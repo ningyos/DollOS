@@ -86,11 +86,13 @@ adb reboot
 ## DollOS-Server (Python)
 ```bash
 cd ~/Projects/DollOS-Server
+git checkout dev              # latest code is on dev branch
 uv sync
-uv run smolgura start        # starts vLLM + AMQP services
-uv run smolgura vllm-worker  # manual worker
+uv run dollos-server start        # starts vLLM + AMQP services
+uv run dollos-server vllm-worker  # manual worker
 ```
 Requires: Docker (RabbitMQ, Redis, Milvus/etcd/MinIO), NVIDIA GPU with CUDA.
+**Note**: `main` branch is outdated. All active development is on `dev`.
 
 ## Specs and Plans
 
