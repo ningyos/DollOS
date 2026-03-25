@@ -4,7 +4,7 @@
 
 DollOS is a personal AI ecosystem. Your AI companion lives across your phone and computer.
 
-- **DollOS-Server** (computer) — GPU-powered AI backend: LLM inference (vLLM), TTS (luxTTS/fish-tts), STT (FunASR), Embedding (bge-m3), Vision. Has a React Web UI for management and interaction. Python, Docker, RabbitMQ AMQP RPC.
+- **DollOS-Server** (computer) — GuraOS microkernel AI operating system. Unified agent loop (GuraCore), cognitive stack, tool system, memory (memsearch: Markdown + sqlite-vec + FTS5). Kernel modules (kmod) are out-of-process NATS services: LLM (Grok cloud + local Qwen3-VL via vLLM), TTS (fish-tts), STT (FunASR), Vision (Qwen3-VL), Desktop UI. NATS is the central message bus (replaced RabbitMQ). Storage: sqlite-vec for vectors (replaced Milvus), RustFS for files. Python, Docker, uv workspaces.
 - **DollOS-Android** (phone) — Custom Android OS based on GrapheneOS Android 16 for Pixel 6a (bluejay). Deep AOSP integration: custom Launcher with 3D avatar (Filament), AI system services, power menu AI controls, hardware security.
 - **Character Packs** (.doll files) — Zip bundles containing 3D avatar model (glTF), personality prompts, voice config, scene config, animations. Users import/export/switch characters.
 
@@ -17,7 +17,7 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 | Repo | Path | What it is |
 |------|------|------------|
 | **DollOS** | `~/Projects/DollOS/` | THIS REPO — umbrella, all specs/plans/docs, sync script |
-| **DollOS-Server** | `~/Projects/DollOS-Server/` | Server backend (Python, vLLM, AMQP RPC, Docker) |
+| **DollOS-Server** | `~/Projects/DollOS-Server/` | Server backend (Python, GuraOS microkernel, NATS, kmod plugins, Docker). Branch: `dev` |
 | **DollOS-Android** | `~/Projects/DollOS-Android/` | AOSP overlay configs (was the old DollOS repo) |
 | **DollOSAIService** | `~/Projects/DollOSAIService/` | Android AI Service app (Kotlin, Gradle). LLM client, conversation engine, memory (ObjectBox + Room FTS4), personality, agent system, background workers, character pack manager. Binds via AIDL. |
 | **DollOSLauncher** | `~/Projects/DollOSLauncher/` | Android 3D Launcher app (Kotlin, Gradle, Filament). Full-screen 3D avatar scene, conversation bubble, app drawer, character picker. |
@@ -30,7 +30,7 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 
 ## Key Architecture Decisions
 
-- **Client-Server**: Phone ↔ Computer via DollOS Protocol (to be designed). Phone sends audio/text, computer returns TTS audio/LLM responses.
+- **Client-Server**: Phone ↔ Computer via DollOS Protocol (to be designed). Phone sends audio/text, computer returns TTS audio/LLM responses. Server uses NATS as central message bus; kernel modules (LLM, TTS, STT, Vision) are out-of-process NATS services.
 - **AIDL IPC**: On Android, DollOSAIService ↔ DollOSService ↔ DollOSLauncher communicate via AIDL Binder.
 - **Character Pack (.doll)**: Zip file with manifest.json, personality.json, voice.json, scene.json, model.glb, animations/, wake_word.bin, thumbnail.png. Managed by CharacterManager in DollOSAIService.
 - **Memory**: Markdown is source of truth. ObjectBox for vector search (brute-force cosine, no HNSW). Room FTS4 for keyword search. Per-model vector store (modelId field). Shared memory across characters + per-character private notes.
@@ -88,11 +88,19 @@ adb reboot
 cd ~/Projects/DollOS-Server
 git checkout dev              # latest code is on dev branch
 uv sync
-uv run dollos-server start        # starts vLLM + AMQP services
-uv run dollos-server vllm-worker  # manual worker
+docker compose up -d          # NATS, Milvus, RustFS
+uv run dollos-server start    # boots GuraOS + kmod services
 ```
-Requires: Docker (RabbitMQ, Redis, Milvus/etcd/MinIO), NVIDIA GPU with CUDA.
+Requires: Docker (NATS, RustFS), NVIDIA GPU with CUDA for kmod workers (vLLM, FunASR, fish-tts).
 **Note**: `main` branch is outdated. All active development is on `dev`.
+
+### Server Architecture (GuraOS)
+- **NATS** — central message bus (IPC, kmod routing, driver communication)
+- **GuraCore** — unified agent loop, cognitive stack, triage
+- **Kernel Modules (kmod)** — out-of-process NATS services: grok (LLM), qwen3-vl (Vision+LLM), fun-asr (STT), fish-speech (TTS), audio-speaker, desktop
+- **Memory** — memsearch: Markdown source of truth + sqlite-vec (vectors) + FTS5 (keywords)
+- **Drivers** — Discord, PC, Phone, Desktop (via NATS or in-process WebSocket)
+- **GuraVerse** — sub-agent spawning (TinyGura)
 
 ## Specs and Plans
 
