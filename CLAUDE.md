@@ -126,7 +126,6 @@ Read the relevant spec before starting any work.
 
 ### In Progress
 - DollOS Protocol design (phone ↔ computer communication)
-- Repo reorganization (smolGura merged into ningyos)
 
 ### Next Up
 - DollOS Protocol spec + implementation
