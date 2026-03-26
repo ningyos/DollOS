@@ -219,7 +219,7 @@ class VadEngine(modelDir: String) {
             provider = "cpu",
             debug = false
         )
-        vad = Vad(config)
+        vad = Vad(config = config)
         Log.i(TAG, "VAD initialized")
     }
 
@@ -308,7 +308,7 @@ class AsrEngine(modelDir: String) {
             decodingMethod = "greedy_search",
             maxActivePaths = 4
         )
-        recognizer = OnlineRecognizer(config)
+        recognizer = OnlineRecognizer(config = config)
         Log.i(TAG, "ASR initialized (paraformer bilingual zh-en)")
     }
 
@@ -411,8 +411,8 @@ class TtsEngine(modelDir: String) {
     var onStarted: (() -> Unit)? = null
     var onCompleted: (() -> Unit)? = null
 
-    val numSpeakers: Int get() = tts.numSpeakers
-    val sampleRate: Int get() = tts.sampleRate
+    val numSpeakers: Int get() = tts.numSpeakers()
+    val sampleRate: Int get() = tts.sampleRate()
 
     init {
         val config = OfflineTtsConfig(
@@ -429,8 +429,8 @@ class TtsEngine(modelDir: String) {
                 debug = false
             )
         )
-        tts = OfflineTts(config)
-        Log.i(TAG, "TTS initialized: Kokoro, ${tts.numSpeakers} speakers, ${tts.sampleRate}Hz")
+        tts = OfflineTts(config = config)
+        Log.i(TAG, "TTS initialized: Kokoro, ${tts.numSpeakers()} speakers, ${tts.sampleRate()}Hz")
     }
 
     fun speak(text: String) {
@@ -446,7 +446,7 @@ class TtsEngine(modelDir: String) {
                     if (!isSpeaking) return@generateWithCallback 0  // stop generation
 
                     if (audioTrack == null) {
-                        initAudioTrack(tts.sampleRate)
+                        initAudioTrack(tts.sampleRate())
                     }
                     val shortSamples = ShortArray(samples.size) {
                         (samples[it] * 32767).toInt().coerceIn(-32768, 32767).toShort()
@@ -577,7 +577,7 @@ class WakeWordEngine(modelDir: String, keyword: String = "Hey Doll") {
             keywordsThreshold = 0.25f,
             numTrailingBlanks = 2
         )
-        spotter = KeywordSpotter(config)
+        spotter = KeywordSpotter(config = config)
         stream = spotter.createStream(keyword)
         Log.i(TAG, "Wake word engine initialized: '$keyword'")
     }
@@ -661,9 +661,9 @@ class SpeakerIdEngine(modelPath: String, private val context: Context) {
             debug = false,
             provider = "cpu"
         )
-        extractor = SpeakerEmbeddingExtractor(config)
+        extractor = SpeakerEmbeddingExtractor(config = config)
         loadSpeakers()
-        Log.i(TAG, "Speaker ID initialized: dim=${extractor.dim}, ${registeredSpeakers.size} speakers")
+        Log.i(TAG, "Speaker ID initialized: dim=${extractor.dim()}, ${registeredSpeakers.size} speakers")
     }
 
     fun identify(audioSamples: FloatArray, threshold: Float = 0.6f): Pair<String, Float>? {
@@ -803,8 +803,12 @@ class VoicePipeline(private val context: Context) {
         private const val MODEL_BASE = "/system_ext/dollos/models/voice"
     }
 
+    @Volatile  // All state transitions should be synchronized
     var state: VoicePipelineState = VoicePipelineState.IDLE
         private set
+
+    @Volatile
+    var isVoiceMessagePending = false
 
     // Engines (lazy init)
     private var vadEngine: VadEngine? = null
@@ -824,9 +828,11 @@ class VoicePipeline(private val context: Context) {
     var onFinalText: ((String) -> Unit)? = null  // called when final ASR text ready to send to AI
 
     private var isInitialized = false
+    private var initFailed = false
 
     fun init() {
         if (isInitialized) return
+        if (initFailed) return  // prevent retry loops after failure
 
         try {
             vadEngine = VadEngine("$MODEL_BASE/vad")
@@ -857,6 +863,7 @@ class VoicePipeline(private val context: Context) {
             Log.i(TAG, "Voice pipeline initialized")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize voice pipeline", e)
+            initFailed = true
         }
     }
 
@@ -884,8 +891,8 @@ class VoicePipeline(private val context: Context) {
             if (state == VoicePipelineState.LISTENING) {
                 asrEngine?.feedAudio(samples)
 
-                // Check if utterance ended (VAD says no more speech)
-                if (!vadEngine!!.isSpeechDetected()) {
+                // Check if utterance ended (VAD has a completed speech segment)
+                if (vadEngine!!.hasSpeechSegment()) {
                     val text = asrEngine?.finishRecognition() ?: ""
                     if (text.isNotEmpty()) {
                         setState(VoicePipelineState.PROCESSING)
@@ -1119,6 +1126,7 @@ voicePipeline.onSpeakerIdentified = { name, conf -> broadcastSpeakerIdentified(n
 voicePipeline.onStateChanged = { state -> broadcastVoicePipelineStateChanged(state.name) }
 voicePipeline.onFinalText = { text ->
     // Voice input → treat as VOICE_MESSAGE
+    voicePipeline.isVoiceMessagePending = true
     scope.launch {
         eventQueue.push(org.dollos.ai.event.Event(
             type = org.dollos.ai.event.EventType.VOICE_MESSAGE,
@@ -1139,7 +1147,8 @@ In `sendMessage()`, inside `onComplete` callback, after `broadcastComplete(respo
 
 ```kotlin
 // If this was a voice message, speak the response
-if (voicePipeline.state == VoicePipelineState.PROCESSING || voicePipeline.state == VoicePipelineState.IDLE) {
+if (voicePipeline.isVoiceMessagePending) {
+    voicePipeline.isVoiceMessagePending = false
     voicePipeline.onAiResponseComplete(response.content)
 }
 ```
@@ -1373,7 +1382,200 @@ git commit -m "feat: wire mic button and voice callbacks to Launcher"
 
 ---
 
-## Task 12: Power Button Double-Tap → Voice Input
+## Task 12: Voice Settings UI
+
+**Goal:** Add a Voice Settings sub-page to the Settings app for configuring wake word, speaker ID, TTS speed, and TTS speaker.
+
+**Files:**
+- Create: `~/Projects/DollOS-build/packages/apps/Settings/res/xml/dollos_voice_settings.xml`
+- Create: `~/Projects/DollOS-build/packages/apps/Settings/src/com/android/settings/dollos/DollOSVoiceSettingsFragment.java`
+- Modify: `~/Projects/DollOS-build/packages/apps/Settings/res/xml/dollos_ai_settings.xml`
+
+- [ ] **Step 1: Create dollos_voice_settings.xml**
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:settings="http://schemas.android.com/apk/res-auto"
+    android:title="@string/dollos_voice_settings_title">
+
+    <!-- Wake Word -->
+    <PreferenceCategory android:title="Wake Word">
+        <SwitchPreference
+            android:key="dollos_wake_word_enabled"
+            android:title="Enable Wake Word"
+            android:summary="Activate voice input by saying a keyword"
+            android:defaultValue="false" />
+        <EditTextPreference
+            android:key="dollos_wake_word_keyword"
+            android:title="Wake Word Keyword"
+            android:summary="The keyword to listen for"
+            android:defaultValue="Hey Doll"
+            android:dependency="dollos_wake_word_enabled" />
+    </PreferenceCategory>
+
+    <!-- Speaker ID -->
+    <PreferenceCategory android:title="Speaker Identification">
+        <SwitchPreference
+            android:key="dollos_speaker_id_enabled"
+            android:title="Enable Speaker ID"
+            android:summary="Identify who is speaking"
+            android:defaultValue="false" />
+        <Preference
+            android:key="dollos_speaker_id_list"
+            android:title="Registered Speakers"
+            android:summary="Manage registered speaker profiles"
+            android:dependency="dollos_speaker_id_enabled" />
+    </PreferenceCategory>
+
+    <!-- TTS -->
+    <PreferenceCategory android:title="Text-to-Speech">
+        <SeekBarPreference
+            android:key="dollos_tts_speed"
+            android:title="TTS Speed"
+            android:defaultValue="10"
+            android:max="20"
+            settings:min="1" />
+        <ListPreference
+            android:key="dollos_tts_speaker"
+            android:title="TTS Speaker"
+            android:summary="Select voice for speech synthesis" />
+    </PreferenceCategory>
+
+</PreferenceScreen>
+```
+
+- [ ] **Step 2: Create DollOSVoiceSettingsFragment.java**
+
+```java
+package com.android.settings.dollos;
+
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.RemoteException;
+import android.util.Log;
+
+import androidx.preference.Preference;
+import androidx.preference.SwitchPreference;
+import androidx.preference.SeekBarPreference;
+import androidx.preference.ListPreference;
+
+import com.android.settings.R;
+import com.android.settings.dashboard.DashboardFragment;
+
+import org.dollos.ai.IDollOSAIService;
+
+public class DollOSVoiceSettingsFragment extends DashboardFragment {
+    private static final String TAG = "DollOSVoiceSettings";
+
+    private IDollOSAIService aiService;
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            aiService = IDollOSAIService.Stub.asInterface(service);
+            loadCurrentValues();
+        }
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            aiService = null;
+        }
+    };
+
+    @Override
+    public int getMetricsCategory() { return 0; }
+
+    @Override
+    protected String getLogTag() { return TAG; }
+
+    @Override
+    protected int getPreferenceScreenResId() {
+        return R.xml.dollos_voice_settings;
+    }
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        Intent intent = new Intent("org.dollos.ai.IDollOSAIService");
+        intent.setPackage("org.dollos.ai");
+        getContext().bindService(intent, connection, Context.BIND_AUTO_CREATE);
+
+        SwitchPreference wakeWordEnabled = findPreference("dollos_wake_word_enabled");
+        if (wakeWordEnabled != null) {
+            wakeWordEnabled.setOnPreferenceChangeListener((pref, newValue) -> {
+                try {
+                    if (aiService != null) aiService.setWakeWordEnabled((Boolean) newValue);
+                } catch (RemoteException e) { Log.e(TAG, "setWakeWordEnabled failed", e); }
+                return true;
+            });
+        }
+
+        SwitchPreference speakerIdEnabled = findPreference("dollos_speaker_id_enabled");
+        if (speakerIdEnabled != null) {
+            speakerIdEnabled.setOnPreferenceChangeListener((pref, newValue) -> {
+                try {
+                    if (aiService != null) aiService.setSpeakerIdEnabled((Boolean) newValue);
+                } catch (RemoteException e) { Log.e(TAG, "setSpeakerIdEnabled failed", e); }
+                return true;
+            });
+        }
+
+        SeekBarPreference ttsSpeed = findPreference("dollos_tts_speed");
+        if (ttsSpeed != null) {
+            ttsSpeed.setOnPreferenceChangeListener((pref, newValue) -> {
+                float speed = ((Integer) newValue) / 10.0f;
+                try {
+                    if (aiService != null) aiService.setTtsSpeed(speed);
+                } catch (RemoteException e) { Log.e(TAG, "setTtsSpeed failed", e); }
+                return true;
+            });
+        }
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        getContext().unbindService(connection);
+    }
+
+    private void loadCurrentValues() {
+        try {
+            SwitchPreference wakeWordEnabled = findPreference("dollos_wake_word_enabled");
+            if (wakeWordEnabled != null && aiService != null) {
+                wakeWordEnabled.setChecked(aiService.isWakeWordEnabled());
+            }
+        } catch (RemoteException e) { Log.e(TAG, "loadCurrentValues failed", e); }
+    }
+}
+```
+
+- [ ] **Step 3: Add Voice Settings entry to dollos_ai_settings.xml**
+
+Add to `dollos_ai_settings.xml` before the closing `</PreferenceScreen>`:
+
+```xml
+<Preference
+    android:key="dollos_voice_settings"
+    android:title="Voice Settings"
+    android:summary="Wake word, speaker ID, TTS configuration"
+    android:fragment="com.android.settings.dollos.DollOSVoiceSettingsFragment" />
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd ~/Projects/DollOS-build
+git add packages/apps/Settings/
+git commit -m "feat: add Voice Settings UI page"
+```
+
+---
+
+## Task 13: Power Button Double-Tap → Voice Input
 
 **Goal:** Change power button double-tap from TaskManager to voice input.
 
@@ -1392,7 +1594,7 @@ Change the double-press target from TaskManagerActivity to a voice input broadca
 
 - [ ] **Step 2: Create VoiceInputActivity**
 
-Create a lightweight activity in DollOSAIService that binds to the service and calls `startListening()`:
+Create a lightweight activity in DollOSAIService that sends a broadcast to start listening (avoids bind/unbind race condition):
 
 Create `app/src/main/java/org/dollos/ai/voice/VoiceInputActivity.kt`:
 
@@ -1400,14 +1602,9 @@ Create `app/src/main/java/org/dollos/ai/voice/VoiceInputActivity.kt`:
 package org.dollos.ai.voice
 
 import android.app.Activity
-import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
 import android.os.Bundle
-import android.os.IBinder
 import android.util.Log
-import org.dollos.ai.IDollOSAIService
 
 class VoiceInputActivity : Activity() {
 
@@ -1418,29 +1615,28 @@ class VoiceInputActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val serviceIntent = Intent("org.dollos.ai.IDollOSAIService").apply {
-            setPackage("org.dollos.ai")
-        }
-
-        bindService(serviceIntent, object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                val aiService = IDollOSAIService.Stub.asInterface(service)
-                try {
-                    aiService.startListening()
-                    Log.i(TAG, "Voice input started via power button")
-                } catch (e: Exception) {
-                    Log.e(TAG, "startListening failed", e)
-                }
-                unbindService(this)
-                finish()
-            }
-
-            override fun onServiceDisconnected(name: ComponentName?) {
-                finish()
-            }
-        }, Context.BIND_AUTO_CREATE)
+        // Instead of bindService, just send a broadcast
+        val intent = Intent("org.dollos.ai.ACTION_VOICE_INPUT")
+        intent.setPackage("org.dollos.ai")
+        sendBroadcast(intent)
+        Log.i(TAG, "Voice input broadcast sent via power button")
+        finish()
     }
 }
+```
+
+Register a BroadcastReceiver in `DollOSAIServiceImpl` init block to handle this:
+
+```kotlin
+// Register voice input broadcast receiver (for power button double-tap)
+val voiceInputReceiver = object : android.content.BroadcastReceiver() {
+    override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+        Log.i("DollOSAIServiceImpl", "Voice input broadcast received")
+        voicePipeline.startListening()
+    }
+}
+val filter = android.content.IntentFilter("org.dollos.ai.ACTION_VOICE_INPUT")
+DollOSAIApp.instance.registerReceiver(voiceInputReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
 ```
 
 - [ ] **Step 3: Add to AndroidManifest.xml**
@@ -1468,7 +1664,7 @@ git commit -m "feat: change power double-tap to voice input"
 
 ---
 
-## Task 13: Build, Deploy, and Verify
+## Task 14: Build, Deploy, and Verify
 
 **Goal:** Build everything, deploy, verify voice pipeline works.
 
