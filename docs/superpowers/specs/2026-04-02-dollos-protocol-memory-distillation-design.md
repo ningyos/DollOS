@@ -104,8 +104,10 @@ Sent after each conversation round completes (state returns to IDLE):
 ### Server Storage
 
 Server receives conversation sync and:
-1. Appends to `conversations/<characterId>/YYYY-MM-DD.jsonl` (one JSON per line, raw log)
+1. Appends to `memory/conversations/<characterId>/YYYY-MM-DD.jsonl` (one JSON per line, raw log, under memsearch data dir)
 2. Sends `ack` back to phone
+
+Only sync complete conversation rounds (LLM responded successfully, state reached IDLE naturally). Do not sync interrupted/cancelled conversations.
 
 No processing at sync time — raw storage only. Distillation happens later.
 
@@ -121,7 +123,7 @@ No processing at sync time — raw storage only. Distillation happens later.
 
 ### Input
 
-Read all conversation logs from `conversations/<characterId>/YYYY-MM-DD.jsonl` for the target date.
+Read all conversation logs from `memory/conversations/<characterId>/YYYY-MM-DD.jsonl` for the target date.
 
 ### Distillation Pipeline
 
@@ -238,7 +240,7 @@ protocol:
 
 distillation:
   schedule: "0 3 * * *"  # 03:00 daily
-  llm_model: "qwen3-vl"  # or "grok-3" via kmod
+  llm_model: "grok-3"  # via kmod LLM service
   weekly_rollup: true
   weekly_schedule: "30 3 * * 0"  # Sunday 03:30
 ```
