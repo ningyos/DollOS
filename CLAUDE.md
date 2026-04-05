@@ -32,7 +32,7 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 
 - **Client-Server**: Phone ↔ Computer via DollOS Protocol (to be designed). Phone sends audio/text, computer returns TTS audio/LLM responses. Server uses NATS as central message bus; kernel modules (LLM, TTS, STT, Vision) are out-of-process NATS services.
 - **AIDL IPC**: On Android, DollOSAIService ↔ DollOSService ↔ DollOSLauncher communicate via AIDL Binder.
-- **Character Pack (.doll)**: Zip file with manifest.json, personality.json, voice.json, scene.json, model.glb, animations/, wake_word.bin, thumbnail.png. Managed by CharacterManager in DollOSAIService.
+- **Character Pack (.doll)**: Zip file with manifest.json, personality.json, voice.json, scene.json, model.glb, animations/, wake_word.onnx, voice_reference.wav, thumbnail.png. Managed by CharacterManager in DollOSAIService.
 - **Memory**: Markdown is source of truth. ObjectBox for vector search (brute-force cosine, no HNSW). Room FTS4 for keyword search. Per-model vector store (modelId field). Shared memory across characters + per-character private notes.
 - **Event-driven AI**: Foreground AI has an EventQueue. Events piggyback on sendMessage() or process during idle. Background workers use background LLM model with skill-based action whitelists.
 - **3D Avatar**: Google Filament on TextureView. glTF 2.0 models. Animation states: IDLE → THINKING → TALKING. Character assets loaded via AIDL ParcelFileDescriptor.
@@ -120,7 +120,7 @@ Read the relevant spec before starting any work.
 - **Background commands**: Don't use tail pipes on background commands.
 - **Specs before code**: Always write/update the spec before implementing. Get user approval on design.
 
-## Current Status (2026-03-25)
+## Current Status (2026-04-02)
 
 ### Completed
 - DollOS Base (AOSP 16, OOBE, theme, GMS, system defaults)
@@ -133,12 +133,41 @@ Read the relevant spec before starting any work.
 - Settings UI (restructured: Stats + Personality main page, LLM / Memory / Budget sub-pages)
 - Character Pack System (.doll format, import/export/switch)
 - AI Launcher (Filament 3D, conversation bubble, app drawer, character picker)
+- Wake Word (openWakeWord 3-stage ONNX pipeline, retrained with fish-tts data + ACAV100M negatives)
+- Voice Pipeline (on-device: ASR sherpa-onnx, TTS Piper VITS, VAD silero, KWS openWakeWord, Speaker ID)
+- TTS Distillation (fish-tts voice cloning → 3447 sentences → Piper VITS single-speaker model, no reference audio needed)
+- Launcher voice UX (tap to cancel listening/speaking, state indicator in bubble)
 
 ### In Progress
 - DollOS Protocol design (phone ↔ computer communication)
 
 ### Next Up
 - DollOS Protocol spec + implementation
-- Voice Pipeline (STT + TTS via DollOS-Server)
+- Server-side TTS (fish-tts via DollOS Protocol for higher quality)
 - Default character pack (bundled in system image)
-- Wake word
+
+## Voice Pipeline Architecture
+
+On-device voice pipeline in DollOSAIService:
+
+- **Wake Word**: openWakeWord 3-stage ONNX (mel → embedding → classifier). Per-character wake_word.onnx in .doll pack. Training: fish-tts generates positive samples, ACAV100M 2000hr negatives, DNN classifier. Threshold 0.7, 3s debounce, disabled when screen locked.
+- **ASR**: sherpa-onnx paraformer (encoder.onnx + decoder.onnx). Always-on streaming, buffer reset on wake word trigger.
+- **TTS**: Piper VITS single-speaker model (distilled from fish-tts voice cloning data). 22050Hz, ~real-time on Pixel 6a. No reference audio needed (voice baked in). Model at `/system_ext/dollos/models/voice/tts-vits/`. Requires `model.onnx` + `tokens.txt` + `espeak-ng-data/`.
+- **VAD**: silero_vad.onnx for speech segment detection.
+- **Speaker ID**: ECAPA-TDNN speaker embedding (512-dim) for speaker verification.
+
+### Wake Word Training
+Training data and scripts at `~/Projects/DollOS/wake_word_training/`:
+- `train_gura.py` — custom training script (AudioFeatureExtractor → DNN → ONNX export)
+- `generate_positive.py` / `generate_negative.py` — fish-tts sample generation
+- `verify_voice.py` — speaker embedding cosine similarity verification
+- ACAV100M features (17.3GB) for negative training data
+- Correct embedding_model.onnx must match the one from openWakeWord Python package
+
+### TTS Model Training
+Piper VITS training at `~/Projects/DollOS/wake_word_training/`:
+- `generate_tts_dataset.py` / `generate_en_dataset.py` — fish-tts dataset generation
+- `filter_accent_whisper.py` — ASR-based accent quality filter
+- Training via piper1-gpl (OHF fork) with PyTorch Lightning
+- Export: `export_gura.sh` → ONNX + add metadata (sample_rate, n_speakers, language)
+- ONNX metadata required by sherpa-onnx: sample_rate, n_speakers, language, noise_scale, noise_scale_w, length_scale
