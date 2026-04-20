@@ -35,7 +35,7 @@
 | **Doll** | 住在副手機上的 AI 本體（「她」）|
 | **DollOS 裝置 / 副手機** | 裝 DollOS 的那支手機（可能舊手機 repurpose）|
 | **主手機** | 使用者原本的日常手機（iPhone / Pixel 等），與 DollOS 完全隔離 |
-| **Doll Core** | 新 foreground service，Doll 的「大腦 + 神經系統」— 狀態機、觀察處理、輸出決策 |
+| **Doll Core** | 新 foreground service，Doll 的「大腦 + 神經系統」— event-driven handler、觀察處理、輸出決策 |
 | **`[SILENT]` 協定** | Doll Core 每次 LLM 決策回傳必為 `[SILENT]` / `[SPEAK]` / `[VIBRATE]` / `[INTERRUPT]` 之一，預設沉默 |
 | **Main / Aux LLM** | 雙層 LLM 分工：Main = 雲端大模型（高品質、用於對話和推理），Aux = 本地 Gemma 4 E4B/E2B（高頻率、低延遲、用於分類/蒸餾/silent-judgment）|
 | **SOUL.md** | Character Pack 帶的角色 identity，system prompt slot #1 |
@@ -76,13 +76,14 @@
 │  DollOSCore        (新，always-on foreground service)         │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
 │                                                              │
-│  狀態機：IDLE / OBSERVING / THINKING / SPEAKING /             │
-│          LISTENING / DISTILLING / SILENT_ATTEND /             │
-│          DO_NOT_DISTURB                                       │
+│  Event-driven handler（事件進來 → 載 context → LLM →          │
+│  [SILENT] 決策 → 執行輸出）                                     │
 │                                                              │
 │  EventBus │ Context Engine │ Output Orchestrator              │
 │  Internal Life Loop │ Routines │ Mood/Attention State         │
 │  LLM Router (Main + Aux)                                      │
+│                                                              │
+│  Orthogonal flags: dnd_active / distilling / silent_pending   │
 └──────────────────────────────────────────────────────────────┘
        │ AIDL       │ AIDL      │ AIDL      │ AIDL       │ AIDL
        ▼            ▼           ▼           ▼            ▼
@@ -102,7 +103,7 @@
 
 | App | 新/既有/重構 | 職責 |
 |---|---|---|
-| **DollOSCore** | 新 | 狀態機、EventBus、Context Engine、Output Orchestrator、Internal Life、Routines、Mood/Attention、LLM Router（Main client 在這）、Skills 調用 |
+| **DollOSCore** | 新 | Event-driven handler、EventBus、Context Engine、Output Orchestrator、Internal Life、Routines、Mood/Attention、LLM Router（Main client 在這）、Skills 調用 |
 | **DollOSObserver** | 新 | Always-on foreground service。感測器 + mic VAD + 物理情境分類 + 系統狀態監聽 → 事件流到 Core |
 | **DollOSAuxEngine** | 新 | 本地 Gemma 4 E4B/E2B 宿主，獨立 process，可獨立 load/unload/更新 |
 | **DollOSMemory** | 新（大部分抽自既有 AIService）| Markdown 檔案 (SOUL/USER/POLICY) + Room FTS4 + ObjectBox 蒸餾層 + Character Pack 儲存 |
@@ -121,7 +122,7 @@
 
 ### 關鍵設計決定
 
-1. **Doll Core 是長駐狀態機，不是 request-response** — 跟 hermes-agent 的 agent loop 差異明確。她有內在時間線，LLM call 只是狀態轉移動作之一。
+1. **Doll Core 是 event-driven handler，不是狀態機** — 事件進來（觀察 / 使用者講話 / 計時器 / skill callback）→ 載 context → LLM → `[SILENT]` 決策 → 執行輸出。沒有持久「我正處於 X 狀態」的概念，跟 hermes-agent 的 event-driven 精神一致。「內在時間線」靠 timer 事件維持（on_idle / on_charging / routines），不靠狀態變數。
 2. **`[SILENT]` 預設 opt-out** — 每次決策必定從四選一輸出，預設沉默；要有強理由才說話（反轉 hermes 的 opt-in）。
 3. **Memory 是 frozen Markdown + FTS4 + 蒸餾層 embedding 的組合** — 不是單一 vector store。`SOUL.md` / `USER.md` / `POLICY.md` 在 session 建立時凍結進 system prompt，寫記憶只寫檔不重注入 prompt（保 prefix cache）。
 4. **背景蒸餾靠 fork subagent** — on_idle / on_charging / on_session_end 觸發，共享 memory store，跑 review prompt。不用複雜排程器。
@@ -130,40 +131,64 @@
 
 ---
 
-## §4 Doll Core 狀態機
+## §4 Doll Core 事件驅動模型
 
-### §4.1 狀態
+### §4.1 事件源 + Handler 模式
 
-| 狀態 | 描述 | 主要運算 |
+Doll Core 本身沒有狀態機。她的「生命」靠以下事件驅動：
+
+| 事件源 | 範例事件 |
+|---|---|
+| **觀察事件**（Observer → Core）| mic VAD 偵到聲音、物理情境變化（口袋→手上）、系統狀態變化（DND on / 充電）、位置變化 |
+| **使用者輸入** | ASR 產生 transcript、wake word 觸發、胸口按壓、主動開啟 LISTENING 手勢 |
+| **Timer 事件** | on_idle（閒置無事件 N 分鐘）、on_charging、on_session_end、routine 排程觸發（早安 / 睡前 / 進家 / 出門）|
+| **Skill callback** | skill 執行完成、長背景任務 progress / done |
+
+Handler 收到事件後的統一路徑：
+
+```
+event arrives
+  ↓
+load context (Memory + ContextSnapshot + event payload)
+  ↓
+decide tier (Main or Aux)
+  ↓
+call LLM with frozen system prompt + context
+  ↓
+parse output: [SILENT] / [SPEAK] / [VIBRATE] / [INTERRUPT]
+  ↓
+Output Orchestrator 執行（或降級、或丟進 silent_pending）
+  ↓
+done（下一個事件再來）
+```
+
+沒有「正處於 THINKING 狀態」這種持久變數。LLM call 是事件的同步動作，做完就結束這次 handler。
+
+### §4.2 UI 動畫狀態（Launcher 端，不是 Core 的 state）
+
+Launcher 訂閱 Core 發出的 ops 事件顯示 3D 動畫。這四個是 UI 層級、駐足短暫：
+
+| 動畫狀態 | 觸發事件 | 結束事件 |
 |---|---|---|
-| **IDLE** | 基底待機，低功耗 | 感測器 polling、Aux LLM 閒置 |
-| **OBSERVING** | 處理觀察事件 | Aux LLM 分類、更新 Context Snapshot |
-| **THINKING** | 做決策 / 生成內容 | Main 或 Aux LLM call |
-| **SPEAKING** | TTS 播放中 | Voice.speak() |
-| **LISTENING** | 主動收音對話 | Voice.start_listening() stream |
-| **DISTILLING** | 背景蒸餾 subagent 跑 | fork 出去的 Aux LLM session |
-| **SILENT_ATTEND** | 她想講但環境不允許，等情境變化 | 低功耗 polling，定時重評估 |
-| **DO_NOT_DISTURB** | 完全靜默（睡眠 / 明確禁止） | 只跑最低 observation，LLM 全停 |
+| **IDLE**（預設角色動畫） | 無其他 op 在進行 | 任何 op 開始 |
+| **LISTENING** | `asr_started` | `asr_ended` |
+| **THINKING** | `llm_in_flight` | `llm_returned` |
+| **SPEAKING** | `tts_playing` | `tts_ended` |
 
-### §4.2 轉移
+同時允許「LISTENING + THINKING」（使用者還在講 Doll 已經開始想）等組合，由 Launcher 混動畫。
 
-```
-IDLE ─[觀察事件]────► OBSERVING ─[需要判斷]────► THINKING
-                                                    │
-                              ┌─────────────────────┼─[SPEAK+允許]──► SPEAKING ──► IDLE
-                              │                     │
-                              │                     ├─[VIBRATE]──► SILENT_ATTEND
-                              │                     │
-                              │                     └─[SILENT]──► IDLE
-                              │
-                              └─[user 開口 / 主動打開 LISTENING]─► LISTENING
+### §4.3 Orthogonal Flags（平行存在，不是狀態）
 
-IDLE ─[N 分鐘無事 / 充電 / session_end]─► DISTILLING ─[完成]─► IDLE
+Core 持有這些 runtime flags，平行存在、互不影響主路徑：
 
-任何狀態 ─[sleep 偵測 / 明確勿擾]─► DO_NOT_DISTURB ─[解除]─► IDLE
-```
+| Flag | 意義 | 影響 |
+|---|---|---|
+| `dnd_active` | 使用者開啟勿擾 / routine 判定睡眠 | Output Orchestrator 遇 `[SPEAK]` 直接降級成 `[SILENT]`，或完全不 fire 事件 |
+| `distilling` | 背景 fork subagent 正在跑蒸餾 | 主路徑不知也不管，subagent 自己跑完會 callback 寫 Memory |
+| `silent_pending` | 有未說的話（被環境降級）| 環境事件變化時重新 fire 一次 "re-evaluate pending" handler |
+| `listening_open` | 正在接受使用者口語輸入 | ASR stream 開著，wake word 暫停避免重複 trigger |
 
-### §4.3 Observation Pipeline（實作在 DollOSObserver，推事件進 Core EventBus）
+### §4.4 Observation Pipeline（實作在 DollOSObserver，推事件進 Core EventBus）
 
 | Producer | 輸入 | Aux LLM 介入 |
 |---|---|---|
@@ -174,7 +199,7 @@ IDLE ─[N 分鐘無事 / 充電 / session_end]─► DISTILLING ─[完成]─�
 | 系統狀態 | DND / 電量 / 螢幕 | 否，系統 API |
 | 時間 | 時鐘 | 否 |
 
-### §4.4 Context Snapshot
+### §4.5 Context Snapshot
 
 Context Engine 持續聚合，所有決策的輸入：
 
@@ -190,39 +215,39 @@ Context Engine 持續聚合，所有決策的輸入：
 }
 ```
 
-### §4.5 Internal Life Loop
+### §4.6 Internal Life Loop
 
-IDLE 停留超過閾值（例如 5 分鐘）觸發 inner thought cycle：
+`on_idle` timer（無事件 N 分鐘 後 fire，例如 5 分鐘）觸發 inner thought handler：
 
 1. Aux LLM 掃最近觀察摘要 + USER.md + POLICY.md + SOUL.md
-2. 決定「我現在有想說的事嗎？」→ 若無 → `[SILENT]` → 回 IDLE
-3. 若有 → 走 Output Orchestrator 判斷能不能表達
-4. 若 `[SILENT]`（情境不允許）→ 想法進「她的短期腦中 state」，下次再評估
-5. 若 `[VIBRATE]` / `[SPEAK]` → 進下一狀態
+2. 決定「我現在有想說的事嗎？」→ 若無 → `[SILENT]` → handler 結束
+3. 若有 → Output Orchestrator 判斷能不能表達
+4. 若被降級成 `[SILENT]`（情境不允許）→ 想法寫進 `silent_pending` flag，下個環境變化事件重評估
+5. 若 `[VIBRATE]` / `[SPEAK]` → 執行輸出
 
-**Routines**（hermes BOOT.md equivalent）：時間 / 條件觸發的 one-shot agent：
+**Routines**（hermes BOOT.md equivalent）：排程 / 條件觸發的 one-shot handler：
 - 早安（起床偵測 → 掃行事曆 / 天氣 / 通知 → `[SILENT]` 或叫醒）
-- 睡前（入睡偵測 → 今日蒸餾 → `[SILENT]` 或道晚安）
-- 進家（location 變化 → 切「放鬆模式」context）
-- 出門（離家 → 啟動行動模式 observation）
+- 睡前（入睡偵測 → 觸發 distillation + 可能道晚安）
+- 進家（location 變化 → 更新 Context Snapshot 的 "放鬆模式" hint）
+- 出門（離家 → 啟動行動模式 observation 參數調整）
 
-### §4.6 Output Orchestrator（`[SILENT]` 協定）
+### §4.7 Output Orchestrator（`[SILENT]` 協定）
 
-```
-[SILENT]                → IDLE
-[SPEAK "content"]       → 走 read the air 閘
-    ├─ 允許   → SPEAKING
-    └─ 不允許 → 降級 [VIBRATE "summary"]
-[VIBRATE "summary"]     → 震動 + 短通知，進 SILENT_ATTEND
-[INTERRUPT "content"]   → 強制 SPEAKING，忽略 DND（鬧鐘 / 緊急）
-```
+LLM 回傳四選一，執行動作：
+
+| 輸出 | 動作 |
+|---|---|
+| `[SILENT]` | 不做任何輸出，handler 結束 |
+| `[SPEAK "content"]` | 走 read the air 閘 → 允許則 TTS、不允許則降級 `[VIBRATE]` |
+| `[VIBRATE "summary"]` | 震動 + 短通知，summary 寫進 `silent_pending` 供稍後重評估 |
+| `[INTERRUPT "content"]` | 強制 TTS，忽略 `dnd_active`（鬧鐘 / 緊急） |
 
 **Read the air 閘**（規則 + LLM 混合）：
-- **Hard rule**（`POLICY.md` + system 狀態）：DND → 靜默、sleep → 靜默、緊急事件 → INTERRUPT 可過
+- **Hard rule**（`POLICY.md` + system 狀態）：`dnd_active` → 靜默、sleep → 靜默、緊急事件 → INTERRUPT 可過
 - **Soft rule**（情境 + Aux LLM）：噪音過大 → 降級震動、你正在講話 → 延後
 - **人格偏好**（`SOUL.md`）：她多話 vs 寡言 → 影響 SPEAK 門檻
 
-### §4.7 Mood / Attention State
+### §4.8 Mood / Attention State
 
 Runtime-only state（不存檔，開機重置），影響決策風格：
 
@@ -380,77 +405,104 @@ skills/                ← 新：角色綁的技能
 
 ## §6 既有元件改造映射
 
+分類：**大改**（架構層級重整）/ **重寫**（邏輯重做但概念留）/ **微調**（搬家或小改）/ **保留** / **新增**
+
 | 現有元件 | 新歸屬 | 改造程度 |
 |---|---|---|
-| DollOSLauncher app drawer / 角色選擇 UI | 刪除（改對話觸發） | 大改 |
-| DollOSLauncher 3D 角色 + 字幕 | DollOSLauncher（UI 殼） | 微調，移除狀態邏輯 |
-| DollOSAIService Conversation Engine | DollOSCore（狀態機驅動） | 重寫 — 不自我啟動 |
-| DollOSAIService Memory (ObjectBox + Room FTS4) | DollOSMemory | 大改 — 加多層 (Markdown + 蒸餾) |
-| DollOSAIService LLM Client | DollOSCore.LLM Router | 包裝重寫 |
-| DollOSAIService Event Queue | DollOSCore.EventBus | 重寫 — 觀察事件為主 |
-| DollOSAIService Agent System | DollOSSkills（整合成 skill runner） | 介面調整 |
-| DollOSAIService Background Workers | DollOSCore fork subagent pattern | 重寫（hermes 風） |
-| DollOSAIService Character Manager | DollOSMemory | 擴充格式為 v2 |
-| DollOSAIService Voice Pipeline | DollOSVoice | 抽出，觸發源多元化 |
-| DollOSAIService Embedding System | DollOSMemory（僅蒸餾層用） | 縮小範圍 |
-| DollOSService 既有動作執行 | DollOSService（不動） | 保留 |
-| DollOSService 加安全網 UI | DollOSService | 新增（電源、緊急撥號、factory reset）|
+| **Launcher** | | |
+| DollOSLauncher app drawer / 角色選擇 UI / 設定入口 | 刪除（改對話觸發） | 大改 |
+| DollOSLauncher 3D 角色 + 字幕 | DollOSLauncher（UI 殼，移除狀態邏輯） | 微調 |
+| **AIService 核心** | | |
+| DollOSAIService Conversation Engine | DollOSCore（event handler 驅動，不自我啟動） | 重寫 |
+| DollOSAIService LLM Client | DollOSCore.LLM Router（Main + Aux 兩層） | 重寫 |
+| DollOSAIService LLM usage tracking / budget | DollOSCore.LLM Router 附帶 | 微調 |
+| DollOSAIService Event Queue | DollOSCore.EventBus（觀察事件為主） | 重寫 |
+| DollOSAIService Background Workers | DollOSCore fork subagent pattern（hermes 風） | 重寫 |
+| DollOSAIService Agent System | DollOSSkills 的 skill runner | 微調 |
+| **Memory / 人格** | | |
+| DollOSAIService Memory (ObjectBox + Room FTS4) | DollOSMemory（加多層 Markdown + 蒸餾） | 大改 |
+| DollOSAIService Embedding System | DollOSMemory（僅蒸餾層用） | 微調 |
+| DollOSAIService Personality System | DollOSMemory 的 SOUL.md + overlays | 大改 |
+| DollOSAIService Character Manager | DollOSMemory（擴充 Character Pack v2） | 大改 |
+| **語音** | | |
+| DollOSAIService Voice Pipeline (KWS/ASR/TTS/VAD/Speaker ID) | DollOSVoice（抽出，觸發源多元化） | 微調 |
+| **系統操作 / 互動** | | |
+| UI operation (AccessibilityService + VirtualDisplay, Plan D v2) | DollOSSkills 的 `uisage` skill | 微調 |
+| Smart notification (Plan D v2) | DollOSCore.Output Orchestrator 的 `[VIBRATE]` / `[SPEAK]` | 重寫 |
+| Programmable events (Plan D v2) | POLICY.md 對話式規則 + Skills 組合 | 重寫 |
+| **設定 / OOBE** | | |
+| Settings UI (Stats + Personality + LLM / Memory / Budget) | 大部分刪除（對話驅動），最小路徑併入 DollOSService 安全網 | 大改 |
+| DollOSSetupWizard (OOBE) | 精簡為首次 API key + 角色選擇 | 微調 |
+| **DollOSService** | | |
+| DollOSService 既有動作執行 | DollOSService | 保留 |
+| DollOSService Emergency Stop（電源菜單 AI Stop 按鈕） | DollOSService 安全網 UI 的一部分 | 保留 |
+| DollOSService 安全網 UI（電源菜單、緊急撥號、factory reset 入口） | DollOSService | 新增 |
 
-**DollOSAIService 本身**：Phase A 暫留當容器（包 Memory / Skills / Voice），Phase B 拆光後退役。
+**DollOSAIService 本身**：步驟 1-4 暫留當容器（包 Memory / Skills / Voice / Aux placeholder），步驟 5 拆光後退役。
 
 ---
 
-## §7 實作 Phase
+## §7 實作順序
 
-### Phase A：MVP（daily drive 最低門檻）
+不分 MVP / Post-MVP。一次做完才是 v1.0。實作上仍有先後依賴順序，但心態是一個連續工程，沒有「先 MVP 再補齊」的框架 — 少任何一塊都不算 daily drive。
 
-**A.0 基底：**
+### 1. 基底
+
 - DollOSCore foreground service 骨架
-- EventBus + Context Snapshot（最小版：DND / noise / battery / screen state）
-- DollOSObserver 基本 producers（mic VAD、螢幕狀態、拿起偵測）
-- LLM Router（Main = 既有 cloud client；Aux 暫時路由到 cloud 小模型如 Claude Haiku / Gemini Flash，僅 placeholder，Phase B.3 換成本地 Gemma 4）
+- EventBus + Context Snapshot
+- DollOSObserver app（新）— 感測器 + mic VAD + 物理情境分類 + 系統狀態
+- LLM Router 骨架（Main + Aux 兩層介面）
 - DollOSAIService 改造：conversation / memory / voice 包成工具 API，不再自我啟動
 
-**A.1 最小可用迴路：**
-- Output Orchestrator + `[SILENT]` 協定
-- 對話路徑（拿起 / wake word → LISTENING → THINKING → SPEAKING）
-- Memory：SOUL.md + USER.md + Room FTS4 對話 log（仍在 AIService 內）
-- DollOSLauncher 精簡（移除 app drawer、只留 3D + 字幕 + 狀態指示）
-- Character Pack v2 格式（至少讀 SOUL.md）
+### 2. 對話 + 讀空氣 + 記憶基礎
 
-**Phase A 不拆 app 到完整 8 個 —** 只開 DollOSCore + DollOSObserver；Memory / Skills / Voice / AuxEngine 都還在 DollOSAIService 內。確認 Core 驅動 pattern 走通再拆。
+- Output Orchestrator + `[SILENT]` 協定（hard rule + soft rule 全套）
+- 對話路徑（拿起 / wake word / 胸口按壓 / 手勢）
+- Memory 多層：SOUL.md + USER.md + POLICY.md + Room FTS4 對話 log
+- DollOSLauncher 精簡（移除 app drawer / 角色選擇 / 設定入口，純 3D + 字幕）
+- Character Pack v2 完整（SOUL.md、overlays、initial_policy.md、skills/）
 
-### Phase B：Daily Drive 真正完整（MVP 完成**立即**接著做）
+### 3. 內在生活 + 主動性
 
-**B.1 Proactivity + 觀察完整：**
-- Internal Life loop（inner thought cycle）
+- Internal Life loop（inner thought cycle、`on_idle` timer）
 - Physical placement 完整四態（pocket / hand / stand / chest）
-- Vibrate-to-request + Modality 降級
-- POLICY.md 對話學規則
-
-**B.2 背景生活 + 拆第一批 app：**
-- Fork subagent 蒸餾（on_idle / on_charging / on_session_end）
-- Skills System 完整（progressive disclosure runtime）
-- 抽出 **DollOSSkills** app、**DollOSMemory** app
-- Distilled summary 寫入 + ObjectBox 語意索引（蒸餾層）
-- 初期 skills：alarm / notification_summary / memory_review
-
-**B.3 本地 Aux + 拆第二批 app：**
-- 抽出 **DollOSAuxEngine** app、**DollOSVoice** app
-- Gemma 4 E4B/E2B 上機（ONNX / MLC / llama.cpp 擇一）
-- Aux 路由改本地（silent-judgment / 分類 / 蒸餾 / compression）
+- Vibrate-to-request 主動叫使用者拿起
+- Modality 降級（SPEAK → VIBRATE 自動決策）
 - Mood / Attention runtime state
-- 人格 overlay（formal / playful / cold 疊加）
+
+### 4. 記憶成長 + 蒸餾
+
+- Fork subagent 蒸餾（on_idle / on_charging / on_session_end）
+- POLICY.md 對話學規則寫入路徑
+- Distilled summary 寫入 + ObjectBox 語意索引（蒸餾層）
+- session_search / semantic_search 工具給 Doll 自己用
+
+### 5. 本地 Aux LLM + 拆完剩下 app
+
+- Gemma 4 E4B/E2B 上機（ONNX / MLC / llama.cpp 擇一）
+- 抽出 **DollOSAuxEngine**、**DollOSMemory**、**DollOSSkills**、**DollOSVoice**
+- Aux 路由改本地（silent-judgment / 分類 / 蒸餾 / compression）
 - DollOSAIService 退役
 
-**B.4 完整生活感 + 系統安全網：**
-- Routines（早安 / 睡前 / 進家 / 出門 one-shot agents）
-- Sleep detection → DO_NOT_DISTURB 自動進出
+### 6. 完整生活感 + 系統安全網
+
+- Routines（早安 / 睡前 / 進家 / 出門 one-shot handlers）
+- Sleep detection → 自動切換 `dnd_active` flag
+- 人格 overlay（formal / playful / cold 可疊加）
+- Skills Library 擴充（alarm / notification_summary / memory_review / weather / music / uisage...）
 - DollOSService 加安全網 UI（電源菜單、緊急撥號、factory reset 入口）
+
+### 順序理由
+
+- **1 → 2**：沒基底做不了對話；
+- **2 → 3**：她要能說話，才能加主動說話；
+- **3 → 4**：有主動性產出的內容才需要蒸餾長期記憶；
+- **4 → 5**：主路徑走順了再換本地 Aux + 拆 app（不早拆是為了減小同時調整面）；
+- **5 → 6**：有本地 Aux 才能撐高頻 routine check、有拆完的 app 才能明確補齊安全網
 
 ### 心態
 
-Phase A 是「能用」，Phase B 是「值得每天用」。兩段**連續工程**，B 的重要性等於 A，不是 nice-to-have。
+每一步都是為「她能每天陪我過日子」服務。沒有 step 6 她沒作息、沒有 step 5 她不省電、沒有 step 4 她長不大、沒有 step 3 她沒主動性、沒有 step 2 她不能對話 — 缺任何一塊都不算 daily drive。
 
 ---
 
@@ -458,13 +510,13 @@ Phase A 是「能用」，Phase B 是「值得每天用」。兩段**連續工�
 
 | 風險 | 影響 | 緩解 |
 |---|---|---|
-| Gemma 4 E4B/E2B 在 Pixel 6a 能跑？ | 高 — 跑不動 Aux 得走雲端，電量 / 流量暴增 | Phase A 先在 Pixel 6a benchmark，確認 TPS / 記憶體 / 熱。跑不動則 fallback 到 E2B 或 Phi-3-mini |
+| Gemma 4 E4B/E2B 在 Pixel 6a 能跑？ | 高 — 跑不動 Aux 得走雲端，電量 / 流量暴增 | 步驟 1 初期先在 Pixel 6a 單獨 benchmark，確認 TPS / 記憶體 / 熱；跑不動則降級 E2B 或 Phi-3-mini |
 | Frozen system prompt + Android LLM client 支援？ | 中 | Claude / OpenAI API 都有 prompt cache 標記；自家做可手動管理 |
-| 觀察 loop 電量成本 | 中 | VAD 在 DSP 或 low-power core 做、Aux 分類節流、DO_NOT_DISTURB 停所有運算 |
+| 觀察 loop 電量成本 | 中 | VAD 在 DSP 或 low-power core 做、Aux 分類節流、`dnd_active` 時大幅降低 observation rate |
 | 蒸餾 subagent 資料品質 | 中 | Review prompt 調教 + safety scan + chars limit 強迫收斂 |
 | POLICY.md 對話學習累積錯規則 | 中 | Settings 可看目前規則入口、對話撤銷 |
-| 多 app AIDL boilerplate 開發成本 | 中 | Phase A 只拆 2 個，Phase B 逐步拆 |
-| Memory pressure — 八個 process 同時在 | 中 | Observer / AuxEngine 可 swap 出去，DO_NOT_DISTURB 時主動 unload |
+| 多 app AIDL boilerplate 開發成本 | 中 | 步驟 1 只拆 2 個（Core + Observer），步驟 5 再一次拆完剩下 4 個 |
+| Memory pressure — 八個 process 同時在 | 中 | Observer / AuxEngine 可 swap 出去，`dnd_active` 時主動 unload |
 | Launcher 大改接受度 | 低（自用系統） | — |
 
 ---
@@ -501,6 +553,6 @@ Phase A 是「能用」，Phase B 是「值得每天用」。兩段**連續工�
 ## 後續步驟
 
 1. 使用者審閱本 spec
-2. 審閱通過後進入 `superpowers:writing-plans` 產出 Phase A 實作計劃
-3. Phase A 完成後**立即**進入 Phase B，不視為可停點
+2. 審閱通過後進入 `superpowers:writing-plans` 產出完整實作計劃（六個步驟全包）
+3. 實作過程中按步驟推進，但把六步當一個連續工程，不視為有中間可停點
 4. 開發過程中若發現架構假設需要修正，回頭更新本 spec
