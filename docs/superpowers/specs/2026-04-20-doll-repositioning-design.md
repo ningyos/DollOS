@@ -95,31 +95,53 @@ DollOS 原本的心智模型是「手機是身體，電腦（DollOS-Server / Gur
 ```
 libbridge-core/          ← 共享函式庫
   • 身體能力：screen, input, fs, shell, clipboard, notification
-  • 訊息格式（protobuf / capnp）
-  • 加密原語（Noise / Ed25519）
+  • 訊息格式 + 加密原語 + Ed25519 簽章
   • 能力清單 / capability negotiation
 
   ├── bridge-transient   ← 單檔 portable binary
   │     • USB-C transport
   │     • 無狀態、拔線即死
-  │     • 不含 subagent、GPU 模組
+  │     • 只有核心身體能力，不含任何 module
   │
   └── bridge-drone       ← 持久服務
-        • 網路 transport（TCP/QUIC + 加密）
+        • 加密網路 transport
         • 可選 modules（動態載入）：
-          - subagent：任務派發 + agent loop
-          - vision：本地 vision 模型
+          - subagent：任務派發 + agent loop（GuraCore 搬家過來）
+          - vision：本地 vision 模型推論
           - llm：本地 LLM 推論
-          - memory：本地工作記憶索引
+          - tts：本地 TTS（fish-tts 搬家過來，語音輸出用）
+          - asr：本地 ASR（FunASR 搬家過來，語音輸入用）
+          - memory：subagent 執行任務時的本地工作記憶（任務 scratchpad + Drone 本地產生的檔案/紀錄索引；**不是** SoT 副本）
 ```
 
 ### 手機端模組
 
-- **Identity Vault**：存 Bridge 長期金鑰、SSH 私鑰、mesh 身分憑證、未來的 cloud API token。受手機 secure element / StrongBox 保護。
-- **Policy Engine**：根據任務性質（是否敏感、是否需要 GPU、是否需要長執行時間、目標機器是否信任）決定用哪台 Drone、走哪種連線、需不需要使用者確認。
-- **Reachability Manager**：維護每台 Drone 的當前連線路徑（direct / managed-mesh / adopted-mesh），處理網路變化時的自動切換。
-- **Action Dispatcher**：把 Doll 產生的指令簽章後送到正確的 transport。
-- **Drone Registry**：使用者可見的已配對機器清單，顯示每台機器的能力、狀態、最後連線時間，可撤銷。
+元件職責分開、避免一個模組什麼都做：
+
+- **Drone Registry**：已配對機器清單的**資料庫**。每筆記錄：身分憑證、宣告的能力（modules + 硬體）、狀態、最後連線時間。使用者可見 UI。
+- **Task Router**：給定一個任務（需要什麼能力 / 使用者明示指定），**挑哪台機器做**（或決定「回手機本地處理」）。讀 Drone Registry。
+- **Reachability Manager**：給定一台目標 Drone，**決定走哪條路**（direct / managed-mesh / adopted-mesh）。處理網路切換（WiFi ↔ 4G）時的 transport 遷移。
+- **Policy Engine**：給定 `(任務, 目標)`，**決定是否需要使用者確認**（一次、session 內、指紋確認）。不做選路決定。
+- **Action Dispatcher**：給定 `(任務, transport, 已授權)`，從 Identity Vault 取金鑰、簽章、送出。
+- **Identity Vault**：所有金鑰集中保管（Bridge 長期金鑰、SSH 私鑰、mesh 身分憑證、cloud API token）。受手機 secure element / StrongBox 保護。
+
+**一個任務的完整流程：**
+```
+Task Router    ─► 選出目標 Drone（或決定本地處理）
+Reachability   ─► 選出該 Drone 現在走哪條 transport
+Policy Engine  ─► 判斷是否需要使用者授權 → （可能跳提示 / 指紋）
+Action Dispatch─► 從 Vault 取金鑰、簽章、送出
+```
+
+### 手機端實作歸屬
+
+新元件作為 `DollOSAIService` 的 sub-packages 出現（不開新 Android app）：
+
+- `bridge/` — Bridge client、USB-C pairing 實作、Reachability Manager、Action Dispatcher
+- `vault/` — Identity Vault（包裝 Android Keystore / StrongBox）
+- `routing/` — Task Router + Policy Engine
+- `mesh/` — mesh provider 抽象 + 三種 provider 實作
+- Drone Registry UI 的 Activity/Fragment 加入 `Settings` app（與既有 AI 設定頁並排）
 
 ---
 
@@ -129,21 +151,32 @@ libbridge-core/          ← 共享函式庫
 
 | 模式 | 信任度 | Transport | 認證 | 生命週期 | 能力範圍 |
 |------|-------|-----------|------|---------|---------|
-| Transient Bridge | 不信任 | USB-C | 物理接觸 + 一次性 session key | 拔線即死 | 螢幕 / 輸入 / 剪貼簿 / 檔案 / shell |
+| Transient Bridge | 不信任 | USB-C | 物理接觸 + 一次性 session key | 拔線即死 | 螢幕 / 輸入 / 剪貼簿 / 檔案 / shell / notification |
 | Drone Bridge | 信任 | TCP/QUIC over 網路 | 配對金鑰 + 指令簽章 | 長駐 | 全部 + subagent + 選配 GPU 模組 |
 | SSH 遠端 | 信任（SSH 自己的信任模型）| SSH | OpenSSH key（Vault 管理）| 按需 | shell + SCP/SFTP + tmux |
 
-### 選路邏輯
+### 目標選擇（Task Router 的規則）
 
-Policy Engine 根據任務屬性自動選：
+Task Router 根據任務屬性挑目標機器：
 
 1. **明確指定**：使用者說「在工作筆電上跑這個」→ 直接用該 Drone
 2. **能力匹配**：任務需要 GPU vision → 找有 `bridge-vision` 模組的 Drone
-3. **地點匹配**：任務是「看一下我現在的螢幕」→ 眼前插著的機器（Transient 或就近 Drone）
-4. **命令列任務**：純 shell 性質 → 優先用 SSH
+3. **情境匹配**：任務是「看一下我現在的螢幕」→ 當下 USB-C 插著的 Transient Bridge（若存在），否則使用者就座的 Drone（由使用者在 Drone Registry 裡標註「就座中」，或手動指定）
+4. **命令列任務**：純 shell 性質 + 目標是沒有 Bridge 的 server → 用 SSH
 5. **沒有合適目標**：回手機本地處理（可能走雲 LLM）
 
 使用者可以強制覆蓋任何自動選擇。
+
+### 路徑選擇（Reachability Manager 的規則）
+
+目標 Drone 選定後，Reachability Manager 決定走哪條路：
+
+- Drone 設定的 provider 是 `direct` → 走 LAN mDNS / port forward / relay
+- Drone 設定的 provider 是 `managed-mesh` → 走 Doll 自架的 mesh
+- Drone 設定的 provider 是 `adopted-mesh` → 走使用者現有 mesh
+- Transient Bridge 固定走 USB-C
+
+網路切換時（例如手機從 WiFi 切到 4G），Reachability Manager 負責 transport 重建。
 
 ---
 
@@ -240,7 +273,8 @@ Doll 只要有 mesh node 身分即可工作。使用者自己管理 coordinator�
 |---------|--------|------|
 | GuraCore agent loop | Drone Bridge 的 subagent 引擎 | 程式碼大幅保留，改介面 |
 | vLLM / Qwen3-VL | Drone Bridge 的 `bridge-llm` / `bridge-vision` 模組 | 改包裝，不改核心 |
-| fish-tts / FunASR | Drone Bridge 選配模組 | 同上 |
+| fish-tts | Drone Bridge 的 `bridge-tts` 模組 | 改包裝 |
+| FunASR | Drone Bridge 的 `bridge-asr` 模組 | 改包裝 |
 | memsearch（Markdown + sqlite-vec + FTS5）| Drone Bridge 本地工作記憶（**不是** SoT）| SoT 移到手機，memsearch 改成任務期工作記憶 |
 | GuraVerse / TinyGura sub-agent spawning 概念 | Drone 的 subagent spawning — 找到正確的家 | 概念保留，實作重做 |
 
