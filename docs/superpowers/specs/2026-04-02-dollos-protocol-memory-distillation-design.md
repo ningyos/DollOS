@@ -1,5 +1,7 @@
 # DollOS Protocol v1 + Memory Distillation Design
 
+> ⚠️ **SUPERSEDED 2026-04-20** — This design was based on the "server = brain, phone = client" mental model, which was discarded during the Doll product repositioning. See `2026-04-20-doll-repositioning-design.md` for the current architecture (phone-as-body, Bridge/Drone as optional extensions). The WebSocket protocol and server-side memory distillation described below are **not being implemented**.
+
 ## Overview
 
 DollOS Protocol v1 enables the phone to push conversation logs to the server over WebSocket. The server uses these logs for nightly memory distillation — an automated process that summarizes daily conversations, extracts facts/preferences, and writes them into long-term memory.

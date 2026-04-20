@@ -1,5 +1,7 @@
 # DollOS Protocol v1 + Memory Distillation Implementation Plan
 
+> ⚠️ **SUPERSEDED 2026-04-20** — This plan implements the deprecated "server = brain, phone = client" design. The corresponding spec (`2026-04-02-dollos-protocol-memory-distillation-design.md`) has been superseded by `2026-04-20-doll-repositioning-design.md`. **Do not execute this plan.** A new plan for Bridge/Drone architecture will be written from the 4/20 spec.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Enable phone to push conversation logs to server via WebSocket, and server to run nightly memory distillation on those logs.

@@ -2,13 +2,19 @@
 
 ## What is DollOS
 
-DollOS is a personal AI ecosystem. Your AI companion lives across your phone and computer.
+DollOS is a personal AI ecosystem. **Your AI companion (Doll) lives on your phone. Computers are optional body extensions she can be Bridged into.**
 
-- **DollOS-Server** (computer) — GuraOS microkernel AI operating system. Unified agent loop (GuraCore), cognitive stack, tool system, memory (memsearch: Markdown + sqlite-vec + FTS5). Kernel modules (kmod) are out-of-process NATS services: LLM (Grok cloud + local Qwen3-VL via vLLM), TTS (fish-tts), STT (FunASR), Vision (Qwen3-VL), Desktop UI. NATS is the central message bus (replaced RabbitMQ). Storage: sqlite-vec for vectors (replaced Milvus), RustFS for files. Python, Docker, uv workspaces.
-- **DollOS-Android** (phone) — Custom Android OS based on GrapheneOS Android 16 for Pixel 6a (bluejay). Deep AOSP integration: custom Launcher with 3D avatar (Filament), AI system services, power menu AI controls, hardware security.
-- **Character Packs** (.doll files) — Zip bundles containing 3D avatar model (glTF), personality prompts, voice config, scene config, animations. Users import/export/switch characters.
+**Product positioning (2026-04-20 repositioning — see `docs/superpowers/specs/2026-04-20-doll-repositioning-design.md`):**
 
-The phone is the body (always with you, sensors, system control). The computer is the brain (heavy compute, source of truth for memory).
+- **Doll (phone)** — The AI companion herself. Memory, personality, decisions, identity all live here. She is the brain AND the body. A phone alone is a complete DollOS experience.
+- **Bridge (daemon on computer)** — Doll's extension into a specific computer. Two modes:
+  - **Transient Bridge** — USB-C only, untrusted machines, one-shot sessions (library PC, friend's laptop)
+  - **Drone Bridge** — Network, paired, long-term residence on trusted machines (your home desktop, work laptop)
+- **Drone** — A trusted machine with a Drone Bridge installed (e.g., "my home desktop is a Drone")
+- **Doll Mesh** — Optional mesh VPN for power users to let Doll orchestrate a fleet of devices (homelab, smart home). Not required for basic use.
+- **Character Packs (.doll files)** — Zip bundles containing 3D avatar model (glTF), personality prompts, voice config, scene config, animations. Users import/export/switch characters.
+
+**The phone is the body AND the brain.** Computers are optional extensions she can temporarily inhabit (Transient) or permanently reside in (Drone). The old "computer = brain" model is DEAD.
 
 ## Repo Map
 
@@ -17,7 +23,8 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 | Repo | Path | What it is |
 |------|------|------------|
 | **DollOS** | `~/Projects/DollOS/` | THIS REPO — umbrella, all specs/plans/docs, sync script |
-| **DollOS-Server** | `~/Projects/DollOS-Server/` | Server backend (Python, GuraOS microkernel, NATS, kmod plugins, Docker). Branch: `dev` |
+| **DollOS-Server** | `~/Projects/DollOS-Server/` | ⚠️ **Being retired** — was Python GuraOS microkernel (NATS + kmod). Code being mined for Bridge/Drone rewrite (see 2026-04-20 spec). Do not build new features here. |
+| **DollOS-Bridge** | *(to be created)* | New repo for `libbridge-core` + `bridge-transient` + `bridge-drone` (Rust/Go, TBD) |
 | **DollOS-Android** | `~/Projects/DollOS-Android/` | AOSP overlay configs (was the old DollOS repo) |
 | **DollOSAIService** | `~/Projects/DollOSAIService/` | Android AI Service app (Kotlin, Gradle). LLM client, conversation engine, memory (ObjectBox + Room FTS4), personality, agent system, background workers, character pack manager. Binds via AIDL. |
 | **DollOSLauncher** | `~/Projects/DollOSLauncher/` | Android 3D Launcher app (Kotlin, Gradle, Filament). Full-screen 3D avatar scene, conversation bubble, app drawer, character picker. |
@@ -30,10 +37,13 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 
 ## Key Architecture Decisions
 
-- **Client-Server**: Phone ↔ Computer via DollOS Protocol (to be designed). Phone sends audio/text, computer returns TTS audio/LLM responses. Server uses NATS as central message bus; kernel modules (LLM, TTS, STT, Vision) are out-of-process NATS services.
+- **Phone-as-home**: Doll lives entirely on the phone. Memory source of truth, personality, identity vault, policy engine, and decision making are all on-device.
+- **Bridge/Drone for computers**: Phone extends to computers via Bridge daemons (see 2026-04-20 spec). Transient Bridge uses USB-C only (physical trust); Drone Bridge uses encrypted network (paired trust). No more "server as brain."
+- **SSH as a tool**: Doll can SSH into remote hosts as a regular capability; SSH keys live in the phone's Identity Vault and never leave the device.
+- **Doll Mesh (optional)**: Optional mesh VPN with pluggable provider (direct / managed-mesh via Headscale-or-Netbird / adopted-mesh). For homelab power users.
 - **AIDL IPC**: On Android, DollOSAIService ↔ DollOSService ↔ DollOSLauncher communicate via AIDL Binder.
 - **Character Pack (.doll)**: Zip file with manifest.json, personality.json, voice.json, scene.json, model.glb, animations/, wake_word.onnx, voice_reference.wav, thumbnail.png. Managed by CharacterManager in DollOSAIService.
-- **Memory**: Markdown is source of truth. ObjectBox for vector search (brute-force cosine, no HNSW). Room FTS4 for keyword search. Per-model vector store (modelId field). Shared memory across characters + per-character private notes.
+- **Memory**: Phone is source of truth. ObjectBox for vector search (brute-force cosine, no HNSW). Room FTS4 for keyword search. Per-model vector store (modelId field). Shared memory across characters + per-character private notes. Drone Bridges have local working memory, NOT a replicated SoT.
 - **Event-driven AI**: Foreground AI has an EventQueue. Events piggyback on sendMessage() or process during idle. Background workers use background LLM model with skill-based action whitelists.
 - **3D Avatar**: Google Filament on TextureView. glTF 2.0 models. Animation states: IDLE → THINKING → TALKING. Character assets loaded via AIDL ParcelFileDescriptor.
 - **Embedding**: Cloud (any OpenAI-compatible endpoint) + Local (ONNX Runtime). Dynamic dimensions, per-model storage, auto-rebuild.
@@ -83,24 +93,28 @@ adb push <apk/odex/vdex> /system_ext/priv-app/<AppName>/
 adb reboot
 ```
 
-## DollOS-Server (Python)
-```bash
-cd ~/Projects/DollOS-Server
-git checkout dev              # latest code is on dev branch
-uv sync
-docker compose up -d          # NATS, Milvus, RustFS
-uv run dollos-server start    # boots GuraOS + kmod services
-```
-Requires: Docker (NATS, RustFS), NVIDIA GPU with CUDA for kmod workers (vLLM, FunASR, fish-tts).
-**Note**: `main` branch is outdated. All active development is on `dev`.
+## DollOS-Server (retiring)
 
-### Server Architecture (GuraOS)
-- **NATS** — central message bus (IPC, kmod routing, driver communication)
-- **GuraCore** — unified agent loop, cognitive stack, triage
-- **Kernel Modules (kmod)** — out-of-process NATS services: grok (LLM), qwen3-vl (Vision+LLM), fun-asr (STT), fish-speech (TTS), audio-speaker, desktop
-- **Memory** — memsearch: Markdown source of truth + sqlite-vec (vectors) + FTS5 (keywords)
-- **Drivers** — Discord, PC, Phone, Desktop (via NATS or in-process WebSocket)
-- **GuraVerse** — sub-agent spawning (TinyGura)
+⚠️ The `DollOS-Server` repo implements the deprecated "server as brain" model. It is being retired and mined for parts — the code will not continue to be built or deployed as-is. Do not start new work here.
+
+**What survives and where it's going (per 2026-04-20 spec §7):**
+
+| From DollOS-Server | Destination |
+|--------------------|-------------|
+| GuraCore agent loop | Drone Bridge's `bridge-subagent` module |
+| vLLM / Qwen3-VL | Drone Bridge's `bridge-llm` / `bridge-vision` optional modules |
+| fish-tts / FunASR | Drone Bridge optional modules |
+| memsearch (Markdown + sqlite-vec + FTS5) | Drone Bridge's local working memory (NOT SoT — SoT stays on phone) |
+| GuraVerse / TinyGura concept | Drone subagent spawning (finally in the right home) |
+
+**What dies:**
+- NATS as central message bus
+- kmod microkernel abstraction
+- Docker compose infrastructure
+- `dollos-server` CLI and bootstrap
+- The 4/2 DollOS Protocol v1 spec + plan (superseded)
+
+The old build instructions (`uv sync`, `docker compose up -d`, `dollos-server start`) still work for archival/reference purposes but are not the active development path.
 
 ## Specs and Plans
 
@@ -120,7 +134,7 @@ Read the relevant spec before starting any work.
 - **Background commands**: Don't use tail pipes on background commands.
 - **Specs before code**: Always write/update the spec before implementing. Get user approval on design.
 
-## Current Status (2026-04-02)
+## Current Status (2026-04-20)
 
 ### Completed
 - DollOS Base (AOSP 16, OOBE, theme, GMS, system defaults)
@@ -137,14 +151,22 @@ Read the relevant spec before starting any work.
 - Voice Pipeline (on-device: ASR sherpa-onnx, TTS Piper VITS, VAD silero, KWS openWakeWord, Speaker ID)
 - TTS Distillation (fish-tts voice cloning → 3447 sentences → Piper VITS single-speaker model, no reference audio needed)
 - Launcher voice UX (tap to cancel listening/speaking, state indicator in bubble)
+- **Product repositioning (2026-04-20)** — Bridge/Drone architecture spec complete, "server as brain" retired
 
 ### In Progress
-- DollOS Protocol design (phone ↔ computer communication)
+- Writing implementation plan from the 2026-04-20 repositioning spec
 
-### Next Up
-- DollOS Protocol spec + implementation
-- Server-side TTS (fish-tts via DollOS Protocol for higher quality)
-- Default character pack (bundled in system image)
+### Next Up (new direction)
+- `libbridge-core` minimal library (body capabilities + encryption)
+- `bridge-transient` USB-C prototype
+- Phone-side Identity Vault + Drone Registry UI
+- `bridge-drone` network service
+- First Drone dogfood on user's home Linux desktop
+
+### Deferred / reshaping
+- Default character pack bundled in system image (still wanted, independent of repositioning)
+- Memory distillation concept (still valuable, will be redesigned to run on-phone or via Drone)
+- Server-side TTS (fish-tts) — will reappear as Drone Bridge's `bridge-tts` module on GPU Drones
 
 ## Voice Pipeline Architecture
 
