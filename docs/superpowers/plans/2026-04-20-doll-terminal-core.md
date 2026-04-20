@@ -63,6 +63,7 @@
   - `<uses-permission>`: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`, `WAKE_LOCK`, `INTERNET`
   - `<application>` with `android:name=".CoreApp"`
   - 宣告 `<service android:name=".service.DollCoreService" android:foregroundServiceType="specialUse" android:exported="true" android:permission="dollos.core.permission.BIND_CORE">`
+  - **必要子元素**：`<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="dollos_core_ai_companion_host" />`（targetSdk 34+ 沒宣告會 `startForeground()` crash）
   - 宣告自訂 permission `dollos.core.permission.BIND_CORE` (`protectionLevel=signature|privileged`)
 - [ ] 建立 `CoreApp.kt` 空 Application subclass
 - [ ] 寫 failing test：`ManifestTest.kt`（Robolectric）驗證 service 已宣告

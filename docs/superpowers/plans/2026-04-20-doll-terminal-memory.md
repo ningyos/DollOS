@@ -58,6 +58,7 @@
 - [ ] 編輯 `AndroidManifest.xml`：
   - `<uses-permission>`: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `INTERNET`（蒸餾可能需要雲端 API）
   - 宣告 `<service android:name=".service.MemoryService" android:foregroundServiceType="specialUse" android:exported="true" android:permission="dollos.memory.permission.BIND_MEMORY">`
+  - **必要子元素**：`<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="dollos_memory_store_host" />`（targetSdk 34+ 沒宣告會 `startForeground()` crash）
   - 宣告自訂 permission `dollos.memory.permission.BIND_MEMORY`
   - 宣告 `<provider android:name=".MemoryContentProvider" android:authorities="dollos.memory" android:exported="true" android:grantUriPermissions="true">`
 - [ ] 建立 `MemoryApp.kt` 空 Application subclass

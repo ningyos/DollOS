@@ -83,7 +83,7 @@
   - `onStartCommand()`：`startForeground(NOTIFICATION_ID, buildNotification())`、return `START_STICKY`
   - `onBind()` return `null`（本 service 不被綁，是它綁 Core）
   - `buildNotification()`：status "Doll 正在觀察"，ongoing、no-clear
-- [ ] Manifest 註冊 service：`android:foregroundServiceType="microphone|location|specialUse"`、`android:exported="false"`
+- [ ] Manifest 註冊 service：`android:foregroundServiceType="microphone|location|specialUse"`、`android:exported="false"`；並加 `<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="dollos_observer_sensor_host" />` 子元素（targetSdk 34+ 的 specialUse 服務必要，否則 `startForeground()` crash）
 - [ ] Run test → PASS
 - [ ] Commit: `observer: add foreground service skeleton with notification channel`
 

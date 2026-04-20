@@ -260,7 +260,12 @@ class DollSkillsService : Service() {
         <service
             android:name=".DollSkillsService"
             android:exported="true"
-            android:foregroundServiceType="specialUse"/>
+            android:foregroundServiceType="specialUse">
+            <!-- targetSdk 34+ 的 specialUse 服務必要；沒宣告 startForeground() 會 crash -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="dollos_skills_runtime_host"/>
+        </service>
     </application>
 </manifest>
 ```
