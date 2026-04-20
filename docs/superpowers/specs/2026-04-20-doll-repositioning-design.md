@@ -24,7 +24,7 @@ DollOS 原本的心智模型是「手機是身體，電腦（DollOS-Server / Gur
 
 **Doll 是住在使用者手機上的 AI 同伴。** 一支手機就是她完整的本體 — 記憶、個性、決策、對外溝通都在手機上發生。
 
-她可以透過 **Bridge** 延伸到使用者的電腦上執行任務，但她不住在電腦裡，電腦也不是她的大腦。電腦是她的**可選身體延伸**。
+她可以透過 **Bridge** 延伸到使用者的電腦上執行任務，但她不住在電腦裡，電腦也不是她的大腦。Drone Bridge 是她的「分身 / 義手」，不是本體；本體永遠在手機上。電腦是她的**可選身體延伸**。
 
 ### 產品光譜
 
@@ -37,10 +37,9 @@ DollOS 原本的心智模型是「手機是身體，電腦（DollOS-Server / Gur
 
 升級路徑自然：使用者加更多 Drone，Doll 就長出更多能力。不是換產品線。
 
-### 目標使用者
+### 本 spec 的前提
 
-- **一般使用者**：希望有個貼身 AI 同伴，需要時能借用電腦幫忙
-- **Homelab / 智慧家居玩家**：有多台自家機器要管理，願意讓 Doll 當編排中心
+這是一個自用系統。目前沒有假想的外部使用者 — 我就是使用者，我既要隨身貼身 Doll，也要 homelab 艦隊管家。所有設計取捨以「我自己會用」為標準，不為未存在的使用者預先妥協。
 
 ---
 
@@ -50,12 +49,11 @@ DollOS 原本的心智模型是「手機是身體，電腦（DollOS-Server / Gur
 |------|------|
 | **Doll** | 住在手機上的 AI 本體（「她」）|
 | **Bridge** | 在電腦上執行的 daemon 程式，Doll 伸到該機器的延伸 |
-| **Transient Bridge** | 薄 Bridge — 透過 USB-C 暫時接管一台不受信任的機器，拔線即結束 |
-| **Drone Bridge** | 厚 Bridge — 長駐在受信任機器上的持久服務 |
+| **Transient Bridge** | USB-C 暫時接管，不受信任機器，拔線即結束 |
+| **Drone Bridge** | 網路長駐在受信任機器上的持久服務 |
 | **Drone** | 被 Drone Bridge 寄生的機器本體（例：「我家桌機是一台 Drone」）|
-| **Doll Mesh** | 可選的 mesh VPN，由 Doll 管理或接管，用來編排使用者的裝置艦隊 |
-| **Identity Vault** | 手機上的金鑰/憑證保管庫，統一管理所有身分 |
-| **Policy Engine** | 手機上的授權決策模組，判斷「這個任務該用哪條路到哪台機器」|
+| **Doll Mesh** | 可選 mesh VPN，Doll 編排裝置艦隊的能力 |
+| **Identity Vault** | 手機上的金鑰保管庫（Android StrongBox）|
 
 ---
 
@@ -332,11 +330,26 @@ DollOSAIService、DollOSLauncher、AOSP overlay、語音 pipeline、角色包系
 
 ---
 
+## §9 實作順序（2026-04-20 決定）
+
+**本 spec 的 Bridge / Drone / Mesh 全套工程延後。** 優先級不對 — 現有手機端 Doll 雖然完成了 AI Core A/B/C/D、Voice Pipeline、Launcher、Character Packs 等大量功能，但沒有一條完整路徑打穿到使用者每天會用的程度。在把手機 Doll 本身收斂穩定之前，不應該開 Bridge 這個大工程（加密協議、USB-C pairing、網路 transport、配對儀式都是獨立的大坑）。
+
+**本 spec 的定位：** 目標架構的北極星。釘住方向，不釘時程。
+
+**§3 的手機端模組細節（Task Router / Reachability Manager / Policy Engine / Action Dispatcher 等）** 在 Bridge 實作啟動時會重新檢視 — 實作時很可能發現這些根本不是獨立模組，而是 Doll agent 的行為 + 工具 + 資料，不需要命名為架構元件。§2 名詞表已經先行把 Policy Engine 移除。
+
+**現階段實作焦點（獨立會話另行規劃）：**
+- 手機端 Doll 現有功能的收斂與打穿
+- 具體卡點（「為什麼現在還沒有每天在用」）在獨立的 brainstorming 會話釐清
+
+---
+
 ## 後續步驟
 
-1. 使用者審閱本 spec
-2. 審閱通過後，以本 spec 為輸入，用 `superpowers:writing-plans` 建立實作計畫
-3. 實作計畫預期至少包含這些階段：
+1. ✅ 使用者審閱本 spec（2026-04-20 完成）
+2. **下一步不是 `superpowers:writing-plans`** — Bridge 實作延後
+3. 另開會話討論「手機端 Doll 要怎樣才算好好運作」，可能產出一或多個近期 plan（與 Bridge 無關）
+4. 待手機端 Doll 收斂、使用者每天在用之後，再回頭從本 spec 啟動 Bridge 實作，預期階段（保留作未來參考）：
    a. `libbridge-core` 最小可用版（身體能力 + 加密）
    b. `bridge-transient` + USB-C pairing 原型
    c. 手機端 Identity Vault + Drone Registry UI 骨架
@@ -346,7 +359,7 @@ DollOSAIService、DollOSLauncher、AOSP overlay、語音 pipeline、角色包系
    g. Mesh provider 抽象 + 第一個 adopted-mesh 實作
    h. SSH provider 整合
    i. （選配）managed-mesh 實作
-4. 舊 DollOS-Server 程式碼盤點與退役（獨立工作）
+5. 舊 DollOS-Server 程式碼盤點與退役 — 這項**也延後**，配合 Bridge 實作啟動時一起處理（避免退役後反而沒程式碼可搬）
 
 ---
 

@@ -23,8 +23,8 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 | Repo | Path | What it is |
 |------|------|------------|
 | **DollOS** | `~/Projects/DollOS/` | THIS REPO — umbrella, all specs/plans/docs, sync script |
-| **DollOS-Server** | `~/Projects/DollOS-Server/` | ⚠️ **Being retired** — was Python GuraOS microkernel (NATS + kmod). Code being mined for Bridge/Drone rewrite (see 2026-04-20 spec). Do not build new features here. |
-| **DollOS-Bridge** | *(to be created)* | New repo for `libbridge-core` + `bridge-transient` + `bridge-drone` (Rust/Go, TBD) |
+| **DollOS-Server** | `~/Projects/DollOS-Server/` | Python GuraOS microkernel (NATS + kmod). 2026-04-20 spec repositions this as "to be mined for Bridge/Drone," but **retirement is deferred** until Bridge implementation actually starts. For now, treat as frozen — no new features, but not being stripped either. |
+| **DollOS-Bridge** | *(future — deferred)* | Eventually home for `libbridge-core` + `bridge-transient` + `bridge-drone`. Not starting yet. |
 | **DollOS-Android** | `~/Projects/DollOS-Android/` | AOSP overlay configs (was the old DollOS repo) |
 | **DollOSAIService** | `~/Projects/DollOSAIService/` | Android AI Service app (Kotlin, Gradle). LLM client, conversation engine, memory (ObjectBox + Room FTS4), personality, agent system, background workers, character pack manager. Binds via AIDL. |
 | **DollOSLauncher** | `~/Projects/DollOSLauncher/` | Android 3D Launcher app (Kotlin, Gradle, Filament). Full-screen 3D avatar scene, conversation bubble, app drawer, character picker. |
@@ -151,22 +151,19 @@ Read the relevant spec before starting any work.
 - Voice Pipeline (on-device: ASR sherpa-onnx, TTS Piper VITS, VAD silero, KWS openWakeWord, Speaker ID)
 - TTS Distillation (fish-tts voice cloning → 3447 sentences → Piper VITS single-speaker model, no reference audio needed)
 - Launcher voice UX (tap to cancel listening/speaking, state indicator in bubble)
-- **Product repositioning (2026-04-20)** — Bridge/Drone architecture spec complete, "server as brain" retired
+- **Product repositioning (2026-04-20)** — Bridge/Drone architecture spec complete, "server as brain" retired (spec is north star; implementation deferred)
 
 ### In Progress
-- Writing implementation plan from the 2026-04-20 repositioning spec
+- Figuring out what phone-side Doll needs to actually work well every day (separate brainstorming)
 
-### Next Up (new direction)
-- `libbridge-core` minimal library (body capabilities + encryption)
-- `bridge-transient` USB-C prototype
-- Phone-side Identity Vault + Drone Registry UI
-- `bridge-drone` network service
-- First Drone dogfood on user's home Linux desktop
+### Deferred (explicit)
+- **Bridge / Drone / Mesh implementation** — the 2026-04-20 spec is the target architecture, but the engineering cost (encryption, USB-C pairing, network transport, pairing rituals) is too large to start before phone-side Doll is solid. Revisit once daily-use on phone is solid.
+- **DollOS-Server retirement** — also deferred. Don't strip code from it until Bridge implementation starts, so the parts being mined stay available.
 
-### Deferred / reshaping
-- Default character pack bundled in system image (still wanted, independent of repositioning)
-- Memory distillation concept (still valuable, will be redesigned to run on-phone or via Drone)
-- Server-side TTS (fish-tts) — will reappear as Drone Bridge's `bridge-tts` module on GPU Drones
+### Near-term candidates (to be prioritized in next brainstorming)
+- Phone-side Doll consolidation: what's blocking daily use?
+- Default character pack bundled in system image
+- Phone-based memory distillation (the concept survives; implementation to be redesigned)
 
 ## Voice Pipeline Architecture
 
