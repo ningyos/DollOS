@@ -528,7 +528,7 @@ skills/                ← 新：角色綁的技能
 - **多使用者共用一支 DollOS**
 - **iOS 版本** — 綁定 Pixel 6a AOSP
 - **硬體配件設計**（胸口 mount / 桌架 / 項鍊型）— 先用市面現成，本 spec 只保證硬體相容（磁吸 / clip / 站立偵測）
-- **DollOS-Server 程式碼退役** — 依 2026-04-20 spec §7 延後，配合 Bridge 實作啟動時一起處理
+- **DollOS-Server 程式碼退役** — 2026-04-22 正式退役並刪除。原始碼已不保留，Bridge 子 agent / LLM / vision 等概念保留在 spec 中待實作
 - **OOBE LLM 隨機生成角色** — Rin 預設角色完成後再做
 - **配對儀式** — DollOS 是單機 AI，不需要配對任何東西
 - **app drawer / 角色選擇 UI / 設定 app** — 全部刪除，改對話觸發

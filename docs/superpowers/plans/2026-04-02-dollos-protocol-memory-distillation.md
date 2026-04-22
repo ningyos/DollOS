@@ -1,6 +1,8 @@
 # DollOS Protocol v1 + Memory Distillation Implementation Plan
 
 > ⚠️ **SUPERSEDED 2026-04-20** — This plan implements the deprecated "server = brain, phone = client" design. The corresponding spec (`2026-04-02-dollos-protocol-memory-distillation-design.md`) has been superseded by `2026-04-20-doll-repositioning-design.md`. **Do not execute this plan.** A new plan for Bridge/Drone architecture will be written from the 4/20 spec.
+>
+> ⚠️ **DollOS-Server 已於 2026-04-22 退役並刪除**。`~/Projects/DollOS-Server/` 目錄不存在。此 plan 僅供歷史參考。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

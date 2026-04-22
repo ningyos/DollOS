@@ -359,7 +359,7 @@ DollOSAIService、DollOSLauncher、AOSP overlay、語音 pipeline、角色包系
    g. Mesh provider 抽象 + 第一個 adopted-mesh 實作
    h. SSH provider 整合
    i. （選配）managed-mesh 實作
-5. 舊 DollOS-Server 程式碼盤點與退役 — 這項**也延後**，配合 Bridge 實作啟動時一起處理（避免退役後反而沒程式碼可搬）
+5. ~~舊 DollOS-Server 程式碼盤點與退役~~ — 已於 2026-04-22 退役並刪除。原始碼已不保留，Bridge 子 agent / LLM / vision 等概念保留在 spec 中待實作
 
 ---
 

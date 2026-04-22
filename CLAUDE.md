@@ -23,7 +23,6 @@ All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull
 | Repo | Path | What it is |
 |------|------|------------|
 | **DollOS** | `~/Projects/DollOS/` | THIS REPO — umbrella, all specs/plans/docs, sync script |
-| **DollOS-Server** | `~/Projects/DollOS-Server/` | Python GuraOS microkernel (NATS + kmod). 2026-04-20 spec repositions this as "to be mined for Bridge/Drone," but **retirement is deferred** until Bridge implementation actually starts. For now, treat as frozen — no new features, but not being stripped either. |
 | **DollOS-Bridge** | *(future — deferred)* | Eventually home for `libbridge-core` + `bridge-transient` + `bridge-drone`. Not starting yet. |
 | **DollOS-Android** | `~/Projects/DollOS-Android/` | AOSP overlay configs (was the old DollOS repo) |
 | **DollOSAIService** | `~/Projects/DollOSAIService/` | Android AI Service app (Kotlin, Gradle). LLM client, conversation engine, memory (ObjectBox + Room FTS4), personality, agent system, background workers, character pack manager. Binds via AIDL. |
@@ -93,29 +92,6 @@ adb push <apk/odex/vdex> /system_ext/priv-app/<AppName>/
 adb reboot
 ```
 
-## DollOS-Server (retiring)
-
-⚠️ The `DollOS-Server` repo implements the deprecated "server as brain" model. It is being retired and mined for parts — the code will not continue to be built or deployed as-is. Do not start new work here.
-
-**What survives and where it's going (per 2026-04-20 spec §7):**
-
-| From DollOS-Server | Destination |
-|--------------------|-------------|
-| GuraCore agent loop | Drone Bridge's `bridge-subagent` module |
-| vLLM / Qwen3-VL | Drone Bridge's `bridge-llm` / `bridge-vision` optional modules |
-| fish-tts / FunASR | Drone Bridge optional modules |
-| memsearch (Markdown + sqlite-vec + FTS5) | Drone Bridge's local working memory (NOT SoT — SoT stays on phone) |
-| GuraVerse / TinyGura concept | Drone subagent spawning (finally in the right home) |
-
-**What dies:**
-- NATS as central message bus
-- kmod microkernel abstraction
-- Docker compose infrastructure
-- `dollos-server` CLI and bootstrap
-- The 4/2 DollOS Protocol v1 spec + plan (superseded)
-
-The old build instructions (`uv sync`, `docker compose up -d`, `dollos-server start`) still work for archival/reference purposes but are not the active development path.
-
 ## Specs and Plans
 
 All design specs and implementation plans live in `~/Projects/DollOS/docs/superpowers/`:
@@ -158,7 +134,6 @@ Read the relevant spec before starting any work.
 
 ### Deferred (explicit)
 - **Bridge / Drone / Mesh implementation** — the 2026-04-20 spec is the target architecture, but the engineering cost (encryption, USB-C pairing, network transport, pairing rituals) is too large to start before phone-side Doll is solid. Revisit once daily-use on phone is solid.
-- **DollOS-Server retirement** — also deferred. Don't strip code from it until Bridge implementation starts, so the parts being mined stay available.
 
 ### Near-term candidates (to be prioritized in next brainstorming)
 - Phone-side Doll consolidation: what's blocking daily use?
