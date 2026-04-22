@@ -9,7 +9,6 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPOS=(
     "DollOS"
     "DollOS-Android"
-    "DollOS-Server"
     "DollOSAIService"
     "DollOSService"
     "DollOSSetupWizard"
