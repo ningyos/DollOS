@@ -762,16 +762,38 @@ DollOS/
 - **既有 v2 character packs**：**不轉換**。clean break，重做為 v3
 - **fish-tts → VITS distillation 訓練資料**：不變動
 
-### 11.6 工程順序（spec 階段不展開細節，留 plan）
+### 11.6 工程順序（plan 列表，2026-05-01 修訂版）
 
-1. Plan：DollOS daemon MVP — event loop + Instinct + Memory + VoM + LLM adapter + IPC server
-2. Plan：DollOS UI MVP — Tauri shell + Cubism Web + chat UI + WebSocket client
-3. Plan：DollOS-App MVP — Cubism Java + Assistant role + audio streaming
-4. Plan：Voice Pipeline 整合（daemon ASR/TTS、phone audio streaming、KWS opt-in）
-5. Plan：Subagent / Drone 系統
-6. Plan：Tier B/C/D adapter
-7. Plan：Self-First Design 細節（mood/preference 演化模型、self-memory schema）
-8. Plan：Memory 資料遷移工具
+每個 plan 在自己的 worktree + feature branch 上跑，跑完 merge 回 main。
+
+| # | Plan | 範圍 |
+|---|---|---|
+| 1 | **Daemon Skeleton**（plan 已寫）| Python project + IPC WebSocket + LLM adapter ABC + LlamaCpp adapter（含 prefill） + 對話 round-trip |
+| 2 | **Memory SoT 儲存層**（plan 已寫）| sqlite-vec + FTS5 + RRF hybrid + character scoping + Embedder ABC + LlamaCppEmbedder |
+| 3 | Inner Voice + Instinct + VoM | 小模型 host、event 預處理（digest/triage/recall）、VoM block 合成、規則引擎、reflex action handlers |
+| 4 | 多 LLM adapter | Anthropic / OpenAI / OpenAI-compat adapter；後端 prefill 能力 detection；BYO 後端 |
+| 5 | Conversation Engine + Character Pack | Turn 流程整合 prefill + `.doll` v3 載入（personality / lessons / Cubism asset path / wake word）|
+| 6 | Subagent / 分身 | 一次性、Doll tool call 即時派出、inline definition、隔離 session |
+| 7 | Self-First Design | self-memory schema（preferences / habits / relations / emotional_residue）+ mood / preference 演化模型 + SELF_STATE 注入 |
+| 8 | DollOS UI MVP | Tauri + Cubism Web SDK + chat 視窗 + system tray + hotkey + localhost WS client |
+| 9 | DollOS-App MVP | Android：Cubism Java SDK + VoiceInteractionService 註冊 + audio streaming + network WS client |
+| 10 | 語音 pipeline 整合 | daemon ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
+| 11 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
+| 12 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
+
+**移除自舊版本**：Memory 資料遷移工具（phone 端本來就無 memory，不需遷移）。
+
+**Subagent / Drone 拆開**：Subagent 簡單（一次性 tool call，無持久化），Drone 重（持久 store + scheduler + UI），併在同 plan 會壓垮 Subagent 的清爽。Drone 推到最後因為它不影響核心 companion 體驗。
+
+**大致依賴**：
+- Plan 1 先跑（其他都依賴 daemon 骨架）
+- Plan 2 + 4 可平行（Memory 跟多 adapter 不互相依賴）
+- Plan 3 (Inner Voice) 依賴 Plan 2（VoM recall 撈 memory）
+- Plan 5 (Conversation Engine) 依賴 1/2/3/4（整合所有東西）
+- Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
+- Plan 7 (Self-First) 依賴 Plan 2/3/5（self-memory + Instinct + Conversation 都到位才能演化）
+- Plan 8/9/10/11 三條互相獨立，都接 daemon WS
+- Plan 12 (Drone) 最後加
 
 ---
 
