@@ -110,17 +110,29 @@ CREATE TRIGGER facts_au AFTER UPDATE ON facts
 # daemon/src/dollos/memory/embedder.py
 
 class Embedder(ABC):
-    """Abstract embedder interface."""
+    """Abstract embedder interface.
+
+    Initialization is two-stage: __init__ stores config (sync), initialize()
+    discovers dimensions (async). Callers MUST await initialize() before
+    accessing dimensions or calling embed().
+    """
+
+    @abstractmethod
+    async def initialize(self) -> None:
+        """Async initialization. After this call, model_id and dimensions
+        are valid and embed() may be called.
+        """
 
     @property
     @abstractmethod
     def model_id(self) -> str:
-        """Stable identifier for the embedding model (used in memory_meta)."""
+        """Stable identifier for the embedding model (used in memory_meta).
+        Available immediately after __init__ (configured statically)."""
 
     @property
     @abstractmethod
     def dimensions(self) -> int:
-        """Vector dimensionality."""
+        """Vector dimensionality. Only valid after initialize()."""
 
     @abstractmethod
     async def embed(self, text: str) -> list[float]: ...
@@ -133,8 +145,8 @@ class Embedder(ABC):
 
 | 類別 | 用途 | 來源 |
 |---|---|---|
-| **StubEmbedder** | 測試用。`embed(text)` 回傳由 SHA256(text) 推出的 deterministic 假向量（固定 dim，例：32）。`model_id="stub"` | 自製 |
-| **LlamaCppEmbedder** | 對 llama.cpp `/embedding` raw endpoint。跟 Plan 1 LlamaCppAdapter 相同風格 | Plan 2 寫 |
+| **StubEmbedder** | 測試用。`embed(text)` 回傳由 SHA256(text) 推出的 deterministic 假向量（固定 dim，例：32）。`model_id="stub"`。`initialize()` no-op | 自製 |
+| **LlamaCppEmbedder** | 對 llama.cpp `/embedding` raw endpoint。跟 Plan 1 LlamaCppAdapter 相同風格。`initialize()` 對 dummy 文字 embed 一次取得 dim | Plan 2 寫 |
 
 llama.cpp `/embedding` 端點：
 ```
@@ -147,7 +159,7 @@ POST /embedding
 → [{ "embedding": [...] }, { "embedding": [...] }]
 ```
 
-`LlamaCppEmbedder.dimensions` 在 `__init__` 時呼叫一次 `/props` 或對 dummy 文字 `embed()` 一次取得。
+`model_id` 由 TOML config 靜態設定（例：`"bge-base-en-v1.5"`），不從 server 自動推。`dimensions` 由 `initialize()` 時對 dummy 文字打一次 `/embedding` 拿 response vector 長度得到。
 
 ### 3.3 為什麼選 llama.cpp raw 而非 OpenAI-compat
 
@@ -222,7 +234,14 @@ class FactWithScore:
 
 
 class Memory:
-    def __init__(self, db_path: Path, embedder: Embedder): ...
+    def __init__(self, db_path: Path, embedder: Embedder):
+        """Sync init — store config only. Schema setup deferred to initialize()."""
+
+    async def initialize(self) -> None:
+        """Open SQLite, load extension, ensure embedder is initialized,
+        apply schema (with embedder.dimensions filled into vec_facts DDL),
+        sync memory_meta. MUST be called before any other method.
+        """
 
     async def write(
         self,
@@ -231,13 +250,17 @@ class Memory:
         character_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        """Insert a fact. Returns the new fact id."""
+        """Insert a fact. Computes embedding, inserts into facts AND vec_facts
+        atomically (transaction). Returns the new fact id."""
 
     async def read(self, fact_id: int) -> Fact | None:
         """Read a single fact by id."""
 
     async def delete(self, fact_id: int) -> bool:
-        """Delete a fact. Returns True if deleted, False if not found."""
+        """Delete a fact. Removes from BOTH facts AND vec_facts inside a
+        single transaction (vec0 virtual tables don't support cross-table
+        triggers, so the dual delete is implemented in Python).
+        Returns True if deleted, False if not found."""
 
     async def search(
         self,
@@ -262,21 +285,32 @@ class Memory:
         """
 ```
 
-### 5.2 Memory.__init__ 行為
+### 5.2 Memory.initialize() 行為
 
 ```python
-def __init__(self, db_path, embedder):
-    1. open SQLite connection (with sqlite-vec extension loaded)
-    2. apply schema (CREATE IF NOT EXISTS) — schema_version 比對
-    3. 比對 memory_meta 的 embedding_model_id vs embedder.model_id：
+async def initialize(self):
+    1. await self.embedder.initialize()       # 拿到 dim
+    2. open SQLite connection (with sqlite-vec extension loaded)
+    3. apply schema (CREATE IF NOT EXISTS) — vec_facts DDL 用 embedder.dimensions
+       填入 FLOAT[<dim>]；schema_version 寫入 memory_meta（首次）或比對
+    4. 比對 memory_meta 的 embedding_model_id vs embedder.model_id：
        - 沒紀錄 → 寫進去（首次啟動）
        - 一致 → 正常
        - 不一致 → logger.warning(
            "memory was built with model X but configured Y; "
            "search results may be inaccurate. Call rebuild_embeddings()."
          )
-    4. 比對 dim 同上
-    5. 不阻擋啟動 — 使用者明確呼叫 rebuild_embeddings() 才動
+    5. 比對 dim 同上邏輯
+    6. 不阻擋啟動 — 使用者明確呼叫 rebuild_embeddings() 才動
+```
+
+### 5.3 Daemon 啟動順序
+
+```python
+embedder = LlamaCppEmbedder(...)          # sync 構造
+memory = Memory(db_path, embedder)         # sync 構造
+await memory.initialize()                  # async 整套 setup（含 embedder.initialize()）
+# 然後才開 IPC server / 接受 client
 ```
 
 ---
@@ -367,6 +401,8 @@ daemon/src/dollos/memory/
 - llama.cpp `/embedding` 端點對批次的 response shape — Plan 階段對真 server 確認後決定 LlamaCppEmbedder 解析邏輯
 - `db_path` 預設位置適不適合（Linux XDG / Mac / Windows 跨平台）— v1 預設 Linux pattern，跨平台留後續
 - FTS5 中文 tokenizer — 預設 unicode61 對中文 byte-level 切，能跑但不理想；後續可換 jieba / 自製
+- **SQLite async 模式選型** — `aiosqlite`（新 dependency，async-native）還是 sync `sqlite3` 包 `asyncio.to_thread`（無新 dep）— Plan 階段二選一
+- **`enable_load_extension` 可用性** — Python `sqlite3` 模組預設可能 disable extension loading（依系統 build），需 prototype 時驗證 sqlite-vec 載入路徑；fallback 是 build Python with extension support 或用替代 SQLite binding
 
 ---
 
@@ -378,12 +414,12 @@ daemon/src/dollos/memory/
 2. `Fact` / `FactWithScore` dataclass + `Embedder` ABC + `StubEmbedder` + tests
 3. `LlamaCppEmbedder` + tests（respx mock）
 4. `scoring.py` rrf_merge + tests
-5. Schema (`schema.sql`) + Memory init / version-check / meta sync
+5. Schema (`schema.sql`) + `Memory.__init__` (sync, store config) + `Memory.initialize()` (async setup, dim discovery, schema apply, meta sync)
 6. `Memory.write` / `read` / `delete` + tests
 7. `Memory.search` 三 mode + character scoping + tests
 8. `Memory.rebuild_embeddings` + tests
 9. Config 新增 `[memory]` `[embedder]` 段 + tests + 範例 config 更新
-10. 整合測試（character scoping 覆蓋、hybrid 完整路徑、`Memory.__init__` 與真 SQLite 檔互動）
+10. 整合測試（character scoping 覆蓋、hybrid 完整路徑、`Memory.initialize()` 與真 SQLite 檔互動）
 
 ---
 
