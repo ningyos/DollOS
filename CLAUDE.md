@@ -2,166 +2,186 @@
 
 ## What is DollOS
 
-DollOS is a personal AI ecosystem. **Your AI companion (Doll) lives on your phone. Computers are optional body extensions she can be Bridged into.**
+DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer is her brain (daemon process). The phone is an optional body / system-assistant interface to reach her on the go.
 
-**Product positioning (2026-04-20 repositioning — see `docs/superpowers/specs/2026-04-20-doll-repositioning-design.md`):**
+**Product positioning (2026-05-01 pivot — see `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md`):**
 
-- **Doll (phone)** — The AI companion herself. Memory, personality, decisions, identity all live here. She is the brain AND the body. A phone alone is a complete DollOS experience.
-- **Bridge (daemon on computer)** — Doll's extension into a specific computer. Two modes:
-  - **Transient Bridge** — USB-C only, untrusted machines, one-shot sessions (library PC, friend's laptop)
-  - **Drone Bridge** — Network, paired, long-term residence on trusted machines (your home desktop, work laptop)
-- **Drone** — A trusted machine with a Drone Bridge installed (e.g., "my home desktop is a Drone")
-- **Doll Mesh** — Optional mesh VPN for power users to let Doll orchestrate a fleet of devices (homelab, smart home). Not required for basic use.
-- **Character Packs (.doll files)** — Zip bundles containing 3D avatar model (glTF), personality prompts, voice config, scene config, animations. Users import/export/switch characters.
+- **Doll** — the AI companion herself. Soul, memory, personality, decisions all live in the daemon on the computer.
+- **DollOS Daemon** — Python process: event loop + Inner Voice (Instinct) + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
+- **DollOS UI** — Tauri (Rust shell + Web frontend) with Cubism Web SDK rendering Live2D. Win/Mac get transparent overlay desktop pet; Linux gets a normal window.
+- **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from daemon.
+- **Big LLM** — user's choice (cloud API / self-host llama.cpp). DollOS only hosts the **small Inner Voice model** (0.6B–1.7B) locally.
+- **VoM (Voice of Mind) + grammar injection** — the signature feature: small model digests memory + events, prefills the result into the big model's `<think>` block. See `docs/research/grammar_injection_techreport.md`.
+- **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Instinct's involuntary state + Memory's self-history + character description), not from prompt commands. See main spec §8.
 
-**The phone is the body AND the brain.** Computers are optional extensions she can temporarily inhabit (Transient) or permanently reside in (Drone). The old "computer = brain" model is DEAD.
+**Three-layer intelligence:**
+1. **Instinct (Inner Voice)** — small model, always-on, reactive. Digest / classify / triage / decide-to-wake / reflex / VoM recall. Per-event preprocessing.
+2. **Doll** — user's chosen large model, deliberative. Wakes when Instinct decides this event needs her conscious attention.
+3. **Subagent / 分身** (ephemeral) and **Drone** (persistent) — task-specific agents Doll dispatches.
 
 ## Repo Map
 
-All repos live under `~/Projects/`. Run `./sync.sh` from this repo to clone/pull all.
+| Repo / Path | Status | Role |
+|---|---|---|
+| **DollOS** (this repo, `~/Projects/DollOS/`) | Active | Umbrella + daemon + UI + protocol + character_packs + docs + wake_word_training |
+| **DollOS-App** | Future | Android app (Cubism Java SDK + Assistant role). Not started. |
+| `fish-tts` (`~/Projects/fish-tts/`) | Active | TTS engine: DualARTransformer + DAC vocoder |
+| `luxtts-onnx` (`~/Projects/luxtts-onnx/`) | Active | TTS engine: LuxTTS ONNX |
+| `tuna` (`~/Projects/tuna/`) | Active | Fine-tuning tools |
 
-| Repo | Path | What it is |
-|------|------|------------|
-| **DollOS** | `~/Projects/DollOS/` | THIS REPO — umbrella, all specs/plans/docs, sync script |
-| **DollOS-Bridge** | *(future — deferred)* | Eventually home for `libbridge-core` + `bridge-transient` + `bridge-drone`. Not starting yet. |
-| **DollOS-Android** | `~/Projects/DollOS-Android/` | AOSP overlay configs (was the old DollOS repo) |
-| **DollOSAIService** | `~/Projects/DollOSAIService/` | Android AI Service app (Kotlin, Gradle). LLM client, conversation engine, memory (ObjectBox + Room FTS4), personality, agent system, background workers, character pack manager. Binds via AIDL. |
-| **DollOSLauncher** | `~/Projects/DollOSLauncher/` | Android 3D Launcher app (Kotlin, Gradle, Filament). Full-screen 3D avatar scene, conversation bubble, app drawer, character picker. |
-| **DollOSService** | in AOSP tree | Android system service (system UID). Executes agent actions (open app, set alarm, toggle WiFi/BT), hosts TaskManagerActivity for emergency stop. |
-| **DollOSSetupWizard** | in AOSP tree | Android OOBE (theme picker, GMS toggle, API key setup) |
-| **DollOS-build** | `~/Projects/DollOS-build/` | Full AOSP build tree (GrapheneOS manifest + local_manifests). `lunch dollos_bluejay-bp2a-userdebug` |
-| **fish-tts** | `~/Projects/fish-tts/` | TTS engine: DualARTransformer + DAC vocoder |
-| **luxtts-onnx** | `~/Projects/luxtts-onnx/` | TTS engine: LuxTTS ONNX (no PyTorch) |
-| **tuna** | `~/Projects/tuna/` | Fine-tuning tools |
+**Retired** (pre-pivot work, no longer maintained — see `docs/RETIRED-REPOS.md`):
+`DollOSAIService`, `DollOSLauncher`, `DollOSService`, `DollOSSetupWizard`, `DollOS-Android`, `DollOS-build`.
+
+### Future structure of this repo
+
+```
+DollOS/
+├── daemon/                        # Python brain (Plans 1–7)
+├── ui/                            # Tauri + Cubism Web (Plan 8)
+├── protocol/                      # shared schema between daemon/ui/app
+├── character_packs/               # .doll v3 examples
+├── docs/                          # specs, plans, research
+├── experiments/                   # POC code (e.g. lesson_injector.py)
+├── vendor/                        # third-party SDK drop instructions
+├── wake_word_training/            # existing, untouched
+└── sync.sh
+```
 
 ## Key Architecture Decisions
 
-- **Phone-as-home**: Doll lives entirely on the phone. Memory source of truth, personality, identity vault, policy engine, and decision making are all on-device.
-- **Bridge/Drone for computers**: Phone extends to computers via Bridge daemons (see 2026-04-20 spec). Transient Bridge uses USB-C only (physical trust); Drone Bridge uses encrypted network (paired trust). No more "server as brain."
-- **SSH as a tool**: Doll can SSH into remote hosts as a regular capability; SSH keys live in the phone's Identity Vault and never leave the device.
-- **Doll Mesh (optional)**: Optional mesh VPN with pluggable provider (direct / managed-mesh via Headscale-or-Netbird / adopted-mesh). For homelab power users.
-- **AIDL IPC**: On Android, DollOSAIService ↔ DollOSService ↔ DollOSLauncher communicate via AIDL Binder.
-- **Character Pack (.doll)**: Zip file with manifest.json, personality.json, voice.json, scene.json, model.glb, animations/, wake_word.onnx, voice_reference.wav, thumbnail.png. Managed by CharacterManager in DollOSAIService.
-- **Memory**: Phone is source of truth. ObjectBox for vector search (brute-force cosine, no HNSW). Room FTS4 for keyword search. Per-model vector store (modelId field). Shared memory across characters + per-character private notes. Drone Bridges have local working memory, NOT a replicated SoT.
-- **Event-driven AI**: Foreground AI has an EventQueue. Events piggyback on sendMessage() or process during idle. Background workers use background LLM model with skill-based action whitelists.
-- **3D Avatar**: Google Filament on TextureView. glTF 2.0 models. Animation states: IDLE → THINKING → TALKING. Character assets loaded via AIDL ParcelFileDescriptor.
-- **Embedding**: Cloud (any OpenAI-compatible endpoint) + Local (ONNX Runtime). Dynamic dimensions, per-model storage, auto-rebuild.
-- **Testing**: Real device (Pixel 6a bluejay), not emulator. `adb` at `~/Android/Sdk/platform-tools/adb`.
+- **Computer-as-home**: Doll lives in the daemon on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
+- **Phone as remote**: Phone app talks to daemon over network WS. Phone never holds memory.
+- **BYO big LLM**: Daemon hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
+- **VoM prefill**: Inner Voice synthesizes a RECALL block and prefills it into the big model's `<think>` region. Backend support varies (full on Anthropic + llama.cpp `/completion`; degraded on strict OpenAI).
+- **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
+- **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
+- **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from prefilled `SELF_STATE` block + self-memory in RECALL.
+- **Memory SoT**: sqlite-vec + FTS5, hybrid retrieval via Reciprocal Rank Fusion (k=60). Single active embedding model; switching = explicit rebuild. Character scoping: `character_id` NULL = shared, otherwise private to that character.
+- **Audio**: KWS optional on phone (opt-in). ASR / TTS run in daemon. Phone streams audio over WS.
 
-## Build Commands
+## Implementation Plans (12 total)
 
-### DollOSAIService (Gradle → prebuilt → AOSP)
+See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full list.
+
+| # | Plan | Status |
+|---|---|---|
+| 1 | Daemon Skeleton | Plan written |
+| 2 | Memory SoT 儲存層 | Plan written |
+| 3 | Inner Voice + Instinct + VoM | Concept |
+| 4 | Multi-LLM adapter | Concept |
+| 5 | Conversation Engine + Character Pack | Concept |
+| 6 | Subagent | Concept |
+| 7 | Self-First Design | Concept |
+| 8 | DollOS UI MVP (Tauri + Cubism Web) | Concept |
+| 9 | DollOS-App MVP (Android) | Concept |
+| 10 | Voice pipeline integration | Concept |
+| 11 | Phone Tier B/C/D adapter | Concept |
+| 12 | Drone | Concept |
+
+## Build / Run
+
+### DollOS Daemon (Python — `daemon/`)
+
+Once Plan 1 is implemented:
+
 ```bash
-cd ~/Projects/DollOSAIService
-./gradlew assembleRelease
-cp app/build/outputs/apk/release/app-release-unsigned.apk prebuilt/DollOSAIService.apk
-rsync -av --delete . ~/Projects/DollOS-build/external/DollOSAIService/
-cd ~/Projects/DollOS-build
-source build/envsetup.sh && lunch dollos_bluejay-bp2a-userdebug
-m DollOSAIService -j$(nproc)
+cd daemon
+uv sync
+cp config.example.toml config.toml
+# edit config.toml to point at your llama-server / model_id
+uv run python -m dollos --config config.toml
+uv run pytest                   # tests
 ```
 
-### DollOSLauncher (same pattern)
+### Self-host llama.cpp big model (recommended for full VoM)
+
 ```bash
-cd ~/Projects/DollOSLauncher
-./gradlew assembleRelease
-cp app/build/outputs/apk/release/app-release-unsigned.apk ~/Projects/DollOS-build/packages/apps/DollOSLauncher/prebuilt/DollOSLauncher.apk
-cd ~/Projects/DollOS-build
-source build/envsetup.sh && lunch dollos_bluejay-bp2a-userdebug
-m DollOSLauncher -j$(nproc)
+./llama.cpp/llama-server \
+    -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL \
+    --alias "unsloth/Qwen3.6" \
+    --jinja \
+    --reasoning-format none \
+    --chat-template-kwargs '{"enable_thinking": true}' \
+    --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00 \
+    --ctx-size 131072 --fit on \
+    --cache-type-k q8_0 --cache-type-v q8_0 \
+    --flash-attn on --cont-batching --parallel 2 \
+    -ngl 99 --tensor-split 1,1 \
+    --batch-size 2048 --ubatch-size 512 \
+    --threads 8 --keep -1 \
+    --port 8001 --host 0.0.0.0
 ```
 
-### DollOSService (built directly in AOSP tree)
-```bash
-cd ~/Projects/DollOS-build
-source build/envsetup.sh && lunch dollos_bluejay-bp2a-userdebug
-m DollOSService -j$(nproc)
-```
+`--reasoning-format none` is REQUIRED for grammar / prefill to apply inside `<think>` blocks.
 
-### Settings app
-```bash
-cd ~/Projects/DollOS-build
-m Settings -j$(nproc)
-```
+### Local embedding server (separate llama-server with `--embedding`)
 
-### Deploy to device
 ```bash
-export PATH="$HOME/Android/Sdk/platform-tools:$PATH"
-adb root && adb remount
-adb push <apk/odex/vdex> /system_ext/priv-app/<AppName>/
-adb reboot
+./llama.cpp/llama-server \
+    -hf <embedding-model-gguf> \
+    --embedding \
+    --port 8002 --host 0.0.0.0
 ```
 
 ## Specs and Plans
 
-All design specs and implementation plans live in `~/Projects/DollOS/docs/superpowers/`:
-- `specs/` — design documents (what to build)
-- `plans/` — implementation plans (how to build, task-by-task with checkboxes)
+- `docs/superpowers/specs/` — current design specs
+- `docs/superpowers/plans/` — current implementation plans
+- `docs/superpowers/archive/` — superseded specs/plans (pre-2026-05-01 pivot)
+- `docs/research/` — research outputs (e.g. `grammar_injection_techreport.md`)
 
-Read the relevant spec before starting any work.
+Always read the relevant spec before implementing. Use `superpowers:brainstorming` to design, `superpowers:writing-plans` to plan, `superpowers:subagent-driven-development` to execute.
 
 ## Coding Rules
 
-- **Language**: Respond in Traditional Chinese (繁體中文)
-- **Subagents for coding**: Always use subagents for implementation. Dispatch one subagent per task.
-- **Phone operations in subagents**: All adb, screenshots, device interaction must run in subagents to avoid images consuming context.
-- **No fallback mechanisms**: Never implement fallback/degradation logic.
-- **Don't overthink base**: Don't tear apart upstream packages to reassemble yourself. Use upstream as-is.
-- **Background commands**: Don't use tail pipes on background commands.
-- **Specs before code**: Always write/update the spec before implementing. Get user approval on design.
+- **Language**: Respond in 繁體中文.
+- **Subagents for coding**: dispatch one subagent per implementation task. Don't write code in the main session.
+- **Worktree per plan**: each plan gets its own worktree under `.worktrees/<plan-name>/` on its own feature branch. Merge to `main` after the plan completes via `superpowers:finishing-a-development-branch`.
+- **No fallback mechanisms**: never implement fallback / degradation logic. State boundaries clearly; if a backend can't do prefill, surface "VoM degraded" to the user, don't silently rewrite the prompt.
+- **Don't overthink upstream**: use upstream packages (llama.cpp, sqlite-vec, Cubism, etc.) as-is.
+- **Specs before code**: update or write the spec before implementing. Get user approval on design.
+- **Background commands**: don't pipe to `tail` on background commands; write to a file and read it.
+- **Per-task user briefing**: before dispatching an implementation subagent, brief the user on the task's plan content; wait for OK; then dispatch.
 
-## Current Status (2026-04-20)
+## Architecture (post-pivot, target state)
 
-### Completed
-- DollOS Base (AOSP 16, OOBE, theme, GMS, system defaults)
-- AI Core Plan A (LLM client, personality, usage tracking)
-- AI Core Plan B (Memory system, conversation engine, context compression)
-- AI Core Plan C (Agent system, tool calling, emergency stop)
-- AI Core Plan D v1 (Event queue, background workers, schedules, system events)
-- AI Core Plan D v2 (UI operation via AccessibilityService + VirtualDisplay, smart notification, programmable events)
-- Embedding System (Cloud + Local ONNX, per-model vector store, retrieval modes)
-- Settings UI (restructured: Stats + Personality main page, LLM / Memory / Budget sub-pages)
-- Character Pack System (.doll format, import/export/switch)
-- AI Launcher (Filament 3D, conversation bubble, app drawer, character picker)
-- Wake Word (openWakeWord 3-stage ONNX pipeline, retrained with fish-tts data + ACAV100M negatives)
-- Voice Pipeline (on-device: ASR sherpa-onnx, TTS Piper VITS, VAD silero, KWS openWakeWord, Speaker ID)
-- TTS Distillation (fish-tts voice cloning → 3447 sentences → Piper VITS single-speaker model, no reference audio needed)
-- Launcher voice UX (tap to cancel listening/speaking, state indicator in bubble)
-- **Product repositioning (2026-04-20)** — Bridge/Drone architecture spec complete, "server as brain" retired (spec is north star; implementation deferred)
+```
+電腦端（DollOS daemon）
+  Event Loop ── Instinct（Inner Voice 小模型 + 規則 + reflex）
+                  ↓ wake / drop / fire
+              Doll Turn（大模型 + VoM/SELF_STATE prefill）
+                  ↓ tool calls
+              Subagent（即時）/ Drone（持久）
+              Memory SoT（sqlite-vec + FTS5）
+              Character Pack Manager（.doll v3）
+              Voice Pipeline Server（ASR/TTS）
+              IPC Server (localhost WS / network WS)
 
-### In Progress
-- Figuring out what phone-side Doll needs to actually work well every day (separate brainstorming)
+UI（Tauri + Cubism Web）— 透過 localhost WS
+Phone App（Android, system assistant）— 透過 network WS
+```
 
-### Deferred (explicit)
-- **Bridge / Drone / Mesh implementation** — the 2026-04-20 spec is the target architecture, but the engineering cost (encryption, USB-C pairing, network transport, pairing rituals) is too large to start before phone-side Doll is solid. Revisit once daily-use on phone is solid.
+## Voice Pipeline Architecture (target)
 
-### Near-term candidates (to be prioritized in next brainstorming)
-- Phone-side Doll consolidation: what's blocking daily use?
-- Default character pack bundled in system image
-- Phone-based memory distillation (the concept survives; implementation to be redesigned)
+| Component | Where | Notes |
+|---|---|---|
+| KWS (openWakeWord) | Phone, opt-in | Per-character `wake_word.onnx` in `.doll` pack |
+| VAD (silero) | Phone | Endpoint detection |
+| Audio streaming | Phone ↔ Daemon, WS binary | Opus encoding |
+| ASR | Daemon | whisper.cpp / sherpa-onnx |
+| TTS | Daemon | Piper VITS (per-character voice in `.doll`) |
+| Speaker ID | Phone | ECAPA-TDNN |
+| Lip sync | Daemon → UI/App | phoneme / viseme stream |
 
-## Voice Pipeline Architecture
+### Wake Word Training (existing, kept)
 
-On-device voice pipeline in DollOSAIService:
-
-- **Wake Word**: openWakeWord 3-stage ONNX (mel → embedding → classifier). Per-character wake_word.onnx in .doll pack. Training: fish-tts generates positive samples, ACAV100M 2000hr negatives, DNN classifier. Threshold 0.7, 3s debounce, disabled when screen locked.
-- **ASR**: sherpa-onnx paraformer (encoder.onnx + decoder.onnx). Always-on streaming, buffer reset on wake word trigger.
-- **TTS**: Piper VITS single-speaker model (distilled from fish-tts voice cloning data). 22050Hz, ~real-time on Pixel 6a. No reference audio needed (voice baked in). Model at `/system_ext/dollos/models/voice/tts-vits/`. Requires `model.onnx` + `tokens.txt` + `espeak-ng-data/`.
-- **VAD**: silero_vad.onnx for speech segment detection.
-- **Speaker ID**: ECAPA-TDNN speaker embedding (512-dim) for speaker verification.
-
-### Wake Word Training
-Training data and scripts at `~/Projects/DollOS/wake_word_training/`:
-- `train_gura.py` — custom training script (AudioFeatureExtractor → DNN → ONNX export)
+`~/Projects/DollOS/wake_word_training/`:
+- `train_gura.py` — custom training (AudioFeatureExtractor → DNN → ONNX export)
 - `generate_positive.py` / `generate_negative.py` — fish-tts sample generation
 - `verify_voice.py` — speaker embedding cosine similarity verification
 - ACAV100M features (17.3GB) for negative training data
-- Correct embedding_model.onnx must match the one from openWakeWord Python package
+- Correct `embedding_model.onnx` must match the openWakeWord Python package version
 
-### TTS Model Training
-Piper VITS training at `~/Projects/DollOS/wake_word_training/`:
-- `generate_tts_dataset.py` / `generate_en_dataset.py` — fish-tts dataset generation
-- `filter_accent_whisper.py` — ASR-based accent quality filter
-- Training via piper1-gpl (OHF fork) with PyTorch Lightning
-- Export: `export_gura.sh` → ONNX + add metadata (sample_rate, n_speakers, language)
-- ONNX metadata required by sherpa-onnx: sample_rate, n_speakers, language, noise_scale, noise_scale_w, length_scale
+### TTS Distillation (existing, kept)
+
+Piper VITS distilled from fish-tts voice cloning data. Training scripts at `~/Projects/DollOS/wake_word_training/`.
