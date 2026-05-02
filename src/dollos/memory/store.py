@@ -340,4 +340,38 @@ class Memory:
         return out
 
     async def rebuild_embeddings(self) -> int:
-        raise NotImplementedError("Task 8 will implement rebuild_embeddings")
+        if self._conn is None:
+            raise RuntimeError("Memory not initialized")
+
+        rows = await asyncio.to_thread(
+            lambda: self._conn.execute(  # type: ignore[union-attr]
+                "SELECT id, text FROM facts ORDER BY id"
+            ).fetchall()
+        )
+        if not rows:
+            return 0
+
+        ids = [r[0] for r in rows]
+        texts = [r[1] for r in rows]
+        new_vecs = await self._embedder.embed_batch(texts)
+        await asyncio.to_thread(self._rebuild_apply_sync, ids, new_vecs)
+        return len(rows)
+
+    def _rebuild_apply_sync(
+        self, ids: list[int], vecs: list[list[float]]
+    ) -> None:
+        assert self._conn is not None
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM vec_facts")
+            for fid, vec in zip(ids, vecs, strict=True):
+                self._conn.execute(
+                    "INSERT INTO vec_facts(fact_id, embedding) VALUES (?, ?)",
+                    (fid, _serialize_f32(vec)),
+                )
+            self._conn.commit()
+            self._set_meta_sync("embedding_model_id", self._embedder.model_id)
+            self._set_meta_sync("embedding_dim", str(self._embedder.dimensions))
+        except Exception:
+            self._conn.rollback()
+            raise

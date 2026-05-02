@@ -244,3 +244,59 @@ async def test_search_top_k_limits_results(tmp_path: Path):
     results = await mem.search("fact", mode="hybrid", top_k=5)
     assert len(results) <= 5
     await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_returns_count(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    await mem.write("a")
+    await mem.write("b")
+    await mem.write("c")
+
+    n = await mem.rebuild_embeddings()
+    assert n == 3
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_overwrites_vec_facts(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    fid = await mem.write("hello world")
+
+    # Original vector
+    row = mem._conn.execute(
+        "SELECT embedding FROM vec_facts WHERE fact_id = ?", (fid,)
+    ).fetchone()
+    original = row[0]
+
+    # Rebuild — StubEmbedder is deterministic, so vector should be identical;
+    # we still verify the row exists and is correct shape after rebuild.
+    n = await mem.rebuild_embeddings()
+    assert n == 1
+    row = mem._conn.execute(
+        "SELECT embedding FROM vec_facts WHERE fact_id = ?", (fid,)
+    ).fetchone()
+    assert row is not None
+    assert len(row[0]) == len(original)
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_updates_meta(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    await mem.write("a")
+    await mem.rebuild_embeddings()
+    assert mem.get_meta("embedding_model_id") == "stub"
+    assert mem.get_meta("embedding_dim") == "32"
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_on_empty_returns_zero(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    assert await mem.rebuild_embeddings() == 0
+    await mem.close()
