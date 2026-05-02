@@ -7,7 +7,7 @@
 **Architecture:** SQLite (file or `:memory:`) with `sqlite-vec` extension for vector search and built-in FTS5 for keyword search. Two-stage init: sync `__init__` stores config; async `initialize()` discovers embedder dimensions and applies schema. SQL operations run on default thread via `asyncio.to_thread` (no new async-sqlite dependency). Hybrid retrieval uses Reciprocal Rank Fusion (k=60) to merge vector and FTS top-50 results.
 
 **Tech Stack:**
-- Python 3.12+
+- Python 3.13+
 - `sqlite-vec` (new pip dep) for vec0 virtual table + KNN
 - stdlib `sqlite3` for everything else (FTS5 built-in)
 - `httpx` for embedder HTTP (already in)
@@ -523,11 +523,15 @@ def test_overlap_fact_gets_summed_score():
     assert out[0][0] == 2
 
 
-def test_top_rank_in_one_beats_lower_ranks_in_both():
-    # fact 1 is top in vector only
-    # fact 2 is rank 5 in both
-    vec = [(1, 0.0)] + [(99 + i, 0.0) for i in range(5)] + [(2, 0.0)]
-    fts = [(99 + i, 0.0) for i in range(5)] + [(2, 0.0)]
+def test_unique_top_rank_beats_unique_lower_rank():
+    # fact 1: appears only in vec at rank 0  → score 1/61
+    # fact 2: appears only in fts at rank 5  → score 1/66
+    # Each fact appears in exactly one list, so RRF reduces to comparing
+    # ranks. Earlier rank wins. (Note: RRF rewards intersection — a fact
+    # in BOTH lists at rank 5 would score 2/66 ≈ 0.030, beating fact 1's
+    # 1/61 ≈ 0.016. The test name reflects what the data actually exercises.)
+    vec = [(1, 0.0)] + [(99 + i, 0.0) for i in range(5)]
+    fts = [(10, 0.0), (11, 0.0), (12, 0.0), (13, 0.0), (14, 0.0), (2, 0.0)]
     out = rrf_merge(vec, fts)
     assert out[0][0] == 1
 
@@ -812,7 +816,11 @@ class Memory:
         await asyncio.to_thread(self._sync_meta)
 
     def _open_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
+        # check_same_thread=False is required because _open_conn() runs in
+        # asyncio.to_thread (worker thread) but get_meta() is a sync helper
+        # called from the main thread (in tests). Safe because all writes
+        # are serialized through asyncio.to_thread; reads are safe.
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
         try:
             conn.enable_load_extension(True)
         except AttributeError as e:

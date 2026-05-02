@@ -1313,7 +1313,7 @@ After all tasks complete you have:
 - WebSocket server listening on configured host:port
 - Working llama.cpp `/completion` adapter with prefill support (the foundation for VoM in plan 3)
 - Type-safe IPC message schemas (extensible — audio / Cubism messages added in later plans)
-- 14 passing automated tests across config, adapter, IPC, and end-to-end
+- 15 passing automated tests across config, adapter, IPC, and end-to-end
 - Manual smoke test verified against real llama-server
 
 **What is NOT in this plan (deferred to later plans):**
