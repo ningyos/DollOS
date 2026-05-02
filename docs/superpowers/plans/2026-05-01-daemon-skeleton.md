@@ -23,33 +23,31 @@
 
 ```
 DollOS/
-├── daemon/                          # ← new sub-tree (this plan creates)
-│   ├── pyproject.toml
-│   ├── README.md
-│   ├── config.example.toml
-│   ├── src/
-│   │   └── dollos/
-│   │       ├── __init__.py
-│   │       ├── __main__.py          # `python -m dollos` entry
-│   │       ├── config.py            # TOML loader + pydantic Settings
-│   │       ├── log.py               # logging setup
-│   │       ├── llm/
-│   │       │   ├── __init__.py
-│   │       │   ├── adapter.py       # LLMAdapter abstract base
-│   │       │   └── llamacpp.py      # LlamaCppAdapter concrete impl
-│   │       ├── ipc/
-│   │       │   ├── __init__.py
-│   │       │   ├── messages.py      # pydantic message schemas
-│   │       │   └── server.py        # WebSocket server
-│   │       └── daemon.py            # wires everything together
-│   └── tests/
+├── pyproject.toml
+├── config.example.toml
+├── src/
+│   └── dollos/
 │       ├── __init__.py
-│       ├── conftest.py
-│       ├── test_config.py
-│       ├── test_llm_llamacpp.py
-│       ├── test_ipc_messages.py
-│       ├── test_ipc_server.py
-│       └── test_e2e.py
+│       ├── __main__.py          # `python -m dollos` entry
+│       ├── config.py            # TOML loader + pydantic Settings
+│       ├── log.py               # logging setup
+│       ├── llm/
+│       │   ├── __init__.py
+│       │   ├── adapter.py       # LLMAdapter abstract base
+│       │   └── llamacpp.py      # LlamaCppAdapter concrete impl
+│       ├── ipc/
+│       │   ├── __init__.py
+│       │   ├── messages.py      # pydantic message schemas
+│       │   └── server.py        # WebSocket server
+│       └── daemon.py            # wires everything together
+└── tests/
+    ├── __init__.py
+    ├── conftest.py
+    ├── test_config.py
+    ├── test_llm_llamacpp.py
+    ├── test_ipc_messages.py
+    ├── test_ipc_server.py
+    └── test_e2e.py
 ```
 
 Each file's responsibility:
@@ -64,175 +62,61 @@ Each file's responsibility:
 
 ---
 
-## Task 1: Project Scaffold
+## Task 1: Verify Project Scaffold + Add Plan 1 Dependencies
 
-**Files:**
-- Create: `daemon/pyproject.toml`
-- Create: `daemon/src/dollos/__init__.py`
-- Create: `daemon/src/dollos/__main__.py`
-- Create: `daemon/tests/__init__.py`
-- Create: `daemon/tests/conftest.py`
-- Create: `daemon/README.md`
-- Create: `daemon/.gitignore`
+The repo root was already uv-init'd (commit `8b28aa5`): `pyproject.toml`, `src/dollos/__init__.py`, `src/dollos/__main__.py`, `tests/__init__.py`, `tests/conftest.py`, `.gitignore` all exist. This task verifies that state and adds the dependencies subsequent tasks need.
 
-- [ ] **Step 1: Initialize uv project**
+- [ ] **Step 1: Verify scaffold present**
+
+```bash
+cat /home/progcat/Projects/DollOS/pyproject.toml
+ls /home/progcat/Projects/DollOS/src/dollos/ /home/progcat/Projects/DollOS/tests/
+```
+
+Expected: `pyproject.toml` shows `name = "dollos"`, `requires-python = ">=3.13"`. Source and test dirs exist.
+
+- [ ] **Step 2: Create missing subdirectories needed by later tasks**
 
 ```bash
 cd /home/progcat/Projects/DollOS
-mkdir -p daemon/src/dollos/llm daemon/src/dollos/ipc daemon/tests
-cd daemon
-uv init --no-readme --no-pin-python --bare
+mkdir -p src/dollos/llm src/dollos/ipc
 ```
 
-- [ ] **Step 2: Write `daemon/pyproject.toml`**
+`tests/` already has `__init__.py`; no action needed there.
 
-```toml
-[project]
-name = "dollos"
-version = "0.1.0"
-description = "DollOS daemon — event loop, Instinct, Memory, Conversation Engine"
-requires-python = ">=3.12"
-dependencies = [
-    "pydantic>=2.6",
-    "httpx>=0.27",
-    "websockets>=12.0",
-    "tomli; python_version < '3.11'",
-]
-
-[project.scripts]
-dollos = "dollos.__main__:main"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/dollos"]
-
-[tool.uv]
-dev-dependencies = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "respx>=0.21",
-    "ruff>=0.4",
-]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "ASYNC"]
-```
-
-- [ ] **Step 3: Write minimal `daemon/src/dollos/__init__.py`**
-
-```python
-"""DollOS daemon package."""
-
-__version__ = "0.1.0"
-```
-
-- [ ] **Step 4: Write `daemon/src/dollos/__main__.py` placeholder**
-
-```python
-"""Entry point: python -m dollos."""
-
-import sys
-
-
-def main() -> int:
-    print("dollos daemon — skeleton (not yet implemented)")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-- [ ] **Step 5: Write `daemon/tests/__init__.py` (empty) and `daemon/tests/conftest.py`**
-
-`daemon/tests/__init__.py`: empty file.
-
-`daemon/tests/conftest.py`:
-
-```python
-"""Shared pytest fixtures."""
-
-import pytest
-
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-```
-
-- [ ] **Step 6: Write `daemon/.gitignore` and `daemon/README.md`**
-
-`daemon/.gitignore`:
-
-```
-.venv/
-__pycache__/
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
-dist/
-build/
-.coverage
-*.pyc
-config.toml
-```
-
-`daemon/README.md`:
-
-```markdown
-# DollOS Daemon
-
-Python daemon — event loop, Instinct, Memory, Conversation Engine, IPC server.
-
-## Setup
+- [ ] **Step 3: Add Plan 1 dependencies**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
+uv add 'pydantic>=2.6' 'httpx>=0.27' 'websockets>=12.0'
+```
+
+Note: `tomli` is not needed — Python 3.13 has `tomllib` in stdlib.
+
+- [ ] **Step 4: Verify uv sync still works**
+
+```bash
+cd /home/progcat/Projects/DollOS
 uv sync
 ```
 
-## Run
+Expected: resolves without error.
+
+- [ ] **Step 5: Run smoke test**
 
 ```bash
-uv run python -m dollos --config config.toml
-```
-
-See `config.example.toml` for configuration template.
-
-## Test
-
-```bash
-uv run pytest
-```
-```
-
-- [ ] **Step 7: Sync and verify package installs**
-
-```bash
-cd daemon
-uv sync
+cd /home/progcat/Projects/DollOS
 uv run python -m dollos
 ```
 
-Expected output: `dollos daemon — skeleton (not yet implemented)`
+Expected output: existing placeholder message (e.g. `dollos daemon — skeleton (not yet implemented)`).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
-git commit -m "chore: scaffold dollos daemon Python project"
+git add pyproject.toml uv.lock src/dollos/llm src/dollos/ipc
+git commit -m "chore(plan1): add Plan 1 dependencies + scaffold subdirs"
 ```
 
 ---
@@ -240,12 +124,12 @@ git commit -m "chore: scaffold dollos daemon Python project"
 ## Task 2: Config Module
 
 **Files:**
-- Create: `daemon/src/dollos/config.py`
-- Create: `daemon/src/dollos/log.py`
-- Create: `daemon/config.example.toml`
-- Create: `daemon/tests/test_config.py`
+- Create: `src/dollos/config.py`
+- Create: `src/dollos/log.py`
+- Create: `config.example.toml`
+- Create: `tests/test_config.py`
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_config.py`**
+- [ ] **Step 1: Write the failing test `tests/test_config.py`**
 
 ```python
 """Tests for config loading."""
@@ -323,13 +207,13 @@ port = 9876
 - [ ] **Step 2: Run test, verify it fails**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_config.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'dollos.config'`
 
-- [ ] **Step 3: Write `daemon/src/dollos/config.py`**
+- [ ] **Step 3: Write `src/dollos/config.py`**
 
 ```python
 """Configuration: TOML loading + pydantic validation."""
@@ -370,7 +254,7 @@ def load_settings(path: Path) -> Settings:
     return Settings.model_validate(data)
 ```
 
-- [ ] **Step 4: Write `daemon/src/dollos/log.py`**
+- [ ] **Step 4: Write `src/dollos/log.py`**
 
 ```python
 """Logging configuration."""
@@ -394,7 +278,7 @@ def setup_logging(level: str) -> None:
     root.setLevel(level)
 ```
 
-- [ ] **Step 5: Write `daemon/config.example.toml`**
+- [ ] **Step 5: Write `config.example.toml`**
 
 ```toml
 # DollOS daemon configuration template.
@@ -417,6 +301,7 @@ level = "INFO"
 - [ ] **Step 6: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_config.py -v
 ```
 
@@ -426,7 +311,7 @@ Expected: all 3 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add src/dollos/config.py src/dollos/log.py config.example.toml tests/test_config.py
 git commit -m "feat(daemon): config module + logging setup"
 ```
 
@@ -435,10 +320,10 @@ git commit -m "feat(daemon): config module + logging setup"
 ## Task 3: LLM Adapter Abstract Interface
 
 **Files:**
-- Create: `daemon/src/dollos/llm/__init__.py`
-- Create: `daemon/src/dollos/llm/adapter.py`
+- Create: `src/dollos/llm/__init__.py`
+- Create: `src/dollos/llm/adapter.py`
 
-- [ ] **Step 1: Write `daemon/src/dollos/llm/__init__.py`**
+- [ ] **Step 1: Write `src/dollos/llm/__init__.py`**
 
 ```python
 """LLM backend adapters."""
@@ -448,7 +333,7 @@ from dollos.llm.adapter import LLMAdapter, StreamChunk
 __all__ = ["LLMAdapter", "StreamChunk"]
 ```
 
-- [ ] **Step 2: Write `daemon/src/dollos/llm/adapter.py`**
+- [ ] **Step 2: Write `src/dollos/llm/adapter.py`**
 
 ```python
 """Abstract LLM adapter interface."""
@@ -506,7 +391,7 @@ Note: ABC + async generator is intentional — concrete impl uses `async def` wi
 - [ ] **Step 3: Verify import works**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run python -c "from dollos.llm import LLMAdapter, StreamChunk; print('OK')"
 ```
 
@@ -516,7 +401,7 @@ Expected: `OK`
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/src/dollos/llm/
+git add src/dollos/llm/
 git commit -m "feat(daemon): LLM adapter abstract interface"
 ```
 
@@ -525,12 +410,12 @@ git commit -m "feat(daemon): LLM adapter abstract interface"
 ## Task 4: LlamaCppAdapter Implementation
 
 **Files:**
-- Create: `daemon/src/dollos/llm/llamacpp.py`
-- Create: `daemon/tests/test_llm_llamacpp.py`
+- Create: `src/dollos/llm/llamacpp.py`
+- Create: `tests/test_llm_llamacpp.py`
 
 The `/completion` endpoint of llama-server takes a raw `prompt` field. To support prefill we concatenate `system + user-rendered + assistant-prefix + prefill` into a single prompt string. For Qwen-style chat templates we use the ChatML format directly (simpler than calling `/apply-template` for v1 — that becomes a refinement in a later plan).
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_llm_llamacpp.py`**
+- [ ] **Step 1: Write the failing test `tests/test_llm_llamacpp.py`**
 
 ```python
 """Tests for LlamaCppAdapter."""
@@ -648,13 +533,13 @@ async def test_stream_completion_passes_stop_sequences():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_llm_llamacpp.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'dollos.llm.llamacpp'`
 
-- [ ] **Step 3: Write `daemon/src/dollos/llm/llamacpp.py`**
+- [ ] **Step 3: Write `src/dollos/llm/llamacpp.py`**
 
 ```python
 """llama.cpp /completion endpoint adapter.
@@ -746,6 +631,7 @@ class LlamaCppAdapter(LLMAdapter):
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_llm_llamacpp.py -v
 ```
 
@@ -755,7 +641,7 @@ Expected: all 3 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add src/dollos/llm/llamacpp.py tests/test_llm_llamacpp.py
 git commit -m "feat(daemon): llama.cpp /completion adapter with prefill support"
 ```
 
@@ -764,13 +650,13 @@ git commit -m "feat(daemon): llama.cpp /completion adapter with prefill support"
 ## Task 5: IPC Message Schemas
 
 **Files:**
-- Create: `daemon/src/dollos/ipc/__init__.py`
-- Create: `daemon/src/dollos/ipc/messages.py`
-- Create: `daemon/tests/test_ipc_messages.py`
+- Create: `src/dollos/ipc/__init__.py`
+- Create: `src/dollos/ipc/messages.py`
+- Create: `tests/test_ipc_messages.py`
 
 Message types for v1 plan-1 are minimal — just text input and streaming text output. Audio / Cubism / proactive_speak come in later plans.
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_ipc_messages.py`**
+- [ ] **Step 1: Write the failing test `tests/test_ipc_messages.py`**
 
 ```python
 """Tests for IPC message schemas."""
@@ -833,19 +719,19 @@ def test_encode_turn_end():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_ipc_messages.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write `daemon/src/dollos/ipc/__init__.py`**
+- [ ] **Step 3: Write `src/dollos/ipc/__init__.py`**
 
 ```python
 """IPC layer — WebSocket server and message schemas."""
 ```
 
-- [ ] **Step 4: Write `daemon/src/dollos/ipc/messages.py`**
+- [ ] **Step 4: Write `src/dollos/ipc/messages.py`**
 
 ```python
 """IPC message schemas (pydantic).
@@ -913,6 +799,7 @@ def encode_server_message(msg: ServerMessage) -> str:
 - [ ] **Step 5: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_ipc_messages.py -v
 ```
 
@@ -922,7 +809,7 @@ Expected: all 6 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add src/dollos/ipc/ tests/test_ipc_messages.py
 git commit -m "feat(daemon): IPC message schemas"
 ```
 
@@ -931,12 +818,12 @@ git commit -m "feat(daemon): IPC message schemas"
 ## Task 6: WebSocket Server
 
 **Files:**
-- Create: `daemon/src/dollos/ipc/server.py`
-- Create: `daemon/tests/test_ipc_server.py`
+- Create: `src/dollos/ipc/server.py`
+- Create: `tests/test_ipc_server.py`
 
 The server accepts WebSocket connections and delegates each `text_input` message to a handler callback, which is expected to yield `ServerMessage` objects (typically a stream of `TextChunk` followed by `TurnEnd`). The handler is injected — keeps the server testable without an LLM backend.
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_ipc_server.py`**
+- [ ] **Step 1: Write the failing test `tests/test_ipc_server.py`**
 
 ```python
 """Tests for WebSocket server."""
@@ -1002,13 +889,13 @@ async def test_server_sends_error_on_malformed_message():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_ipc_server.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write `daemon/src/dollos/ipc/server.py`**
+- [ ] **Step 3: Write `src/dollos/ipc/server.py`**
 
 ```python
 """WebSocket IPC server."""
@@ -1092,6 +979,7 @@ class WebSocketServer:
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_ipc_server.py -v
 ```
 
@@ -1101,7 +989,7 @@ Expected: both tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add src/dollos/ipc/server.py tests/test_ipc_server.py
 git commit -m "feat(daemon): WebSocket IPC server with handler dispatch"
 ```
 
@@ -1110,14 +998,14 @@ git commit -m "feat(daemon): WebSocket IPC server with handler dispatch"
 ## Task 7: Daemon Entry — Wire Adapter and Server Together
 
 **Files:**
-- Create: `daemon/src/dollos/daemon.py`
-- Modify: `daemon/src/dollos/__main__.py`
+- Create: `src/dollos/daemon.py`
+- Modify: `src/dollos/__main__.py`
 
 This task wires `LLMAdapter` and `WebSocketServer` together: when a `TextInput` arrives, call `adapter.stream_completion()` and wrap each `StreamChunk` as a `TextChunk` server message, finishing with `TurnEnd`.
 
 For this skeleton, the system prompt is hardcoded ("You are Doll, a helpful AI companion."). Character pack loading and personality come in a later plan.
 
-- [ ] **Step 1: Write `daemon/src/dollos/daemon.py`**
+- [ ] **Step 1: Write `src/dollos/daemon.py`**
 
 ```python
 """Daemon: wires LLM adapter and IPC server together."""
@@ -1188,7 +1076,7 @@ class Daemon:
             await self.server.stop()
 ```
 
-- [ ] **Step 2: Update `daemon/src/dollos/__main__.py`**
+- [ ] **Step 2: Update `src/dollos/__main__.py`**
 
 ```python
 """Entry point: python -m dollos --config <path>."""
@@ -1231,7 +1119,7 @@ if __name__ == "__main__":
 - [ ] **Step 3: Verify daemon starts (manual sanity check)**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 cp config.example.toml config.toml
 # Run in background and kill after a second
 timeout 2 uv run python -m dollos --config config.toml || true
@@ -1243,7 +1131,7 @@ Expected: log line `WebSocket server listening on 127.0.0.1:9876`, then exits cl
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add src/dollos/daemon.py src/dollos/__main__.py
 git commit -m "feat(daemon): wire adapter to IPC server, runnable entry point"
 ```
 
@@ -1252,11 +1140,11 @@ git commit -m "feat(daemon): wire adapter to IPC server, runnable entry point"
 ## Task 8: End-to-End Integration Test
 
 **Files:**
-- Create: `daemon/tests/test_e2e.py`
+- Create: `tests/test_e2e.py`
 
 This test stands up the full Daemon (real WebSocketServer + LlamaCppAdapter) but mocks the llama.cpp HTTP endpoint via `respx`. It validates the full path: WebSocket text → adapter → mocked LLM → text chunks back over WebSocket.
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_e2e.py`**
+- [ ] **Step 1: Write the failing test `tests/test_e2e.py`**
 
 ```python
 """End-to-end test: WebSocket client → daemon → mocked llama.cpp → response."""
@@ -1329,7 +1217,7 @@ async def test_full_round_trip_with_mocked_llamacpp():
 - [ ] **Step 2: Run test, verify it passes**
 
 ```bash
-cd daemon
+cd /home/progcat/Projects/DollOS
 uv run pytest tests/test_e2e.py -v
 ```
 
@@ -1338,6 +1226,7 @@ Expected: PASS.
 - [ ] **Step 3: Run the full test suite**
 
 ```bash
+cd /home/progcat/Projects/DollOS
 uv run pytest -v
 ```
 
@@ -1347,7 +1236,7 @@ Expected: all tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/
+git add tests/test_e2e.py
 git commit -m "test(daemon): end-to-end integration test with mocked llama.cpp"
 ```
 
@@ -1355,58 +1244,52 @@ git commit -m "test(daemon): end-to-end integration test with mocked llama.cpp"
 
 ## Task 9: Live Smoke Test (Manual)
 
-**Files:**
-- Modify: `daemon/README.md` — add manual smoke test instructions
-
 This is a one-time manual verification that the daemon talks to a real llama.cpp server. Not run in CI.
 
-- [ ] **Step 1: Append to `daemon/README.md`**
-
-````markdown
-
-## Manual Smoke Test
+- [ ] **Step 1: Run the manual smoke test**
 
 Prereq: a running llama-server (e.g. Qwen3.6-35B-A3B per project CLAUDE.md).
 
-1. Start daemon:
-   ```bash
-   cp config.example.toml config.toml
-   # edit config.toml to point at your llama-server URL
-   uv run python -m dollos --config config.toml
-   ```
+```bash
+cd /home/progcat/Projects/DollOS
+cp config.example.toml config.toml
+# edit config.toml to point at your llama-server URL
+uv run python -m dollos --config config.toml
+```
 
-2. In another terminal, send a test message via Python:
-   ```bash
-   uv run python -c "
-   import asyncio, json, websockets
-
-   async def main():
-       async with websockets.connect('ws://127.0.0.1:9876') as ws:
-           await ws.send(json.dumps({'type': 'text_input', 'text': 'Say hi.'}))
-           while True:
-               raw = await ws.recv()
-               msg = json.loads(raw)
-               print(msg)
-               if msg['type'] == 'turn_end':
-                   break
-
-   asyncio.run(main())
-   "
-   ```
-
-Expected: a stream of `text_chunk` messages followed by `turn_end`.
-````
-
-- [ ] **Step 2: Run the manual smoke test against your real llama-server**
-
-Follow the README steps. Confirm tokens stream back.
-
-- [ ] **Step 3: Commit**
+In another terminal, send a test message via Python:
 
 ```bash
 cd /home/progcat/Projects/DollOS
-git add daemon/README.md
-git commit -m "docs(daemon): manual smoke test instructions"
+uv run python -c "
+import asyncio, json, websockets
+
+async def main():
+    async with websockets.connect('ws://127.0.0.1:9876') as ws:
+        await ws.send(json.dumps({'type': 'text_input', 'text': 'Say hi.'}))
+        while True:
+            raw = await ws.recv()
+            msg = json.loads(raw)
+            print(msg)
+            if msg['type'] == 'turn_end':
+                break
+
+asyncio.run(main())
+"
+```
+
+Expected: a stream of `text_chunk` messages followed by `turn_end`.
+
+- [ ] **Step 2: Confirm tokens stream back**
+
+Visual inspection — no automated test for this step.
+
+- [ ] **Step 3: Commit** (only if config.toml was updated; do NOT commit config.toml itself — it is gitignored)
+
+```bash
+cd /home/progcat/Projects/DollOS
+git status
+# commit any minor fixups if needed
 ```
 
 ---

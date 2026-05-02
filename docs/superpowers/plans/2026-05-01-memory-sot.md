@@ -22,24 +22,23 @@
 
 ```
 DollOS/
-├── daemon/
-│   ├── pyproject.toml                                # MODIFY: add sqlite-vec
-│   ├── config.example.toml                          # MODIFY: add [memory] [embedder]
-│   ├── src/dollos/
-│   │   ├── config.py                                 # MODIFY: MemoryConfig + EmbedderConfig
-│   │   └── memory/                                   # CREATE: new package
-│   │       ├── __init__.py
-│   │       ├── embedder.py                           # Embedder ABC + StubEmbedder
-│   │       ├── embedder_llamacpp.py                  # LlamaCppEmbedder
-│   │       ├── scoring.py                            # rrf_merge
-│   │       ├── store.py                              # Memory, Fact, FactWithScore
-│   │       └── schema.sql                            # static DDL parts
-│   └── tests/
-│       ├── test_memory_embedder.py                   # StubEmbedder
-│       ├── test_memory_embedder_llamacpp.py          # LlamaCppEmbedder
-│       ├── test_memory_scoring.py                    # rrf_merge
-│       ├── test_memory_store.py                      # Memory CRUD + search
-│       └── test_memory_e2e.py                        # full integration
+├── pyproject.toml                                    # MODIFY: add sqlite-vec
+├── config.example.toml                              # MODIFY: add [memory] [embedder]
+├── src/dollos/
+│   ├── config.py                                     # MODIFY: MemoryConfig + EmbedderConfig
+│   └── memory/                                       # CREATE: new package
+│       ├── __init__.py
+│       ├── embedder.py                               # Embedder ABC + StubEmbedder
+│       ├── embedder_llamacpp.py                      # LlamaCppEmbedder
+│       ├── scoring.py                                # rrf_merge
+│       ├── store.py                                  # Memory, Fact, FactWithScore
+│       └── schema.sql                                # static DDL parts
+└── tests/
+    ├── test_memory_embedder.py                       # StubEmbedder
+    ├── test_memory_embedder_llamacpp.py              # LlamaCppEmbedder
+    ├── test_memory_scoring.py                        # rrf_merge
+    ├── test_memory_store.py                          # Memory CRUD + search
+    └── test_memory_e2e.py                            # full integration
 ```
 
 File responsibilities:
@@ -67,41 +66,33 @@ def _write_sync(self, text, character_id, metadata, embedding) -> int:
     ...
 ```
 
-`enable_load_extension` requirement: documented in `daemon/README.md` Setup step (Plan 2 will not silently fail; the connection helper raises a clear error if extension loading is disabled).
+`enable_load_extension` requirement: documented in the project README Setup step (Plan 2 will not silently fail; the connection helper raises a clear error if extension loading is disabled).
 
 ---
 
 ## Task 1: Add Dependency + Create Package Skeleton
 
 **Files:**
-- Modify: `daemon/pyproject.toml`
-- Create: `daemon/src/dollos/memory/__init__.py`
+- Modify: `pyproject.toml`
+- Create: `src/dollos/memory/__init__.py`
 
-- [ ] **Step 1: Modify `daemon/pyproject.toml` — add `sqlite-vec` to dependencies**
+- [ ] **Step 1: Add `sqlite-vec` dependency**
 
-Find the existing `dependencies = [...]` block and add `sqlite-vec>=0.1`:
-
-```toml
-dependencies = [
-    "pydantic>=2.6",
-    "httpx>=0.27",
-    "websockets>=12.0",
-    "sqlite-vec>=0.1",
-    "tomli; python_version < '3.11'",
-]
+```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
+uv add 'sqlite-vec>=0.1'
 ```
 
-- [ ] **Step 2: Create `daemon/src/dollos/memory/__init__.py`** (placeholder; exports filled in later tasks)
+- [ ] **Step 2: Create `src/dollos/memory/__init__.py`** (placeholder; exports filled in later tasks)
 
 ```python
 """Memory subsystem — facts storage, embedder, hybrid retrieval."""
 ```
 
-- [ ] **Step 3: Sync deps, verify install**
+- [ ] **Step 3: Verify install**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
-uv sync
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run python -c "import sqlite_vec; print('sqlite-vec OK')"
 ```
 
@@ -110,6 +101,7 @@ Expected: `sqlite-vec OK`
 - [ ] **Step 4: Verify existing test suite still passes**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest -v
 ```
 
@@ -119,7 +111,7 @@ Expected: 15/15 tests still pass (Plan 1's test count).
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/pyproject.toml daemon/uv.lock daemon/src/dollos/memory/
+git add pyproject.toml uv.lock src/dollos/memory/
 git commit -m "chore(memory): add sqlite-vec dep + package skeleton"
 ```
 
@@ -128,12 +120,12 @@ git commit -m "chore(memory): add sqlite-vec dep + package skeleton"
 ## Task 2: Embedder ABC + StubEmbedder
 
 **Files:**
-- Create: `daemon/src/dollos/memory/embedder.py`
-- Create: `daemon/tests/test_memory_embedder.py`
+- Create: `src/dollos/memory/embedder.py`
+- Create: `tests/test_memory_embedder.py`
 
 `StubEmbedder` is for tests — produces deterministic 32-dim vectors from SHA256 of input text. No external dependencies.
 
-- [ ] **Step 1: Write the failing test `daemon/tests/test_memory_embedder.py`**
+- [ ] **Step 1: Write the failing test `tests/test_memory_embedder.py`**
 
 ```python
 """Tests for Embedder ABC + StubEmbedder."""
@@ -196,13 +188,13 @@ def test_embedder_is_abstract():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_embedder.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write `daemon/src/dollos/memory/embedder.py`**
+- [ ] **Step 3: Write `src/dollos/memory/embedder.py`**
 
 ```python
 """Embedder abstract interface and a deterministic stub for tests."""
@@ -280,6 +272,7 @@ class StubEmbedder(Embedder):
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_embedder.py -v
 ```
 
@@ -289,7 +282,7 @@ Expected: 6 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/embedder.py daemon/tests/test_memory_embedder.py
+git add src/dollos/memory/embedder.py tests/test_memory_embedder.py
 git commit -m "feat(memory): Embedder ABC + StubEmbedder for tests"
 ```
 
@@ -298,8 +291,8 @@ git commit -m "feat(memory): Embedder ABC + StubEmbedder for tests"
 ## Task 3: LlamaCppEmbedder
 
 **Files:**
-- Create: `daemon/src/dollos/memory/embedder_llamacpp.py`
-- Create: `daemon/tests/test_memory_embedder_llamacpp.py`
+- Create: `src/dollos/memory/embedder_llamacpp.py`
+- Create: `tests/test_memory_embedder_llamacpp.py`
 
 Calls llama.cpp `/embedding` raw endpoint. `initialize()` does a probe call with text `"_dim_probe_"` and sets `dimensions` from the returned vector length. `model_id` is configured statically (not derived from the server).
 
@@ -393,7 +386,7 @@ async def test_dimensions_before_initialize_raises():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_embedder_llamacpp.py -v
 ```
 
@@ -471,6 +464,7 @@ class LlamaCppEmbedder(Embedder):
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_embedder_llamacpp.py -v
 ```
 
@@ -480,7 +474,7 @@ Expected: 4 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/embedder_llamacpp.py daemon/tests/test_memory_embedder_llamacpp.py
+git add src/dollos/memory/embedder_llamacpp.py tests/test_memory_embedder_llamacpp.py
 git commit -m "feat(memory): LlamaCppEmbedder for /embedding raw endpoint"
 ```
 
@@ -489,8 +483,8 @@ git commit -m "feat(memory): LlamaCppEmbedder for /embedding raw endpoint"
 ## Task 4: RRF Scoring (Pure Function)
 
 **Files:**
-- Create: `daemon/src/dollos/memory/scoring.py`
-- Create: `daemon/tests/test_memory_scoring.py`
+- Create: `src/dollos/memory/scoring.py`
+- Create: `tests/test_memory_scoring.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -552,13 +546,13 @@ def test_k_parameter_changes_score_magnitude_but_not_order():
 - [ ] **Step 2: Run test to verify failure**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_scoring.py -v
 ```
 
 Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write `daemon/src/dollos/memory/scoring.py`**
+- [ ] **Step 3: Write `src/dollos/memory/scoring.py`**
 
 ```python
 """Reciprocal Rank Fusion for hybrid retrieval scoring."""
@@ -595,6 +589,7 @@ def rrf_merge(
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_scoring.py -v
 ```
 
@@ -604,7 +599,7 @@ Expected: 6 tests PASS.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/scoring.py daemon/tests/test_memory_scoring.py
+git add src/dollos/memory/scoring.py tests/test_memory_scoring.py
 git commit -m "feat(memory): RRF scoring for hybrid retrieval"
 ```
 
@@ -613,13 +608,13 @@ git commit -m "feat(memory): RRF scoring for hybrid retrieval"
 ## Task 5: Schema + Memory __init__/initialize
 
 **Files:**
-- Create: `daemon/src/dollos/memory/schema.sql`
-- Create: `daemon/src/dollos/memory/store.py`
-- Create: `daemon/tests/test_memory_store.py` (initial — only init tests; CRUD tests added in Task 6)
+- Create: `src/dollos/memory/schema.sql`
+- Create: `src/dollos/memory/store.py`
+- Create: `tests/test_memory_store.py` (initial — only init tests; CRUD tests added in Task 6)
 
 The static schema lives in `schema.sql`; the dynamic vec_facts CREATE happens in `Memory.initialize()` after embedder dim is known.
 
-- [ ] **Step 1: Write `daemon/src/dollos/memory/schema.sql`**
+- [ ] **Step 1: Write `src/dollos/memory/schema.sql`**
 
 ```sql
 -- Static schema. The vec_facts virtual table is created dynamically in
@@ -659,7 +654,7 @@ BEGIN
 END;
 ```
 
-- [ ] **Step 2: Write the failing test `daemon/tests/test_memory_store.py`**
+- [ ] **Step 2: Write the failing test `tests/test_memory_store.py`**
 
 ```python
 """Tests for Memory.__init__ and initialize()."""
@@ -745,13 +740,13 @@ async def test_methods_before_initialize_raise(tmp_path: Path):
 - [ ] **Step 3: Run test to verify failure**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
 Expected: FAIL (Memory not defined).
 
-- [ ] **Step 4: Write `daemon/src/dollos/memory/store.py`** (Task 5 portion only — `__init__` + `initialize` + `get_meta` + `close`; CRUD methods are stubs raising NotImplementedError, filled in later tasks)
+- [ ] **Step 4: Write `src/dollos/memory/store.py`** (Task 5 portion only — `__init__` + `initialize` + `get_meta` + `close`; CRUD methods are stubs raising NotImplementedError, filled in later tasks)
 
 ```python
 """Memory store: facts CRUD + hybrid retrieval over sqlite-vec + FTS5."""
@@ -942,6 +937,7 @@ class Memory:
 - [ ] **Step 5: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
@@ -950,6 +946,7 @@ Expected: 5 tests PASS.
 - [ ] **Step 6: Verify full suite still passes**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest -v
 ```
 
@@ -959,7 +956,7 @@ Expected: 30+ tests pass (15 from Plan 1 + new ones from Tasks 2–5).
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/schema.sql daemon/src/dollos/memory/store.py daemon/tests/test_memory_store.py
+git add src/dollos/memory/schema.sql src/dollos/memory/store.py tests/test_memory_store.py
 git commit -m "feat(memory): schema + Memory init with two-stage async setup"
 ```
 
@@ -968,10 +965,10 @@ git commit -m "feat(memory): schema + Memory init with two-stage async setup"
 ## Task 6: Memory.write / read / delete
 
 **Files:**
-- Modify: `daemon/src/dollos/memory/store.py` — replace the three NotImplementedError stubs
-- Modify: `daemon/tests/test_memory_store.py` — append CRUD tests
+- Modify: `src/dollos/memory/store.py` — replace the three NotImplementedError stubs
+- Modify: `tests/test_memory_store.py` — append CRUD tests
 
-- [ ] **Step 1: Append failing tests to `daemon/tests/test_memory_store.py`**
+- [ ] **Step 1: Append failing tests to `tests/test_memory_store.py`**
 
 ```python
 @pytest.mark.asyncio
@@ -1055,13 +1052,13 @@ Also add `import datetime as dt` at the top of `test_memory_store.py` if not alr
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
 Expected: New tests fail with NotImplementedError.
 
-- [ ] **Step 3: Replace the `write`, `read`, `delete` stubs in `daemon/src/dollos/memory/store.py`**
+- [ ] **Step 3: Replace the `write`, `read`, `delete` stubs in `src/dollos/memory/store.py`**
 
 Replace these three methods (and add the helper methods below):
 
@@ -1160,6 +1157,7 @@ def _row_to_fact(row: tuple) -> Fact:
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
@@ -1169,7 +1167,7 @@ Expected: all CRUD tests + earlier init tests pass.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/store.py daemon/tests/test_memory_store.py
+git add src/dollos/memory/store.py tests/test_memory_store.py
 git commit -m "feat(memory): write/read/delete with vec_facts dual-ops in transaction"
 ```
 
@@ -1178,10 +1176,10 @@ git commit -m "feat(memory): write/read/delete with vec_facts dual-ops in transa
 ## Task 7: Memory.search (vector / fts / hybrid)
 
 **Files:**
-- Modify: `daemon/src/dollos/memory/store.py` — replace `search` stub
-- Modify: `daemon/tests/test_memory_store.py` — append search tests
+- Modify: `src/dollos/memory/store.py` — replace `search` stub
+- Modify: `tests/test_memory_store.py` — append search tests
 
-- [ ] **Step 1: Append failing tests to `daemon/tests/test_memory_store.py`**
+- [ ] **Step 1: Append failing tests to `tests/test_memory_store.py`**
 
 ```python
 @pytest.mark.asyncio
@@ -1278,13 +1276,13 @@ async def test_search_top_k_limits_results(tmp_path: Path):
 - [ ] **Step 2: Run tests, verify they fail**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v -k search
 ```
 
 Expected: failures with NotImplementedError.
 
-- [ ] **Step 3: Replace the `search` stub in `store.py`**
+- [ ] **Step 3: Replace the `search` stub in `src/dollos/memory/store.py`**
 
 Add this import at the top:
 
@@ -1401,6 +1399,7 @@ def _scope_clause(character_id: str | None) -> tuple[str, tuple]:
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
@@ -1410,7 +1409,7 @@ Expected: all search tests pass.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/store.py daemon/tests/test_memory_store.py
+git add src/dollos/memory/store.py tests/test_memory_store.py
 git commit -m "feat(memory): hybrid search (vector + FTS + RRF) with character scoping"
 ```
 
@@ -1419,8 +1418,8 @@ git commit -m "feat(memory): hybrid search (vector + FTS + RRF) with character s
 ## Task 8: Memory.rebuild_embeddings
 
 **Files:**
-- Modify: `daemon/src/dollos/memory/store.py` — replace `rebuild_embeddings` stub
-- Modify: `daemon/tests/test_memory_store.py` — append rebuild tests
+- Modify: `src/dollos/memory/store.py` — replace `rebuild_embeddings` stub
+- Modify: `tests/test_memory_store.py` — append rebuild tests
 
 - [ ] **Step 1: Append failing tests**
 
@@ -1484,13 +1483,13 @@ async def test_rebuild_on_empty_returns_zero(tmp_path: Path):
 - [ ] **Step 2: Run tests, verify they fail**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v -k rebuild
 ```
 
 Expected: failures with NotImplementedError.
 
-- [ ] **Step 3: Replace the `rebuild_embeddings` stub**
+- [ ] **Step 3: Replace the `rebuild_embeddings` stub in `src/dollos/memory/store.py`**
 
 ```python
     async def rebuild_embeddings(self) -> int:
@@ -1534,6 +1533,7 @@ Expected: failures with NotImplementedError.
 - [ ] **Step 4: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_store.py -v
 ```
 
@@ -1543,7 +1543,7 @@ Expected: all tests pass.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/memory/store.py daemon/tests/test_memory_store.py
+git add src/dollos/memory/store.py tests/test_memory_store.py
 git commit -m "feat(memory): rebuild_embeddings for switching embedder model"
 ```
 
@@ -1552,12 +1552,12 @@ git commit -m "feat(memory): rebuild_embeddings for switching embedder model"
 ## Task 9: Config Schema + Example Update + Public Exports
 
 **Files:**
-- Modify: `daemon/src/dollos/config.py`
-- Modify: `daemon/src/dollos/memory/__init__.py`
-- Modify: `daemon/config.example.toml`
-- Modify: `daemon/tests/test_config.py`
+- Modify: `src/dollos/config.py`
+- Modify: `src/dollos/memory/__init__.py`
+- Modify: `config.example.toml`
+- Modify: `tests/test_config.py`
 
-- [ ] **Step 1: Append failing tests to `daemon/tests/test_config.py`**
+- [ ] **Step 1: Append failing tests to `tests/test_config.py`**
 
 ```python
 def test_load_settings_includes_memory_and_embedder(tmp_path: Path):
@@ -1626,13 +1626,13 @@ model_id = "test-emb"
 - [ ] **Step 2: Run tests to verify failure**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_config.py -v
 ```
 
 Expected: new tests fail (no `memory` / `embedder` on Settings).
 
-- [ ] **Step 3: Modify `daemon/src/dollos/config.py`**
+- [ ] **Step 3: Modify `src/dollos/config.py`**
 
 Add these classes (after `LogConfig`, before `Settings`):
 
@@ -1672,7 +1672,7 @@ Add `field_validator` to imports at the top:
 from pydantic import BaseModel, Field, field_validator
 ```
 
-- [ ] **Step 4: Modify `daemon/src/dollos/memory/__init__.py` to export public API**
+- [ ] **Step 4: Modify `src/dollos/memory/__init__.py` to export public API**
 
 ```python
 """Memory subsystem — facts storage, embedder, hybrid retrieval."""
@@ -1691,7 +1691,7 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 5: Modify `daemon/config.example.toml` — append `[memory]` and `[embedder]` sections**
+- [ ] **Step 5: Modify `config.example.toml` — append `[memory]` and `[embedder]` sections**
 
 Append these sections to the existing file (after the `[log]` section):
 
@@ -1710,6 +1710,7 @@ timeout_s = 30.0
 - [ ] **Step 6: Run tests, verify they pass**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_config.py -v
 ```
 
@@ -1718,6 +1719,7 @@ Expected: 5 tests pass (3 existing + 2 new).
 - [ ] **Step 7: Run the full suite to catch any regressions**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest -v
 ```
 
@@ -1725,7 +1727,7 @@ Expected: all tests pass.
 
 Note: any earlier `Settings(...)` constructions (e.g. in `test_e2e.py` from Plan 1) that did not provide `memory` / `embedder` fields will now fail. Fix them by adding plausible test values OR — preferred — make the Plan 1 e2e test still construct Settings with the new fields. If `tests/test_e2e.py` breaks:
 
-Open `daemon/tests/test_e2e.py` and update the Settings construction:
+Open `tests/test_e2e.py` and update the Settings construction:
 
 ```python
 from pathlib import Path
@@ -1761,7 +1763,7 @@ Re-run `uv run pytest -v`. All tests must pass.
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/src/dollos/config.py daemon/src/dollos/memory/__init__.py daemon/config.example.toml daemon/tests/test_config.py daemon/tests/test_e2e.py
+git add src/dollos/config.py src/dollos/memory/__init__.py config.example.toml tests/test_config.py tests/test_e2e.py
 git commit -m "feat(daemon): config sections for memory + embedder, public memory API exports"
 ```
 
@@ -1770,7 +1772,7 @@ git commit -m "feat(daemon): config sections for memory + embedder, public memor
 ## Task 10: End-to-End Integration Test
 
 **Files:**
-- Create: `daemon/tests/test_memory_e2e.py`
+- Create: `tests/test_memory_e2e.py`
 
 This test exercises the full memory subsystem against a real (file-backed) SQLite database with a real `StubEmbedder` (no mocks at the memory layer). Validates the full path: write 30 facts across 3 visibility tiers, verify hybrid retrieval respects character scoping and returns sensible top results.
 
@@ -1853,7 +1855,7 @@ async def test_rebuild_after_reopen(tmp_path: Path):
 - [ ] **Step 2: Run test, verify it passes**
 
 ```bash
-cd /home/progcat/Projects/DollOS/.worktrees/memory-sot/daemon
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest tests/test_memory_e2e.py -v
 ```
 
@@ -1862,6 +1864,7 @@ Expected: 2 tests PASS.
 - [ ] **Step 3: Run the full test suite**
 
 ```bash
+cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 uv run pytest -v
 ```
 
@@ -1871,7 +1874,7 @@ Expected: all tests pass (Plan 1's 15 + Plan 2's new tests).
 
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
-git add daemon/tests/test_memory_e2e.py
+git add tests/test_memory_e2e.py
 git commit -m "test(memory): end-to-end integration covering scoping + lifecycle + persistence"
 ```
 
