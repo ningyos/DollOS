@@ -342,37 +342,44 @@ Reflex 是 external tool 的**極小白名單**（例如 `silence_alarm`），�
 
 ```python
 while running:
-    event = await events.get()  # 阻塞等
-    history.append(event)
+    event = await events.get()                         # 阻塞等
+    history.append(EventEntry(event))
 
-    # Inner Voice 永遠跑：產 first instinct、emotion、更新 S、可能出 reflex
+    # Inner Voice 永遠跑：產 first instinct / emotion / summary / 可能 reflex
     iv_out = await inner_voice.process(event, history, self.S)
-    self.S = iv_out.summary                    # 持續更新的工作摘要
-    history.append(iv_out.first_instinct)      # 直覺進 history
-    history.append(iv_out.emotion)             # 情緒變化進 history
+    self.S = iv_out.summary                            # 持續更新的工作摘要
+    history.append(InstinctEntry(iv_out.first_instinct))
+    history.append(EmotionEntry(iv_out.emotion))
 
     if iv_out.reflex_calls:
-        # reflex 完整處理，不驚動大模型
+        # reflex 命中：執行 + 產 ToolExecutedEvent 進 queue（給後續 Inner Voice 看）
         for call in iv_out.reflex_calls:
-            await tools.execute(call)          # 限 whitelist
+            result = await tools.execute(call, caller="instinct")
+            await events.put(ToolExecutedEvent(call, result))
         continue
 
-    # 否則大模型處理（除 reflex 外的所有事）
-    tool_calls = await big_llm.stream_tool_calls(
+    # 大模型 single-round（沒有 inner ReAct loop）
+    chunks = self.llm.stream_completion(
         system=character.system_prompt,
-        history=history,                       # 含 IV 的 instinct/emotion
-        prefill=self.S.to_prefill(),           # working summary 進 prefill
+        history=history,                               # 含 IV 的 instinct/emotion
+        prefill=self.S.to_prefill(),                   # working summary 進 prefill
+        tools=self.tools,
     )
-    for call in tool_calls:
-        result = await tools.execute(call)
-        history.append(result)
+    async for item in self.template.parse_stream(chunks):
+        if isinstance(item, ToolCall):
+            history.append(ToolCallEntry(item))
+            result = await tools.execute(item, caller="big_llm")
+            await events.put(ToolExecutedEvent(item, result))
+    # 大模型沒 emit tool call = Doll 自己決定結束 → 等下個 event
 ```
 
 要點：
 - **Inner Voice 永遠跑**（無條件，每個 event 一次）
 - **reflex 是 Inner Voice 的副產物**，命中就完整處理
-- **沒命中 reflex 的所有事都進大模型**
-- 大模型 input = system + history（含 IV 的 instinct/emotion）+ prefill（含 S）
+- **所有 tool 執行（reflex / 大模型）都產 ToolExecutedEvent 進 queue** — 對稱、有回饋
+- **沒有 inner ReAct loop** — ReAct 行為從外層 event loop 自然 emergent（tool 結果以 event 形式回流，下個 iteration 大模型看到，決定下一個動作）
+- **何時停由 Doll 決定**：大模型某個 iteration emit 零 tool calls → 沒新 event 產生 → queue 空 → loop block 等外部
+- 大模型 input = system + history（含 IV 的 instinct/emotion + 過往 ToolCall/ToolExecuted entries）+ prefill（含 S）
 
 ### 5.5 DollState (S) = Inner Voice 持續摘要
 
