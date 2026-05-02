@@ -311,7 +311,7 @@ Loop 是 **event-driven**：沒事件就阻塞、不主動 tick — 沒目的的
 所有 Doll 對外或對內的行為都是 tool call — **包含講話**。**Tool registry 全 character 共用**，不因 .doll 切換而異：
 
 ```
-say(text)              講話一句 → IPC / TTS（sentence atomic）
+say(text)              講話 → IPC / TTS
 note_memory(text)      寫 Memory SoT
 spawn_subagent(...)    Plan 6
 create_drone(...)      Plan 6
@@ -319,8 +319,6 @@ recall(query)          呼叫 Inner Voice 撈事實
 read_history(...)      讀 history（內部）
 ... 由 daemon 定義
 ```
-
-**`say` 一次一句**：模型每句獨立 tool call（`<tool_call name="say">{"text":"...一句..."}</tool_call>`），TTS sentence-level 處理（Piper VITS 本來就 sentence-level）。多句連續 = 多個 say tool call。
 
 個性 **不來自不同的 tool 集合**，來自：
 - `.doll` 的 system_prompt（Doll 是誰）
