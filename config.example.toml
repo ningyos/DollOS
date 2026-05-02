@@ -2,7 +2,8 @@
 # Copy to config.toml and edit.
 
 [llm]
-backend = "llamacpp"
+provider = "llamacpp"
+template = "qwen3-thinking"
 base_url = "http://127.0.0.1:8001"
 model_alias = "unsloth/Qwen3.6"
 timeout_s = 60.0
