@@ -50,3 +50,29 @@ class Qwen3ThinkingTemplate(PromptTemplate):
         if prefill:
             rendered += prefill
         return rendered
+
+
+class Qwen3PlainTemplate(PromptTemplate):
+    """Qwen3.x instruct (non-thinking) ChatML.
+
+    Same envelope as Qwen3ThinkingTemplate but does NOT open a <think>
+    block — Inner Voice's small models (Qwen3-0.6B/1.7B Instruct) are
+    not trained to use <think>...</think>; opening one would confuse
+    them. Prefill goes directly inside the assistant turn.
+    """
+
+    def render(self, *, system: str, user: str, prefill: str) -> str:
+        parts = [
+            "<|im_start|>system",
+            system,
+            "<|im_end|>",
+            "<|im_start|>user",
+            user,
+            "<|im_end|>",
+            "<|im_start|>assistant",
+            "",
+        ]
+        rendered = "\n".join(parts)
+        if prefill:
+            rendered += prefill
+        return rendered
