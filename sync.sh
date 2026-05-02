@@ -8,17 +8,13 @@ BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 REPOS=(
     "DollOS"
-    "DollOS-Android"
-    "DollOSAIService"
-    "DollOSService"
-    "DollOSSetupWizard"
-    "DollOSLauncher"
-    "device_dollos_bluejay"
-    "vendor_dollos"
     "fish-tts"
     "luxtts-onnx"
     "tuna"
 )
+# Retired (2026-05-01 pivot) — see docs/RETIRED-REPOS.md:
+#   DollOS-Android, DollOSAIService, DollOSService, DollOSSetupWizard,
+#   DollOSLauncher, device_dollos_bluejay, vendor_dollos
 
 echo "=== DollOS Sync ==="
 echo "Base directory: $BASE_DIR"
