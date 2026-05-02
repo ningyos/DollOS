@@ -24,7 +24,8 @@ from dollos.daemon import Daemon
 async def test_full_round_trip_with_mocked_llamacpp():
     settings = Settings(
         llm=LLMConfig(
-            backend="llamacpp",
+            provider="llamacpp",
+            template="qwen3-thinking",
             base_url="http://test.local:8001",
             model_alias="mock",
         ),
