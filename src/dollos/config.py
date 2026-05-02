@@ -4,11 +4,14 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LLMConfig(BaseModel):
-    backend: Literal["llamacpp"] = "llamacpp"
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["llamacpp"] = "llamacpp"
+    template: Literal["qwen3-thinking"] = "qwen3-thinking"
     base_url: str
     model_alias: str
     timeout_s: float = 60.0

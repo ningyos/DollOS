@@ -9,7 +9,9 @@ from dollos.config import Settings
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TextChunk, TextInput, TurnEnd
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
-from dollos.llm.llamacpp import LlamaCppAdapter
+from dollos.llm.composed import ComposedLLMAdapter
+from dollos.llm.templates import Qwen3ThinkingTemplate
+from dollos.llm.transport import LlamaCppProvider
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +21,24 @@ PLACEHOLDER_SYSTEM_PROMPT = "You are Doll, a helpful AI companion."
 
 
 def build_adapter(settings: Settings) -> LLMAdapter:
-    if settings.llm.backend == "llamacpp":
-        return LlamaCppAdapter(
+    provider = _build_provider(settings)
+    template = _build_template(settings)
+    return ComposedLLMAdapter(provider=provider, template=template)
+
+
+def _build_provider(settings: Settings) -> LlamaCppProvider:
+    if settings.llm.provider == "llamacpp":
+        return LlamaCppProvider(
             base_url=settings.llm.base_url,
             timeout_s=settings.llm.timeout_s,
         )
-    raise ValueError(f"unknown LLM backend: {settings.llm.backend}")
+    raise ValueError(f"unknown provider: {settings.llm.provider}")
+
+
+def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
+    if settings.llm.template == "qwen3-thinking":
+        return Qwen3ThinkingTemplate()
+    raise ValueError(f"unknown template: {settings.llm.template}")
 
 
 class Daemon:
