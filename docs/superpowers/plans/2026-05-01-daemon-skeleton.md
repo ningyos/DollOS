@@ -413,7 +413,7 @@ git commit -m "feat: LLM adapter abstract interface"
 - Create: `src/dollos/llm/llamacpp.py`
 - Create: `tests/test_llm_llamacpp.py`
 
-The `/completion` endpoint of llama-server takes a raw `prompt` field. To support prefill we concatenate `system + user-rendered + assistant-prefix + prefill` into a single prompt string. For Qwen-style chat templates we use the ChatML format directly (simpler than calling `/apply-template` for v1 — that becomes a refinement in a later plan).
+The `/completion` endpoint of llama-server takes a raw `prompt` field. To support prefill we concatenate `system + user-rendered + assistant-prefix + <think>\n + prefill` into a single prompt string. The assistant role opens with `<think>\n` (Qwen3.x thinking-model convention) so prefill content goes INSIDE the thinking block — this is what Plan 3 will use to inject VoM RECALL blocks. For Qwen-style chat templates we use ChatML directly (simpler than calling `/apply-template` for v1 — that becomes a refinement in a later plan).
 
 - [ ] **Step 1: Write the failing test `tests/test_llm_llamacpp.py`**
 
@@ -486,15 +486,17 @@ async def test_stream_completion_includes_prefill_in_prompt():
         async for _ in adapter.stream_completion(
             system="SYS",
             user="USR",
-            prefill="<think>\nRECALL: x\nGOAL: ",
+            prefill="RECALL: x\nGOAL: ",
         ):
             pass
 
     prompt = captured["body"]["prompt"]
     assert "SYS" in prompt
     assert "USR" in prompt
-    assert "<think>\nRECALL: x\nGOAL: " in prompt
-    # Prefill must come AFTER the assistant role marker
+    # Renderer always opens <think> after the assistant marker
+    assert "<|im_start|>assistant\n<think>\n" in prompt
+    assert "RECALL: x\nGOAL: " in prompt
+    # Prefill must come AFTER <think>\n
     assert prompt.endswith("<think>\nRECALL: x\nGOAL: ")
 
 
@@ -562,7 +564,16 @@ logger = logging.getLogger(__name__)
 
 
 def _render_chatml(system: str, user: str, prefill: str) -> str:
-    """Render Qwen-style ChatML prompt with assistant role opened for prefill."""
+    """Render Qwen-style ChatML prompt with <think> block opened for prefill.
+
+    The assistant role opens with <think>\\n (Qwen3.x thinking-model
+    convention); prefill is appended INSIDE the <think> block. Callers should
+    pass prefill as the recall/lessons/goal content WITHOUT a leading <think>
+    tag (the renderer adds it). Plan 3 (VoM) populates this prefill.
+
+    Assumes a thinking-capable Qwen-family model. Non-thinking-model support
+    is out of scope for Plan 1; Plan 4 (multi-LLM adapter) will revisit.
+    """
     parts = [
         "<|im_start|>system",
         system,
@@ -571,6 +582,7 @@ def _render_chatml(system: str, user: str, prefill: str) -> str:
         user,
         "<|im_end|>",
         "<|im_start|>assistant",
+        "<think>",
         "",
     ]
     rendered = "\n".join(parts)
