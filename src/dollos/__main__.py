@@ -4,7 +4,7 @@ import sys
 
 
 def main() -> int:
-    print("dollos daemon — skeleton (not yet implemented)")
+    print("dollos — skeleton (not yet implemented)")
     return 0
 
 

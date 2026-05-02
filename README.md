@@ -5,7 +5,7 @@ Personal AI Ecosystem — your AI companion lives on your computer. The phone is
 ## Architecture
 
 ```
-電腦端（DollOS daemon）
+電腦端（DollOS）
   Event Loop ── Instinct（small model + rules + reflex）
                   ↓ wake / drop / fire
               Doll Turn（large model + VoM/SELF_STATE prefill）
@@ -20,7 +20,7 @@ UI（Tauri + Cubism Web）   ←→   localhost WS
 DollOS-App（Android）       ←→   network WS
 ```
 
-**Computer = soul + brain.** Memory, personality, decisions all live in the daemon on the user's computer.
+**Computer = soul + brain.** Memory, personality, decisions all live in DollOS on the user's computer.
 
 **Phone = body / interface.** Android app registered as system assistant via `VoiceInteractionService`. Reaches Doll over network WebSocket. Optional — a computer alone is a complete experience.
 
@@ -66,5 +66,5 @@ Pre-pivot Android-side repos (retired 2026-05-01) are documented in `docs/RETIRE
 git clone https://github.com/ningyos/DollOS.git ~/Projects/DollOS
 cd ~/Projects/DollOS
 # Then follow the relevant plan in docs/superpowers/plans/ for the subsystem
-# you want to build (Plan 1: Daemon Skeleton is the entry point).
+# you want to build (Plan 1: DollOS Skeleton is the entry point).
 ```
