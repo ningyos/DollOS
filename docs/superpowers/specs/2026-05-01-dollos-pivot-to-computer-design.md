@@ -236,30 +236,26 @@ Instinct **不是 agent，也不是被呼叫的 tool**。她是「事情自然�
 - **Rule engine**（自然語言規則編譯後的內部結構）
 - **Action handlers**（reflex 用的預定 callback）
 
-### 4.2 對每個 event 自動完成的工作
+### 4.2 每個 event 必跑的工作
 
-| 工作 | 內容 |
+Inner Voice **每個 event 都跑一次**，產生四種輸出：
+
+| 輸出 | 內容 |
 |---|---|
-| **Digest** | 多個原始 event 壓成簡述 |
-| **Classify** | 分類事件（priority、domain、intent）|
-| **Extract** | 抽取結構化 entity |
-| **Tag** | 標 metadata（情感、相關角色、推測意圖）|
-| **Triage** | 給 priority tag（urgent/normal/low/discard）|
-| **Decide-to-wake** | 規則 + classification 決定要不要叫 Doll |
-| **Reflex** | 已知 event type 的即時 action（鬧鐘響、來電響、KWS 觸發）|
-| **VoM Recall** | 撈 memory + 合成 RECALL block 給 Doll prefill 用 |
-| **Emotional state delta** | 產生 mood / preference / attention shift（**Self-First feature**，見 §8）|
+| **First instinct** | 對 event 的一句主觀反應（「又來了」「有意思」「我不懂」），進 history 給大模型看 |
+| **Emotion delta** | 情緒變化（高興 +、煩 +），進 history、累積到 S |
+| **Summary update** | S 的下一個版本（持續維護的工作摘要），餵下次 prefill |
+| **Reflex calls**（可選）| 規則命中時出 external tool call（whitelist 限制），命中後完整處理事件，**不驚動大模型** |
 
-### 4.3 輸出 outcome（決策結果）
+Inner Voice 還可作為**內部 tool** 被大模型主動呼叫：
+- `recall(query)` — 撈相關事實合成 VoM RECALL block（Plan 4 已交付）
+- 其他內部 capability（digest / classify / extract / compress / tag）作為內部 helper，不對外暴露
 
-```
-- drop                  # 規則靜音 / triage discard
-- reflex done           # 已執行 action handler
-- memory write          # 重要事實寫進 SoT
-- defer                 # 排隊，時間到再處理
-- wake Doll             # 啟動大模型 turn
-- fire Drone            # 觸發特定 Drone definition
-```
+### 4.3 Inner Voice 不做的事
+
+- **不做 decide-to-wake**：「要不要驚動大模型」不是 Inner Voice 的判斷 — 沒命中 reflex 就一律進大模型（見 §5.4）
+- **不碰外部世界**：嚴禁 `say` / `note_memory` / `spawn_subagent` 等有副作用的 external tool。Inner Voice 只能讀、產內部訊號、更新 S
+- **不獨立 drop / defer**：drop 等於「Inner Voice 跑完但沒出 reflex，且大模型也選擇不出 tool call」的自然結果，不是 Instinct 的主動決策
 
 ### 4.4 自然語言規則執行模型
 
@@ -296,45 +292,100 @@ Instinct 內部使用的 capability，**不對外暴露為 tool**（除非需要
 
 ---
 
-## §5 Doll Turn 與 VoM Prefill
+## §5 Doll Core Loop
 
-### 5.1 一個 Doll turn 的完整流程
+### 5.1 立論：Loop = Doll
+
+Doll 不是「被叫醒處理 turn 的大模型」，而是 **持續存在的 event-driven 迴圈本身**。大模型、小模型、Memory、Subagent、Drone 都是這個 loop 用的器官。
+
+| 原模型（已棄）| 新模型 |
+|---|---|
+| Doll = 大模型 call | Doll = the loop |
+| 大模型醒來處理 turn | Loop 把大模型當思考器官呼叫 |
+| Doll-ness 存在 prompt 裡 | Doll-ness 存在 Inner Voice 維持的 S 與工具使用方式裡 |
+
+Loop 是 **event-driven**：沒事件就阻塞、不主動 tick — 沒目的的 wake 沒意義。連續性靠 history + S 在 events 之間持續存在。
+
+### 5.2 Doll 的輸出 = Tool Call（唯一）
+
+所有 Doll 對外或對內的行為都是 tool call。**Tool registry 全 character 共用**，不因 .doll 切換而異：
 
 ```
-Instinct outcome: wake Doll
-  │
-  ▼
-Conversation Engine 構造 prompt:
-  [system: character description（純身份描述，無行為指令）]
-  [history（壓縮過）]
-  [current event payload（user input 或 trigger）]
-  [assistant prefill: <think>\n
-     RECALL: <Instinct 撈出的事實 memory>
-     LESSONS: <對症 lessons，若有>
-     SELF_STATE: <Instinct 的 mood/preference/attention/relational state>
-     GOAL: ←大模型從這開始
-  ]
-  │
-  ▼
-依後端能力選 prefill 機制：
-  • Anthropic: messages 最後 role=assistant
-  • llama.cpp self-host: /completion raw（最強）
-  • OpenAI strict: 退化成 system addendum
-  │
-  ▼
-大模型 streaming 出 tokens
-  │
-  ▼
-TTS streaming（句邊界切片）
-  │
-  ▼
-UI / App 收 audio + lip sync to Cubism
-  │
-  ▼
-turn 結束 → Instinct 寫 memory（顯著事件）→ self-state 更新
+say(text)              講話 → IPC / TTS
+note_memory(text)      寫 Memory SoT
+spawn_subagent(...)    Plan 6
+create_drone(...)      Plan 6
+recall(query)          呼叫 Inner Voice 撈事實
+read_history(...)      讀 history（內部）
+... 由 daemon 定義
 ```
 
-### 5.2 後端能力 adapter
+個性 **不來自不同的 tool 集合**，來自：
+- `.doll` 的 system_prompt（Doll 是誰）
+- Inner Voice 對事件產生的 first instinct / emotion 個別差異
+- 大模型在這個身份和情緒下對工具的選擇
+
+工具是手腳，個性是怎麼用手腳。
+
+### 5.3 Tool 兩級權限
+
+| 類別 | 內容 | 誰能呼叫 |
+|---|---|---|
+| **Internal**（無現實副作用）| `recall`、`read_history`、inspect S | Inner Voice + 大模型 |
+| **External**（有現實副作用）| `say`、`note_memory`、`spawn_subagent`、`create_drone` 等 | **僅** 大模型 + reflex whitelist |
+
+Inner Voice **嚴禁**碰外部世界。她只能讀、產內部訊號（first instinct / emotion）、更新 S。
+
+Reflex 是 external tool 的**極小白名單**（例如 `silence_alarm`），由 Instinct 規則直接出 — 不經大模型，但仍走相同 executor。
+
+### 5.4 Loop 骨架
+
+```python
+while running:
+    event = await events.get()  # 阻塞等
+    history.append(event)
+
+    # Inner Voice 永遠跑：產 first instinct、emotion、更新 S、可能出 reflex
+    iv_out = await inner_voice.process(event, history, self.S)
+    self.S = iv_out.summary                    # 持續更新的工作摘要
+    history.append(iv_out.first_instinct)      # 直覺進 history
+    history.append(iv_out.emotion)             # 情緒變化進 history
+
+    if iv_out.reflex_calls:
+        # reflex 完整處理，不驚動大模型
+        for call in iv_out.reflex_calls:
+            await tools.execute(call)          # 限 whitelist
+        continue
+
+    # 否則大模型處理（除 reflex 外的所有事）
+    tool_calls = await big_llm.stream_tool_calls(
+        system=character.system_prompt,
+        history=history,                       # 含 IV 的 instinct/emotion
+        prefill=self.S.to_prefill(),           # working summary 進 prefill
+    )
+    for call in tool_calls:
+        result = await tools.execute(call)
+        history.append(result)
+```
+
+要點：
+- **Inner Voice 永遠跑**（無條件，每個 event 一次）
+- **reflex 是 Inner Voice 的副產物**，命中就完整處理
+- **沒命中 reflex 的所有事都進大模型**
+- 大模型 input = system + history（含 IV 的 instinct/emotion）+ prefill（含 S）
+
+### 5.5 DollState (S) = Inner Voice 持續摘要
+
+短期到中期的「現在」由 Inner Voice 維護：
+
+- **寫入**：Inner Voice 每 event 輸出新 `summary`
+- **讀取**：大模型透過 prefill；Inner Voice 下一輪 recursive 看自己上一次的摘要
+- **格式**：v1 起手是 **純文字**（小模型輸出的摘要字串）。schema 不由 loop 預定，由 Inner Voice prompt 決定內容
+- **持久性**：daemon 進程內，不寫硬碟（snapshot 留之後 plan）
+
+事件連動、awaits、attention、mood 等需求出現時，再決定 S 是否擴成結構化欄位。Plan 5 v1 不承諾純文字摘要長期夠用。
+
+### 5.6 後端能力 adapter（prefill 機制）
 
 | 後端 | Prefill 機制 | VoM 等級 |
 |---|---|---|
@@ -344,7 +395,7 @@ turn 結束 → Instinct 寫 memory（顯著事件）→ self-state 更新
 | OpenAI strict | system / user message | 退化 |
 | Gemini / Bedrock | 各家不同 | 逐一適配 |
 
-### 5.3 串流預算
+### 5.7 串流預算
 
 目標：**first audible token < 1.5s**。
 
@@ -353,17 +404,17 @@ turn 結束 → Instinct 寫 memory（顯著事件）→ self-state 更新
 | Trigger → uplink open | < 100ms |
 | Mic → ASR partial | 100–300ms |
 | VAD endpoint → ASR final | 200–500ms |
-| Instinct（含 recall）| < 300ms |
+| Inner Voice（產 instinct/emotion/summary）| < 300ms |
 | Doll first token | 200–800ms（後端決定）|
 | TTS first audio chunk | 100–300ms |
 
 設定面板跑校準測試告訴使用者「以你目前後端組合，預期延遲 X 秒」。
 
-### 5.4 Subagent / Drone 在 turn 中
+### 5.8 Subagent / Drone 是 tool
 
-Doll 在 turn 中可 tool call：
-- `spawn_subagent(prompt, model, tools, budget)` — 即時派出隔離 session，定義不存檔。同一 turn 內若同步等結果（小任務）；長任務則結果走回 event queue
-- `create_drone(definition)` — 持久化 definition 進 Drone Definition Store。由 schedule / external trigger / 條件啟動。**新建 drone 需使用者一次確認**（避免 Doll 偷部署）
+Doll 用大模型 tool call 派出 — 跟 `say`、`note_memory` 一樣，不是特殊機制：
+- `spawn_subagent(prompt, model, tools, budget)` — 即時派出隔離 session，定義不存檔
+- `create_drone(definition)` — 持久化 definition。**新建 drone 需使用者一次確認**
 
 詳見 §6。
 
@@ -771,21 +822,21 @@ DollOS/
 | 2 | **Memory SoT 儲存層**（plan 已寫）| sqlite-vec + FTS5 + RRF hybrid + character scoping + Embedder ABC + LlamaCppEmbedder |
 | 3 | LLM Provider / Template 解耦層 | Provider 抽象（llama.cpp raw / vLLM / OpenAI-compat / Anthropic）+ PromptTemplate 抽象（Qwen3-thinking / Qwen3-plain / Llama / Gemma / server-applied）+ prefill 能力 detection + 重構 LlamaCppAdapter 為 (provider, template) 組合。**底層基礎設施，下面的 Plan 4 / 5 / 7 都吃這層** |
 | 4 | Inner Voice + VoM RECALL（utility 層）| 小模型 host（Qwen3-0.6B/1.7B 之一，via Plan 3 的 Provider+Template 組合）+ recall capability + VoM RECALL block 合成 + prompt template + prefix cache。**純文字 utility，不處理事件、不寫 memory、無 mood/state** |
-| 5 | Conversation Engine + Character Pack | Turn 流程整合 prefill + `.doll` v3 載入（personality / lessons / Cubism asset path / wake word）|
-| 6 | Subagent / 分身 | 一次性、Doll tool call 即時派出、inline definition、隔離 session |
-| 7 | Self-First Design | self-memory schema（preferences / habits / relations / emotional_residue）+ mood / preference 演化模型 + SELF_STATE 注入 |
+| 5 | **Doll Core Loop v1** | Event queue + 主迴圈（event-driven，無 idle tick）+ Tool ABC + 兩級權限 registry + 核心 tools (`say`、`note_memory`、`recall`) + Inner Voice 整合（每 event 產 first_instinct / emotion / summary，無 reflex 實作）+ 大模型 tool-call 整合 + `.doll` v3 載入（minimal：manifest + system_prompt） |
+| 6 | Subagent / 分身 | `spawn_subagent` tool（Doll 用大模型 tool call 即時派出、inline definition、隔離 session） |
+| 7 | Self-First Design | Inner Voice 摘要擴 self-traits（preferences / habits / relations / emotional_residue）+ mood baseline + 慢變演化模型 |
 | 8 | DollOS UI MVP | Tauri + Cubism Web SDK + chat 視窗 + system tray + hotkey + localhost WS client |
 | 9 | DollOS-App MVP | Android：Cubism Java SDK + VoiceInteractionService 註冊 + audio streaming + network WS client |
 | 10 | 語音 pipeline 整合 | DollOS ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
-| 11 | Event Loop + Rule engine + Reflex handlers（Instinct dispatcher）| Event Queue / Event schema / 規則編譯 + pattern match / reflex action handler 介面 / decide-to-wake 邏輯。**消費 Plan 3 的 Inner Voice utility，把多個 event source 真正串接** |
+| 11 | **Reflex / Rule Library** | Reflex tool whitelist + 自然語言規則編譯 + pattern match。掛在 Plan 5 的 Inner Voice 介面上，event 來源齊（Plan 9/10/13）後才有規則可寫 |
 | 12 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
 | 13 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
 
 **移除自舊版本**：Memory 資料遷移工具（phone 端本來就無 memory，不需遷移）。
 
-**Plan 3 拆兩半（2026-05-02 修訂）**：原本「Inner Voice + Instinct + VoM」一鍋，scope 過大且 ownership 混亂（mood/state 屬 Plan 7、wake Doll 屬 Plan 5、fire Drone 屬 Plan 13）。拆成：
-- **Plan 3** = 純 Inner Voice utility 層（小模型 + 文字處理 capability + VoM block 合成）。可獨立測試，無 event 概念。
-- **Plan 11** = Event Loop + Rule engine + Reflex handlers。Plan 9（App）/ Plan 10（Voice）/ Plan 13（Drone）落地後 event source 變多，這時才有真正動因實作中央派發。
+**2026-05-02 重定位**：原本「Plan 5 Conversation Engine + Plan 11 Event Loop dispatcher」分工建立在「ConversationEngine 是獨立物件、Event Loop 是排程器」的舊模型上。重新立論「Loop = Doll 本人」（見 §5）後：
+- **Plan 5** 從「CE 物件」升級成 **Doll Core Loop v1** — 包含 event queue / 主迴圈 / Tool registry / Inner Voice 整合 / 大模型 tool-call 串接 / character pack 載入。Doll 第一次活起來的奠基 plan
+- **Plan 11** 縮 scope 成 **Reflex / Rule Library** — loop 已併入 Plan 5；剩規則 DSL + reflex whitelist，等 event 來源變多後才有實質規則可寫
 
 **Subagent / Drone 拆開**：Subagent 簡單（一次性 tool call，無持久化），Drone 重（持久 store + scheduler + UI），併在同 plan 會壓垮 Subagent 的清爽。Drone 推到最後因為它不影響核心 companion 體驗。
 
@@ -793,13 +844,13 @@ DollOS/
 - Plan 1 先跑（其他都依賴 DollOS 骨架）
 - Plan 2 + 3 可平行（Memory 跟 Provider/Template 解耦不互相依賴）
 - Plan 4 (Inner Voice utility) 依賴 Plan 2（撈 memory）+ Plan 3（用 Provider+Template 起小模型）
-- Plan 5 (Conversation Engine) 依賴 1/2/3/4（整合所有東西）
+- Plan 5 (Doll Core Loop) 依賴 1/2/3/4（整合所有東西）— Doll 第一次能對話的 plan
 - Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
-- Plan 7 (Self-First) 依賴 Plan 2/3/5（self-memory + Instinct + Conversation 都到位才能演化）
+- Plan 7 (Self-First) 依賴 Plan 5（擴 Inner Voice 摘要與 prefill 結構）
 - Plan 8/9/10 三條互相獨立，都接 DollOS WS
-- Plan 11 (Event Loop) 在 9/10 之後（事件來源齊了才有意義）
+- Plan 11 (Reflex / Rule Library) 在 9/10 之後（事件來源齊了才有規則寫頭）
 - Plan 12 (Tier B/C/D) 在 9 之後（建在 App 上）
-- Plan 13 (Drone) 最後加，依賴 Plan 11 的 event queue
+- Plan 13 (Drone) 最後加，依賴 Plan 5 的 event queue
 
 ---
 
