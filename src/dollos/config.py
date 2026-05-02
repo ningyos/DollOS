@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -23,10 +23,30 @@ class LogConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
+class MemoryConfig(BaseModel):
+    db_path: Path
+
+    @field_validator("db_path", mode="before")
+    @classmethod
+    def _expand_user(cls, v: object) -> object:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        return v
+
+
+class EmbedderConfig(BaseModel):
+    backend: Literal["llamacpp"] = "llamacpp"
+    base_url: str
+    model_id: str
+    timeout_s: float = 30.0
+
+
 class Settings(BaseModel):
     llm: LLMConfig
     ipc: IPCConfig = Field(default_factory=lambda: IPCConfig())
     log: LogConfig = Field(default_factory=lambda: LogConfig())
+    memory: MemoryConfig
+    embedder: EmbedderConfig
 
 
 def load_settings(path: Path) -> Settings:
