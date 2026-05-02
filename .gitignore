@@ -3,3 +3,14 @@ ref-transcribe.txt
 wake_word_training
 .worktrees/
 CubismSdkForJava-*.zip
+
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+.coverage
