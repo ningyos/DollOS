@@ -739,8 +739,7 @@ DollOS/
 ├── protocol/           # 共用 schema（IPC / event / character pack）
 ├── character_packs/    # 範例 + 工具
 ├── docs/               # specs, plans（既有）
-├── wake_word_training/ # 既有保留
-└── sync.sh             # 既有
+└── wake_word_training/ # 既有保留
 ```
 
 ### 11.4 程式碼遷移

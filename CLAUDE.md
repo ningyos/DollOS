@@ -43,8 +43,7 @@ DollOS/
 ├── docs/                          # specs, plans, research
 ├── experiments/                   # POC code (e.g. lesson_injector.py)
 ├── vendor/                        # third-party SDK drop instructions
-├── wake_word_training/            # existing, untouched
-└── sync.sh
+└── wake_word_training/            # existing, untouched
 ```
 
 ## Key Architecture Decisions

@@ -1,46 +1,70 @@
 # DollOS
 
-Personal AI Ecosystem — your AI companion lives on your phone. Computers are optional body extensions.
+Personal AI Ecosystem — your AI companion lives on your computer. The phone is an optional body / system-assistant interface.
 
 ## Architecture
 
 ```
-DollOS
-├── DollOS-Android   — Phone (AOSP 16): AI companion (brain + body)
-├── DollOSAIService  — AI: LLM, memory, conversation, agents, character packs
-├── DollOSLauncher   — 3D avatar Launcher (Filament)
-├── DollOSObserver   — Sensor host: sensors, VAD, placement, sleep detection
-├── Bridge           — (future) Computer extension daemon
-└── Character Packs  — .doll files: personality, 3D model, voice, scene
+電腦端（DollOS daemon）
+  Event Loop ── Instinct（small model + rules + reflex）
+                  ↓ wake / drop / fire
+              Doll Turn（large model + VoM/SELF_STATE prefill）
+                  ↓ tool calls
+              Subagent（ephemeral）/ Drone（persistent）
+              Memory SoT（sqlite-vec + FTS5）
+              Character Pack Manager（.doll v3）
+              Voice Pipeline Server（ASR/TTS）
+              IPC Server (localhost WS / network WS)
+
+UI（Tauri + Cubism Web）   ←→   localhost WS
+DollOS-App（Android）       ←→   network WS
 ```
 
-**Phone = Brain + Body.** All AI intelligence, memory, personality, and identity live on the phone. A phone alone is a complete experience.
+**Computer = soul + brain.** Memory, personality, decisions all live in the daemon on the user's computer.
 
-**Bridge = Computer extension.** Optional daemon that lets Doll inhabit your computer. Two modes: Transient (USB-C, untrusted) and Drone (network, trusted, long-term).
+**Phone = body / interface.** Android app registered as system assistant via `VoiceInteractionService`. Reaches Doll over network WebSocket. Optional — a computer alone is a complete experience.
 
-**Character Packs = Replaceable identity.** .doll files bundle personality, 3D model, voice, and scene. Switch characters without losing your memory.
+**BYO big LLM.** DollOS only hosts a small Inner Voice model (0.6B–1.7B). Big model is user's choice (cloud API or self-hosted llama.cpp).
 
-## Repos
+**Signature feature: VoM + grammar injection.** Inner Voice synthesizes a RECALL block and prefills it into the big model's `<think>` region. See `docs/research/grammar_injection_techreport.md`.
 
-| Repo | Description |
-|------|-------------|
-| [DollOS](https://github.com/ningyos/DollOS) | This repo — docs, specs, plans, sync script |
-| [DollOS-Android](https://github.com/ningyos/DollOS-Android) | Android OS customization (AOSP 16 + GrapheneOS) |
-| [DollOSAIService](https://github.com/ningyos/DollOSAIService) | Android AI Service (conversation, memory, agents) |
-| [DollOSLauncher](https://github.com/ningyos/DollOSLauncher) | Android 3D AI Launcher (Filament) |
-| [DollOSObserver](https://github.com/ningyos/DollOSObserver) | Sensor host (sensors, VAD, placement, sleep) |
-| [DollOSService](https://github.com/ningyos/DollOSService) | Android system service |
-| [DollOSSetupWizard](https://github.com/ningyos/DollOSSetupWizard) | Android OOBE |
-| [fish-tts](https://github.com/ningyos/fish-tts) | TTS engine (DualARTransformer + DAC) |
-| [luxtts-onnx](https://github.com/ningyos/luxtts-onnx) | TTS engine (ONNX Runtime, no PyTorch) |
-| [tuna](https://github.com/ningyos/tuna) | Fine-tuning tools |
+**Killer feature: Self-First Design.** Doll has a self (mood / preferences / habits / relations). Self emerges from architecture, not from prompt commands. See `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md` §8.
+
+## Repo Layout
+
+```
+DollOS/
+├── daemon/                # Python brain (Plans 1–7)
+├── ui/                    # Tauri + Cubism Web (Plan 8)
+├── protocol/              # shared schema (daemon ↔ ui ↔ app)
+├── character_packs/       # .doll v3 examples
+├── docs/
+│   ├── superpowers/specs/ # design docs
+│   ├── superpowers/plans/ # implementation plans
+│   ├── superpowers/archive/  # superseded pre-pivot docs
+│   ├── research/          # research outputs (e.g. grammar_injection_techreport.md)
+│   └── RETIRED-REPOS.md
+├── experiments/           # POC code
+├── vendor/                # third-party SDK fetch instructions
+└── wake_word_training/    # wake word + TTS distillation training scripts
+```
+
+## Related Repos
+
+| Repo | Status | Role |
+|------|--------|------|
+| **DollOS-App** | Future | Android app (Cubism Java SDK + Assistant role). Not started. |
+| [fish-tts](https://github.com/ningyos/fish-tts) | Active | TTS engine (DualARTransformer + DAC) |
+| [luxtts-onnx](https://github.com/ningyos/luxtts-onnx) | Active | TTS engine (ONNX Runtime, no PyTorch) |
+| [tuna](https://github.com/ningyos/tuna) | Active | Fine-tuning tools |
+
+Pre-pivot Android-side repos (retired 2026-05-01) are documented in `docs/RETIRED-REPOS.md`.
 
 ## Setup
 
 ```bash
 git clone https://github.com/ningyos/DollOS.git ~/Projects/DollOS
 cd ~/Projects/DollOS
-./sync.sh
+# Then follow the relevant plan in docs/superpowers/plans/ for the subsystem
+# you want to build (Plan 1: Daemon Skeleton is the entry point).
 ```
-
-This clones all repos into `~/Projects/`.
