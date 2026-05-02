@@ -769,8 +769,8 @@ DollOS/
 |---|---|---|
 | 1 | **Daemon Skeleton**（plan 已寫）| Python project + IPC WebSocket + LLM adapter ABC + LlamaCpp adapter（含 prefill） + 對話 round-trip |
 | 2 | **Memory SoT 儲存層**（plan 已寫）| sqlite-vec + FTS5 + RRF hybrid + character scoping + Embedder ABC + LlamaCppEmbedder |
-| 3 | Inner Voice + VoM RECALL（utility 層）| 小模型 host（Qwen3-0.6B/1.7B 之一）+ capabilities（digest/classify/extract/recall/compress/tag）+ VoM RECALL block 合成 + prompt template + prefix cache。**純文字 utility，不處理事件、不寫 memory、無 mood/state** |
-| 4 | 多 LLM adapter | Anthropic / OpenAI / OpenAI-compat adapter；後端 prefill 能力 detection；BYO 後端 |
+| 3 | LLM Provider / Template 解耦層 | Provider 抽象（llama.cpp raw / vLLM / OpenAI-compat / Anthropic）+ PromptTemplate 抽象（Qwen3-thinking / Qwen3-plain / Llama / Gemma / server-applied）+ prefill 能力 detection + 重構 LlamaCppAdapter 為 (provider, template) 組合。**底層基礎設施，下面的 Plan 4 / 5 / 7 都吃這層** |
+| 4 | Inner Voice + VoM RECALL（utility 層）| 小模型 host（Qwen3-0.6B/1.7B 之一，via Plan 3 的 Provider+Template 組合）+ recall capability + VoM RECALL block 合成 + prompt template + prefix cache。**純文字 utility，不處理事件、不寫 memory、無 mood/state** |
 | 5 | Conversation Engine + Character Pack | Turn 流程整合 prefill + `.doll` v3 載入（personality / lessons / Cubism asset path / wake word）|
 | 6 | Subagent / 分身 | 一次性、Doll tool call 即時派出、inline definition、隔離 session |
 | 7 | Self-First Design | self-memory schema（preferences / habits / relations / emotional_residue）+ mood / preference 演化模型 + SELF_STATE 注入 |
@@ -791,8 +791,8 @@ DollOS/
 
 **大致依賴**：
 - Plan 1 先跑（其他都依賴 DollOS 骨架）
-- Plan 2 + 4 可平行（Memory 跟多 adapter 不互相依賴）
-- Plan 3 (Inner Voice utility) 依賴 Plan 2（VoM recall 撈 memory）
+- Plan 2 + 3 可平行（Memory 跟 Provider/Template 解耦不互相依賴）
+- Plan 4 (Inner Voice utility) 依賴 Plan 2（撈 memory）+ Plan 3（用 Provider+Template 起小模型）
 - Plan 5 (Conversation Engine) 依賴 1/2/3/4（整合所有東西）
 - Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
 - Plan 7 (Self-First) 依賴 Plan 2/3/5（self-memory + Instinct + Conversation 都到位才能演化）
