@@ -66,19 +66,21 @@ See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full l
 |---|---|---|
 | 1 | DollOS Skeleton | Merged |
 | 2 | Memory SoT 儲存層 | Merged |
-| 3 | LLM Provider / Template decoupling layer | Concept |
-| 4 | Inner Voice + VoM RECALL (utility layer) | Concept |
-| 5 | Conversation Engine + Character Pack | Concept |
+| 3 | LLM Provider / Template decoupling layer | Merged |
+| 4 | Inner Voice + VoM RECALL (utility layer) | Branch kept, not merged |
+| 5 | **Doll Core Loop v1** | Concept |
 | 6 | Subagent | Concept |
 | 7 | Self-First Design | Concept |
 | 8 | DollOS UI MVP (Tauri + Cubism Web) | Concept |
 | 9 | DollOS-App MVP (Android) | Concept |
 | 10 | Voice pipeline integration | Concept |
-| 11 | Event Loop + Rule engine + Reflex handlers (Instinct dispatcher) | Concept |
+| 11 | **Reflex / Rule Library** | Concept |
 | 12 | Phone Tier B/C/D adapter | Concept |
 | 13 | Drone | Concept |
 
-**Plan 3 was split (2026-05-02)** — was "Inner Voice + Instinct + VoM"; the event-handling parts (event loop, rule engine, reflex handlers, decide-to-wake) extracted into new **Plan 11** because they have no real driver until phone/voice/drone event sources land. Plan 3 is now a focused text-utility layer.
+**Plan 3 was split (2026-05-02)** — was "Inner Voice + Instinct + VoM"; event-handling parts extracted to Plan 11. Plan 3 is now a focused text-utility layer.
+
+**Plan 5 / 11 重定位（2026-05-02）** — 原本「Plan 5 Conversation Engine + Plan 11 Event Loop dispatcher」基於「CE 物件 + Event Loop 是排程器」的舊模型。重新立論「Loop = Doll 本人」（spec §5）後：Plan 5 升級成 **Doll Core Loop v1**（event queue + 主迴圈 + Tool registry 兩級權限 + Inner Voice 整合 + 大模型 tool-call + character pack）；Plan 11 縮成 **Reflex / Rule Library**（規則 DSL + reflex whitelist）。
 
 ## Build / Run
 
