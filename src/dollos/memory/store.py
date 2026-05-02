@@ -13,6 +13,7 @@ from typing import Any, Literal
 import sqlite_vec
 
 from dollos.memory.embedder import Embedder
+from dollos.memory.scoring import rrf_merge
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ def _row_to_fact(row: tuple) -> "Fact":
         created_at=dt.datetime.fromisoformat(row[3]),
         metadata=json.loads(row[4]),
     )
+
+
+def _scope_clause(character_id: str | None) -> tuple[str, tuple]:
+    if character_id is None:
+        return "f.character_id IS NULL", ()
+    return "(f.character_id IS NULL OR f.character_id = ?)", (character_id,)
 
 
 class Memory:
@@ -251,7 +258,86 @@ class Memory:
         top_k: int = 10,
         mode: Literal["vector", "fts", "hybrid"] = "hybrid",
     ) -> list[FactWithScore]:
-        raise NotImplementedError("Task 7 will implement search")
+        if self._conn is None:
+            raise RuntimeError("Memory not initialized")
+
+        if mode == "fts":
+            hits = await asyncio.to_thread(
+                self._fts_search, query, character_id, top_k
+            )
+            return await asyncio.to_thread(self._fetch_facts_with_scores, hits)
+
+        # Both vector and hybrid need an embedding
+        query_vec = await self._embedder.embed(query)
+
+        if mode == "vector":
+            hits = await asyncio.to_thread(
+                self._vector_search, query_vec, character_id, top_k
+            )
+            return await asyncio.to_thread(self._fetch_facts_with_scores, hits)
+
+        # hybrid
+        vec_hits = await asyncio.to_thread(
+            self._vector_search, query_vec, character_id, 50
+        )
+        fts_hits = await asyncio.to_thread(
+            self._fts_search, query, character_id, 50
+        )
+        merged = rrf_merge(vec_hits, fts_hits)[:top_k]
+        return await asyncio.to_thread(self._fetch_facts_with_scores, merged)
+
+    def _vector_search(
+        self,
+        query_vec: list[float],
+        character_id: str | None,
+        limit: int,
+    ) -> list[tuple[int, float]]:
+        assert self._conn is not None
+        scope_clause, params = _scope_clause(character_id)
+        sql = (
+            "SELECT v.fact_id, v.distance "
+            "FROM vec_facts v JOIN facts f ON f.id = v.fact_id "
+            f"WHERE v.embedding MATCH ? AND k = ? AND {scope_clause} "
+            "ORDER BY v.distance"
+        )
+        rows = self._conn.execute(
+            sql, (_serialize_f32(query_vec), limit, *params)
+        ).fetchall()
+        return [(int(r[0]), float(r[1])) for r in rows if r[1] is not None]
+
+    def _fts_search(
+        self,
+        query: str,
+        character_id: str | None,
+        limit: int,
+    ) -> list[tuple[int, float]]:
+        assert self._conn is not None
+        scope_clause, params = _scope_clause(character_id)
+        sql = (
+            "SELECT fts.rowid, fts.rank "
+            "FROM facts_fts fts JOIN facts f ON f.id = fts.rowid "
+            f"WHERE facts_fts MATCH ? AND {scope_clause} "
+            "ORDER BY fts.rank LIMIT ?"
+        )
+        rows = self._conn.execute(sql, (query, *params, limit)).fetchall()
+        return [(int(r[0]), float(r[1])) for r in rows]
+
+    def _fetch_facts_with_scores(
+        self, scored: list[tuple[int, float]]
+    ) -> list[FactWithScore]:
+        assert self._conn is not None
+        if not scored:
+            return []
+        out: list[FactWithScore] = []
+        for fact_id, score in scored:
+            row = self._conn.execute(
+                "SELECT id, text, character_id, created_at, metadata "
+                "FROM facts WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
+            if row is not None:
+                out.append(FactWithScore(fact=_row_to_fact(row), score=score))
+        return out
 
     async def rebuild_embeddings(self) -> int:
         raise NotImplementedError("Task 8 will implement rebuild_embeddings")

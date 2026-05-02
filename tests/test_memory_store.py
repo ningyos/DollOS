@@ -153,3 +153,94 @@ async def test_metadata_default_is_empty_dict(tmp_path: Path):
     assert fact is not None
     assert fact.metadata == {}
     await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_vector_mode_returns_facts(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    a = await mem.write("alpha")
+    b = await mem.write("bravo")
+    c = await mem.write("charlie")
+
+    results = await mem.search("alpha", mode="vector", top_k=10)
+    ids = {r.fact.id for r in results}
+    assert {a, b, c}.issubset(ids)
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_fts_mode_finds_keyword(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    target = await mem.write("the quick brown fox")
+    other = await mem.write("nothing related here")
+
+    results = await mem.search("brown fox", mode="fts", top_k=10)
+    ids = [r.fact.id for r in results]
+    assert target in ids
+    # FTS may not return `other` at all
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_hybrid_mode_combines_both(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    a = await mem.write("the quick brown fox")
+    b = await mem.write("a slow green turtle")
+    c = await mem.write("brown bears in the forest")
+
+    results = await mem.search("brown", mode="hybrid", top_k=10)
+    ids = {r.fact.id for r in results}
+    assert a in ids and c in ids
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_character_scope_none_excludes_private_facts(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    shared = await mem.write("shared knowledge")
+    private = await mem.write("gura's secret", character_id="gura")
+
+    results = await mem.search("knowledge secret", mode="hybrid", character_id=None)
+    ids = {r.fact.id for r in results}
+    assert shared in ids
+    assert private not in ids
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_character_scope_includes_private_for_that_character(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    shared = await mem.write("shared knowledge")
+    private_gura = await mem.write("gura's secret", character_id="gura")
+    private_rin = await mem.write("rin's secret", character_id="rin")
+
+    results = await mem.search(
+        "knowledge secret", mode="hybrid", character_id="gura"
+    )
+    ids = {r.fact.id for r in results}
+    assert shared in ids
+    assert private_gura in ids
+    assert private_rin not in ids
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_search_top_k_limits_results(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    for i in range(20):
+        await mem.write(f"fact number {i}")
+
+    results = await mem.search("fact", mode="hybrid", top_k=5)
+    assert len(results) <= 5
+    await mem.close()
