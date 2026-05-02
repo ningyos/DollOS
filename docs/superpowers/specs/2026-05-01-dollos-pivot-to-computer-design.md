@@ -769,7 +769,7 @@ DollOS/
 |---|---|---|
 | 1 | **Daemon Skeleton**（plan 已寫）| Python project + IPC WebSocket + LLM adapter ABC + LlamaCpp adapter（含 prefill） + 對話 round-trip |
 | 2 | **Memory SoT 儲存層**（plan 已寫）| sqlite-vec + FTS5 + RRF hybrid + character scoping + Embedder ABC + LlamaCppEmbedder |
-| 3 | Inner Voice + Instinct + VoM | 小模型 host、event 預處理（digest/triage/recall）、VoM block 合成、規則引擎、reflex action handlers |
+| 3 | Inner Voice + VoM RECALL（utility 層）| 小模型 host（Qwen3-0.6B/1.7B 之一）+ capabilities（digest/classify/extract/recall/compress/tag）+ VoM RECALL block 合成 + prompt template + prefix cache。**純文字 utility，不處理事件、不寫 memory、無 mood/state** |
 | 4 | 多 LLM adapter | Anthropic / OpenAI / OpenAI-compat adapter；後端 prefill 能力 detection；BYO 後端 |
 | 5 | Conversation Engine + Character Pack | Turn 流程整合 prefill + `.doll` v3 載入（personality / lessons / Cubism asset path / wake word）|
 | 6 | Subagent / 分身 | 一次性、Doll tool call 即時派出、inline definition、隔離 session |
@@ -777,22 +777,29 @@ DollOS/
 | 8 | DollOS UI MVP | Tauri + Cubism Web SDK + chat 視窗 + system tray + hotkey + localhost WS client |
 | 9 | DollOS-App MVP | Android：Cubism Java SDK + VoiceInteractionService 註冊 + audio streaming + network WS client |
 | 10 | 語音 pipeline 整合 | DollOS ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
-| 11 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
-| 12 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
+| 11 | Event Loop + Rule engine + Reflex handlers（Instinct dispatcher）| Event Queue / Event schema / 規則編譯 + pattern match / reflex action handler 介面 / decide-to-wake 邏輯。**消費 Plan 3 的 Inner Voice utility，把多個 event source 真正串接** |
+| 12 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
+| 13 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
 
 **移除自舊版本**：Memory 資料遷移工具（phone 端本來就無 memory，不需遷移）。
+
+**Plan 3 拆兩半（2026-05-02 修訂）**：原本「Inner Voice + Instinct + VoM」一鍋，scope 過大且 ownership 混亂（mood/state 屬 Plan 7、wake Doll 屬 Plan 5、fire Drone 屬 Plan 13）。拆成：
+- **Plan 3** = 純 Inner Voice utility 層（小模型 + 文字處理 capability + VoM block 合成）。可獨立測試，無 event 概念。
+- **Plan 11** = Event Loop + Rule engine + Reflex handlers。Plan 9（App）/ Plan 10（Voice）/ Plan 13（Drone）落地後 event source 變多，這時才有真正動因實作中央派發。
 
 **Subagent / Drone 拆開**：Subagent 簡單（一次性 tool call，無持久化），Drone 重（持久 store + scheduler + UI），併在同 plan 會壓垮 Subagent 的清爽。Drone 推到最後因為它不影響核心 companion 體驗。
 
 **大致依賴**：
 - Plan 1 先跑（其他都依賴 DollOS 骨架）
 - Plan 2 + 4 可平行（Memory 跟多 adapter 不互相依賴）
-- Plan 3 (Inner Voice) 依賴 Plan 2（VoM recall 撈 memory）
+- Plan 3 (Inner Voice utility) 依賴 Plan 2（VoM recall 撈 memory）
 - Plan 5 (Conversation Engine) 依賴 1/2/3/4（整合所有東西）
 - Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
 - Plan 7 (Self-First) 依賴 Plan 2/3/5（self-memory + Instinct + Conversation 都到位才能演化）
-- Plan 8/9/10/11 三條互相獨立，都接 DollOS WS
-- Plan 12 (Drone) 最後加
+- Plan 8/9/10 三條互相獨立，都接 DollOS WS
+- Plan 11 (Event Loop) 在 9/10 之後（事件來源齊了才有意義）
+- Plan 12 (Tier B/C/D) 在 9 之後（建在 App 上）
+- Plan 13 (Drone) 最後加，依賴 Plan 11 的 event queue
 
 ---
 
