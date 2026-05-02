@@ -1,0 +1,65 @@
+"""End-to-end test: WebSocket client → daemon → mocked llama.cpp → response."""
+
+import asyncio
+import json
+
+import httpx
+import pytest
+import respx
+import websockets
+
+from dollos.config import IPCConfig, LLMConfig, LogConfig, Settings
+from dollos.daemon import Daemon
+
+
+@pytest.mark.asyncio
+async def test_full_round_trip_with_mocked_llamacpp():
+    settings = Settings(
+        llm=LLMConfig(
+            backend="llamacpp",
+            base_url="http://test.local:8001",
+            model_alias="mock",
+        ),
+        ipc=IPCConfig(host="127.0.0.1", port=0),
+        log=LogConfig(level="WARNING"),
+    )
+
+    daemon = Daemon(settings)
+
+    sse_body = (
+        'data: {"content": "Hi", "stop": false}\n\n'
+        'data: {"content": " there", "stop": false}\n\n'
+        'data: {"content": "", "stop": true}\n\n'
+    )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse_body,
+            )
+        )
+
+        await daemon.server.start()
+        try:
+            port = daemon.server.port
+            assert port is not None
+
+            uri = f"ws://127.0.0.1:{port}"
+            async with websockets.connect(uri) as ws:
+                await ws.send(json.dumps({"type": "text_input", "text": "Hello"}))
+
+                received: list[dict] = []
+                while True:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=3.0)
+                    parsed = json.loads(raw)
+                    received.append(parsed)
+                    if parsed["type"] == "turn_end":
+                        break
+
+            text_chunks = [m for m in received if m["type"] == "text_chunk"]
+            assert "".join(c["text"] for c in text_chunks) == "Hi there"
+            assert received[-1]["type"] == "turn_end"
+        finally:
+            await daemon.server.stop()
