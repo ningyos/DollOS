@@ -1,5 +1,6 @@
 """Tests for Memory.__init__ and initialize()."""
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -76,3 +77,79 @@ async def test_methods_before_initialize_raise(tmp_path: Path):
     mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
     with pytest.raises(RuntimeError):
         await mem.write("hello")
+
+
+@pytest.mark.asyncio
+async def test_write_then_read_returns_same_fact(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    fact_id = await mem.write("the sky is blue", metadata={"source": "test"})
+    fact = await mem.read(fact_id)
+
+    assert fact is not None
+    assert fact.id == fact_id
+    assert fact.text == "the sky is blue"
+    assert fact.character_id is None
+    assert fact.metadata == {"source": "test"}
+    assert isinstance(fact.created_at, dt.datetime)
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_write_with_character_id(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    fact_id = await mem.write("private thought", character_id="gura")
+    fact = await mem.read(fact_id)
+    assert fact is not None
+    assert fact.character_id == "gura"
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_read_nonexistent_returns_none(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    assert await mem.read(99999) is None
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_from_facts_and_vec_facts(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+
+    fact_id = await mem.write("ephemeral")
+    assert await mem.delete(fact_id) is True
+    assert await mem.read(fact_id) is None
+
+    # Confirm vec_facts row is gone too
+    cur = mem._conn.execute("SELECT COUNT(*) FROM vec_facts WHERE fact_id = ?", (fact_id,))
+    assert cur.fetchone()[0] == 0
+
+    # Confirm FTS row is gone too (auto by trigger)
+    cur = mem._conn.execute("SELECT COUNT(*) FROM facts_fts WHERE rowid = ?", (fact_id,))
+    assert cur.fetchone()[0] == 0
+
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_nonexistent_returns_false(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    assert await mem.delete(99999) is False
+    await mem.close()
+
+
+@pytest.mark.asyncio
+async def test_metadata_default_is_empty_dict(tmp_path: Path):
+    mem = Memory(db_path=tmp_path / "memory.db", embedder=StubEmbedder())
+    await mem.initialize()
+    fact_id = await mem.write("no metadata")
+    fact = await mem.read(fact_id)
+    assert fact is not None
+    assert fact.metadata == {}
+    await mem.close()

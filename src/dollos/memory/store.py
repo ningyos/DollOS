@@ -39,6 +39,16 @@ def _serialize_f32(vec: list[float]) -> bytes:
     return struct.pack(f"<{len(vec)}f", *vec)
 
 
+def _row_to_fact(row: tuple) -> "Fact":
+    return Fact(
+        id=row[0],
+        text=row[1],
+        character_id=row[2],
+        created_at=dt.datetime.fromisoformat(row[3]),
+        metadata=json.loads(row[4]),
+    )
+
+
 class Memory:
     """Facts memory store.
 
@@ -165,13 +175,73 @@ class Memory:
     ) -> int:
         if self._conn is None:
             raise RuntimeError("Memory not initialized")
-        raise NotImplementedError("Task 6 will implement write")
+        embedding = await self._embedder.embed(text)
+        return await asyncio.to_thread(
+            self._write_sync, text, character_id, metadata or {}, embedding
+        )
+
+    def _write_sync(
+        self,
+        text: str,
+        character_id: str | None,
+        metadata: dict[str, Any],
+        embedding: list[float],
+    ) -> int:
+        assert self._conn is not None
+        created_at = dt.datetime.now(dt.UTC).isoformat()
+        try:
+            cur = self._conn.execute(
+                "INSERT INTO facts(text, character_id, created_at, metadata) "
+                "VALUES (?, ?, ?, ?)",
+                (text, character_id, created_at, json.dumps(metadata)),
+            )
+            fact_id = cur.lastrowid
+            assert fact_id is not None
+            self._conn.execute(
+                "INSERT INTO vec_facts(fact_id, embedding) VALUES (?, ?)",
+                (fact_id, _serialize_f32(embedding)),
+            )
+            self._conn.commit()
+            return fact_id
+        except Exception:
+            self._conn.rollback()
+            raise
 
     async def read(self, fact_id: int) -> Fact | None:
-        raise NotImplementedError("Task 6 will implement read")
+        if self._conn is None:
+            raise RuntimeError("Memory not initialized")
+        return await asyncio.to_thread(self._read_sync, fact_id)
+
+    def _read_sync(self, fact_id: int) -> Fact | None:
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT id, text, character_id, created_at, metadata "
+            "FROM facts WHERE id = ?",
+            (fact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_fact(row)
 
     async def delete(self, fact_id: int) -> bool:
-        raise NotImplementedError("Task 6 will implement delete")
+        if self._conn is None:
+            raise RuntimeError("Memory not initialized")
+        return await asyncio.to_thread(self._delete_sync, fact_id)
+
+    def _delete_sync(self, fact_id: int) -> bool:
+        assert self._conn is not None
+        try:
+            # vec_facts is virtual and not connected via foreign key; delete
+            # explicitly inside the same transaction. FTS sync is handled by
+            # the AFTER DELETE trigger on facts.
+            self._conn.execute("BEGIN")
+            self._conn.execute("DELETE FROM vec_facts WHERE fact_id = ?", (fact_id,))
+            cur = self._conn.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+        except Exception:
+            self._conn.rollback()
+            raise
 
     async def search(
         self,
