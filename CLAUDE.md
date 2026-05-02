@@ -66,8 +66,8 @@ See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full l
 |---|---|---|
 | 1 | DollOS Skeleton | Merged |
 | 2 | Memory SoT 儲存層 | Merged |
-| 3 | Inner Voice + VoM RECALL (utility layer) | Concept |
-| 4 | Multi-LLM adapter | Concept |
+| 3 | LLM Provider / Template decoupling layer | Concept |
+| 4 | Inner Voice + VoM RECALL (utility layer) | Concept |
 | 5 | Conversation Engine + Character Pack | Concept |
 | 6 | Subagent | Concept |
 | 7 | Self-First Design | Concept |
