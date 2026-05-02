@@ -22,6 +22,14 @@ port = 9876
 
 [log]
 level = "INFO"
+
+[memory]
+db_path = "/tmp/dollos/memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "bge-base-en-v1.5"
 """
     )
 
@@ -62,9 +70,80 @@ model_alias = "test-model"
 [ipc]
 host = "127.0.0.1"
 port = 9876
+
+[memory]
+db_path = "/tmp/dollos/memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "bge-base-en-v1.5"
 """
     )
 
     settings = load_settings(config_path)
 
     assert settings.log.level == "INFO"
+
+
+def test_load_settings_includes_memory_and_embedder(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8001"
+model_alias = "test-model"
+
+[ipc]
+host = "127.0.0.1"
+port = 9876
+
+[log]
+level = "INFO"
+
+[memory]
+db_path = "/tmp/dollos/memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "bge-base-en-v1.5"
+timeout_s = 30.0
+"""
+    )
+
+    settings = load_settings(config_path)
+
+    assert str(settings.memory.db_path) == "/tmp/dollos/memory.db"
+    assert settings.embedder.backend == "llamacpp"
+    assert settings.embedder.base_url == "http://127.0.0.1:8002"
+    assert settings.embedder.model_id == "bge-base-en-v1.5"
+    assert settings.embedder.timeout_s == 30.0
+
+
+def test_settings_db_path_expands_user(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8001"
+model_alias = "test-model"
+
+[ipc]
+host = "127.0.0.1"
+port = 9876
+
+[memory]
+db_path = "~/dollos-memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "test-emb"
+"""
+    )
+    settings = load_settings(config_path)
+    assert "~" not in str(settings.memory.db_path)
+    assert str(settings.memory.db_path).endswith("dollos-memory.db")

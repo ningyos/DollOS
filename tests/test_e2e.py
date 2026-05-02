@@ -2,13 +2,21 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
 import websockets
 
-from dollos.config import IPCConfig, LLMConfig, LogConfig, Settings
+from dollos.config import (
+    EmbedderConfig,
+    IPCConfig,
+    LLMConfig,
+    LogConfig,
+    MemoryConfig,
+    Settings,
+)
 from dollos.daemon import Daemon
 
 
@@ -22,6 +30,12 @@ async def test_full_round_trip_with_mocked_llamacpp():
         ),
         ipc=IPCConfig(host="127.0.0.1", port=0),
         log=LogConfig(level="WARNING"),
+        memory=MemoryConfig(db_path=Path("/tmp/dollos-test.db")),
+        embedder=EmbedderConfig(
+            backend="llamacpp",
+            base_url="http://test.local:8002",
+            model_id="test-emb",
+        ),
     )
 
     daemon = Daemon(settings)
