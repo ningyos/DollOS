@@ -58,15 +58,15 @@ DollOS/
 - **Memory SoT**: sqlite-vec + FTS5, hybrid retrieval via Reciprocal Rank Fusion (k=60). Single active embedding model; switching = explicit rebuild. Character scoping: `character_id` NULL = shared, otherwise private to that character.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
 
-## Implementation Plans (12 total)
+## Implementation Plans (13 total)
 
 See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full list.
 
 | # | Plan | Status |
 |---|---|---|
-| 1 | DollOS Skeleton | Plan written |
-| 2 | Memory SoT 儲存層 | Plan written |
-| 3 | Inner Voice + Instinct + VoM | Concept |
+| 1 | DollOS Skeleton | Merged |
+| 2 | Memory SoT 儲存層 | Merged |
+| 3 | Inner Voice + VoM RECALL (utility layer) | Concept |
 | 4 | Multi-LLM adapter | Concept |
 | 5 | Conversation Engine + Character Pack | Concept |
 | 6 | Subagent | Concept |
@@ -74,8 +74,11 @@ See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full l
 | 8 | DollOS UI MVP (Tauri + Cubism Web) | Concept |
 | 9 | DollOS-App MVP (Android) | Concept |
 | 10 | Voice pipeline integration | Concept |
-| 11 | Phone Tier B/C/D adapter | Concept |
-| 12 | Drone | Concept |
+| 11 | Event Loop + Rule engine + Reflex handlers (Instinct dispatcher) | Concept |
+| 12 | Phone Tier B/C/D adapter | Concept |
+| 13 | Drone | Concept |
+
+**Plan 3 was split (2026-05-02)** — was "Inner Voice + Instinct + VoM"; the event-handling parts (event loop, rule engine, reflex handlers, decide-to-wake) extracted into new **Plan 11** because they have no real driver until phone/voice/drone event sources land. Plan 3 is now a focused text-utility layer.
 
 ## Build / Run
 
