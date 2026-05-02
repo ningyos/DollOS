@@ -356,8 +356,8 @@ src/dollos/llm/
 | `tests/test_llm_templates.py` | Qwen3ThinkingTemplate.render() 的 output 結構：含 system / user / `<think>\n` / prefill 結尾。**從 test_llm_llamacpp.py 的 prompt assertions 拆過來** |
 | `tests/test_llm_composed.py` | ComposedLLMAdapter 把 template.render() 結果丟給 provider.stream()；用 stub Provider + stub Template 驗證 wiring 正確 |
 | `tests/test_llm_llamacpp.py` | DELETE — 內容已拆 |
-| `tests/test_e2e.py` | 既有，不動。end-to-end 仍走 `Settings → build_adapter → ComposedLLMAdapter → LlamaCppProvider → mocked /completion`，行為與 Plan 1 一致 |
-| `tests/test_config.py` | 加一個 test，驗證 `provider = "llamacpp"` + `template = "qwen3-thinking"` 載入正確；驗證舊 `backend = "llamacpp"` 寫法 raises ValidationError |
+| `tests/test_e2e.py` | **必須更新 LLMConfig 構造**：`backend = "llamacpp"` → `provider = "llamacpp"`、加 `template = "qwen3-thinking"`。**測試的 high-level 行為（daemon WS round-trip）不變** — end-to-end 仍走 `Settings → build_adapter → ComposedLLMAdapter → LlamaCppProvider → mocked /completion` |
+| `tests/test_config.py` | 加 test 驗證新欄位（`provider` + `template`）載入正確；既有用 `backend` 的 test 改成 `provider`；額外加一個 test 驗證舊 `backend = "llamacpp"` 寫法 raises ValidationError |
 
 預估完成後 test 數：原本 15 → 約 18-20（新增 transport / templates / composed 各 2-3 個 test，扣掉 llamacpp 的 3 個被拆走）。
 
@@ -376,16 +376,17 @@ src/dollos/llm/
 
 ### 遷移步驟（plan 階段會展開）
 
-1. 寫 `transport.py`（Provider ABC + LlamaCppProvider）+ test
-2. 寫 `templates.py`（PromptTemplate ABC + Qwen3ThinkingTemplate）+ test
-3. 寫 `composed.py`（ComposedLLMAdapter）+ test
-4. 改 `config.py`（rename backend → provider，加 template）+ test
-5. 改 `daemon.py`（重寫 build_adapter）+ 跑 e2e 驗證行為一致
-6. 改 `__init__.py` exports
-7. 刪 `llamacpp.py` + `test_llm_llamacpp.py`
-8. 改 `config.example.toml`
+每個編號 = 一個 commit。**規則：每個 commit 全 suite 必須綠**。
 
-每步可獨立 commit。順序確保 build 從來不破。
+1. 寫 `transport.py`（Provider ABC + LlamaCppProvider）+ test — 純新增，既有不動，全綠
+2. 寫 `templates.py`（PromptTemplate ABC + Qwen3ThinkingTemplate）+ test — 純新增，全綠
+3. 寫 `composed.py`（ComposedLLMAdapter）+ test — 純新增，全綠
+4. **批次切換**：改 `config.py`（rename backend → provider 加 template）+ 改 `daemon.py`（重寫 build_adapter）+ 改 `tests/test_config.py`（既有 test 改用新欄位 + 新增舊欄位 raises 的 test）+ 改 `tests/test_e2e.py`（LLMConfig 構造用新欄位）。**這幾個是耦合的 — 一起 commit 才不會中間破 build**
+5. 改 `config.example.toml`（沒 caller，可獨立 commit）
+6. 改 `__init__.py` exports（移除 LlamaCppAdapter，加新 abstractions / concretes）+ grep 所有 `from dollos.llm.llamacpp import` 換成新路徑
+7. 刪 `src/dollos/llm/llamacpp.py` + `tests/test_llm_llamacpp.py`（最後刪，避免 cleanup 中間破 build）
+
+每步 commit 後跑 `uv run pytest -v`，全綠才進下步。8 commits 變 7（步驟 4/5 合併不通，因為 config / daemon / 兩個 test 互相依賴；只能一次到位）。
 
 ---
 
@@ -410,18 +411,17 @@ src/dollos/llm/
 
 ---
 
-## §11 Plan Task 預估（8 tasks）
+## §11 Plan Task 預估（7 tasks）
 
-> writing-plans 會展開細節。這裡只列骨架。
+> writing-plans 會展開細節。這裡只列骨架。對應 §8 的 7 個 commit。
 
-1. 建立 `Provider` ABC 在 `src/dollos/llm/transport.py` + 簡單 test
-2. 從 `llamacpp.py` 拆 `LlamaCppProvider` 進 `transport.py` + test（包含 SSE 解析、stop/max_tokens、supports_prefill）
-3. 建立 `PromptTemplate` ABC + `Qwen3ThinkingTemplate` 在 `templates.py` + test
-4. 建立 `ComposedLLMAdapter` 在 `composed.py` + test（用 stub Provider/Template）
-5. 改 `config.py`：rename backend → provider，加 template 欄位 + 更新既有 config tests
-6. 改 `daemon.py` build_adapter 用 ComposedLLMAdapter；刪 LlamaCppAdapter import
-7. 刪 `llamacpp.py` + `tests/test_llm_llamacpp.py`；改 `__init__.py` exports
-8. 改 `config.example.toml`；跑 full suite 驗證 e2e 仍綠
+1. 建立 `Provider` ABC + `LlamaCppProvider`（從 llamacpp.py 拆 HTTP / SSE 部分）在 `src/dollos/llm/transport.py` + test（SSE 解析 / stop / max_tokens / supports_prefill）
+2. 建立 `PromptTemplate` ABC + `Qwen3ThinkingTemplate`（從 llamacpp.py 拆 _render_chatml）在 `templates.py` + test（render output 含 system / user / `<think>\n` / prefill 結尾）
+3. 建立 `ComposedLLMAdapter` 在 `composed.py` + test（stub Provider/Template 驗證 wiring）
+4. **耦合 commit**：rename `LLMConfig.backend` → `provider`、加 `template` 欄位、改 `daemon.py` build_adapter 用 ComposedLLMAdapter、改既有 `test_config.py` + 加新 test、改 `test_e2e.py` 構造、跑 full suite 驗證綠
+5. 改 `config.example.toml`（rename backend → provider，加 template）
+6. 改 `src/dollos/llm/__init__.py` exports — 移除 `LlamaCppAdapter`，加 `ComposedLLMAdapter` / `LlamaCppProvider` / `Qwen3ThinkingTemplate` / `Provider` / `PromptTemplate`；grep 所有舊 import 換掉
+7. 刪 `src/dollos/llm/llamacpp.py` + `tests/test_llm_llamacpp.py`；跑 full suite 確認全綠
 
 ---
 
