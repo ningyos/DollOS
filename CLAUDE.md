@@ -6,10 +6,10 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 
 **Product positioning (2026-05-01 pivot — see `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md`):**
 
-- **Doll** — the AI companion herself. Soul, memory, personality, decisions all live in the daemon on the computer.
-- **DollOS Daemon** — Python process: event loop + Inner Voice (Instinct) + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
+- **Doll** — the AI companion herself. Soul, memory, personality, decisions all live in DollOS on the computer.
+- **DollOS** — Python process: event loop + Inner Voice (Instinct) + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
 - **DollOS UI** — Tauri (Rust shell + Web frontend) with Cubism Web SDK rendering Live2D. Win/Mac get transparent overlay desktop pet; Linux gets a normal window.
-- **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from daemon.
+- **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from DollOS.
 - **Big LLM** — user's choice (cloud API / self-host llama.cpp). DollOS only hosts the **small Inner Voice model** (0.6B–1.7B) locally.
 - **VoM (Voice of Mind) + grammar injection** — the signature feature: small model digests memory + events, prefills the result into the big model's `<think>` block. See `docs/research/grammar_injection_techreport.md`.
 - **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Instinct's involuntary state + Memory's self-history + character description), not from prompt commands. See main spec §8.
@@ -48,15 +48,15 @@ DollOS/
 
 ## Key Architecture Decisions
 
-- **Computer-as-home**: Doll lives in the daemon on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
-- **Phone as remote**: Phone app talks to daemon over network WS. Phone never holds memory.
-- **BYO big LLM**: Daemon hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
+- **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
+- **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
+- **BYO big LLM**: DollOS hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
 - **VoM prefill**: Inner Voice synthesizes a RECALL block and prefills it into the big model's `<think>` region. Backend support varies (full on Anthropic + llama.cpp `/completion`; degraded on strict OpenAI).
 - **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
 - **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from prefilled `SELF_STATE` block + self-memory in RECALL.
 - **Memory SoT**: sqlite-vec + FTS5, hybrid retrieval via Reciprocal Rank Fusion (k=60). Single active embedding model; switching = explicit rebuild. Character scoping: `character_id` NULL = shared, otherwise private to that character.
-- **Audio**: KWS optional on phone (opt-in). ASR / TTS run in daemon. Phone streams audio over WS.
+- **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
 
 ## Implementation Plans (12 total)
 
@@ -64,7 +64,7 @@ See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full l
 
 | # | Plan | Status |
 |---|---|---|
-| 1 | Daemon Skeleton | Plan written |
+| 1 | DollOS Skeleton | Plan written |
 | 2 | Memory SoT 儲存層 | Plan written |
 | 3 | Inner Voice + Instinct + VoM | Concept |
 | 4 | Multi-LLM adapter | Concept |
@@ -79,7 +79,7 @@ See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full l
 
 ## Build / Run
 
-### DollOS Daemon (Python — `daemon/`)
+### DollOS (Python)
 
 Once Plan 1 is implemented:
 
@@ -145,7 +145,7 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
 ## Architecture (post-pivot, target state)
 
 ```
-電腦端（DollOS daemon）
+電腦端（DollOS）
   Event Loop ── Instinct（Inner Voice 小模型 + 規則 + reflex）
                   ↓ wake / drop / fire
               Doll Turn（大模型 + VoM/SELF_STATE prefill）
@@ -166,11 +166,11 @@ Phone App（Android, system assistant）— 透過 network WS
 |---|---|---|
 | KWS (openWakeWord) | Phone, opt-in | Per-character `wake_word.onnx` in `.doll` pack |
 | VAD (silero) | Phone | Endpoint detection |
-| Audio streaming | Phone ↔ Daemon, WS binary | Opus encoding |
-| ASR | Daemon | whisper.cpp / sherpa-onnx |
-| TTS | Daemon | Piper VITS (per-character voice in `.doll`) |
+| Audio streaming | Phone ↔ DollOS, WS binary | Opus encoding |
+| ASR | DollOS | whisper.cpp / sherpa-onnx |
+| TTS | DollOS | Piper VITS (per-character voice in `.doll`) |
 | Speaker ID | Phone | ECAPA-TDNN |
-| Lip sync | Daemon → UI/App | phoneme / viseme stream |
+| Lip sync | DollOS → UI/App | phoneme / viseme stream |
 
 ### Wake Word Training (existing, kept)
 

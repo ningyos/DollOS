@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the daemon's facts memory subsystem — a sqlite-vec-backed store with hybrid (vector + FTS) retrieval, character-scoped privacy, and a pluggable embedder layer.
+**Goal:** Build DollOS's facts memory subsystem — a sqlite-vec-backed store with hybrid (vector + FTS) retrieval, character-scoped privacy, and a pluggable embedder layer.
 
 **Architecture:** SQLite (file or `:memory:`) with `sqlite-vec` extension for vector search and built-in FTS5 for keyword search. Two-stage init: sync `__init__` stores config; async `initialize()` discovers embedder dimensions and applies schema. SQL operations run on default thread via `asyncio.to_thread` (no new async-sqlite dependency). Hybrid retrieval uses Reciprocal Rank Fusion (k=60) to merge vector and FTS top-50 results.
 
@@ -1764,7 +1764,7 @@ Re-run `uv run pytest -v`. All tests must pass.
 ```bash
 cd /home/progcat/Projects/DollOS/.worktrees/memory-sot
 git add src/dollos/config.py src/dollos/memory/__init__.py config.example.toml tests/test_config.py tests/test_e2e.py
-git commit -m "feat(daemon): config sections for memory + embedder, public memory API exports"
+git commit -m "feat: config sections for memory + embedder, public memory API exports"
 ```
 
 ---
@@ -1916,7 +1916,7 @@ After all tasks complete you have:
 - §4 RRF → Task 4 (function), Task 7 (used in hybrid mode)
 - §5.1 Memory API → Tasks 5–8
 - §5.2 initialize() flow → Task 5
-- §5.3 daemon startup order → documented in plan header (callers must `await initialize()`)
+- §5.3 startup order → documented in plan header (callers must `await initialize()`)
 - §6 config sections → Task 9
 - §7 file structure → matches plan's File Structure section exactly
 - §8 testing strategy → Tasks 2/3/4/5/6/7/8/10 cover all listed test files

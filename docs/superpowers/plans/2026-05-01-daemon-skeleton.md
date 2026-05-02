@@ -1,13 +1,13 @@
-# DollOS Daemon Skeleton Implementation Plan
+# DollOS Skeleton Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stand up the DollOS Python daemon skeleton — a runnable process that accepts WebSocket connections, receives text input, calls a self-hosted llama.cpp `/completion` endpoint, and streams tokens back to the client.
+**Goal:** Stand up the DollOS Python skeleton — a runnable process that accepts WebSocket connections, receives text input, calls a self-hosted llama.cpp `/completion` endpoint, and streams tokens back to the client.
 
-**Architecture:** Async Python daemon using `asyncio`. Pluggable LLM adapter pattern (ABC + concrete impl). WebSocket IPC layer separates daemon core from any UI/App frontends. No memory, no Instinct, no character pack yet — those come in subsequent plans. This plan produces the foundation everything else hangs off.
+**Architecture:** Async Python program using `asyncio`. Pluggable LLM adapter pattern (ABC + concrete impl). WebSocket IPC layer separates the program core from any UI/App frontends. No memory, no Instinct, no character pack yet — those come in subsequent plans. This plan produces the foundation everything else hangs off.
 
 **Tech Stack:**
-- Python 3.12+
+- Python 3.13+
 - `uv` for environment + dependency management
 - `pydantic` v2 for config + IPC message schemas
 - `httpx` for async HTTP to llama.cpp
@@ -109,7 +109,7 @@ cd /home/progcat/Projects/DollOS
 uv run python -m dollos
 ```
 
-Expected output: existing placeholder message (e.g. `dollos daemon — skeleton (not yet implemented)`).
+Expected output: existing placeholder message (e.g. `dollos — skeleton (not yet implemented)`).
 
 - [ ] **Step 6: Commit**
 
@@ -281,7 +281,7 @@ def setup_logging(level: str) -> None:
 - [ ] **Step 5: Write `config.example.toml`**
 
 ```toml
-# DollOS daemon configuration template.
+# DollOS configuration template.
 # Copy to config.toml and edit.
 
 [llm]
@@ -312,7 +312,7 @@ Expected: all 3 tests PASS.
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/config.py src/dollos/log.py config.example.toml tests/test_config.py
-git commit -m "feat(daemon): config module + logging setup"
+git commit -m "feat: config module + logging setup"
 ```
 
 ---
@@ -343,7 +343,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class StreamChunk:
     """A single streamed chunk from the LLM."""
 
@@ -402,7 +402,7 @@ Expected: `OK`
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/llm/
-git commit -m "feat(daemon): LLM adapter abstract interface"
+git commit -m "feat: LLM adapter abstract interface"
 ```
 
 ---
@@ -642,7 +642,7 @@ Expected: all 3 tests PASS.
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/llm/llamacpp.py tests/test_llm_llamacpp.py
-git commit -m "feat(daemon): llama.cpp /completion adapter with prefill support"
+git commit -m "feat: llama.cpp /completion adapter with prefill support"
 ```
 
 ---
@@ -741,7 +741,7 @@ Binary frames (audio etc.) come in later plans.
 """
 
 import json
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -753,7 +753,7 @@ class TextInput(BaseModel):
     text: str
 
 
-ClientMessage = Annotated[Union[TextInput], Field(discriminator="type")]
+ClientMessage = Annotated[TextInput, Field(discriminator="type")]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(ClientMessage)
 
 
@@ -786,7 +786,7 @@ class ErrorMsg(BaseModel):
 
 
 ServerMessage = Annotated[
-    Union[TextChunk, TurnEnd, ErrorMsg],
+    TextChunk | TurnEnd | ErrorMsg,
     Field(discriminator="type"),
 ]
 
@@ -810,7 +810,7 @@ Expected: all 6 tests PASS.
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/ipc/ tests/test_ipc_messages.py
-git commit -m "feat(daemon): IPC message schemas"
+git commit -m "feat: IPC message schemas"
 ```
 
 ---
@@ -990,12 +990,12 @@ Expected: both tests PASS.
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/ipc/server.py tests/test_ipc_server.py
-git commit -m "feat(daemon): WebSocket IPC server with handler dispatch"
+git commit -m "feat: WebSocket IPC server with handler dispatch"
 ```
 
 ---
 
-## Task 7: Daemon Entry — Wire Adapter and Server Together
+## Task 7: Entry Point — Wire Adapter and Server Together
 
 **Files:**
 - Create: `src/dollos/daemon.py`
@@ -1016,7 +1016,7 @@ import signal
 from collections.abc import AsyncIterator
 
 from dollos.config import Settings
-from dollos.ipc.messages import ServerMessage, TextChunk, TextInput, TurnEnd
+from dollos.ipc.messages import ErrorMsg, ServerMessage, TextChunk, TextInput, TurnEnd
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.llamacpp import LlamaCppAdapter
@@ -1062,7 +1062,6 @@ class Daemon:
             yield TurnEnd()
         except Exception as e:
             logger.exception("handler error")
-            from dollos.ipc.messages import ErrorMsg
             yield ErrorMsg(message=f"handler error: {e}")
 
     async def run(self) -> None:
@@ -1116,7 +1115,7 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 3: Verify daemon starts (manual sanity check)**
+- [ ] **Step 3: Verify DollOS starts (manual sanity check)**
 
 ```bash
 cd /home/progcat/Projects/DollOS
@@ -1132,7 +1131,7 @@ Expected: log line `WebSocket server listening on 127.0.0.1:9876`, then exits cl
 ```bash
 cd /home/progcat/Projects/DollOS
 git add src/dollos/daemon.py src/dollos/__main__.py
-git commit -m "feat(daemon): wire adapter to IPC server, runnable entry point"
+git commit -m "feat: wire adapter to IPC server, runnable entry point"
 ```
 
 ---
@@ -1237,14 +1236,14 @@ Expected: all tests PASS.
 ```bash
 cd /home/progcat/Projects/DollOS
 git add tests/test_e2e.py
-git commit -m "test(daemon): end-to-end integration test with mocked llama.cpp"
+git commit -m "test: end-to-end integration test with mocked llama.cpp"
 ```
 
 ---
 
 ## Task 9: Live Smoke Test (Manual)
 
-This is a one-time manual verification that the daemon talks to a real llama.cpp server. Not run in CI.
+This is a one-time manual verification that DollOS talks to a real llama.cpp server. Not run in CI.
 
 - [ ] **Step 1: Run the manual smoke test**
 
@@ -1308,10 +1307,10 @@ After all tasks complete you have:
 **What is NOT in this plan (deferred to later plans):**
 - Memory SoT — Plan 2
 - Inner Voice + Instinct + VoM recall — Plan 3
-- Streaming TTS / audio frames — Plan 4 (Voice Pipeline)
-- Character Pack loading — Plan 5
-- Subagent / Drone — Plan 6
+- Streaming TTS / audio frames — Plan 10 (Voice pipeline integration)
+- Character Pack loading — Plan 5 (Conversation Engine + Character Pack)
+- Subagent — Plan 6 / Drone — Plan 12
 - Self-state / Self-First Design — Plan 7
-- Phone-side network WS authentication / pairing — Plan 8 (App MVP)
+- Phone-side network WS authentication / pairing — Plan 9 (DollOS-App MVP)
 
 Next plan: **Memory SoT storage layer** (sqlite-vec or LanceDB; schema for facts vs self-memory; basic CRUD + hybrid retrieval).

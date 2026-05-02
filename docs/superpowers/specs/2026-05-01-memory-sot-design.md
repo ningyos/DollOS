@@ -2,14 +2,14 @@
 
 **日期：** 2026-05-01
 **狀態：** 草案（待使用者最終審閱）
-**範圍：** main spec 「DollOS Pivot」§11.6 列出的 Plan 2 — daemon 端 facts memory 儲存層
+**範圍：** main spec 「DollOS Pivot」§11.6 列出的 Plan 2 — DollOS-side facts memory 儲存層
 **對齊主 spec：** `2026-05-01-dollos-pivot-to-computer-design.md`（§3.3 Memory SoT、§13 Open question 後端選型）
 
 ---
 
 ## §0 範圍
 
-**Plan 2 做什麼**：在 daemon 內建立 **Facts memory** 子系統 — Doll 「她記得什麼」的儲存與檢索。
+**Plan 2 做什麼**：在 DollOS 內建立 **Facts memory** 子系統 — Doll 「她記得什麼」的儲存與檢索。
 
 **Plan 2 不做**：
 - Self-memory（preferences / habits / relations / emotional_residue）— 這些 update semantics 是 read-modify-write + decay，跟 facts 的 append-and-retrieve 完全不同，留 Plan 7（Self-First Design）一起做演化規則
@@ -18,7 +18,7 @@
 - 進階檢索 policy（importance / decay / recency boost）— Plan 5 整合時再依實際 access pattern 加
 
 **Plan 2 完成後**：
-- daemon 可以讀寫 / 檢索 facts
+- DollOS 可以讀寫 / 檢索 facts
 - 是 Plan 3（Inner Voice + VoM recall）的前置條件 — VoM 從 facts memory 撈出 RECALL block 給 Doll prefill
 
 ---
@@ -304,7 +304,7 @@ async def initialize(self):
     6. 不阻擋啟動 — 使用者明確呼叫 rebuild_embeddings() 才動
 ```
 
-### 5.3 Daemon 啟動順序
+### 5.3 DollOS 啟動順序
 
 ```python
 embedder = LlamaCppEmbedder(...)          # sync 構造

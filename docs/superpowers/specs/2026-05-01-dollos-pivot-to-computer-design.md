@@ -24,7 +24,7 @@
 | **VoM（Voice of Mind）** | Instinct 的特定輸出 — prefill 進 Doll thinking 區塊的 RECALL block。Techreport 原意保留 |
 | **Subagent / 分身** | 一次性、Doll tool call 即時派出、任務完即死的隔離 session agent |
 | **Drone** | 長駐、有持久 definition、由 schedule / external / Doll 觸發的 agent。**注意：與 4/20 spec 的 Drone（信任機器）含義不同，4/20 那意義已退役** |
-| **DollOS Daemon** | 電腦端 Python 主程序，event loop 與所有 brain logic 所在 |
+| **DollOS** | 電腦端 Python 主程序，event loop 與所有 brain logic 所在 |
 | **DollOS UI** | 電腦端 Tauri + Cubism Web SDK 前端 |
 | **DollOS App** | Android app（手機端） |
 | **Inner Voice 模型** | Instinct 內部使用的 small model（0.6B–1.7B），self-host 推薦 |
@@ -178,7 +178,7 @@ DollOS 推薦使用者選 thinking model + 支援 prefill 的後端組合。
 
 ### 3.3 元件職責（單一責任）
 
-**Daemon（Python）：**
+**DollOS（Python）：**
 
 | 元件 | 職責 |
 |---|---|
@@ -198,10 +198,10 @@ DollOS 推薦使用者選 thinking model + 支援 prefill 的後端組合。
 
 | 元件 | 職責 |
 |---|---|
-| Cubism Renderer | Web SDK 渲染 Live2D，吃 daemon 推來的 expression / motion / lip sync |
+| Cubism Renderer | Web SDK 渲染 Live2D，吃 DollOS 推來的 expression / motion / lip sync |
 | UI Layer | chat 視窗、system tray、hotkey、設定 |
 | Platform Adapter | Win/Mac 透明 overlay｜Linux 視窗模式 |
-| IPC Client | localhost WS to daemon |
+| IPC Client | localhost WS to DollOS |
 
 **App（Android）：**
 
@@ -211,17 +211,17 @@ DollOS 推薦使用者選 thinking model + 支援 prefill 的後端組合。
 | Assistant Bridge | `VoiceInteractionService` 接 hotword / 長按 / 手勢 |
 | KWS Module | openWakeWord ONNX，opt-in |
 | Audio Streamer | mic 上行 / TTS 下行 |
-| Notification Handler | 收 daemon push 顯示 |
+| Notification Handler | 收 DollOS push 顯示 |
 | Tier Adapters | A11y（B）/ Shizuku（C）/ Root（D），各自獨立 |
 | IPC Client | network WS（4G / WiFi 重連策略內建）|
 
 ### 3.4 邊界與跨界規則
 
-1. **Memory SoT 不過界** — 永遠在 daemon。Phone 不存任何 memory，最多收 transient context（一個 turn 結束就丟）
-2. **金鑰不出 Vault** — Phone 不持 LLM API key、tool credential。所有對外請求由 daemon 發出
-3. **Character pack 雙向同步** — daemon 是 source of truth；UI/App 拿輕量化資產
+1. **Memory SoT 不過界** — 永遠在 DollOS。Phone 不存任何 memory，最多收 transient context（一個 turn 結束就丟）
+2. **金鑰不出 Vault** — Phone 不持 LLM API key、tool credential。所有對外請求由 DollOS 發出
+3. **Character pack 雙向同步** — DollOS 是 source of truth；UI/App 拿輕量化資產
 4. **Audio 走 streaming** — chunked WS binary，不包成 request/response
-5. **Phone offline 行為** — 連不上 daemon 時 App 進 failsafe（顯示 last conversation snapshot，可錄音排隊待上線）。**不嘗試本地推理 fallback**
+5. **Phone offline 行為** — 連不上 DollOS 時 App 進 failsafe（顯示 last conversation snapshot，可錄音排隊待上線）。**不嘗試本地推理 fallback**
 
 ---
 
@@ -684,7 +684,7 @@ App 透過 `VoiceInteractionService` 註冊成 Android 預設 assistant。取得
 
 ### 10.2 v2 → v3 不向下相容
 
-3D Filament + glTF 退役，全面換 Cubism。**v2 .doll pack 無法在 v3 daemon 載入**。不做自動轉換工具。
+3D Filament + glTF 退役，全面換 Cubism。**v2 .doll pack 無法在 v3 DollOS 載入**。不做自動轉換工具。
 
 ### 10.3 跨平台共用
 
@@ -713,7 +713,7 @@ Drone definition 是 user-instance specific（你的 RSS、你的 mailbox），c
 | Repo | 處置 |
 |---|---|
 | `DollOS`（這個）| **保留 + 升級** — 變 monorepo 含 daemon、UI、protocol、character_packs、既有 docs/specs/plans/wake_word_training |
-| `DollOSAIService` | **大部分退役**，brain logic 搬到 daemon。Java code 作為 phone app 重寫的參考 |
+| `DollOSAIService` | **大部分退役**，brain logic 搬到 DollOS。Java code 作為 phone app 重寫的參考 |
 | `DollOSLauncher` | **退役** — Cubism + Tauri 取代 |
 | `DollOSService`（system service）| **退役** |
 | `DollOSSetupWizard` | **退役** |
@@ -757,7 +757,7 @@ DollOS/
 
 ### 11.5 資料遷移
 
-- **既有 phone memory（ObjectBox + Room FTS4）**：寫一次性 export 工具 → import 到 daemon SQL。一次性
+- **既有 phone memory（ObjectBox + Room FTS4）**：寫一次性 export 工具 → import 到 DollOS SQL。一次性
 - **既有 v2 character packs**：**不轉換**。clean break，重做為 v3
 - **fish-tts → VITS distillation 訓練資料**：不變動
 
@@ -776,7 +776,7 @@ DollOS/
 | 7 | Self-First Design | self-memory schema（preferences / habits / relations / emotional_residue）+ mood / preference 演化模型 + SELF_STATE 注入 |
 | 8 | DollOS UI MVP | Tauri + Cubism Web SDK + chat 視窗 + system tray + hotkey + localhost WS client |
 | 9 | DollOS-App MVP | Android：Cubism Java SDK + VoiceInteractionService 註冊 + audio streaming + network WS client |
-| 10 | 語音 pipeline 整合 | daemon ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
+| 10 | 語音 pipeline 整合 | DollOS ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
 | 11 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
 | 12 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
 
@@ -785,13 +785,13 @@ DollOS/
 **Subagent / Drone 拆開**：Subagent 簡單（一次性 tool call，無持久化），Drone 重（持久 store + scheduler + UI），併在同 plan 會壓垮 Subagent 的清爽。Drone 推到最後因為它不影響核心 companion 體驗。
 
 **大致依賴**：
-- Plan 1 先跑（其他都依賴 daemon 骨架）
+- Plan 1 先跑（其他都依賴 DollOS 骨架）
 - Plan 2 + 4 可平行（Memory 跟多 adapter 不互相依賴）
 - Plan 3 (Inner Voice) 依賴 Plan 2（VoM recall 撈 memory）
 - Plan 5 (Conversation Engine) 依賴 1/2/3/4（整合所有東西）
 - Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
 - Plan 7 (Self-First) 依賴 Plan 2/3/5（self-memory + Instinct + Conversation 都到位才能演化）
-- Plan 8/9/10/11 三條互相獨立，都接 daemon WS
+- Plan 8/9/10/11 三條互相獨立，都接 DollOS WS
 - Plan 12 (Drone) 最後加
 
 ---
@@ -816,7 +816,7 @@ DollOS/
 
 - Memory SoT 具體 backend：sqlite-vec / LanceDB / DuckDB
 - Drone Definition 持久化格式：JSON / YAML / SQLite row
-- Daemon ↔ Phone pairing 流程細節：QR code? mDNS + PSK? cloud relay?
+- DollOS ↔ Phone pairing 流程細節：QR code? mDNS + PSK? cloud relay?
 - Inner Voice 模型 default：Qwen3-0.6B / 1.7B / Llama-3.2-1B / Gemma-2-2B
 - TTS streaming 的 phoneme/viseme 抽取點
 - mood / preference 演化模型參數
@@ -833,7 +833,7 @@ DollOS/
 
 1. ✅ 使用者審閱本 spec
 2. 使用 `superpowers:writing-plans` skill 為各 plan（§11.6）逐一建立實作計畫
-3. 第一個 plan 預計：DollOS daemon MVP（event loop + Instinct + Memory + VoM + LLM adapter + IPC server）
+3. 第一個 plan 預計：DollOS MVP（event loop + Instinct + Memory + VoM + LLM adapter + IPC server）
 4. AOSP 相關 repos 正式打標退役（保留只讀，不刪除）
 
 ---
@@ -850,6 +850,6 @@ DollOS/
 ## 附錄 B — 命名術語對照（避免混淆）
 
 - 「Drone」在本 spec = 長駐 agent。**4/20 spec 的 Drone（信任機器主機）含義已死**，不要混用
-- 「Bridge」、「Drone Bridge」、「Transient Bridge」、「Doll Mesh」、「Identity Vault」（4/20 spec 的網路架構名詞）整批退役。**Identity Vault 概念部分保留**作為「daemon 端的金鑰倉」，但不再是「跨機器架構元件」
+- 「Bridge」、「Drone Bridge」、「Transient Bridge」、「Doll Mesh」、「Identity Vault」（4/20 spec 的網路架構名詞）整批退役。**Identity Vault 概念部分保留**作為「DollOS-side 金鑰倉」，但不再是「跨機器架構元件」
 - 「VoM」= Inner Voice 的特定輸出（recall block），不是 Inner Voice 整體
 - 「Inner Voice」現在是 Instinct 內部的小模型，**不是 user-facing concept**。User-facing 用 Instinct
