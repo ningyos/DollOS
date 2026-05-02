@@ -308,10 +308,10 @@ Loop 是 **event-driven**：沒事件就阻塞、不主動 tick — 沒目的的
 
 ### 5.2 Doll 的輸出 = Tool Call（唯一）
 
-所有 Doll 對外或對內的行為都是 tool call。**Tool registry 全 character 共用**，不因 .doll 切換而異：
+所有 Doll 對外或對內的行為都是 tool call — **包含講話**。**Tool registry 全 character 共用**，不因 .doll 切換而異：
 
 ```
-say(text)              講話 → IPC / TTS
+say(text)              講話一句 → IPC / TTS（sentence atomic）
 note_memory(text)      寫 Memory SoT
 spawn_subagent(...)    Plan 6
 create_drone(...)      Plan 6
@@ -319,6 +319,8 @@ recall(query)          呼叫 Inner Voice 撈事實
 read_history(...)      讀 history（內部）
 ... 由 daemon 定義
 ```
+
+**`say` 一次一句**：模型每句獨立 tool call（`<tool_call name="say">{"text":"...一句..."}</tool_call>`），TTS sentence-level 處理（Piper VITS 本來就 sentence-level）。多句連續 = 多個 say tool call。
 
 個性 **不來自不同的 tool 集合**，來自：
 - `.doll` 的 system_prompt（Doll 是誰）
@@ -395,22 +397,7 @@ while running:
 | OpenAI strict | system / user message | 退化 |
 | Gemini / Bedrock | 各家不同 | 逐一適配 |
 
-### 5.7 串流預算
-
-目標：**first audible token < 1.5s**。
-
-| 階段 | 預算 |
-|---|---|
-| Trigger → uplink open | < 100ms |
-| Mic → ASR partial | 100–300ms |
-| VAD endpoint → ASR final | 200–500ms |
-| Inner Voice（產 instinct/emotion/summary）| < 300ms |
-| Doll first token | 200–800ms（後端決定）|
-| TTS first audio chunk | 100–300ms |
-
-設定面板跑校準測試告訴使用者「以你目前後端組合，預期延遲 X 秒」。
-
-### 5.8 Subagent / Drone 是 tool
+### 5.7 Subagent / Drone 是 tool
 
 Doll 用大模型 tool call 派出 — 跟 `say`、`note_memory` 一樣，不是特殊機制：
 - `spawn_subagent(prompt, model, tools, budget)` — 即時派出隔離 session，定義不存檔
