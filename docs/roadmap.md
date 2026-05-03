@@ -37,7 +37,9 @@ IPC handler 在送 user input 給大模型前，先 call InnerVoice.recall(user_
 
 ### 4. 跑通 event loop
 
-Daemon class → DollOS（file `daemon.py → kernel.py`）。Event ABC + UserTextEvent + 各 history item dataclass。Event Queue（asyncio.Queue）+ DollLoop 主迴圈。IPC handler 改 push UserTextEvent 進 queue；DollLoop pop event 跑「recall + LLM call + stream」同樣邏輯。
+Event ABC + UserTextEvent + 各 history item dataclass。Event Queue（asyncio.Queue）+ DollLoop 主迴圈。IPC handler 改 push UserTextEvent 進 queue；DollLoop pop event 跑「recall + LLM call + stream」同樣邏輯。
+
+（DollOS / kernel.py rename 已在 step 2 處理）
 
 **Demo**：行為不變，內部結構變 event-driven。為後續 plan 鋪路。
 
