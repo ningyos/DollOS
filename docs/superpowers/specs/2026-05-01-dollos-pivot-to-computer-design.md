@@ -236,18 +236,41 @@ Instinct **不是 agent，也不是被呼叫的 tool**。她是「事情自然�
 - **Rule engine**（自然語言規則編譯後的內部結構）
 - **Action handlers**（reflex 用的預定 callback）
 
-### 4.2 每個 event 必跑的工作
+### 4.2 Loop 中 Inner Voice 的兩個階段
 
-Inner Voice **每個 event 都跑一次**，產生四種輸出：
+Inner Voice 在 loop 裡是 **bracket 結構**：
+
+```
+event → [Pre IV: process] → big LLM → [Post IV: review] → 執行 → 也許產 events
+        感知                          審判
+```
+
+#### Pre IV — `process(event, history, S)`：感知
+
+每個 event **必跑一次**，產四種輸出：
 
 | 輸出 | 內容 |
 |---|---|
-| **First instinct** | 對 event 的一句主觀反應（「又來了」「有意思」「我不懂」），進 history 給大模型看 |
-| **Emotion delta** | 情緒變化（高興 +、煩 +），進 history、累積到 S |
+| **First instinct** | 對 event 的一句主觀反應，進 history 給大模型看 |
+| **Emotion delta** | 情緒變化，進 history、累積到 S |
 | **Summary update** | S 的下一個版本（持續維護的工作摘要），餵下次 prefill |
-| **Reflex calls**（可選）| 規則命中時出 external tool call（whitelist 限制），命中後完整處理事件，**不驚動大模型** |
+| **Reflex calls**（可選）| 規則命中時出 external tool call（whitelist 限制），命中後完整處理 event，**不驚動大模型** |
 
-Inner Voice 還可作為**內部 tool** 被大模型主動呼叫：
+#### Post IV — `review(raw_calls, history, S)`：審判
+
+大模型 emit tool calls 後 **必跑一次**，產兩種輸出：
+
+| 輸出 | 內容 |
+|---|---|
+| **Approved calls** | 批准執行的 tool call subset（可能等於 raw、可能更少；不增 / 不發新 call） |
+| **Continue thread** | 是否 emit ToolExecutedEvent 讓 cascade 繼續；False = 此 thread 收尾，loop 等外部 |
+
+審判不發新 tool call（守 IV 不碰現實的邊界 — review 只批准 / 拒絕既存）。
+
+**say 等可串流 tool 的限制**：text token 在大模型 emit 過程中已經 stream 到 IPC，post IV 拒絕對它無效。Review 對 say 主要影響 `continue_thread`，對 atomic tool（note_memory / recall / spawn_subagent）才有 pre-execute 攔截能力。
+
+#### 內部 tool 由大模型主動呼叫
+
 - `recall(query)` — 撈相關事實合成 VoM RECALL block（Plan 4 已交付）
 - 其他內部 capability（digest / classify / extract / compress / tag）作為內部 helper，不對外暴露
 
@@ -345,14 +368,14 @@ while running:
     event = await events.get()                         # 阻塞等
     history.append(EventEntry(event))
 
-    # Inner Voice 永遠跑：產 first instinct / emotion / summary / 可能 reflex
-    iv_out = await inner_voice.process(event, history, self.S)
-    self.S = iv_out.summary                            # 持續更新的工作摘要
+    # Pre IV：感知 — 產 first instinct / emotion / summary / 可能 reflex
+    iv_out = await instinct.process(event, history, self.S)
+    self.S = iv_out.summary
     history.append(InstinctEntry(iv_out.first_instinct))
     history.append(EmotionEntry(iv_out.emotion))
 
     if iv_out.reflex_calls:
-        # reflex 命中：執行 + 產 ToolExecutedEvent 進 queue（給後續 Inner Voice 看）
+        # reflex 命中：執行 + 產 ToolExecutedEvent 進 queue
         for call in iv_out.reflex_calls:
             result = await tools.execute(call, caller="instinct")
             await events.put(ToolExecutedEvent(call, result))
@@ -365,20 +388,35 @@ while running:
         prefill=self.S.to_prefill(),                   # working summary 進 prefill
         tools=self.tools,
     )
+    raw_calls: list[ToolCall] = []
     async for item in self.template.parse_stream(chunks):
         if isinstance(item, ToolCall):
             history.append(ToolCallEntry(item))
-            result = await tools.execute(item, caller="big_llm")
-            await events.put(ToolExecutedEvent(item, result))
-    # 大模型沒 emit tool call = Doll 自己決定結束 → 等下個 event
+            raw_calls.append(item)
+            # streamable tool（如 say）的 text 在 parse 時已 stream 到 IPC
+
+    # Post IV：審判 — 批准 / 拒絕 + cascade 決策
+    review = await instinct.review(raw_calls, history, self.S)
+
+    for call in review.approved_calls:
+        # streamable tool 已執行（或執行中）；atomic tool 在這執行
+        if not call.already_executed:
+            result = await tools.execute(call, caller="big_llm")
+        else:
+            result = call.streamed_result
+        if review.continue_thread:
+            await events.put(ToolExecutedEvent(call, result))
+    # !continue_thread → 沒 event push → loop block 等外部
 ```
 
 要點：
-- **Inner Voice 永遠跑**（無條件，每個 event 一次）
-- **reflex 是 Inner Voice 的副產物**，命中就完整處理
-- **所有 tool 執行（reflex / 大模型）都產 ToolExecutedEvent 進 queue** — 對稱、有回饋
-- **沒有 inner ReAct loop** — ReAct 行為從外層 event loop 自然 emergent（tool 結果以 event 形式回流，下個 iteration 大模型看到，決定下一個動作）
-- **何時停由 Doll 決定**：大模型某個 iteration emit 零 tool calls → 沒新 event 產生 → queue 空 → loop block 等外部
+
+- **Inner Voice bracket loop**：每個 event 都被 pre + post IV 包夾。Pre 感知，post 審判
+- **reflex 命中就完整處理 event**，不進大模型也不過 post IV
+- **所有 tool 執行（reflex / 大模型 approved）都產 ToolExecutedEvent 進 queue**（除非 post IV 判 `continue_thread = False`）
+- **沒有 inner ReAct loop** — ReAct 行為從外層 event loop emergent
+- **何時停由 Doll 整體（大 + 小模型）決定**：post IV 判 `continue_thread = False` 即當前 thread 收尾
+- **Post IV 不發新 tool call**，只批准 / 拒絕既存（守 IV 不碰現實邊界）
 - 大模型 input = system + history（含 IV 的 instinct/emotion + 過往 ToolCall/ToolExecuted entries）+ prefill（含 S）
 
 ### 5.5 DollState (S) = Inner Voice 持續摘要
