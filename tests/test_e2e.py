@@ -17,7 +17,7 @@ from dollos.config import (
     MemoryConfig,
     Settings,
 )
-from dollos.daemon import Daemon
+from dollos.kernel import DollOS
 
 
 @pytest.mark.asyncio
@@ -39,7 +39,7 @@ async def test_full_round_trip_with_mocked_llamacpp():
         ),
     )
 
-    daemon = Daemon(settings)
+    dollos = DollOS(settings)
 
     sse_body = (
         'data: {"content": "Hi", "stop": false}\n\n'
@@ -56,9 +56,9 @@ async def test_full_round_trip_with_mocked_llamacpp():
             )
         )
 
-        await daemon.server.start()
+        await dollos.server.start()
         try:
-            port = daemon.server.port
+            port = dollos.server.port
             assert port is not None
 
             uri = f"ws://127.0.0.1:{port}"
@@ -77,4 +77,4 @@ async def test_full_round_trip_with_mocked_llamacpp():
             assert "".join(c["text"] for c in text_chunks) == "Hi there"
             assert received[-1]["type"] == "turn_end"
         finally:
-            await daemon.server.stop()
+            await dollos.server.stop()
