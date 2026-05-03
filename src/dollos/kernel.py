@@ -12,12 +12,9 @@ from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
+from dollos.prompts import PromptRenderer
 
 logger = logging.getLogger(__name__)
-
-
-PLACEHOLDER_SYSTEM_PROMPT = "You are Doll, a helpful AI companion."
-"""Placeholder until character pack loading lands in a later plan."""
 
 
 def build_adapter(settings: Settings) -> LLMAdapter:
@@ -45,6 +42,8 @@ class DollOS:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.adapter = build_adapter(settings)
+        self.renderer = PromptRenderer()
+        self._character_profile = settings.character.profile_path.read_text()
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -54,8 +53,12 @@ class DollOS:
 
     async def _handle_text_input(self, msg: TextInput) -> AsyncIterator[ServerMessage]:
         try:
+            system = self.renderer.render(
+                "scaffolding",
+                character=self._character_profile,
+            )
             async for chunk in self.adapter.stream_completion(
-                system=PLACEHOLDER_SYSTEM_PROMPT,
+                system=system,
                 user=msg.text,
                 prefill="",
             ):
