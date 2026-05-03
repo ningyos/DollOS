@@ -40,27 +40,27 @@ def test_qwen3_thinking_preserves_special_chars_in_inputs():
     assert "<tag>" in out
 
 
-def test_qwen3_plain_renders_chatml_envelope_without_think():
+def test_qwen3_plain_renders_chatml_envelope_with_closed_think():
     tpl = Qwen3PlainTemplate()
     out = tpl.render(system="SYS", user="USR", prefill="")
 
     assert "<|im_start|>system\nSYS\n<|im_end|>" in out
     assert "<|im_start|>user\nUSR\n<|im_end|>" in out
     assert "<|im_start|>assistant\n" in out
-    # Critical: no <think> block opened
-    assert "<think>" not in out
+    # Closed empty think block must be present to suppress thinking
+    assert "<think>\n\n</think>" in out
 
 
-def test_qwen3_plain_appends_prefill_after_assistant_marker():
+def test_qwen3_plain_appends_prefill_after_closed_think_block():
     tpl = Qwen3PlainTemplate()
     out = tpl.render(system="s", user="u", prefill="bullet 1\nbullet 2")
-    assert out.endswith("<|im_start|>assistant\nbullet 1\nbullet 2")
+    assert out.endswith("</think>\n\nbullet 1\nbullet 2")
 
 
-def test_qwen3_plain_empty_prefill_ends_with_assistant_marker():
+def test_qwen3_plain_empty_prefill_ends_with_double_newline_after_think():
     tpl = Qwen3PlainTemplate()
     out = tpl.render(system="s", user="u", prefill="")
-    assert out.endswith("<|im_start|>assistant\n")
+    assert out.endswith("</think>\n\n")
 
 
 def test_qwen3_plain_preserves_special_chars_in_inputs():
