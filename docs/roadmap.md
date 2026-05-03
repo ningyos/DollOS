@@ -65,22 +65,13 @@ UserTextEvent 進 loop 時自動寫 memory（user 原話保真）。Assistant ut
 
 **Demo**：對話記憶完整 — Doll 知道你說過什麼、自己說過什麼。
 
-### 9. *(TBD)*
-
-候選：
-- History windowing in prompt（避免 prompt 撐爆）
-- Self-First slice（preferences / mood / habits）
-- UI 殼（Tauri）
-- async tool 介面（fast=False，subagent 前置）
-- 其他
-
-### 10. Subagent
+### 9. Subagent
 
 spawn_subagent tool（external、fast=False）。Inline definition + 隔離 session + 預算（max_tokens / max_wall_clock_s）。fast=False async pattern：execute 立即回 dispatched-ack，subagent 跑完自己 push SubagentResultEvent 回 queue。
 
 **Demo**：Doll 能派分身做任務，結果非同步回流。
 
-### 11. Character
+### 10. Character
 
 `.doll` v3 minimal schema：`manifest.json` + `prompts/character.jinja`。character.jinja 覆寫 #2 的 default `doll_character.jinja`，渲染時吃 ctx（{{ S }} / {{ tools }} / {{ self_state }} / ...）。CharacterPack dataclass + load_character_pack()。`[character] default_pack` config。範例 gura.doll。
 
