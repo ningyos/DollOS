@@ -23,3 +23,6 @@ backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"   # typically a separate llama-server started with --embedding
 model_id = "bge-base-en-v1.5"
 timeout_s = 30.0
+
+[character]
+profile_path = "experiments/test_character.jinja"   # development character profile (Gura mock)
