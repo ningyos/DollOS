@@ -93,7 +93,10 @@ class DollOS:
                 "scaffolding", character=self._character_profile
             )
             recall = await self.inner_voice.recall(msg.text)
-            prefill = f"<think>\n{recall}GOAL: "
+            # Qwen3ThinkingTemplate already emits the opening <think> tag
+            # in its assistant turn; we only contribute the body of the
+            # think block (recall + GOAL scaffold).
+            prefill = f"{recall}GOAL: "
             async for chunk in self.adapter.stream_completion(
                 system=system, user=msg.text, prefill=prefill,
             ):

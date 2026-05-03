@@ -113,7 +113,10 @@ async def test_full_round_trip_with_mocked_llamacpp(
             assert len(captured_requests) == 1
             prompt = captured_requests[0]["prompt"]
             assert "You are Gura, a 9000-year-old shark." in prompt
-            # VoM prefill must reach the big model
-            assert "<think>\nRECALL:\n- user likes coffee\nGOAL: " in prompt
+            # VoM prefill must reach the big model (recall + GOAL scaffold inside the
+            # template-opened <think> block; the template emits its own <think>, so we
+            # must NOT have a duplicate).
+            assert "RECALL:\n- user likes coffee\nGOAL: " in prompt
+            assert prompt.count("<think>") == 1
         finally:
             await dollos.server.stop()
