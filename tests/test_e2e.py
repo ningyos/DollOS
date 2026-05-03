@@ -22,7 +22,10 @@ from dollos.kernel import DollOS
 
 
 @pytest.mark.asyncio
-async def test_full_round_trip_with_mocked_llamacpp():
+async def test_full_round_trip_with_mocked_llamacpp(tmp_path: Path):
+    character_path = tmp_path / "test_character.jinja"
+    character_path.write_text("You are Gura, a 9000-year-old shark.")
+
     settings = Settings(
         llm=LLMConfig(
             provider="llamacpp",
@@ -39,7 +42,7 @@ async def test_full_round_trip_with_mocked_llamacpp():
             model_id="test-emb",
         ),
         character=CharacterConfig(
-            profile_path=Path("experiments/test_character.jinja"),
+            profile_path=character_path,
         ),
     )
 
@@ -51,14 +54,18 @@ async def test_full_round_trip_with_mocked_llamacpp():
         'data: {"content": "", "stop": true}\n\n'
     )
 
-    with respx.mock(base_url="http://test.local:8001") as m:
-        m.post("/completion").mock(
-            return_value=httpx.Response(
-                200,
-                headers={"content-type": "text/event-stream"},
-                content=sse_body,
-            )
+    captured_requests: list[dict] = []
+
+    def _capture_and_respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=sse_body,
         )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(side_effect=_capture_and_respond)
 
         await dollos.server.start()
         try:
@@ -80,5 +87,8 @@ async def test_full_round_trip_with_mocked_llamacpp():
             text_chunks = [m for m in received if m["type"] == "text_chunk"]
             assert "".join(c["text"] for c in text_chunks) == "Hi there"
             assert received[-1]["type"] == "turn_end"
+            assert len(captured_requests) == 1
+            prompt = captured_requests[0]["prompt"]
+            assert "You are Gura, a 9000-year-old shark." in prompt
         finally:
             await dollos.server.stop()
