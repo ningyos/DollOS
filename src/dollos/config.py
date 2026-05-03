@@ -44,12 +44,26 @@ class EmbedderConfig(BaseModel):
     timeout_s: float = 30.0
 
 
+class CharacterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_path: Path
+
+    @field_validator("profile_path", mode="before")
+    @classmethod
+    def _expand_user(cls, v: object) -> object:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        return v
+
+
 class Settings(BaseModel):
     llm: LLMConfig
     ipc: IPCConfig = Field(default_factory=lambda: IPCConfig())
     log: LogConfig = Field(default_factory=lambda: LogConfig())
     memory: MemoryConfig
     embedder: EmbedderConfig
+    character: CharacterConfig
 
 
 def load_settings(path: Path) -> Settings:

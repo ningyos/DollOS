@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from dollos.config import load_settings
-from dollos.daemon import Daemon
+from dollos.kernel import DollOS
 from dollos.log import setup_logging
 
 
@@ -23,9 +23,9 @@ def main() -> int:
     settings = load_settings(args.config)
     setup_logging(settings.log.level)
 
-    daemon = Daemon(settings)
+    dollos = DollOS(settings)
     try:
-        asyncio.run(daemon.run())
+        asyncio.run(dollos.run())
     except KeyboardInterrupt:
         pass
     return 0
