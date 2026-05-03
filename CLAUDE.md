@@ -58,29 +58,22 @@ DollOS/
 - **Memory SoT**: sqlite-vec + FTS5, hybrid retrieval via Reciprocal Rank Fusion (k=60). Single active embedding model; switching = explicit rebuild. Character scoping: `character_id` NULL = shared, otherwise private to that character.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
 
-## Implementation Plans (13 total)
+## Implementation Plans
 
-See `docs/superpowers/plans/` for written plans, main spec §11.6 for the full list.
+**增量開發**：每個 plan 只加一個新概念。Plans 不預先全列，做完才寫下一個。詳細能力目標清單見 spec §11.6。
+
+### 已完成
 
 | # | Plan | Status |
 |---|---|---|
 | 1 | DollOS Skeleton | Merged |
 | 2 | Memory SoT 儲存層 | Merged |
-| 3 | LLM Provider / Template decoupling layer | Merged |
-| 4 | Inner Voice + VoM RECALL (utility layer) | Branch kept, not merged |
-| 5 | **Doll Core Loop v1** | Concept |
-| 6 | Subagent | Concept |
-| 7 | Self-First Design | Concept |
-| 8 | DollOS UI MVP (Tauri + Cubism Web) | Concept |
-| 9 | DollOS-App MVP (Android) | Concept |
-| 10 | Voice pipeline integration | Concept |
-| 11 | **Reflex / Rule Library** | Concept |
-| 12 | Phone Tier B/C/D adapter | Concept |
-| 13 | Drone | Concept |
+| 3 | LLM Provider / Template decoupling | Merged |
+| 4 | Inner Voice + VoM RECALL utility | Branch kept, not merged |
 
-**Plan 3 was split (2026-05-02)** — was "Inner Voice + Instinct + VoM"; event-handling parts extracted to Plan 11. Plan 3 is now a focused text-utility layer.
+### 下一個
 
-**Plan 5 / 11 重定位（2026-05-02）** — 原本「Plan 5 Conversation Engine + Plan 11 Event Loop dispatcher」基於「CE 物件 + Event Loop 是排程器」的舊模型。重新立論「Loop = Doll 本人」（spec §5）後：Plan 5 升級成 **Doll Core Loop v1**（event queue + 主迴圈 + Tool registry 兩級權限 + Inner Voice 整合 + 大模型 tool-call + character pack）；Plan 11 縮成 **Reflex / Rule Library**（規則 DSL + reflex whitelist）。
+待選定（候選見 spec §11.6 「接下來的能力目標」）。最可能下個：**Doll 有人格** — 載入 .doll v3 minimal pack（manifest + system_prompt），讓 IPC handler 既有的 LLM call 用上 character system_prompt。
 
 ## Build / Run
 

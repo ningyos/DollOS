@@ -842,45 +842,50 @@ DollOS/
 - **既有 v2 character packs**：**不轉換**。clean break，重做為 v3
 - **fish-tts → VITS distillation 訓練資料**：不變動
 
-### 11.6 工程順序（plan 列表，2026-05-01 修訂版）
+### 11.6 工程方法：增量、一次一個概念
+
+每個 plan **只加一個新概念**。Plans 不預先全部列出 — 寫到哪做到哪、做完才寫下一個。Plan 範圍刻意小（典型 3-8 task），跑完 merge，立即享受新能力，再決定下一步。
 
 每個 plan 在自己的 worktree + feature branch 上跑，跑完 merge 回 main。
 
-| # | Plan | 範圍 |
+#### 已完成的 plans
+
+| # | Plan | 加入的概念 |
 |---|---|---|
-| 1 | **Daemon Skeleton**（plan 已寫）| Python project + IPC WebSocket + LLM adapter ABC + LlamaCpp adapter（含 prefill） + 對話 round-trip |
-| 2 | **Memory SoT 儲存層**（plan 已寫）| sqlite-vec + FTS5 + RRF hybrid + character scoping + Embedder ABC + LlamaCppEmbedder |
-| 3 | LLM Provider / Template 解耦層 | Provider 抽象（llama.cpp raw / vLLM / OpenAI-compat / Anthropic）+ PromptTemplate 抽象（Qwen3-thinking / Qwen3-plain / Llama / Gemma / server-applied）+ prefill 能力 detection + 重構 LlamaCppAdapter 為 (provider, template) 組合。**底層基礎設施，下面的 Plan 4 / 5 / 7 都吃這層** |
-| 4 | Inner Voice + VoM RECALL（utility 層）| 小模型 host（Qwen3-0.6B/1.7B 之一，via Plan 3 的 Provider+Template 組合）+ recall capability + VoM RECALL block 合成 + prompt template + prefix cache。**純文字 utility，不處理事件、不寫 memory、無 mood/state** |
-| 5 | **Doll Core Loop v1** | Event queue + 主迴圈（event-driven，無 idle tick）+ Tool ABC + 兩級權限 registry + 核心 tools (`say`、`note_memory`、`recall`) + Inner Voice 整合（每 event 產 first_instinct / emotion / summary，無 reflex 實作）+ 大模型 tool-call 整合 + `.doll` v3 載入（minimal：manifest + system_prompt） |
-| 6 | Subagent / 分身 | `spawn_subagent` tool（Doll 用大模型 tool call 即時派出、inline definition、隔離 session） |
-| 7 | Self-First Design | Inner Voice 摘要擴 self-traits（preferences / habits / relations / emotional_residue）+ mood baseline + 慢變演化模型 |
-| 8 | DollOS UI MVP | Tauri + Cubism Web SDK + chat 視窗 + system tray + hotkey + localhost WS client |
-| 9 | DollOS-App MVP | Android：Cubism Java SDK + VoiceInteractionService 註冊 + audio streaming + network WS client |
-| 10 | 語音 pipeline 整合 | DollOS ASR + TTS + phone audio streaming + KWS opt-in + lip sync stream |
-| 11 | **Reflex / Rule Library** | Reflex tool whitelist + 自然語言規則編譯 + pattern match。掛在 Plan 5 的 Inner Voice 介面上，event 來源齊（Plan 9/10/13）後才有規則可寫 |
-| 12 | Phone Tier B/C/D adapter | A11y / Shizuku / Root 模組，逐層解鎖 system event push 能力 |
-| 13 | Drone | 持久 definition store + cron-like trigger + runner + UI 編輯 + 結果回 event queue |
+| 1 | DollOS Skeleton | Python project + IPC WebSocket + 對話 round-trip |
+| 2 | Memory SoT 儲存層 | sqlite-vec + FTS5 + RRF hybrid + character scoping |
+| 3 | LLM Provider / Template 解耦 | Provider / PromptTemplate 抽象、prefill 能力分層 |
+| 4 | Inner Voice + VoM RECALL utility | 小模型 host + recall capability（純文字 utility，無事件處理）|
 
-**移除自舊版本**：Memory 資料遷移工具（phone 端本來就無 memory，不需遷移）。
+#### 接下來的能力目標（順序大致，但每個目標可能切成 1-N 個 plan）
 
-**2026-05-02 重定位**：原本「Plan 5 Conversation Engine + Plan 11 Event Loop dispatcher」分工建立在「ConversationEngine 是獨立物件、Event Loop 是排程器」的舊模型上。重新立論「Loop = Doll 本人」（見 §5）後：
-- **Plan 5** 從「CE 物件」升級成 **Doll Core Loop v1** — 包含 event queue / 主迴圈 / Tool registry / Inner Voice 整合 / 大模型 tool-call 串接 / character pack 載入。Doll 第一次活起來的奠基 plan
-- **Plan 11** 縮 scope 成 **Reflex / Rule Library** — loop 已併入 Plan 5；剩規則 DSL + reflex whitelist，等 event 來源變多後才有實質規則可寫
+不預先承諾切法，每個目標寫 plan 時才決定。
 
-**Subagent / Drone 拆開**：Subagent 簡單（一次性 tool call，無持久化），Drone 重（持久 store + scheduler + UI），併在同 plan 會壓垮 Subagent 的清爽。Drone 推到最後因為它不影響核心 companion 體驗。
+- Doll 有人格（character pack 載入）
+- Doll 有記憶（每輪自動寫 + recall 進 prefill）
+- DollLoop 骨架（event queue refactor、IPC handler 改 push event）
+- Tool 概念（Tool ABC + registry + 第一個 tool）
+- Inner Voice 進入 loop（pre 階段：process）
+- Bracket loop（post 階段：review + ToolExecutedEvent cascade）
+- `say` 變 tool call（結構統一，Doll 輸出全是 tool）
+- Reflex hooks（IV 規則命中 → external whitelist tool）
+- Subagent（spawn_subagent tool）
+- Self-First slice（IV summary 擴 self-traits / mood baseline）
+- UI 殼（Tauri 視窗 + WS client）
+- UI 加 Cubism 渲染
+- App 殼（Android）
+- App 註冊 system assistant
+- Voice pipeline（ASR / TTS / phone audio streaming）
+- Wake word（KWS opt-in）
+- Reflex / Rule Library（自然語言規則編譯）
+- Phone Tier B/C/D（A11y / Shizuku / Root）
+- Drone
 
-**大致依賴**：
-- Plan 1 先跑（其他都依賴 DollOS 骨架）
-- Plan 2 + 3 可平行（Memory 跟 Provider/Template 解耦不互相依賴）
-- Plan 4 (Inner Voice utility) 依賴 Plan 2（撈 memory）+ Plan 3（用 Provider+Template 起小模型）
-- Plan 5 (Doll Core Loop) 依賴 1/2/3/4（整合所有東西）— Doll 第一次能對話的 plan
-- Plan 6 (Subagent) 在 Plan 5 之後（subagent 是 Doll tool call）
-- Plan 7 (Self-First) 依賴 Plan 5（擴 Inner Voice 摘要與 prefill 結構）
-- Plan 8/9/10 三條互相獨立，都接 DollOS WS
-- Plan 11 (Reflex / Rule Library) 在 9/10 之後（事件來源齊了才有規則寫頭）
-- Plan 12 (Tier B/C/D) 在 9 之後（建在 App 上）
-- Plan 13 (Drone) 最後加，依賴 Plan 5 的 event queue
+**選下個 plan 的原則**：
+- 解一個目前最阻擋進展的痛點
+- 不依賴尚未啟動的能力
+- 一個 plan 結束 = 一個能直接 demo 的能力增量
+- 認知負擔不能爆 — 只加一個新概念，跟最近的 plan 串得起來
 
 ---
 
