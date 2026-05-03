@@ -14,3 +14,6 @@ __pycache__/
 dist/
 build/
 .coverage
+
+# DollOS-generated data (memsearch markdown, Milvus Lite cache, etc.)
+data/
