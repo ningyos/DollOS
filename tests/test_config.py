@@ -33,6 +33,9 @@ db_path = "/tmp/dollos/memory.db"
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "bge-base-en-v1.5"
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
 
@@ -84,6 +87,9 @@ db_path = "/tmp/dollos/memory.db"
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "bge-base-en-v1.5"
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
 
@@ -117,6 +123,9 @@ backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "bge-base-en-v1.5"
 timeout_s = 30.0
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
 
@@ -150,6 +159,9 @@ db_path = "~/dollos-memory.db"
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "test-emb"
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
     settings = load_settings(config_path)
@@ -181,6 +193,9 @@ db_path = "/tmp/dollos/memory.db"
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "test-emb"
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
 
@@ -209,8 +224,73 @@ db_path = "/tmp/dollos/memory.db"
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "test-emb"
+
+[character]
+profile_path = "experiments/test_character.jinja"
 """
     )
 
     with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_load_settings_includes_character(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+provider = "llamacpp"
+template = "qwen3-thinking"
+base_url = "http://127.0.0.1:8001"
+model_alias = "test-model"
+
+[ipc]
+host = "127.0.0.1"
+port = 9876
+
+[memory]
+db_path = "/tmp/test/memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "test-emb"
+
+[character]
+profile_path = "experiments/test_character.jinja"
+"""
+    )
+
+    settings = load_settings(config_path)
+
+    assert str(settings.character.profile_path) == "experiments/test_character.jinja"
+
+
+def test_character_section_required(tmp_path: Path):
+    """Settings.character has no default — must be present in config."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+provider = "llamacpp"
+template = "qwen3-thinking"
+base_url = "http://127.0.0.1:8001"
+model_alias = "test-model"
+
+[ipc]
+host = "127.0.0.1"
+port = 9876
+
+[memory]
+db_path = "/tmp/test/memory.db"
+
+[embedder]
+backend = "llamacpp"
+base_url = "http://127.0.0.1:8002"
+model_id = "test-emb"
+# missing [character]
+"""
+    )
+
+    with pytest.raises(ValueError):
         load_settings(config_path)
