@@ -64,16 +64,18 @@ DollOS/
 
 ### 已完成
 
-| # | Plan | Status |
-|---|---|---|
-| 1 | DollOS Skeleton | Merged |
-| 2 | Memory SoT 儲存層 | Merged |
-| 3 | LLM Provider / Template decoupling | Merged |
-| 4 | Inner Voice + VoM RECALL utility | Branch kept, not merged |
+| Plan | Status |
+|---|---|
+| 1 — DollOS Skeleton | Merged |
+| 2 — Memory SoT 儲存層 | Merged |
+| 3 — LLM Provider / Template decoupling | Merged |
+| 4 — Inner Voice + VoM RECALL utility | Branch kept, not merged |
+| Roadmap step 1 — 確保 LLM 能用 | 確認既有 Plan 1 已涵蓋（無 code 改動）|
+| Roadmap step 2 — Prompt rendering + DollOS rename | Merged |
 
 ### 下一個
 
-待選定（候選見 spec §11.6 「接下來的能力目標」）。最可能下個：**Doll 有人格** — 載入 .doll v3 minimal pack（manifest + system_prompt），讓 IPC handler 既有的 LLM call 用上 character system_prompt。
+**Roadmap step 3 — VoM**：merge Plan 4 的 `InnerVoice.recall()`，把 hardcoded recall prompt 搬進 `iv_recall.jinja`，IPC handler 在送 user input 給大模型前先 call recall 並接進 prefill。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
