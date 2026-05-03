@@ -11,7 +11,8 @@
 | 1 — DollOS Skeleton | Python project + IPC WS server + 對話 round-trip stub |
 | 2 — Memory SoT | sqlite-vec + FTS5 + RRF hybrid + character scoping |
 | 3 — LLM Provider/Template | Provider / PromptTemplate ABC + LlamaCppProvider + Qwen3 templates |
-| 4 — InnerVoice utility | recall(query) → "RECALL:\n..." (branch 留著未合) |
+| 4 — InnerVoice utility | recall(query) → "RECALL:\n..." (superseded by memsearch pivot) |
+| Roadmap step 3 — VoM (memsearch-backed) | Merged |
 
 ---
 

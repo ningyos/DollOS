@@ -36,3 +36,32 @@ def test_renderer_does_not_html_escape():
     renderer = PromptRenderer()
     out = renderer.render("_test_fixture", greeting="<tag>")
     assert "<tag>" in out
+
+
+def test_render_blocks_returns_dict_with_each_block():
+    """A template with multiple {% block %} sections returns a dict keyed by name."""
+    renderer = PromptRenderer()
+    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="hi", item="apple")
+    assert set(blocks.keys()) == {"system", "user"}
+    assert blocks["system"] == "hi from system"
+    assert blocks["user"] == "user wants apple"
+
+
+def test_render_blocks_strips_per_block_whitespace():
+    renderer = PromptRenderer()
+    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="hi", item="apple")
+    for v in blocks.values():
+        assert v == v.strip()
+
+
+def test_render_blocks_substitutes_ctx_into_each_block():
+    renderer = PromptRenderer()
+    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="yo", item="banana")
+    assert "yo" in blocks["system"]
+    assert "banana" in blocks["user"]
+
+
+def test_render_blocks_unknown_template_raises():
+    renderer = PromptRenderer()
+    with pytest.raises(TemplateNotFound):
+        renderer.render_blocks("does_not_exist")

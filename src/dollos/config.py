@@ -18,18 +18,25 @@ class LLMConfig(BaseModel):
 
 
 class IPCConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     host: str = "127.0.0.1"
     port: int = 9876
 
 
 class LogConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
-class MemoryConfig(BaseModel):
-    db_path: Path
+class DataConfig(BaseModel):
+    """Root for all DollOS-generated data. data/ 不存在 = fresh launch."""
+    model_config = ConfigDict(extra="forbid")
 
-    @field_validator("db_path", mode="before")
+    root: Path = Path("data")
+
+    @field_validator("root", mode="before")
     @classmethod
     def _expand_user(cls, v: object) -> object:
         if isinstance(v, str):
@@ -37,11 +44,11 @@ class MemoryConfig(BaseModel):
         return v
 
 
-class EmbedderConfig(BaseModel):
-    backend: Literal["llamacpp"] = "llamacpp"
-    base_url: str
-    model_id: str
-    timeout_s: float = 30.0
+class MemsearchConfig(BaseModel):
+    """memsearch knobs (paths derived from data.root in kernel.build_memsearch)."""
+    model_config = ConfigDict(extra="forbid")
+
+    top_k: int = 10
 
 
 class CharacterConfig(BaseModel):
@@ -57,13 +64,23 @@ class CharacterConfig(BaseModel):
         return v
 
 
+class InnerVoiceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str
+    timeout_s: float = 30.0
+
+
 class Settings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     llm: LLMConfig
     ipc: IPCConfig = Field(default_factory=lambda: IPCConfig())
     log: LogConfig = Field(default_factory=lambda: LogConfig())
-    memory: MemoryConfig
-    embedder: EmbedderConfig
+    data: DataConfig = Field(default_factory=lambda: DataConfig())
+    memsearch: MemsearchConfig = Field(default_factory=lambda: MemsearchConfig())
     character: CharacterConfig
+    inner_voice: InnerVoiceConfig
 
 
 def load_settings(path: Path) -> Settings:

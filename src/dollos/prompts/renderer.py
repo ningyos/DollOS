@@ -27,3 +27,20 @@ class PromptRenderer:
         """
         template = self._env.get_template(f"{template_name}.jinja")
         return template.render(**ctx)
+
+    def render_blocks(self, template_name: str, **ctx: object) -> dict[str, str]:
+        """Render every `{% block %}` section in the template, return as dict.
+
+        Each block is rendered with the same ctx; result keyed by block name.
+        Per-block trailing/leading whitespace is stripped. Useful when one
+        template defines multiple related prompt segments (e.g. system + user)
+        that should evolve together.
+
+        Raises jinja2.TemplateNotFound if the template isn't found.
+        """
+        template = self._env.get_template(f"{template_name}.jinja")
+        ctx_obj = template.new_context(ctx)
+        return {
+            name: "".join(block(ctx_obj)).strip()
+            for name, block in template.blocks.items()
+        }

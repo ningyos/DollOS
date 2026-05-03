@@ -15,14 +15,15 @@ port = 9876
 [log]
 level = "INFO"
 
-[memory]
-db_path = "~/.local/share/dollos/memory.db"
+[data]
+root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-generated data lives here.
 
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"   # typically a separate llama-server started with --embedding
-model_id = "bge-base-en-v1.5"
-timeout_s = 30.0
+[memsearch]
+top_k = 10   # InnerVoice.recall default; memsearch uses ONNX bge-m3 by default.
 
 [character]
 profile_path = "experiments/test_character.jinja"   # development character profile (Gura mock)
+
+[inner_voice]
+base_url = "http://127.0.0.1:8003"   # separate llama-server with small Qwen3 instruct (e.g. Qwen3-0.6B-Instruct)
+timeout_s = 30.0

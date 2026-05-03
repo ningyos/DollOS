@@ -1,4 +1,11 @@
-"""End-to-end test: WebSocket client → daemon → mocked llama.cpp → response."""
+"""End-to-end test: WebSocket client → DollOS → mocked llama.cpp → response.
+
+The full chain runs, but with two cheap stubs:
+- InnerVoice.recall returns a fixed RECALL block (recall behavior is
+  covered by tests/test_inner_voice.py).
+- MemSearch.index is no-op'd (a real index() would download the
+  ~558MB ONNX model on first run).
+"""
 
 import asyncio
 import json
@@ -11,18 +18,21 @@ import websockets
 
 from dollos.config import (
     CharacterConfig,
-    EmbedderConfig,
+    DataConfig,
+    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
-    MemoryConfig,
+    MemsearchConfig,
     Settings,
 )
 from dollos.kernel import DollOS
 
 
 @pytest.mark.asyncio
-async def test_full_round_trip_with_mocked_llamacpp(tmp_path: Path):
+async def test_full_round_trip_with_mocked_llamacpp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     character_path = tmp_path / "test_character.jinja"
     character_path.write_text("You are Gura, a 9000-year-old shark.")
 
@@ -35,16 +45,26 @@ async def test_full_round_trip_with_mocked_llamacpp(tmp_path: Path):
         ),
         ipc=IPCConfig(host="127.0.0.1", port=0),
         log=LogConfig(level="WARNING"),
-        memory=MemoryConfig(db_path=Path("/tmp/dollos-test.db")),
-        embedder=EmbedderConfig(
-            backend="llamacpp",
-            base_url="http://test.local:8002",
-            model_id="test-emb",
-        ),
-        character=CharacterConfig(
-            profile_path=character_path,
+        data=DataConfig(root=tmp_path / "data"),
+        memsearch=MemsearchConfig(top_k=10),
+        character=CharacterConfig(profile_path=character_path),
+        inner_voice=InnerVoiceConfig(
+            base_url="http://test.local:8003",
+            timeout_s=5.0,
         ),
     )
+
+    # Stub InnerVoice.recall — recall behavior is covered by test_inner_voice.py.
+    async def _stub_recall(self, query, **kwargs):
+        return "RECALL:\n- user likes coffee\n"
+
+    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
+
+    # No-op memsearch.index() to avoid downloading the ONNX model in tests.
+    async def _noop_index(self):
+        return None
+
+    monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
 
     dollos = DollOS(settings)
 
@@ -67,6 +87,9 @@ async def test_full_round_trip_with_mocked_llamacpp(tmp_path: Path):
     with respx.mock(base_url="http://test.local:8001") as m:
         m.post("/completion").mock(side_effect=_capture_and_respond)
 
+        # Use run-style lifecycle: index then start. We call them manually
+        # because dollos.run() blocks on _shutdown.wait().
+        await dollos.memsearch.index()  # no-op due to monkeypatch
         await dollos.server.start()
         try:
             port = dollos.server.port
@@ -84,11 +107,16 @@ async def test_full_round_trip_with_mocked_llamacpp(tmp_path: Path):
                     if parsed["type"] == "turn_end":
                         break
 
-            text_chunks = [m for m in received if m["type"] == "text_chunk"]
+            text_chunks = [msg for msg in received if msg["type"] == "text_chunk"]
             assert "".join(c["text"] for c in text_chunks) == "Hi there"
             assert received[-1]["type"] == "turn_end"
             assert len(captured_requests) == 1
             prompt = captured_requests[0]["prompt"]
             assert "You are Gura, a 9000-year-old shark." in prompt
+            # VoM prefill must reach the big model (recall + GOAL scaffold inside the
+            # template-opened <think> block; the template emits its own <think>, so we
+            # must NOT have a duplicate).
+            assert "RECALL:\n- user likes coffee\nGOAL: " in prompt
+            assert prompt.count("<think>") == 1
         finally:
             await dollos.server.stop()
