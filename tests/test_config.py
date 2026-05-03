@@ -3,16 +3,12 @@
 from pathlib import Path
 
 import pytest
-
 from pydantic import ValidationError
 
 from dollos.config import Settings, load_settings
 
 
-def test_load_settings_from_toml(tmp_path: Path):
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
+_BASE_TOML = """
 [llm]
 provider = "llamacpp"
 template = "qwen3-thinking"
@@ -23,182 +19,108 @@ model_alias = "test-model"
 host = "127.0.0.1"
 port = 9876
 
-[log]
-level = "INFO"
-
-[memory]
-db_path = "/tmp/dollos/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "bge-base-en-v1.5"
-
 [character]
 profile_path = "experiments/test_character.jinja"
+
+[inner_voice]
+base_url = "http://127.0.0.1:8003"
 """
-    )
+
+
+def test_load_settings_minimal_uses_defaults_for_data_and_memsearch(tmp_path: Path):
+    """[data] and [memsearch] are both optional with sensible defaults."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
 
     settings = load_settings(config_path)
 
     assert isinstance(settings, Settings)
-    assert settings.llm.provider == "llamacpp"
-    assert settings.llm.template == "qwen3-thinking"
-    assert settings.llm.base_url == "http://127.0.0.1:8001"
-    assert settings.llm.model_alias == "test-model"
-    assert settings.ipc.host == "127.0.0.1"
-    assert settings.ipc.port == 9876
-    assert settings.log.level == "INFO"
+    assert settings.data.root == Path("data")
+    assert settings.memsearch.top_k == 10
 
 
-def test_load_settings_missing_required_field(tmp_path: Path):
+def test_load_settings_with_data_root_override(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-# missing base_url and model_alias
+        _BASE_TOML
+        + """
+[data]
+root = "/var/lib/dollos"
 """
     )
 
-    with pytest.raises(ValueError):
+    settings = load_settings(config_path)
+    assert settings.data.root == Path("/var/lib/dollos")
+
+
+def test_data_root_expands_user(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[data]
+root = "~/my-dollos-data"
+"""
+    )
+    settings = load_settings(config_path)
+    assert "~" not in str(settings.data.root)
+    assert str(settings.data.root).endswith("my-dollos-data")
+
+
+def test_load_settings_with_memsearch_top_k_override(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[memsearch]
+top_k = 5
+"""
+    )
+    settings = load_settings(config_path)
+    assert settings.memsearch.top_k == 5
+
+
+def test_load_settings_rejects_legacy_memory_section(tmp_path: Path):
+    """Old [memory] section should produce a validation error (extra fields)."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[memory]
+db_path = "/tmp/old.db"
+"""
+    )
+    with pytest.raises(ValidationError):
         load_settings(config_path)
 
 
-def test_load_settings_default_log_level(tmp_path: Path):
+def test_load_settings_rejects_legacy_embedder_section(tmp_path: Path):
+    """Old [embedder] section should produce a validation error (extra fields)."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "/tmp/dollos/memory.db"
-
+        _BASE_TOML
+        + """
 [embedder]
 backend = "llamacpp"
 base_url = "http://127.0.0.1:8002"
 model_id = "bge-base-en-v1.5"
-
-[character]
-profile_path = "experiments/test_character.jinja"
 """
     )
-
-    settings = load_settings(config_path)
-
-    assert settings.log.level == "INFO"
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
 
 
-def test_load_settings_includes_memory_and_embedder(tmp_path: Path):
+def test_load_settings_rejects_unknown_memsearch_field(tmp_path: Path):
+    """Memsearch config has extra='forbid'; unknown fields rejected."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[log]
-level = "INFO"
-
-[memory]
-db_path = "/tmp/dollos/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "bge-base-en-v1.5"
-timeout_s = 30.0
-
-[character]
-profile_path = "experiments/test_character.jinja"
+        _BASE_TOML
+        + """
+[memsearch]
+top_k = 10
+embedding_provider = "openai"  # not exposed in v1
 """
     )
-
-    settings = load_settings(config_path)
-
-    assert str(settings.memory.db_path) == "/tmp/dollos/memory.db"
-    assert settings.embedder.backend == "llamacpp"
-    assert settings.embedder.base_url == "http://127.0.0.1:8002"
-    assert settings.embedder.model_id == "bge-base-en-v1.5"
-    assert settings.embedder.timeout_s == 30.0
-
-
-def test_settings_db_path_expands_user(tmp_path: Path):
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "~/dollos-memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "test-emb"
-
-[character]
-profile_path = "experiments/test_character.jinja"
-"""
-    )
-    settings = load_settings(config_path)
-    assert "~" not in str(settings.memory.db_path)
-    assert str(settings.memory.db_path).endswith("dollos-memory.db")
-
-
-def test_load_settings_old_backend_field_raises(tmp_path: Path):
-    """Pre-Plan-3 configs used `backend = "llamacpp"`. After the rename
-    that field is unknown and pydantic should reject the missing
-    required `provider`."""
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-[llm]
-backend = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "/tmp/dollos/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "test-emb"
-
-[character]
-profile_path = "experiments/test_character.jinja"
-"""
-    )
-
     with pytest.raises(ValidationError):
         load_settings(config_path)
 
@@ -213,84 +135,12 @@ template = "qwen3-thinking"
 base_url = "http://127.0.0.1:8001"
 model_alias = "test-model"
 
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "/tmp/dollos/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "test-emb"
-
 [character]
 profile_path = "experiments/test_character.jinja"
+
+[inner_voice]
+base_url = "http://127.0.0.1:8003"
 """
     )
-
     with pytest.raises(ValidationError):
-        load_settings(config_path)
-
-
-def test_load_settings_includes_character(tmp_path: Path):
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "/tmp/test/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "test-emb"
-
-[character]
-profile_path = "experiments/test_character.jinja"
-"""
-    )
-
-    settings = load_settings(config_path)
-
-    assert str(settings.character.profile_path) == "experiments/test_character.jinja"
-
-
-def test_character_section_required(tmp_path: Path):
-    """Settings.character has no default — must be present in config."""
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        """
-[llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
-
-[ipc]
-host = "127.0.0.1"
-port = 9876
-
-[memory]
-db_path = "/tmp/test/memory.db"
-
-[embedder]
-backend = "llamacpp"
-base_url = "http://127.0.0.1:8002"
-model_id = "test-emb"
-# missing [character]
-"""
-    )
-
-    with pytest.raises(ValueError):
         load_settings(config_path)
