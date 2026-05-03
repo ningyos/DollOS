@@ -55,7 +55,7 @@ DollOS/
 - **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
 - **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from prefilled `SELF_STATE` block + self-memory in RECALL.
-- **Memory SoT**: sqlite-vec + FTS5, hybrid retrieval via Reciprocal Rank Fusion (k=60). Single active embedding model; switching = explicit rebuild. Character scoping: `character_id` NULL = shared, otherwise private to that character.
+- **Memory SoT**: memsearch (Milvus Lite + ONNX bge-m3 + markdown daily summary files). `data/memory/shared/` for shared facts, `data/memory/{character_id}/` for per-character private (step 10). Hybrid retrieval (dense + BM25 + RRF) provided by memsearch.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
 
 ## Implementation Plans
@@ -69,13 +69,14 @@ DollOS/
 | 1 — DollOS Skeleton | Merged |
 | 2 — Memory SoT 儲存層 | Merged |
 | 3 — LLM Provider / Template decoupling | Merged |
-| 4 — Inner Voice + VoM RECALL utility | Branch kept, not merged |
+| 4 — Inner Voice + VoM RECALL utility | Superseded by memsearch pivot |
 | Roadmap step 1 — 確保 LLM 能用 | 確認既有 Plan 1 已涵蓋（無 code 改動）|
 | Roadmap step 2 — Prompt rendering + DollOS rename | Merged |
+| Roadmap step 3 — VoM (memsearch-backed) | Merged |
 
 ### 下一個
 
-**Roadmap step 3 — VoM**：merge Plan 4 的 `InnerVoice.recall()`，把 hardcoded recall prompt 搬進 `iv_recall.jinja`，IPC handler 在送 user input 給大模型前先 call recall 並接進 prefill。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 4 — Event Loop**：Event ABC + asyncio.Queue + DollLoop 主迴圈，把 IPC handler 的同步路徑改成 event-driven。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
