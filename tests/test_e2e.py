@@ -10,6 +10,7 @@ import respx
 import websockets
 
 from dollos.config import (
+    CharacterConfig,
     EmbedderConfig,
     IPCConfig,
     LLMConfig,
@@ -36,6 +37,9 @@ async def test_full_round_trip_with_mocked_llamacpp():
             backend="llamacpp",
             base_url="http://test.local:8002",
             model_id="test-emb",
+        ),
+        character=CharacterConfig(
+            profile_path=Path("experiments/test_character.jinja"),
         ),
     )
 
