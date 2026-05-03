@@ -49,7 +49,7 @@ DollOS._handle_text_input
   │     └─→ small LLM (iv_recall.jinja system + user blocks)
   │     回 "RECALL:\n- ...\n"  或  "RECALL:\n(no relevant memories)\n"
   ↓
-  prefill = f"<think>\n{recall}GOAL: "
+  prefill = f"{recall}GOAL: "   # template already emits the opening <think>
   ↓
   big LLM.stream_completion(...)
     ↓
@@ -350,7 +350,7 @@ class DollOS:
                 "scaffolding", character=self._character_profile
             )
             recall = await self.inner_voice.recall(msg.text)
-            prefill = f"<think>\n{recall}GOAL: "
+            prefill = f"{recall}GOAL: "   # template already emits the opening <think>
             async for chunk in self.adapter.stream_completion(
                 system=system, user=msg.text, prefill=prefill,
             ):
