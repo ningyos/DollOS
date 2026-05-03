@@ -1,4 +1,4 @@
-"""Daemon: wires LLM adapter and IPC server together."""
+"""DollOS kernel: wires LLM adapter and IPC server together."""
 
 import asyncio
 import logging
@@ -41,7 +41,7 @@ def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
     raise ValueError(f"unknown template: {settings.llm.template}")
 
 
-class Daemon:
+class DollOS:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.adapter = build_adapter(settings)
