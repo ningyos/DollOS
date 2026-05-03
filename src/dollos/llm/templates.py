@@ -53,12 +53,18 @@ class Qwen3ThinkingTemplate(PromptTemplate):
 
 
 class Qwen3PlainTemplate(PromptTemplate):
-    """Qwen3.x instruct (non-thinking) ChatML.
+    """Qwen3.x ChatML with thinking immediately closed.
 
-    Same envelope as Qwen3ThinkingTemplate but does NOT open a <think>
-    block — Inner Voice's small models (Qwen3-0.6B/1.7B Instruct) are
-    not trained to use <think>...</think>; opening one would confuse
-    them. Prefill goes directly inside the assistant turn.
+    Inner Voice's small models may be either non-thinking Instruct OR
+    thinking-trained variants. We emit an empty closed <think></think>
+    block before the prefill so the model skips thinking and goes
+    straight to producing the answer.
+
+    Works on both: non-thinking Instruct models treat <think> as a
+    known no-op token; thinking-trained models see closed empty block
+    and skip the thinking phase. This mirrors llama-server's
+    `--chat-template-kwargs '{"enable_thinking": false}'` but works
+    through the raw /completion prompt path.
     """
 
     def render(self, *, system: str, user: str, prefill: str) -> str:
@@ -70,6 +76,10 @@ class Qwen3PlainTemplate(PromptTemplate):
             user,
             "<|im_end|>",
             "<|im_start|>assistant",
+            "<think>",
+            "",
+            "</think>",
+            "",
             "",
         ]
         rendered = "\n".join(parts)
