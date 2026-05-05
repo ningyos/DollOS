@@ -74,10 +74,11 @@ DollOS/
 | Roadmap step 2 — Prompt rendering + DollOS rename | Merged |
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
+| Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 
 ### 下一個
 
-**Roadmap step 5 — Inner Voice full**：Instinct ABC + SmallModelInstinct。每 event 一次小模型 call 產 first_instinct + emotion + summary 三項。DollState (S) = summary 純文字。S 接進大模型 prefill（與 RECALL 並列或合併）。Step 4 留下的 `_perceive` stub 在這 step 換成真 `await self._inner_voice.perceive(raw)`。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 6 — Tool calling**：Tool ABC + ClassVar `name`/`permission`/`feedback`/`fast`/`streamable`。ToolRegistry + permission-checked execute（兩級權限）。第一批 tools：`say`（external、streamable）+ `note_memory`（external）+ `recall`（internal）。Template 擴 `render_tools` / `parse_stream` / `format_tool_result`（Qwen3ThinkingTemplate native `<tool_call>` JSON）。**`say` 變 tool call**（結構統一）。大模型 single-round；tool 執行 sync；結果不回大模型（cascade 留 step 7）。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 

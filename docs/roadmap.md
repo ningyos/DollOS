@@ -14,6 +14,7 @@
 | 4 — InnerVoice utility | recall(query) → "RECALL:\n..." (superseded by memsearch pivot) |
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
+| Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 
 ---
 
@@ -45,11 +46,13 @@ Smoke-tested：memsearch + IV plain + 大模型 stream 端對端通；prefill `G
 
 **Demo**：行為跟 step 3 一致；多 client 真的並行（依賴 llama.cpp `--parallel`）；為 step 5 Inner Voice + step 6 tool / step 9 subagent 的 RawEvent 注入點鋪好。
 
-### 5. Inner Voice
+### 5. Inner Voice  ✅ Merged
 
-Instinct ABC + SmallModelInstinct。每 event 一次小模型 call 產 **first_instinct + emotion + summary** 三項。DollState (S) = summary 純文字。S 接進大模型 prefill（與 recall block 並列或合併）。
+Step 5 minimal scope: Instinct ABC + SmallModelInstinct + iv_summary.jinja + EventDispatcher STATE-block injection + Kernel build_instinct factory. Per-event small-model call produces rolling natural-language summary; non-empty summary prepends `STATE:\n{summary}\n\n` to big-model prefill before existing RECALL block.
 
-**Demo**：Doll 多了「內心反應 / 情緒 / 持續摘要」，回應更有連貫感。
+Smoke-tested: 3-turn conversation; rolling summary persists across turns; big model references prior context. first_instinct / emotion deferred (YAGNI; emotion goes to big-model think).
+
+**Demo**：行為跟 step 4 一致 + 多了「Doll 持續摘要」的延續感；下個 step 是 step 6 Tool calling。
 
 ### 6. Tool calling
 
