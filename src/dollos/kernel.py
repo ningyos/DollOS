@@ -15,7 +15,7 @@ from dollos.ipc.messages import ServerMessage, TextInput
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
-from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
+from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
 
@@ -59,13 +59,14 @@ def build_inner_voice(
 ) -> InnerVoice:
     """Construct InnerVoice wired to a small llama.cpp model + memsearch.
 
-    v1 hardcodes (LlamaCppProvider, Qwen3PlainTemplate) for the small LLM.
+    v1 hardcodes (LlamaCppProvider, Qwen3ThinkingTemplate) for the small LLM;
+    InnerVoice.recall() strips the reasoning prefix before the </think> tag.
     """
     provider = LlamaCppProvider(
         base_url=settings.inner_voice.base_url,
         timeout_s=settings.inner_voice.timeout_s,
     )
-    llm = ComposedLLMAdapter(provider=provider, template=Qwen3PlainTemplate())
+    llm = ComposedLLMAdapter(provider=provider, template=Qwen3ThinkingTemplate())
     return InnerVoice(
         memsearch=memsearch,
         llm=llm,

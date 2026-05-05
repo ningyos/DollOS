@@ -152,6 +152,28 @@ async def test_recall_strips_whitespace_from_model_output():
 
 
 @pytest.mark.asyncio
+async def test_recall_strips_thinking_prefix_from_output():
+    """Inner Voice uses the thinking template; reasoning + </think> must be stripped."""
+    mem = _FakeMemSearch(
+        hits=[
+            {"content": "主人喜歡咖啡", "score": 0.9, "source": "x.md"},
+            {"content": "主人住在台北", "score": 0.8, "source": "x.md"},
+        ]
+    )
+    fake_llm = _FakeLLMAdapter(
+        response=(
+            "I should review the candidates...\n"
+            "</think>\n\n- 主人喜歡咖啡\n- 主人住在台北"
+        )
+    )
+    iv = _make_iv(mem, fake_llm)
+
+    block = await iv.recall("query")
+
+    assert block == "RECALL:\n- 主人喜歡咖啡\n- 主人住在台北\n"
+
+
+@pytest.mark.asyncio
 async def test_recall_passes_top_k_to_memsearch():
     """default_top_k from settings is used; per-call override also works."""
     mem = _FakeMemSearch(hits=[{"content": "fact", "score": 0.5, "source": "x.md"}])
