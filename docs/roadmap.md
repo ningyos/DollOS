@@ -15,6 +15,7 @@
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
+| Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 
 ---
 
@@ -54,11 +55,13 @@ Smoke-tested: 3-turn conversation; rolling summary persists across turns; big mo
 
 **Demo**：行為跟 step 4 一致 + 多了「Doll 持續摘要」的延續感；下個 step 是 step 6 Tool calling。
 
-### 6. Tool calling
+### 6. Tool calling  ✅ Merged
 
-Tool ABC + ClassVar `name` / `permission` / `feedback` / `fast` / `streamable`。ToolRegistry + permission-checked execute（兩級權限）。第一批 tools：say（external、streamable）+ note_memory（external）+ recall（internal）。Template 擴 `render_tools` / `parse_stream` / `format_tool_result`（Qwen3ThinkingTemplate native `<tool_call>` JSON）。**say 變 tool call**（結構統一）。大模型 single-round；tool 執行 sync；結果不回大模型（cascade 留 #7）。
+Step 6 minimal scope: pydantic Tool models (Say, NoteMemory) with run(ctx); ToolStreamParser state machine; Qwen3ThinkingTemplate `# Tools` system-prompt section; LLMAdapter tools= plumbing; EventDispatcher parser-driven _respond; Kernel wires memory_root + memsearch.
 
-**Demo**：Doll 會用 tool — 講話 / 寫 memory / 主動 recall。但每輪只一次大模型 call。
+Smoke-tested: 3-turn conversation; output via Say tool only (no naked-text leak); NoteMemory writes daily markdown + memsearch.index_file synchronously. recall tool / cascade / permission / streamable / fast deferred.
+
+**Demo**：Doll 透過 tool 講話 + 寫 memory；下個 step 是 step 7 Reflex + cascade。
 
 ### 7. Reflex + pre + post
 
