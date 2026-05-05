@@ -66,6 +66,9 @@ class NoteMemory(BaseModel):
     async def run(self, ctx: ToolCtx) -> None:
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Sync append + index inside async — append is a single small
+        # write (microseconds), and index_file is the only slow op.
+        # Wrapping the write in asyncio.to_thread is YAGNI for step 6.
         with path.open("a") as f:
             f.write(f"- {self.text}\n")
         await ctx.memsearch.index_file(path)
@@ -137,15 +140,17 @@ class ToolStreamParser:
     """State machine: accumulates stream chunks, yields parsed tool_call dicts.
 
     States:
-      OUTSIDE         - not inside a tool_call (text dropped + warned)
+      OUTSIDE         - not inside a tool_call (text dropped + DEBUG-logged)
       INSIDE          - between <tool_call> and </tool_call>; accumulating JSON
 
-    After `</think>` not specially tracked here — caller uses parser only on
-    post-think portion (or parser silently drops everything outside tool_call
-    blocks anyway, including pre-</think> reasoning).
+    Parser does NOT track `</think>` — all text outside <tool_call> is
+    treated identically (dropped, logged at DEBUG). This includes the
+    model's <think> reasoning content. Step 6 deliberately does not
+    surface think content to the IPC sink.
 
-    Naked text outside <tool_call> is logged at DEBUG (think content) and
-    INFO/WARNING after </think> (model violated structure rule).
+    Rationale: a stateless drop-everything-outside policy is simpler than
+    a think-aware logger and produces the same user-visible behavior.
+    Operators wanting to see the model's raw stream enable DEBUG logs.
     """
 
     def feed(self, chunk: str) -> list[dict]:
@@ -164,7 +169,9 @@ Implementation: scan for `<tool_call>` open / `</tool_call>` close markers. Buff
 | 中文 / unicode 在 JSON | `json.loads` 處理（UTF-8） |
 | Nested JSON 在 arguments | OK，`json.loads` 完整解析 |
 | 兩個 `<tool_call>` 連著 | yield 兩個 dict |
-| `<tool_call>` 開了沒關（stream 結束） | parser 提供 `flush()`，dispatcher 收尾時呼叫，未閉合 buffer log warning + drop |
+| `<tool_call>` 開了沒關（stream 結束） | parser 提供 `flush()`，dispatcher 收尾時呼叫，未閉合 buffer log WARNING + drop |
+| Naked text（含 `<think>` 內容）| state OUTSIDE 全 drop + DEBUG log |
+| Malformed JSON in `<tool_call>` | log WARNING、跳過該 call、parser 重置回 OUTSIDE state |
 
 ---
 
@@ -194,15 +201,15 @@ async def _respond(self, doll_event, summary, sink):
         tools=TOOLS,
     ):
         for call in parser.feed(chunk.text):
-            await self._dispatch_tool_call(call, tools_by_name, ctx, sink)
+            await self._dispatch_tool_call(call, tools_by_name, ctx)
         if chunk.done:
             break
     for call in parser.flush():
-        await self._dispatch_tool_call(call, tools_by_name, ctx, sink)
-    sink.put_nowait(TurnEnd())
+        await self._dispatch_tool_call(call, tools_by_name, ctx)
+    ctx.sink.put_nowait(TurnEnd())
 
 
-async def _dispatch_tool_call(self, call, tools_by_name, ctx, sink):
+async def _dispatch_tool_call(self, call, tools_by_name, ctx):
     name = call.get("name")
     tool_cls = tools_by_name.get(name)
     if tool_cls is None:
@@ -217,7 +224,7 @@ async def _dispatch_tool_call(self, call, tools_by_name, ctx, sink):
         await tool.run(ctx)
     except Exception as e:
         logger.exception("tool %s raised", name)
-        sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
+        ctx.sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
 ```
 
 EventDispatcher ctor 新增 `memory_root: Path` + `memsearch: MemSearch`（為了組 `ToolCtx`）。Kernel 在 build dispatcher 時注入。
