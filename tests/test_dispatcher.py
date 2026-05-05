@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -36,9 +37,10 @@ class _FakeAdapter(LLMAdapter):
         prefill: str = "",
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        tools: list[type] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append(
-            {"system": system, "user": user, "prefill": prefill}
+            {"system": system, "user": user, "prefill": prefill, "tools": tools}
         )
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -60,6 +62,7 @@ class _HangAdapter(LLMAdapter):
         prefill: str = "",
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        tools: list[type] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.entered.set()
         await asyncio.Event().wait()  # forever
@@ -106,10 +109,19 @@ class _FakeInstinct:
         return ""
 
 
+class _FakeMemSearch:
+    def __init__(self) -> None:
+        self.indexed: list = []
+
+    async def index_file(self, path):
+        self.indexed.append(path)
+
+
 def _make_dispatcher(
     *,
     adapter: LLMAdapter,
     inner_voice: _FakeInnerVoice,
+    tmp_path: Path,
 ) -> EventDispatcher:
     return EventDispatcher(
         adapter=adapter,
@@ -117,6 +129,8 @@ def _make_dispatcher(
         instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=_FakeMemSearch(),
     )
 
 
@@ -135,38 +149,46 @@ async def _drain(sink: asyncio.Queue) -> list:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_is_sync_returns_immediately():
+async def test_dispatch_is_sync_returns_immediately(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="x"), StreamChunk(text="", done=True)],
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"x"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
         delay=0.05,
     )
     iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     ev = UserTextEvent(text="hi", response_sink=sink)
 
-    # dispatch() must be sync (def, not async). Calling without await must
-    # produce None, and the task must already be registered.
     result = dispatcher.dispatch(ev)
     assert result is None
     assert len(dispatcher._tasks) == 1
 
-    # Drain to clean up.
     await _drain(sink)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel():
+async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: Path):
     adapter = _FakeAdapter(
         chunks=[
-            StreamChunk(text="Hi"),
-            StreamChunk(text=" there"),
+            StreamChunk(
+                text=(
+                    '<tool_call>{"name":"Say","arguments":{"text":"Hi"}}</tool_call>'
+                    '<tool_call>{"name":"Say","arguments":{"text":" there"}}</tool_call>'
+                ),
+                done=False,
+            ),
             StreamChunk(text="", done=True),
         ],
     )
     iv = _FakeInnerVoice("RECALL:\n- foo\n")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -181,29 +203,27 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel():
 
 
 @pytest.mark.asyncio
-async def test_recall_passes_perception_to_iv_and_to_adapter_user():
+async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     iv = _FakeInnerVoice("RECALL:\n- foo\n")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hello world", response_sink=sink))
 
     await _drain(sink)
 
-    # IV.recall called with perception (= text in step-4 stub passthrough).
     assert iv.calls == ["hello world"]
-    # adapter.user is perception; prefill is "{recall}DECISION: ".
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["user"] == "hello world"
     assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nDECISION: "
 
 
 @pytest.mark.asyncio
-async def test_handler_exception_pushes_errormsg_and_sentinel():
+async def test_handler_exception_pushes_errormsg_and_sentinel(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     iv = _FakeInnerVoice(raises=RuntimeError("boom"))
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="x", response_sink=sink))
@@ -216,7 +236,7 @@ async def test_handler_exception_pushes_errormsg_and_sentinel():
 
 
 @pytest.mark.asyncio
-async def test_perceive_typeerror_for_unsupported_raw_logged(caplog):
+async def test_perceive_typeerror_for_unsupported_raw_logged(tmp_path: Path, caplog):
     """An unsupported RawEvent subclass: _sink_of raises TypeError; task dies
     with a logged exception. No sink to push to."""
 
@@ -225,18 +245,15 @@ async def test_perceive_typeerror_for_unsupported_raw_logged(caplog):
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
         dispatcher.dispatch(FooEvent())
-        # Yield once so the task can run.
         for _ in range(5):
             await asyncio.sleep(0)
-        # All tasks should have completed (no sink to drain).
         await asyncio.sleep(0.05)
 
     assert len(dispatcher._tasks) == 0
-    # Either a 'no sink' or TypeError mention should be in the log.
     assert any(
         "no sink" in rec.message.lower() or "typeerror" in rec.message.lower()
         for rec in caplog.records
@@ -244,15 +261,14 @@ async def test_perceive_typeerror_for_unsupported_raw_logged(caplog):
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_in_flight_tasks():
+async def test_stop_cancels_in_flight_tasks(tmp_path: Path):
     hang = _HangAdapter()
     iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=hang, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=hang, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hang", response_sink=sink))
 
-    # Wait for handler to enter the hanging stream_completion.
     await asyncio.wait_for(hang.entered.wait(), timeout=1.0)
 
     t0 = time.monotonic()
@@ -263,10 +279,10 @@ async def test_stop_cancels_in_flight_tasks():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_after_stop_raises_runtime_error():
+async def test_dispatch_after_stop_raises_runtime_error(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     await dispatcher.stop()
 
@@ -276,13 +292,19 @@ async def test_dispatch_after_stop_raises_runtime_error():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_dispatch_runs_in_parallel():
+async def test_concurrent_dispatch_runs_in_parallel(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="x"), StreamChunk(text="", done=True)],
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"x"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
         delay=0.05,
     )
     iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv)
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink_a: asyncio.Queue = asyncio.Queue()
     sink_b: asyncio.Queue = asyncio.Queue()
@@ -294,26 +316,33 @@ async def test_concurrent_dispatch_runs_in_parallel():
     items_a, items_b = await asyncio.gather(_drain(sink_a), _drain(sink_b))
     elapsed = time.monotonic() - t0
 
-    # Both finished, both received chunks.
     assert any(isinstance(it, TextChunk) for it in items_a)
     assert any(isinstance(it, TextChunk) for it in items_b)
-    # Parallel: total wall < 2 * single-call (~0.10s).
     assert elapsed < 0.09, f"elapsed {elapsed:.3f}s — looks serial"
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_calls_instinct_with_doll_event_perception():
+async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
     )
     iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
     inst = _FakeInstinct(summaries=["主人剛打招呼。"])
+    ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -328,18 +357,27 @@ async def test_dispatcher_calls_instinct_with_doll_event_perception():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_prepends_state_block_when_summary_nonempty():
+async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
     )
     iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
     inst = _FakeInstinct(summaries=["主人剛打招呼。"])
+    ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -355,18 +393,27 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_skips_state_block_when_summary_empty():
+async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
     )
     iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
     inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -382,18 +429,27 @@ async def test_dispatcher_skips_state_block_when_summary_empty():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_instinct_error_surfaces_as_error_msg():
+async def test_dispatcher_instinct_error_surfaces_as_error_msg(tmp_path: Path):
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
     )
     iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
     inst = _FakeInstinct(raises=RuntimeError("instinct boom"))
+    ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -408,3 +464,252 @@ async def test_dispatcher_instinct_error_surfaces_as_error_msg():
 
     assert any(isinstance(m, ErrorMsg) and "instinct boom" in m.message for m in items)
     assert len(adapter.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"hello"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+
+    items = []
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+        items.append(item)
+
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert any(m.text == "hello" for m in text_chunks)
+    assert any(isinstance(m, TurnEnd) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text=(
+                    '<tool_call>{"name":"NoteMemory","arguments":'
+                    '{"text":"likes coffee"}}</tool_call>'
+                ),
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+
+    shared = tmp_path / "shared"
+    files = list(shared.glob("*.md"))
+    assert len(files) == 1
+    assert files[0].read_text().endswith("- likes coffee\n")
+    assert ms.indexed and Path(ms.indexed[0]) == files[0]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text=(
+                    '<tool_call>{"name":"NoteMemory","arguments":'
+                    '{"text":"a"}}</tool_call>'
+                    '<tool_call>{"name":"Say","arguments":'
+                    '{"text":"b"}}</tool_call>'
+                ),
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = []
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+        items.append(m)
+
+    assert (tmp_path / "shared").exists()
+    assert any(isinstance(m, TextChunk) and m.text == "b" for m in items)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(text="leaked thinking text\n", done=False),
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"x"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="trailing leak\n", done=False),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = []
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+        items.append(m)
+
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert len(text_chunks) == 1
+    assert text_chunks[0].text == "x"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"WhoKnows","arguments":{}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"after"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    with caplog.at_level("WARNING"):
+        disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+        items = []
+        while True:
+            m = await sink.get()
+            if m is None:
+                break
+            items.append(m)
+
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert any(m.text == "after" for m in text_chunks)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog):
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"wrong":"k"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    with caplog.at_level("WARNING"):
+        disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+        items = []
+        while True:
+            m = await sink.get()
+            if m is None:
+                break
+            items.append(m)
+
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert any(m.text == "ok" for m in text_chunks)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="", done=True)]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    assert len(adapter.calls) == 1
+    from dollos.tools import TOOLS
+    assert adapter.calls[0].get("tools") == TOOLS
