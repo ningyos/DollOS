@@ -12,7 +12,7 @@
 
 ## §1 設計原則
 
-1. **Tool 結構統一**。大模型 `</think>` 後唯一合法輸出 = `<tool_call>` JSON。Naked text → log warning + 丟掉，不送進 IPC。「say 變 tool call」是這條的具體實現。
+1. **Tool 結構統一**。大模型 `</think>` 後唯一合法輸出 = `<tool_call>` JSON。Tool_call 之外的文字（含 `<think>` 內容）→ parser 全部 drop（DEBUG log），不送進 IPC。「say 變 tool call」是這條的具體實現。
 2. **Pydantic model = Tool**。Tool class 自己是 `BaseModel`，args 是 fields，docstring 是 description，schema 由 `model_json_schema()` derive。**單一 SoT**：name / schema / description / execution 全在一個 class。
 3. **多 tool / round + stream-order execute**。大模型一個 round 可 emit 多個 `<tool_call>`；parser state machine 看到 `</tool_call>` 立刻 dispatch + `await` execute；後續 token 繼續 parse。對齊 Anthropic / OpenAI / Qwen3 native multi-tool 主流。
 4. **單一大模型 round**。Tool 結果**不**回大模型。step 7 才做 cascade（tool result → ToolExecutedEvent → 大模型新一輪）。
@@ -258,8 +258,8 @@ Transport 層（`LlamaCppProvider`）不變——只是把渲染好的 prompt �
 
 | 情境 | 處理 |
 |---|---|
-| 大模型 emit naked text（`</think>` 後）| parser log warning，drop |
-| `<tool_call>` JSON malformed | parser log warning，跳過該 call，繼續 parse |
+| 大模型 emit naked text（任何時候，含 `<think>` 內容）| parser log DEBUG，drop |
+| `<tool_call>` JSON malformed | parser log WARNING，跳過該 call，重置回 OUTSIDE，繼續 parse |
 | Unknown tool name | dispatcher log warning，skip |
 | Args validation fail（pydantic ValidationError）| dispatcher log warning，skip |
 | Tool `.run()` raise | dispatcher log + ErrorMsg 進 sink，**後續 tool 繼續執行** |
