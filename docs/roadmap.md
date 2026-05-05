@@ -13,6 +13,7 @@
 | 3 — LLM Provider/Template | Provider / PromptTemplate ABC + LlamaCppProvider + Qwen3 templates |
 | 4 — InnerVoice utility | recall(query) → "RECALL:\n..." (superseded by memsearch pivot) |
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
+| Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 
 ---
 
@@ -36,13 +37,13 @@ IPC handler 在送 user input 給大模型前，先 call InnerVoice.recall(user_
 
 **Demo**：Doll 能引用既有 memory（手動填 memory 後測），但還不會自動寫新 memory。
 
-### 4. 跑通 event loop
+### 4. 跑通 event loop  ✅ Merged
 
-Event ABC + UserTextEvent + 各 history item dataclass。Event Queue（asyncio.Queue）+ DollLoop 主迴圈。IPC handler 改 push UserTextEvent 進 queue；DollLoop pop event 跑「recall + LLM call + stream」同樣邏輯。
+Two-tier event model（`RawEvent` ABC + `UserTextEvent` / `DollEvent` perception）+ `EventDispatcher`（sync `dispatch()` spawn `asyncio.Task` per event，無 worker / queue / mutex）。IPC handler 變薄，recall + 大模型 stream 邏輯 lift 進 `EventDispatcher._respond`。`DollEvent.perception` 餵大模型 `user` role；step 4 用 stub passthrough，step 5 Inner Voice 真正 perceive。
 
-（DollOS / kernel.py rename 已在 step 2 處理）
+Smoke-tested：memsearch + IV plain + 大模型 stream 端對端通；prefill `GOAL:` 觸發 think loop，改 `DECISION:` 後乾淨收 `</think>`。
 
-**Demo**：行為不變，內部結構變 event-driven。為後續 plan 鋪路。
+**Demo**：行為跟 step 3 一致；多 client 真的並行（依賴 llama.cpp `--parallel`）；為 step 5 Inner Voice + step 6 tool / step 9 subagent 的 RawEvent 注入點鋪好。
 
 ### 5. Inner Voice
 
