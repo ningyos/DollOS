@@ -60,6 +60,12 @@ async def test_full_round_trip_with_mocked_llamacpp(
 
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
 
+    # Stub SmallModelInstinct.process — returns empty so no STATE block in prefill.
+    async def _stub_instinct_process(self, event):
+        return ""
+
+    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
+
     # No-op memsearch.index() to avoid downloading the ONNX model in tests.
     async def _noop_index(self):
         return None

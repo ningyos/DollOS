@@ -2,8 +2,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from dollos.config import (
     CharacterConfig,
     DataConfig,
@@ -15,7 +13,8 @@ from dollos.config import (
     Settings,
 )
 from dollos.inner_voice import InnerVoice
-from dollos.kernel import build_inner_voice, build_memsearch
+from dollos.instinct import SmallModelInstinct
+from dollos.kernel import build_inner_voice, build_instinct, build_memsearch
 from dollos.prompts import PromptRenderer
 
 
@@ -84,3 +83,27 @@ def test_build_inner_voice_uses_qwen3_plain_template(tmp_path: Path):
     memsearch = build_memsearch(settings)
     iv = build_inner_voice(settings, memsearch, PromptRenderer())
     assert isinstance(iv._llm._template, Qwen3PlainTemplate)
+
+
+def test_build_instinct_returns_small_model_instinct(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    renderer = PromptRenderer()
+    inst = build_instinct(settings, renderer)
+    assert isinstance(inst, SmallModelInstinct)
+
+
+def test_build_instinct_uses_inner_voice_config_base_url(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    renderer = PromptRenderer()
+    inst = build_instinct(settings, renderer)
+    assert inst._adapter._provider._base_url == "http://test.local:8003"
+    assert inst._adapter._provider._timeout_s == 15.0
+
+
+def test_build_instinct_uses_qwen3_plain_template(tmp_path: Path):
+    from dollos.llm.templates import Qwen3PlainTemplate
+
+    settings = _make_settings(tmp_path)
+    renderer = PromptRenderer()
+    inst = build_instinct(settings, renderer)
+    assert isinstance(inst._adapter._template, Qwen3PlainTemplate)
