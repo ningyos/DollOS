@@ -8,8 +8,10 @@ from collections.abc import AsyncIterator
 from memsearch import MemSearch
 
 from dollos.config import Settings
+from dollos.dispatcher import EventDispatcher
+from dollos.events import UserTextEvent
 from dollos.inner_voice import InnerVoice
-from dollos.ipc.messages import ErrorMsg, ServerMessage, TextChunk, TextInput, TurnEnd
+from dollos.ipc.messages import ServerMessage, TextInput
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
@@ -80,6 +82,12 @@ class DollOS:
         self.memsearch = build_memsearch(settings)
         self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
         self._character_profile = settings.character.profile_path.read_text()
+        self.dispatcher = EventDispatcher(
+            adapter=self.adapter,
+            inner_voice=self.inner_voice,
+            renderer=self.renderer,
+            character_profile=self._character_profile,
+        )
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -88,26 +96,13 @@ class DollOS:
         self._shutdown = asyncio.Event()
 
     async def _handle_text_input(self, msg: TextInput) -> AsyncIterator[ServerMessage]:
-        try:
-            system = self.renderer.render(
-                "scaffolding", character=self._character_profile
-            )
-            recall = await self.inner_voice.recall(msg.text)
-            # Qwen3ThinkingTemplate already emits the opening <think> tag
-            # in its assistant turn; we only contribute the body of the
-            # think block (recall + GOAL scaffold).
-            prefill = f"{recall}GOAL: "
-            async for chunk in self.adapter.stream_completion(
-                system=system, user=msg.text, prefill=prefill,
-            ):
-                if chunk.text:
-                    yield TextChunk(text=chunk.text)
-                if chunk.done:
-                    break
-            yield TurnEnd()
-        except Exception as e:
-            logger.exception("handler error")
-            yield ErrorMsg(message=f"handler error: {e}")
+        sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
+        self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
+        while True:
+            item = await sink.get()
+            if item is None:
+                return
+            yield item
 
     async def run(self) -> None:
         await self.memsearch.index()
@@ -120,5 +115,6 @@ class DollOS:
                 await self._shutdown.wait()
             finally:
                 await self.server.stop()
+                await self.dispatcher.stop()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based
