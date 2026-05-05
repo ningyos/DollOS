@@ -11,6 +11,7 @@ from dollos.config import Settings
 from dollos.dispatcher import EventDispatcher
 from dollos.events import UserTextEvent
 from dollos.inner_voice import InnerVoice
+from dollos.instinct import Instinct, SmallModelInstinct
 from dollos.ipc.messages import ServerMessage, TextInput
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
@@ -74,6 +75,22 @@ def build_inner_voice(
     )
 
 
+def build_instinct(
+    settings: Settings, renderer: PromptRenderer
+) -> Instinct:
+    """Construct SmallModelInstinct wired to the small llama.cpp model.
+
+    Uses the same `inner_voice` config block as InnerVoice — both are
+    small-model utilities. v1 hardcodes (LlamaCppProvider, Qwen3PlainTemplate).
+    """
+    provider = LlamaCppProvider(
+        base_url=settings.inner_voice.base_url,
+        timeout_s=settings.inner_voice.timeout_s,
+    )
+    adapter = ComposedLLMAdapter(provider=provider, template=Qwen3PlainTemplate())
+    return SmallModelInstinct(adapter=adapter, renderer=renderer)
+
+
 class DollOS:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -81,10 +98,12 @@ class DollOS:
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
         self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
+        self.instinct = build_instinct(settings, self.renderer)
         self._character_profile = settings.character.profile_path.read_text()
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
             inner_voice=self.inner_voice,
+            instinct=self.instinct,
             renderer=self.renderer,
             character_profile=self._character_profile,
         )
