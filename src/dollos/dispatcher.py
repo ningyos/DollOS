@@ -16,6 +16,7 @@ import logging
 
 from dollos.events import DollEvent, RawEvent, UserTextEvent
 from dollos.inner_voice import InnerVoice
+from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter
 from dollos.prompts import PromptRenderer
@@ -36,11 +37,13 @@ class EventDispatcher:
         *,
         adapter: LLMAdapter,
         inner_voice: InnerVoice,
+        instinct: Instinct,
         renderer: PromptRenderer,
         character_profile: str,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
+        self._instinct = instinct
         self._renderer = renderer
         self._character_profile = character_profile
         self._tasks: set[asyncio.Task[None]] = set()
@@ -77,7 +80,8 @@ class EventDispatcher:
 
         try:
             doll_event = await self._perceive(raw)
-            await self._respond(doll_event, sink)
+            summary = await self._instinct.process(doll_event)
+            await self._respond(doll_event, summary, sink)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -97,13 +101,15 @@ class EventDispatcher:
     async def _respond(
         self,
         doll_event: DollEvent,
+        summary: str,
         sink: asyncio.Queue[ServerMessage | None],
     ) -> None:
         recall = await self._inner_voice.recall(doll_event.perception)
         system = self._renderer.render(
             "scaffolding", character=self._character_profile
         )
-        prefill = f"{recall}DECISION: "
+        state_block = f"STATE:\n{summary}\n\n" if summary else ""
+        prefill = f"{state_block}{recall}DECISION: "
         async for chunk in self._adapter.stream_completion(
             system=system,
             user=doll_event.perception,

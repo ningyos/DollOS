@@ -85,6 +85,27 @@ class _FakeInnerVoice:
         return self._text
 
 
+class _FakeInstinct:
+    """Fake Instinct.process — returns configurable summaries, captures calls."""
+
+    def __init__(
+        self,
+        summaries: list[str] | None = None,
+        raises: Exception | None = None,
+    ) -> None:
+        self._summaries = list(summaries) if summaries is not None else [""]
+        self._raises = raises
+        self.calls: list[str] = []
+
+    async def process(self, event):  # type: ignore[no-untyped-def]
+        self.calls.append(event.perception)
+        if self._raises:
+            raise self._raises
+        if self._summaries:
+            return self._summaries.pop(0)
+        return ""
+
+
 def _make_dispatcher(
     *,
     adapter: LLMAdapter,
@@ -93,6 +114,7 @@ def _make_dispatcher(
     return EventDispatcher(
         adapter=adapter,
         inner_voice=inner_voice,
+        instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         character_profile="You are Doll.",
     )
@@ -277,3 +299,112 @@ async def test_concurrent_dispatch_runs_in_parallel():
     assert any(isinstance(it, TextChunk) for it in items_b)
     # Parallel: total wall < 2 * single-call (~0.10s).
     assert elapsed < 0.09, f"elapsed {elapsed:.3f}s — looks serial"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_calls_instinct_with_doll_event_perception():
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+
+    assert inst.calls == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_prepends_state_block_when_summary_nonempty():
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+
+    assert len(adapter.calls) == 1
+    prefill = adapter.calls[0]["prefill"]
+    assert prefill == "STATE:\n主人剛打招呼。\n\nRECALL:\n- foo\nDECISION: "
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_skips_state_block_when_summary_empty():
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=[""])
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+
+    prefill = adapter.calls[0]["prefill"]
+    assert "STATE:" not in prefill
+    assert prefill == "RECALL:\n- foo\nDECISION: "
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_instinct_error_surfaces_as_error_msg():
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="ok", done=False), StreamChunk(text="", done=True)]
+    )
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(raises=RuntimeError("instinct boom"))
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+
+    items = []
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+        items.append(item)
+
+    assert any(isinstance(m, ErrorMsg) and "instinct boom" in m.message for m in items)
+    assert len(adapter.calls) == 0

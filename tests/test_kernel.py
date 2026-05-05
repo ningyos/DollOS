@@ -71,7 +71,11 @@ def _install_fake_inner_voice(monkeypatch, recall_text: str | None = None, raise
             raise raises
         return recall_text or "RECALL:\n- foo\n"
 
+    async def _stub_instinct_process(self, event):
+        return ""
+
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
+    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
     return captured
 
 
@@ -90,6 +94,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
     dollos.dispatcher = EventDispatcher(
         adapter=fake_adapter,
         inner_voice=dollos.inner_voice,
+        instinct=dollos.instinct,
         renderer=dollos.renderer,
         character_profile=dollos._character_profile,
     )
