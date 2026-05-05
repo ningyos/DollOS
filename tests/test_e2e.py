@@ -74,10 +74,10 @@ async def test_full_round_trip_with_mocked_llamacpp(
 
     dollos = DollOS(settings)
 
+    _tc = '<tool_call>{"name":"Say","arguments":{"text":"Hi there"}}</tool_call>'
     sse_body = (
-        'data: {"content": "Hi", "stop": false}\n\n'
-        'data: {"content": " there", "stop": false}\n\n'
-        'data: {"content": "", "stop": true}\n\n'
+        "data: " + json.dumps({"content": _tc, "stop": False}) + "\n\n"
+        + "data: " + json.dumps({"content": "", "stop": True}) + "\n\n"
     )
 
     captured_requests: list[dict] = []
