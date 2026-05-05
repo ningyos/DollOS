@@ -77,10 +77,10 @@ def test_build_inner_voice_uses_inner_voice_config_base_url(tmp_path: Path):
     assert iv._llm._provider._timeout_s == 15.0
 
 
-def test_build_inner_voice_uses_qwen3_plain_template(tmp_path: Path):
-    from dollos.llm.templates import Qwen3PlainTemplate
+def test_build_inner_voice_uses_qwen3_thinking_template(tmp_path: Path):
+    from dollos.llm.templates import Qwen3ThinkingTemplate
 
     settings = _make_settings(tmp_path)
     memsearch = build_memsearch(settings)
     iv = build_inner_voice(settings, memsearch, PromptRenderer())
-    assert isinstance(iv._llm._template, Qwen3PlainTemplate)
+    assert isinstance(iv._llm._template, Qwen3ThinkingTemplate)
