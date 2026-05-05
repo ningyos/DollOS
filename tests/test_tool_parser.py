@@ -106,3 +106,15 @@ def test_flush_on_clean_state_returns_empty():
     p = ToolStreamParser()
     p.feed('<tool_call>{"name":"X","arguments":{}}</tool_call>')
     assert p.flush() == []
+
+
+def test_non_dict_json_payload_logs_warning_and_skips(caplog):
+    p = ToolStreamParser()
+    with caplog.at_level(logging.WARNING, logger="dollos.tool_parser"):
+        out = p.feed(
+            '<tool_call>[1, 2, 3]</tool_call>'
+            '<tool_call>{"name":"Say","arguments":{"text":"after"}}</tool_call>'
+        )
+    assert out == [{"name": "Say", "arguments": {"text": "after"}}]
+    assert any("not a JSON object" in r.message or "object" in r.message.lower()
+               for r in caplog.records)
