@@ -73,10 +73,11 @@ DollOS/
 | Roadmap step 1 — 確保 LLM 能用 | 確認既有 Plan 1 已涵蓋（無 code 改動）|
 | Roadmap step 2 — Prompt rendering + DollOS rename | Merged |
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
+| Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 
 ### 下一個
 
-**Roadmap step 4 — Event Loop**：Event ABC + asyncio.Queue + DollLoop 主迴圈，把 IPC handler 的同步路徑改成 event-driven。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 5 — Inner Voice full**：Instinct ABC + SmallModelInstinct。每 event 一次小模型 call 產 first_instinct + emotion + summary 三項。DollState (S) = summary 純文字。S 接進大模型 prefill（與 RECALL 並列或合併）。Step 4 留下的 `_perceive` stub 在這 step 換成真 `await self._inner_voice.perceive(raw)`。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
