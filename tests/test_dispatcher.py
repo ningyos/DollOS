@@ -171,10 +171,10 @@ async def test_recall_passes_perception_to_iv_and_to_adapter_user():
 
     # IV.recall called with perception (= text in step-4 stub passthrough).
     assert iv.calls == ["hello world"]
-    # adapter.user is perception; prefill is "{recall}GOAL: ".
+    # adapter.user is perception; prefill is "{recall}DECISION: ".
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["user"] == "hello world"
-    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nGOAL: "
+    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nDECISION: "
 
 
 @pytest.mark.asyncio
