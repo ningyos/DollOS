@@ -651,6 +651,7 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
 
     text_chunks = [m for m in items if isinstance(m, TextChunk)]
     assert any(m.text == "after" for m in text_chunks)
+    assert any("WhoKnows" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -688,6 +689,7 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
 
     text_chunks = [m for m in items if isinstance(m, TextChunk)]
     assert any(m.text == "ok" for m in text_chunks)
+    assert any("validation" in r.message.lower() for r in caplog.records)
 
 
 @pytest.mark.asyncio
