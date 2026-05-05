@@ -17,3 +17,9 @@ build/
 
 # DollOS-generated data (memsearch markdown, Milvus Lite cache, etc.)
 data/
+
+# Local daemon config (copy of config.example.toml, user-specific)
+config.toml
+
+# Runtime logs
+logs/
