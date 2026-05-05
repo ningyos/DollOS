@@ -106,6 +106,8 @@ class DollOS:
             instinct=self.instinct,
             renderer=self.renderer,
             character_profile=self._character_profile,
+            memory_root=settings.data.root / "memory",
+            memsearch=self.memsearch,
         )
         self.server = WebSocketServer(
             host=settings.ipc.host,
