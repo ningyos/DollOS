@@ -656,10 +656,10 @@ SELF_STATE:
   attention: <Doll 注意力所在>
   toward_user: <對 user 的 relational state>
   active_preferences: <當下被啟動的 preferences>
-GOAL:
+DECISION:
 ```
 
-Doll 從 GOAL 之後開始生成。所有 self-state 是不可協商的既定事實。
+Doll 從 DECISION 之後開始生成。所有 self-state 是不可協商的既定事實。
 
 ### 8.5 設定面板的訊息（取代「行為指令」）
 
