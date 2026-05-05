@@ -79,7 +79,4 @@ class InnerVoice:
                 break
 
         body = "".join(chunks).strip()
-        # Inner Voice uses the thinking template; output begins with reasoning + </think>.
-        if "</think>" in body:
-            body = body.split("</think>", 1)[1].strip()
         return f"RECALL:\n{body}\n"
