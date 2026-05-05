@@ -56,10 +56,19 @@ class _FakeAdapter(LLMAdapter):
         prefill: str = "",
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        tools: list[type] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append({"system": system, "user": user, "prefill": prefill})
         for c in self.chunks:
             yield c
+
+
+class _FakeMemSearch:
+    def __init__(self) -> None:
+        self.indexed: list = []
+
+    async def index_file(self, path):
+        self.indexed.append(path)
 
 
 def _install_fake_inner_voice(monkeypatch, recall_text: str | None = None, raises=None):
@@ -97,6 +106,8 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         instinct=dollos.instinct,
         renderer=dollos.renderer,
         character_profile=dollos._character_profile,
+        memory_root=tmp_path,
+        memsearch=_FakeMemSearch(),
     )
     return dollos, fake_adapter
 
@@ -114,14 +125,17 @@ async def test_handle_text_input_yields_chunks_then_turnend(
 ):
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [
-        StreamChunk(text="Hi"),
-        StreamChunk(text=" there"),
+        StreamChunk(
+            text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+            done=False,
+        ),
         StreamChunk(text="", done=True),
     ]
     _install_fake_inner_voice(monkeypatch, "RECALL:\n- foo\n")
 
     items = await _collect(dollos._handle_text_input(TextInput(text="hi")))
-    assert items == [TextChunk(text="Hi"), TextChunk(text=" there"), TurnEnd()]
+    assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
+    assert isinstance(items[-1], TurnEnd)
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 
 import pytest
+from pydantic import BaseModel, Field
 
 from dollos.llm.adapter import StreamChunk
 from dollos.llm.composed import ComposedLLMAdapter
@@ -13,7 +14,7 @@ from dollos.llm.transport import Provider
 class _FakeTemplate(PromptTemplate):
     """Renders prompt as 'SYS={system}|USR={user}|PRE={prefill}' for assertion."""
 
-    def render(self, *, system: str, user: str, prefill: str) -> str:
+    def render(self, *, system: str, user: str, prefill: str, tools=None) -> str:
         return f"SYS={system}|USR={user}|PRE={prefill}"
 
 
@@ -96,3 +97,38 @@ async def test_composed_default_stop_and_max_tokens():
     # Defaults: stop=None, max_tokens=1024 forwarded through.
     assert provider.last_stop is None
     assert provider.last_max_tokens == 1024
+
+
+class _ToolDummy(BaseModel):
+    """Dummy tool."""
+
+    text: str = Field(description="x")
+
+
+@pytest.mark.asyncio
+async def test_composed_passes_tools_to_template():
+    """ComposedLLMAdapter forwards `tools=` into template.render()."""
+
+    captured = {}
+
+    class _CaptureTemplate:
+        def render(self, *, system, user, prefill, tools=None):
+            captured["tools"] = tools
+            return "RENDERED"
+
+    class _StubProvider:
+        async def stream(self, *, prompt, stop=None, max_tokens=1024):
+            captured["prompt"] = prompt
+            yield StreamChunk(text="ok", done=True)
+
+    adapter = ComposedLLMAdapter(
+        provider=_StubProvider(), template=_CaptureTemplate()
+    )
+    chunks = []
+    async for ch in adapter.stream_completion(
+        system="s", user="u", prefill="", tools=[_ToolDummy]
+    ):
+        chunks.append(ch)
+
+    assert captured["tools"] == [_ToolDummy]
+    assert captured["prompt"] == "RENDERED"

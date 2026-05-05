@@ -1,6 +1,11 @@
 """PromptTemplate — model-family-specific prompt rendering."""
 
+from __future__ import annotations
+
+import json
 from abc import ABC, abstractmethod
+
+from pydantic import BaseModel
 
 
 class PromptTemplate(ABC):
@@ -21,20 +26,55 @@ class PromptTemplate(ABC):
         system: str,
         user: str,
         prefill: str,
+        tools: list[type[BaseModel]] | None = None,
     ) -> str:
         ...
+
+
+def _format_tools_block(tools: list[type[BaseModel]]) -> str:
+    """Render the `# Tools` system-prompt section for Qwen3 native tool calling."""
+    schemas = [
+        {
+            "name": cls.__name__,
+            "description": (cls.__doc__ or "").strip(),
+            "parameters": cls.model_json_schema(),
+        }
+        for cls in tools
+    ]
+    schemas_json = json.dumps(schemas, ensure_ascii=False, indent=2)
+    return (
+        "\n\n# Tools\n\n"
+        "You have tools. To call a tool, emit:\n"
+        "<tool_call>\n"
+        '{"name": "<tool_name>", "arguments": {<args>}}\n'
+        "</tool_call>\n\n"
+        "After </think>, output ONLY <tool_call> blocks. "
+        "Plain text after </think> is invalid.\n\n"
+        "Available tools:\n"
+        "<tools>\n"
+        f"{schemas_json}\n"
+        "</tools>"
+    )
 
 
 class Qwen3ThinkingTemplate(PromptTemplate):
     """Qwen3.x thinking-model ChatML.
 
     Opens the <think> block inside the assistant turn so prefill content
-    goes inside the thinking block. This matches the Plan 1 review decision
-    to optimize for Qwen3.6-thinking models (see grammar_injection_techreport
-    §2.3 for the prefill technique).
+    goes inside the thinking block. Renders an optional `# Tools` section
+    in the system prompt for tool calling.
     """
 
-    def render(self, *, system: str, user: str, prefill: str) -> str:
+    def render(
+        self,
+        *,
+        system: str,
+        user: str,
+        prefill: str,
+        tools: list[type[BaseModel]] | None = None,
+    ) -> str:
+        if tools:
+            system = system + _format_tools_block(tools)
         parts = [
             "<|im_start|>system",
             system,
@@ -55,19 +95,24 @@ class Qwen3ThinkingTemplate(PromptTemplate):
 class Qwen3PlainTemplate(PromptTemplate):
     """Qwen3.x ChatML with thinking immediately closed.
 
-    Inner Voice's small models may be either non-thinking Instruct OR
-    thinking-trained variants. We emit an empty closed <think></think>
-    block before the prefill so the model skips thinking and goes
-    straight to producing the answer.
-
-    Works on both: non-thinking Instruct models treat <think> as a
-    known no-op token; thinking-trained models see closed empty block
-    and skip the thinking phase. This mirrors llama-server's
-    `--chat-template-kwargs '{"enable_thinking": false}'` but works
-    through the raw /completion prompt path.
+    Inner Voice's small models. Rejects non-empty tools — small-model
+    code paths must not attempt tool calling (raises NotImplementedError
+    to surface misuse loudly).
     """
 
-    def render(self, *, system: str, user: str, prefill: str) -> str:
+    def render(
+        self,
+        *,
+        system: str,
+        user: str,
+        prefill: str,
+        tools: list[type[BaseModel]] | None = None,
+    ) -> str:
+        if tools:
+            raise NotImplementedError(
+                "Qwen3PlainTemplate does not support tool calling; "
+                "use Qwen3ThinkingTemplate for tool-calling code paths."
+            )
         parts = [
             "<|im_start|>system",
             system,

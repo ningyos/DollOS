@@ -75,10 +75,11 @@ DollOS/
 | Roadmap step 3 — VoM (memsearch-backed) | Merged |
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
+| Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 
 ### 下一個
 
-**Roadmap step 6 — Tool calling**：Tool ABC + ClassVar `name`/`permission`/`feedback`/`fast`/`streamable`。ToolRegistry + permission-checked execute（兩級權限）。第一批 tools：`say`（external、streamable）+ `note_memory`（external）+ `recall`（internal）。Template 擴 `render_tools` / `parse_stream` / `format_tool_result`（Qwen3ThinkingTemplate native `<tool_call>` JSON）。**`say` 變 tool call**（結構統一）。大模型 single-round；tool 執行 sync；結果不回大模型（cascade 留 step 7）。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 7 — Reflex + pre + post**：完整 bracket loop。Instinct.process() 加 reflex_calls 輸出（規則命中 → external whitelist tool）。Instinct.review() 階段（approved_calls, continue_thread）。ToolExecutedEvent cascade（reflex / 大模型 approved 都產 event 進 queue）。MAX_ITERATIONS backstop。Doll 自決停止（review continue_thread = False）。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
