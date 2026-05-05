@@ -42,7 +42,7 @@ class RawEvent(ABC)                                                  @dataclass 
 | `system` | 「你是 helpful assistant」 | character profile（**我是誰**） |
 | `user` | 人類使用者的話 | **DollEvent.perception** — Inner Voice 翻譯後的「我剛感知到什麼」 |
 | `assistant` | 助手回應 | Doll 對該 event 的反應（step 6+ tool calls；step 4 純文字） |
-| prefill | 通常空 | `<think>` 內：RECALL + S + GOAL |
+| prefill | 通常空 | `<think>` 內：RECALL + S + DECISION |
 
 ### 「Doll 知道 source」怎麼實現
 
@@ -77,7 +77,7 @@ asyncio.create_task(self._handle(raw))   ← 立刻 return，不等任何事
     └─ await self._respond(doll_event)
           ├─ recall = await inner_voice.recall(doll_event.perception)
           ├─ system = render("scaffolding", character=...)
-          ├─ prefill = f"{recall}GOAL: "
+          ├─ prefill = f"{recall}DECISION: "
           ├─ async for chunk in adapter.stream_completion(
           │       system=system,
           │       user=doll_event.perception,   ← 餵 perception 不是 raw text
@@ -286,7 +286,7 @@ class EventDispatcher:
         system = self._renderer.render(
             "scaffolding", character=self._character_profile
         )
-        prefill = f"{recall}GOAL: "
+        prefill = f"{recall}DECISION: "
         async for chunk in self._adapter.stream_completion(
             system=system,
             user=doll_event.perception,
@@ -441,7 +441,7 @@ class DollOS:
   - `_perceive` stub 換成 `await self._inner_voice.perceive(raw)`
   - Inner Voice perceive 同時產 first_instinct + emotion + S delta（main spec §4）
   - S 容器 + asyncio.Lock 出現；perceive 結束後 `async with S_lock: S = merge(S, delta)`
-  - prefill 從 `<think>RECALL+GOAL` 變成 `<think>RECALL+S+GOAL`
+  - prefill 從 `<think>RECALL+DECISION` 變成 `<think>RECALL+S+DECISION`
   - 多 character pack 可能各自有 `iv_perceive.jinja`（step 10）
 - **Step 6（tool calling）**：
   - `_respond` 內 `parse_stream` 解 tool call；`say` 變 streamable tool（chunk 推 sink 邏輯改成 say tool 自己負責）

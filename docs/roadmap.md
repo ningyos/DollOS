@@ -32,7 +32,7 @@
 
 ### 3. VoM
 
-IPC handler 在送 user input 給大模型前，先 call InnerVoice.recall(user_input) → 結果接進 prefill（`<think>\n{recall}GOAL: `）。**只讀 memory 不寫**。
+IPC handler 在送 user input 給大模型前，先 call InnerVoice.recall(user_input) → 結果接進 prefill（`<think>\n{recall}DECISION: `）。**只讀 memory 不寫**。
 
 **Demo**：Doll 能引用既有 memory（手動填 memory 後測），但還不會自動寫新 memory。
 

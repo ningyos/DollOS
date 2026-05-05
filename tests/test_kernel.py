@@ -142,7 +142,7 @@ async def test_dispatch_user_text_uses_recall_in_prefill(
 
     await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nGOAL: "
+    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nDECISION: "
 
 
 @pytest.mark.asyncio

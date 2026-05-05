@@ -103,7 +103,7 @@ class EventDispatcher:
         system = self._renderer.render(
             "scaffolding", character=self._character_profile
         )
-        prefill = f"{recall}GOAL: "
+        prefill = f"{recall}DECISION: "
         async for chunk in self._adapter.stream_completion(
             system=system,
             user=doll_event.perception,
