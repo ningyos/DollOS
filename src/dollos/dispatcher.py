@@ -1,36 +1,35 @@
 """EventDispatcher — fan-out raw events to concurrent tasks.
 
-Each call to ``dispatch(raw)`` spawns one ``asyncio.Task`` that runs
-``_perceive`` (step-4 stub: passthrough text → DollEvent) then ``_respond``
-(InnerVoice.recall + LLMAdapter.stream_completion, pushing chunks into the
-event's ``response_sink`` and finally a ``None`` sentinel).
-
-No worker, no queue. Multi-event concurrency is naturally bounded by the
-underlying llama.cpp ``--parallel`` setting — not by this module.
+Step 6: _respond now feeds the big-model stream into ToolStreamParser
+and dispatches each parsed <tool_call> dict to its pydantic-model tool's run().
+The big model emits ONLY <tool_call> blocks after </think>; naked text
+is dropped (DEBUG log) by the parser. Single-round per event — tool
+results NOT cascaded back (cascade is step 7).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
+
+from memsearch import MemSearch
+from pydantic import ValidationError
 
 from dollos.events import DollEvent, RawEvent, UserTextEvent
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
-from dollos.ipc.messages import ErrorMsg, ServerMessage, TextChunk, TurnEnd
+from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
 from dollos.prompts import PromptRenderer
+from dollos.tool_parser import ToolStreamParser
+from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
 
 
 class EventDispatcher:
-    """Spawns one asyncio.Task per RawEvent. No worker, no queue.
-
-    Step 4 ships a stubbed ``_perceive`` that turns a UserTextEvent's text
-    directly into a DollEvent.perception. Step 5 will replace this with
-    ``InnerVoice.perceive(raw)``.
-    """
+    """Spawns one asyncio.Task per RawEvent. No worker, no queue."""
 
     def __init__(
         self,
@@ -40,17 +39,23 @@ class EventDispatcher:
         instinct: Instinct,
         renderer: PromptRenderer,
         character_profile: str,
+        memory_root: Path,
+        memsearch: MemSearch,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
         self._instinct = instinct
         self._renderer = renderer
         self._character_profile = character_profile
+        self._memory_root = memory_root
+        self._memsearch = memsearch
+        self._tools_by_name: dict[str, type] = {
+            cls.__name__: cls for cls in TOOLS
+        }
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
     def dispatch(self, raw: RawEvent) -> None:
-        """Sync fan-out: spawn a task and return immediately."""
         if self._stopping:
             raise RuntimeError("EventDispatcher is stopping")
         task = asyncio.create_task(
@@ -60,7 +65,6 @@ class EventDispatcher:
         task.add_done_callback(self._tasks.discard)
 
     async def stop(self) -> None:
-        """Cancel all in-flight tasks; subsequent dispatch() raises."""
         self._stopping = True
         if not self._tasks:
             return
@@ -69,9 +73,6 @@ class EventDispatcher:
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     async def _handle(self, raw: RawEvent) -> None:
-        # Resolve sink BEFORE try/except. If the raw event has no associated
-        # sink (programming bug — caller dispatched an unsupported type), we
-        # have nowhere to push errors, so log and bail.
         try:
             sink = self._sink_of(raw)
         except TypeError:
@@ -91,9 +92,6 @@ class EventDispatcher:
             sink.put_nowait(None)
 
     async def _perceive(self, raw: RawEvent) -> DollEvent:
-        # Step 4 stub: passthrough for UserTextEvent.
-        # Step 5 will replace this body with:
-        #     return await self._inner_voice.perceive(raw)
         if isinstance(raw, UserTextEvent):
             return DollEvent(perception=raw.text, raw=raw)
         raise TypeError(f"no stub perceive for {type(raw).__name__}")
@@ -110,21 +108,46 @@ class EventDispatcher:
         )
         state_block = f"STATE:\n{summary}\n\n" if summary else ""
         prefill = f"{state_block}{recall}DECISION: "
+
+        parser = ToolStreamParser()
+        ctx = ToolCtx(
+            sink=sink,
+            memory_root=self._memory_root,
+            memsearch=self._memsearch,
+        )
         async for chunk in self._adapter.stream_completion(
             system=system,
             user=doll_event.perception,
             prefill=prefill,
+            tools=TOOLS,
         ):
-            if chunk.text:
-                sink.put_nowait(TextChunk(text=chunk.text))
+            for call in parser.feed(chunk.text):
+                await self._dispatch_tool_call(call, ctx)
             if chunk.done:
                 break
-        sink.put_nowait(TurnEnd())
+        for call in parser.flush():
+            await self._dispatch_tool_call(call, ctx)
+        ctx.sink.put_nowait(TurnEnd())
+
+    async def _dispatch_tool_call(self, call: dict, ctx: ToolCtx) -> None:
+        name = call.get("name")
+        tool_cls = self._tools_by_name.get(name) if isinstance(name, str) else None
+        if tool_cls is None:
+            logger.warning("unknown tool: %r", name)
+            return
+        try:
+            tool = tool_cls.model_validate(call.get("arguments", {}))
+        except ValidationError as e:
+            logger.warning("tool args validation failed for %s: %s", name, e)
+            return
+        try:
+            await tool.run(ctx)
+        except Exception as e:
+            logger.exception("tool %s raised", name)
+            ctx.sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
 
     @staticmethod
     def _sink_of(raw: RawEvent) -> asyncio.Queue[ServerMessage | None]:
-        # Step 4: only UserTextEvent has a sink. Future RawEvent types may
-        # have none (e.g. TimerFiredEvent — output via tool calls / IPC push).
         if isinstance(raw, UserTextEvent):
             return raw.response_sink
         raise TypeError(f"no sink for {type(raw).__name__}")
