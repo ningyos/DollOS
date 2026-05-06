@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -120,7 +121,12 @@ class _FakeMemSearch:
 
 
 def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
-    return ToolCtx(sink=sink, memory_root=memory_root, memsearch=memsearch)
+    return ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=memsearch,
+        transcripts_root=memory_root / "transcripts",
+    )
 
 
 def _make_dispatcher(
@@ -137,6 +143,7 @@ def _make_dispatcher(
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
+        transcripts_root=tmp_path / "transcripts",
     )
 
 
@@ -349,6 +356,7 @@ async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Pa
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -384,6 +392,7 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: P
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -420,6 +429,7 @@ async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -456,6 +466,7 @@ async def test_dispatcher_instinct_error_surfaces_as_error_msg(tmp_path: Path):
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -494,6 +505,7 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -535,6 +547,7 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
         character_profile="You are Doll.",
         memory_root=tmp_path,
         memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -573,6 +586,7 @@ async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -607,6 +621,7 @@ async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -644,6 +659,7 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -682,6 +698,7 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -710,6 +727,7 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -733,6 +751,7 @@ async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
         inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -757,6 +776,7 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
         inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -780,6 +800,7 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
         inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -808,6 +829,7 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     disp._tools_by_name["_BoomTool"] = _BoomTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -834,6 +856,7 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
         inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -890,6 +913,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -945,6 +969,7 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -981,6 +1006,7 @@ async def test_respond_max_cascade_depth_emits_error_and_ends(tmp_path: Path, mo
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1035,6 +1061,7 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
         adapter=adapter, inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), character_profile="x",
         memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1046,3 +1073,89 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
     second_user = adapter.calls[1]["user"]
     assert "A" in second_user
     assert "B" in second_user
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path):
+    """User text is written to transcript in finally, after the turn completes."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    transcripts_root = tmp_path / "transcripts"
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=transcripts_root,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    expected = transcripts_root / f"{date.today():%Y-%m-%d}.md"
+    assert expected.exists()
+    content = expected.read_text()
+    assert "user] hi" in content
+    assert "doll] ok" in content
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_handles_diary_event(tmp_path: Path):
+    """DiaryEvent flows through perceive/respond pipeline; perception
+    tells Doll to write diary; daily.md ends up with diary section."""
+
+    captured_user_message: list[str] = []
+
+    class _CaptureAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def stream_completion(self, **kw):
+            self.calls.append(kw)
+            captured_user_message.append(kw["user"])
+            yield StreamChunk(
+                text=(
+                    '<tool_call>{"name":"WriteDiary","arguments":'
+                    '{"content":"today felt good"}}</tool_call>'
+                ),
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    from dollos.events import DiaryEvent
+    adapter = _CaptureAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    transcripts_root = tmp_path / "transcripts"
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=transcripts_root,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(DiaryEvent(response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    # The perception told Doll to write a diary
+    assert "日記" in captured_user_message[0]
+    # WriteDiary tool was actually called → daily file has diary section
+    daily_file = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
+    assert daily_file.exists()
+    assert "## 日記 (" in daily_file.read_text()

@@ -77,10 +77,11 @@ DollOS/
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
+| Roadmap step 8 — Memory auto-write + Diary | Merged |
 
 ### 下一個
 
-**Roadmap step 8 — Memory（自動寫）**：UserTextEvent 進 loop 時自動寫 memory（user 原話保真）。Assistant utterance 寫 memory（v1 寫全部、無顯著性過濾）。**並行討論**：reflex 需 research+brainstorm 後才排到具體 step。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 9 — Subagent**：spawn_subagent tool（external、fast=False）。Inline definition + 隔離 session + 預算（max_tokens / max_wall_clock_s）。fast=False async pattern：execute 立即回 dispatched-ack，subagent 跑完自己 push SubagentResultEvent 回 queue（真正用上 step 4 spec 預告的 RawEvent queue routing）。**並行**：reflex 仍待 research+brainstorm。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
