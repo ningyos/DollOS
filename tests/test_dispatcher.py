@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from dollos.dispatcher import EventDispatcher, ToolCallFailure
+from dollos.dispatcher import EventDispatcher, ToolResult
 from dollos.events import RawEvent, UserTextEvent
 from dollos.ipc.messages import ErrorMsg, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -785,9 +785,9 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
         {"name": "WhoKnows", "arguments": {}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
+    assert isinstance(fail, ToolResult) and not fail.success
     assert fail.tool_name == "WhoKnows"
-    assert "unknown" in fail.error.lower()
+    assert "unknown" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -809,9 +809,9 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
         {"name": "Say", "arguments": {"wrong": "k"}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
+    assert isinstance(fail, ToolResult) and not fail.success
     assert fail.tool_name == "Say"
-    assert "validation" in fail.error.lower()
+    assert "validation" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -839,8 +839,8 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         {"name": "_BoomTool", "arguments": {"text": "x"}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
-    assert "kaboom" in fail.error
+    assert isinstance(fail, ToolResult) and not fail.success
+    assert "kaboom" in fail.detail
     msg = sink.get_nowait()
     assert isinstance(msg, ErrorMsg)
     assert "_BoomTool" in msg.message and "kaboom" in msg.message
@@ -863,8 +863,8 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
 
     fail = await disp._dispatch_tool_call({"name": 42, "arguments": {}}, ctx)
 
-    assert isinstance(fail, ToolCallFailure)
-    assert "name" in fail.error.lower()
+    assert isinstance(fail, ToolResult) and not fail.success
+    assert "name" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -1159,3 +1159,274 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
     daily_file = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     assert daily_file.exists()
     assert "## 日記 (" in daily_file.read_text()
+
+
+def test_tool_result_dataclass_fields():
+    r = ToolResult(tool_name="X", success=False, detail="boom")
+    assert r.tool_name == "X"
+    assert r.success is False
+    assert r.detail == "boom"
+
+
+def test_tool_result_success_field_defaults_to_required():
+    """success must be explicit (no default) — caller intent should be visible."""
+    import dataclasses
+    fields = {f.name: f for f in dataclasses.fields(ToolResult)}
+    assert "success" in fields
+    assert fields["success"].default is dataclasses.MISSING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_none_when_tool_run_returns_none(tmp_path):
+    """Side-effect tool (Say) returning None → _dispatch_tool_call returns None (no cascade)."""
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    result = await disp._dispatch_tool_call(
+        {"name": "Say", "arguments": {"text": "hi"}}, ctx
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_success_result_when_tool_returns_str(tmp_path):
+    """Returning tool returning str → ToolResult(success=True, detail=str)."""
+
+    class _ReturningTool(BaseModel):
+        text: str
+        async def run(self, ctx) -> str:
+            return f"echoed: {self.text}"
+
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    disp._tools_by_name["_ReturningTool"] = _ReturningTool
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    result = await disp._dispatch_tool_call(
+        {"name": "_ReturningTool", "arguments": {"text": "hi"}}, ctx
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.success is True
+    assert result.detail == "echoed: hi"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_success_result_with_empty_str(tmp_path):
+    """Returning tool returning empty str → ToolResult(success=True, detail='')."""
+
+    class _EmptyReturningTool(BaseModel):
+        async def run(self, ctx) -> str:
+            return ""
+
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    disp._tools_by_name["_EmptyReturningTool"] = _EmptyReturningTool
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    result = await disp._dispatch_tool_call(
+        {"name": "_EmptyReturningTool", "arguments": {}}, ctx
+    )
+
+    assert isinstance(result, ToolResult)
+    assert result.success is True
+    assert result.detail == ""
+
+
+@pytest.mark.asyncio
+async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
+    """Round 1: returning tool fires → cascade → Round 2: Say wraps up."""
+
+    class _RoundedFakeAdapter:
+        def __init__(self, rounds):
+            self._rounds = rounds
+            self.calls: list[dict] = []
+
+        async def stream_completion(
+            self, *, system, user, prefill, stop=None,
+            max_tokens=1024, tools=None,
+        ):
+            idx = len(self.calls)
+            self.calls.append(
+                {"system": system, "user": user, "prefill": prefill,
+                 "tools": tools}
+            )
+            for c in self._rounds[idx]:
+                yield c
+
+    class _Echo(BaseModel):
+        text: str
+        async def run(self, ctx) -> str:
+            return f"got: {self.text}"
+
+    rounds = [
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"_Echo","arguments":{"text":"hi"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+    ]
+    adapter = _RoundedFakeAdapter(rounds)
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=["", ""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    disp._tools_by_name["_Echo"] = _Echo
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = []
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+        items.append(m)
+
+    assert len(adapter.calls) == 2
+    second_user = adapter.calls[1]["user"]
+    assert "_Echo" in second_user
+    assert "成功" in second_user
+    assert "got: hi" in second_user
+    assert "第 1 次重試" in second_user
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert any(m.text == "done" for m in text_chunks)
+
+
+@pytest.mark.asyncio
+async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path):
+    """Empty-string success cascade: perception says '成功，無輸出'."""
+
+    class _RoundedFakeAdapter:
+        def __init__(self, rounds):
+            self._rounds = rounds
+            self.calls: list[dict] = []
+
+        async def stream_completion(
+            self, *, system, user, prefill, stop=None,
+            max_tokens=1024, tools=None,
+        ):
+            idx = len(self.calls)
+            self.calls.append(
+                {"system": system, "user": user, "prefill": prefill,
+                 "tools": tools}
+            )
+            for c in self._rounds[idx]:
+                yield c
+
+    class _Empty(BaseModel):
+        async def run(self, ctx) -> str:
+            return ""
+
+    rounds = [
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"_Empty","arguments":{}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+    ]
+    adapter = _RoundedFakeAdapter(rounds)
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=["", ""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    disp._tools_by_name["_Empty"] = _Empty
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    second_user = adapter.calls[1]["user"]
+    assert "_Empty" in second_user
+    assert "成功" in second_user
+    assert "無輸出" in second_user
+
+
+@pytest.mark.asyncio
+async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path):
+    """Say (returns None) → no cascade → turn ends after one round."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    assert len(adapter.calls) == 1
