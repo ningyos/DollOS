@@ -16,6 +16,7 @@
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
+| Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 
 ---
 
@@ -65,9 +66,13 @@ Smoke-tested: 3-turn conversation; output via Say tool only (no naked-text leak)
 
 ### 7. Reflex + pre + post
 
-完整 bracket loop。Instinct.process() 加 reflex_calls 輸出（規則命中 → external whitelist tool）。Instinct.review() 階段（approved_calls, continue_thread）。ToolExecutedEvent cascade（reflex / 大模型 approved 都產 event 進 queue）。MAX_ITERATIONS backstop。Doll 自決停止（review continue_thread = False）。
+**Re-cut to step 7 = Cascade only**. Reflex deferred to its own research+brainstorm; review dropped (architecture conflict with Self-First).
 
-**Demo**：Doll 能多輪反應自己動作（recall result → 接續），有 small-model 守門。Reflex 規則庫 stub（具體規則之後）。
+Step 7 minimal scope: `_dispatch_tool_call` returns `ToolCallFailure | None`; `_respond` is an inner while-loop in the same asyncio task; tool failures (validation / unknown / runtime) are formatted into a perception narrative for the next big-model invocation in the same turn. Iteration count surfaced as "第 N 次重試". `MAX_CASCADE_DEPTH = 50` runaway cap. `scaffolding.jinja` adds meta-rule about multi-try / change approach / stop. Only fail-cascade — success-cascade deferred to step 9 returning tools.
+
+**Demo**：Doll 看得到自己 tool call 失敗 → 修正 args / 換 tool / 放棄；turn 行為對 user 透明（只看到最終正確輸出）。
+
+下個 step 是 step 8（自動寫 memory）或 reflex research（依時序選）。
 
 ### 8. Memory（自動寫）
 
