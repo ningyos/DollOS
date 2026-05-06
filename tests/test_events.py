@@ -32,3 +32,17 @@ def test_doll_event_is_not_raw_event():
     raw = UserTextEvent(text="hi", response_sink=sink)
     de = DollEvent(perception="x", raw=raw)
     assert not isinstance(de, RawEvent)
+
+
+def test_diary_event_is_raw_event_subclass():
+    sink: asyncio.Queue = asyncio.Queue()
+    from dollos.events import DiaryEvent, RawEvent
+    evt = DiaryEvent(response_sink=sink)
+    assert isinstance(evt, RawEvent)
+
+
+def test_diary_event_holds_response_sink():
+    sink: asyncio.Queue = asyncio.Queue()
+    from dollos.events import DiaryEvent
+    evt = DiaryEvent(response_sink=sink)
+    assert evt.response_sink is sink

@@ -51,6 +51,17 @@ def test_build_memsearch_creates_shared_dir(tmp_path: Path):
     assert expected.is_dir()
 
 
+def test_build_memsearch_creates_transcripts_dir(tmp_path: Path):
+    """build_memsearch should create data.root/memory/transcripts/ if missing."""
+    settings = _make_settings(tmp_path)
+    expected = tmp_path / "data" / "memory" / "transcripts"
+    assert not expected.exists()
+
+    build_memsearch(settings)
+
+    assert expected.is_dir()
+
+
 def test_build_memsearch_returns_memsearch_instance(tmp_path: Path):
     settings = _make_settings(tmp_path)
     instance = build_memsearch(settings)

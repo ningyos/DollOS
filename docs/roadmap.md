@@ -17,6 +17,7 @@
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
+| Roadmap step 8 — Memory auto-write + Diary | Merged |
 
 ---
 
@@ -76,9 +77,11 @@ Step 7 minimal scope: `_dispatch_tool_call` returns `ToolCallFailure | None`; `_
 
 ### 8. Memory（自動寫）
 
-UserTextEvent 進 loop 時自動寫 memory（user 原話保真）。Assistant utterance 寫 memory（v1 寫全部、無顯著性過濾）。
+**Re-cut**: roadmap 原文「v1 寫全部、無顯著性過濾」採折衷——transcript 走 ephemeral 路徑（同日 recall 可見），LT memory 由 Doll 自己寫日記產生。
 
-**Demo**：對話記憶完整 — Doll 知道你說過什麼、自己說過什麼。
+Step 8 minimal scope: `memory_writer.append_transcript` 寫 `[HH:MM role] X` 到 `data/memory/transcripts/{date}.md`（dispatcher 在 `_handle` finally 寫 user，Say.run 寫 doll）。memsearch 索引兩個目錄。新 `WriteDiary` pydantic tool 寫 markdown section 到 `data/memory/shared/{date}.md`。新 `DiaryEvent` RawEvent + dispatcher routing；kernel `_diary_scheduler` 每日 23:00 fire；`_drain_diary_sink` 內部消費。情緒走大模型 think 自由發揮，無新 emotion infrastructure。
+
+**Demo**：對話自動進 transcript（即時可 recall），每日固定時間 Doll 醒來寫日記（含情緒），隔日 recall 引用日記反思。
 
 ### 9. Subagent
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from dollos.ipc.messages import TextChunk
-from dollos.tools import TOOLS, NoteMemory, Say, ToolCtx
+from dollos.tools import TOOLS, NoteMemory, Say, ToolCtx, WriteDiary
 
 
 class _FakeMemSearch:
@@ -23,7 +23,12 @@ class _FakeMemSearch:
 def _make_ctx(tmp_path: Path) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
-    ctx = ToolCtx(sink=sink, memory_root=tmp_path, memsearch=ms)
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
     return ctx, ms, sink
 
 
@@ -88,3 +93,59 @@ async def test_note_memory_run_appends_to_existing_file(tmp_path):
     content = expected_path.read_text()
     assert "old fact" in content
     assert content.endswith("- new fact\n")
+
+
+@pytest.mark.asyncio
+async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    diary = WriteDiary(content="今天我學會了 transcript 跟 diary。")
+    await diary.run(ctx)
+
+    expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
+    assert expected.exists()
+    content = expected.read_text()
+    assert "## 日記 (" in content
+    assert "今天我學會了 transcript 跟 diary。" in content
+    assert ms.indexed and Path(ms.indexed[-1]) == expected
+
+
+def test_write_diary_schema_has_content_field():
+    schema = WriteDiary.model_json_schema()
+    assert "content" in schema["properties"]
+    assert schema["properties"]["content"]["type"] == "string"
+
+
+def test_write_diary_in_tools_list():
+    from dollos.tools import TOOLS
+    assert WriteDiary in TOOLS
+
+
+@pytest.mark.asyncio
+async def test_say_run_also_appends_to_transcript(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    transcripts_root = tmp_path / "transcripts"
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=transcripts_root,
+    )
+    await Say(text="hello").run(ctx)
+
+    msg = sink.get_nowait()
+    assert isinstance(msg, TextChunk) and msg.text == "hello"
+
+    expected = transcripts_root / f"{date.today():%Y-%m-%d}.md"
+    assert expected.exists()
+    content = expected.read_text()
+    assert "doll] hello" in content
+    # Say writes to transcript; NoteMemory writes to shared.
+    assert any(Path(p) == expected for p in ms.indexed)
