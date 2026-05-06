@@ -45,14 +45,15 @@ def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
 
 
 def build_memsearch(settings: Settings) -> MemSearch:
-    """Construct memsearch rooted at data.root / memory / shared.
-
-    step 10 will extend `paths` to include the active character's
-    private directory (data.root/memory/<character_id>). v1 only has shared.
-    """
+    """Construct memsearch rooted at data.root / memory / shared and transcripts."""
     shared_path = settings.data.root / "memory" / "shared"
+    transcripts_path = settings.data.root / "memory" / "transcripts"
     shared_path.mkdir(parents=True, exist_ok=True)
-    return MemSearch(paths=[str(shared_path)], embedding_provider="onnx")
+    transcripts_path.mkdir(parents=True, exist_ok=True)
+    return MemSearch(
+        paths=[str(shared_path), str(transcripts_path)],
+        embedding_provider="onnx",
+    )
 
 
 def build_inner_voice(
@@ -108,6 +109,7 @@ class DollOS:
             character_profile=self._character_profile,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
+            transcripts_root=settings.data.root / "memory" / "transcripts",
         )
         self.server = WebSocketServer(
             host=settings.ipc.host,

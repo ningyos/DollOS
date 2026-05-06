@@ -12,6 +12,7 @@ streamable / fast metadata — YAGNI.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -20,9 +21,12 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from dollos.ipc.messages import ServerMessage, TextChunk
+from dollos.memory_writer import append_transcript
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,6 +36,7 @@ class ToolCtx:
     sink: asyncio.Queue[ServerMessage | None]
     memory_root: Path
     memsearch: MemSearch
+    transcripts_root: Path
 
 
 class Say(BaseModel):
@@ -41,6 +46,15 @@ class Say(BaseModel):
 
     async def run(self, ctx: ToolCtx) -> None:
         ctx.sink.put_nowait(TextChunk(text=self.text))
+        try:
+            await append_transcript(
+                transcripts_root=ctx.transcripts_root,
+                memsearch=ctx.memsearch,
+                role="doll",
+                text=self.text,
+            )
+        except Exception:
+            logger.exception("transcript append failed for Say")
 
 
 class NoteMemory(BaseModel):

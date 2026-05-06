@@ -22,6 +22,7 @@ from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
+from dollos.memory_writer import append_transcript
 from dollos.prompts import PromptRenderer
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import TOOLS, ToolCtx
@@ -56,6 +57,7 @@ class EventDispatcher:
         character_profile: str,
         memory_root: Path,
         memsearch: MemSearch,
+        transcripts_root: Path,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -64,6 +66,7 @@ class EventDispatcher:
         self._character_profile = character_profile
         self._memory_root = memory_root
         self._memsearch = memsearch
+        self._transcripts_root = transcripts_root
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -104,6 +107,19 @@ class EventDispatcher:
             logger.exception("dispatcher _handle error")
             sink.put_nowait(ErrorMsg(message=f"handler error: {e}"))
         finally:
+            # Write user text AFTER the turn completes — avoids same-turn
+            # recall self-matching (memsearch returning the just-written
+            # user message as a hit on its own perception query).
+            if isinstance(raw, UserTextEvent):
+                try:
+                    await append_transcript(
+                        transcripts_root=self._transcripts_root,
+                        memsearch=self._memsearch,
+                        role="user",
+                        text=raw.text,
+                    )
+                except Exception:
+                    logger.exception("transcript append failed for UserTextEvent")
             sink.put_nowait(None)
 
     async def _perceive(self, raw: RawEvent) -> DollEvent:
@@ -133,6 +149,7 @@ class EventDispatcher:
                 sink=sink,
                 memory_root=self._memory_root,
                 memsearch=self._memsearch,
+                transcripts_root=self._transcripts_root,
             )
             fails: list[ToolCallFailure] = []
 

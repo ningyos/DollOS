@@ -108,6 +108,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         character_profile=dollos._character_profile,
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
+        transcripts_root=tmp_path / "transcripts",
     )
     return dollos, fake_adapter
 
