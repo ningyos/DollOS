@@ -76,10 +76,11 @@ DollOS/
 | Roadmap step 4 — Event Loop (concurrent dispatcher + two-tier event model) | Merged |
 | Roadmap step 5 — Inner Voice (minimal, summary-only) | Merged |
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
+| Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 
 ### 下一個
 
-**Roadmap step 7 — Reflex + pre + post**：完整 bracket loop。Instinct.process() 加 reflex_calls 輸出（規則命中 → external whitelist tool）。Instinct.review() 階段（approved_calls, continue_thread）。ToolExecutedEvent cascade（reflex / 大模型 approved 都產 event 進 queue）。MAX_ITERATIONS backstop。Doll 自決停止（review continue_thread = False）。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 8 — Memory（自動寫）**：UserTextEvent 進 loop 時自動寫 memory（user 原話保真）。Assistant utterance 寫 memory（v1 寫全部、無顯著性過濾）。**並行討論**：reflex 需 research+brainstorm 後才排到具體 step。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
