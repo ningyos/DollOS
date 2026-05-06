@@ -65,3 +65,11 @@ def test_render_blocks_unknown_template_raises():
     renderer = PromptRenderer()
     with pytest.raises(TemplateNotFound):
         renderer.render_blocks("does_not_exist")
+
+
+def test_scaffolding_includes_meta_rule_about_multi_try():
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "嘗試多次" in out or "tried multiple times" in out.lower()
+    assert "換方法" in out or "change approach" in out.lower() or "different" in out.lower()
+    assert "停止" in out or "stop" in out.lower()
