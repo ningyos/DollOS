@@ -33,15 +33,20 @@ MAX_CASCADE_DEPTH = 50
 
 
 @dataclass
-class ToolCallFailure:
-    """Tool call could not execute. Internal cascade primitive (not a RawEvent).
+class ToolResult:
+    """Tool execution result. Internal cascade primitive (not a RawEvent).
 
-    Used by the inner cascade loop in _respond to build the next-iteration
-    perception so Doll sees her own failed call and can self-correct.
+    success=False: mechanical fail (validation / unknown / runtime exception).
+    success=True:  ran cleanly. detail = the str returned by Tool.run().
+                   May be empty string (Tool ran but had no content to return).
+
+    Failures always cascade (Doll should fix). Successes cascade iff
+    Tool.run() returned a str (not None) — i.e., the tool author opted in.
     """
 
     tool_name: str
-    error: str
+    success: bool
+    detail: str
 
 
 class EventDispatcher:
@@ -157,7 +162,7 @@ class EventDispatcher:
                 memsearch=self._memsearch,
                 transcripts_root=self._transcripts_root,
             )
-            fails: list[ToolCallFailure] = []
+            results: list[ToolResult] = []
 
             async for chunk in self._adapter.stream_completion(
                 system=system,
@@ -166,17 +171,17 @@ class EventDispatcher:
                 tools=TOOLS,
             ):
                 for call in parser.feed(chunk.text):
-                    fail = await self._dispatch_tool_call(call, ctx)
-                    if fail is not None:
-                        fails.append(fail)
+                    result = await self._dispatch_tool_call(call, ctx)
+                    if result is not None:
+                        results.append(result)
                 if chunk.done:
                     break
             for call in parser.flush():
-                fail = await self._dispatch_tool_call(call, ctx)
-                if fail is not None:
-                    fails.append(fail)
+                result = await self._dispatch_tool_call(call, ctx)
+                if result is not None:
+                    results.append(result)
 
-            if not fails:
+            if not results:
                 break
 
             iteration += 1
@@ -190,7 +195,7 @@ class EventDispatcher:
                 break
 
             doll_event = DollEvent(
-                perception=self._format_fail_perception(fails, iteration),
+                perception=self._format_results_perception(results, iteration),
                 raw=doll_event.raw,
             )
             summary = await self._instinct.process(doll_event)
@@ -198,45 +203,65 @@ class EventDispatcher:
         sink.put_nowait(TurnEnd())
 
     @staticmethod
-    def _format_fail_perception(
-        fails: list[ToolCallFailure], iteration: int
+    def _format_results_perception(
+        results: list[ToolResult], iteration: int
     ) -> str:
-        lines = [
-            f"你 call 了 {f.tool_name} tool 失敗：{f.error}"
-            for f in fails
-        ]
+        lines = []
+        for r in results:
+            if r.success:
+                if r.detail:
+                    lines.append(
+                        f"你 call 了 {r.tool_name} tool 成功，回傳：\n{r.detail}"
+                    )
+                else:
+                    lines.append(
+                        f"你 call 了 {r.tool_name} tool 成功，無輸出。"
+                    )
+            else:
+                lines.append(f"你 call 了 {r.tool_name} tool 失敗：{r.detail}")
         lines.append(f"（這是 thread 的第 {iteration} 次重試）")
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     async def _dispatch_tool_call(
         self, call: dict, ctx: ToolCtx
-    ) -> ToolCallFailure | None:
+    ) -> ToolResult | None:
+        """Execute a tool call. Returns ToolResult if cascade-worthy, None otherwise.
+
+        Returns None when:
+          - tool.run() returned None (side-effect tool, no cascade)
+        Returns ToolResult when:
+          - validation/unknown error (success=False, error in detail)
+          - runtime exception (success=False, error in detail) — also pushes ErrorMsg to sink
+          - tool.run() returned str (success=True, str in detail; may be empty)
+        """
         name = call.get("name")
         if not isinstance(name, str):
-            return ToolCallFailure(
-                tool_name=str(name),
-                error="missing or non-string 'name' field in tool_call",
+            return ToolResult(
+                tool_name=str(name), success=False,
+                detail="missing or non-string 'name' field in tool_call",
             )
         tool_cls = self._tools_by_name.get(name)
         if tool_cls is None:
             logger.warning("unknown tool: %r", name)
-            return ToolCallFailure(tool_name=name, error="unknown tool")
+            return ToolResult(tool_name=name, success=False, detail="unknown tool")
         try:
             tool = tool_cls.model_validate(call.get("arguments", {}))
         except ValidationError as e:
             logger.warning("tool args validation failed for %s: %s", name, e)
-            return ToolCallFailure(
-                tool_name=name, error=f"args validation: {e}"
+            return ToolResult(
+                tool_name=name, success=False, detail=f"args validation: {e}"
             )
         try:
-            await tool.run(ctx)
+            returned = await tool.run(ctx)
         except Exception as e:
             logger.exception("tool %s raised", name)
             ctx.sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
-            return ToolCallFailure(
-                tool_name=name, error=f"runtime error: {e}"
+            return ToolResult(
+                tool_name=name, success=False, detail=f"runtime error: {e}"
             )
-        return None
+        if returned is None:
+            return None
+        return ToolResult(tool_name=name, success=True, detail=returned)
 
     @staticmethod
     def _sink_of(raw: RawEvent) -> asyncio.Queue[ServerMessage | None]:
