@@ -46,13 +46,26 @@ def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
 
 
 def build_memsearch(settings: Settings) -> MemSearch:
-    """Construct memsearch rooted at data.root / memory / shared and transcripts."""
+    """Construct memsearch rooted at data.root / memory / shared, transcripts, and skills.
+
+    skills/ holds skill entry files (frontmatter + short description); they ARE indexed
+    so RECALL surfaces them. skill_bodies/ holds full skill instructions and is NOT
+    indexed — it is loaded on demand by the InvokeSkill tool. skill_bodies/ is also
+    NOT auto-created at startup; Doll creates it lazily via Shell when she writes
+    a new skill body.
+    """
     shared_path = settings.data.root / "memory" / "shared"
     transcripts_path = settings.data.root / "memory" / "transcripts"
+    skills_path = settings.data.root / "memory" / "skills"
     shared_path.mkdir(parents=True, exist_ok=True)
     transcripts_path.mkdir(parents=True, exist_ok=True)
+    skills_path.mkdir(parents=True, exist_ok=True)
     return MemSearch(
-        paths=[str(shared_path), str(transcripts_path)],
+        paths=[
+            str(shared_path),
+            str(transcripts_path),
+            str(skills_path),
+        ],
         embedding_provider="onnx",
     )
 
