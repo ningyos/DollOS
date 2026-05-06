@@ -18,6 +18,7 @@
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
+| Roadmap step 9 — Success-cascade + Shell | Merged |
 
 ---
 
@@ -83,11 +84,15 @@ Step 8 minimal scope: `memory_writer.append_transcript` 寫 `[HH:MM role] X` 到
 
 **Demo**：對話自動進 transcript（即時可 recall），每日固定時間 Doll 醒來寫日記（含情緒），隔日 recall 引用日記反思。
 
-### 9. Subagent
+### 9. Success-cascade + Shell  ✅ Merged
 
-spawn_subagent tool（external、fast=False）。Inline definition + 隔離 session + 預算（max_tokens / max_wall_clock_s）。fast=False async pattern：execute 立即回 dispatched-ack，subagent 跑完自己 push SubagentResultEvent 回 queue。
+**Re-cut**: 原 roadmap step 9 為 Subagent。實際排程改：先做 success-cascade + Shell（讓 Doll 透過 shell 操控環境，並把 cascade 從 fail-only 升級成 success+fail unified）；Subagent 留到之後。
 
-**Demo**：Doll 能派分身做任務，結果非同步回流。
+Step 9 minimal scope: Tool.run 簽名 `-> str | None`（None = side-effect tool 不 cascade，str = cascade with content）。`ToolCallFailure` 升級成 `ToolResult(tool_name, success, detail)`，success/fail 共用 cascade 路徑。新 `Shell` returning tool（fresh subprocess via asyncio.to_thread，cwd=`data/`，default 30s/max 300s timeout，stdout+stderr 合併，8000-char head/tail truncation）。trust-only（無 permission gate / 無 sandbox）。
+
+**Demo**：Doll 透過 Shell 執行命令、看結果、接續講話；cascade 同 turn 多輪正常。
+
+下個 step 是 step 10（Skills system — entry/body 分離 + InvokeSkill returning tool）。
 
 ### 10. Character
 

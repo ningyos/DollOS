@@ -78,10 +78,11 @@ DollOS/
 | Roadmap step 6 — Tool calling (Say + NoteMemory, pydantic) | Merged |
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
+| Roadmap step 9 — Success-cascade + Shell | Merged |
 
 ### 下一個
 
-**Roadmap step 9 — Subagent**：spawn_subagent tool（external、fast=False）。Inline definition + 隔離 session + 預算（max_tokens / max_wall_clock_s）。fast=False async pattern：execute 立即回 dispatched-ack，subagent 跑完自己 push SubagentResultEvent 回 queue（真正用上 step 4 spec 預告的 RawEvent queue routing）。**並行**：reflex 仍待 research+brainstorm。完整 roadmap：`docs/roadmap.md`。
+**Roadmap step 10 — Skills system**：Anthropic-skill 風格 markdown 檔，但放進 memory 體系——entry 檔（短 description + frontmatter）由 memsearch 索引、進 RECALL；body 檔不索引、由 `InvokeSkill(name)` returning tool 主動載入（吃 step 9 的 success-cascade）。Doll 用 Shell 寫新 skill。**並行**：reflex 仍待 wake gating 後才有意義。完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
