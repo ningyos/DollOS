@@ -8,12 +8,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
-from dollos.dispatcher import EventDispatcher
+from dollos.dispatcher import EventDispatcher, ToolCallFailure
 from dollos.events import RawEvent, UserTextEvent
 from dollos.ipc.messages import ErrorMsg, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.prompts import PromptRenderer
+from dollos.tools import ToolCtx
 
 # ----- Fakes -----
 
@@ -115,6 +117,10 @@ class _FakeMemSearch:
 
     async def index_file(self, path):
         self.indexed.append(path)
+
+
+def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
+    return ToolCtx(sink=sink, memory_root=memory_root, memsearch=memsearch)
 
 
 def _make_dispatcher(
@@ -715,3 +721,124 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
     assert len(adapter.calls) == 1
     from dollos.tools import TOOLS
     assert adapter.calls[0].get("tools") == TOOLS
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    fail = await disp._dispatch_tool_call(
+        {"name": "Say", "arguments": {"text": "hi"}}, ctx
+    )
+
+    assert fail is None
+    msg = sink.get_nowait()
+    assert isinstance(msg, TextChunk)
+    assert msg.text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    fail = await disp._dispatch_tool_call(
+        {"name": "WhoKnows", "arguments": {}}, ctx
+    )
+
+    assert isinstance(fail, ToolCallFailure)
+    assert fail.tool_name == "WhoKnows"
+    assert "unknown" in fail.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    fail = await disp._dispatch_tool_call(
+        {"name": "Say", "arguments": {"wrong": "k"}}, ctx
+    )
+
+    assert isinstance(fail, ToolCallFailure)
+    assert fail.tool_name == "Say"
+    assert "validation" in fail.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_error(tmp_path):
+    class _BoomTool(BaseModel):
+        text: str
+        async def run(self, ctx):
+            raise RuntimeError("kaboom")
+
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    disp._tools_by_name["_BoomTool"] = _BoomTool
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    fail = await disp._dispatch_tool_call(
+        {"name": "_BoomTool", "arguments": {"text": "x"}}, ctx
+    )
+
+    assert isinstance(fail, ToolCallFailure)
+    assert "kaboom" in fail.error
+    msg = sink.get_nowait()
+    assert isinstance(msg, ErrorMsg)
+    assert "_BoomTool" in msg.message and "kaboom" in msg.message
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_tool_ctx(sink, tmp_path, ms)
+
+    fail = await disp._dispatch_tool_call({"name": 42, "arguments": {}}, ctx)
+
+    assert isinstance(fail, ToolCallFailure)
+    assert "name" in fail.error.lower()
