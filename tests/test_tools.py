@@ -13,6 +13,7 @@ from dollos.tools import (
     SHELL_MAX_TIMEOUT_S,
     SHELL_OUTPUT_MAX_CHARS,
     TOOLS,
+    InvokeSkill,
     NoteMemory,
     Say,
     Shell,
@@ -306,3 +307,76 @@ async def test_shell_truncates_long_output(tmp_path):
         command=f"yes hello | head -c {SHELL_OUTPUT_MAX_CHARS * 2}"
     ).run(ctx)
     assert "[truncated" in out
+
+
+def test_invoke_skill_in_tools_list():
+    from dollos.tools import TOOLS
+    assert InvokeSkill in TOOLS
+
+
+def test_invoke_skill_schema_has_name_field():
+    schema = InvokeSkill.model_json_schema()
+    assert "name" in schema["properties"]
+    assert schema["properties"]["name"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_invoke_skill_run_returns_body_content(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    memory_root = tmp_path / "memory"
+    bodies_dir = memory_root / "skill_bodies"
+    bodies_dir.mkdir(parents=True)
+    body_path = bodies_dir / "my_skill.md"
+    body_content = "# Steps\n\n1. Step one\n2. Step two\n"
+    body_path.write_text(body_content)
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    out = await InvokeSkill(name="my_skill").run(ctx)
+
+    assert out == body_content
+
+
+@pytest.mark.asyncio
+async def test_invoke_skill_run_raises_filenotfound_for_missing_skill(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    memory_root = tmp_path / "memory"
+    memory_root.mkdir()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        await InvokeSkill(name="nonexistent").run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
+    """Verify path goes to skill_bodies/, not skills/."""
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    memory_root = tmp_path / "memory"
+    skills_dir = memory_root / "skills"
+    bodies_dir = memory_root / "skill_bodies"
+    skills_dir.mkdir(parents=True)
+    bodies_dir.mkdir(parents=True)
+    (skills_dir / "x.md").write_text("ENTRY CONTENT")
+    (bodies_dir / "x.md").write_text("BODY CONTENT")
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    out = await InvokeSkill(name="x").run(ctx)
+    assert out == "BODY CONTENT"
