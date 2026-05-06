@@ -81,7 +81,7 @@ async def append_transcript(
 
 ### §3.2 兩處呼叫
 
-**Dispatcher**：`_handle` 在 perceive 之前，對 `UserTextEvent` 寫 `role="user"`：
+**Dispatcher**：`_handle` 在 turn 結束**之後**（finally 階段），對 `UserTextEvent` 寫 `role="user"`：
 
 ```python
 async def _handle(self, raw: RawEvent) -> None:
@@ -90,19 +90,31 @@ async def _handle(self, raw: RawEvent) -> None:
     except TypeError:
         ...
 
-    # NEW: write user text to transcript before processing
-    if isinstance(raw, UserTextEvent):
-        try:
-            await append_transcript(
-                transcripts_root=self._transcripts_root,
-                memsearch=self._memsearch,
-                role="user",
-                text=raw.text,
-            )
-        except Exception:
-            logger.exception("transcript append failed for UserTextEvent")
-            # don't abort the turn; transcript loss is non-fatal
-    ...
+    try:
+        doll_event = await self._perceive(raw)
+        summary = await self._instinct.process(doll_event)
+        await self._respond(doll_event, summary, sink)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception("dispatcher _handle error")
+        sink.put_nowait(ErrorMsg(message=f"handler error: {e}"))
+    finally:
+        # Write user text AFTER the turn completes — avoids same-turn
+        # recall self-matching (where memsearch returns the just-written
+        # user message as a hit on its own perception query).
+        if isinstance(raw, UserTextEvent):
+            try:
+                await append_transcript(
+                    transcripts_root=self._transcripts_root,
+                    memsearch=self._memsearch,
+                    role="user",
+                    text=raw.text,
+                )
+            except Exception:
+                logger.exception("transcript append failed for UserTextEvent")
+                # transcript loss is non-fatal
+        sink.put_nowait(None)
 ```
 
 EventDispatcher ctor 加 `transcripts_root: Path` 注入。
@@ -194,9 +206,8 @@ async def _perceive(self, raw: RawEvent) -> DollEvent:
         return DollEvent(perception=raw.text, raw=raw)
     if isinstance(raw, DiaryEvent):
         perception = (
-            "今天要寫日記。回顧今天的對話（已透過 RECALL 帶入相關片段）"
-            "和你目前的狀態（STATE），用 WriteDiary tool 寫一段反思——"
-            "記下今天發生的事、以及你的情緒。誠實寫，不需要表演。"
+            "今天該寫日記了。回顧今天發生的事跟你的感受，"
+            "用 WriteDiary tool 寫一段反思。誠實寫，不需要表演。"
         )
         return DollEvent(perception=perception, raw=raw)
     raise TypeError(...)
@@ -220,15 +231,32 @@ Kernel 加 background asyncio task：
 
 ```python
 class DollOS:
-    DIARY_HOUR = 23  # 23:59 fires
-    DIARY_MINUTE = 59
+    DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see §12.3)
+    DIARY_MINUTE = 0
 
     async def run(self) -> None:
         await self.memsearch.index()
-        await self.server.start()
-        # NEW: start scheduler + drain background tasks
-        self._scheduler_task = asyncio.create_task(self._diary_scheduler())
-        ...
+        try:
+            await self.server.start()
+            # NEW: start scheduler
+            self._scheduler_task = asyncio.create_task(self._diary_scheduler())
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, self._shutdown.set)
+            try:
+                await self._shutdown.wait()
+            finally:
+                await self.server.stop()
+                # NEW: stop scheduler before dispatcher (drain tasks rely on
+                # dispatcher still running to push None sentinel)
+                if self._scheduler_task is not None:
+                    self._scheduler_task.cancel()
+                    await asyncio.gather(
+                        self._scheduler_task, return_exceptions=True
+                    )
+                await self.dispatcher.stop()
+        finally:
+            pass
 
     async def _diary_scheduler(self) -> None:
         while not self._shutdown.is_set():
@@ -361,11 +389,13 @@ def build_memsearch(settings: Settings) -> MemSearch:
 ## §12 已知限制 / Follow-ups
 
 1. **Transcript 累積**：每日累積，無自動清。長期會肥。Follow-up：日記寫完後 transcript 歸檔到 `transcripts/archive/`，從 memsearch 路徑移除。
-2. **DIARY_HOUR/MINUTE hardcoded**：23:59。Follow-up：進 `config.toml [scheduler]`。
-3. **Doll 沒 call WriteDiary 的當日**：log warning + 沒日記。Follow-up：Inner Voice review 或 hard-prompt。step 8 接受。
-4. **單機 race**：transcript append 跨 client 並行寫同檔——OS small-write 大致 atomic 但極端 case 行間交錯。同 step 6 NoteMemory 同問題。Follow-up：lock 或寫 SQLite。
-5. **DiaryEvent 沒 STATE 接續**：scheduler-fire 是獨立 RawEvent，instinct.process 從 `_last_summary` 起步——通常很合理（state 反映當日累積）但 daemon restart 後 `_last_summary` 是空的、剛啟動就觸發 diary 會 STATE 空。
-6. **memsearch 多 path 索引 cost**：兩個目錄都掃。檔案少（每日 1-2 檔）影響微小。
+2. **DIARY_HOUR/MINUTE hardcoded**：23:00。Follow-up：進 `config.toml [scheduler]`。
+3. **跨午夜寫錯日期**：23:00 fire 後 WriteDiary 跑 5+ 分鐘 → 進入 00:00+ → `date.today()` 在 run() 內讀變成隔日，日記寫到隔天的 daily.md。23:00 fire 留 60 分鐘 buffer 通常夠；但 buggy / GPU 慢時仍可能跨。Follow-up：DiaryEvent 帶 `subject_date` field，WriteDiary 從 ctx 讀。
+4. **Doll 沒 call WriteDiary 的當日**：log warning + 沒日記。Follow-up：Inner Voice review 或 hard-prompt。step 8 接受。
+5. **單機 race**：transcript append 跨 client 並行寫同檔——OS small-write 大致 atomic 但極端 case 行間交錯。同 step 6 NoteMemory 同問題。Follow-up：lock 或寫 SQLite。
+6. **DiaryEvent 沒 STATE 接續**：scheduler-fire 是獨立 RawEvent，instinct.process 從 `_last_summary` 起步——通常很合理（state 反映當日累積）但 daemon restart 後 `_last_summary` 是空的、剛啟動就觸發 diary 會 STATE 空。
+7. **memsearch 多 path 索引 cost**：兩個目錄都掃。檔案少（每日 1-2 檔）影響微小。
+8. **WriteDiary 在非 DiaryEvent 場景被 call**：tool 在 TOOLS list，user turn 中 Doll 也可能 call（理論上）。語意可接受（Doll agency），但會出現 user 要求 Doll 寫日記的情況。Follow-up：用 ctx flag 限制只在 DiaryEvent 可 call。
 
 ---
 
