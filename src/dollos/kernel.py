@@ -4,15 +4,16 @@ import asyncio
 import logging
 import signal
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 
 from memsearch import MemSearch
 
 from dollos.config import Settings
 from dollos.dispatcher import EventDispatcher
-from dollos.events import UserTextEvent
+from dollos.events import DiaryEvent, UserTextEvent
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct, SmallModelInstinct
-from dollos.ipc.messages import ServerMessage, TextInput
+from dollos.ipc.messages import ErrorMsg, ServerMessage, TextInput
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
@@ -93,6 +94,9 @@ def build_instinct(
 
 
 class DollOS:
+    DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see spec §12.3)
+    DIARY_MINUTE = 0
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.adapter = build_adapter(settings)
@@ -117,6 +121,7 @@ class DollOS:
             handler=self._handle_text_input,
         )
         self._shutdown = asyncio.Event()
+        self._scheduler_task: asyncio.Task[None] | None = None
 
     async def _handle_text_input(self, msg: TextInput) -> AsyncIterator[ServerMessage]:
         sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
@@ -127,10 +132,46 @@ class DollOS:
                 return
             yield item
 
+    async def _diary_scheduler(self) -> None:
+        """Background task: fires DiaryEvent daily at DIARY_HOUR:DIARY_MINUTE."""
+        while not self._shutdown.is_set():
+            now = datetime.now()
+            target = now.replace(
+                hour=self.DIARY_HOUR, minute=self.DIARY_MINUTE,
+                second=0, microsecond=0,
+            )
+            if target <= now:
+                target = target + timedelta(days=1)
+            sleep_s = (target - now).total_seconds()
+            try:
+                await asyncio.wait_for(
+                    self._shutdown.wait(), timeout=sleep_s
+                )
+                return  # shutdown signaled
+            except TimeoutError:
+                pass  # time to fire
+            sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
+            asyncio.create_task(self._drain_diary_sink(sink))
+            self.dispatcher.dispatch(DiaryEvent(response_sink=sink))
+
+    async def _drain_diary_sink(
+        self, sink: asyncio.Queue[ServerMessage | None]
+    ) -> None:
+        """Consume diary event sink to None sentinel; logs ErrorMsg only."""
+        while True:
+            item = await sink.get()
+            if item is None:
+                return
+            if isinstance(item, ErrorMsg):
+                logger.error("diary event error: %s", item.message)
+            # TextChunk / TurnEnd silently consumed
+
     async def run(self) -> None:
         await self.memsearch.index()
         try:
             await self.server.start()
+            # Start diary scheduler
+            self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown.set)
@@ -138,6 +179,13 @@ class DollOS:
                 await self._shutdown.wait()
             finally:
                 await self.server.stop()
+                # Cancel scheduler before dispatcher.stop so any in-flight
+                # diary turn can finish via dispatcher's task tracking
+                if self._scheduler_task is not None:
+                    self._scheduler_task.cancel()
+                    await asyncio.gather(
+                        self._scheduler_task, return_exceptions=True
+                    )
                 await self.dispatcher.stop()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based
