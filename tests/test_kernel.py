@@ -1,5 +1,6 @@
 """Integration tests for DollOS._handle_text_input via EventDispatcher."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,3 +176,30 @@ async def test_dispatch_user_text_uses_text_as_user_role(
 
     await _collect(dollos._handle_text_input(TextInput(text="hello world")))
     assert adapter.calls[0]["user"] == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_drain_diary_sink_consumes_until_sentinel(tmp_path):
+    """_drain_diary_sink eats messages and returns on None sentinel."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    sink: asyncio.Queue = asyncio.Queue()
+    sink.put_nowait(TextChunk(text="ignored"))
+    sink.put_nowait(ErrorMsg(message="logged"))
+    sink.put_nowait(TurnEnd())
+    sink.put_nowait(None)
+    await asyncio.wait_for(dollos._drain_diary_sink(sink), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_diary_scheduler_returns_on_shutdown(tmp_path):
+    """Scheduler returns when shutdown is set, even if next fire is far away."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    async def _quickshutdown():
+        await asyncio.sleep(0.05)
+        dollos._shutdown.set()
+
+    asyncio.create_task(_quickshutdown())
+    await asyncio.wait_for(dollos._diary_scheduler(), timeout=2.0)
