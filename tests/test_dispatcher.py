@@ -1109,3 +1109,53 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
     content = expected.read_text()
     assert "user] hi" in content
     assert "doll] ok" in content
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_handles_diary_event(tmp_path: Path):
+    """DiaryEvent flows through perceive/respond pipeline; perception
+    tells Doll to write diary; daily.md ends up with diary section."""
+
+    captured_user_message: list[str] = []
+
+    class _CaptureAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def stream_completion(self, **kw):
+            self.calls.append(kw)
+            captured_user_message.append(kw["user"])
+            yield StreamChunk(
+                text=(
+                    '<tool_call>{"name":"WriteDiary","arguments":'
+                    '{"content":"today felt good"}}</tool_call>'
+                ),
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    from dollos.events import DiaryEvent
+    adapter = _CaptureAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    transcripts_root = tmp_path / "transcripts"
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=transcripts_root,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(DiaryEvent(response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    # The perception told Doll to write a diary
+    assert "日記" in captured_user_message[0]
+    # WriteDiary tool was actually called → daily file has diary section
+    daily_file = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
+    assert daily_file.exists()
+    assert "## 日記 (" in daily_file.read_text()

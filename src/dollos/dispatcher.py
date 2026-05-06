@@ -17,7 +17,7 @@ from pathlib import Path
 from memsearch import MemSearch
 from pydantic import ValidationError
 
-from dollos.events import DollEvent, RawEvent, UserTextEvent
+from dollos.events import DiaryEvent, DollEvent, RawEvent, UserTextEvent
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
@@ -125,6 +125,12 @@ class EventDispatcher:
     async def _perceive(self, raw: RawEvent) -> DollEvent:
         if isinstance(raw, UserTextEvent):
             return DollEvent(perception=raw.text, raw=raw)
+        if isinstance(raw, DiaryEvent):
+            perception = (
+                "今天該寫日記了。回顧今天發生的事跟你的感受，"
+                "用 WriteDiary tool 寫一段反思。誠實寫，不需要表演。"
+            )
+            return DollEvent(perception=perception, raw=raw)
         raise TypeError(f"no stub perceive for {type(raw).__name__}")
 
     async def _respond(
@@ -234,6 +240,6 @@ class EventDispatcher:
 
     @staticmethod
     def _sink_of(raw: RawEvent) -> asyncio.Queue[ServerMessage | None]:
-        if isinstance(raw, UserTextEvent):
+        if isinstance(raw, (UserTextEvent, DiaryEvent)):
             return raw.response_sink
         raise TypeError(f"no sink for {type(raw).__name__}")

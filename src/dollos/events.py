@@ -37,6 +37,18 @@ class UserTextEvent(RawEvent):
 
 
 @dataclass
+class DiaryEvent(RawEvent):
+    """Scheduled trigger for Doll to write today's diary.
+
+    Has no user-facing sink — the daemon drains internally. Dispatcher's
+    _perceive synthesizes a "write today's diary" perception so Doll wakes
+    and calls the WriteDiary tool.
+    """
+
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
 class DollEvent:
     """Natural-language perception consumed by the big LLM as `user` role.
 
