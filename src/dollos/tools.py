@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -27,6 +28,20 @@ if TYPE_CHECKING:
     from memsearch import MemSearch
 
 logger = logging.getLogger(__name__)
+
+SHELL_DEFAULT_TIMEOUT_S = 30
+SHELL_MAX_TIMEOUT_S = 300
+SHELL_OUTPUT_MAX_CHARS = 8000
+
+
+def _truncate(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    half = cap // 2
+    head = text[:half]
+    tail = text[-half:]
+    dropped = len(text) - 2 * half
+    return f"{head}\n...[truncated {dropped} chars]...\n{tail}"
 
 
 @dataclass
@@ -99,4 +114,49 @@ class WriteDiary(BaseModel):
         await ctx.memsearch.index_file(path)
 
 
-TOOLS: list[type[BaseModel]] = [Say, NoteMemory, WriteDiary]
+class Shell(BaseModel):
+    """Execute a shell command. Returns combined stdout+stderr.
+
+    Subprocess runs with the daemon's user permissions. Working directory
+    starts at settings.data.root each call (cd does NOT persist between
+    calls — each Shell invocation is a fresh subprocess).
+
+    Use this for any system inspection (ls, cat, find, ps, ...) or any
+    command-line task. Output is truncated to 8000 chars total if longer.
+    """
+
+    command: str = Field(
+        description="The shell command to run (will be passed to bash -c)."
+    )
+    timeout_s: int = Field(
+        default=SHELL_DEFAULT_TIMEOUT_S,
+        ge=1,
+        le=SHELL_MAX_TIMEOUT_S,
+        description=(
+            f"Seconds before timeout. Default {SHELL_DEFAULT_TIMEOUT_S}, "
+            f"max {SHELL_MAX_TIMEOUT_S}."
+        ),
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        cwd = ctx.memory_root.parent
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["bash", "-c", self.command],
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return f"[shell timeout after {self.timeout_s}s]"
+        combined = proc.stdout
+        if proc.stderr:
+            combined += proc.stderr
+        prefix = f"[exit {proc.returncode}]\n"
+        body = _truncate(combined, SHELL_OUTPUT_MAX_CHARS)
+        return prefix + body
+
+
+TOOLS: list[type[BaseModel]] = [Say, NoteMemory, WriteDiary, Shell]
