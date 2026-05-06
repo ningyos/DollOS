@@ -33,15 +33,20 @@ MAX_CASCADE_DEPTH = 50
 
 
 @dataclass
-class ToolCallFailure:
-    """Tool call could not execute. Internal cascade primitive (not a RawEvent).
+class ToolResult:
+    """Tool execution result. Internal cascade primitive (not a RawEvent).
 
-    Used by the inner cascade loop in _respond to build the next-iteration
-    perception so Doll sees her own failed call and can self-correct.
+    success=False: mechanical fail (validation / unknown / runtime exception).
+    success=True:  ran cleanly. detail = the str returned by Tool.run().
+                   May be empty string (Tool ran but had no content to return).
+
+    Failures always cascade (Doll should fix). Successes cascade iff
+    Tool.run() returned a str (not None) — i.e., the tool author opted in.
     """
 
     tool_name: str
-    error: str
+    success: bool
+    detail: str
 
 
 class EventDispatcher:
@@ -157,7 +162,7 @@ class EventDispatcher:
                 memsearch=self._memsearch,
                 transcripts_root=self._transcripts_root,
             )
-            fails: list[ToolCallFailure] = []
+            fails: list[ToolResult] = []
 
             async for chunk in self._adapter.stream_completion(
                 system=system,
@@ -199,10 +204,10 @@ class EventDispatcher:
 
     @staticmethod
     def _format_fail_perception(
-        fails: list[ToolCallFailure], iteration: int
+        fails: list[ToolResult], iteration: int
     ) -> str:
         lines = [
-            f"你 call 了 {f.tool_name} tool 失敗：{f.error}"
+            f"你 call 了 {f.tool_name} tool 失敗：{f.detail}"
             for f in fails
         ]
         lines.append(f"（這是 thread 的第 {iteration} 次重試）")
@@ -210,31 +215,32 @@ class EventDispatcher:
 
     async def _dispatch_tool_call(
         self, call: dict, ctx: ToolCtx
-    ) -> ToolCallFailure | None:
+    ) -> ToolResult | None:
         name = call.get("name")
         if not isinstance(name, str):
-            return ToolCallFailure(
+            return ToolResult(
                 tool_name=str(name),
-                error="missing or non-string 'name' field in tool_call",
+                success=False,
+                detail="missing or non-string 'name' field in tool_call",
             )
         tool_cls = self._tools_by_name.get(name)
         if tool_cls is None:
             logger.warning("unknown tool: %r", name)
-            return ToolCallFailure(tool_name=name, error="unknown tool")
+            return ToolResult(tool_name=name, success=False, detail="unknown tool")
         try:
             tool = tool_cls.model_validate(call.get("arguments", {}))
         except ValidationError as e:
             logger.warning("tool args validation failed for %s: %s", name, e)
-            return ToolCallFailure(
-                tool_name=name, error=f"args validation: {e}"
+            return ToolResult(
+                tool_name=name, success=False, detail=f"args validation: {e}"
             )
         try:
             await tool.run(ctx)
         except Exception as e:
             logger.exception("tool %s raised", name)
             ctx.sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
-            return ToolCallFailure(
-                tool_name=name, error=f"runtime error: {e}"
+            return ToolResult(
+                tool_name=name, success=False, detail=f"runtime error: {e}"
             )
         return None
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from dollos.dispatcher import EventDispatcher, ToolCallFailure
+from dollos.dispatcher import EventDispatcher, ToolResult
 from dollos.events import RawEvent, UserTextEvent
 from dollos.ipc.messages import ErrorMsg, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -785,9 +785,9 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
         {"name": "WhoKnows", "arguments": {}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
+    assert isinstance(fail, ToolResult) and not fail.success
     assert fail.tool_name == "WhoKnows"
-    assert "unknown" in fail.error.lower()
+    assert "unknown" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -809,9 +809,9 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
         {"name": "Say", "arguments": {"wrong": "k"}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
+    assert isinstance(fail, ToolResult) and not fail.success
     assert fail.tool_name == "Say"
-    assert "validation" in fail.error.lower()
+    assert "validation" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -839,8 +839,8 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         {"name": "_BoomTool", "arguments": {"text": "x"}}, ctx
     )
 
-    assert isinstance(fail, ToolCallFailure)
-    assert "kaboom" in fail.error
+    assert isinstance(fail, ToolResult) and not fail.success
+    assert "kaboom" in fail.detail
     msg = sink.get_nowait()
     assert isinstance(msg, ErrorMsg)
     assert "_BoomTool" in msg.message and "kaboom" in msg.message
@@ -863,8 +863,8 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
 
     fail = await disp._dispatch_tool_call({"name": 42, "arguments": {}}, ctx)
 
-    assert isinstance(fail, ToolCallFailure)
-    assert "name" in fail.error.lower()
+    assert isinstance(fail, ToolResult) and not fail.success
+    assert "name" in fail.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -1159,3 +1159,18 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
     daily_file = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     assert daily_file.exists()
     assert "## 日記 (" in daily_file.read_text()
+
+
+def test_tool_result_dataclass_fields():
+    r = ToolResult(tool_name="X", success=False, detail="boom")
+    assert r.tool_name == "X"
+    assert r.success is False
+    assert r.detail == "boom"
+
+
+def test_tool_result_success_field_defaults_to_required():
+    """success must be explicit (no default) — caller intent should be visible."""
+    import dataclasses
+    fields = {f.name: f for f in dataclasses.fields(ToolResult)}
+    assert "success" in fields
+    assert fields["success"].default is dataclasses.MISSING
