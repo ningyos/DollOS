@@ -19,6 +19,7 @@
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
 | Roadmap step 9 — Success-cascade + Shell | Merged |
+| Roadmap step 10 — Skills system | Merged |
 
 ---
 
@@ -96,9 +97,15 @@ Step 9 minimal scope: Tool.run 簽名 `-> str | None`（None = side-effect tool 
 
 ### 10. Character
 
-`.doll` v3 minimal schema：`manifest.json` + `prompts/character.jinja`。character.jinja 覆寫 #2 的 default `doll_character.jinja`，渲染時吃 ctx（{{ S }} / {{ tools }} / {{ self_state }} / ...）。CharacterPack dataclass + load_character_pack()。`[character] default_pack` config。範例 gura.doll。
+**Re-cut**: 原 roadmap step 10 為 Character pack。實際排程改：先做 Skills system（讓 Doll 能累積 procedural memory）；Character pack 留到之後。
 
-**Demo**：Doll 真有人格，可換包換靈魂。
+Step 10 minimal scope: Skill 兩檔分離——`data/memory/skills/<name>.md`（entry，frontmatter `name` + 短 prose description，由 memsearch 索引、進 RECALL）+ `data/memory/skill_bodies/<name>.md`（body，完整 instructions，不索引）。新 `InvokeSkill(name)` returning tool 載入 body 進 cascade（吃 step 9 success-cascade）。`scaffolding.jinja` 加 skill convention 段教 Doll 怎麼用。Doll 用 Shell tool 寫新 skill。
+
+Smoke test 結論：**infrastructure 完整通過 unit test（174 → 178 tests），但 real-model behavior 退化**——加長 scaffolding 後 Qwen3.6 35B 變得更不可靠地遵守 tool_call 格式（步 6 §10.4 既有問題加重）。需要 Character pack（step 11+）幫 Doll 建立更紮實的角色身份才能改善 tool-using 行為。
+
+**Demo 預期**：對話中 Doll 寫 skill；隔輪 user 觸發類似情境，RECALL 帶到 entry，Doll 主動 InvokeSkill 讀 body 跟著做。**Demo 實際**：機制可達成（unit test 證明），但要 Doll 在真實對話穩定觸發此流程需後續 Character pack 改善。
+
+下個 step 候選：Character pack（最高優先——直接修 model 行為）/ wake gating / Subagent / Voice pipeline。
 
 ---
 

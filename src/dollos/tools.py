@@ -159,4 +159,24 @@ class Shell(BaseModel):
         return prefix + body
 
 
-TOOLS: list[type[BaseModel]] = [Say, NoteMemory, WriteDiary, Shell]
+class InvokeSkill(BaseModel):
+    """Load a skill's full instructions into context.
+
+    Use this when you've seen a skill entry in RECALL and decide to follow
+    its procedure. The skill body will be returned as the next perception,
+    after which you should follow its instructions step by step.
+    """
+
+    name: str = Field(
+        description=(
+            "Skill name (matches the entry's frontmatter `name` field "
+            "and filename basename)."
+        )
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        path = ctx.memory_root / "skill_bodies" / f"{self.name}.md"
+        return path.read_text()
+
+
+TOOLS: list[type[BaseModel]] = [Say, NoteMemory, WriteDiary, Shell, InvokeSkill]

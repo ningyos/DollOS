@@ -118,3 +118,18 @@ def test_build_instinct_uses_qwen3_plain_template(tmp_path: Path):
     renderer = PromptRenderer()
     inst = build_instinct(settings, renderer)
     assert isinstance(inst._adapter._template, Qwen3PlainTemplate)
+
+
+def test_build_memsearch_indexes_skills_dir(tmp_path):
+    settings = _make_settings(tmp_path)
+    build_memsearch(settings)
+    skills_path = tmp_path / "data" / "memory" / "skills"
+    assert skills_path.is_dir()
+
+
+def test_build_memsearch_does_not_create_skill_bodies_dir(tmp_path):
+    """skill_bodies/ is not indexed and should not be auto-created at startup."""
+    settings = _make_settings(tmp_path)
+    build_memsearch(settings)
+    bodies_path = tmp_path / "data" / "memory" / "skill_bodies"
+    assert not bodies_path.exists()

@@ -79,10 +79,17 @@ DollOS/
 | Roadmap step 7 — Cascade (inner while-loop on tool fails) | Merged |
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
 | Roadmap step 9 — Success-cascade + Shell | Merged |
+| Roadmap step 10 — Skills system | Merged |
 
 ### 下一個
 
-**Roadmap step 10 — Skills system**：Anthropic-skill 風格 markdown 檔，但放進 memory 體系——entry 檔（短 description + frontmatter）由 memsearch 索引、進 RECALL；body 檔不索引、由 `InvokeSkill(name)` returning tool 主動載入（吃 step 9 的 success-cascade）。Doll 用 Shell 寫新 skill。**並行**：reflex 仍待 wake gating 後才有意義。完整 roadmap：`docs/roadmap.md`。
+**下一個候選**（按用戶決定挑一個）：
+- **Character pack**（.doll v3 schema、character.jinja 覆寫）—— **最高優先**：step 5/10 smoke 都觀察到 model 行為弱化，character pack 是直接的 fix
+- **Subagent**（async result via SubagentResultEvent）
+- **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
+- **Voice pipeline**（KWS / VAD / ASR / TTS）
+
+完整 roadmap：`docs/roadmap.md`。
 
 ## Build / Run
 
