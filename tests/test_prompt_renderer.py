@@ -73,3 +73,12 @@ def test_scaffolding_includes_meta_rule_about_multi_try():
     assert "嘗試多次" in out or "tried multiple times" in out.lower()
     assert "換方法" in out or "change approach" in out.lower() or "different" in out.lower()
     assert "停止" in out or "stop" in out.lower()
+
+
+def test_scaffolding_includes_skill_convention():
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "skill" in out.lower()
+    assert "InvokeSkill" in out
+    assert "skills/" in out
+    assert "skill_bodies/" in out

@@ -2,6 +2,15 @@
 {{ character }}
 
 如果你嘗試多次仍未達到目的，考慮換方法、嘗試不同 tool、或停止 (不再 call tool)。
+
+你有「skill」可以累積經驗：
+
+- Skill = 一個 procedural memory，分兩檔：
+  - `data/memory/skills/<name>.md` — entry，YAML frontmatter `name: <name>` + 一段自然語言 description（1-3 句講做什麼、何時用）
+  - `data/memory/skill_bodies/<name>.md` — body，完整步驟 / 細節（任意 markdown）
+- RECALL 會自動讓你看到 entry，本身就是「我有這個 skill」的訊號
+- 想用某個 skill → call `InvokeSkill(name=...)`，body 會透過 cascade 進你的下個 perception
+- 想寫新 skill → 用 Shell tool 同時寫 entry + body 兩個檔
 {%- endif %}
 {%- if rules %}
 
