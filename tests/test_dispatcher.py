@@ -842,3 +842,207 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
 
     assert isinstance(fail, ToolCallFailure)
     assert "name" in fail.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
+    """First adapter call yields unknown tool; second yields valid Say."""
+
+    class _RoundedFakeAdapter:
+        def __init__(self, rounds):
+            self._rounds = rounds
+            self.calls: list[dict] = []
+
+        async def stream_completion(
+            self, *, system, user, prefill, stop=None,
+            max_tokens=1024, tools=None,
+        ):
+            idx = len(self.calls)
+            self.calls.append(
+                {"system": system, "user": user, "prefill": prefill,
+                 "tools": tools}
+            )
+            chunks = self._rounds[idx]
+            for c in chunks:
+                yield c
+
+    rounds = [
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"WhoKnows","arguments":{}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+        [
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"fixed"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ],
+    ]
+    adapter = _RoundedFakeAdapter(rounds)
+    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
+    inst = _FakeInstinct(summaries=["", ""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = []
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+        items.append(m)
+
+    assert len(adapter.calls) == 2
+    second_user = adapter.calls[1]["user"]
+    assert "WhoKnows" in second_user
+    assert "unknown" in second_user.lower()
+    assert (
+        "第 1 次" in second_user
+        or "iteration 1" in second_user.lower()
+        or "1 次重試" in second_user
+    )
+    text_chunks = [m for m in items if isinstance(m, TextChunk)]
+    assert any(m.text == "fixed" for m in text_chunks)
+    assert any(isinstance(m, TurnEnd) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
+    """Step 6 behavior preserved — no fails, single round, immediate TurnEnd."""
+
+    class _OneShotAdapter:
+        def __init__(self, chunks):
+            self._chunks = chunks
+            self.calls: list[dict] = []
+
+        async def stream_completion(
+            self, *, system, user, prefill, stop=None,
+            max_tokens=1024, tools=None,
+        ):
+            self.calls.append({"prefill": prefill})
+            for c in self._chunks:
+                yield c
+
+    adapter = _OneShotAdapter([
+        StreamChunk(
+            text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+            done=False,
+        ),
+        StreamChunk(text="", done=True),
+    ])
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_respond_max_cascade_depth_emits_error_and_ends(tmp_path: Path, monkeypatch):
+    from dollos import dispatcher as disp_mod
+    monkeypatch.setattr(disp_mod, "MAX_CASCADE_DEPTH", 2)
+
+    class _PerpetualFailAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream_completion(self, **kw):
+            self.calls += 1
+            yield StreamChunk(
+                text='<tool_call>{"name":"WhoKnows","arguments":{}}</tool_call>',
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _PerpetualFailAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=["", "", "", ""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = []
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+        items.append(m)
+
+    # cap=2 means iterations 1, 2 OK; iteration 3 -> error
+    assert adapter.calls == 3
+    assert any(
+        isinstance(m, ErrorMsg) and "MAX_CASCADE_DEPTH" in m.message
+        for m in items
+    )
+    assert any(isinstance(m, TurnEnd) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path):
+    """One round emits two fails; next round perception lists both."""
+
+    class _TwoRoundAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def stream_completion(self, **kw):
+            self.calls.append(kw)
+            idx = len(self.calls) - 1
+            if idx == 0:
+                yield StreamChunk(
+                    text=(
+                        '<tool_call>{"name":"A","arguments":{}}</tool_call>'
+                        '<tool_call>{"name":"B","arguments":{}}</tool_call>'
+                    ),
+                    done=False,
+                )
+                yield StreamChunk(text="", done=True)
+            else:
+                yield StreamChunk(
+                    text='<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
+                    done=False,
+                )
+                yield StreamChunk(text="", done=True)
+
+    adapter = _TwoRoundAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=["", ""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    second_user = adapter.calls[1]["user"]
+    assert "A" in second_user
+    assert "B" in second_user

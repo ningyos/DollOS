@@ -28,6 +28,8 @@ from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
 
+MAX_CASCADE_DEPTH = 50
+
 
 @dataclass
 class ToolCallFailure:
@@ -115,32 +117,73 @@ class EventDispatcher:
         summary: str,
         sink: asyncio.Queue[ServerMessage | None],
     ) -> None:
-        recall = await self._inner_voice.recall(doll_event.perception)
-        system = self._renderer.render(
-            "scaffolding", character=self._character_profile
-        )
-        state_block = f"STATE:\n{summary}\n\n" if summary else ""
-        prefill = f"{state_block}{recall}DECISION: "
+        from dollos import dispatcher as _disp_mod
 
-        parser = ToolStreamParser()
-        ctx = ToolCtx(
-            sink=sink,
-            memory_root=self._memory_root,
-            memsearch=self._memsearch,
-        )
-        async for chunk in self._adapter.stream_completion(
-            system=system,
-            user=doll_event.perception,
-            prefill=prefill,
-            tools=TOOLS,
-        ):
-            for call in parser.feed(chunk.text):
-                _ = await self._dispatch_tool_call(call, ctx)
-            if chunk.done:
+        iteration = 0
+        while True:
+            recall = await self._inner_voice.recall(doll_event.perception)
+            system = self._renderer.render(
+                "scaffolding", character=self._character_profile
+            )
+            state_block = f"STATE:\n{summary}\n\n" if summary else ""
+            prefill = f"{state_block}{recall}DECISION: "
+
+            parser = ToolStreamParser()
+            ctx = ToolCtx(
+                sink=sink,
+                memory_root=self._memory_root,
+                memsearch=self._memsearch,
+            )
+            fails: list[ToolCallFailure] = []
+
+            async for chunk in self._adapter.stream_completion(
+                system=system,
+                user=doll_event.perception,
+                prefill=prefill,
+                tools=TOOLS,
+            ):
+                for call in parser.feed(chunk.text):
+                    fail = await self._dispatch_tool_call(call, ctx)
+                    if fail is not None:
+                        fails.append(fail)
+                if chunk.done:
+                    break
+            for call in parser.flush():
+                fail = await self._dispatch_tool_call(call, ctx)
+                if fail is not None:
+                    fails.append(fail)
+
+            if not fails:
                 break
-        for call in parser.flush():
-            _ = await self._dispatch_tool_call(call, ctx)
-        ctx.sink.put_nowait(TurnEnd())
+
+            iteration += 1
+            if iteration > _disp_mod.MAX_CASCADE_DEPTH:
+                sink.put_nowait(ErrorMsg(
+                    message=(
+                        f"cascade exceeded MAX_CASCADE_DEPTH "
+                        f"({_disp_mod.MAX_CASCADE_DEPTH})"
+                    )
+                ))
+                break
+
+            doll_event = DollEvent(
+                perception=self._format_fail_perception(fails, iteration),
+                raw=doll_event.raw,
+            )
+            summary = await self._instinct.process(doll_event)
+
+        sink.put_nowait(TurnEnd())
+
+    @staticmethod
+    def _format_fail_perception(
+        fails: list[ToolCallFailure], iteration: int
+    ) -> str:
+        lines = [
+            f"你 call 了 {f.tool_name} tool 失敗：{f.error}"
+            for f in fails
+        ]
+        lines.append(f"（這是 thread 的第 {iteration} 次重試）")
+        return "\n".join(lines)
 
     async def _dispatch_tool_call(
         self, call: dict, ctx: ToolCtx
