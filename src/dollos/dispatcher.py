@@ -169,6 +169,7 @@ class EventDispatcher:
                 user=doll_event.perception,
                 prefill=prefill,
                 tools=TOOLS,
+                max_tokens=4096,
             ):
                 for call in parser.feed(chunk.text):
                     result = await self._dispatch_tool_call(call, ctx)
