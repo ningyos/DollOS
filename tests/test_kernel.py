@@ -159,11 +159,11 @@ async def test_dispatch_user_text_uses_recall_in_prefill(
 ):
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_inner_voice(monkeypatch, "- foo\n")
+    _install_fake_inner_voice(monkeypatch, "RECALL:\n- foo\n")
 
     await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == "<recall>\n- foo\n</recall>\n\n讓我想想看...\n"
+    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\n"
 
 
 @pytest.mark.asyncio

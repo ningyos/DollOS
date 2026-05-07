@@ -45,18 +45,18 @@ class InnerVoice:
         character_id: str | None = None,    # ignored in step 3; reserved for step 10
         top_k: int | None = None,
     ) -> str:
-        """Return the raw RECALL body (bullet lines) for the given query.
+        """Return a RECALL block string for the given query.
 
-        Returns the bullet lines only — no <recall> XML wrap. The caller
-        (dispatcher) is responsible for wrapping and adding continuation prose.
+        Always returns an XML-wrapped block starting with "<recall>\\n" so
+        the caller can embed verbatim into a Doll prefill.
 
-        If memsearch returns no hits, returns "(no relevant memories)\\n"
-        without invoking the LLM.
+        If memsearch returns no hits, returns
+        "<recall>\\n(no relevant memories)\\n</recall>\\n" without invoking the LLM.
         """
         k = top_k if top_k is not None else self._default_top_k
         hits = await self._memsearch.search(query, top_k=k)
         if not hits:
-            return "(no relevant memories)\n"
+            return "<recall>\n(no relevant memories)\n</recall>\n"
 
         candidates = "\n".join(
             f"{i + 1}. {h['content']}" for i, h in enumerate(hits)
@@ -79,4 +79,4 @@ class InnerVoice:
                 break
 
         body = "".join(chunks).strip()
-        return f"{body}\n"
+        return f"<recall>\n{body}\n</recall>\n"
