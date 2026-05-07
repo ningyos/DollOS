@@ -148,16 +148,12 @@ class EventDispatcher:
 
         iteration = 0
         while True:
-            recall_body = await self._inner_voice.recall(doll_event.perception)
+            recall = await self._inner_voice.recall(doll_event.perception)
             system = self._renderer.render(
                 "scaffolding", character=self._character_profile
             )
-            state_block = f"{summary}\n\n" if summary else ""
-            prefill = (
-                f"{state_block}"
-                f"<recall>\n{recall_body.rstrip()}\n</recall>\n\n"
-                f"讓我想想看...\n"
-            )
+            state_block = f"<state>\n{summary}\n</state>\n\n" if summary else ""
+            prefill = f"{state_block}{recall}"
 
             parser = ToolStreamParser()
             ctx = ToolCtx(
