@@ -10,18 +10,6 @@
 - Tool 結果回來後，回到 `<think>` 再判斷一次該做什麼，再決定下步（另一個 `<tool_call>` 或結束 turn）。
 - 如果嘗試多次仍未達目的，換方法、換 tool、或停止（不再 call tool）。
 
-# Tool Calling
-
-Format:
-
-```
-<tool_call>
-{"name": "<name>", "arguments": {<args>}}
-</tool_call>
-```
-
-After `</think>`, output ONLY `<tool_call>` blocks. Plain text after `</think>` 不會被處理。
-
 # Skills
 
 Skill = procedural memory，分兩檔：

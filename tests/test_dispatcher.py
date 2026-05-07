@@ -229,7 +229,7 @@ async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path
     assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["user"] == "hello world"
-    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\nDECISION: "
+    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\n"
 
 
 @pytest.mark.asyncio
@@ -404,7 +404,7 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: P
 
     assert len(adapter.calls) == 1
     prefill = adapter.calls[0]["prefill"]
-    assert prefill == "STATE:\n主人剛打招呼。\n\nRECALL:\n- foo\nDECISION: "
+    assert prefill == "STATE:\n主人剛打招呼。\n\nRECALL:\n- foo\n"
 
 
 @pytest.mark.asyncio
@@ -441,7 +441,7 @@ async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
 
     prefill = adapter.calls[0]["prefill"]
     assert "STATE:" not in prefill
-    assert prefill == "RECALL:\n- foo\nDECISION: "
+    assert prefill == "RECALL:\n- foo\n"
 
 
 @pytest.mark.asyncio
