@@ -56,7 +56,7 @@ async def test_full_round_trip_with_mocked_llamacpp(
 
     # Stub InnerVoice.recall — recall behavior is covered by test_inner_voice.py.
     async def _stub_recall(self, query, **kwargs):
-        return "<recall>\n- user likes coffee\n</recall>\n"
+        return "- user likes coffee\n"
 
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
 
@@ -122,7 +122,7 @@ async def test_full_round_trip_with_mocked_llamacpp(
             # VoM prefill must reach the big model (recall inside
             # the template-opened <think> block; the template emits its own <think>, so
             # we must NOT have a duplicate).
-            assert "<recall>\n- user likes coffee\n</recall>\n" in prompt
+            assert "<recall>\n- user likes coffee\n</recall>\n\n讓我想想看...\n" in prompt
             # The ChatML assistant turn opens exactly one <think> block.
             # (Scaffolding may contain `<think>` in inline code — check the
             # actual turn opener pattern, not raw count.)
