@@ -47,16 +47,16 @@ class InnerVoice:
     ) -> str:
         """Return a RECALL block string for the given query.
 
-        Always starts with "RECALL:\\n" so the caller can embed verbatim
-        into a Doll prefill.
+        Always returns an XML-wrapped block starting with "<recall>\\n" so
+        the caller can embed verbatim into a Doll prefill.
 
         If memsearch returns no hits, returns
-        "RECALL:\\n(no relevant memories)\\n" without invoking the LLM.
+        "<recall>\\n(no relevant memories)\\n</recall>\\n" without invoking the LLM.
         """
         k = top_k if top_k is not None else self._default_top_k
         hits = await self._memsearch.search(query, top_k=k)
         if not hits:
-            return "RECALL:\n(no relevant memories)\n"
+            return "<recall>\n(no relevant memories)\n</recall>\n"
 
         candidates = "\n".join(
             f"{i + 1}. {h['content']}" for i, h in enumerate(hits)
@@ -79,4 +79,4 @@ class InnerVoice:
                 break
 
         body = "".join(chunks).strip()
-        return f"RECALL:\n{body}\n"
+        return f"<recall>\n{body}\n</recall>\n"
