@@ -114,3 +114,12 @@ def test_scaffolding_includes_act_after_thinking_rule():
     out = renderer.render("scaffolding", character="You are Doll.")
     assert "思考後動手" in out
     assert "ACTION" in out  # mentioned as anti-pattern
+
+
+def test_iv_summary_template_includes_language_rule():
+    """Inner Voice prompt must enforce 繁體中文 output."""
+    renderer = PromptRenderer()
+    blocks = renderer.render_blocks(
+        "iv_summary", prev_summary="(none)", perception="hello"
+    )
+    assert "繁體中文" in blocks["system"] or "Traditional Chinese" in blocks["system"]

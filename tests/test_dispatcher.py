@@ -1107,8 +1107,8 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
     expected = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     assert expected.exists()
     content = expected.read_text()
-    assert "user] hi" in content
-    assert "doll] ok" in content
+    assert "主人說：hi" in content
+    assert "我說：ok" in content
 
 
 @pytest.mark.asyncio
