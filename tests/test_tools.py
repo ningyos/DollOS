@@ -159,7 +159,7 @@ async def test_say_run_also_appends_to_transcript(tmp_path):
     expected = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     assert expected.exists()
     content = expected.read_text()
-    assert "doll] hello" in content
+    assert "我說：hello" in content
     # Say writes to transcript; NoteMemory writes to shared.
     assert any(Path(p) == expected for p in ms.indexed)
 

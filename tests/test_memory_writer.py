@@ -28,8 +28,8 @@ async def test_append_transcript_writes_role_tagged_bullet(tmp_path):
     expected = tmp_path / f"{date.today():%Y-%m-%d}.md"
     assert expected.exists()
     content = expected.read_text()
-    assert content.startswith("- [")
-    assert "user] hello\n" in content
+    assert content.startswith("- ")
+    assert "主人說：hello" in content
 
 
 @pytest.mark.asyncio
@@ -47,8 +47,8 @@ async def test_append_transcript_appends_multiple(tmp_path):
     content = expected.read_text()
     lines = [ln for ln in content.split("\n") if ln]
     assert len(lines) == 2
-    assert "user] hi" in lines[0]
-    assert "doll] hello" in lines[1]
+    assert "主人說：hi" in lines[0]
+    assert "我說：hello" in lines[1]
 
 
 @pytest.mark.asyncio
