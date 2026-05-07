@@ -32,25 +32,47 @@ class PromptTemplate(ABC):
 
 
 def _format_tools_block(tools: list[type[BaseModel]]) -> str:
-    """Render the `# Tools` system-prompt section for Qwen3 native tool calling."""
-    schemas = [
-        {
-            "name": cls.__name__,
-            "description": (cls.__doc__ or "").strip(),
-            "parameters": cls.model_json_schema(),
+    """Render the `# Available Tools` system-prompt section — Hermes-compact format.
+
+    Strips pydantic JSON Schema boilerplate (`title` fields, duplicate
+    `description` at parameters level), uses OpenAI/Hermes function envelope,
+    and serializes JSON with no whitespace. Saves ~37% vs raw model_json_schema().
+    """
+
+    def _compact_schema(cls: type[BaseModel]) -> dict:
+        raw = cls.model_json_schema()
+        props_raw = raw.get("properties", {})
+        props: dict = {}
+        for fname, finfo in props_raw.items():
+            entry: dict = {}
+            if "type" in finfo:
+                entry["type"] = finfo["type"]
+            if "description" in finfo:
+                entry["description"] = finfo["description"]
+            if "default" in finfo:
+                entry["default"] = finfo["default"]
+            if "minimum" in finfo:
+                entry["minimum"] = finfo["minimum"]
+            if "maximum" in finfo:
+                entry["maximum"] = finfo["maximum"]
+            props[fname] = entry
+        return {
+            "type": "function",
+            "function": {
+                "name": cls.__name__,
+                "description": (cls.__doc__ or "").strip(),
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": raw.get("required", []),
+                },
+            },
         }
-        for cls in tools
-    ]
-    schemas_json = json.dumps(schemas, ensure_ascii=False, indent=2)
+
+    schemas = [_compact_schema(cls) for cls in tools]
+    schemas_json = json.dumps(schemas, ensure_ascii=False, separators=(",", ":"))
     return (
-        "\n\n# Tools\n\n"
-        "You have tools. To call a tool, emit:\n"
-        "<tool_call>\n"
-        '{"name": "<tool_name>", "arguments": {<args>}}\n'
-        "</tool_call>\n\n"
-        "After </think>, output ONLY <tool_call> blocks. "
-        "Plain text after </think> is invalid.\n\n"
-        "Available tools:\n"
+        "\n\n# Available Tools\n\n"
         "<tools>\n"
         f"{schemas_json}\n"
         "</tools>"

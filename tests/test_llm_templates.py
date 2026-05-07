@@ -97,7 +97,7 @@ def test_thinking_template_with_tools_renders_tools_block():
         prefill="",
         tools=[_ExampleSay, _ExampleNote],
     )
-    assert "# Tools" in rendered
+    assert "# Available Tools" in rendered
     assert "<tools>" in rendered
     assert "</tools>" in rendered
     assert "_ExampleSay" in rendered
@@ -108,14 +108,14 @@ def test_thinking_template_with_tools_renders_tools_block():
 def test_thinking_template_without_tools_omits_block():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="You are Doll.", user="hi", prefill="")
-    assert "# Tools" not in rendered
+    assert "# Available Tools" not in rendered
     assert "<tools>" not in rendered
 
 
 def test_thinking_template_empty_tools_list_omits_block():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="You are Doll.", user="hi", prefill="", tools=[])
-    assert "# Tools" not in rendered
+    assert "# Available Tools" not in rendered
 
 
 def test_thinking_template_tools_block_contains_valid_json():
@@ -126,9 +126,31 @@ def test_thinking_template_tools_block_contains_valid_json():
     payload = rendered[start:end].strip()
     parsed = json.loads(payload)
     assert isinstance(parsed, list)
-    assert parsed[0]["name"] == "_ExampleSay"
-    assert "description" in parsed[0]
-    assert "parameters" in parsed[0]
+    item = parsed[0]
+    assert item["type"] == "function"
+    assert item["function"]["name"] == "_ExampleSay"
+    assert "description" in item["function"]
+    assert "parameters" in item["function"]
+    params = item["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "properties" in params
+    # No title fields anywhere
+    assert "title" not in params
+    for prop in params["properties"].values():
+        assert "title" not in prop
+
+
+def test_thinking_template_tools_block_uses_compact_json():
+    """Hermes-compact uses no indent — saves significant chars."""
+    t = Qwen3ThinkingTemplate()
+    rendered = t.render(
+        system="x", user="y", prefill="", tools=[_ExampleSay, _ExampleNote]
+    )
+    start = rendered.index("<tools>") + len("<tools>")
+    end = rendered.index("</tools>")
+    payload = rendered[start:end].strip()
+    # Compact JSON has no '\n  ' indent patterns inside the array
+    assert "\n  " not in payload
 
 
 def test_plain_template_rejects_non_empty_tools():

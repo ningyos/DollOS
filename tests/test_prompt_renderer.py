@@ -12,11 +12,15 @@ def test_render_scaffolding_with_character_includes_text():
     assert "You are Gura." in out
 
 
-def test_render_scaffolding_no_ctx_returns_empty():
-    """No ctx vars → all conditional blocks skipped → output is empty / whitespace only."""
+def test_render_scaffolding_no_ctx_returns_base_sections():
+    """No ctx vars → conditional blocks (Identity, Rules, Examples) skipped,
+    but Behavior / Tool Calling / Skills are unconditional."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding")
-    assert out.strip() == ""
+    assert "# Behavior" in out
+    assert "# Tool Calling" in out
+    assert "# Skills" in out
+    assert "# Identity" not in out
 
 
 def test_render_with_ctx_substitutes_variables():
@@ -82,3 +86,29 @@ def test_scaffolding_includes_skill_convention():
     assert "InvokeSkill" in out
     assert "skills/" in out
     assert "skill_bodies/" in out
+
+
+def test_scaffolding_has_partitioned_sections():
+    """Partitioned layout uses H1 headers."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "# Identity" in out
+    assert "# Behavior" in out
+    assert "# Tool Calling" in out
+    assert "# Skills" in out
+
+
+def test_scaffolding_includes_think_bridging_rule():
+    """Behavior section explains tool result -> think bridging."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "Tool 結果回來" in out or "tool" in out.lower()
+    assert "<think>" in out
+
+
+def test_scaffolding_includes_act_after_thinking_rule():
+    """Behavior section explicitly forbids ACTION: / plan plaintext."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "思考後動手" in out
+    assert "ACTION" in out  # mentioned as anti-pattern

@@ -123,6 +123,9 @@ async def test_full_round_trip_with_mocked_llamacpp(
             # the template-opened <think> block; the template emits its own <think>, so
             # we must NOT have a duplicate).
             assert "RECALL:\n- user likes coffee\nDECISION: " in prompt
-            assert prompt.count("<think>") == 1
+            # The ChatML assistant turn opens exactly one <think> block.
+            # (Scaffolding may contain `<think>` in inline code — check the
+            # actual turn opener pattern, not raw count.)
+            assert prompt.count("<|im_start|>assistant\n<think>") == 1
         finally:
             await dollos.server.stop()
