@@ -152,7 +152,7 @@ class EventDispatcher:
             system = self._renderer.render(
                 "scaffolding", character=self._character_profile
             )
-            state_block = f"STATE:\n{summary}\n\n" if summary else ""
+            state_block = f"<state>\n{summary}\n</state>\n\n" if summary else ""
             prefill = f"{state_block}{recall}"
 
             parser = ToolStreamParser()
