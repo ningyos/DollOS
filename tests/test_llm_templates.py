@@ -97,32 +97,38 @@ def test_thinking_template_with_tools_renders_tools_block():
         prefill="",
         tools=[_ExampleSay, _ExampleNote],
     )
-    assert "# Available Tools" in rendered
+    assert "# Tools" in rendered
     assert "<tools>" in rendered
     assert "</tools>" in rendered
     assert "_ExampleSay" in rendered
     assert "_ExampleNote" in rendered
     assert '"text"' in rendered
+    # Qwen3 native preamble
+    assert "You may call one or more functions" in rendered
+    assert "<tool_call>" in rendered
 
 
 def test_thinking_template_without_tools_omits_block():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="You are Doll.", user="hi", prefill="")
-    assert "# Available Tools" not in rendered
+    assert "# Tools" not in rendered
     assert "<tools>" not in rendered
 
 
 def test_thinking_template_empty_tools_list_omits_block():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="You are Doll.", user="hi", prefill="", tools=[])
-    assert "# Available Tools" not in rendered
+    assert "# Tools" not in rendered
 
 
 def test_thinking_template_tools_block_contains_valid_json():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="x", user="y", prefill="", tools=[_ExampleSay])
-    start = rendered.index("<tools>") + len("<tools>")
-    end = rendered.index("</tools>")
+    # Qwen3 native preamble includes "<tools></tools>" in description text, so
+    # find the opening <tools> that is followed by a newline (i.e., the actual block).
+    marker = "<tools>\n"
+    start = rendered.index(marker) + len(marker)
+    end = rendered.index("</tools>", start)
     payload = rendered[start:end].strip()
     parsed = json.loads(payload)
     assert isinstance(parsed, list)

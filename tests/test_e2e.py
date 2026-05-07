@@ -119,10 +119,10 @@ async def test_full_round_trip_with_mocked_llamacpp(
             assert len(captured_requests) == 1
             prompt = captured_requests[0]["prompt"]
             assert "You are Gura, a 9000-year-old shark." in prompt
-            # VoM prefill must reach the big model (recall + DECISION scaffold inside
+            # VoM prefill must reach the big model (recall inside
             # the template-opened <think> block; the template emits its own <think>, so
             # we must NOT have a duplicate).
-            assert "RECALL:\n- user likes coffee\nDECISION: " in prompt
+            assert "RECALL:\n- user likes coffee\n" in prompt
             # The ChatML assistant turn opens exactly one <think> block.
             # (Scaffolding may contain `<think>` in inline code — check the
             # actual turn opener pattern, not raw count.)

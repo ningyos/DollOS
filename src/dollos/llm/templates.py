@@ -32,11 +32,12 @@ class PromptTemplate(ABC):
 
 
 def _format_tools_block(tools: list[type[BaseModel]]) -> str:
-    """Render the `# Available Tools` system-prompt section — Hermes-compact format.
+    """Render the `# Tools` system-prompt section — Qwen3 native format.
 
     Strips pydantic JSON Schema boilerplate (`title` fields, duplicate
     `description` at parameters level), uses OpenAI/Hermes function envelope,
     and serializes JSON with no whitespace. Saves ~37% vs raw model_json_schema().
+    Uses Qwen3 canonical preamble wording from tokenizer_config.json.
     """
 
     def _compact_schema(cls: type[BaseModel]) -> dict:
@@ -72,10 +73,17 @@ def _format_tools_block(tools: list[type[BaseModel]]) -> str:
     schemas = [_compact_schema(cls) for cls in tools]
     schemas_json = json.dumps(schemas, ensure_ascii=False, separators=(",", ":"))
     return (
-        "\n\n# Available Tools\n\n"
+        "\n\n# Tools\n\n"
+        "You may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> XML tags:\n"
         "<tools>\n"
         f"{schemas_json}\n"
-        "</tools>"
+        "</tools>\n\n"
+        "For each function call, return a json object with function name "
+        "and arguments within <tool_call></tool_call> XML tags:\n"
+        "<tool_call>\n"
+        '{"name": <function-name>, "arguments": <args-json-object>}\n'
+        "</tool_call>"
     )
 
 

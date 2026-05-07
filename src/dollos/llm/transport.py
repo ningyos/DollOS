@@ -42,9 +42,15 @@ class Provider(ABC):
 class LlamaCppProvider(Provider):
     """POST /completion to a llama-server with SSE streaming."""
 
-    def __init__(self, base_url: str, timeout_s: float = 60.0):
+    def __init__(
+        self,
+        base_url: str,
+        timeout_s: float = 60.0,
+        presence_penalty: float = 1.3,
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
+        self._presence_penalty = presence_penalty
 
     @property
     def supports_prefill(self) -> bool:
@@ -65,6 +71,7 @@ class LlamaCppProvider(Provider):
             # Will be moved to PromptTemplate when a non-ChatML template lands.
             "stop": stop if stop is not None else ["<|im_end|>"],
             "cache_prompt": True,
+            "presence_penalty": self._presence_penalty,
         }
         url = f"{self._base_url}/completion"
         timeout = httpx.Timeout(self._timeout_s, connect=5.0)

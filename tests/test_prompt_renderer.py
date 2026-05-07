@@ -14,11 +14,12 @@ def test_render_scaffolding_with_character_includes_text():
 
 def test_render_scaffolding_no_ctx_returns_base_sections():
     """No ctx vars → conditional blocks (Identity, Rules, Examples) skipped,
-    but Behavior / Tool Calling / Skills are unconditional."""
+    but Behavior / Skills are unconditional. Tool Calling section removed
+    (now handled by Qwen3 native preamble in _format_tools_block)."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding")
     assert "# Behavior" in out
-    assert "# Tool Calling" in out
+    assert "# Tool Calling" not in out
     assert "# Skills" in out
     assert "# Identity" not in out
 
@@ -89,12 +90,13 @@ def test_scaffolding_includes_skill_convention():
 
 
 def test_scaffolding_has_partitioned_sections():
-    """Partitioned layout uses H1 headers."""
+    """Partitioned layout uses H1 headers. Tool Calling section removed
+    (now handled by Qwen3 native preamble in _format_tools_block)."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", character="You are Doll.")
     assert "# Identity" in out
     assert "# Behavior" in out
-    assert "# Tool Calling" in out
+    assert "# Tool Calling" not in out
     assert "# Skills" in out
 
 
