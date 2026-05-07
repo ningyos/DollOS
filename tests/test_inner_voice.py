@@ -75,7 +75,7 @@ async def test_recall_with_hits_returns_recall_block():
 
     block = await iv.recall("what about coffee")
 
-    assert block.startswith("<recall>\n")
+    assert block.startswith("RECALL:\n")
     assert "user likes coffee" in block
     assert block.endswith("\n")
 
@@ -136,7 +136,7 @@ async def test_recall_empty_hits_returns_no_relevant_block():
 
     block = await iv.recall("anything")
 
-    assert block == "<recall>\n(no relevant memories)\n</recall>\n"
+    assert block == "RECALL:\n(no relevant memories)\n"
     assert fake_llm.call_count == 0
 
 
@@ -148,7 +148,7 @@ async def test_recall_strips_whitespace_from_model_output():
 
     block = await iv.recall("q")
 
-    assert block == "<recall>\n- fact\n</recall>\n"
+    assert block == "RECALL:\n- fact\n"
 
 
 @pytest.mark.asyncio
