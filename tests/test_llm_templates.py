@@ -17,8 +17,8 @@ def test_qwen3_thinking_renders_chatml_envelope():
     tpl = Qwen3ThinkingTemplate()
     out = tpl.render(system="SYS", user="USR", prefill="")
 
-    assert "<|im_start|>system\nSYS\n<|im_end|>" in out
-    assert "<|im_start|>user\nUSR\n<|im_end|>" in out
+    assert "<|im_start|>system\nSYS<|im_end|>" in out
+    assert "<|im_start|>user\nUSR<|im_end|>" in out
     assert "<|im_start|>assistant\n<think>\n" in out
 
 
@@ -47,8 +47,8 @@ def test_qwen3_plain_renders_chatml_envelope_with_closed_think():
     tpl = Qwen3PlainTemplate()
     out = tpl.render(system="SYS", user="USR", prefill="")
 
-    assert "<|im_start|>system\nSYS\n<|im_end|>" in out
-    assert "<|im_start|>user\nUSR\n<|im_end|>" in out
+    assert "<|im_start|>system\nSYS<|im_end|>" in out
+    assert "<|im_start|>user\nUSR<|im_end|>" in out
     assert "<|im_start|>assistant\n" in out
     # Closed empty think block must be present to suppress thinking
     assert "<think>\n\n</think>" in out
@@ -130,9 +130,9 @@ def test_thinking_template_tools_block_contains_valid_json():
     start = rendered.index(marker) + len(marker)
     end = rendered.index("</tools>", start)
     payload = rendered[start:end].strip()
-    parsed = json.loads(payload)
-    assert isinstance(parsed, list)
-    item = parsed[0]
+    lines = [json.loads(line) for line in payload.split("\n") if line.strip()]
+    assert isinstance(lines, list)
+    item = lines[0]
     assert item["type"] == "function"
     assert item["function"]["name"] == "_ExampleSay"
     assert "description" in item["function"]

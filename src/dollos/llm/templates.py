@@ -71,7 +71,9 @@ def _format_tools_block(tools: list[type[BaseModel]]) -> str:
         }
 
     schemas = [_compact_schema(cls) for cls in tools]
-    schemas_json = json.dumps(schemas, ensure_ascii=False, separators=(",", ":"))
+    schemas_json = "\n".join(
+        json.dumps(s, ensure_ascii=False, separators=(",", ":")) for s in schemas
+    )
     return (
         "\n\n# Tools\n\n"
         "You may call one or more functions to assist with the user query.\n\n"
@@ -105,18 +107,11 @@ class Qwen3ThinkingTemplate(PromptTemplate):
     ) -> str:
         if tools:
             system = system + _format_tools_block(tools)
-        parts = [
-            "<|im_start|>system",
-            system,
-            "<|im_end|>",
-            "<|im_start|>user",
-            user,
-            "<|im_end|>",
-            "<|im_start|>assistant",
-            "<think>",
-            "",
-        ]
-        rendered = "\n".join(parts)
+        rendered = (
+            f"<|im_start|>system\n{system}<|im_end|>\n"
+            f"<|im_start|>user\n{user}<|im_end|>\n"
+            f"<|im_start|>assistant\n<think>\n"
+        )
         if prefill:
             rendered += prefill
         return rendered
@@ -143,21 +138,11 @@ class Qwen3PlainTemplate(PromptTemplate):
                 "Qwen3PlainTemplate does not support tool calling; "
                 "use Qwen3ThinkingTemplate for tool-calling code paths."
             )
-        parts = [
-            "<|im_start|>system",
-            system,
-            "<|im_end|>",
-            "<|im_start|>user",
-            user,
-            "<|im_end|>",
-            "<|im_start|>assistant",
-            "<think>",
-            "",
-            "</think>",
-            "",
-            "",
-        ]
-        rendered = "\n".join(parts)
+        rendered = (
+            f"<|im_start|>system\n{system}<|im_end|>\n"
+            f"<|im_start|>user\n{user}<|im_end|>\n"
+            f"<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
         if prefill:
             rendered += prefill
         return rendered
