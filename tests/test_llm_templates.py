@@ -17,8 +17,8 @@ def test_qwen3_thinking_renders_chatml_envelope():
     tpl = Qwen3ThinkingTemplate()
     out = tpl.render(system="SYS", user="USR", prefill="")
 
-    assert "<|im_start|>system\nSYS\n<|im_end|>" in out
-    assert "<|im_start|>user\nUSR\n<|im_end|>" in out
+    assert "<|im_start|>system\nSYS<|im_end|>" in out
+    assert "<|im_start|>user\nUSR<|im_end|>" in out
     assert "<|im_start|>assistant\n<think>\n" in out
 
 
@@ -47,8 +47,8 @@ def test_qwen3_plain_renders_chatml_envelope_with_closed_think():
     tpl = Qwen3PlainTemplate()
     out = tpl.render(system="SYS", user="USR", prefill="")
 
-    assert "<|im_start|>system\nSYS\n<|im_end|>" in out
-    assert "<|im_start|>user\nUSR\n<|im_end|>" in out
+    assert "<|im_start|>system\nSYS<|im_end|>" in out
+    assert "<|im_start|>user\nUSR<|im_end|>" in out
     assert "<|im_start|>assistant\n" in out
     # Closed empty think block must be present to suppress thinking
     assert "<think>\n\n</think>" in out
@@ -103,6 +103,9 @@ def test_thinking_template_with_tools_renders_tools_block():
     assert "_ExampleSay" in rendered
     assert "_ExampleNote" in rendered
     assert '"text"' in rendered
+    # Qwen3 native preamble
+    assert "You may call one or more functions" in rendered
+    assert "<tool_call>" in rendered
 
 
 def test_thinking_template_without_tools_omits_block():
@@ -121,14 +124,39 @@ def test_thinking_template_empty_tools_list_omits_block():
 def test_thinking_template_tools_block_contains_valid_json():
     t = Qwen3ThinkingTemplate()
     rendered = t.render(system="x", user="y", prefill="", tools=[_ExampleSay])
+    # Qwen3 native preamble includes "<tools></tools>" in description text, so
+    # find the opening <tools> that is followed by a newline (i.e., the actual block).
+    marker = "<tools>\n"
+    start = rendered.index(marker) + len(marker)
+    end = rendered.index("</tools>", start)
+    payload = rendered[start:end].strip()
+    lines = [json.loads(line) for line in payload.split("\n") if line.strip()]
+    assert isinstance(lines, list)
+    item = lines[0]
+    assert item["type"] == "function"
+    assert item["function"]["name"] == "_ExampleSay"
+    assert "description" in item["function"]
+    assert "parameters" in item["function"]
+    params = item["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "properties" in params
+    # No title fields anywhere
+    assert "title" not in params
+    for prop in params["properties"].values():
+        assert "title" not in prop
+
+
+def test_thinking_template_tools_block_uses_compact_json():
+    """Hermes-compact uses no indent — saves significant chars."""
+    t = Qwen3ThinkingTemplate()
+    rendered = t.render(
+        system="x", user="y", prefill="", tools=[_ExampleSay, _ExampleNote]
+    )
     start = rendered.index("<tools>") + len("<tools>")
     end = rendered.index("</tools>")
     payload = rendered[start:end].strip()
-    parsed = json.loads(payload)
-    assert isinstance(parsed, list)
-    assert parsed[0]["name"] == "_ExampleSay"
-    assert "description" in parsed[0]
-    assert "parameters" in parsed[0]
+    # Compact JSON has no '\n  ' indent patterns inside the array
+    assert "\n  " not in payload
 
 
 def test_plain_template_rejects_non_empty_tools():

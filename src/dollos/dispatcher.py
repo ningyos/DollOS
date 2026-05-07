@@ -153,7 +153,7 @@ class EventDispatcher:
                 "scaffolding", character=self._character_profile
             )
             state_block = f"STATE:\n{summary}\n\n" if summary else ""
-            prefill = f"{state_block}{recall}DECISION: "
+            prefill = f"{state_block}{recall}"
 
             parser = ToolStreamParser()
             ctx = ToolCtx(
@@ -211,7 +211,8 @@ class EventDispatcher:
             if r.success:
                 if r.detail:
                     lines.append(
-                        f"你 call 了 {r.tool_name} tool 成功，回傳：\n{r.detail}"
+                        f"你 call 了 {r.tool_name} tool 成功，回傳：\n"
+                        f"<tool_response>\n{r.detail}\n</tool_response>"
                     )
                 else:
                     lines.append(

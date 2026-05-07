@@ -35,7 +35,13 @@ async def append_transcript(
     path = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%H:%M")
-    line = f"- [{timestamp} {role}] {text}\n"
+    if role == "user":
+        speaker = "主人"
+    elif role == "doll":
+        speaker = "我"
+    else:
+        speaker = role  # fallback for any future roles
+    line = f"- {timestamp} {speaker}說：{text}\n"
     with path.open("a") as f:
         f.write(line)
     await memsearch.index_file(path)
