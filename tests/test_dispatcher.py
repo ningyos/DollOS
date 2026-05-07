@@ -73,11 +73,11 @@ class _HangAdapter(LLMAdapter):
 
 
 class _FakeInnerVoice:
-    """Fake InnerVoice.recall — returns a fixed RECALL block, captures args."""
+    """Fake InnerVoice.recall — returns a fixed RECALL body (bullets), captures args."""
 
     def __init__(
         self,
-        recall_text: str = "<recall>\n- foo\n</recall>\n",
+        recall_text: str = "- foo\n",
         raises: Exception | None = None,
     ) -> None:
         self._text = recall_text
@@ -218,7 +218,7 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: 
 @pytest.mark.asyncio
 async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice("- foo\n")
     dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -229,7 +229,7 @@ async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path
     assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["user"] == "hello world"
-    assert adapter.calls[0]["prefill"] == "<recall>\n- foo\n</recall>\n"
+    assert adapter.calls[0]["prefill"] == "<recall>\n- foo\n</recall>\n\n讓我想想看...\n"
 
 
 @pytest.mark.asyncio
@@ -345,7 +345,7 @@ async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Pa
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=["主人剛打招呼。"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -381,7 +381,7 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: P
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=["主人剛打招呼。"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -404,7 +404,7 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: P
 
     assert len(adapter.calls) == 1
     prefill = adapter.calls[0]["prefill"]
-    assert prefill == "<state>\n主人剛打招呼。\n</state>\n\n<recall>\n- foo\n</recall>\n"
+    assert prefill == "主人剛打招呼。\n\n<recall>\n- foo\n</recall>\n\n讓我想想看...\n"
 
 
 @pytest.mark.asyncio
@@ -418,7 +418,7 @@ async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -441,7 +441,7 @@ async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
 
     prefill = adapter.calls[0]["prefill"]
     assert "<state>" not in prefill
-    assert prefill == "<recall>\n- foo\n</recall>\n"
+    assert prefill == "<recall>\n- foo\n</recall>\n\n讓我想想看...\n"
 
 
 @pytest.mark.asyncio
@@ -455,7 +455,7 @@ async def test_dispatcher_instinct_error_surfaces_as_error_msg(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(raises=RuntimeError("instinct boom"))
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -494,7 +494,7 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -536,7 +536,7 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
@@ -906,7 +906,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         ],
     ]
     adapter = _RoundedFakeAdapter(rounds)
-    iv = _FakeInnerVoice(recall_text="<recall>\n- foo\n</recall>\n")
+    iv = _FakeInnerVoice(recall_text="- foo\n")
     inst = _FakeInstinct(summaries=["", ""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
