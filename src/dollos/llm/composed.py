@@ -29,11 +29,12 @@ class ComposedLLMAdapter(LLMAdapter):
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         prompt = self._template.render(
             system=system, user=user, prefill=prefill, tools=tools
         )
         async for chunk in self._provider.stream(
-            prompt=prompt, stop=stop, max_tokens=max_tokens
+            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar
         ):
             yield chunk

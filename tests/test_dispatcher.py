@@ -41,6 +41,7 @@ class _FakeAdapter(LLMAdapter):
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type] | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append(
             {"system": system, "user": user, "prefill": prefill, "tools": tools}
@@ -66,6 +67,7 @@ class _HangAdapter(LLMAdapter):
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type] | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.entered.set()
         await asyncio.Event().wait()  # forever
@@ -216,7 +218,9 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path):
+async def test_recall_runs_but_prefill_is_empty(tmp_path: Path):
+    """IV.recall still runs (memsearch upkeep, future triage) but its result
+    is NOT injected as prefill — see dispatcher comment dated 2026-05-07."""
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     iv = _FakeInnerVoice("RECALL:\n- foo\n")
     dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
@@ -229,7 +233,7 @@ async def test_recall_passes_perception_to_iv_and_to_adapter_user(tmp_path: Path
     assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["user"] == "hello world"
-    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\n"
+    assert adapter.calls[0]["prefill"] == ""
 
 
 @pytest.mark.asyncio
@@ -371,7 +375,10 @@ async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: Path):
+async def test_dispatcher_passes_empty_prefill_regardless_of_summary(tmp_path: Path):
+    """Both STATE and RECALL prefill injection were removed 2026-05-07
+    (mimicry / infinite-transcript bug). IV.recall and Instinct.process still
+    run for memory upkeep / future triage; their output never reaches prefill."""
     adapter = _FakeAdapter(
         chunks=[
             StreamChunk(
@@ -403,45 +410,7 @@ async def test_dispatcher_prepends_state_block_when_summary_nonempty(tmp_path: P
             break
 
     assert len(adapter.calls) == 1
-    prefill = adapter.calls[0]["prefill"]
-    assert prefill == "STATE:\n主人剛打招呼。\n\nRECALL:\n- foo\n"
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_skips_state_block_when_summary_empty(tmp_path: Path):
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ]
-    )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=[""])
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
-        renderer=PromptRenderer(),
-        character_profile="You are Doll.",
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-    while True:
-        item = await sink.get()
-        if item is None:
-            break
-
-    prefill = adapter.calls[0]["prefill"]
-    assert "STATE:" not in prefill
-    assert prefill == "RECALL:\n- foo\n"
+    assert adapter.calls[0]["prefill"] == ""
 
 
 @pytest.mark.asyncio
@@ -878,7 +847,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
 
         async def stream_completion(
             self, *, system, user, prefill, stop=None,
-            max_tokens=1024, tools=None,
+            max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(
@@ -949,7 +918,7 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
 
         async def stream_completion(
             self, *, system, user, prefill, stop=None,
-            max_tokens=1024, tools=None,
+            max_tokens=1024, tools=None, grammar=None,
         ):
             self.calls.append({"prefill": prefill})
             for c in self._chunks:
@@ -1273,7 +1242,7 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
 
         async def stream_completion(
             self, *, system, user, prefill, stop=None,
-            max_tokens=1024, tools=None,
+            max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(
@@ -1346,7 +1315,7 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
 
         async def stream_completion(
             self, *, system, user, prefill, stop=None,
-            max_tokens=1024, tools=None,
+            max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(

@@ -34,8 +34,11 @@ class Provider(ABC):
         prompt: str,
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream tokens. Caller owns prompt formatting."""
+        """Stream tokens. Caller owns prompt formatting. `grammar` is a GBNF
+        string used to constrain sampling when the backend supports it; pass
+        None for unconstrained sampling."""
         ...
 
 
@@ -62,6 +65,7 @@ class LlamaCppProvider(Provider):
         prompt: str,
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         body = {
             "prompt": prompt,
@@ -73,6 +77,8 @@ class LlamaCppProvider(Provider):
             "cache_prompt": True,
             "presence_penalty": self._presence_penalty,
         }
+        if grammar is not None:
+            body["grammar"] = grammar
         url = f"{self._base_url}/completion"
         timeout = httpx.Timeout(self._timeout_s, connect=5.0)
 
