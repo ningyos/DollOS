@@ -63,7 +63,7 @@ def _make_iv(memsearch, llm, default_top_k: int = 10) -> InnerVoice:
 
 
 @pytest.mark.asyncio
-async def test_recall_with_hits_returns_recall_block():
+async def test_recall_with_hits_returns_plain_filtered_text():
     mem = _FakeMemSearch(
         hits=[
             {"content": "the sky is blue", "score": 0.9, "source": "shared/2026-05-03.md"},
@@ -75,9 +75,10 @@ async def test_recall_with_hits_returns_recall_block():
 
     block = await iv.recall("what about coffee")
 
-    assert block.startswith("RECALL:\n")
+    # No "RECALL:" prefix — dispatcher does the framing now.
+    assert "RECALL:" not in block
+    assert not block.startswith("RECALL")
     assert "user likes coffee" in block
-    assert block.endswith("\n")
 
 
 @pytest.mark.asyncio
@@ -90,7 +91,6 @@ async def test_recall_system_prompt_comes_from_iv_recall_template():
 
     assert fake_llm.last_system is not None
     assert "memory recall helper" in fake_llm.last_system
-    assert "(no relevant memories)" in fake_llm.last_system
     assert fake_llm.call_count == 1
 
 
@@ -129,14 +129,14 @@ async def test_recall_uses_empty_prefill():
 
 
 @pytest.mark.asyncio
-async def test_recall_empty_hits_returns_no_relevant_block():
+async def test_recall_empty_hits_returns_empty_string():
     mem = _FakeMemSearch(hits=[])
     fake_llm = _FakeLLMAdapter(response="should not be called")
     iv = _make_iv(mem, fake_llm)
 
     block = await iv.recall("anything")
 
-    assert block == "RECALL:\n(no relevant memories)\n"
+    assert block == ""
     assert fake_llm.call_count == 0
 
 
@@ -148,7 +148,7 @@ async def test_recall_strips_whitespace_from_model_output():
 
     block = await iv.recall("q")
 
-    assert block == "RECALL:\n- fact\n"
+    assert block == "- fact"
 
 
 @pytest.mark.asyncio
