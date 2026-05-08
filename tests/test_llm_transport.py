@@ -136,3 +136,54 @@ async def test_llamacpp_provider_default_stop_when_none_passed():
     # ChatML-flavored `<|im_end|>` even though stop is conceptually
     # template's concern. Future plans will revisit.
     assert captured["body"]["stop"] == ["<|im_end|>"]
+
+
+@pytest.mark.asyncio
+async def test_llamacpp_provider_includes_grammar_when_passed():
+    provider = LlamaCppProvider(base_url="http://test.local:8001", timeout_s=5.0)
+
+    captured: dict = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"content": "", "stop": true}\n\n',
+        )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(side_effect=capture)
+
+        async for _ in provider.stream(
+            prompt="x",
+            stop=None,
+            max_tokens=128,
+            grammar="root ::= \"hi\"",
+        ):
+            pass
+
+    assert captured["body"]["grammar"] == "root ::= \"hi\""
+
+
+@pytest.mark.asyncio
+async def test_llamacpp_provider_omits_grammar_when_none():
+    provider = LlamaCppProvider(base_url="http://test.local:8001", timeout_s=5.0)
+
+    captured: dict = {}
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content='data: {"content": "", "stop": true}\n\n',
+        )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(side_effect=capture)
+
+        async for _ in provider.stream(prompt="x", stop=None, max_tokens=128):
+            pass
+
+    assert "grammar" not in captured["body"]

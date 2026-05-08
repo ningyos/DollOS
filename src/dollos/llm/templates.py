@@ -89,6 +89,107 @@ def _format_tools_block(tools: list[type[BaseModel]]) -> str:
     )
 
 
+# Pragmatic JSON string content rules (handles \" \\ \n \t \uXXXX).
+# Shared tail appended to every B4-typed grammar.
+#
+# Deny list inside the char class:
+#   "  \\                              ASCII quote / backslash (true JSON escape)
+#   “ ”                      “ ”  typographic double quotes
+#   ‘ ’                      ‘ ’  typographic single quotes
+#   「 」 『 』        「 」 『 』  CJK corner brackets
+# Without the second group, byte-level grammar lets the model produce a
+# `」}}` close (observed 2026-05-08 T8) — well-formed bytes, malformed JSON.
+_JSON_STR_RULES = (
+    "str ::= \"\\\"\" str-char* \"\\\"\"\n"
+    "str-char ::= "
+    "[^\"\\\\\\u201C\\u201D\\u2018\\u2019\\u300C\\u300D\\u300E\\u300F] | "
+    "\"\\\\\" [\"\\\\/bfnrt] | "
+    "\"\\\\u\" hex hex hex hex\n"
+    "hex ::= [0-9a-fA-F]\n"
+)
+
+
+def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
+    """Build a B4-typed GBNF grammar for Qwen3 <think>+tool_call output.
+
+    Constrains the model to:
+      SEEN: <line>
+      INTENT: <line>
+      TOOL: <tool-name>
+      </think>
+      <tool_call>...</tool_call>
+
+    Each tool gets a per-tool call rule whose JSON body lists only the
+    tool's *required string* fields. Optional fields are dropped (matches
+    proven B4-typed probe — extras add noise).
+    Raises NotImplementedError if any required field is non-string, or if
+    a tool / field name contains characters needing escaping.
+    """
+    if not tools:
+        raise ValueError("tools must be non-empty for grammar build")
+
+    def _check_ident(s: str, what: str) -> None:
+        if "\\" in s or '"' in s:
+            raise NotImplementedError(
+                f"{what} {s!r} contains backslash/quote; grammar escape unsupported"
+            )
+
+    # alias suffix for per-tool call rules: ToolName -> tool-name-call
+    def _rule_id(name: str) -> str:
+        out: list[str] = []
+        for i, ch in enumerate(name):
+            if ch.isupper() and i > 0:
+                out.append("-")
+            out.append(ch.lower())
+        return "".join(out) + "-call"
+
+    tool_names: list[str] = []
+    call_rule_ids: list[str] = []
+    call_rules: list[str] = []
+
+    for cls in tools:
+        name = cls.__name__
+        _check_ident(name, "tool name")
+        schema = cls.model_json_schema()
+        props = schema.get("properties", {})
+        required = schema.get("required", [])
+        body_parts: list[str] = []
+        for fname in required:
+            _check_ident(fname, "field name")
+            finfo = props.get(fname, {})
+            if finfo.get("type") != "string":
+                raise NotImplementedError(
+                    f"tool {name} required field {fname!r} is not a string "
+                    f"(type={finfo.get('type')!r}); grammar build unsupported"
+                )
+            # Each required string field: "fname": <str>
+            body_parts.append(f'\\"{fname}\\": " str "')
+        joined = ', '.join(body_parts) if len(body_parts) > 1 else (body_parts[0] if body_parts else "")
+        # Build literal: <tool_call>\n{"name": "ToolName", "arguments": {<fields>}}\n</tool_call>
+        rule_id = _rule_id(name)
+        rule = (
+            f'{rule_id} ::= "<tool_call>\\n'
+            f'{{\\"name\\": \\"{name}\\", \\"arguments\\": {{'
+            f'{joined}}}}}\\n</tool_call>"'
+        )
+        tool_names.append(name)
+        call_rule_ids.append(rule_id)
+        call_rules.append(rule)
+
+    tool_name_alts = " | ".join(f'"{n}"' for n in tool_names)
+    tool_call_alts = " | ".join(call_rule_ids)
+
+    head = (
+        "root ::= think tool-call\n"
+        'think ::= "SEEN: " line "INTENT: " line "TOOL: " tool-name "\\n</think>\\n\\n"\n'
+        'line ::= [^\\n]+ "\\n"\n'
+        f"tool-name ::= {tool_name_alts}\n"
+        f"tool-call ::= {tool_call_alts}\n"
+    )
+    body = "\n".join(call_rules) + "\n"
+    return head + body + _JSON_STR_RULES
+
+
 class Qwen3ThinkingTemplate(PromptTemplate):
     """Qwen3.x thinking-model ChatML.
 
