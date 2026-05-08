@@ -105,8 +105,7 @@ class EventDispatcher:
 
         try:
             doll_event = await self._perceive(raw)
-            summary = await self._instinct.process(doll_event)
-            await self._respond(doll_event, summary, sink)
+            await self._respond(doll_event, sink)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -142,7 +141,6 @@ class EventDispatcher:
     async def _respond(
         self,
         doll_event: DollEvent,
-        summary: str,
         sink: asyncio.Queue[ServerMessage | None],
     ) -> None:
         from dollos import dispatcher as _disp_mod
@@ -151,11 +149,25 @@ class EventDispatcher:
 
         iteration = 0
         while True:
-            # Prefill removed (2026-05-07): STATE/RECALL injection caused
-            # model to mimic the format and produce infinite transcript-style
-            # autocompletion. IV summary + recall still run (for memory upkeep
-            # / future event triage) but are not injected into the think block.
-            await self._inner_voice.recall(doll_event.perception)
+            # Wire format (2026-05-08): IV.recall result is wrapped in a
+            # [Memory context] block prepended to the user message (RAG
+            # context pattern). Prefill stays empty — STATE/RECALL prefill
+            # caused mimicry / infinite-transcript autocompletion.
+            recall_text = await self._inner_voice.recall(doll_event.perception)
+            if recall_text:
+                framed_user = (
+                    "[Memory context]\n"
+                    f"{recall_text}\n\n"
+                    "[Message]\n"
+                    f"{doll_event.perception}"
+                )
+            else:
+                framed_user = (
+                    "[Memory context]\n"
+                    "(no relevant memory)\n\n"
+                    "[Message]\n"
+                    f"{doll_event.perception}"
+                )
             system = self._renderer.render(
                 "scaffolding", character=self._character_profile
             )
@@ -172,7 +184,7 @@ class EventDispatcher:
 
             async for chunk in self._adapter.stream_completion(
                 system=system,
-                user=doll_event.perception,
+                user=framed_user,
                 prefill=prefill,
                 tools=TOOLS,
                 max_tokens=4096,
@@ -206,7 +218,6 @@ class EventDispatcher:
                 perception=self._format_results_perception(results, iteration),
                 raw=doll_event.raw,
             )
-            summary = await self._instinct.process(doll_event)
 
         sink.put_nowait(TurnEnd())
 

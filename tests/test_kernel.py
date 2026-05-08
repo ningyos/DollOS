@@ -80,7 +80,7 @@ def _install_fake_inner_voice(monkeypatch, recall_text: str | None = None, raise
         captured.append(query)
         if raises is not None:
             raise raises
-        return recall_text or "RECALL:\n- foo\n"
+        return recall_text if recall_text is not None else "- foo"
 
     async def _stub_instinct_process(self, event):
         return ""
@@ -134,7 +134,7 @@ async def test_handle_text_input_yields_chunks_then_turnend(
         ),
         StreamChunk(text="", done=True),
     ]
-    _install_fake_inner_voice(monkeypatch, "RECALL:\n- foo\n")
+    _install_fake_inner_voice(monkeypatch, "- foo")
 
     items = await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
@@ -162,7 +162,7 @@ async def test_dispatch_user_text_passes_empty_prefill(
     not piped to the big model's <think> opener."""
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_inner_voice(monkeypatch, "RECALL:\n- foo\n")
+    _install_fake_inner_voice(monkeypatch, "- foo")
 
     await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert len(adapter.calls) == 1
@@ -178,7 +178,10 @@ async def test_dispatch_user_text_uses_text_as_user_role(
     _install_fake_inner_voice(monkeypatch)
 
     await _collect(dollos._handle_text_input(TextInput(text="hello world")))
-    assert adapter.calls[0]["user"] == "hello world"
+    user = adapter.calls[0]["user"]
+    assert "[Memory context]" in user
+    assert "[Message]" in user
+    assert "hello world" in user
 
 
 @pytest.mark.asyncio

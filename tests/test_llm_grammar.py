@@ -35,6 +35,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "WriteDiary": "write-diary-call",
         "Shell": "shell-call",
         "InvokeSkill": "invoke-skill-call",
+        "Recall": "recall-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]
@@ -58,6 +59,15 @@ def test_grammar_per_tool_field_names_match_required_strings():
     assert r'\"name\":' in g  # InvokeSkill (and the envelope "name")
     # Shell's optional timeout_s must not appear in the grammar body.
     assert "timeout_s" not in g
+
+
+def test_grammar_includes_recall_tool():
+    """Recall tool appears in the auto-generated tool-name enum and gets
+    its own per-tool call rule (proves TOOLS auto-threads new tools through
+    grammar build)."""
+    g = build_qwen3_think_tool_grammar(TOOLS)
+    assert '"Recall"' in g
+    assert "recall-call ::= " in g
 
 
 def test_grammar_includes_json_str_rules():

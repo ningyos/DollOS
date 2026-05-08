@@ -1,8 +1,9 @@
 """Instinct — System 1 per-event preprocessing layer.
 
-Step 5 minimal: only `process()` returning a rolling natural-language summary.
-Future steps will extend with first_instinct (step 7 reflex), wake gating, etc.
-The summary is injected into the big-model prefill as the STATE block.
+Class kept for future wake-gating / reflex; not currently consumed by
+the dispatcher (post 2026-05-08 RAG-context pivot the rolling summary
+is no longer injected anywhere). Kernel still constructs an Instinct
+so future call sites can wire in without re-plumbing.
 
 Prompt content lives in `dollos/prompts/templates/iv_summary.jinja`.
 """

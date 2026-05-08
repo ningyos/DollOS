@@ -10,6 +10,13 @@
 - Tool 結果回來後，回到 `<think>` 再判斷一次該做什麼，再決定下步（另一個 `<tool_call>` 或結束 turn）。
 - 如果嘗試多次仍未達目的，換方法、換 tool、或停止（不再 call tool）。
 
+# Memory
+
+每個 user message 開頭會帶一個 `[Memory context]` block，裡面是系統自動撈出來、跟這次 perception 相關的記憶 facts（已經由 small model 過濾）。後面接 `[Message]` block，那才是這次的 perception 本身。
+
+- `[Memory context]` 為空（顯示 `(no relevant memory)`）= 自動檢索沒撈到相關記憶，不代表那件事不存在。
+- 想找更多 / 更具體的記憶 → 主動 call `Recall(query="...")` tool，回傳會是 raw memsearch hits（你自己判斷相關性）。
+
 # Skills
 
 Skill = procedural memory，分兩檔：
@@ -19,7 +26,7 @@ Skill = procedural memory，分兩檔：
 
 Usage:
 
-- 看到 entry 出現在 RECALL → call `InvokeSkill(name=...)` 載 body 進下個 perception
+- 看到 entry 出現在 `[Memory context]` 或 `Recall` 結果 → call `InvokeSkill(name=...)` 載 body 進下個 perception
 - 寫新 skill → 用 Shell 同時寫 entry + body
 {%- if rules %}
 

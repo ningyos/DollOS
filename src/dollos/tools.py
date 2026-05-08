@@ -162,9 +162,10 @@ class Shell(BaseModel):
 class InvokeSkill(BaseModel):
     """Load a skill's full instructions into context.
 
-    Use this when you've seen a skill entry in RECALL and decide to follow
-    its procedure. The skill body will be returned as the next perception,
-    after which you should follow its instructions step by step.
+    Use this when you've seen a skill entry in the [Memory context] block
+    (or via the Recall tool) and decide to follow its procedure. The skill
+    body will be returned as the next perception, after which you should
+    follow its instructions step by step.
     """
 
     name: str = Field(
@@ -179,4 +180,27 @@ class InvokeSkill(BaseModel):
         return path.read_text()
 
 
-TOOLS: list[type[BaseModel]] = [Say, NoteMemory, WriteDiary, Shell, InvokeSkill]
+class Recall(BaseModel):
+    """Search Doll's memory for relevant facts.
+
+    Use when you need deeper context than the [Memory context] block
+    already provides in this turn's perception. Returns raw memsearch
+    hits (no small-model filter — you judge relevance yourself).
+    """
+
+    query: str = Field(
+        description=(
+            "What to search for in memory. Specific keywords work best."
+        )
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        hits = await ctx.memsearch.search(self.query, top_k=5)
+        if not hits:
+            return "[no relevant memory]"
+        return "\n".join(f"- {h['content']}" for h in hits)
+
+
+TOOLS: list[type[BaseModel]] = [
+    Say, NoteMemory, WriteDiary, Shell, InvokeSkill, Recall,
+]

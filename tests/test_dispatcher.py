@@ -75,11 +75,15 @@ class _HangAdapter(LLMAdapter):
 
 
 class _FakeInnerVoice:
-    """Fake InnerVoice.recall — returns a fixed RECALL block, captures args."""
+    """Fake InnerVoice.recall — returns a plain filtered string, captures args.
+
+    Post 2026-05-08 wire format: recall returns plain text (no "RECALL:"
+    prefix). Empty-string return signals "no relevant memory".
+    """
 
     def __init__(
         self,
-        recall_text: str = "RECALL:\n- foo\n",
+        recall_text: str = "- foo",
         raises: Exception | None = None,
     ) -> None:
         self._text = recall_text
@@ -218,11 +222,11 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_recall_runs_but_prefill_is_empty(tmp_path: Path):
-    """IV.recall still runs (memsearch upkeep, future triage) but its result
-    is NOT injected as prefill — see dispatcher comment dated 2026-05-07."""
+async def test_recall_result_wraps_user_message_with_memory_context(tmp_path: Path):
+    """IV.recall result is wrapped in [Memory context] block prepended to
+    user message (RAG context pattern, 2026-05-08). Prefill stays empty."""
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("RECALL:\n- foo\n")
+    iv = _FakeInnerVoice("- user likes coffee")
     dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -232,8 +236,33 @@ async def test_recall_runs_but_prefill_is_empty(tmp_path: Path):
 
     assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["user"] == "hello world"
+    user = adapter.calls[0]["user"]
+    assert "[Memory context]" in user
+    assert "- user likes coffee" in user
+    assert "[Message]" in user
+    assert "hello world" in user
+    assert "RECALL:" not in user
     assert adapter.calls[0]["prefill"] == ""
+
+
+@pytest.mark.asyncio
+async def test_empty_recall_still_emits_memory_context_block(tmp_path: Path):
+    """Empty IV.recall result still produces an explicit (no relevant memory)
+    line in the [Memory context] block."""
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice("")  # no hits
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))
+
+    await _drain(sink)
+
+    user = adapter.calls[0]["user"]
+    assert "[Memory context]" in user
+    assert "(no relevant memory)" in user
+    assert "[Message]" in user
+    assert "hi" in user
 
 
 @pytest.mark.asyncio
@@ -339,7 +368,10 @@ async def test_concurrent_dispatch_runs_in_parallel(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Path):
+async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
+    """Instinct.process is no longer called from the dispatcher hot path
+    (post 2026-05-08). Class still constructible (kernel builds it), just
+    not consumed here."""
     adapter = _FakeAdapter(
         chunks=[
             StreamChunk(
@@ -349,83 +381,9 @@ async def test_dispatcher_calls_instinct_with_doll_event_perception(tmp_path: Pa
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
-        renderer=PromptRenderer(),
-        character_profile="You are Doll.",
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-
-    while True:
-        item = await sink.get()
-        if item is None:
-            break
-
-    assert inst.calls == ["hi"]
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_passes_empty_prefill_regardless_of_summary(tmp_path: Path):
-    """Both STATE and RECALL prefill injection were removed 2026-05-07
-    (mimicry / infinite-transcript bug). IV.recall and Instinct.process still
-    run for memory upkeep / future triage; their output never reaches prefill."""
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ]
-    )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
-        renderer=PromptRenderer(),
-        character_profile="You are Doll.",
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-    while True:
-        item = await sink.get()
-        if item is None:
-            break
-
-    assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == ""
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_instinct_error_surfaces_as_error_msg(tmp_path: Path):
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ]
-    )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(raises=RuntimeError("instinct boom"))
+    iv = _FakeInnerVoice()
+    # Instinct that would raise if called — proves dispatcher never calls it.
+    inst = _FakeInstinct(raises=RuntimeError("instinct should not be called"))
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
@@ -448,8 +406,48 @@ async def test_dispatcher_instinct_error_surfaces_as_error_msg(tmp_path: Path):
             break
         items.append(item)
 
-    assert any(isinstance(m, ErrorMsg) and "instinct boom" in m.message for m in items)
-    assert len(adapter.calls) == 0
+    assert inst.calls == []
+    # Adapter still ran (no instinct error surfaced).
+    assert len(adapter.calls) == 1
+    assert any(isinstance(m, TextChunk) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_empty_prefill(tmp_path: Path):
+    """STATE/RECALL prefill injection removed 2026-05-07; replaced by
+    [Memory context] block in user message 2026-05-08."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice("- foo")
+    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="You are Doll.",
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        item = await sink.get()
+        if item is None:
+            break
+
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["prefill"] == ""
 
 
 @pytest.mark.asyncio
