@@ -156,6 +156,23 @@ Step 12 範圍：
 
 下個 step 候選（按優先序）：cascade Say 強化（最直接影響 UX）/ Subagent / Wake gating / Voice pipeline。
 
+#### Post-merge 發現（2026-05-08 deterministic smoke, temp=0/top_k=1）
+
+合併後跑 deterministic smoke（暴露 model real baseline，非 sampling lucky path）→ **3/8 vs 上次 sampling smoke 7/8**。差距全部出在 T2/T4/T5/T7/T8。揭露：
+
+- **InvokeSkill 幻覺是 deterministic baseline 行為**，不是偶發。step 12 之前 worktree smoke 的 7/8 是 sampling luck（temperature=0.6 偶爾躲過幻覺路徑）。
+- **新加 `Recall` tool 沒解 InvokeSkill 偏好**：model 看到「未知任務」deterministic 仍先猜 skill 檔名 call InvokeSkill，不會自動切到 Recall 或 Shell。Recall tool 設計沒錯，是 scaffolding 引導不夠強。
+- **Cascade 灌爆**：T4 連 4 次 InvokeSkill ENOENT（猜不同檔名 `system/initialization.md` / `debug_shell_errors.md` / `create_skill.md`）；用戶端看到 4 個 ERROR 才等到 Say。`MAX_CASCADE_DEPTH=50` 跟「emotion-aware cap」都缺。
+- **Tool error format 太低階**：`Errno 2: No such file or directory: 'data/memory/skill_bodies/X.md'` 對 model 沒指引性，只會繼續猜下一個檔名。
+- **T7 echo bug**：「我剛才說了什麼」回 T5 的錯誤回應當答案——transcript 撈到的是「最近一句 Doll Say」即可，無語意過濾。
+
+**結論**：step 11/12 已列「InvokeSkill 幻覺」為 #1 待修，這次 deterministic smoke **量化確認嚴重程度**——sampling 模糊了真實基線，必須優先解。
+
+下個 step（修正版優先序）：
+1. **InvokeSkill / cascade 失敗治理**：scaffolding 把 InvokeSkill 改成 conditional（只在 `[Memory context]` 看到 entry 才能用）+ InvokeSkill 失敗 message 改成有指引性 + cascade depth 收緊到 5 + 同 tool 連續失敗 ≥3 直接斷
+2. cascade Say 強化（forward tool 結果）
+3. Subagent / Wake gating / Voice pipeline（功能擴張，等 baseline 穩定）
+
 ---
 
 ## 之後（未排序）
