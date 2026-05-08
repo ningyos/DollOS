@@ -58,6 +58,7 @@ class _FakeAdapter(LLMAdapter):
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type] | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append({"system": system, "user": user, "prefill": prefill})
         for c in self.chunks:
@@ -154,16 +155,18 @@ async def test_handle_text_input_yields_errormsg_on_dispatch_failure(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_user_text_uses_recall_in_prefill(
+async def test_dispatch_user_text_passes_empty_prefill(
     dollos_with_fakes, monkeypatch
 ):
+    """Prefill injection removed 2026-05-07 — IV.recall still runs but is
+    not piped to the big model's <think> opener."""
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
     _install_fake_inner_voice(monkeypatch, "RECALL:\n- foo\n")
 
     await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == "RECALL:\n- foo\n"
+    assert adapter.calls[0]["prefill"] == ""
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
+from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.memory_writer import append_transcript
 from dollos.prompts import PromptRenderer
 from dollos.tool_parser import ToolStreamParser
@@ -146,6 +147,8 @@ class EventDispatcher:
     ) -> None:
         from dollos import dispatcher as _disp_mod
 
+        grammar = build_qwen3_think_tool_grammar(TOOLS)
+
         iteration = 0
         while True:
             # Prefill removed (2026-05-07): STATE/RECALL injection caused
@@ -173,6 +176,7 @@ class EventDispatcher:
                 prefill=prefill,
                 tools=TOOLS,
                 max_tokens=4096,
+                grammar=grammar,
             ):
                 for call in parser.feed(chunk.text):
                     result = await self._dispatch_tool_call(call, ctx)

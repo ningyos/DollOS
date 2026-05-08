@@ -36,7 +36,10 @@ class LLMAdapter(ABC):
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion. `tools` is forwarded to the template; transports
-        ignore it (the prompt encodes tool definitions as text)."""
+        ignore it (the prompt encodes tool definitions as text). `grammar` is
+        a GBNF string forwarded to the provider's sampler when supported (None
+        = unconstrained sampling)."""
         ...
