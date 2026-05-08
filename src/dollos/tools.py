@@ -177,6 +177,19 @@ class InvokeSkill(BaseModel):
 
     async def run(self, ctx: ToolCtx) -> str:
         path = ctx.memory_root / "skill_bodies" / f"{self.name}.md"
+        if not path.exists():
+            skill_dir = ctx.memory_root / "skill_bodies"
+            if skill_dir.exists():
+                existing = sorted(p.stem for p in skill_dir.glob("*.md"))
+            else:
+                existing = []
+            available = ", ".join(existing) if existing else "(none yet)"
+            return (
+                f"Skill '{self.name}' 不存在。"
+                f"目前可用 skills: {available}\n"
+                f"建議：用 Shell 動手做 / Say 直接回答 / 用 Recall 找其他相關記憶。"
+                f"不要再猜其他 skill 名字。"
+            )
         return path.read_text()
 
 

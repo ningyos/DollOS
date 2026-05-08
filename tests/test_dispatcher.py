@@ -119,11 +119,15 @@ class _FakeInstinct:
 
 
 class _FakeMemSearch:
-    def __init__(self) -> None:
+    def __init__(self, hits: list | None = None) -> None:
         self.indexed: list = []
+        self._hits = hits or []
 
     async def index_file(self, path):
         self.indexed.append(path)
+
+    async def search(self, query: str, top_k: int = 5):
+        return self._hits
 
 
 def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
@@ -958,9 +962,14 @@ async def test_respond_max_cascade_depth_emits_error_and_ends(tmp_path: Path, mo
             self.calls = 0
 
         async def stream_completion(self, **kw):
+            # Alternate tool names so the same-tool 3-fail break does
+            # NOT trigger; this test isolates the depth-cap path.
             self.calls += 1
+            name = f"WhoKnows{self.calls}"
             yield StreamChunk(
-                text='<tool_call>{"name":"WhoKnows","arguments":{}}</tool_call>',
+                text=(
+                    '<tool_call>{"name":"' + name + '","arguments":{}}</tool_call>'
+                ),
                 done=False,
             )
             yield StreamChunk(text="", done=True)
@@ -1366,6 +1375,189 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
     assert "_Empty" in second_user
     assert "成功" in second_user
     assert "無輸出" in second_user
+
+
+@pytest.mark.asyncio
+async def test_cascade_breaks_on_same_tool_consecutive_3_failures(tmp_path: Path):
+    """3 consecutive InvokeSkill failures -> ErrorMsg + cascade aborts."""
+
+    class _RoundedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_completion(self, **kw):
+            self.calls.append(kw)
+            yield StreamChunk(
+                text=(
+                    '<tool_call>{"name":"InvokeSkill","arguments":'
+                    '{"wrong":"x"}}</tool_call>'
+                ),
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _RoundedAdapter()
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = await _drain(sink)
+
+    # 3 rounds, then ErrorMsg + break.
+    assert len(adapter.calls) == 3
+    assert any(
+        isinstance(m, ErrorMsg)
+        and "連續 3 次 InvokeSkill" in m.message
+        and "停下來換思路" in m.message
+        for m in items
+    )
+    assert any(isinstance(m, TurnEnd) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_cascade_resets_consecutive_counter_on_success(tmp_path: Path):
+    """Fail, fail, success, fail -> does NOT trigger same-tool break.
+
+    After the third success, the cascade keeps going; we cap iterations
+    by yielding a final Say so the loop ends naturally.
+    """
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_completion(self, **kw):
+            idx = len(self.calls)
+            self.calls.append(kw)
+            scripts = [
+                # round 0: fail (validation)
+                '<tool_call>{"name":"InvokeSkill","arguments":{"bad":"x"}}</tool_call>',
+                # round 1: fail (validation)
+                '<tool_call>{"name":"InvokeSkill","arguments":{"bad":"y"}}</tool_call>',
+                # round 2: success-cascade (Recall returns str)
+                '<tool_call>{"name":"Recall","arguments":{"query":"q"}}</tool_call>',
+                # round 3: fail again — counter was reset on success → 1, not 3
+                '<tool_call>{"name":"InvokeSkill","arguments":{"bad":"z"}}</tool_call>',
+                # round 4: terminate with Say (returns None → no cascade)
+                '<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+            ]
+            text = scripts[min(idx, len(scripts) - 1)]
+            yield StreamChunk(text=text, done=False)
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = await _drain(sink)
+
+    # No same-tool ErrorMsg; loop ended via Say-returns-None on round 4.
+    assert not any(
+        isinstance(m, ErrorMsg) and "連續 3 次" in m.message
+        for m in items
+    )
+    assert len(adapter.calls) == 5
+    assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
+
+
+@pytest.mark.asyncio
+async def test_cascade_does_not_break_on_alternating_tool_failures(tmp_path: Path):
+    """A-fail, B-fail, A-fail, then Say -> no break (counter reset on
+    different tool name each time)."""
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_completion(self, **kw):
+            idx = len(self.calls)
+            self.calls.append(kw)
+            scripts = [
+                '<tool_call>{"name":"WhoKnowsA","arguments":{}}</tool_call>',
+                '<tool_call>{"name":"WhoKnowsB","arguments":{}}</tool_call>',
+                '<tool_call>{"name":"WhoKnowsA","arguments":{}}</tool_call>',
+                '<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
+            ]
+            text = scripts[min(idx, len(scripts) - 1)]
+            yield StreamChunk(text=text, done=False)
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = await _drain(sink)
+
+    assert not any(
+        isinstance(m, ErrorMsg) and "連續 3 次" in m.message
+        for m in items
+    )
+    assert len(adapter.calls) == 4
+    assert any(isinstance(m, TextChunk) and m.text == "done" for m in items)
+
+
+@pytest.mark.asyncio
+async def test_cascade_max_depth_is_5(tmp_path: Path):
+    """Default MAX_CASCADE_DEPTH is 5 — confirms plan §3 constant change."""
+    from dollos import dispatcher as _disp_mod
+    assert _disp_mod.MAX_CASCADE_DEPTH == 5
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_path: Path):
+    """Dispatcher reads memory_root/skills/*.md filenames and passes the
+    sorted stems as available_skills= to the scaffolding renderer."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "morning.md").write_text("---\nname: morning\n---\n")
+    (skills_dir / "bedtime.md").write_text("---\nname: bedtime\n---\n")
+
+    captured: list[dict] = []
+
+    class _SpyRenderer:
+        def __init__(self):
+            self._real = PromptRenderer()
+
+        def render(self, template_name: str, **ctx):
+            captured.append({"template": template_name, "ctx": ctx})
+            return self._real.render(template_name, **ctx)
+
+        def render_blocks(self, template_name: str, **ctx):
+            return self._real.render_blocks(template_name, **ctx)
+
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=_SpyRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    while True:
+        m = await sink.get()
+        if m is None:
+            break
+
+    scaffolding_calls = [c for c in captured if c["template"] == "scaffolding"]
+    assert scaffolding_calls, "scaffolding template should have been rendered"
+    assert scaffolding_calls[0]["ctx"]["available_skills"] == ["bedtime", "morning"]
 
 
 @pytest.mark.asyncio
