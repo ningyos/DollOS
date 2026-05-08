@@ -344,11 +344,14 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_invoke_skill_run_raises_filenotfound_for_missing_skill(tmp_path):
+async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
+    """ENOENT -> success-cascade str (no exception). Message includes
+    '(none yet)' for empty skill dir + Shell/Recall guidance."""
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
-    memory_root.mkdir()
+    bodies_dir = memory_root / "skill_bodies"
+    bodies_dir.mkdir(parents=True)  # empty dir
     ctx = ToolCtx(
         sink=sink,
         memory_root=memory_root,
@@ -356,8 +359,32 @@ async def test_invoke_skill_run_raises_filenotfound_for_missing_skill(tmp_path):
         transcripts_root=tmp_path / "transcripts",
     )
 
-    with pytest.raises(FileNotFoundError):
-        await InvokeSkill(name="nonexistent").run(ctx)
+    out = await InvokeSkill(name="nope").run(ctx)
+    assert "(none yet)" in out
+    assert "Shell" in out
+    assert "Recall" in out
+    assert "nope" in out
+
+
+@pytest.mark.asyncio
+async def test_invoke_skill_missing_lists_existing_skills(tmp_path):
+    """ENOENT -> message lists existing skills sorted by stem."""
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    memory_root = tmp_path / "memory"
+    bodies_dir = memory_root / "skill_bodies"
+    bodies_dir.mkdir(parents=True)
+    (bodies_dir / "morning.md").write_text("...")
+    (bodies_dir / "bedtime.md").write_text("...")
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    out = await InvokeSkill(name="nope").run(ctx)
+    assert "bedtime, morning" in out
 
 
 @pytest.mark.asyncio
