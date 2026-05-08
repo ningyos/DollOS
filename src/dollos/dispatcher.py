@@ -148,12 +148,15 @@ class EventDispatcher:
 
         iteration = 0
         while True:
-            recall = await self._inner_voice.recall(doll_event.perception)
+            # Prefill removed (2026-05-07): STATE/RECALL injection caused
+            # model to mimic the format and produce infinite transcript-style
+            # autocompletion. IV summary + recall still run (for memory upkeep
+            # / future event triage) but are not injected into the think block.
+            await self._inner_voice.recall(doll_event.perception)
             system = self._renderer.render(
                 "scaffolding", character=self._character_profile
             )
-            state_block = f"STATE:\n{summary}\n\n" if summary else ""
-            prefill = f"{state_block}{recall}"
+            prefill = ""
 
             parser = ToolStreamParser()
             ctx = ToolCtx(
