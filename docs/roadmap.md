@@ -107,6 +107,30 @@ Smoke test 結論：**infrastructure 完整通過 unit test（174 → 178 tests�
 
 下個 step 候選：Character pack（最高優先——直接修 model 行為）/ wake gating / Subagent / Voice pipeline。
 
+### 11. Prompt-compact + grammar wiring  ✅ Merged
+
+**Pivot**：原預期 step 11 直接做 Character pack，實際先做 prompt-compact 跟 grammar wiring，因為 step 5/10 的 model 退化問題不是 character 內容夠不夠就能修——是格式洩漏 / tool 名幻覺 / JSON 形狀錯。先把結構鎖緊再談人格。
+
+Step 11 範圍：
+- character.jinja 改寫：移掉 few-shot 對話範例（model 會模仿成「主人說：xxx」假轉錄）；加「絕對不做」list（不寫 ReAct 標籤、不模擬 tool 結果、不寫假對話）。
+- 移除 STATE/RECALL prefill 注入：dispatcher hard-code `prefill = ""`。IV.recall 仍跑（memsearch upkeep）但結果不進 think block。**修了無限轉錄續寫 bug**。
+- B4-typed GBNF wiring（`build_qwen3_think_tool_grammar`）：think 鎖成 SEEN/INTENT/TOOL 三 field + per-tool typed JSON envelope（field name 鎖死）；`LlamaCppProvider.stream` 加 per-request `grammar` 參數；dispatcher 每 turn build grammar。
+- JSON string codepoint deny list：`[^"\\“”‘’「」『』]` 防止 model 用中文 closing quote 假關 JSON（byte-level grammar 漏洞，T8 smoke 親見）。
+- 5 個 stale RECALL/STATE prefill test 清掉。
+
+**Demo**：T1-T8 smoke 5/8 visible 強角色（vs 自由 sampling 4-5/8 + 大量格式洩漏 / 幻覺 tool name）；零 malformed JSON warning；think tokens 縮 ~15× per techreport §3 E1。
+
+**已知遺留**（grammar 範疇外，下個分支處理）：
+- T4/T5/T8 InvokeSkill 幻覺：fresh data 下 model 把所有未知任務都先當 skill 查（`Errno 2 No such file or directory`）。character / scaffolding 把 skill lookup 寫太搶眼。
+- Grammar `tool-name` 跟 `tool-call` 沒 cross-link：think 寫 `TOOL: InvokeSkill` 但 emit `<tool_call>{"name":"Say"}` 仍合法。要改成 5 個 production rule 展開（commit 變數）。
+- Scaffolding 還在洩漏 STATE/RECALL 概念：prefill 已移除但 system prompt 還提 → model 偶爾在 SEEN field 幻覺 `STATE: drink_preference: ...` 這種捏造結構。
+- Cascade 後 Say 弱化：T4 Shell 跑完，第二輪 perception 是「你 call 了 Shell tool 成功，回傳：...」，model 沒 forward 結果給用戶（Say 只 emit「嗯?」）。`_format_results_perception` 沒指引要 Say。
+- Cascade 自我崩潰：T8 第 3 次重試時 model 自己抱怨「這已經是第三次了」。MAX_CASCADE_DEPTH=50 過寬，缺 emotion-aware 上限。
+- T2 fabrication 偶發：fresh data 時開玩笑（好），有 stale data 時偶爾編造「主人喜歡美式咖啡」。memsearch miss → model 取捨不穩。需要明確「miss → 不瞎掰」mechanism。
+- dispatcher 啟動 cwd-relative：daemon 從非 worktree 目錄啟動會用錯 `data/`。Config `root` 設計小坑。
+
+下個 step 候選（按優先序）：InvokeSkill 幻覺修復 / Character pack / cascade Say 強化 / Subagent。
+
 ---
 
 ## 之後（未排序）
