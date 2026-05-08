@@ -6,8 +6,8 @@ Rules:
 - If a candidate is irrelevant, skip it
 - Do NOT add facts not in candidates
 - Do NOT speculate or fill gaps
-- Output bullets only. Don't repeat the query, don't add header.
-- If no candidates are relevant, output a single line: (no relevant memories)
+- Output bullets only. Don't repeat the query, don't add a header, don't add a "RECALL:" prefix.
+- If no candidates are relevant, output nothing (empty response).
 {%- endblock -%}
 
 {%- block user -%}

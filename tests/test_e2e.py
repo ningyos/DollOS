@@ -56,7 +56,7 @@ async def test_full_round_trip_with_mocked_llamacpp(
 
     # Stub InnerVoice.recall — recall behavior is covered by test_inner_voice.py.
     async def _stub_recall(self, query, **kwargs):
-        return "RECALL:\n- user likes coffee\n"
+        return "- user likes coffee"
 
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
 
@@ -119,9 +119,11 @@ async def test_full_round_trip_with_mocked_llamacpp(
             assert len(captured_requests) == 1
             prompt = captured_requests[0]["prompt"]
             assert "You are Gura, a 9000-year-old shark." in prompt
-            # Prefill removed 2026-05-07 — RECALL must NOT appear in prompt
-            # (mimicry / infinite-transcript bug). IV.recall still runs but
-            # its output stays in memsearch, not in <think>.
+            # Wire format (2026-05-08): IV.recall result lives in a
+            # [Memory context] block in the user message, not in prefill.
+            # The literal "RECALL:" label is gone for good.
+            assert "[Memory context]" in prompt
+            assert "user likes coffee" in prompt
             assert "RECALL:" not in prompt
             # The ChatML assistant turn opens exactly one <think> block.
             # (Scaffolding may contain `<think>` in inline code — check the
