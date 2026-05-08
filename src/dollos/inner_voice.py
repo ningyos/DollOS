@@ -1,8 +1,10 @@
-"""InnerVoice — small-model VoM RECALL block synthesizer.
+"""InnerVoice — small-model memory recall filter.
 
 Reads from memsearch (markdown SoT + Milvus shadow index) and uses a
-small LLM to filter / synthesize a RECALL block. Pure utility — no
-state, no event handling, no writes.
+small LLM to filter / synthesize relevant facts as plain text. The
+dispatcher wraps the returned text in a [Memory context] block; this
+class does NOT emit framing labels itself. Pure utility — no state,
+no event handling, no writes.
 
 Prompt content lives in `dollos/prompts/templates/iv_recall.jinja`
 (system + user blocks).
@@ -45,18 +47,20 @@ class InnerVoice:
         character_id: str | None = None,    # ignored in step 3; reserved for step 10
         top_k: int | None = None,
     ) -> str:
-        """Return a RECALL block string for the given query.
+        """Return filtered relevant facts as plain text.
 
-        Always starts with "RECALL:\\n" so the caller can embed verbatim
-        into a Doll prefill.
+        Dispatcher wraps the result in a [Memory context] block; do not
+        add own labels (no "RECALL:" prefix, no "(no relevant memories)"
+        wrapping). Returns the small-LLM-filtered output verbatim
+        (typically a bullet list or natural prose).
 
-        If memsearch returns no hits, returns
-        "RECALL:\\n(no relevant memories)\\n" without invoking the LLM.
+        If memsearch returns no hits, returns "" (empty string) without
+        invoking the LLM.
         """
         k = top_k if top_k is not None else self._default_top_k
         hits = await self._memsearch.search(query, top_k=k)
         if not hits:
-            return "RECALL:\n(no relevant memories)\n"
+            return ""
 
         candidates = "\n".join(
             f"{i + 1}. {h['content']}" for i, h in enumerate(hits)
@@ -78,5 +82,4 @@ class InnerVoice:
             if chunk.done:
                 break
 
-        body = "".join(chunks).strip()
-        return f"RECALL:\n{body}\n"
+        return "".join(chunks).strip()

@@ -15,6 +15,7 @@ from dollos.tools import (
     TOOLS,
     InvokeSkill,
     NoteMemory,
+    Recall,
     Say,
     Shell,
     ToolCtx,
@@ -380,3 +381,70 @@ async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
 
     out = await InvokeSkill(name="x").run(ctx)
     assert out == "BODY CONTENT"
+
+
+class _SearchableMemSearch:
+    """Fake MemSearch with a configurable .search() returning canned hits."""
+
+    def __init__(self, hits):
+        self._hits = hits
+        self.last_query: str | None = None
+        self.last_top_k: int | None = None
+
+    async def search(self, query, top_k=5):
+        self.last_query = query
+        self.last_top_k = top_k
+        return self._hits
+
+    async def index_file(self, path):  # pragma: no cover
+        pass
+
+
+def test_recall_in_tools_list():
+    assert Recall in TOOLS
+
+
+def test_recall_schema_has_query_field():
+    schema = Recall.model_json_schema()
+    assert "query" in schema["properties"]
+    assert schema["properties"]["query"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_recall_run_returns_bullet_list_for_hits(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _SearchableMemSearch(
+        hits=[
+            {"content": "user likes coffee", "score": 0.9, "source": "x.md"},
+            {"content": "the sky is blue", "score": 0.8, "source": "x.md"},
+        ]
+    )
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    out = await Recall(query="coffee").run(ctx)
+
+    assert ms.last_query == "coffee"
+    assert ms.last_top_k == 5
+    assert "- user likes coffee" in out
+    assert "- the sky is blue" in out
+
+
+@pytest.mark.asyncio
+async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _SearchableMemSearch(hits=[])
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    out = await Recall(query="anything").run(ctx)
+
+    assert out == "[no relevant memory]"
