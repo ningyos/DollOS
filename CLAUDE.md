@@ -11,7 +11,7 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 - **DollOS UI** — Tauri (Rust shell + Web frontend) with Cubism Web SDK rendering Live2D. Win/Mac get transparent overlay desktop pet; Linux gets a normal window.
 - **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from DollOS.
 - **Big LLM** — user's choice (cloud API / self-host llama.cpp). DollOS only hosts the **small Inner Voice model** (0.6B–1.7B) locally.
-- **VoM (Voice of Mind) + grammar injection** — the signature feature: small model digests memory + events, prefills the result into the big model's `<think>` block. See `docs/research/grammar_injection_techreport.md`.
+- **VoM (Voice of Mind) + grammar injection** — small model digests memory + events; result reaches the big model via a `[Memory context]` block prepended to the user message + an explicit `Recall` tool. **Wire format pivoted 2026-05-08**: structured STATE/RECALL prefill into `<think>` was abandoned (LLM training distribution has no precedent for ReAct-style memory labels → mimicry / list-continuation failure). Two-tier architecture preserved; only the wire format between layers changed. See `docs/research/grammar_injection_techreport.md` (think-block grammar) and `docs/superpowers/plans/2026-05-08-memory-rag-tool.md` (current wire format).
 - **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Instinct's involuntary state + Memory's self-history + character description), not from prompt commands. See main spec §8.
 
 **Three-layer intelligence:**
@@ -51,10 +51,10 @@ DollOS/
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
 - **BYO big LLM**: DollOS hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
-- **VoM prefill**: Inner Voice synthesizes a RECALL block and prefills it into the big model's `<think>` region. Backend support varies (full on Anthropic + llama.cpp `/completion`; degraded on strict OpenAI).
+- **VoM wire format**: Inner Voice's small-LLM-filtered recall result is wrapped in a `[Memory context]` block prepended to the user message; the explicit `Recall` pydantic tool gives Doll on-demand deeper search (raw memsearch hits). No prefill into `<think>`. Backend-portable (works on any provider that accepts a user message).
 - **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
 - **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
-- **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from prefilled `SELF_STATE` block + self-memory in RECALL.
+- **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from character description + Doll's own memory entries (self-history, preferences, mood) surfacing through the `[Memory context]` block + `Recall` tool. The 2026-05-08 smoke confirmed Self-First behavior emerges this way (T2 「我自己愛冰美式，你呢？」).
 - **Memory SoT**: memsearch (Milvus Lite + ONNX bge-m3 + markdown daily summary files). `data/memory/shared/` for shared facts, `data/memory/{character_id}/` for per-character private (step 10). Hybrid retrieval (dense + BM25 + RRF) provided by memsearch.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
 
@@ -80,14 +80,17 @@ DollOS/
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
 | Roadmap step 9 — Success-cascade + Shell | Merged |
 | Roadmap step 10 — Skills system | Merged |
+| Roadmap step 11 — Prompt-compact + grammar wiring (B4 GBNF + CJK deny) | Merged |
+| Roadmap step 12 — Memory wire format pivot (RAG context + Recall tool) | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Character pack**（.doll v3 schema、character.jinja 覆寫）—— **最高優先**：step 5/10 smoke 都觀察到 model 行為弱化，character pack 是直接的 fix
+- **Cascade Say 強化** — T8 仍出現 cascade 後 Say 弱化（"嗯?" / "跑完了？可是結果呢？"）。修 `_format_results_perception` 引導 model forward tool 結果
 - **Subagent**（async result via SubagentResultEvent）
 - **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
 - **Voice pipeline**（KWS / VAD / ASR / TTS）
+- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 11/12 後 model 行為已穩定，優先序下降
 
 完整 roadmap：`docs/roadmap.md`。
 
@@ -106,7 +109,7 @@ uv run python -m dollos --config config.toml
 uv run pytest                   # tests
 ```
 
-### Self-host llama.cpp big model (recommended for full VoM)
+### Self-host llama.cpp big model (recommended for grammar / think structure)
 
 ```bash
 ./llama.cpp/llama-server \
@@ -125,7 +128,7 @@ uv run pytest                   # tests
     --port 8001 --host 0.0.0.0
 ```
 
-`--reasoning-format none` is REQUIRED for grammar / prefill to apply inside `<think>` blocks.
+`--reasoning-format none` is REQUIRED for grammar to apply inside `<think>` blocks (B4-typed think structure).
 
 ### Local embedding server (separate llama-server with `--embedding`)
 
@@ -150,7 +153,7 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
 - **Language**: Respond in 繁體中文.
 - **Subagents for coding**: dispatch one subagent per implementation task. Don't write code in the main session.
 - **Worktree per plan**: each plan gets its own worktree under `.worktrees/<plan-name>/` on its own feature branch. Merge to `main` after the plan completes via `superpowers:finishing-a-development-branch`.
-- **No fallback mechanisms**: never implement fallback / degradation logic. State boundaries clearly; if a backend can't do prefill, surface "VoM degraded" to the user, don't silently rewrite the prompt.
+- **No fallback mechanisms**: never implement fallback / degradation logic. State boundaries clearly; if a backend can't do something the design needs (e.g. raw `prefill` for the previous VoM design), surface the limitation explicitly, don't silently rewrite the prompt.
 - **Don't overthink upstream**: use upstream packages (llama.cpp, sqlite-vec, Cubism, etc.) as-is.
 - **Specs before code**: update or write the spec before implementing. Get user approval on design.
 - **Background commands**: don't pipe to `tail` on background commands; write to a file and read it.
@@ -162,7 +165,7 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
 電腦端（DollOS）
   Event Loop ── Instinct（Inner Voice 小模型 + 規則 + reflex）
                   ↓ wake / drop / fire
-              Doll Turn（大模型 + VoM/SELF_STATE prefill）
+              Doll Turn（大模型 + [Memory context] block + Recall tool）
                   ↓ tool calls
               Subagent（即時）/ Drone（持久）
               Memory SoT（sqlite-vec + FTS5）

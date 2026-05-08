@@ -131,6 +131,31 @@ Step 11 範圍：
 
 下個 step 候選（按優先序）：InvokeSkill 幻覺修復 / Character pack / cascade Say 強化 / Subagent。
 
+### 12. Memory wire format pivot — RAG context + Recall tool  ✅ Merged
+
+**Pivot 動機**：step 11 砍掉 STATE/RECALL prefill 注入後，IV.recall 跑完結果丟掉、Instinct.process 同樣浪費。深一層發現：**LLM 訓練分佈裡根本沒有「ReAct-style 結構化記憶 prefill」這種東西**。業界主流走兩條已訓練通道——RAG context in user message（LangChain / ChatGPT memory）+ tool-based memory（Anthropic memory tool / Letta）。VoM 原 wire format（自定義 STATE/RECALL 標籤塞 think prefill）是 0% 訓練覆蓋的孤兒做法。
+
+**架構保留**：兩層模型分工、Instinct / InnerVoice class、memsearch SoT、`prefill` 機制（template / adapter 仍接受參數，將來不同 wire format 可用）— 沒動。**只換 wire format**。
+
+Step 12 範圍：
+- `inner_voice.py`: `recall()` 返回值剝掉 `RECALL:\n` 前綴跟 `(no relevant memories)` wrap，純 plain filtered text；空回 `""`。
+- `iv_recall.jinja`: small-LLM 不再產 `RECALL:` 前綴。
+- `dispatcher.py`: 移除兩個 `Instinct.process()` call（Instinct class 留著供 wake-gating / reflex 將來用）。把 IV.recall 結果包成 `[Memory context]\n{text}\n\n[Message]\n{perception}` 進 user msg；空 recall 仍出 `(no relevant memory)` block。
+- 新 `Recall` pydantic tool（`tools.py`）：`Recall(query)` 走 raw memsearch（top-5），不二次 filter（baseline 已 filter）。Grammar generator 自動納入。
+- `scaffolding.jinja`: 加 `# Memory` section 教 Doll 用 `[Memory context]` + `Recall` tool；`# Skills` 段 RECALL 字眼改寫成 `[Memory context]`。
+
+**Demo**：T1-T8 smoke **7/8 visible**（vs step 11 之 5/8）；零 ERROR、零 malformed JSON、**零 InvokeSkill 幻覺**。
+- T2 出現 **Self-First**：「我最近超愛喝冰美式」反問用戶喜好（spec §8 預期效果首次自然浮現）
+- T7 跨 turn RAG：引用 T6 剛寫進的 NoteMemory（「主人的知識庫升級了」）
+- T4/T5 乾淨用 Shell（step 11 必爆的 InvokeSkill 幻覺消失，因 scaffolding 把 skill 用法明確跟 `[Memory context]` 綁定）
+
+**仍遺留**（不在 step 12 範圍）：
+- T8 cascade Say 弱化：「跑完了？可是結果呢？」— `_format_results_perception` 沒引導 model forward tool 結果。本質 cascade 設計問題。
+- Grammar `tool-name` ↔ `tool-call` cross-link 缺漏（step 11 遺留）
+- T8 cascade 自我崩潰防呆缺漏（step 11 遺留）
+
+下個 step 候選（按優先序）：cascade Say 強化（最直接影響 UX）/ Subagent / Wake gating / Voice pipeline。
+
 ---
 
 ## 之後（未排序）
