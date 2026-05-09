@@ -214,6 +214,53 @@ Step 13 範圍（4 個 commit + 1 個探索 log）：
 2. cascade depth 拉到 20 + 同 tool any-outcome counter（小改動，從 exploration log 把 budget pressure 那塊改良後上）
 3. Subagent / Wake gating / Voice pipeline / Character pack
 
+### 14. Episodic memory + uncapped cascade + REVIEW think field  ✅ Merged
+
+**動機**：step 13 後 T7 / T8 仍偶發 cascade exceeded（depth=5 太緊）；本質問題不是 depth cap 太小，是 model 沒辦法跨 turn 看見過去做了什麼。Cross-turn 的 wire format 又跟「DollOS 沒 session 概念」哲學衝突。**正解：cascade end 時小模型 compact 成一句話，append 到 rolling buffer，下個 cascade 看見**——episodic memory 不是 conversation transcript。
+
+但加完 rolling 後，移除 cap 重跑 smoke 揭露**真正的失敗模式**：96 次 inference 中 model 完全相同的 3 行 think 重複 ~70 次，**B4-typed grammar 沒給 self-reflection 的 syntactic 空間**。Surgical fix：think 加第 4 個 REVIEW 欄位。
+
+Step 14 範圍（一個 commit + plan docs，merge `5b6cd79` → `9c79375`）：
+
+**a. Rolling cascade compact**（episodic memory）
+- 新 `iv_compact.jinja`（small-LLM 1-2 句第一人稱過去式）
+- `Instinct.compact_cascade()` 新方法
+- `EventDispatcher._rolling: list[str]` daemon-life buffer
+- `_respond` 開始：`[Recent activity]\n- ...\n\n` block prepend 到 user message（在 `[Memory context]` 上方）
+- `_respond` 結束（不分 cascade exit reason）：compact + append，try/except 防 crash turn
+
+**b. MAX_CASCADE_DEPTH 移除**
+- 整個 hard cap 拿掉（包括 iteration counter + depth check）
+- 同 tool 連續失敗 ≥3 次的 counter 留著（剩唯一 safety net）
+- 哲學：trust model + 用 same-tool 抓真 pathology，不限制合理 deliberation 長度
+
+**c. REVIEW field in think grammar**
+- `templates.py` grammar 加：`"REVIEW: " line` between INTENT 和 TOOL
+- `scaffolding.jinja` 加 `# Think structure` section 解釋 4 欄位語意，特別教 REVIEW = 「看自己卡住沒卡住，卡了就換 tool」
+- `character.jinja` 思考方式範例對齊 4 欄位結構
+
+**Smoke**：3 sampling runs、fresh data each
+- Run 1: **8/8** 完美
+- Run 2: 7-8/8（T2 偶發 fabricate「可口可樂」，但 cascade 行為健康）
+- Run 3: **8/8** 完美
+- **0 cascade loops, 0 timeouts**（vs 之前偶發 96-iter loop）
+- 每 run 19-26 dispatches（穩定，不再 variance 12-96）
+- T5 cwd 理解 3/3、T7 cross-turn recall 3/3、T8 skill creation 3/3
+- Verbose log 確認 REVIEW 內容是真實 reasoning：「這是第一次回應這個問題」/「看紀錄：」之類
+
+**Verbose 觀察 (root cause confirmation)**：T2 looping 96 次的真實樣貌：
+- Phase 1（前 ~20 iters）：query 變化（`drink preference` / `Gura shark drink water` / `favorite` / ...）— deliberation runaway
+- Phase 2（中段）：query 開始重複（`Gura likes` ×2、`Gura shark` ×2）
+- Phase 3（後 ~70 iters）：完全相同 query「Gura shark」+ 完全相同 think 3 行模板 — 標準 stuck loop
+- 結論：B4 grammar 強迫 think 短，**沒有空間寫「我已試 N 次沒結果，換」**
+
+**仍遺留**：
+- T2 偶發 fabricate 用戶偏好（character/scaffolding 對「不知道就不瞎掰」anchor 還有點弱）
+
+下個 step 候選（按優先序）：
+1. T2 fabrication anchor 強化（小 fix）
+2. Subagent / Wake gating / Voice pipeline / Character pack（功能擴張，baseline 已穩）
+
 ---
 
 ## 之後（未排序）
