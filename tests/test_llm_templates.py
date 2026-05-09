@@ -175,3 +175,71 @@ def test_plain_template_accepts_empty_tools_list():
     t = Qwen3PlainTemplate()
     out = t.render(system="x", user="y", prefill="", tools=[])
     assert "x" in out
+
+
+def test_qwen3_thinking_render_messages_basic():
+    """One user msg → output has system, user, and an open assistant turn."""
+    t = Qwen3ThinkingTemplate()
+    out = t.render_messages(
+        system="SYS",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    assert "<|im_start|>system\nSYS<|im_end|>\n" in out
+    assert "<|im_start|>user\nhello<|im_end|>\n" in out
+    assert out.endswith("<|im_start|>assistant\n<think>\n")
+
+
+def test_qwen3_thinking_render_messages_multi():
+    """user, assistant, user → 3 message blocks plus final open assistant."""
+    t = Qwen3ThinkingTemplate()
+    out = t.render_messages(
+        system="S",
+        messages=[
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+        ],
+    )
+    assert out.count("<|im_start|>user\n") == 2
+    # 1 assistant in history + 1 final open assistant
+    assert out.count("<|im_start|>assistant\n") == 2
+    # Final block is the open <think> turn
+    assert out.endswith("<|im_start|>assistant\n<think>\n")
+    # Message ordering preserved
+    u1 = out.index("u1")
+    a1 = out.index("a1")
+    u2 = out.index("u2")
+    assert u1 < a1 < u2
+
+
+def test_qwen3_thinking_render_messages_with_tools():
+    """Tools provided → # Tools block appears in system."""
+    t = Qwen3ThinkingTemplate()
+    out = t.render_messages(
+        system="You are Doll.",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[_ExampleSay],
+    )
+    assert "# Tools" in out
+    assert "<tools>" in out
+    assert "_ExampleSay" in out
+    # Tools block must live inside the system block
+    sys_start = out.index("<|im_start|>system\n")
+    sys_end = out.index("<|im_end|>", sys_start)
+    assert "# Tools" in out[sys_start:sys_end]
+
+
+def test_qwen3_thinking_render_messages_tool_response_role():
+    """A user msg whose content is a <tool_response>...</tool_response>
+    block renders verbatim inside <|im_start|>user\\n...<|im_end|>."""
+    t = Qwen3ThinkingTemplate()
+    tr_content = "<tool_response>\n[exit 0]\n/home/x\n</tool_response>"
+    out = t.render_messages(
+        system="S",
+        messages=[
+            {"role": "user", "content": "ask"},
+            {"role": "assistant", "content": "<tool_call>...</tool_call>"},
+            {"role": "user", "content": tr_content},
+        ],
+    )
+    assert f"<|im_start|>user\n{tr_content}<|im_end|>\n" in out

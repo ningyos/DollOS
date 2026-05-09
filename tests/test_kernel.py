@@ -64,6 +64,20 @@ class _FakeAdapter(LLMAdapter):
         for c in self.chunks:
             yield c
 
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools: list[type] | None = None,
+        grammar: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        self.calls.append({"system": system, "messages": list(messages)})
+        for c in self.chunks:
+            yield c
+
 
 class _FakeMemSearch:
     def __init__(self) -> None:
@@ -155,18 +169,19 @@ async def test_handle_text_input_yields_errormsg_on_dispatch_failure(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_user_text_passes_empty_prefill(
+async def test_dispatch_user_text_uses_stream_messages(
     dollos_with_fakes, monkeypatch
 ):
-    """Prefill injection removed 2026-05-07 — IV.recall still runs but is
-    not piped to the big model's <think> opener."""
+    """Cascade uses multi-message API (2026-05-08); legacy stream_completion
+    is reserved for small-model callers."""
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
     _install_fake_inner_voice(monkeypatch, "- foo")
 
     await _collect(dollos._handle_text_input(TextInput(text="hi")))
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == ""
+    assert "messages" in adapter.calls[0]
+    assert "prefill" not in adapter.calls[0]
 
 
 @pytest.mark.asyncio
@@ -178,7 +193,7 @@ async def test_dispatch_user_text_uses_text_as_user_role(
     _install_fake_inner_voice(monkeypatch)
 
     await _collect(dollos._handle_text_input(TextInput(text="hello world")))
-    user = adapter.calls[0]["user"]
+    user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
     assert "[Message]" in user
     assert "hello world" in user

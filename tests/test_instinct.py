@@ -27,10 +27,26 @@ class _FakeAdapter(LLMAdapter):
         prefill: str = "",
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        tools=None,
+        grammar=None,
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append({"system": system, "user": user, "prefill": prefill})
         for c in self.chunks:
             yield c
+
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools=None,
+        grammar=None,
+    ) -> AsyncIterator[StreamChunk]:
+        if False:  # pragma: no cover
+            yield StreamChunk(text="", done=True)
+        raise NotImplementedError("Instinct tests do not use stream_messages")
 
 
 def _make_doll_event(text: str) -> DollEvent:

@@ -43,6 +43,8 @@ class _FakeLLMAdapter(LLMAdapter):
         prefill: str = "",
         stop: list[str] | None = None,
         max_tokens: int = 1024,
+        tools=None,
+        grammar=None,
     ) -> AsyncIterator[StreamChunk]:
         self.last_system = system
         self.last_user = user
@@ -51,6 +53,21 @@ class _FakeLLMAdapter(LLMAdapter):
         if self._response:
             yield StreamChunk(text=self._response, done=False)
         yield StreamChunk(text="", done=True)
+
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools=None,
+        grammar=None,
+    ) -> AsyncIterator[StreamChunk]:
+        # Not used by InnerVoice; kept to satisfy the LLMAdapter ABC.
+        if False:  # pragma: no cover
+            yield StreamChunk(text="", done=True)
+        raise NotImplementedError("InnerVoice tests do not use stream_messages")
 
 
 def _make_iv(memsearch, llm, default_top_k: int = 10) -> InnerVoice:

@@ -127,7 +127,11 @@ async def test_full_round_trip_with_mocked_llamacpp(
             assert "RECALL:" not in prompt
             # The ChatML assistant turn opens exactly one <think> block.
             # (Scaffolding may contain `<think>` in inline code — check the
-            # actual turn opener pattern, not raw count.)
+            # actual turn opener pattern, not raw count.) Multi-message
+            # render (2026-05-08): with no cascade, messages list has only
+            # the original framed user — exactly 1 user block + 1 open
+            # assistant block.
             assert prompt.count("<|im_start|>assistant\n<think>") == 1
+            assert prompt.count("<|im_start|>user\n") == 1
         finally:
             await dollos.server.stop()

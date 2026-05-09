@@ -25,7 +25,11 @@ from dollos.tools import ToolCtx
 class _FakeAdapter(LLMAdapter):
     """Fake LLMAdapter — yields a configurable sequence of chunks.
 
-    Captures call args for assertions.
+    Captures call args for assertions. Records each call's keyword args
+    in `self.calls`. For dispatcher (multi-message) tests the relevant
+    entry is `calls[i]["messages"]`; legacy `stream_completion` callers
+    populate `calls[i]["user"]` / `calls[i]["prefill"]` for back-compat
+    with small-model code paths in tests.
     """
 
     chunks: list[StreamChunk] = field(default_factory=list)
@@ -51,6 +55,24 @@ class _FakeAdapter(LLMAdapter):
         for c in self.chunks:
             yield c
 
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools: list[type] | None = None,
+        grammar: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        self.calls.append(
+            {"system": system, "messages": list(messages), "tools": tools}
+        )
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        for c in self.chunks:
+            yield c
+
 
 class _HangAdapter(LLMAdapter):
     """Adapter that hangs forever (for stop()/cancel tests)."""
@@ -64,6 +86,20 @@ class _HangAdapter(LLMAdapter):
         system: str,
         user: str,
         prefill: str = "",
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools: list[type] | None = None,
+        grammar: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        self.entered.set()
+        await asyncio.Event().wait()  # forever
+        yield StreamChunk(text="", done=True)  # pragma: no cover
+
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
         stop: list[str] | None = None,
         max_tokens: int = 1024,
         tools: list[type] | None = None,
@@ -240,13 +276,12 @@ async def test_recall_result_wraps_user_message_with_memory_context(tmp_path: Pa
 
     assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
-    user = adapter.calls[0]["user"]
+    user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
     assert "- user likes coffee" in user
     assert "[Message]" in user
     assert "hello world" in user
     assert "RECALL:" not in user
-    assert adapter.calls[0]["prefill"] == ""
 
 
 @pytest.mark.asyncio
@@ -262,7 +297,7 @@ async def test_empty_recall_still_emits_memory_context_block(tmp_path: Path):
 
     await _drain(sink)
 
-    user = adapter.calls[0]["user"]
+    user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
     assert "(no relevant memory)" in user
     assert "[Message]" in user
@@ -417,9 +452,10 @@ async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_passes_empty_prefill(tmp_path: Path):
-    """STATE/RECALL prefill injection removed 2026-05-07; replaced by
-    [Memory context] block in user message 2026-05-08."""
+async def test_dispatcher_uses_stream_messages_not_stream_completion(tmp_path: Path):
+    """Cascade flow uses the new multi-message stream_messages API
+    (2026-05-08); legacy stream_completion is reserved for small-model
+    callers (InnerVoice / Instinct)."""
     adapter = _FakeAdapter(
         chunks=[
             StreamChunk(
@@ -451,7 +487,9 @@ async def test_dispatcher_passes_empty_prefill(tmp_path: Path):
             break
 
     assert len(adapter.calls) == 1
-    assert adapter.calls[0]["prefill"] == ""
+    # Multi-message API used: call carries `messages`, not `user`/`prefill`.
+    assert "messages" in adapter.calls[0]
+    assert "user" not in adapter.calls[0]
 
 
 @pytest.mark.asyncio
@@ -847,14 +885,13 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
             self._rounds = rounds
             self.calls: list[dict] = []
 
-        async def stream_completion(
-            self, *, system, user, prefill, stop=None,
+        async def stream_messages(
+            self, *, system, messages, stop=None,
             max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(
-                {"system": system, "user": user, "prefill": prefill,
-                 "tools": tools}
+                {"system": system, "messages": list(messages), "tools": tools}
             )
             chunks = self._rounds[idx]
             for c in chunks:
@@ -896,14 +933,16 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         items.append(m)
 
     assert len(adapter.calls) == 2
-    second_user = adapter.calls[1]["user"]
-    assert "WhoKnows" in second_user
-    assert "unknown" in second_user.lower()
-    assert (
-        "第 1 次" in second_user
-        or "iteration 1" in second_user.lower()
-        or "1 次重試" in second_user
-    )
+    # Second call's messages list reflects the failed unknown-tool round:
+    # [user(framed), assistant(model emit), user(<tool_response>...unknown...)]
+    second_msgs = adapter.calls[1]["messages"]
+    assert len(second_msgs) == 3
+    assert second_msgs[0]["role"] == "user"
+    assert "[Message]" in second_msgs[0]["content"]
+    assert second_msgs[1]["role"] == "assistant"
+    assert second_msgs[2]["role"] == "user"
+    assert "<tool_response>" in second_msgs[2]["content"]
+    assert "unknown" in second_msgs[2]["content"].lower()
     text_chunks = [m for m in items if isinstance(m, TextChunk)]
     assert any(m.text == "fixed" for m in text_chunks)
     assert any(isinstance(m, TurnEnd) for m in items)
@@ -918,11 +957,11 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
             self._chunks = chunks
             self.calls: list[dict] = []
 
-        async def stream_completion(
-            self, *, system, user, prefill, stop=None,
+        async def stream_messages(
+            self, *, system, messages, stop=None,
             max_tokens=1024, tools=None, grammar=None,
         ):
-            self.calls.append({"prefill": prefill})
+            self.calls.append({"messages": list(messages)})
             for c in self._chunks:
                 yield c
 
@@ -961,7 +1000,7 @@ async def test_respond_max_cascade_depth_emits_error_and_ends(tmp_path: Path, mo
         def __init__(self):
             self.calls = 0
 
-        async def stream_completion(self, **kw):
+        async def stream_messages(self, **kw):
             # Alternate tool names so the same-tool 3-fail break does
             # NOT trigger; this test isolates the depth-cap path.
             self.calls += 1
@@ -1010,8 +1049,8 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
         def __init__(self):
             self.calls = []
 
-        async def stream_completion(self, **kw):
-            self.calls.append(kw)
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
             idx = len(self.calls) - 1
             if idx == 0:
                 yield StreamChunk(
@@ -1046,9 +1085,13 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
         if m is None:
             break
 
-    second_user = adapter.calls[1]["user"]
-    assert "A" in second_user
-    assert "B" in second_user
+    # Round 2 must include both A and B tool_response messages.
+    second_msgs = adapter.calls[1]["messages"]
+    tool_responses = [m for m in second_msgs if "<tool_response>" in m.get("content", "")]
+    # Two unknown-tool failures from round 1 each produce a tool_response.
+    assert len(tool_responses) == 2
+    joined = "\n".join(m["content"] for m in tool_responses)
+    assert "unknown" in joined.lower()
 
 
 @pytest.mark.asyncio
@@ -1098,9 +1141,9 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
         def __init__(self):
             self.calls = []
 
-        async def stream_completion(self, **kw):
-            self.calls.append(kw)
-            captured_user_message.append(kw["user"])
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
+            captured_user_message.append(kw["messages"][0]["content"])
             yield StreamChunk(
                 text=(
                     '<tool_call>{"name":"WriteDiary","arguments":'
@@ -1247,14 +1290,13 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
             self._rounds = rounds
             self.calls: list[dict] = []
 
-        async def stream_completion(
-            self, *, system, user, prefill, stop=None,
+        async def stream_messages(
+            self, *, system, messages, stop=None,
             max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(
-                {"system": system, "user": user, "prefill": prefill,
-                 "tools": tools}
+                {"system": system, "messages": list(messages), "tools": tools}
             )
             for c in self._rounds[idx]:
                 yield c
@@ -1302,11 +1344,12 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
         items.append(m)
 
     assert len(adapter.calls) == 2
-    second_user = adapter.calls[1]["user"]
-    assert "_Echo" in second_user
-    assert "成功" in second_user
-    assert "got: hi" in second_user
-    assert "第 1 次重試" in second_user
+    # Round 2 messages: original user, assistant emit, tool_response.
+    second_msgs = adapter.calls[1]["messages"]
+    assert len(second_msgs) == 3
+    assert second_msgs[2]["role"] == "user"
+    assert "<tool_response>" in second_msgs[2]["content"]
+    assert "got: hi" in second_msgs[2]["content"]
     text_chunks = [m for m in items if isinstance(m, TextChunk)]
     assert any(m.text == "done" for m in text_chunks)
 
@@ -1320,14 +1363,13 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
             self._rounds = rounds
             self.calls: list[dict] = []
 
-        async def stream_completion(
-            self, *, system, user, prefill, stop=None,
+        async def stream_messages(
+            self, *, system, messages, stop=None,
             max_tokens=1024, tools=None, grammar=None,
         ):
             idx = len(self.calls)
             self.calls.append(
-                {"system": system, "user": user, "prefill": prefill,
-                 "tools": tools}
+                {"system": system, "messages": list(messages), "tools": tools}
             )
             for c in self._rounds[idx]:
                 yield c
@@ -1371,10 +1413,14 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
         if m is None:
             break
 
-    second_user = adapter.calls[1]["user"]
-    assert "_Empty" in second_user
-    assert "成功" in second_user
-    assert "無輸出" in second_user
+    # Round 2 messages: original user, assistant emit, tool_response
+    # whose content is "(no output)" (since _Empty returned "").
+    second_msgs = adapter.calls[1]["messages"]
+    assert len(second_msgs) == 3
+    tr = second_msgs[2]
+    assert tr["role"] == "user"
+    assert "<tool_response>" in tr["content"]
+    assert "(no output)" in tr["content"]
 
 
 @pytest.mark.asyncio
@@ -1385,8 +1431,8 @@ async def test_cascade_breaks_on_same_tool_consecutive_3_failures(tmp_path: Path
         def __init__(self):
             self.calls: list[dict] = []
 
-        async def stream_completion(self, **kw):
-            self.calls.append(kw)
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
             yield StreamChunk(
                 text=(
                     '<tool_call>{"name":"InvokeSkill","arguments":'
@@ -1427,9 +1473,9 @@ async def test_cascade_resets_consecutive_counter_on_success(tmp_path: Path):
         def __init__(self):
             self.calls: list[dict] = []
 
-        async def stream_completion(self, **kw):
+        async def stream_messages(self, **kw):
             idx = len(self.calls)
-            self.calls.append(kw)
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
             scripts = [
                 # round 0: fail (validation)
                 '<tool_call>{"name":"InvokeSkill","arguments":{"bad":"x"}}</tool_call>',
@@ -1472,9 +1518,9 @@ async def test_cascade_does_not_break_on_alternating_tool_failures(tmp_path: Pat
         def __init__(self):
             self.calls: list[dict] = []
 
-        async def stream_completion(self, **kw):
+        async def stream_messages(self, **kw):
             idx = len(self.calls)
-            self.calls.append(kw)
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
             scripts = [
                 '<tool_call>{"name":"WhoKnowsA","arguments":{}}</tool_call>',
                 '<tool_call>{"name":"WhoKnowsB","arguments":{}}</tool_call>',
@@ -1499,6 +1545,143 @@ async def test_cascade_does_not_break_on_alternating_tool_failures(tmp_path: Pat
     )
     assert len(adapter.calls) == 4
     assert any(isinstance(m, TextChunk) and m.text == "done" for m in items)
+
+
+@pytest.mark.asyncio
+async def test_cascade_preserves_original_user_in_messages_first(tmp_path: Path):
+    """Across cascade iterations, messages[0] stays the original framed
+    user perception — never overwritten."""
+
+    class _Echo(BaseModel):
+        text: str
+        async def run(self, ctx) -> str:
+            return f"echo:{self.text}"
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            idx = len(self.calls)
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
+            scripts = [
+                '<tool_call>{"name":"_Echo","arguments":{"text":"a"}}</tool_call>',
+                '<tool_call>{"name":"Say","arguments":{"text":"final"}}</tool_call>',
+            ]
+            text = scripts[min(idx, len(scripts) - 1)]
+            yield StreamChunk(text=text, done=False)
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp._tools_by_name["_Echo"] = _Echo
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="原始問題", response_sink=sink))
+    await _drain(sink)
+
+    assert len(adapter.calls) == 2
+    for call in adapter.calls:
+        first = call["messages"][0]
+        assert first["role"] == "user"
+        assert "[Message]\n原始問題" in first["content"]
+
+
+@pytest.mark.asyncio
+async def test_cascade_appends_assistant_then_tool_response(tmp_path: Path):
+    """After 1 iteration with a successful returning tool, the next
+    iteration's messages list is [user, assistant(raw model emit),
+    user(<tool_response>...)]."""
+
+    class _Path(BaseModel):
+        async def run(self, ctx) -> str:
+            return "/path/X"
+
+    raw_emit = (
+        "SEEN: ok\nINTENT: pwd\nTOOL: _Path\n</think>\n\n"
+        '<tool_call>{"name":"_Path","arguments":{}}</tool_call>'
+    )
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            idx = len(self.calls)
+            # Snapshot messages list — dispatcher continues mutating it.
+            snap = {**kw, "messages": list(kw["messages"])}
+            self.calls.append(snap)
+            if idx == 0:
+                yield StreamChunk(text=raw_emit, done=False)
+                yield StreamChunk(text="", done=True)
+            else:
+                yield StreamChunk(
+                    text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                    done=False,
+                )
+                yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp._tools_by_name["_Path"] = _Path
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="ask", response_sink=sink))
+    await _drain(sink)
+
+    second = adapter.calls[1]["messages"]
+    assert len(second) == 3
+    assert second[0]["role"] == "user"
+    assert second[1]["role"] == "assistant"
+    assert second[1]["content"] == raw_emit
+    assert second[2]["role"] == "user"
+    assert second[2]["content"] == "<tool_response>\n/path/X\n</tool_response>"
+
+
+@pytest.mark.asyncio
+async def test_cascade_does_not_reinject_memory_context_per_iteration(tmp_path: Path):
+    """[Memory context] block appears EXACTLY ONCE in the messages list —
+    only on messages[0], never re-injected on subsequent iterations."""
+
+    class _Echo(BaseModel):
+        text: str
+        async def run(self, ctx) -> str:
+            return f"r:{self.text}"
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            idx = len(self.calls)
+            self.calls.append({**kw, "messages": list(kw["messages"])} if "messages" in kw else kw)
+            scripts = [
+                '<tool_call>{"name":"_Echo","arguments":{"text":"a"}}</tool_call>',
+                '<tool_call>{"name":"_Echo","arguments":{"text":"b"}}</tool_call>',
+                '<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
+            ]
+            text = scripts[min(idx, len(scripts) - 1)]
+            yield StreamChunk(text=text, done=False)
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice("foo")
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp._tools_by_name["_Echo"] = _Echo
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    assert len(adapter.calls) == 3
+    final_msgs = adapter.calls[-1]["messages"]
+    occurrences = sum(
+        1 for m in final_msgs if "[Memory context]" in m.get("content", "")
+    )
+    assert occurrences == 1
+    assert "[Memory context]" in final_msgs[0]["content"]
 
 
 @pytest.mark.asyncio
