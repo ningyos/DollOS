@@ -134,16 +134,32 @@ class _FakeInnerVoice:
 
 
 class _FakeInstinct:
-    """Fake Instinct.process — returns configurable summaries, captures calls."""
+    """Fake Instinct — captures process()/compact_cascade() calls.
+
+    `summaries` controls process() return values (legacy path).
+    `compact_summaries` controls compact_cascade() return values (active
+    path, post 2026-05-09 rolling-compact). When exhausted, compact
+    falls back to `f"summary {N}"` numbered by call count.
+    `compact_raises` makes compact_cascade raise instead of returning.
+    `raises` only applies to process() (not compact_cascade) so the
+    "instinct should not be called" sentinel test still works.
+    """
 
     def __init__(
         self,
         summaries: list[str] | None = None,
         raises: Exception | None = None,
+        compact_summaries: list[str] | None = None,
+        compact_raises: Exception | None = None,
     ) -> None:
         self._summaries = list(summaries) if summaries is not None else [""]
         self._raises = raises
+        self._compact_summaries = (
+            list(compact_summaries) if compact_summaries is not None else []
+        )
+        self._compact_raises = compact_raises
         self.calls: list[str] = []
+        self.compact_calls: list[dict] = []
 
     async def process(self, event):  # type: ignore[no-untyped-def]
         self.calls.append(event.perception)
@@ -152,6 +168,16 @@ class _FakeInstinct:
         if self._summaries:
             return self._summaries.pop(0)
         return ""
+
+    async def compact_cascade(self, *, perception, cascade_messages):
+        self.compact_calls.append(
+            {"perception": perception, "cascade_messages": list(cascade_messages)}
+        )
+        if self._compact_raises is not None:
+            raise self._compact_raises
+        if self._compact_summaries:
+            return self._compact_summaries.pop(0)
+        return f"summary {len(self.compact_calls)}"
 
 
 class _FakeMemSearch:
@@ -992,56 +1018,6 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_respond_max_cascade_depth_emits_error_and_ends(tmp_path: Path, monkeypatch):
-    from dollos import dispatcher as disp_mod
-    monkeypatch.setattr(disp_mod, "MAX_CASCADE_DEPTH", 2)
-
-    class _PerpetualFailAdapter:
-        def __init__(self):
-            self.calls = 0
-
-        async def stream_messages(self, **kw):
-            # Alternate tool names so the same-tool 3-fail break does
-            # NOT trigger; this test isolates the depth-cap path.
-            self.calls += 1
-            name = f"WhoKnows{self.calls}"
-            yield StreamChunk(
-                text=(
-                    '<tool_call>{"name":"' + name + '","arguments":{}}</tool_call>'
-                ),
-                done=False,
-            )
-            yield StreamChunk(text="", done=True)
-
-    adapter = _PerpetualFailAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=["", "", "", ""])
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
-        memory_root=tmp_path, memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-    items = []
-    while True:
-        m = await sink.get()
-        if m is None:
-            break
-        items.append(m)
-
-    # cap=2 means iterations 1, 2 OK; iteration 3 -> error
-    assert adapter.calls == 3
-    assert any(
-        isinstance(m, ErrorMsg) and "MAX_CASCADE_DEPTH" in m.message
-        for m in items
-    )
-    assert any(isinstance(m, TurnEnd) for m in items)
-
-
-@pytest.mark.asyncio
 async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path):
     """One round emits two fails; next round perception lists both."""
 
@@ -1685,13 +1661,6 @@ async def test_cascade_does_not_reinject_memory_context_per_iteration(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_cascade_max_depth_is_5(tmp_path: Path):
-    """Default MAX_CASCADE_DEPTH is 5 — confirms plan §3 constant change."""
-    from dollos import dispatcher as _disp_mod
-    assert _disp_mod.MAX_CASCADE_DEPTH == 5
-
-
-@pytest.mark.asyncio
 async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_path: Path):
     """Dispatcher reads memory_root/skills/*.md filenames and passes the
     sorted stems as available_skills= to the scaffolding renderer."""
@@ -1772,3 +1741,243 @@ async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path)
             break
 
     assert len(adapter.calls) == 1
+
+
+# ----- Rolling cascade compact (2026-05-09) -----
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_rolling_starts_empty(tmp_path: Path):
+    """Fresh dispatcher: _rolling == []; first turn user message has no
+    [Recent activity] block."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice("- foo")
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    assert disp._rolling == []
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    user = adapter.calls[0]["messages"][0]["content"]
+    assert "[Recent activity]" not in user
+    assert "[Memory context]" in user
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
+    """3 sequential turns -> _rolling has 3 entries in order."""
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])})
+            yield StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(compact_summaries=["s1", "s2", "s3"])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    for text in ("a", "b", "c"):
+        sink: asyncio.Queue = asyncio.Queue()
+        disp.dispatch(UserTextEvent(text=text, response_sink=sink))
+        await _drain(sink)
+
+    assert disp._rolling == ["s1", "s2", "s3"]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_path: Path):
+    """After 1 turn, the 2nd turn's first user message contains a
+    [Recent activity] block listing prior summary, before [Memory context]."""
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])})
+            yield StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(compact_summaries=["summary 1", "summary 2"])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    for text in ("first", "second"):
+        sink: asyncio.Queue = asyncio.Queue()
+        disp.dispatch(UserTextEvent(text=text, response_sink=sink))
+        await _drain(sink)
+
+    second_user = adapter.calls[1]["messages"][0]["content"]
+    assert "[Recent activity]\n- summary 1\n\n" in second_user
+    # And the [Recent activity] block precedes [Memory context].
+    ra_idx = second_user.index("[Recent activity]")
+    mc_idx = second_user.index("[Memory context]")
+    assert ra_idx < mc_idx
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_compact_called_with_full_cascade_messages(tmp_path: Path):
+    """After a 2-iteration cascade (returning tool then Say), compact_cascade
+    receives the full messages list (user, assistant, user(<tool_response>),
+    assistant)."""
+
+    class _Echo(BaseModel):
+        text: str
+        async def run(self, ctx) -> str:
+            return f"e:{self.text}"
+
+    class _ScriptedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            idx = len(self.calls)
+            self.calls.append({**kw, "messages": list(kw["messages"])})
+            scripts = [
+                '<tool_call>{"name":"_Echo","arguments":{"text":"x"}}</tool_call>',
+                '<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
+            ]
+            yield StreamChunk(text=scripts[min(idx, 1)], done=False)
+            yield StreamChunk(text="", done=True)
+
+    adapter = _ScriptedAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(compact_summaries=["s"])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    disp._tools_by_name["_Echo"] = _Echo
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    assert len(inst.compact_calls) == 1
+    call = inst.compact_calls[0]
+    assert call["perception"] == "hi"
+    msgs = call["cascade_messages"]
+    # user(framed) + assistant(round1) + user(<tool_response>) + assistant(round2)
+    assert len(msgs) == 4
+    assert msgs[0]["role"] == "user"
+    assert "[Message]" in msgs[0]["content"]
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[2]["role"] == "user"
+    assert "<tool_response>" in msgs[2]["content"]
+    assert msgs[3]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
+    """Same-tool 3-fail abort: compact_cascade still runs, summary still
+    appends to _rolling."""
+
+    class _RoundedAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            self.calls.append({**kw, "messages": list(kw["messages"])})
+            yield StreamChunk(
+                text=(
+                    '<tool_call>{"name":"InvokeSkill","arguments":'
+                    '{"wrong":"x"}}</tool_call>'
+                ),
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _RoundedAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(compact_summaries=["abort-summary"])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    items = await _drain(sink)
+
+    assert any(
+        isinstance(m, ErrorMsg) and "連續 3 次 InvokeSkill" in m.message
+        for m in items
+    )
+    assert len(inst.compact_calls) == 1
+    assert disp._rolling == ["abort-summary"]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, caplog):
+    """compact_cascade raising must not crash the turn: TurnEnd still
+    fires, no extra ErrorMsg for compact, _rolling stays empty."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(compact_raises=RuntimeError("compact-boom"))
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter, inner_voice=iv, instinct=inst,
+        renderer=PromptRenderer(), character_profile="x",
+        memory_root=tmp_path, memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
+        disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+        items = await _drain(sink)
+
+    # TurnEnd still arrives, plus the None sentinel.
+    assert any(isinstance(m, TurnEnd) for m in items)
+    # No ErrorMsg surfaced for compact failure (logged only).
+    error_msgs = [m for m in items if isinstance(m, ErrorMsg)]
+    assert not any("compact-boom" in m.message for m in error_msgs)
+    # _rolling stays empty.
+    assert disp._rolling == []
+    # Failure was logged.
+    assert any("compact_cascade" in r.message for r in caplog.records)

@@ -60,11 +60,20 @@ async def test_full_round_trip_with_mocked_llamacpp(
 
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
 
-    # Stub SmallModelInstinct.process — returns empty so no STATE block in prefill.
+    # Stub SmallModelInstinct.process — legacy path (not called by current
+    # dispatcher, but kept for symmetry).
     async def _stub_instinct_process(self, event):
         return ""
 
     monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
+
+    # Stub SmallModelInstinct.compact_cascade — avoids real small-LLM call.
+    async def _stub_compact_cascade(self, *, perception, cascade_messages):
+        return "test summary"
+
+    monkeypatch.setattr(
+        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
+    )
 
     # No-op memsearch.index() to avoid downloading the ONNX model in tests.
     async def _noop_index(self):
