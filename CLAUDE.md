@@ -82,15 +82,17 @@ DollOS/
 | Roadmap step 10 — Skills system | Merged |
 | Roadmap step 11 — Prompt-compact + grammar wiring (B4 GBNF + CJK deny) | Merged |
 | Roadmap step 12 — Memory wire format pivot (RAG context + Recall tool) | Merged |
+| Roadmap step 13 — Cascade robustness (multi-message + skills audit + character trim) | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Cascade Say 強化** — T8 仍出現 cascade 後 Say 弱化（"嗯?" / "跑完了？可是結果呢？"）。修 `_format_results_perception` 引導 model forward tool 結果
+- **Cross-turn conversation history** — 解 T2 / T7 偶發誤判（fresh data 時 model 看不到 prior turns）。Step 13 multi-message 只在 turn 內、不跨 turn。動 dispatcher 維 session-level message buffer。
 - **Subagent**（async result via SubagentResultEvent）
 - **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
 - **Voice pipeline**（KWS / VAD / ASR / TTS）
-- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 11/12 後 model 行為已穩定，優先序下降
+- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13 後 model 行為已穩定，優先序持續下降
+- **Cascade depth 治理**（小改動）— 偶發 T7/T8 撞 MAX_CASCADE_DEPTH=5，可拉到 20 + 同 tool any-outcome counter；step 13 中 explore 過 budget pressure 但 revert（見 `docs/research/cascade-governance-exploration.md`）
 
 完整 roadmap：`docs/roadmap.md`。
 
