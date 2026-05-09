@@ -13,14 +13,14 @@ def test_render_scaffolding_with_character_includes_text():
 
 
 def test_render_scaffolding_no_ctx_returns_base_sections():
-    """No ctx vars → conditional blocks (Identity, Rules, Examples) skipped,
-    but Behavior / Skills are unconditional. Tool Calling section removed
+    """No ctx vars → conditional blocks (Identity, Skills, Rules, Examples)
+    skipped; only Behavior / Memory remain. Tool Calling section removed
     (now handled by Qwen3 native preamble in _format_tools_block)."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding")
     assert "# Behavior" in out
     assert "# Tool Calling" not in out
-    assert "# Skills" in out
+    assert "# Skills" not in out
     assert "# Identity" not in out
 
 
@@ -80,20 +80,52 @@ def test_scaffolding_includes_meta_rule_about_multi_try():
     assert "停止" in out or "stop" in out.lower()
 
 
-def test_scaffolding_includes_skill_convention():
+def test_scaffolding_omits_skills_section_when_no_skills_available():
+    """available_skills=[] → entire # Skills section absent. Model must
+    never see InvokeSkill / skill_bodies references when no skills exist."""
+    renderer = PromptRenderer()
+    out = renderer.render(
+        "scaffolding", character="You are Doll.", available_skills=[]
+    )
+    assert "# Skills" not in out
+    assert "InvokeSkill" not in out
+    assert "skill_bodies" not in out
+
+
+def test_scaffolding_omits_skills_section_when_argument_missing():
+    """Same as above but available_skills not passed at all."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", character="You are Doll.")
-    assert "skill" in out.lower()
+    assert "# Skills" not in out
+    assert "InvokeSkill" not in out
+    assert "skill_bodies" not in out
+
+
+def test_scaffolding_renders_skill_list_when_available():
+    """available_skills non-empty → # Skills section appears with literal
+    skill names listed and InvokeSkill mentioned in usage bullet."""
+    renderer = PromptRenderer()
+    out = renderer.render(
+        "scaffolding",
+        character="You are Doll.",
+        available_skills=["morning", "bedtime"],
+    )
+    assert "# Skills" in out
+    assert "- morning" in out
+    assert "- bedtime" in out
     assert "InvokeSkill" in out
-    assert "skills/" in out
-    assert "skill_bodies/" in out
 
 
 def test_scaffolding_has_partitioned_sections():
     """Partitioned layout uses H1 headers. Tool Calling section removed
-    (now handled by Qwen3 native preamble in _format_tools_block)."""
+    (now handled by Qwen3 native preamble in _format_tools_block).
+    # Skills now conditional on available_skills."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render(
+        "scaffolding",
+        character="You are Doll.",
+        available_skills=["x"],
+    )
     assert "# Identity" in out
     assert "# Behavior" in out
     assert "# Tool Calling" not in out
@@ -114,6 +146,20 @@ def test_scaffolding_includes_act_after_thinking_rule():
     out = renderer.render("scaffolding", character="You are Doll.")
     assert "思考後動手" in out
     assert "ACTION" in out  # mentioned as anti-pattern
+
+
+def test_scaffolding_memory_section_includes_curiosity_fallback():
+    """The # Memory section includes the don't-know fallback flow:
+    Recall first, then ask user, then NoteMemory after they tell."""
+    renderer = PromptRenderer()
+    rendered = renderer.render("scaffolding", character="Test")
+    # Anchor on the `# Memory` section.
+    assert "# Memory" in rendered
+    # The fallback flow mentions both tools by name.
+    assert "Recall" in rendered
+    assert "NoteMemory" in rendered
+    # The flow language anchors the don't-know case.
+    assert "不確定" in rendered or "不瞎掰" in rendered
 
 
 def test_iv_summary_template_includes_language_rule():

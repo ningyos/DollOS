@@ -30,7 +30,10 @@ from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
 
-MAX_CASCADE_DEPTH = 50
+# Hard cap on cascade iterations per turn. 5 covers legit multi-step
+# turns (Shell+Say, Shell+NoteMemory+Say, etc.); pathological loops on
+# the same failing tool are caught earlier by the same-tool 3-fail break.
+MAX_CASCADE_DEPTH = 5
 
 
 @dataclass
@@ -147,32 +150,43 @@ class EventDispatcher:
 
         grammar = build_qwen3_think_tool_grammar(TOOLS)
 
-        iteration = 0
-        while True:
-            # Wire format (2026-05-08): IV.recall result is wrapped in a
-            # [Memory context] block prepended to the user message (RAG
-            # context pattern). Prefill stays empty — STATE/RECALL prefill
-            # caused mimicry / infinite-transcript autocompletion.
-            recall_text = await self._inner_voice.recall(doll_event.perception)
-            if recall_text:
-                framed_user = (
-                    "[Memory context]\n"
-                    f"{recall_text}\n\n"
-                    "[Message]\n"
-                    f"{doll_event.perception}"
-                )
-            else:
-                framed_user = (
-                    "[Memory context]\n"
-                    "(no relevant memory)\n\n"
-                    "[Message]\n"
-                    f"{doll_event.perception}"
-                )
-            system = self._renderer.render(
-                "scaffolding", character=self._character_profile
+        # Per-turn one-time setup: recall + scaffolding (system) + skills
+        # discovery. The cascade preserves history within the turn via the
+        # `messages` list; `[Memory context]` only appears in the first
+        # user message, never re-injected.
+        recall_text = await self._inner_voice.recall(doll_event.perception)
+        if recall_text:
+            first_user = (
+                "[Memory context]\n"
+                f"{recall_text}\n\n"
+                "[Message]\n"
+                f"{doll_event.perception}"
             )
-            prefill = ""
+        else:
+            first_user = (
+                "[Memory context]\n"
+                "(no relevant memory)\n\n"
+                "[Message]\n"
+                f"{doll_event.perception}"
+            )
+        messages: list[dict] = [{"role": "user", "content": first_user}]
 
+        skills_dir = self._memory_root / "skills"
+        if skills_dir.exists():
+            available_skills = sorted(p.stem for p in skills_dir.glob("*.md"))
+        else:
+            available_skills = []
+        system = self._renderer.render(
+            "scaffolding",
+            character=self._character_profile,
+            available_skills=available_skills,
+        )
+
+        iteration = 0
+        # Same-tool consecutive-failure tracker.
+        consecutive_fails: dict[str, int] = {}
+        last_failed_tool: str | None = None
+        while True:
             parser = ToolStreamParser()
             ctx = ToolCtx(
                 sink=sink,
@@ -181,15 +195,17 @@ class EventDispatcher:
                 transcripts_root=self._transcripts_root,
             )
             results: list[ToolResult] = []
+            assistant_buf: list[str] = []
 
-            async for chunk in self._adapter.stream_completion(
+            async for chunk in self._adapter.stream_messages(
                 system=system,
-                user=framed_user,
-                prefill=prefill,
+                messages=messages,
                 tools=TOOLS,
                 max_tokens=4096,
                 grammar=grammar,
             ):
+                if chunk.text:
+                    assistant_buf.append(chunk.text)
                 for call in parser.feed(chunk.text):
                     result = await self._dispatch_tool_call(call, ctx)
                     if result is not None:
@@ -201,7 +217,48 @@ class EventDispatcher:
                 if result is not None:
                     results.append(result)
 
+            # Append the model's full raw emit as the assistant turn.
+            messages.append({
+                "role": "assistant",
+                "content": "".join(assistant_buf),
+            })
+
             if not results:
+                break
+
+            # Append a tool_response user message for each tool result.
+            for r in results:
+                detail = r.detail if r.detail else "(no output)"
+                messages.append({
+                    "role": "user",
+                    "content": f"<tool_response>\n{detail}\n</tool_response>",
+                })
+
+            # Update same-tool consecutive-failure tracker.
+            for r in results:
+                if r.success:
+                    consecutive_fails.clear()
+                    last_failed_tool = None
+                else:
+                    if r.tool_name == last_failed_tool:
+                        consecutive_fails[r.tool_name] = (
+                            consecutive_fails.get(r.tool_name, 1) + 1
+                        )
+                    else:
+                        last_failed_tool = r.tool_name
+                        consecutive_fails = {r.tool_name: 1}
+
+            stuck_tool = next(
+                (n for n, c in consecutive_fails.items() if c >= 3),
+                None,
+            )
+            if stuck_tool is not None:
+                sink.put_nowait(ErrorMsg(
+                    message=(
+                        f"cascade aborted: 連續 3 次 {stuck_tool} tool 失敗，"
+                        f"停下來換思路。"
+                    )
+                ))
                 break
 
             iteration += 1
@@ -214,33 +271,7 @@ class EventDispatcher:
                 ))
                 break
 
-            doll_event = DollEvent(
-                perception=self._format_results_perception(results, iteration),
-                raw=doll_event.raw,
-            )
-
         sink.put_nowait(TurnEnd())
-
-    @staticmethod
-    def _format_results_perception(
-        results: list[ToolResult], iteration: int
-    ) -> str:
-        lines = []
-        for r in results:
-            if r.success:
-                if r.detail:
-                    lines.append(
-                        f"你 call 了 {r.tool_name} tool 成功，回傳：\n"
-                        f"<tool_response>\n{r.detail}\n</tool_response>"
-                    )
-                else:
-                    lines.append(
-                        f"你 call 了 {r.tool_name} tool 成功，無輸出。"
-                    )
-            else:
-                lines.append(f"你 call 了 {r.tool_name} tool 失敗：{r.detail}")
-        lines.append(f"（這是 thread 的第 {iteration} 次重試）")
-        return "\n\n".join(lines)
 
     async def _dispatch_tool_call(
         self, call: dict, ctx: ToolCtx

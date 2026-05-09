@@ -16,18 +16,21 @@
 
 - `[Memory context]` 為空（顯示 `(no relevant memory)`）= 自動檢索沒撈到相關記憶，不代表那件事不存在。
 - 想找更多 / 更具體的記憶 → 主動 call `Recall(query="...")` tool，回傳會是 raw memsearch hits（你自己判斷相關性）。
+- **主人問你不確定的事**：先 Recall 換 keyword 試；還沒撈到就直接問主人，不 echo 不瞎掰；主人答完 NoteMemory 記下。
 
+{%- if available_skills %}
 # Skills
 
-Skill = procedural memory，分兩檔：
-
-- `data/memory/skills/<name>.md` — entry（frontmatter `name` + 1-3 句描述）
-- `data/memory/skill_bodies/<name>.md` — body（完整 instructions）
+可用 skills:
+{% for skill in available_skills %}
+- {{ skill }}
+{%- endfor %}
 
 Usage:
 
-- 看到 entry 出現在 `[Memory context]` 或 `Recall` 結果 → call `InvokeSkill(name=...)` 載 body 進下個 perception
+- 看到 skill 名字（在上面那個 list） → call `InvokeSkill(name=...)` 載 body 進下個 perception
 - 寫新 skill → 用 Shell 同時寫 entry + body
+{%- endif %}
 {%- if rules %}
 
 # Rules

@@ -217,6 +217,35 @@ class Qwen3ThinkingTemplate(PromptTemplate):
             rendered += prefill
         return rendered
 
+    def render_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        tools: list[type[BaseModel]] | None = None,
+    ) -> str:
+        """Multi-message ChatML render for cascade history within a turn.
+
+        Each entry of `messages` is `{"role": "user"|"assistant", "content": str}`.
+        Tool results are passed in by the caller as a user-role message whose
+        content is wrapped in `<tool_response>...</tool_response>` (Qwen3 native
+        format). Tool calls are passed as assistant-role messages whose content
+        is the model's verbatim emit (think + tool_call XML).
+
+        Regardless of the last message's role, this method always opens a fresh
+        `<|im_start|>assistant\\n<think>\\n` turn at the end so the model can
+        continue. No `prefill` argument — cascade design has no prefill.
+        """
+        if tools:
+            system = system + _format_tools_block(tools)
+        rendered = f"<|im_start|>system\n{system}<|im_end|>\n"
+        for msg in messages:
+            rendered += (
+                f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+            )
+        rendered += "<|im_start|>assistant\n<think>\n"
+        return rendered
+
 
 class Qwen3PlainTemplate(PromptTemplate):
     """Qwen3.x ChatML with thinking immediately closed.

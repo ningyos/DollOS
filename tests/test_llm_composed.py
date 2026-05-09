@@ -17,6 +17,13 @@ class _FakeTemplate(PromptTemplate):
     def render(self, *, system: str, user: str, prefill: str, tools=None) -> str:
         return f"SYS={system}|USR={user}|PRE={prefill}"
 
+    def render_messages(self, *, system: str, messages: list[dict], tools=None) -> str:
+        body = "|".join(f"{m['role']}={m['content']}" for m in messages)
+        tool_marker = ""
+        if tools:
+            tool_marker = "|TOOLS=" + ",".join(t.__name__ for t in tools)
+        return f"SYS={system}|MSG={body}{tool_marker}"
+
 
 class _FakeProvider(Provider):
     """Captures the prompt it receives and yields canned chunks."""
@@ -135,3 +142,41 @@ async def test_composed_passes_tools_to_template():
 
     assert captured["tools"] == [_ToolDummy]
     assert captured["prompt"] == "RENDERED"
+
+
+@pytest.mark.asyncio
+async def test_composed_stream_messages_renders_via_template_and_calls_provider():
+    """ComposedLLMAdapter.stream_messages must render via
+    template.render_messages() and forward the rendered prompt + grammar
+    to provider.stream()."""
+    fake_chunks = [
+        StreamChunk(text="hi", done=False),
+        StreamChunk(text="", done=True),
+    ]
+    provider = _FakeProvider(fake_chunks)
+    template = _FakeTemplate()
+    adapter = ComposedLLMAdapter(provider=provider, template=template)
+
+    out = []
+    async for chunk in adapter.stream_messages(
+        system="S",
+        messages=[
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "<tool_response>\nx\n</tool_response>"},
+        ],
+        stop=["<|end|>"],
+        max_tokens=99,
+        tools=[_ToolDummy],
+        grammar="GBNF",
+    ):
+        out.append(chunk)
+
+    assert provider.last_prompt == (
+        "SYS=S|MSG=user=u1|assistant=a1|user=<tool_response>\nx\n</tool_response>"
+        "|TOOLS=_ToolDummy"
+    )
+    assert provider.last_stop == ["<|end|>"]
+    assert provider.last_max_tokens == 99
+    assert provider.last_grammar == "GBNF"
+    assert out == fake_chunks
