@@ -83,16 +83,16 @@ DollOS/
 | Roadmap step 11 — Prompt-compact + grammar wiring (B4 GBNF + CJK deny) | Merged |
 | Roadmap step 12 — Memory wire format pivot (RAG context + Recall tool) | Merged |
 | Roadmap step 13 — Cascade robustness (multi-message + skills audit + character trim) | Merged |
+| Roadmap step 14 — Episodic memory + uncapped cascade + REVIEW think field | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Cross-turn conversation history** — 解 T2 / T7 偶發誤判（fresh data 時 model 看不到 prior turns）。Step 13 multi-message 只在 turn 內、不跨 turn。動 dispatcher 維 session-level message buffer。
-- **Subagent**（async result via SubagentResultEvent）
+- **Subagent**（async result via SubagentResultEvent）— Doll 派出 ephemeral 工作者
 - **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
 - **Voice pipeline**（KWS / VAD / ASR / TTS）
-- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13 後 model 行為已穩定，優先序持續下降
-- **Cascade depth 治理**（小改動）— 偶發 T7/T8 撞 MAX_CASCADE_DEPTH=5，可拉到 20 + 同 tool any-outcome counter；step 13 中 explore 過 budget pressure 但 revert（見 `docs/research/cascade-governance-exploration.md`）
+- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13/14 後 model 行為已穩定，優先序持續下降
+- **T2 fabrication anchor 強化** — small fix：character/scaffolding 對「不知道就不要瞎掰」訊號還有點弱，偶發「可口可樂」這種捏造
 
 完整 roadmap：`docs/roadmap.md`。
 
