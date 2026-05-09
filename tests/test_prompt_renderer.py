@@ -174,6 +174,14 @@ def test_scaffolding_has_think_structure_section():
         assert f"**{label}**:" in out, f"missing labeled bullet for {label}"
 
 
+def test_scaffolding_behavior_disambiguates_user_first_person():
+    """Model previously misread user '我' as referring to Doll (T2 fabrication
+    bug). Scaffolding now anchors '我' = speaker = user."""
+    renderer = PromptRenderer()
+    rendered = renderer.render("scaffolding", character="Test")
+    assert "主人說的「我」永遠是主人" in rendered
+
+
 def test_iv_compact_template_renders_with_perception_and_messages():
     """iv_compact template renders system + user blocks, threading
     perception + cascade_messages content into the user block."""
