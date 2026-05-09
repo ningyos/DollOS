@@ -148,6 +148,20 @@ def test_scaffolding_includes_act_after_thinking_rule():
     assert "ACTION" in out  # mentioned as anti-pattern
 
 
+def test_scaffolding_memory_section_includes_curiosity_fallback():
+    """The # Memory section includes the don't-know fallback flow:
+    Recall first, then ask user, then NoteMemory after they tell."""
+    renderer = PromptRenderer()
+    rendered = renderer.render("scaffolding", character="Test")
+    # Anchor on the `# Memory` section.
+    assert "# Memory" in rendered
+    # The fallback flow mentions both tools by name.
+    assert "Recall" in rendered
+    assert "NoteMemory" in rendered
+    # The flow language anchors the don't-know case.
+    assert "不確定" in rendered or "不瞎掰" in rendered
+
+
 def test_iv_summary_template_includes_language_rule():
     """Inner Voice prompt must enforce 繁體中文 output."""
     renderer = PromptRenderer()
