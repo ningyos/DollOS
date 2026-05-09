@@ -173,6 +173,47 @@ Step 12 範圍：
 2. cascade Say 強化（forward tool 結果）
 3. Subagent / Wake gating / Voice pipeline（功能擴張，等 baseline 穩定）
 
+### 13. Cascade robustness — multi-message + skills audit + character trim  ✅ Merged
+
+**動機**：step 12 的 deterministic smoke 揭露三個獨立病症：(1) InvokeSkill 幻覺 deterministic baseline、(2) cascade Say 弱化、(3) T2 / T7 model 詮釋偶發失敗。Step 13 一次解決前兩個，第三個需 cross-turn history（留下個 step）。
+
+Step 13 範圍（4 個 commit + 1 個探索 log）：
+
+**a. cascade governance + Hermes skills audit** (`9a95376`)
+- `MAX_CASCADE_DEPTH 50 → 5`、同 tool consecutive **failure** counter（≥3 → break + ErrorMsg）
+- `InvokeSkill.run` ENOENT short-circuit → 列出實際存在的 skills 的 corrective str（不再 raise）
+- `scaffolding.jinja` 把整個 `# Skills` section 包進 `{% if available_skills %}`：dispatcher 讀 `data/memory/skills/*.md` glob 傳 sorted stems。**沒 skill 安裝時 InvokeSkill / skill_bodies 概念完全不出現在 system prompt**（Hermes #1 smoking gun）
+- 結果：T4/T5 的 InvokeSkill 幻覺**完全消失**
+
+**b. multi-message conversation history within turn** (`7794bbe`)
+- 廢掉 single-shot perception re-render；改 multi-message ChatML：原 user perception 持續在 `messages[0]`，每 cascade iter 加 assistant raw emit + per-result `<tool_response>` user message
+- 新 `Qwen3ThinkingTemplate.render_messages`、`LLMAdapter.stream_messages`（legacy `stream_completion` 留給 InnerVoice / Instinct）
+- recall + scaffolding 從 per-iter 變 per-turn render
+- 結果：T4/T5 從 1/3 → 3/3、T8 build_skill 從 0/3 → 2/3、T7 偶現 cross-turn recall
+
+**c. character + scaffolding 求知慾 + LARP trim** (`85a082a`)
+- character.jinja：移除「9000 歲 / 老氣橫秋 / 黏 / 逗主人」LARP 助長條、`# 個性` 7 → 4 bullets、新增「不 LARP」反向 anchor、修 stale `STATE/RECALL` references
+- scaffolding `# Memory`：加「主人問你不確定的事」fallback 三步流程（Recall 換 keyword → 直接問用戶 → NoteMemory）
+- 結果：T2 命中率 0/3 → 2/3 with 穩定好奇行為（「沒記下來，主人喜歡什麼？」）；T2 平均回應長度從 ~100 字降到 ~30-40 字；零「血腥瑪莉開玩笑啦」式 LARP 填充
+
+**d. exploration log** (`01ee726`) - `docs/research/cascade-governance-exploration.md`
+- 完整記錄探索失敗的 4 個方向：budget pressure、naive YES/NO judge、wrap-up iter、5-flag sanity guard
+- 全部 revert，原因見文件
+- 留作未來 reference 避免再踩同坑
+
+**Smoke**：3 sampling runs，平均 **~7/8**（vs step 12 結束時 6/8）；零 InvokeSkill ENOENT；零 ERROR；T2 / T8 從幾乎不通變多數通
+
+**已知遺留**（step 13 未解，下個 step 候選）：
+- T2 / T7 偶發誤判：fresh data 時 model 看不到 prior turn，靠 memsearch 撈不可靠 → 需要 **cross-turn conversation history**（架構級，留下個 step）
+- T7 偶發 cascade exceeded：MAX_CASCADE_DEPTH=5 對 cross-turn recall 有時太緊
+- T5 在 `data/` 內跑 `ls data` 誤判：Shell tool 沒提示 cwd
+- T8 偶發 cascade exceeded：build_skill 多步任務需 4-5 iter
+
+下個 step 候選（按優先序）：
+1. **Cross-turn conversation history**（最高槓桿，解 T2 / T7 不穩定根因）
+2. cascade depth 拉到 20 + 同 tool any-outcome counter（小改動，從 exploration log 把 budget pressure 那塊改良後上）
+3. Subagent / Wake gating / Voice pipeline / Character pack
+
 ---
 
 ## 之後（未排序）
