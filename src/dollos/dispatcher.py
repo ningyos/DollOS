@@ -30,11 +30,6 @@ from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
 
-# Hard cap on cascade iterations per turn. 5 covers legit multi-step
-# turns (Shell+Say, Shell+NoteMemory+Say, etc.); pathological loops on
-# the same failing tool are caught earlier by the same-tool 3-fail break.
-MAX_CASCADE_DEPTH = 5
-
 
 @dataclass
 class ToolResult:
@@ -81,6 +76,15 @@ class EventDispatcher:
         }
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
+        # Rolling buffer of per-cascade first-person summaries. Daemon-lifetime;
+        # surfaced as `[Recent activity]` block on each turn's first user message.
+        self._rolling: list[str] = []
+
+    def _format_recent_activity(self) -> str:
+        if not self._rolling:
+            return ""
+        bullets = "\n".join(f"- {s}" for s in self._rolling)
+        return f"[Recent activity]\n{bullets}\n\n"
 
     def dispatch(self, raw: RawEvent) -> None:
         if self._stopping:
@@ -146,8 +150,6 @@ class EventDispatcher:
         doll_event: DollEvent,
         sink: asyncio.Queue[ServerMessage | None],
     ) -> None:
-        from dollos import dispatcher as _disp_mod
-
         grammar = build_qwen3_think_tool_grammar(TOOLS)
 
         # Per-turn one-time setup: recall + scaffolding (system) + skills
@@ -155,20 +157,16 @@ class EventDispatcher:
         # `messages` list; `[Memory context]` only appears in the first
         # user message, never re-injected.
         recall_text = await self._inner_voice.recall(doll_event.perception)
+        recent_activity = self._format_recent_activity()
         if recall_text:
-            first_user = (
-                "[Memory context]\n"
-                f"{recall_text}\n\n"
-                "[Message]\n"
-                f"{doll_event.perception}"
-            )
+            memory_block = f"[Memory context]\n{recall_text}\n\n"
         else:
-            first_user = (
-                "[Memory context]\n"
-                "(no relevant memory)\n\n"
-                "[Message]\n"
-                f"{doll_event.perception}"
-            )
+            memory_block = "[Memory context]\n(no relevant memory)\n\n"
+        first_user = (
+            f"{recent_activity}"
+            f"{memory_block}"
+            f"[Message]\n{doll_event.perception}"
+        )
         messages: list[dict] = [{"role": "user", "content": first_user}]
 
         skills_dir = self._memory_root / "skills"
@@ -182,7 +180,6 @@ class EventDispatcher:
             available_skills=available_skills,
         )
 
-        iteration = 0
         # Same-tool consecutive-failure tracker.
         consecutive_fails: dict[str, int] = {}
         last_failed_tool: str | None = None
@@ -261,15 +258,18 @@ class EventDispatcher:
                 ))
                 break
 
-            iteration += 1
-            if iteration > _disp_mod.MAX_CASCADE_DEPTH:
-                sink.put_nowait(ErrorMsg(
-                    message=(
-                        f"cascade exceeded MAX_CASCADE_DEPTH "
-                        f"({_disp_mod.MAX_CASCADE_DEPTH})"
-                    )
-                ))
-                break
+        # Compact the cascade into a 1-sentence summary; append to rolling
+        # buffer for `[Recent activity]` block on next turn. Runs regardless
+        # of cascade exit reason (natural / same-tool-abort).
+        try:
+            summary = await self._instinct.compact_cascade(
+                perception=doll_event.perception,
+                cascade_messages=messages,
+            )
+            if summary:
+                self._rolling.append(summary)
+        except Exception:
+            logger.exception("compact_cascade failed; rolling buffer not updated")
 
         sink.put_nowait(TurnEnd())
 

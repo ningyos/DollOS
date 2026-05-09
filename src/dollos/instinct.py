@@ -1,11 +1,19 @@
 """Instinct — System 1 per-event preprocessing layer.
 
-Class kept for future wake-gating / reflex; not currently consumed by
-the dispatcher (post 2026-05-08 RAG-context pivot the rolling summary
-is no longer injected anywhere). Kernel still constructs an Instinct
-so future call sites can wire in without re-plumbing.
+Active duty: this class is the cascade compactor backbone. After every
+finished cascade the dispatcher calls `compact_cascade()` to produce a
+1-sentence first-person summary; the summary lands in the dispatcher's
+rolling buffer and reappears as a `[Recent activity]` block on the next
+turn's first user message (see `docs/superpowers/plans/2026-05-09-rolling-compact.md`).
 
-Prompt content lives in `dollos/prompts/templates/iv_summary.jinja`.
+The legacy `process()` method (per-event rolling summary, originally
+wired through STATE prefill in step 5) is retained for backwards compat
+and possible future wake-gating callers, but is NOT invoked by the
+current dispatcher path.
+
+Prompt content lives in:
+  - `dollos/prompts/templates/iv_compact.jinja` (compact_cascade)
+  - `dollos/prompts/templates/iv_summary.jinja` (legacy process)
 """
 
 from __future__ import annotations
@@ -26,6 +34,22 @@ class Instinct(ABC):
 
         Implementations may maintain in-memory state across calls.
         Empty string means "no STATE block" (caller skips injection).
+
+        Legacy path: not currently called by the dispatcher.
+        """
+
+    @abstractmethod
+    async def compact_cascade(
+        self,
+        *,
+        perception: str,
+        cascade_messages: list[dict],
+    ) -> str:
+        """Compact a finished cascade into a 1-sentence first-person summary.
+
+        Called by the dispatcher after every cascade exits (natural break,
+        depth-cap exceed, or same-tool-fail abort). Result is appended to
+        the dispatcher's rolling buffer.
         """
 
 
@@ -62,3 +86,29 @@ class SmallModelInstinct(Instinct):
 
         self._last_summary = "".join(chunks).strip()
         return self._last_summary
+
+    async def compact_cascade(
+        self,
+        *,
+        perception: str,
+        cascade_messages: list[dict],
+    ) -> str:
+        blocks = self._renderer.render_blocks(
+            "iv_compact",
+            perception=perception,
+            cascade_messages=cascade_messages,
+        )
+
+        chunks: list[str] = []
+        async for chunk in self._adapter.stream_completion(
+            system=blocks["system"],
+            user=blocks["user"],
+            prefill="",
+            max_tokens=256,
+        ):
+            if chunk.text:
+                chunks.append(chunk.text)
+            if chunk.done:
+                break
+
+        return "".join(chunks).strip()

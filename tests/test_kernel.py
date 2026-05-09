@@ -99,8 +99,14 @@ def _install_fake_inner_voice(monkeypatch, recall_text: str | None = None, raise
     async def _stub_instinct_process(self, event):
         return ""
 
+    async def _stub_compact_cascade(self, *, perception, cascade_messages):
+        return "test summary"
+
     monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
     monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
+    monkeypatch.setattr(
+        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
+    )
     return captured
 
 

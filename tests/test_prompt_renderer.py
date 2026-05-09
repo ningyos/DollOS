@@ -162,6 +162,44 @@ def test_scaffolding_memory_section_includes_curiosity_fallback():
     assert "不確定" in rendered or "不瞎掰" in rendered
 
 
+def test_scaffolding_has_think_structure_section():
+    """# Think structure section documents the 4 think-block fields
+    (SEEN / INTENT / REVIEW / TOOL) so the model knows what each slot
+    is for. REVIEW is the self-reflection slot that unblocks cascade
+    looping."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", character="You are Doll.")
+    assert "# Think structure" in out
+    for label in ("SEEN", "INTENT", "REVIEW", "TOOL"):
+        assert f"**{label}**:" in out, f"missing labeled bullet for {label}"
+
+
+def test_iv_compact_template_renders_with_perception_and_messages():
+    """iv_compact template renders system + user blocks, threading
+    perception + cascade_messages content into the user block."""
+    renderer = PromptRenderer()
+    msgs = [
+        {"role": "assistant", "content": "想了一下要不要 Recall"},
+        {"role": "user", "content": "<tool_response>\n找到了\n</tool_response>"},
+    ]
+    blocks = renderer.render_blocks(
+        "iv_compact",
+        perception="我剛才說了什麼",
+        cascade_messages=msgs,
+    )
+    assert set(blocks.keys()) >= {"system", "user"}
+    # System: voice / language rules.
+    assert "第一人稱" in blocks["system"] or "first-person" in blocks["system"].lower()
+    assert "1-2" in blocks["system"] or "一" in blocks["system"]
+    # User: perception + cascade content threaded.
+    assert "我剛才說了什麼" in blocks["user"]
+    assert "想了一下要不要 Recall" in blocks["user"]
+    assert "找到了" in blocks["user"]
+    # User block markers per plan §1.
+    assert "[我]" in blocks["user"]
+    assert "[Result]" in blocks["user"]
+
+
 def test_iv_summary_template_includes_language_rule():
     """Inner Voice prompt must enforce 繁體中文 output."""
     renderer = PromptRenderer()
