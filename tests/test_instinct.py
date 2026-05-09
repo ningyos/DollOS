@@ -119,6 +119,74 @@ async def test_small_model_instinct_strips_whitespace():
 
 
 @pytest.mark.asyncio
+async def test_compact_cascade_returns_stripped_string():
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(text="  我問了主人。  ", done=False),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    inst = SmallModelInstinct(adapter=adapter, renderer=PromptRenderer())
+
+    summary = await inst.compact_cascade(
+        perception="hi",
+        cascade_messages=[{"role": "assistant", "content": "<think>...</think>"}],
+    )
+
+    assert summary == "我問了主人。"
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["prefill"] == ""
+
+
+@pytest.mark.asyncio
+async def test_compact_cascade_renders_jinja_blocks():
+    """Spy renderer asserts compact_cascade hits the iv_compact template
+    with perception + cascade_messages args."""
+    captured: list[dict] = []
+    real = PromptRenderer()
+
+    class _SpyRenderer:
+        def render(self, *a, **kw):
+            return real.render(*a, **kw)
+
+        def render_blocks(self, template_name, **ctx):
+            captured.append({"template": template_name, "ctx": ctx})
+            return real.render_blocks(template_name, **ctx)
+
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="ok", done=True)]
+    )
+    inst = SmallModelInstinct(adapter=adapter, renderer=_SpyRenderer())
+
+    msgs = [{"role": "user", "content": "[Message]\nq"}]
+    await inst.compact_cascade(perception="q", cascade_messages=msgs)
+
+    assert any(c["template"] == "iv_compact" for c in captured)
+    compact_call = next(c for c in captured if c["template"] == "iv_compact")
+    assert compact_call["ctx"]["perception"] == "q"
+    assert compact_call["ctx"]["cascade_messages"] is msgs
+
+
+@pytest.mark.asyncio
+async def test_compact_cascade_passes_messages_to_user_block():
+    """Render the actual template and confirm cascade_messages content
+    appears in the rendered user block."""
+    renderer = PromptRenderer()
+    msgs = [
+        {"role": "assistant", "content": "thinking_about_coffee"},
+        {"role": "user", "content": "<tool_response>\nok\n</tool_response>"},
+    ]
+    blocks = renderer.render_blocks(
+        "iv_compact",
+        perception="主人愛喝什麼",
+        cascade_messages=msgs,
+    )
+    assert "主人愛喝什麼" in blocks["user"]
+    assert "thinking_about_coffee" in blocks["user"]
+    assert "<tool_response>" in blocks["user"]
+
+
+@pytest.mark.asyncio
 async def test_small_model_instinct_empty_output_is_empty_summary():
     adapter = _FakeAdapter(
         chunks=[StreamChunk(text="", done=True)]
