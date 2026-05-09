@@ -92,7 +92,7 @@ DollOS/
 - **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
 - **Voice pipeline**（KWS / VAD / ASR / TTS）
 - **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13/14 後 model 行為已穩定，優先序持續下降
-- **T2 fabrication anchor 強化** — small fix：character/scaffolding 對「不知道就不要瞎掰」訊號還有點弱，偶發「可口可樂」這種捏造
+- **T2 fabrication anchor 強化** — ✅ done（merge `d31e5ae`，加 user 「我」 disambiguation 進 scaffolding）
 
 完整 roadmap：`docs/roadmap.md`。
 
