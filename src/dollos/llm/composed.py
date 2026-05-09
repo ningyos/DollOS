@@ -38,3 +38,21 @@ class ComposedLLMAdapter(LLMAdapter):
             prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar
         ):
             yield chunk
+
+    async def stream_messages(
+        self,
+        *,
+        system: str,
+        messages: list[dict],
+        stop: list[str] | None = None,
+        max_tokens: int = 1024,
+        tools: list[type[BaseModel]] | None = None,
+        grammar: str | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        prompt = self._template.render_messages(
+            system=system, messages=messages, tools=tools
+        )
+        async for chunk in self._provider.stream(
+            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar
+        ):
+            yield chunk
