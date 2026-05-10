@@ -84,15 +84,15 @@ DollOS/
 | Roadmap step 12 — Memory wire format pivot (RAG context + Recall tool) | Merged |
 | Roadmap step 13 — Cascade robustness (multi-message + skills audit + character trim) | Merged |
 | Roadmap step 14 — Episodic memory + uncapped cascade + REVIEW think field | Merged |
+| Roadmap step 15 — Subagent (ephemeral async worker + structured Report) | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Subagent**（async result via SubagentResultEvent）— Doll 派出 ephemeral 工作者
 - **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
 - **Voice pipeline**（KWS / VAD / ASR / TTS）
 - **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13/14 後 model 行為已穩定，優先序持續下降
-- **T2 fabrication anchor 強化** — ✅ done（merge `d31e5ae`，加 user 「我」 disambiguation 進 scaffolding）
+- **End-to-end subagent smoke**（小事）— 加 T9 案例觸發 SpawnSubagent，sampling 驗 sub-cascade 真實行為（unit test 已覆蓋邏輯，但沒跑大模型驗證）
 
 完整 roadmap：`docs/roadmap.md`。
 

@@ -261,6 +261,39 @@ Step 14 範圍（一個 commit + plan docs，merge `5b6cd79` → `9c79375`）：
 1. T2 fabrication anchor 強化（小 fix）
 2. Subagent / Wake gating / Voice pipeline / Character pack（功能擴張，baseline 已穩）
 
+### 15. Subagent — ephemeral async worker + structured Report  ✅ Merged
+
+Spec calls Subagent「ephemeral, definition inline, dies after run, results re-enter event queue」。Step 15 落地 MVP。
+
+範圍：
+- **`SpawnSubagent(task, timeout_s)`** main-only tool — Doll call 後立刻 return「subagent X dispatched」，背景 asyncio.Task 跑 sub-cascade
+- **`Report(status, summary, details)`** sub-only tool — subagent 必須 call Report 才算結束（status: ok / incomplete / timeout / error / no_report）
+- **`SUB_TOOLS`**：`Shell, NoteMemory, Recall, InvokeSkill, Report` — 沒 Say、沒 SpawnSubagent（不遞迴）、沒 WriteDiary
+- **`SubagentResultEvent`** RawEvent — sub-cascade 結束時 fire 進 dispatcher event queue → 變新 turn 的 perception
+- **`SubagentRunner`**（新 module `src/dollos/subagent.py`）— asyncio.Task 管理，wall-clock timeout via `asyncio.wait_for`，sub-cascade 內部沿用 same-tool 3-fail counter
+- **`subagent_scaffolding.jinja`** — 精簡 worker scaffolding（無 character / 無 [Memory context] / 無 [Recent activity] / 強調必須 call Report）
+- `dispatcher.py` `_perceive` 新增 SubagentResultEvent 處理：
+  ```
+  你派出的 subagent 回來了：
+  - task: ...
+  - status: ok|timeout|error|no_report
+  - summary: ...
+  - details: ...
+  ```
+
+設計選擇（用戶決定）：
+- Result 結構化（不用 free-form Say，必 Report tool）
+- Timeout per-spawn（Doll 自估）
+- 並行不限
+
+Tests：248 passed（含 6 個 subagent unit test：完成 / timeout / no_report / runtime error / 並行 / SUB_TOOLS grammar exclude Say+SpawnSubagent）。
+
+Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是狗」，無 regression）。SpawnSubagent 未由 T1-T8 觸發 — 邏輯由 unit test 覆蓋；未來 end-to-end smoke 加 T9 case 觸發。
+
+**Bug 紀錄**：實作 agent 第一次跑 pytest **OOM**（51GB RAM），原因是 `test_dispatcher_passes_subagent_runner_into_tool_ctx` 的 capture tool 返回 string → cascade 繼續 → `_FakeAdapter` 重 yield 同樣 chunks → 同 tool 連續 success（counter 不抓） → infinite cascade。修法：tool 改 side-effect capture + return None。揭露 step 14 移除 MAX_CASCADE_DEPTH 後 same-tool counter 對「success-only loop」的盲點 — 但 production 場景小，靠 model 訓練自停（rolling compact 確認可行）。
+
+下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
+
 ---
 
 ## 之後（未排序）
