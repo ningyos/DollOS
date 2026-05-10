@@ -87,13 +87,19 @@ DollOS/
 | Roadmap step 15 — Subagent (ephemeral async worker + structured Report) | Merged |
 | Roadmap step 16 — IPC pump (per-connection persistent sink) | Merged |
 | Roadmap step 17 — Doll pack (directory + doll.toml manifest) | Merged |
+| Roadmap step 18 — Time awareness ([Now] + HH:MM:SS + time-aware Recall) | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Voice pipeline**（KWS / VAD / ASR / TTS）— 真產品 feature
-- **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）— 等 voice / drone 大量 events 進來才有 ROI
-- **Pack 漸進擴充** — voice.onnx / wake_word.onnx / avatar/ 子目錄，但每個都要先有對應 feature 在 build 才加（incremental）
+- **Mood / 情緒模型**（Self-First killer feature）— 顯式情緒狀態、衰減、影響回答 tone
+- **Self-history / 偏好學習** — Doll 自己寫對自己的觀察進 memory，下次 surface
+- **習慣模型** — 觀察主人作息累積進 memory
+- **Self-initiated events** — Doll 自己 wake（閒置太久關心、累積 mood 講話）
+- **Drone**（spec 提的，跟 subagent 對偶）— persistent + scheduled
+- **Cascade decision log** — 每 iter SEEN/INTENT/REVIEW/TOOL 持久化，可 replay
+- **Voice pipeline**（基礎建設，跟 Doll 行為無關）
+- **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 完整 roadmap：`docs/roadmap.md`。
 

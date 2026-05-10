@@ -294,6 +294,26 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 18. Time awareness — [Now] block + HH:MM:SS + time-aware Recall  ✅ Merged
+
+**動機**：DollOS 有檔案系統級時間（`{YYYY-MM-DD}.md` 檔名、`[HH:MM role]` 行 prefix、diary header），但 **Doll 的 perception 無時間感**。Diary、memory、recall 都該有時間軸才合理。
+
+範圍（second precision throughout）：
+- **`[Now]` block 注入**：每 cascade first user msg 開頭 `2026-05-10 14:23:05 週六下午`（中文 day-of-week + period-of-day descriptor）
+- **`[Recent activity]` 帶時間**：rolling buffer 從 `list[str]` 改 `list[tuple[datetime, str]]`，render 用 HH:MM:SS（跨日加完整 YYYY-MM-DD）
+- **Memsearch hits 帶日期**：IV.recall() 給 small-LLM 的 candidates string 加 file-date prefix
+- **`Recall` tool 加 since/until**：optional `datetime | None`，filter granularity 是 day（用 `.date()` 比較）；hits 出來帶 `2026-05-08 ...` 前綴
+- **`append_transcript`** 行 prefix：`HH:MM` → `HH:MM:SS`
+- **`WriteDiary`** header：`HH:MM` → `HH:MM:SS`
+
+**Doll 怎麼用**：從 `[Now]` 拿到當前日期 → 自己算 yesterday/last_week → call `Recall(query, since=ISO, until=ISO)`。Tool 不做 NL date parsing，只接 ISO format。
+
+**沒做的**（incremental）：relative-time render、uptime tracker、time-aware diary cross-day reference、self-initiated time events、timezone、minute/second-level Recall filter（只到 day）。
+
+Smoke：T1-T8 8/8。T7 表現特別好——「你剛才問了我 pwd、data 在哪裡，還有 Qwen3 的 prompt format 怎麼記下來」chronological summary 出來了。
+
+Tests：270 passed（12 new）。
+
 ### 17. Doll pack — directory + doll.toml manifest  ✅ Merged
 
 **動機**：`experiments/test_character.jinja` 是當前 character source，單 jinja 整塊內容塞 `{{ character }}` 變數。問題：identity content 跟 mechanism content 混在一起（思考方式 / 工具方式 已過時且 scaffolding 重複）；無結構容納未來 voice / avatar / wake；命名 `experiments/` 暗示 scratch。
