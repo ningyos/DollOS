@@ -160,6 +160,10 @@ class EventDispatcher:
         # block so Doll can choose whether to wrap up early.
         self._active_cascade: asyncio.Task[None] | None = None
         self._pending: list[RawEvent] = []
+        # Set whenever a SERIALIZE_TYPES event is queued during an active
+        # cascade; cleared when the active cascade ends. Threaded through to
+        # ToolCtx so Monitor can early-return on interrupt (Phase 3).
+        self._pending_signal: asyncio.Event = asyncio.Event()
         self._parallel_tasks: set[asyncio.Task[None]] = set()
         # Rolling buffer of per-cascade first-person summaries. Daemon-lifetime;
         # surfaced as `[Recent activity]` block on each turn's first user message.
@@ -203,6 +207,7 @@ class EventDispatcher:
                 and not self._active_cascade.done()
             ):
                 self._pending.append(raw)
+                self._pending_signal.set()
                 return
             task = asyncio.create_task(
                 self._handle(raw), name=f"event-{type(raw).__name__}"
@@ -221,6 +226,10 @@ class EventDispatcher:
             task.add_done_callback(self._tasks.discard)
 
     def _on_cascade_done(self, task: asyncio.Task[None]) -> None:
+        # Reset interrupt signal — next cascade starts clean. The new cascade
+        # sees [Pending events] block on iter 1, so the signal isn't needed
+        # to convey that information.
+        self._pending_signal.clear()
         # Pop the next serialized event off the pending queue and start it.
         # Iterate in case a stray event slipped in for an already-stopping
         # dispatcher — we just drop those.
@@ -399,6 +408,7 @@ class EventDispatcher:
                 transcripts_root=self._transcripts_root,
                 subagent_runner=self._subagent_runner,
                 process_registry=self._process_registry,
+                pending_signal=self._pending_signal,
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []
