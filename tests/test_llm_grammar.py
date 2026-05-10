@@ -47,6 +47,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "Shell": "shell-call",
         "InvokeSkill": "invoke-skill-call",
         "Recall": "recall-call",
+        "SpawnSubagent": "spawn-subagent-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]
@@ -68,8 +69,13 @@ def test_grammar_per_tool_field_names_match_required_strings():
     assert r'\"content\":' in g  # WriteDiary
     assert r'\"command\":' in g  # Shell
     assert r'\"name\":' in g  # InvokeSkill (and the envelope "name")
-    # Shell's optional timeout_s must not appear in the grammar body.
-    assert "timeout_s" not in g
+    # Shell's optional timeout_s must not appear in the Shell call rule
+    # body. SpawnSubagent has a REQUIRED timeout_s so the substring may
+    # appear elsewhere — scope the check to the shell-call line.
+    shell_rule = next(
+        line for line in g.splitlines() if line.startswith("shell-call ::=")
+    )
+    assert "timeout_s" not in shell_rule
 
 
 def test_grammar_includes_recall_tool():
@@ -115,15 +121,28 @@ def test_empty_tools_raises():
         build_qwen3_think_tool_grammar([])
 
 
+class _BoolField(BaseModel):
+    """Tool whose required field type is unsupported by the grammar builder
+    (boolean / array / object are all unsupported as of 2026-05-09)."""
+
+    flag: bool = Field(description="a flag")
+
+
+def test_unsupported_required_field_type_raises():
+    with pytest.raises(NotImplementedError):
+        build_qwen3_think_tool_grammar([_BoolField])
+
+
 class _IntField(BaseModel):
-    """Tool whose required field is non-string."""
+    """Tool with a required integer field — supported (used by SpawnSubagent)."""
 
     n: int = Field(description="a number")
 
 
-def test_non_string_required_field_raises():
-    with pytest.raises(NotImplementedError):
-        build_qwen3_think_tool_grammar([_IntField])
+def test_integer_required_field_emits_integer_rule():
+    g = build_qwen3_think_tool_grammar([_IntField])
+    assert r'\"n\": " integer "' in g
+    assert "integer ::= " in g
 
 
 class _GoodTool(BaseModel):

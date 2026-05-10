@@ -475,3 +475,127 @@ async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
     out = await Recall(query="anything").run(ctx)
 
     assert out == "[no relevant memory]"
+
+
+# ---------- SpawnSubagent / Report ----------
+
+
+def test_main_tools_includes_spawn_subagent_not_report():
+    from dollos.tools import MAIN_TOOLS, Report, SpawnSubagent
+
+    assert SpawnSubagent in MAIN_TOOLS
+    assert Report not in MAIN_TOOLS
+
+
+def test_sub_tools_includes_report_not_say_or_spawn():
+    from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
+
+    assert Report in SUB_TOOLS
+    assert Say not in SUB_TOOLS
+    assert SpawnSubagent not in SUB_TOOLS
+
+
+def test_spawn_subagent_schema_has_task_and_timeout_s():
+    from dollos.tools import SpawnSubagent
+
+    schema = SpawnSubagent.model_json_schema()
+    assert "task" in schema["properties"]
+    assert "timeout_s" in schema["properties"]
+    assert "task" in schema["required"]
+    assert "timeout_s" in schema["required"]
+    assert schema["properties"]["timeout_s"]["minimum"] == 1
+    assert schema["properties"]["timeout_s"]["maximum"] == 600
+
+
+def test_report_schema_has_status_summary_details():
+    from dollos.tools import Report
+
+    schema = Report.model_json_schema()
+    for f in ("status", "summary", "details"):
+        assert f in schema["properties"]
+        assert f in schema["required"]
+    assert set(schema["properties"]["status"]["enum"]) == {"ok", "incomplete"}
+
+
+@pytest.mark.asyncio
+async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
+    """SpawnSubagent.run delegates to ctx.subagent_runner.spawn and returns a
+    confirmation string mentioning dispatch + the task + the timeout."""
+    from dollos.tools import SpawnSubagent
+
+    captured: list[dict] = []
+
+    class _FakeRunner:
+        def spawn(self, **kwargs):
+            captured.append(kwargs)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+        subagent_runner=_FakeRunner(),
+    )
+
+    out = await SpawnSubagent(
+        task="search transcripts for coffee", timeout_s=30
+    ).run(ctx)
+
+    assert len(captured) == 1
+    kw = captured[0]
+    assert kw["task"] == "search transcripts for coffee"
+    assert kw["timeout_s"] == 30
+    assert kw["response_sink"] is sink
+    assert "sub_id" in kw and len(kw["sub_id"]) >= 4
+    assert "dispatched" in out
+    assert "30" in out
+
+
+@pytest.mark.asyncio
+async def test_spawn_subagent_without_runner_returns_unavailable(tmp_path):
+    """If ctx.subagent_runner is None (e.g. running inside a subagent),
+    SpawnSubagent.run returns a non-fatal error string and does NOT raise."""
+    from dollos.tools import SpawnSubagent
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+        subagent_runner=None,
+    )
+
+    out = await SpawnSubagent(task="x", timeout_s=10).run(ctx)
+    assert "unavailable" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
+    """Report.run side-effects ctx.subagent_report and returns None
+    (cascade-ending semantics)."""
+    from dollos.tools import Report
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    assert ctx.subagent_report is None
+
+    out = await Report(
+        status="ok", summary="done", details="data here"
+    ).run(ctx)
+
+    assert out is None
+    assert ctx.subagent_report == {
+        "status": "ok",
+        "summary": "done",
+        "details": "data here",
+    }
