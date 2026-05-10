@@ -28,6 +28,7 @@ from dollos.events import (
     DollEvent,
     RawEvent,
     ScheduledEvent,
+    ShellResultEvent,
     SubagentResultEvent,
     UserTextEvent,
 )
@@ -37,8 +38,8 @@ from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.memory_writer import append_transcript
-from dollos.process_registry import ProcessRegistry
 from dollos.prompts import PromptRenderer
+from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import TOOLS, ToolCtx
@@ -136,7 +137,7 @@ class EventDispatcher:
         transcripts_root: Path,
         subagent_runner: SubagentRunner | None = None,
         cascade_logger: CascadeLogger | None = None,
-        process_registry: ProcessRegistry | None = None,
+        shell_runner: ShellRunner | None = None,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -148,7 +149,7 @@ class EventDispatcher:
         self._transcripts_root = transcripts_root
         self._subagent_runner = subagent_runner
         self._cascade_logger = cascade_logger or _NoOpCascadeLogger()
-        self._process_registry = process_registry
+        self._shell_runner = shell_runner
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -160,10 +161,6 @@ class EventDispatcher:
         # block so Doll can choose whether to wrap up early.
         self._active_cascade: asyncio.Task[None] | None = None
         self._pending: list[RawEvent] = []
-        # Set whenever a SERIALIZE_TYPES event is queued during an active
-        # cascade; cleared when the active cascade ends. Threaded through to
-        # ToolCtx so Monitor can early-return on interrupt (Phase 3).
-        self._pending_signal: asyncio.Event = asyncio.Event()
         self._parallel_tasks: set[asyncio.Task[None]] = set()
         # Rolling buffer of per-cascade first-person summaries. Daemon-lifetime;
         # surfaced as `[Recent activity]` block on each turn's first user message.
@@ -207,7 +204,6 @@ class EventDispatcher:
                 and not self._active_cascade.done()
             ):
                 self._pending.append(raw)
-                self._pending_signal.set()
                 return
             task = asyncio.create_task(
                 self._handle(raw), name=f"event-{type(raw).__name__}"
@@ -226,10 +222,6 @@ class EventDispatcher:
             task.add_done_callback(self._tasks.discard)
 
     def _on_cascade_done(self, task: asyncio.Task[None]) -> None:
-        # Reset interrupt signal — next cascade starts clean. The new cascade
-        # sees [Pending events] block on iter 1, so the signal isn't needed
-        # to convey that information.
-        self._pending_signal.clear()
         # Pop the next serialized event off the pending queue and start it.
         # Iterate in case a stray event slipped in for an already-stopping
         # dispatcher — we just drop those.
@@ -327,6 +319,14 @@ class EventDispatcher:
                 f"- details: {raw.details}"
             )
             return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, ShellResultEvent):
+            perception = (
+                "你執行的 shell 命令回來了：\n"
+                f"- command: {raw.command}\n"
+                f"- status: {raw.status} (exit {raw.exit_code})\n"
+                f"- output:\n{raw.output}"
+            )
+            return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, DailyPlanEvent):
             perception = (
                 "早安。要規劃今天的時程。看一下昨天的 schedule（Recall 找）"
@@ -407,8 +407,7 @@ class EventDispatcher:
                 memsearch=self._memsearch,
                 transcripts_root=self._transcripts_root,
                 subagent_runner=self._subagent_runner,
-                process_registry=self._process_registry,
-                pending_signal=self._pending_signal,
+                shell_runner=self._shell_runner,
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []
@@ -562,6 +561,7 @@ class EventDispatcher:
                 UserTextEvent,
                 DiaryEvent,
                 SubagentResultEvent,
+                ShellResultEvent,
                 ScheduledEvent,
                 DailyPlanEvent,
             ),

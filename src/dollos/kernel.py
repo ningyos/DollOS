@@ -22,8 +22,8 @@ from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
-from dollos.process_registry import ProcessRegistry
 from dollos.prompts import PromptRenderer
+from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 
 logger = logging.getLogger(__name__)
@@ -126,22 +126,18 @@ class DollOS:
         cascade_log_root = settings.data.root / "cascade_log"
         configure_cascade_logging(cascade_log_root)
         self._cascade_logger = CascadeLogger(cascade_log_root)
-        # Phase 2: shared registry for async Shell handles. Both main
-        # cascade (via dispatcher) and subagents (via SubagentRunner)
-        # use the same instance — one global registry keeps handle
-        # namespace consistent across the daemon.
-        self.process_registry = ProcessRegistry()
-        # Two-stage wiring: SubagentRunner needs a dispatch_fn, dispatcher
-        # needs a runner. Build runner first with no dispatch_fn, then build
-        # dispatcher referencing the runner, then point runner at
+        # Two-stage wiring: SubagentRunner / ShellRunner need a dispatch_fn,
+        # dispatcher needs the runners. Build runners first with no dispatch_fn,
+        # then build dispatcher referencing them, then point runners at
         # dispatcher.dispatch.
+        self.shell_runner = ShellRunner(cwd=settings.data.root)
         self.subagent_runner = SubagentRunner(
             adapter=self.adapter,
             renderer=self.renderer,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
-            process_registry=self.process_registry,
+            shell_runner=self.shell_runner,
         )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
@@ -154,9 +150,10 @@ class DollOS:
             transcripts_root=settings.data.root / "memory" / "transcripts",
             subagent_runner=self.subagent_runner,
             cascade_logger=self._cascade_logger,
-            process_registry=self.process_registry,
+            shell_runner=self.shell_runner,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
+        self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -350,13 +347,12 @@ class DollOS:
                     await asyncio.gather(
                         self._schedule_task, return_exceptions=True
                     )
-                # Stop subagents BEFORE dispatcher so any final result
-                # event has a live dispatcher to enter (in practice
-                # cancellation skips the result event; ordering kept
-                # explicit per plan).
+                # Stop subagents and shell runner BEFORE dispatcher so any
+                # final result event has a live dispatcher to enter (in
+                # practice cancellation skips the result event; ordering
+                # kept explicit per plan).
                 await self.subagent_runner.stop()
+                await self.shell_runner.stop()
                 await self.dispatcher.stop()
-                # Kill any background Shell subprocesses still running.
-                await self.process_registry.shutdown()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based

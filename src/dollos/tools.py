@@ -24,18 +24,14 @@ from pydantic import BaseModel, Field, field_validator
 
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
-from dollos.process_registry import ProcessRegistry
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
 
+    from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
 
 logger = logging.getLogger(__name__)
-
-SHELL_OUTPUT_MAX_CHARS = 8000
-MONITOR_DEFAULT_TIMEOUT_S = 60
-MONITOR_MAX_TIMEOUT_S = 600
 
 _FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
 
@@ -73,28 +69,13 @@ def _format_hit(hit: dict) -> str:
     return f"- {hit.get('content', '')}"
 
 
-def _truncate(text: str, cap: int) -> str:
-    if len(text) <= cap:
-        return text
-    half = cap // 2
-    head = text[:half]
-    tail = text[-half:]
-    dropped = len(text) - 2 * half
-    return f"{head}\n...[truncated {dropped} chars]...\n{tail}"
-
-
 @dataclass
 class ToolCtx:
     """Narrow execution context passed to Tool.run().
 
-    `subagent_runner` is set on the main-cascade ctx so SpawnSubagent can
-    schedule background workers; remains None inside a sub-cascade (and
-    SUB_TOOLS doesn't include SpawnSubagent anyway, so subagent recursion
-    is structurally impossible).
-
-    `subagent_report` is None in the main cascade and set by the Report
-    tool inside a sub-cascade — SubagentRunner reads it back to build the
-    SubagentResultEvent.
+    `subagent_runner` and `shell_runner` carry the dispatch sinks for
+    fire-and-forget external actions. Both can be None inside isolated
+    test contexts; tools surface a clear "unavailable" message when so.
     """
 
     sink: asyncio.Queue[ServerMessage | None] | None
@@ -103,8 +84,7 @@ class ToolCtx:
     transcripts_root: Path
     subagent_runner: "SubagentRunner | None" = None
     subagent_report: dict | None = None
-    process_registry: ProcessRegistry | None = None
-    pending_signal: asyncio.Event | None = None
+    shell_runner: "ShellRunner | None" = None
 
 
 class Say(BaseModel):
@@ -168,168 +148,47 @@ class WriteDiary(BaseModel):
 
 
 class Shell(BaseModel):
-    """Spawn a shell command in the background. Returns a handle immediately.
+    """Run a shell command in the background. Returns immediately.
 
-    The command runs as a fresh subprocess (no cd persistence between calls)
-    with the daemon's user permissions and ``cwd = data/`` (the parent of
-    memory/). stdout + stderr are merged on the pipe.
+    Shell is fire-and-forget. The command runs as a fresh subprocess (no
+    cd persistence between calls) with the daemon's user permissions and
+    cwd = data/ (the parent of memory/). stdout + stderr are merged. When
+    the proc finishes, its result comes back as a NEW turn's perception
+    starting with 「你執行的 shell 命令回來了」 — react to it then.
 
-    This call **does not block** — Shell returns a handle string like
-    ``"sh-1"``. Use ``Monitor(handle=...)`` to wait for the output and exit
-    code. For short commands (pwd, ls), feel free to emit Shell + Monitor in
-    the same cascade iteration; for long commands, you can do other work and
-    Monitor later.
+    There is no wait / monitor / cancel tool. If you start a Shell and
+    keep working in the same cascade, the result may also arrive as a
+    perception inserted into your next iteration. Either way: react when
+    you see it.
     """
 
     command: str = Field(
-        description="The shell command to run (will be passed to bash -c)."
-    )
-
-    async def run(self, ctx: ToolCtx) -> str:
-        if ctx.process_registry is None:
-            return (
-                "[Shell unavailable: no process_registry on this ctx — "
-                "cannot dispatch background subprocess]"
-            )
-        cwd = ctx.memory_root.parent
-        proc = await asyncio.create_subprocess_shell(
-            self.command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=str(cwd),
-        )
-        handle = ctx.process_registry.register(proc, self.command)
-        return (
-            f"shell {handle} dispatched (command={self.command!r}). "
-            f"Use Monitor({handle!r}) to wait."
-        )
-
-
-class Monitor(BaseModel):
-    """Wait for a background process (from Shell) to finish.
-
-    Blocks the cascade iteration until the process exits or the timeout
-    elapses. On success, returns ``[exit N]\\n{output}`` (output truncated
-    to 8000 chars). On timeout, the process is left running — Monitor again
-    or Cancel it.
-    """
-
-    handle: str = Field(
-        description="Handle returned by Shell (e.g., 'sh-1')."
+        description="Shell command to run (passed to bash -c).",
     )
     timeout_s: int = Field(
-        default=MONITOR_DEFAULT_TIMEOUT_S,
         ge=1,
-        le=MONITOR_MAX_TIMEOUT_S,
+        le=600,
         description=(
-            f"Wait at most this many seconds. Default "
-            f"{MONITOR_DEFAULT_TIMEOUT_S}, max {MONITOR_MAX_TIMEOUT_S}."
+            "Wall-clock seconds before the proc is killed. Estimate "
+            "from the command (5 short, 60 medium, 300 long; max 600). "
+            "No default — pick a number every time."
         ),
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        if ctx.process_registry is None:
+        if ctx.shell_runner is None:
             return (
-                "[Monitor unavailable: no process_registry on this ctx]"
+                "[Shell unavailable: no shell_runner on this ctx]"
             )
-        managed = ctx.process_registry.get(self.handle)
-        if managed is None:
-            return (
-                f"unknown handle {self.handle!r} "
-                f"(already monitored or not found)"
-            )
-        proc = managed.proc
-        proc_task = asyncio.create_task(proc.communicate())
-        pending_signal = ctx.pending_signal
-        pending_task: asyncio.Task | None = None
-        waiters: list[asyncio.Task] = [proc_task]
-        if pending_signal is not None:
-            pending_task = asyncio.create_task(pending_signal.wait())
-            waiters.append(pending_task)
-
-        try:
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=self.timeout_s,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        except asyncio.CancelledError:
-            proc_task.cancel()
-            if pending_task is not None:
-                pending_task.cancel()
-            raise
-
-        # Pending event won the race — early return; process keeps running.
-        if pending_task is not None and pending_task in done:
-            proc_task.cancel()
-            return (
-                f"Monitor({self.handle!r}) interrupted by pending event. "
-                f"Process still running. Use Cancel({self.handle!r}) to kill, "
-                f"or skip and respond to pending."
-            )
-
-        # Process completed naturally.
-        if proc_task in done:
-            if pending_task is not None:
-                pending_task.cancel()
-            try:
-                stdout, _ = proc_task.result()
-            except Exception as e:
-                return (
-                    f"Monitor({self.handle!r}) error reading output: {e}"
-                )
-            output = stdout.decode("utf-8", errors="replace") if stdout else ""
-            ctx.process_registry.remove(self.handle)
-            return _truncate(
-                f"[exit {proc.returncode}]\n{output}",
-                SHELL_OUTPUT_MAX_CHARS,
-            )
-
-        # Timeout — neither task completed.
-        proc_task.cancel()
-        if pending_task is not None:
-            pending_task.cancel()
-        return (
-            f"Monitor({self.handle!r}) timed out after "
-            f"{self.timeout_s}s. Process still running. "
-            f"Use Monitor again or Cancel."
+        ctx.shell_runner.spawn(
+            command=self.command,
+            timeout_s=self.timeout_s,
+            response_sink=ctx.sink,
         )
-
-
-class Cancel(BaseModel):
-    """Kill a background process started by Shell.
-
-    Sends SIGKILL. Process must already be registered (via Shell). Use when
-    Monitor was interrupted and you don't need the result, or when a process
-    times out and you want to stop it.
-    """
-
-    handle: str = Field(
-        description="Handle returned by Shell (e.g., 'sh-1')."
-    )
-
-    async def run(self, ctx: ToolCtx) -> str:
-        if ctx.process_registry is None:
-            return "[Cancel unavailable: no process_registry on this ctx]"
-        managed = ctx.process_registry.get(self.handle)
-        if managed is None:
-            return f"unknown handle {self.handle!r}"
-        proc = managed.proc
-        if proc.returncode is not None:
-            ctx.process_registry.remove(self.handle)
-            return (
-                f"process {self.handle!r} already exited with code "
-                f"{proc.returncode}"
-            )
-        try:
-            proc.kill()
-            await proc.wait()
-        except ProcessLookupError:
-            pass  # process already gone
-        except Exception as e:
-            return f"failed to kill {self.handle!r}: {e}"
-        ctx.process_registry.remove(self.handle)
-        return f"killed {self.handle!r}"
+        return (
+            f"shell dispatched (command={self.command!r}, "
+            f"timeout={self.timeout_s}s). 結果完成時會以新事件回來。"
+        )
 
 
 class InvokeSkill(BaseModel):
@@ -551,12 +410,12 @@ class WriteSchedule(BaseModel):
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, Monitor, Cancel,
+    Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
-    Shell, Monitor, Cancel, NoteMemory, Recall, InvokeSkill, Report,
+    Shell, NoteMemory, Recall, InvokeSkill, Report,
 ]
 
 # Back-compat alias — many modules / tests import TOOLS directly.
