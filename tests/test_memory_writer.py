@@ -1,5 +1,6 @@
 """Tests for memory_writer helpers."""
 
+import re
 from datetime import date
 from pathlib import Path
 
@@ -71,3 +72,16 @@ async def test_append_transcript_creates_parent_dir(tmp_path):
         role="user", text="x",
     )
     assert (nested / f"{date.today():%Y-%m-%d}.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_append_transcript_uses_seconds_in_timestamp(tmp_path):
+    ms = _FakeMemSearch()
+    await append_transcript(
+        transcripts_root=tmp_path, memsearch=ms,
+        role="user", text="hi",
+    )
+    expected = tmp_path / f"{date.today():%Y-%m-%d}.md"
+    content = expected.read_text()
+    # Expect `- HH:MM:SS 主人說：hi` (3 colon-separated time groups).
+    assert re.search(r"^- \d{2}:\d{2}:\d{2} 主人說：hi$", content.strip())

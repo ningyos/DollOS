@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -35,6 +36,41 @@ logger = logging.getLogger(__name__)
 SHELL_DEFAULT_TIMEOUT_S = 30
 SHELL_MAX_TIMEOUT_S = 300
 SHELL_OUTPUT_MAX_CHARS = 8000
+
+_FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
+
+
+def _hit_date(hit: dict) -> date | None:
+    """Extract YYYY-MM-DD from a memsearch hit's source filename, if any."""
+    src = hit.get("source", "")
+    m = _FILE_DATE_RE.search(src)
+    if m:
+        return date.fromisoformat(m.group(1))
+    return None
+
+
+def _hit_in_range(
+    hit: dict, since: datetime | None, until: datetime | None
+) -> bool:
+    """File-path date in inclusive [since.date(), until.date()] range.
+
+    Hits without an extractable date are excluded when any filter is set.
+    """
+    d = _hit_date(hit)
+    if d is None:
+        return since is None and until is None
+    if since is not None and d < since.date():
+        return False
+    if until is not None and d > until.date():
+        return False
+    return True
+
+
+def _format_hit(hit: dict) -> str:
+    d = _hit_date(hit)
+    if d is not None:
+        return f"- {d.isoformat()} {hit.get('content', '')}"
+    return f"- {hit.get('content', '')}"
 
 
 def _truncate(text: str, cap: int) -> str:
@@ -123,7 +159,7 @@ class WriteDiary(BaseModel):
     async def run(self, ctx: ToolCtx) -> None:
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%H:%M")
+        timestamp = datetime.now().strftime("%H:%M:%S")
         with path.open("a") as f:
             f.write(f"\n## 日記 ({timestamp})\n\n{self.content}\n")
         await ctx.memsearch.index_file(path)
@@ -214,6 +250,10 @@ class Recall(BaseModel):
     Use when you need deeper context than the [Memory context] block
     already provides in this turn's perception. Returns raw memsearch
     hits (no small-model filter — you judge relevance yourself).
+
+    Optional date filter via `since` / `until`. Filter granularity is
+    file-date (one day); finer-grained (minute/second) filtering is not
+    supported in this version.
     """
 
     query: str = Field(
@@ -221,12 +261,29 @@ class Recall(BaseModel):
             "What to search for in memory. Specific keywords work best."
         )
     )
+    since: datetime | None = Field(
+        default=None,
+        description=(
+            "Optional ISO YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS lower bound "
+            "(inclusive). Filtering uses date portion only — same-day hits "
+            "are kept regardless of time."
+        ),
+    )
+    until: datetime | None = Field(
+        default=None,
+        description=(
+            "Optional ISO upper bound (inclusive). Same date-portion "
+            "semantics as `since`."
+        ),
+    )
 
     async def run(self, ctx: ToolCtx) -> str:
         hits = await ctx.memsearch.search(self.query, top_k=5)
+        if self.since is not None or self.until is not None:
+            hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]
         if not hits:
             return "[no relevant memory]"
-        return "\n".join(f"- {h['content']}" for h in hits)
+        return "\n".join(_format_hit(h) for h in hits)
 
 
 class SpawnSubagent(BaseModel):

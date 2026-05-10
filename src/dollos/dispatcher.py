@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 from memsearch import MemSearch
@@ -37,6 +38,29 @@ from dollos.tool_parser import ToolStreamParser
 from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
+
+
+_WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
+
+
+def _period_of_day(hour: int) -> str:
+    if hour < 5:
+        return "深夜"
+    if hour < 9:
+        return "早上"
+    if hour < 12:
+        return "上午"
+    if hour < 18:
+        return "下午"
+    return "晚上"
+
+
+def _format_now(now: datetime) -> str:
+    return (
+        f"[Now]\n"
+        f"{now:%Y-%m-%d %H:%M:%S} "
+        f"{_WEEKDAYS[now.weekday()]}{_period_of_day(now.hour)}\n\n"
+    )
 
 
 @dataclass
@@ -88,13 +112,21 @@ class EventDispatcher:
         self._stopping = False
         # Rolling buffer of per-cascade first-person summaries. Daemon-lifetime;
         # surfaced as `[Recent activity]` block on each turn's first user message.
-        self._rolling: list[str] = []
+        # Each entry is (timestamp, summary) — timestamp captured at compact time.
+        self._rolling: list[tuple[datetime, str]] = []
 
     def _format_recent_activity(self) -> str:
         if not self._rolling:
             return ""
-        bullets = "\n".join(f"- {s}" for s in self._rolling)
-        return f"[Recent activity]\n{bullets}\n\n"
+        today = date.today()
+        lines = []
+        for ts, summary in self._rolling:
+            if ts.date() == today:
+                prefix = f"{ts:%H:%M:%S}"
+            else:
+                prefix = f"{ts:%Y-%m-%d %H:%M:%S}"
+            lines.append(f"- {prefix} {summary}")
+        return "[Recent activity]\n" + "\n".join(lines) + "\n\n"
 
     def dispatch(self, raw: RawEvent) -> None:
         if self._stopping:
@@ -182,9 +214,10 @@ class EventDispatcher:
         else:
             memory_block = "[Memory context]\n(no relevant memory)\n\n"
         first_user = (
-            f"{recent_activity}"
-            f"{memory_block}"
-            f"[Message]\n{doll_event.perception}"
+            _format_now(datetime.now())
+            + recent_activity
+            + memory_block
+            + f"[Message]\n{doll_event.perception}"
         )
         messages: list[dict] = [{"role": "user", "content": first_user}]
 
@@ -287,7 +320,7 @@ class EventDispatcher:
                 cascade_messages=messages,
             )
             if summary:
-                self._rolling.append(summary)
+                self._rolling.append((datetime.now(), summary))
         except Exception:
             logger.exception("compact_cascade failed; rolling buffer not updated")
 

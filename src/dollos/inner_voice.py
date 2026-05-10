@@ -10,10 +10,13 @@ Prompt content lives in `dollos/prompts/templates/iv_recall.jinja`
 (system + user blocks).
 """
 
+import re
 from typing import Protocol
 
 from dollos.llm.adapter import LLMAdapter
 from dollos.prompts import PromptRenderer
+
+_FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
 
 
 class _MemSearchLike(Protocol):
@@ -62,9 +65,13 @@ class InnerVoice:
         if not hits:
             return ""
 
-        candidates = "\n".join(
-            f"{i + 1}. {h['content']}" for i, h in enumerate(hits)
-        )
+        candidates_parts = []
+        for i, h in enumerate(hits):
+            src = h.get("source", "")
+            m = _FILE_DATE_RE.search(src)
+            date_prefix = f"{m.group(1)} " if m else ""
+            candidates_parts.append(f"{i + 1}. {date_prefix}{h['content']}")
+        candidates = "\n".join(candidates_parts)
         blocks = self._renderer.render_blocks(
             "iv_recall",
             query=query,
