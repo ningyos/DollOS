@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from dollos.events import RawEvent, SubagentResultEvent
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -416,3 +417,64 @@ async def test_subagent_uses_subagent_scaffolding(tmp_path: Path):
     # The user message is the raw task, no [Memory context] / [Message] wrapping.
     msgs = adapter.calls[0]["messages"]
     assert msgs[0] == {"role": "user", "content": "hello"}
+
+
+# ----- Phase 2: process_registry on sub-cascade ctx -----
+
+
+@pytest.mark.asyncio
+async def test_subagent_ctx_has_process_registry(tmp_path: Path):
+    """SubagentRunner forwards its process_registry into the sub-cascade
+    ToolCtx so subagents can use Shell + Monitor."""
+    from dollos.process_registry import ProcessRegistry
+    from dollos.tools import SUB_TOOLS, ToolCtx
+
+    captured: list[ToolCtx] = []
+
+    class _CaptureTool(BaseModel):
+        token: str = "x"
+
+        async def run(self, ctx) -> str:
+            captured.append(ctx)
+            return None  # side-effect tool, ends sub-cascade naturally
+
+    SUB_TOOLS_orig = list(SUB_TOOLS)
+    SUB_TOOLS.clear()
+    SUB_TOOLS.extend([_CaptureTool])
+    try:
+        adapter = _ScriptedAdapter(
+            scripts=[
+                [
+                    StreamChunk(
+                        text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
+                        done=False,
+                    ),
+                    StreamChunk(text="", done=True),
+                ],
+            ]
+        )
+        events: list[RawEvent] = []
+        registry = ProcessRegistry()
+        runner = SubagentRunner(
+            adapter=adapter,
+            renderer=PromptRenderer(),
+            memory_root=tmp_path / "memory",
+            memsearch=_FakeMemSearch(),
+            transcripts_root=tmp_path / "transcripts",
+            process_registry=registry,
+        )
+        runner.set_dispatch_fn(events.append)
+        sink: asyncio.Queue = asyncio.Queue()
+        runner.spawn(
+            sub_id="reg1",
+            task="capture ctx",
+            timeout_s=10,
+            response_sink=sink,
+        )
+        await _wait_for_event(events, timeout=3.0)
+
+        assert captured, "tool was not invoked inside sub-cascade"
+        assert captured[0].process_registry is registry
+    finally:
+        SUB_TOOLS.clear()
+        SUB_TOOLS.extend(SUB_TOOLS_orig)

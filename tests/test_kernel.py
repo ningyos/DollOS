@@ -403,3 +403,38 @@ async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
         isinstance(d, ScheduledEvent) and d.intent == "morning"
         for d in dispatched
     )
+
+
+# ----- Phase 2: process_registry wiring -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_creates_process_registry(tmp_path: Path):
+    """DollOS exposes a ProcessRegistry on construction; the dispatcher and
+    SubagentRunner share that same instance."""
+    from dollos.process_registry import ProcessRegistry
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.process_registry, ProcessRegistry)
+    assert dollos.dispatcher._process_registry is dollos.process_registry
+    assert dollos.subagent_runner._process_registry is dollos.process_registry
+
+
+@pytest.mark.asyncio
+async def test_kernel_shutdown_cleans_processes(tmp_path: Path):
+    """Calling registry.shutdown() kills any still-running subprocess and
+    clears the registry. We exercise it directly (kernel.run lifecycle is
+    covered elsewhere)."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    proc = await asyncio.create_subprocess_shell(
+        "sleep 30",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    handle = dollos.process_registry.register(proc, "sleep 30")
+    assert proc.returncode is None
+    await dollos.process_registry.shutdown()
+    assert proc.returncode is not None
+    assert dollos.process_registry.get(handle) is None
