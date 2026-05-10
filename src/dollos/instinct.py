@@ -6,6 +6,11 @@ finished cascade the dispatcher calls `compact_cascade()` to produce a
 rolling buffer and reappears as a `[Recent activity]` block on the next
 turn's first user message (see `docs/superpowers/plans/2026-05-09-rolling-compact.md`).
 
+Mood is no longer produced here (2026-05-10 pivot): the big model writes
+mood as part of its `<think>` block (5th field). The dispatcher parses
+the last assistant message's `MOOD:` line. Small model only handles the
+summary now.
+
 The legacy `process()` method (per-event rolling summary, originally
 wired through STATE prefill in step 5) is retained for backwards compat
 and possible future wake-gating callers, but is NOT invoked by the
@@ -23,6 +28,13 @@ from abc import ABC, abstractmethod
 from dollos.events import DollEvent
 from dollos.llm.adapter import LLMAdapter
 from dollos.prompts import PromptRenderer
+
+
+# Grammar enforcing single-line summary output from compact_cascade.
+COMPACT_GRAMMAR = (
+    'root ::= line\n'
+    'line ::= [^\\n]{1,150} "\\n"\n'
+)
 
 
 class Instinct(ABC):
@@ -45,11 +57,12 @@ class Instinct(ABC):
         perception: str,
         cascade_messages: list[dict],
     ) -> str:
-        """Compact a finished cascade into a 1-sentence first-person summary.
+        """Compact a finished cascade into a 1-sentence summary.
 
         Called by the dispatcher after every cascade exits (natural break,
-        depth-cap exceed, or same-tool-fail abort). Result is appended to
-        the dispatcher's rolling buffer.
+        depth-cap exceed, or same-tool-fail abort). The returned string
+        lands in the rolling buffer and surfaces as `[Recent activity]`
+        on the next turn's first user message.
         """
 
 
@@ -105,6 +118,7 @@ class SmallModelInstinct(Instinct):
             user=blocks["user"],
             prefill="",
             max_tokens=256,
+            grammar=COMPACT_GRAMMAR,
         ):
             if chunk.text:
                 chunks.append(chunk.text)

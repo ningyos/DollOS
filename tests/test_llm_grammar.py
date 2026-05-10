@@ -17,18 +17,25 @@ def test_grammar_starts_with_root_rule():
 def test_grammar_has_think_skeleton():
     g = build_qwen3_think_tool_grammar(TOOLS)
     assert (
-        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "TOOL: " tool-name'
+        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "MOOD: " line "TOOL: " tool-name'
         in g
     )
     assert 'line ::= [^\\n]+ "\\n"' in g
 
 
 def test_grammar_think_has_review_field():
-    """REVIEW field sits between INTENT and TOOL, reusing the `line` rule.
+    """REVIEW field sits between INTENT and MOOD, reusing the `line` rule.
     Gives the model syntactic space to self-reflect on cascade progress
     instead of looping identical SEEN/INTENT/TOOL triples."""
     g = build_qwen3_think_tool_grammar(TOOLS)
     assert '"REVIEW: " line ' in g
+
+
+def test_grammar_think_has_mood_field():
+    """MOOD field sits between REVIEW and TOOL. Big model writes its mood
+    snapshot here; dispatcher parses MOOD: line from last assistant message."""
+    g = build_qwen3_think_tool_grammar(TOOLS)
+    assert '"MOOD: " line' in g
 
 
 def test_grammar_tool_name_enum_includes_all_tools():
