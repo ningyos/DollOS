@@ -33,8 +33,18 @@ from dollos.kernel import DollOS
 async def test_full_round_trip_with_mocked_llamacpp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    character_path = tmp_path / "test_character.jinja"
-    character_path.write_text("You are Gura, a 9000-year-old shark.")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\n'
+        'id = "gura"\n'
+        'name = "Gura"\n'
+        '\n'
+        '[identity]\n'
+        'self = "You are Gura, a 9000-year-old shark."\n'
+        'personality = "- chill"\n'
+        'taboos = "- no LARP"\n'
+    )
 
     settings = Settings(
         llm=LLMConfig(
@@ -47,7 +57,7 @@ async def test_full_round_trip_with_mocked_llamacpp(
         log=LogConfig(level="WARNING"),
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=10),
-        character=CharacterConfig(profile_path=character_path),
+        character=CharacterConfig(pack=pack_dir),
         inner_voice=InnerVoiceConfig(
             base_url="http://test.local:8003",
             timeout_s=5.0,
