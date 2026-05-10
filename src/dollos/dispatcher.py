@@ -28,6 +28,7 @@ from dollos.events import (
     DollEvent,
     RawEvent,
     ScheduledEvent,
+    ShellResultEvent,
     SubagentResultEvent,
     UserTextEvent,
 )
@@ -327,6 +328,14 @@ class EventDispatcher:
                 f"- details: {raw.details}"
             )
             return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, ShellResultEvent):
+            perception = (
+                "你執行的 shell 命令回來了：\n"
+                f"- command: {raw.command}\n"
+                f"- status: {raw.status} (exit {raw.exit_code})\n"
+                f"- output:\n{raw.output}"
+            )
+            return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, DailyPlanEvent):
             perception = (
                 "早安。要規劃今天的時程。看一下昨天的 schedule（Recall 找）"
@@ -562,6 +571,7 @@ class EventDispatcher:
                 UserTextEvent,
                 DiaryEvent,
                 SubagentResultEvent,
+                ShellResultEvent,
                 ScheduledEvent,
                 DailyPlanEvent,
             ),
