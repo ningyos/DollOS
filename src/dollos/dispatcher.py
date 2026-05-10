@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from pathlib import Path
 from memsearch import MemSearch
 from pydantic import ValidationError
 
+from dollos.cascade_log import CascadeLogger
 from dollos.character import Identity
 from dollos.events import (
     DiaryEvent,
@@ -96,6 +98,16 @@ class ToolResult:
     detail: str
 
 
+class _NoOpCascadeLogger:
+    """No-op CascadeLogger used as default when none is wired (tests)."""
+
+    def start_turn(self) -> str:
+        return "noop"
+
+    def log_iter(self, **_kwargs) -> None:
+        return None
+
+
 class EventDispatcher:
     """Spawns one asyncio.Task per RawEvent. No worker, no queue."""
 
@@ -111,6 +123,7 @@ class EventDispatcher:
         memsearch: MemSearch,
         transcripts_root: Path,
         subagent_runner: SubagentRunner | None = None,
+        cascade_logger: CascadeLogger | None = None,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -121,6 +134,7 @@ class EventDispatcher:
         self._memsearch = memsearch
         self._transcripts_root = transcripts_root
         self._subagent_runner = subagent_runner
+        self._cascade_logger = cascade_logger or _NoOpCascadeLogger()
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -267,7 +281,11 @@ class EventDispatcher:
         # Same-tool consecutive-failure tracker.
         consecutive_fails: dict[str, int] = {}
         last_failed_tool: str | None = None
+        turn_id = self._cascade_logger.start_turn()
+        iter_num = 0
         while True:
+            iter_num += 1
+            iter_start = time.monotonic()
             parser = ToolStreamParser()
             ctx = ToolCtx(
                 sink=sink,
@@ -278,6 +296,7 @@ class EventDispatcher:
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []
+            parsed_tool_calls: list[dict] = []
 
             async for chunk in self._adapter.stream_messages(
                 system=system,
@@ -289,12 +308,14 @@ class EventDispatcher:
                 if chunk.text:
                     assistant_buf.append(chunk.text)
                 for call in parser.feed(chunk.text):
+                    parsed_tool_calls.append(call)
                     result = await self._dispatch_tool_call(call, ctx)
                     if result is not None:
                         results.append(result)
                 if chunk.done:
                     break
             for call in parser.flush():
+                parsed_tool_calls.append(call)
                 result = await self._dispatch_tool_call(call, ctx)
                 if result is not None:
                     results.append(result)
@@ -304,6 +325,16 @@ class EventDispatcher:
                 "role": "assistant",
                 "content": "".join(assistant_buf),
             })
+
+            duration_ms = int((time.monotonic() - iter_start) * 1000)
+            self._cascade_logger.log_iter(
+                turn_id=turn_id,
+                iter=iter_num,
+                assistant_text="".join(assistant_buf),
+                tool_calls=parsed_tool_calls,
+                results=results,
+                duration_ms=duration_ms,
+            )
 
             if not results:
                 break
