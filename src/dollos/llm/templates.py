@@ -206,7 +206,7 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
 
     head = (
         "root ::= think tool-call\n"
-        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "TOOL: " tool-name "\\n</think>\\n\\n"\n'
+        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "MOOD: " line "TOOL: " tool-name "\\n</think>\\n\\n"\n'
         'line ::= [^\\n]+ "\\n"\n'
         f"tool-name ::= {tool_name_alts}\n"
         f"tool-call ::= {tool_call_alts}\n"

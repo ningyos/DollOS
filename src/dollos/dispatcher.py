@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -53,6 +54,21 @@ def _period_of_day(hour: int) -> str:
     if hour < 18:
         return "下午"
     return "晚上"
+
+
+_MOOD_LINE_RE = re.compile(r"^MOOD:\s*(.+)$", re.MULTILINE)
+
+
+def _parse_last_mood(messages: list[dict]) -> str | None:
+    """Find the last assistant message; extract MOOD: line value if present."""
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            m = _MOOD_LINE_RE.search(content)
+            if m:
+                return m.group(1).strip()
+            return None
+    return None
 
 
 def _format_now(now: datetime) -> str:
@@ -114,6 +130,21 @@ class EventDispatcher:
         # surfaced as `[Recent activity]` block on each turn's first user message.
         # Each entry is (timestamp, summary) — timestamp captured at compact time.
         self._rolling: list[tuple[datetime, str]] = []
+        # Doll's current mood — natural-language sentence updated each cascade.
+        # Default at daemon start; evolves via `Instinct.compact_cascade`.
+        # Surfaces as `[Mood]` block on each turn's first user message.
+        self._current_mood: str = "平靜，剛醒來"
+
+    def _format_mood(self) -> str:
+        return f"[Mood]\n{self._current_mood}\n\n"
+
+    async def _append_mood(self, mood: str) -> None:
+        path = self._memory_root / "mood" / f"{date.today():%Y-%m-%d}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with path.open("a") as f:
+            f.write(f"## ({timestamp}) {mood}\n")
+        await self._memsearch.index_file(path)
 
     def _format_recent_activity(self) -> str:
         if not self._rolling:
@@ -215,6 +246,7 @@ class EventDispatcher:
             memory_block = "[Memory context]\n(no relevant memory)\n\n"
         first_user = (
             _format_now(datetime.now())
+            + self._format_mood()
             + recent_activity
             + memory_block
             + f"[Message]\n{doll_event.perception}"
@@ -311,6 +343,14 @@ class EventDispatcher:
                 ))
                 break
 
+        # Parse mood from last assistant message's MOOD: line (think field).
+        # Big model writes mood in <think> as part of every cascade iteration;
+        # we adopt the latest one.
+        new_mood = _parse_last_mood(messages)
+        if new_mood:
+            self._current_mood = new_mood
+            await self._append_mood(new_mood)
+
         # Compact the cascade into a 1-sentence summary; append to rolling
         # buffer for `[Recent activity]` block on next turn. Runs regardless
         # of cascade exit reason (natural / same-tool-abort).
@@ -322,7 +362,7 @@ class EventDispatcher:
             if summary:
                 self._rolling.append((datetime.now(), summary))
         except Exception:
-            logger.exception("compact_cascade failed; rolling buffer not updated")
+            logger.exception("compact_cascade failed; rolling unchanged")
 
         sink.put_nowait(TurnEnd())
 
