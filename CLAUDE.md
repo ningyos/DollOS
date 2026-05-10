@@ -86,13 +86,14 @@ DollOS/
 | Roadmap step 14 — Episodic memory + uncapped cascade + REVIEW think field | Merged |
 | Roadmap step 15 — Subagent (ephemeral async worker + structured Report) | Merged |
 | Roadmap step 16 — IPC pump (per-connection persistent sink) | Merged |
+| Roadmap step 17 — Doll pack (directory + doll.toml manifest) | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）
-- **Voice pipeline**（KWS / VAD / ASR / TTS）
-- **Character pack**（.doll v3 schema、character.jinja 覆寫）— step 13/14 後 model 行為已穩定，優先序持續下降
+- **Voice pipeline**（KWS / VAD / ASR / TTS）— 真產品 feature
+- **Wake gating**（Inner Voice 輸出 `wake: bool`，為 reflex 鋪基礎）— 等 voice / drone 大量 events 進來才有 ROI
+- **Pack 漸進擴充** — voice.onnx / wake_word.onnx / avatar/ 子目錄，但每個都要先有對應 feature 在 build 才加（incremental）
 
 完整 roadmap：`docs/roadmap.md`。
 
