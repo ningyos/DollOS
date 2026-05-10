@@ -477,6 +477,157 @@ async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
     assert out == "[no relevant memory]"
 
 
+# ---------- Recall date filter / formatting (2026-05-10) ----------
+
+
+def _ctx_with_search(tmp_path, hits):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _SearchableMemSearch(hits=hits)
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_recall_filters_by_since(tmp_path):
+    from datetime import datetime as _dt
+
+    ctx = _ctx_with_search(
+        tmp_path,
+        hits=[
+            {"content": "old fact", "score": 0.9,
+             "source": "shared/2026-05-08.md"},
+            {"content": "new fact", "score": 0.8,
+             "source": "shared/2026-05-10.md"},
+        ],
+    )
+    out = await Recall(
+        query="x", since=_dt(2026, 5, 10, 0, 0, 0)
+    ).run(ctx)
+    assert "new fact" in out
+    assert "old fact" not in out
+
+
+@pytest.mark.asyncio
+async def test_recall_filters_by_until(tmp_path):
+    from datetime import datetime as _dt
+
+    ctx = _ctx_with_search(
+        tmp_path,
+        hits=[
+            {"content": "old fact", "score": 0.9,
+             "source": "shared/2026-05-08.md"},
+            {"content": "new fact", "score": 0.8,
+             "source": "shared/2026-05-10.md"},
+        ],
+    )
+    out = await Recall(
+        query="x", until=_dt(2026, 5, 9, 23, 59, 59)
+    ).run(ctx)
+    assert "old fact" in out
+    assert "new fact" not in out
+
+
+@pytest.mark.asyncio
+async def test_recall_filters_by_both(tmp_path):
+    from datetime import datetime as _dt
+
+    ctx = _ctx_with_search(
+        tmp_path,
+        hits=[
+            {"content": "older", "score": 0.9,
+             "source": "shared/2026-05-01.md"},
+            {"content": "middle", "score": 0.8,
+             "source": "shared/2026-05-08.md"},
+            {"content": "newer", "score": 0.7,
+             "source": "shared/2026-05-10.md"},
+        ],
+    )
+    out = await Recall(
+        query="x",
+        since=_dt(2026, 5, 5, 0, 0, 0),
+        until=_dt(2026, 5, 9, 0, 0, 0),
+    ).run(ctx)
+    assert "middle" in out
+    assert "older" not in out
+    assert "newer" not in out
+
+
+@pytest.mark.asyncio
+async def test_recall_no_filter_returns_all(tmp_path):
+    ctx = _ctx_with_search(
+        tmp_path,
+        hits=[
+            {"content": "a", "score": 0.9,
+             "source": "shared/2026-05-08.md"},
+            {"content": "b", "score": 0.8,
+             "source": "shared/2026-05-10.md"},
+        ],
+    )
+    out = await Recall(query="x").run(ctx)
+    assert "a" in out
+    assert "b" in out
+
+
+@pytest.mark.asyncio
+async def test_recall_skips_hits_without_date_when_filtering(tmp_path):
+    from datetime import datetime as _dt
+
+    hits = [
+        {"content": "no-date", "score": 0.9, "source": "shared/no-date.md"},
+        {"content": "dated", "score": 0.8,
+         "source": "shared/2026-05-10.md"},
+    ]
+    # With filter: undated hit excluded.
+    ctx_filtered = _ctx_with_search(tmp_path, hits=list(hits))
+    out_filtered = await Recall(
+        query="x", since=_dt(2026, 5, 10, 0, 0, 0)
+    ).run(ctx_filtered)
+    assert "dated" in out_filtered
+    assert "no-date" not in out_filtered
+
+    # Without filter: undated hit included.
+    ctx_unfiltered = _ctx_with_search(tmp_path, hits=list(hits))
+    out_all = await Recall(query="x").run(ctx_unfiltered)
+    assert "no-date" in out_all
+    assert "dated" in out_all
+
+
+@pytest.mark.asyncio
+async def test_recall_formats_hits_with_date_prefix(tmp_path):
+    ctx = _ctx_with_search(
+        tmp_path,
+        hits=[
+            {"content": "coffee fact", "score": 0.9,
+             "source": "shared/2026-05-08.md"},
+        ],
+    )
+    out = await Recall(query="x").run(ctx)
+    assert "- 2026-05-08 coffee fact" in out
+
+
+@pytest.mark.asyncio
+async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
+    import re as _re
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+    await WriteDiary(content="今天好累").run(ctx)
+    expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
+    content = expected.read_text()
+    assert _re.search(r"## 日記 \(\d{2}:\d{2}:\d{2}\)", content)
+
+
 # ---------- SpawnSubagent / Report ----------
 
 

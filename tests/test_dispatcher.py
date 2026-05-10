@@ -1809,7 +1809,7 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
         disp.dispatch(UserTextEvent(text=text, response_sink=sink))
         await _drain(sink)
 
-    assert disp._rolling == ["s1", "s2", "s3"]
+    assert [s for _, s in disp._rolling] == ["s1", "s2", "s3"]
 
 
 @pytest.mark.asyncio
@@ -1846,7 +1846,8 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
         await _drain(sink)
 
     second_user = adapter.calls[1]["messages"][0]["content"]
-    assert "[Recent activity]\n- summary 1\n\n" in second_user
+    assert "[Recent activity]\n" in second_user
+    assert "summary 1" in second_user
     # And the [Recent activity] block precedes [Memory context].
     ra_idx = second_user.index("[Recent activity]")
     mc_idx = second_user.index("[Memory context]")
@@ -1947,7 +1948,7 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
         for m in items
     )
     assert len(inst.compact_calls) == 1
-    assert disp._rolling == ["abort-summary"]
+    assert [s for _, s in disp._rolling] == ["abort-summary"]
 
 
 @pytest.mark.asyncio
@@ -2120,3 +2121,101 @@ async def test_dispatcher_passes_subagent_runner_into_tool_ctx(tmp_path: Path):
     await _drain(sink)
     # Tool ran exactly once and saw `runner` in ctx.
     assert captured == [runner]
+
+
+# ----- Time awareness (2026-05-10) -----
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_injects_now_block_in_first_user_message(tmp_path: Path):
+    """First user message starts with [Now]\\n + ISO date + 週X 早上/上午/下午/晚上/深夜."""
+    import re as _re
+
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    user = adapter.calls[0]["messages"][0]["content"]
+    assert user.startswith("[Now]\n")
+    # Date YYYY-MM-DD HH:MM:SS pattern
+    assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", user)
+    # Chinese weekday + period descriptor
+    assert _re.search(r"週[一二三四五六日]", user)
+    assert any(p in user for p in ("深夜", "早上", "上午", "下午", "晚上"))
+    # Order: [Now] before [Memory context] before [Message]
+    assert user.index("[Now]") < user.index("[Memory context]") < user.index("[Message]")
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_recent_activity_renders_with_seconds(tmp_path: Path):
+    """[Recent activity] entries from today render with HH:MM:SS prefix."""
+    from datetime import datetime as _dt
+    import re as _re
+
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    today = _dt.now().replace(hour=14, minute=15, second=30, microsecond=0)
+    disp._rolling = [(today, "主人查 pwd")]
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    user = adapter.calls[0]["messages"][0]["content"]
+    assert "[Recent activity]" in user
+    # Today's entry: HH:MM:SS prefix only (no date).
+    assert _re.search(r"- 14:15:30 主人查 pwd", user)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_recent_activity_uses_full_date_for_old_entries(
+    tmp_path: Path,
+):
+    """Yesterday's rolling entry renders with YYYY-MM-DD HH:MM:SS prefix."""
+    from datetime import datetime as _dt, timedelta as _td
+
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
+                done=False,
+            ),
+            StreamChunk(text="", done=True),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    yesterday = _dt.now().replace(
+        hour=10, minute=5, second=0, microsecond=0
+    ) - _td(days=1)
+    disp._rolling = [(yesterday, "old chat")]
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    user = adapter.calls[0]["messages"][0]["content"]
+    assert "[Recent activity]" in user
+    expected_prefix = f"- {yesterday:%Y-%m-%d %H:%M:%S} old chat"
+    assert expected_prefix in user
