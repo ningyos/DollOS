@@ -21,7 +21,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
@@ -369,8 +369,68 @@ class Report(BaseModel):
         return None
 
 
+class ScheduleEntryArg(BaseModel):
+    """One entry in a daily schedule — see ``WriteSchedule``."""
+
+    time: str = Field(
+        description="ISO HH:MM:SS, 24-hour clock. e.g. '07:30:00'.",
+    )
+    intent: str = Field(
+        description="One short sentence describing the planned action.",
+        min_length=1,
+    )
+
+    @field_validator("time")
+    @classmethod
+    def parse_time(cls, v: str) -> str:
+        try:
+            datetime.fromisoformat(f"1970-01-01T{v}")
+        except ValueError as e:
+            raise ValueError(f"time must be HH:MM:SS, got {v!r}") from e
+        return v
+
+
+class WriteSchedule(BaseModel):
+    """Write today's schedule. Replaces any existing schedule for today.
+
+    Each entry has a time (HH:MM:SS, 24-hour) and intent (short sentence).
+    Past times are NOT fired retroactively — they're skipped by the
+    scheduler. Use this once at the start of the day (or to replan).
+    """
+
+    entries: list[ScheduleEntryArg]
+
+    async def run(self, ctx: ToolCtx) -> str:
+        from dollos.schedule import ScheduleEntry, write_schedule
+
+        today = date.today()
+        path = ctx.memory_root / "schedule" / f"{today:%Y-%m-%d}.toml"
+        parsed = [
+            ScheduleEntry(
+                time=datetime.fromisoformat(f"1970-01-01T{e.time}").time(),
+                intent=e.intent,
+            )
+            for e in self.entries
+        ]
+        write_schedule(path, parsed)
+
+        # Markdown summary into shared memory so Recall surfaces today's
+        # plan (gap #3).
+        md_path = ctx.memory_root / "shared" / f"{today:%Y-%m-%d}.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        with md_path.open("a") as f:
+            f.write(f"\n## 計劃 ({timestamp})\n\n")
+            for e in parsed:
+                f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
+        await ctx.memsearch.index_file(md_path)
+
+        return f"Schedule written: {len(parsed)} entries"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, Shell, InvokeSkill, Recall, SpawnSubagent,
+    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, InvokeSkill, Recall,
+    SpawnSubagent,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [

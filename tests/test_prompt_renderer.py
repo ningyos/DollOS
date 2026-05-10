@@ -256,3 +256,10 @@ def test_iv_summary_template_includes_language_rule():
         "iv_summary", prev_summary="(none)", perception="hello"
     )
     assert "繁體中文" in blocks["system"] or "Traditional Chinese" in blocks["system"]
+
+
+def test_scaffolding_explains_pending_events_block():
+    """gap #4: scaffolding teaches Doll what `[Pending events]` means."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    assert "[Pending events]" in out

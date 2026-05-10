@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
+from datetime import time
 from typing import Literal
 
 from dollos.ipc.messages import ServerMessage
@@ -68,6 +69,33 @@ class SubagentResultEvent(RawEvent):
     status: Literal["ok", "incomplete", "timeout", "error", "no_report"]
     summary: str
     details: str
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
+class ScheduledEvent(RawEvent):
+    """Fired by the daemon scheduler when a scheduled entry's time arrives.
+
+    ``entry_time`` and ``intent`` come straight from the entry Doll wrote
+    via the WriteSchedule tool. ``response_sink`` routes Doll's cascade
+    output back to whatever client is currently connected (or a dummy
+    queue if none).
+    """
+
+    entry_time: time
+    intent: str
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
+class DailyPlanEvent(RawEvent):
+    """Fired on first WS connection of the day if no schedule exists yet.
+
+    Also fireable manually for replan in later phases. Carries no data —
+    the perception tells Doll to look at yesterday + recent diary and call
+    ``WriteSchedule``.
+    """
+
     response_sink: asyncio.Queue[ServerMessage | None]
 
 

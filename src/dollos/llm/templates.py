@@ -150,6 +150,29 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
     tool_names: list[str] = []
     call_rule_ids: list[str] = []
     call_rules: list[str] = []
+    extra_rules: list[str] = []
+    used_aux_rule_ids: set[str] = set()
+
+    def _resolve_ref(schema: dict, ref: str) -> dict:
+        # `$ref` is always "#/$defs/<Name>" for pydantic-generated schemas.
+        prefix = "#/$defs/"
+        if not ref.startswith(prefix):
+            raise NotImplementedError(
+                f"unsupported $ref {ref!r}; only #/$defs/<Name> supported"
+            )
+        defname = ref[len(prefix):]
+        return schema["$defs"][defname]
+
+    def _aux_rule_id(base: str, suffix: str) -> str:
+        # Convert CamelCase base + suffix into a unique kebab-case rule id.
+        out: list[str] = []
+        for i, ch in enumerate(base):
+            if ch.isupper() and i > 0:
+                out.append("-")
+            out.append(ch.lower())
+        rid = "".join(out) + "-" + suffix
+        # Avoid duplicate rules across tools that share a $def.
+        return rid
 
     for cls in tools:
         name = cls.__name__
@@ -184,6 +207,64 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
             elif ftype == "integer":
                 # Required integer field: "fname": <integer>
                 body_parts.append(f'\\"{fname}\\": " integer "')
+            elif ftype == "array":
+                # Array of $defs-referenced objects with required string /
+                # integer fields. Used by WriteSchedule.entries:
+                # list[ScheduleEntryArg].
+                items = finfo.get("items", {})
+                ref = items.get("$ref")
+                if not ref:
+                    raise NotImplementedError(
+                        f"tool {name} required field {fname!r} array items "
+                        f"have no $ref; only $ref-typed array items supported"
+                    )
+                item_schema = _resolve_ref(schema, ref)
+                if item_schema.get("type") != "object":
+                    raise NotImplementedError(
+                        f"tool {name} required field {fname!r} item is not "
+                        f"an object; grammar build unsupported"
+                    )
+                item_props = item_schema.get("properties", {})
+                item_required = item_schema.get("required", [])
+                inner_parts: list[str] = []
+                for ifname in item_required:
+                    _check_ident(ifname, "field name")
+                    iinfo = item_props.get(ifname, {})
+                    ityp = iinfo.get("type")
+                    if ityp == "string":
+                        inner_parts.append(f'\\"{ifname}\\": " str "')
+                    elif ityp == "integer":
+                        inner_parts.append(f'\\"{ifname}\\": " integer "')
+                    else:
+                        raise NotImplementedError(
+                            f"tool {name} field {fname!r} item field "
+                            f"{ifname!r} has unsupported type {ityp!r}; "
+                            f"grammar build unsupported"
+                        )
+                inner_joined = (
+                    ', '.join(inner_parts)
+                    if len(inner_parts) > 1
+                    else (inner_parts[0] if inner_parts else "")
+                )
+                # Build per-tool item rule + array rule. Both reference
+                # `str` and `integer` from the shared tail.
+                item_rule_id = _aux_rule_id(name, f"{fname}-item")
+                array_rule_id = _aux_rule_id(name, f"{fname}-array")
+                if item_rule_id not in used_aux_rule_ids:
+                    extra_rules.append(
+                        f'{item_rule_id} ::= "{{{inner_joined}}}"'
+                    )
+                    used_aux_rule_ids.add(item_rule_id)
+                if array_rule_id not in used_aux_rule_ids:
+                    # Non-empty array: item ("," item)*
+                    extra_rules.append(
+                        f'{array_rule_id} ::= "[" {item_rule_id} '
+                        f'("," {item_rule_id})* "]"'
+                    )
+                    used_aux_rule_ids.add(array_rule_id)
+                body_parts.append(
+                    f'\\"{fname}\\": " {array_rule_id} "'
+                )
             else:
                 raise NotImplementedError(
                     f"tool {name} required field {fname!r} has unsupported "
@@ -212,6 +293,8 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
         f"tool-call ::= {tool_call_alts}\n"
     )
     body = "\n".join(call_rules) + "\n"
+    if extra_rules:
+        body += "\n".join(extra_rules) + "\n"
     return head + body + _JSON_STR_RULES
 
 

@@ -23,9 +23,11 @@ from pydantic import ValidationError
 from dollos.cascade_log import CascadeLogger
 from dollos.character import Identity
 from dollos.events import (
+    DailyPlanEvent,
     DiaryEvent,
     DollEvent,
     RawEvent,
+    ScheduledEvent,
     SubagentResultEvent,
     UserTextEvent,
 )
@@ -41,6 +43,15 @@ from dollos.tool_parser import ToolStreamParser
 from dollos.tools import TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
+
+
+# Event types that demand serialized handling — racing cascades over the same
+# mood / rolling buffer / cascade log are observable bugs (gap #2). Internal
+# async results (SubagentResultEvent) stay parallel: they're "result of work
+# Doll started" so queueing them just makes the user wait artificially.
+SERIALIZE_TYPES: tuple[type, ...] = (
+    UserTextEvent, ScheduledEvent, DailyPlanEvent, DiaryEvent,
+)
 
 
 _WEEKDAYS = ["週一", "週二", "週三", "週四", "週五", "週六", "週日"]
@@ -140,6 +151,13 @@ class EventDispatcher:
         }
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
+        # Phase 1 schedule: serialize user-facing events so racing cascades
+        # don't interleave mood / rolling / cascade-log writes. Pending events
+        # are surfaced in the active cascade's next-iter `[Pending events]`
+        # block so Doll can choose whether to wrap up early.
+        self._active_cascade: asyncio.Task[None] | None = None
+        self._pending: list[RawEvent] = []
+        self._parallel_tasks: set[asyncio.Task[None]] = set()
         # Rolling buffer of per-cascade first-person summaries. Daemon-lifetime;
         # surfaced as `[Recent activity]` block on each turn's first user message.
         # Each entry is (timestamp, summary) — timestamp captured at compact time.
@@ -176,19 +194,77 @@ class EventDispatcher:
     def dispatch(self, raw: RawEvent) -> None:
         if self._stopping:
             raise RuntimeError("EventDispatcher is stopping")
-        task = asyncio.create_task(
-            self._handle(raw), name=f"event-{type(raw).__name__}"
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        if isinstance(raw, SERIALIZE_TYPES):
+            if (
+                self._active_cascade is not None
+                and not self._active_cascade.done()
+            ):
+                self._pending.append(raw)
+                return
+            task = asyncio.create_task(
+                self._handle(raw), name=f"event-{type(raw).__name__}"
+            )
+            self._active_cascade = task
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            task.add_done_callback(self._on_cascade_done)
+        else:
+            task = asyncio.create_task(
+                self._handle(raw), name=f"event-{type(raw).__name__}"
+            )
+            self._parallel_tasks.add(task)
+            self._tasks.add(task)
+            task.add_done_callback(self._parallel_tasks.discard)
+            task.add_done_callback(self._tasks.discard)
+
+    def _on_cascade_done(self, task: asyncio.Task[None]) -> None:
+        # Pop the next serialized event off the pending queue and start it.
+        # Iterate in case a stray event slipped in for an already-stopping
+        # dispatcher — we just drop those.
+        while self._pending:
+            if self._stopping:
+                self._pending.clear()
+                break
+            nxt = self._pending.pop(0)
+            new_task = asyncio.create_task(
+                self._handle(nxt), name=f"event-{type(nxt).__name__}"
+            )
+            self._active_cascade = new_task
+            self._tasks.add(new_task)
+            new_task.add_done_callback(self._tasks.discard)
+            new_task.add_done_callback(self._on_cascade_done)
+            return
+        self._active_cascade = None
 
     async def stop(self) -> None:
         self._stopping = True
+        # Drop anything still pending; nothing will dispatch them now.
+        self._pending.clear()
         if not self._tasks:
             return
         for t in list(self._tasks):
             t.cancel()
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
+        self._active_cascade = None
+
+    def _format_pending(self) -> str:
+        if not self._pending:
+            return ""
+        lines: list[str] = []
+        for ev in self._pending:
+            if isinstance(ev, UserTextEvent):
+                lines.append(f"- UserTextEvent: 主人說「{ev.text}」")
+            elif isinstance(ev, ScheduledEvent):
+                lines.append(
+                    f"- ScheduledEvent: {ev.entry_time:%H:%M:%S} {ev.intent}"
+                )
+            elif isinstance(ev, DailyPlanEvent):
+                lines.append("- DailyPlanEvent: 該規劃今天時程")
+            elif isinstance(ev, DiaryEvent):
+                lines.append("- DiaryEvent: 該寫今日 diary")
+            else:  # defensive — unknown serialize type
+                lines.append(f"- {type(ev).__name__}")
+        return "[Pending events]\n" + "\n".join(lines) + "\n\n"
 
     async def _handle(self, raw: RawEvent) -> None:
         try:
@@ -239,6 +315,20 @@ class EventDispatcher:
                 f"- details: {raw.details}"
             )
             return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, DailyPlanEvent):
+            perception = (
+                "早安。要規劃今天的時程。看一下昨天的 schedule（Recall 找）"
+                "跟最近的 diary，決定今天要主動做什麼事，呼叫 WriteSchedule "
+                "(entries=[...]) 寫下來。"
+            )
+            return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, ScheduledEvent):
+            perception = (
+                f"你早上計劃了 {raw.entry_time:%H:%M:%S} 要做：\n"
+                f"{raw.intent}\n\n"
+                f"該開始了。"
+            )
+            return DollEvent(perception=perception, raw=raw)
         raise TypeError(f"no stub perceive for {type(raw).__name__}")
 
     async def _respond(
@@ -261,6 +351,7 @@ class EventDispatcher:
         first_user = (
             _format_now(datetime.now())
             + self._format_mood()
+            + self._format_pending()
             + recent_activity
             + memory_block
             + f"[Message]\n{doll_event.perception}"
@@ -286,6 +377,17 @@ class EventDispatcher:
         while True:
             iter_num += 1
             iter_start = time.monotonic()
+            # On iter >= 2 we may have new pending events that arrived
+            # while the previous iter ran. Inject a fresh `[Pending events]`
+            # block as a standalone user message so Doll can react before
+            # her next think (gap #4 — re-check per iter).
+            if iter_num > 1:
+                pending_block = self._format_pending()
+                if pending_block:
+                    messages.append({
+                        "role": "user",
+                        "content": pending_block.rstrip(),
+                    })
             parser = ToolStreamParser()
             ctx = ToolCtx(
                 sink=sink,
@@ -440,6 +542,15 @@ class EventDispatcher:
 
     @staticmethod
     def _sink_of(raw: RawEvent) -> asyncio.Queue[ServerMessage | None]:
-        if isinstance(raw, (UserTextEvent, DiaryEvent, SubagentResultEvent)):
+        if isinstance(
+            raw,
+            (
+                UserTextEvent,
+                DiaryEvent,
+                SubagentResultEvent,
+                ScheduledEvent,
+                DailyPlanEvent,
+            ),
+        ):
             return raw.response_sink
         raise TypeError(f"no sink for {type(raw).__name__}")

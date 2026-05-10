@@ -252,3 +252,154 @@ async def test_diary_scheduler_returns_on_shutdown(tmp_path):
 
     asyncio.create_task(_quickshutdown())
     await asyncio.wait_for(dollos._diary_scheduler(), timeout=2.0)
+
+
+# ----- Phase 1 schedule: bootstrap + sink lifecycle -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_fires_daily_plan_on_first_connect_if_no_schedule(tmp_path):
+    """gap #5: DailyPlanEvent fires when first connection sees no
+    schedule.toml for today."""
+    from dollos.events import DailyPlanEvent
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    dispatched: list = []
+    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+    plan_events = [d for d in dispatched if isinstance(d, DailyPlanEvent)]
+    assert plan_events
+    # Bootstrap is daemon-internal: the dispatched event must NOT carry the
+    # active connection's sink. Its Say tool output goes to a throwaway queue.
+    assert plan_events[0].response_sink is not dollos._active_sink
+    assert plan_events[0].response_sink is not sink
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_uses_dummy_sink_not_active(tmp_path):
+    """Bootstrap dispatches with a fresh dummy sink, never the active sink.
+
+    Architectural guarantee: daemon-internal planning (bootstrap) must not
+    emit Say output to the connected client; the day's first user-facing
+    greeting comes from a scheduled entry instead.
+    """
+    from dollos.events import DailyPlanEvent
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    dispatched: list = []
+    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+
+    plan_events = [d for d in dispatched if isinstance(d, DailyPlanEvent)]
+    assert len(plan_events) == 1
+    bootstrap_sink = plan_events[0].response_sink
+    assert bootstrap_sink is not sink
+    assert bootstrap_sink is not dollos._active_sink
+    assert isinstance(bootstrap_sink, asyncio.Queue)
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_skips_daily_plan_when_schedule_exists(tmp_path):
+    """If a schedule.toml already exists for today, no DailyPlanEvent is fired."""
+    from datetime import date as _date
+
+    from dollos.events import DailyPlanEvent
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    today_str = f"{_date.today():%Y-%m-%d}"
+    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
+    sched_path.parent.mkdir(parents=True, exist_ok=True)
+    sched_path.write_text('[[entry]]\ntime = "07:00:00"\nintent = "x"\n')
+
+    dispatched: list = []
+    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+    assert not any(isinstance(d, DailyPlanEvent) for d in dispatched)
+
+
+@pytest.mark.asyncio
+async def test_kernel_active_sink_set_on_connect_cleared_on_disconnect(tmp_path):
+    """gap #1: _active_sink lifecycle tracks the live connection."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    # Pretend we already bootstrapped so connect doesn't dispatch.
+    from datetime import date as _date
+    dollos._bootstrapped_dates.add(_date.today())
+
+    assert dollos._active_sink is None
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+    assert dollos._active_sink is sink
+    await dollos._handle_disconnect()
+    assert dollos._active_sink is None
+
+
+@pytest.mark.asyncio
+async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
+    """The scheduler runner reads schedule.toml, calls due_entries, and
+    dispatches a ScheduledEvent for each entry whose time arrived."""
+    from datetime import date as _date
+    from datetime import time as _time
+
+    from dollos.events import ScheduledEvent
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    today_str = f"{_date.today():%Y-%m-%d}"
+    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
+    sched_path.parent.mkdir(parents=True, exist_ok=True)
+    sched_path.write_text(
+        '[[entry]]\ntime = "07:30:00"\nintent = "morning"\n'
+    )
+
+    dispatched: list = []
+    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
+
+    # Patch due_entries to yield the entry on the first poll, then nothing.
+    from dollos.schedule import ScheduleEntry
+    import dollos.kernel as kernel_mod
+
+    poll_count = {"n": 0}
+
+    def _fake_due_entries(schedule, now, fired):
+        poll_count["n"] += 1
+        if poll_count["n"] == 1:
+            return [ScheduleEntry(time=_time(7, 30), intent="morning")]
+        return []
+
+    monkeypatch.setattr(kernel_mod, "due_entries", _fake_due_entries)
+
+    # Short-circuit the 30s sleep inside the runner so it polls quickly.
+    # We replace the bound asyncio module reference inside dollos.kernel
+    # via a tiny stub that only handles the runner's two call sites
+    # (shutdown.wait + a sentinel awaitable).
+    real_wait_for = asyncio.wait_for
+    tick_count = {"n": 0}
+
+    async def _fast_wait_for(awaitable, timeout):
+        tick_count["n"] += 1
+        # Always close the awaitable so it doesn't leak.
+        if tick_count["n"] == 1:
+            awaitable.close()
+            raise TimeoutError
+        # Second tick: signal shutdown then let the awaitable resolve.
+        dollos._shutdown.set()
+        return await real_wait_for(awaitable, timeout=0.5)
+
+    # Patch on the kernel module's asyncio binding so only the runner sees it.
+    monkeypatch.setattr(kernel_mod.asyncio, "wait_for", _fast_wait_for)
+
+    await real_wait_for(dollos._schedule_runner(), timeout=2.0)
+    assert any(
+        isinstance(d, ScheduledEvent) and d.intent == "morning"
+        for d in dispatched
+    )
