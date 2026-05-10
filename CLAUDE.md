@@ -89,17 +89,18 @@ DollOS/
 | Roadmap step 17 — Doll pack (directory + doll.toml manifest) | Merged |
 | Roadmap step 18 — Time awareness ([Now] + HH:MM:SS + time-aware Recall) | Merged |
 | Roadmap step 19 — Mood (Self-First emotional state via big-model think field) | Merged |
+| Roadmap step 20 — Cascade decision log + structlog | Merged |
 
 ### 下一個
 
 **下一個候選**（按用戶決定挑一個）：
-- **Self-history / 偏好學習** — Doll 自己寫對自己的觀察進 memory，下次 surface
-- **習慣模型** — 觀察主人作息累積進 memory
 - **Self-initiated events** — Doll 自己 wake（閒置太久關心、累積 mood 講話）
 - **Drone**（spec 提的，跟 subagent 對偶）— persistent + scheduled
-- **Cascade decision log** — 每 iter SEEN/INTENT/REVIEW/MOOD/TOOL 持久化，可 replay
 - **Voice pipeline**（基礎建設，跟 Doll 行為無關）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
+
+**已收的設計準則**：
+- 偏好學習 / 習慣學習不是新 subsystem，是 prompt engineering — Doll 用 NoteMemory 自記
 
 完整 roadmap：`docs/roadmap.md`。
 
