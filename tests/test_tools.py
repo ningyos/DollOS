@@ -750,3 +750,93 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
         "summary": "done",
         "details": "data here",
     }
+
+
+# ----- WriteSchedule (Phase 1 schedule) -----
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_writes_toml_file(tmp_path):
+    from datetime import time as _time
+
+    from dollos.schedule import load_schedule
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    tool = WriteSchedule(entries=[
+        ScheduleEntryArg(time="07:30:00", intent="morning"),
+        ScheduleEntryArg(time="11:30:00", intent="lunch"),
+    ])
+    out = await tool.run(ctx)
+    assert "2 entries" in out
+
+    today_str = f"{date.today():%Y-%m-%d}"
+    path = tmp_path / "schedule" / f"{today_str}.toml"
+    assert path.exists()
+    sched = load_schedule(path)
+    assert sched is not None
+    assert sched.entries[0].time == _time(7, 30)
+    assert sched.entries[1].intent == "lunch"
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_overwrites_existing(tmp_path):
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await WriteSchedule(entries=[
+        ScheduleEntryArg(time="07:00:00", intent="old1"),
+        ScheduleEntryArg(time="08:00:00", intent="old2"),
+    ]).run(ctx)
+    await WriteSchedule(entries=[
+        ScheduleEntryArg(time="09:00:00", intent="new"),
+    ]).run(ctx)
+
+    today_str = f"{date.today():%Y-%m-%d}"
+    path = tmp_path / "schedule" / f"{today_str}.toml"
+    text = path.read_text()
+    assert "old1" not in text and "old2" not in text
+    assert "new" in text
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_writes_markdown_summary(tmp_path):
+    """gap #3 — also writes a markdown summary into shared so Recall can find."""
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await WriteSchedule(entries=[
+        ScheduleEntryArg(time="07:30:00", intent="morning"),
+    ]).run(ctx)
+
+    today_str = f"{date.today():%Y-%m-%d}"
+    md_path = tmp_path / "shared" / f"{today_str}.md"
+    assert md_path.exists()
+    body = md_path.read_text()
+    assert "## 計劃" in body
+    assert "07:30:00 — morning" in body
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_indexes_markdown_with_memsearch(tmp_path):
+    """gap #3 — markdown summary is indexed in memsearch so Recall surfaces it."""
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    ctx, ms, _sink = _make_ctx(tmp_path)
+    await WriteSchedule(entries=[
+        ScheduleEntryArg(time="07:30:00", intent="morning"),
+    ]).run(ctx)
+
+    today_str = f"{date.today():%Y-%m-%d}"
+    md_path = tmp_path / "shared" / f"{today_str}.md"
+    assert md_path in ms.indexed
+
+
+def test_write_schedule_validates_time_format():
+    """gap #6 — ScheduleEntryArg rejects non-HH:MM:SS strings."""
+    from dollos.tools import ScheduleEntryArg
+
+    with pytest.raises(ValidationError):
+        ScheduleEntryArg(time="not a time", intent="x")
+    with pytest.raises(ValidationError):
+        ScheduleEntryArg(time="25:00:00", intent="x")
