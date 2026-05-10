@@ -192,6 +192,10 @@ class SubagentRunner:
             subagent_runner=None,  # no recursion
             subagent_report=None,
             process_registry=self._process_registry,
+            # Sub-cascades don't share the main cascade's pending queue —
+            # they have their own loop and no parallel events to interrupt
+            # for. Phase 3 keeps this None; Phase 4 may revisit.
+            pending_signal=None,
         )
 
         consecutive_fails: dict[str, int] = {}
