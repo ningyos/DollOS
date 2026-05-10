@@ -37,6 +37,7 @@ from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.memory_writer import append_transcript
+from dollos.process_registry import ProcessRegistry
 from dollos.prompts import PromptRenderer
 from dollos.subagent import SubagentRunner
 from dollos.tool_parser import ToolStreamParser
@@ -135,6 +136,7 @@ class EventDispatcher:
         transcripts_root: Path,
         subagent_runner: SubagentRunner | None = None,
         cascade_logger: CascadeLogger | None = None,
+        process_registry: ProcessRegistry | None = None,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -146,6 +148,7 @@ class EventDispatcher:
         self._transcripts_root = transcripts_root
         self._subagent_runner = subagent_runner
         self._cascade_logger = cascade_logger or _NoOpCascadeLogger()
+        self._process_registry = process_registry
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -395,6 +398,7 @@ class EventDispatcher:
                 memsearch=self._memsearch,
                 transcripts_root=self._transcripts_root,
                 subagent_runner=self._subagent_runner,
+                process_registry=self._process_registry,
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []

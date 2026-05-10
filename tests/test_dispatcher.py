@@ -2814,3 +2814,75 @@ async def test_dispatcher_no_pending_block_when_empty(tmp_path: Path):
 
     user = adapter.calls[0]["messages"][0]["content"]
     assert "[Pending events]" not in user
+
+
+# ----- Phase 2: process_registry wiring -----
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_threads_process_registry_into_tool_ctx(tmp_path: Path):
+    """EventDispatcher is built with a ProcessRegistry; that exact instance
+    must reach tool ctx during a cascade. We assert by instrumenting a fake
+    tool that captures the ctx and verifying ctx.process_registry is the
+    one we passed in."""
+    from dollos.process_registry import ProcessRegistry
+    from dollos.tools import TOOLS
+
+    captured: list[ToolCtx] = []
+
+    class _CaptureTool(BaseModel):
+        # Same interface as a real tool — pydantic + run.
+        token: str = "x"
+
+        async def run(self, ctx: ToolCtx):  # noqa: D401
+            captured.append(ctx)
+            # Return None → side-effect tool, no cascade re-iter.
+            return None
+
+    # Replace tools list temporarily so dispatcher recognises the capture tool.
+    TOOLS_orig = list(TOOLS)
+    TOOLS.clear()
+    TOOLS.extend([_CaptureTool])
+    try:
+        adapter = _FakeAdapter(
+            chunks=[
+                StreamChunk(
+                    text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
+                    done=False,
+                ),
+                StreamChunk(text="", done=True),
+            ],
+        )
+        iv = _FakeInnerVoice()
+        registry = ProcessRegistry()
+        dispatcher = EventDispatcher(
+            adapter=adapter,
+            inner_voice=iv,
+            instinct=_FakeInstinct(),
+            renderer=PromptRenderer(),
+            identity=_doll_identity(),
+            memory_root=tmp_path,
+            memsearch=_FakeMemSearch(),
+            transcripts_root=tmp_path / "transcripts",
+            process_registry=registry,
+        )
+
+        sink: asyncio.Queue = asyncio.Queue()
+        dispatcher.dispatch(UserTextEvent(text="go", response_sink=sink))
+        await _drain(sink)
+
+        assert captured, "tool was not invoked"
+        assert captured[0].process_registry is registry
+    finally:
+        TOOLS.clear()
+        TOOLS.extend(TOOLS_orig)
+
+
+def test_dispatcher_accepts_no_process_registry(tmp_path: Path):
+    """Default ctor: process_registry is None (back-compat with tests)."""
+    iv = _FakeInnerVoice()
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    dispatcher = _make_dispatcher(
+        adapter=adapter, inner_voice=iv, tmp_path=tmp_path
+    )
+    assert dispatcher._process_registry is None

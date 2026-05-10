@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from dollos.events import RawEvent, SubagentResultEvent
 from dollos.ipc.messages import ServerMessage
 from dollos.llm.templates import build_qwen3_think_tool_grammar
+from dollos.process_registry import ProcessRegistry
 from dollos.prompts import PromptRenderer
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import SUB_TOOLS, ToolCtx
@@ -63,6 +64,7 @@ class SubagentRunner:
         memsearch: "MemSearch",
         transcripts_root: Path,
         dispatch_fn: Callable[[RawEvent], None] | None = None,
+        process_registry: ProcessRegistry | None = None,
     ) -> None:
         self._adapter = adapter
         self._renderer = renderer
@@ -70,6 +72,7 @@ class SubagentRunner:
         self._memsearch = memsearch
         self._transcripts_root = transcripts_root
         self._dispatch_fn = dispatch_fn
+        self._process_registry = process_registry
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in SUB_TOOLS
         }
@@ -188,6 +191,7 @@ class SubagentRunner:
             transcripts_root=self._transcripts_root,
             subagent_runner=None,  # no recursion
             subagent_report=None,
+            process_registry=self._process_registry,
         )
 
         consecutive_fails: dict[str, int] = {}
