@@ -23,8 +23,18 @@ from dollos.llm.adapter import LLMAdapter, StreamChunk
 
 
 def _make_settings(tmp_path: Path) -> Settings:
-    character_path = tmp_path / "character.jinja"
-    character_path.write_text("You are Doll.")
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\n'
+        'id = "doll"\n'
+        'name = "Doll"\n'
+        '\n'
+        '[identity]\n'
+        'self = "You are Doll."\n'
+        'personality = "- chill"\n'
+        'taboos = "- no LARP"\n'
+    )
     return Settings(
         llm=LLMConfig(
             provider="llamacpp",
@@ -36,7 +46,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         log=LogConfig(level="WARNING"),
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=7),
-        character=CharacterConfig(profile_path=character_path),
+        character=CharacterConfig(pack=pack_dir),
         inner_voice=InnerVoiceConfig(
             base_url="http://test.local:8003",
             timeout_s=15.0,
@@ -127,7 +137,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         inner_voice=dollos.inner_voice,
         instinct=dollos.instinct,
         renderer=dollos.renderer,
-        character_profile=dollos._character_profile,
+        identity=dollos._doll_pack.identity,
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",

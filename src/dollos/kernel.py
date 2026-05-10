@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from memsearch import MemSearch
 
+from dollos.character import DollPack
 from dollos.config import Settings
 from dollos.dispatcher import EventDispatcher
 from dollos.events import DiaryEvent, UserTextEvent
@@ -117,7 +118,7 @@ class DollOS:
         self.memsearch = build_memsearch(settings)
         self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
         self.instinct = build_instinct(settings, self.renderer)
-        self._character_profile = settings.character.profile_path.read_text()
+        self._doll_pack = DollPack.load(settings.character.pack)
         # Two-stage wiring: SubagentRunner needs a dispatch_fn, dispatcher
         # needs a runner. Build runner first with no dispatch_fn, then build
         # dispatcher referencing the runner, then point runner at
@@ -134,7 +135,7 @@ class DollOS:
             inner_voice=self.inner_voice,
             instinct=self.instinct,
             renderer=self.renderer,
-            character_profile=self._character_profile,
+            identity=self._doll_pack.identity,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
