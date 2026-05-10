@@ -193,3 +193,27 @@ async def test_recall_ignores_character_id_in_step3():
     await iv.recall("q", character_id="gura")
 
     assert mem.last_query == "q"
+
+
+@pytest.mark.asyncio
+async def test_recall_prefixes_dates_to_candidates():
+    """Hits whose source filename ends in YYYY-MM-DD.md get the date
+    prefixed in the candidates string sent to the small model."""
+    mem = _FakeMemSearch(
+        hits=[
+            {"content": "fact A", "score": 0.9,
+             "source": "shared/2026-05-08.md"},
+            {"content": "fact B", "score": 0.8,
+             "source": "shared/no-date.md"},
+        ]
+    )
+    fake_llm = _FakeLLMAdapter(response="- fact A")
+    iv = _make_iv(mem, fake_llm)
+
+    await iv.recall("query")
+
+    user_block = fake_llm.last_user
+    assert user_block is not None
+    assert "2026-05-08 fact A" in user_block
+    # Undated hit keeps content but no date prefix on its line.
+    assert "fact B" in user_block
