@@ -172,14 +172,14 @@ def test_scaffolding_memory_section_includes_curiosity_fallback():
 
 
 def test_scaffolding_has_think_structure_section():
-    """# Think structure section documents the 4 think-block fields
-    (SEEN / INTENT / REVIEW / TOOL) so the model knows what each slot
-    is for. REVIEW is the self-reflection slot that unblocks cascade
-    looping."""
+    """# Think structure section documents the 5 think-block fields
+    (SEEN / INTENT / REVIEW / MOOD / TOOL) so the model knows what each
+    slot is for. REVIEW is self-reflection; MOOD is the emotional snapshot
+    the dispatcher parses to update Doll's current mood."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
     assert "# Think structure" in out
-    for label in ("SEEN", "INTENT", "REVIEW", "TOOL"):
+    for label in ("SEEN", "INTENT", "REVIEW", "MOOD", "TOOL"):
         assert f"**{label}**:" in out, f"missing labeled bullet for {label}"
 
 
@@ -233,6 +233,20 @@ def test_iv_compact_template_renders_with_perception_and_messages():
     # User block markers per plan §1.
     assert "[我]" in blocks["user"]
     assert "[Result]" in blocks["user"]
+
+
+def test_iv_compact_template_no_longer_references_mood():
+    """Mood is now produced by the big model in <think>, not the small
+    model post-hoc. iv_compact must not mention prior_mood / MOOD output."""
+    renderer = PromptRenderer()
+    blocks = renderer.render_blocks(
+        "iv_compact",
+        perception="hi",
+        cascade_messages=[],
+    )
+    assert "我之前的心情" not in blocks["user"]
+    assert "MOOD" not in blocks["system"]
+    assert "SUMMARY:" not in blocks["system"]
 
 
 def test_iv_summary_template_includes_language_rule():

@@ -30,7 +30,10 @@ class _FakeAdapter(LLMAdapter):
         tools=None,
         grammar=None,
     ) -> AsyncIterator[StreamChunk]:
-        self.calls.append({"system": system, "user": user, "prefill": prefill})
+        self.calls.append({
+            "system": system, "user": user, "prefill": prefill,
+            "grammar": grammar,
+        })
         for c in self.chunks:
             yield c
 
@@ -119,10 +122,10 @@ async def test_small_model_instinct_strips_whitespace():
 
 
 @pytest.mark.asyncio
-async def test_compact_cascade_returns_stripped_string():
+async def test_compact_cascade_returns_summary_string():
     adapter = _FakeAdapter(
         chunks=[
-            StreamChunk(text="  我問了主人。  ", done=False),
+            StreamChunk(text="我剛才回答了主人。\n", done=False),
             StreamChunk(text="", done=True),
         ]
     )
@@ -133,9 +136,40 @@ async def test_compact_cascade_returns_stripped_string():
         cascade_messages=[{"role": "assistant", "content": "<think>...</think>"}],
     )
 
-    assert summary == "我問了主人。"
+    assert isinstance(summary, str)
+    assert summary == "我剛才回答了主人。"
     assert len(adapter.calls) == 1
     assert adapter.calls[0]["prefill"] == ""
+
+
+@pytest.mark.asyncio
+async def test_compact_cascade_strips_whitespace():
+    adapter = _FakeAdapter(
+        chunks=[StreamChunk(text="  我做了某件事。  \n", done=True)]
+    )
+    inst = SmallModelInstinct(adapter=adapter, renderer=PromptRenderer())
+    summary = await inst.compact_cascade(
+        perception="hi", cascade_messages=[]
+    )
+    assert summary == "我做了某件事。"
+
+
+@pytest.mark.asyncio
+async def test_compact_cascade_passes_grammar_to_adapter():
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(text="ok\n", done=True),
+        ]
+    )
+    inst = SmallModelInstinct(adapter=adapter, renderer=PromptRenderer())
+    await inst.compact_cascade(
+        perception="hi",
+        cascade_messages=[],
+    )
+    grammar = adapter.calls[0]["grammar"]
+    assert grammar is not None
+    assert "line ::=" in grammar
+    assert "{1,150}" in grammar
 
 
 @pytest.mark.asyncio
@@ -154,17 +188,20 @@ async def test_compact_cascade_renders_jinja_blocks():
             return real.render_blocks(template_name, **ctx)
 
     adapter = _FakeAdapter(
-        chunks=[StreamChunk(text="ok", done=True)]
+        chunks=[StreamChunk(text="ok\n", done=True)]
     )
     inst = SmallModelInstinct(adapter=adapter, renderer=_SpyRenderer())
 
     msgs = [{"role": "user", "content": "[Message]\nq"}]
-    await inst.compact_cascade(perception="q", cascade_messages=msgs)
+    await inst.compact_cascade(
+        perception="q", cascade_messages=msgs
+    )
 
     assert any(c["template"] == "iv_compact" for c in captured)
     compact_call = next(c for c in captured if c["template"] == "iv_compact")
     assert compact_call["ctx"]["perception"] == "q"
     assert compact_call["ctx"]["cascade_messages"] is msgs
+    assert "prior_mood" not in compact_call["ctx"]
 
 
 @pytest.mark.asyncio
