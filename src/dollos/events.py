@@ -73,6 +73,28 @@ class SubagentResultEvent(RawEvent):
 
 
 @dataclass
+class ShellResultEvent(RawEvent):
+    """A backgrounded Shell command completed — result re-enters event queue.
+
+    Fired by ShellRunner when the spawned proc either exits, times out, or
+    raises. Dispatcher renders this into a perception so Doll's cascade fires
+    for it — same pattern as SubagentResultEvent.
+
+    Status semantics:
+        ok      — proc exited 0
+        nonzero — proc exited with non-zero code (output still meaningful)
+        timeout — wall-clock timeout reached; proc was killed
+        error   — runner-level exception (spawn failure, decode failure)
+    """
+
+    command: str
+    status: Literal["ok", "nonzero", "timeout", "error"]
+    exit_code: int | None
+    output: str
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
 class ScheduledEvent(RawEvent):
     """Fired by the daemon scheduler when a scheduled entry's time arrives.
 
