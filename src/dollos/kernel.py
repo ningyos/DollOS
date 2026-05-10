@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import signal
-from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 
 from memsearch import MemSearch
@@ -150,14 +149,10 @@ class DollOS:
         self._shutdown = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
 
-    async def _handle_text_input(self, msg: TextInput) -> AsyncIterator[ServerMessage]:
-        sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
+    async def _handle_text_input(
+        self, msg: TextInput, sink: "asyncio.Queue[ServerMessage | None]"
+    ) -> None:
         self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
-        while True:
-            item = await sink.get()
-            if item is None:
-                return
-            yield item
 
     async def _diary_scheduler(self) -> None:
         """Background task: fires DiaryEvent daily at DIARY_HOUR:DIARY_MINUTE."""

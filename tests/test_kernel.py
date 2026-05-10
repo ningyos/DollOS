@@ -135,11 +135,14 @@ def dollos_with_fakes(tmp_path, monkeypatch):
     return dollos, fake_adapter
 
 
-async def _collect(it):
+async def _drain_until_separator(sink: asyncio.Queue) -> list:
+    """Drain a sink until the first None separator (turn boundary)."""
     out = []
-    async for item in it:
+    while True:
+        item = await sink.get()
+        if item is None:
+            return out
         out.append(item)
-    return out
 
 
 @pytest.mark.asyncio
@@ -156,7 +159,10 @@ async def test_handle_text_input_yields_chunks_then_turnend(
     ]
     _install_fake_inner_voice(monkeypatch, "- foo")
 
-    items = await _collect(dollos._handle_text_input(TextInput(text="hi")))
+    sink: asyncio.Queue = asyncio.Queue()
+    result = await dollos._handle_text_input(TextInput(text="hi"), sink)
+    assert result is None  # void return; output flows via sink
+    items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
     assert isinstance(items[-1], TurnEnd)
 
@@ -168,7 +174,9 @@ async def test_handle_text_input_yields_errormsg_on_dispatch_failure(
     dollos, _adapter = dollos_with_fakes
     _install_fake_inner_voice(monkeypatch, raises=RuntimeError("boom"))
 
-    items = await _collect(dollos._handle_text_input(TextInput(text="x")))
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_text_input(TextInput(text="x"), sink)
+    items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert len(items) == 1
     assert isinstance(items[0], ErrorMsg)
     assert "boom" in items[0].message
@@ -184,7 +192,9 @@ async def test_dispatch_user_text_uses_stream_messages(
     adapter.chunks = [StreamChunk(text="", done=True)]
     _install_fake_inner_voice(monkeypatch, "- foo")
 
-    await _collect(dollos._handle_text_input(TextInput(text="hi")))
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_text_input(TextInput(text="hi"), sink)
+    await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert len(adapter.calls) == 1
     assert "messages" in adapter.calls[0]
     assert "prefill" not in adapter.calls[0]
@@ -198,7 +208,9 @@ async def test_dispatch_user_text_uses_text_as_user_role(
     adapter.chunks = [StreamChunk(text="", done=True)]
     _install_fake_inner_voice(monkeypatch)
 
-    await _collect(dollos._handle_text_input(TextInput(text="hello world")))
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_text_input(TextInput(text="hello world"), sink)
+    await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
     assert "[Message]" in user
