@@ -8,12 +8,14 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.ipc.messages import TextChunk
+from dollos.process_registry import ProcessRegistry
 from dollos.tools import (
-    SHELL_DEFAULT_TIMEOUT_S,
-    SHELL_MAX_TIMEOUT_S,
+    MONITOR_DEFAULT_TIMEOUT_S,
+    MONITOR_MAX_TIMEOUT_S,
     SHELL_OUTPUT_MAX_CHARS,
     TOOLS,
     InvokeSkill,
+    Monitor,
     NoteMemory,
     Recall,
     Say,
@@ -170,26 +172,42 @@ def test_shell_in_tools_list():
     assert Shell in TOOLS
 
 
-def test_shell_schema_has_command_and_timeout():
+def test_monitor_in_tools_list():
+    from dollos.tools import MAIN_TOOLS, SUB_TOOLS, TOOLS
+    assert Monitor in TOOLS
+    assert Monitor in MAIN_TOOLS
+    assert Monitor in SUB_TOOLS
+
+
+def test_shell_schema_has_command_field_and_no_timeout():
     schema = Shell.model_json_schema()
     assert "command" in schema["properties"]
     assert schema["properties"]["command"]["type"] == "string"
+    # Phase 2: timeout moved to Monitor.
+    assert "timeout_s" not in schema["properties"]
+
+
+def test_monitor_schema_has_handle_and_timeout():
+    schema = Monitor.model_json_schema()
+    assert "handle" in schema["properties"]
     assert "timeout_s" in schema["properties"]
+    assert schema["properties"]["timeout_s"]["minimum"] == 1
+    assert schema["properties"]["timeout_s"]["maximum"] == MONITOR_MAX_TIMEOUT_S
 
 
-def test_shell_timeout_validation_lower_bound():
+def test_monitor_timeout_default():
+    m = Monitor(handle="sh-1")
+    assert m.timeout_s == MONITOR_DEFAULT_TIMEOUT_S
+
+
+def test_monitor_timeout_validation_lower_bound():
     with pytest.raises(ValidationError):
-        Shell(command="echo", timeout_s=0)
+        Monitor(handle="sh-1", timeout_s=0)
 
 
-def test_shell_timeout_validation_upper_bound():
+def test_monitor_timeout_validation_upper_bound():
     with pytest.raises(ValidationError):
-        Shell(command="echo", timeout_s=SHELL_MAX_TIMEOUT_S + 1)
-
-
-def test_shell_timeout_default():
-    s = Shell(command="echo")
-    assert s.timeout_s == SHELL_DEFAULT_TIMEOUT_S
+        Monitor(handle="sh-1", timeout_s=MONITOR_MAX_TIMEOUT_S + 1)
 
 
 def test_truncate_under_cap_returns_unchanged():
@@ -205,8 +223,50 @@ def test_truncate_over_cap_inserts_marker():
     assert len(out) < len(long)
 
 
+def _make_shell_ctx(tmp_path: Path) -> tuple[ToolCtx, ProcessRegistry]:
+    """Build a ToolCtx with a fresh ProcessRegistry rooted at tmp_path."""
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    memory_root = tmp_path / "memory"
+    memory_root.mkdir(exist_ok=True)
+    registry = ProcessRegistry()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=memory_root,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+        process_registry=registry,
+    )
+    return ctx, registry
+
+
 @pytest.mark.asyncio
-async def test_shell_run_echo_returns_stdout(tmp_path):
+async def test_shell_returns_handle_not_output(tmp_path):
+    """Shell.run dispatches and returns a 'sh-N dispatched' string; the
+    process is registered, not awaited."""
+    ctx, registry = _make_shell_ctx(tmp_path)
+    out = await Shell(command="echo hello").run(ctx)
+    assert out.startswith("shell sh-1 dispatched")
+    assert "echo hello" in out
+    assert "Monitor" in out
+    assert registry.get("sh-1") is not None
+    # Drain so the test doesn't leak a running process.
+    await registry.get("sh-1").proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_shell_handles_increment(tmp_path):
+    ctx, registry = _make_shell_ctx(tmp_path)
+    out1 = await Shell(command="echo a").run(ctx)
+    out2 = await Shell(command="echo b").run(ctx)
+    assert "sh-1" in out1
+    assert "sh-2" in out2
+    for h in ("sh-1", "sh-2"):
+        await registry.get(h).proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_shell_without_registry_returns_unavailable(tmp_path):
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
@@ -216,26 +276,70 @@ async def test_shell_run_echo_returns_stdout(tmp_path):
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        process_registry=None,
     )
     out = await Shell(command="echo hi").run(ctx)
-    assert "[exit 0]" in out
-    assert "hi" in out
+    assert "unavailable" in out.lower()
 
 
 @pytest.mark.asyncio
-async def test_shell_run_nonzero_exit_still_returns_str(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    memory_root = tmp_path / "memory"
-    memory_root.mkdir()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-    out = await Shell(command="false").run(ctx)
-    assert "[exit 1]" in out
+async def test_monitor_waits_for_process(tmp_path):
+    ctx, _registry = _make_shell_ctx(tmp_path)
+    await Shell(command="echo hello").run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=10).run(ctx)
+    assert out.startswith("[exit 0]")
+    assert "hello" in out
+
+
+@pytest.mark.asyncio
+async def test_monitor_unknown_handle(tmp_path):
+    ctx, _registry = _make_shell_ctx(tmp_path)
+    out = await Monitor(handle="sh-999").run(ctx)
+    assert "unknown handle" in out
+    assert "sh-999" in out
+
+
+@pytest.mark.asyncio
+async def test_monitor_removes_handle_on_success(tmp_path):
+    ctx, registry = _make_shell_ctx(tmp_path)
+    await Shell(command="echo hi").run(ctx)
+    await Monitor(handle="sh-1", timeout_s=10).run(ctx)
+    assert registry.get("sh-1") is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_timeout_keeps_handle(tmp_path):
+    """On timeout, process stays in the registry so Doll can Monitor again."""
+    ctx, registry = _make_shell_ctx(tmp_path)
+    await Shell(command="sleep 5").run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=1).run(ctx)
+    assert "timed out" in out
+    assert "sh-1" in out
+    assert registry.get("sh-1") is not None
+    # Cleanup: kill the stray sleep so the test exits cleanly.
+    proc = registry.get("sh-1").proc
+    proc.kill()
+    await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_shell_command_failure_in_monitor(tmp_path):
+    """Shell `false` → Monitor returns [exit 1]."""
+    ctx, _registry = _make_shell_ctx(tmp_path)
+    await Shell(command="false").run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=10).run(ctx)
+    assert out.startswith("[exit 1]")
+
+
+@pytest.mark.asyncio
+async def test_shell_combines_stdout_and_stderr_via_monitor(tmp_path):
+    ctx, _registry = _make_shell_ctx(tmp_path)
+    await Shell(
+        command="echo to_stdout; echo to_stderr 1>&2"
+    ).run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=10).run(ctx)
+    assert "to_stdout" in out
+    assert "to_stderr" in out
 
 
 @pytest.mark.asyncio
@@ -246,68 +350,42 @@ async def test_shell_cwd_is_data_root(tmp_path):
     memory_root.mkdir(parents=True)
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
+    registry = ProcessRegistry()
     ctx = ToolCtx(
         sink=sink,
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=data_root / "transcripts",
+        process_registry=registry,
     )
-    out = await Shell(command="pwd").run(ctx)
+    await Shell(command="pwd").run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=10).run(ctx)
     assert str(data_root.resolve()) in out
 
 
 @pytest.mark.asyncio
-async def test_shell_combines_stdout_and_stderr(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    memory_root = tmp_path / "memory"
-    memory_root.mkdir()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-    out = await Shell(
-        command="echo to_stdout; echo to_stderr 1>&2"
-    ).run(ctx)
-    assert "to_stdout" in out
-    assert "to_stderr" in out
-
-
-@pytest.mark.asyncio
-async def test_shell_timeout_returns_message_not_exception(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    memory_root = tmp_path / "memory"
-    memory_root.mkdir()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-    out = await Shell(command="sleep 5", timeout_s=1).run(ctx)
-    assert "shell timeout" in out
-    assert "1s" in out
-
-
-@pytest.mark.asyncio
-async def test_shell_truncates_long_output(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    memory_root = tmp_path / "memory"
-    memory_root.mkdir()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-    )
-    out = await Shell(
+async def test_monitor_truncates_long_output(tmp_path):
+    ctx, _registry = _make_shell_ctx(tmp_path)
+    await Shell(
         command=f"yes hello | head -c {SHELL_OUTPUT_MAX_CHARS * 2}"
     ).run(ctx)
+    out = await Monitor(handle="sh-1", timeout_s=10).run(ctx)
     assert "[truncated" in out
+
+
+@pytest.mark.asyncio
+async def test_monitor_without_registry_returns_unavailable(tmp_path):
+    sink: asyncio.Queue = asyncio.Queue()
+    ms = _FakeMemSearch()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+        process_registry=None,
+    )
+    out = await Monitor(handle="sh-1").run(ctx)
+    assert "unavailable" in out.lower()
 
 
 def test_invoke_skill_in_tools_list():
