@@ -294,6 +294,23 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 16. IPC pump — per-connection persistent sink  ✅ Merged
+
+**動機**：step 15 e2e smoke 揭露 IPC 架構不支援 daemon-initiated events。WS handler 每 text_input 開新 sink、turn 結束推 None → handler iterator return → sink 死。Subagent 之後 fire SubagentResultEvent 拿到死 sink → Doll 的 TURN 2 Say 寫到 /dev/null。
+
+**修法**：per-WS-connection 持續 sink + pump task。Handler 改 void signature，IPC server 起 pump 在背景 drain `sink → ws.send` forever；None 變 turn separator（pump skip 繼續），connection close 才 cancel pump。
+
+範圍：
+- `ipc/server.py`: `Handler` 改 `(TextInput, sink) → Awaitable[None]`；新 `_pump` async method；`_on_connect` 起 pump_task、傳 sink 給 handler、disconnect cancel pump
+- `kernel.py`: `_handle_text_input(msg, sink)` 改 void，`dispatch` 後立刻 return
+- `dispatcher.py`: **不動**（None 持續是 turn separator 語意）
+
+Manual smoke `/tmp/smoke_subagent.py` 確認 e2e flow：
+- TURN 1: 「分身已經出發去查了，等它回來就告訴你 a~」
+- TURN 2: 「分身回來啦～/tmp 目錄一共有 50 個檔案跟資料夾 a~」
+
+T1-T8 smoke 8/8 無 regression。Tests: 250 passed。
+
 ---
 
 ## 之後（未排序）
