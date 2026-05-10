@@ -91,11 +91,11 @@ DollOS/
 | Roadmap step 19 — Mood (Self-First emotional state via big-model think field) | Merged |
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
+| Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Merged |
 
 ### 下一個
 
-**Phase 2-4** of self-initiated events / interrupt design:
-- **Phase 2: Async Shell + Monitor 工具** — Shell return handle，Monitor 工具 block 等任務完成；process_registry
+**Phase 3-4** of self-initiated events / interrupt design:
 - **Phase 3: Cancel + interrupt-aware Monitor** — Monitor 真的能被 pending events early-return；Cancel tool
 - **Phase 4: Subagent 統一 async pattern** — 跟 Phase 2 工具集合一個介面
 
