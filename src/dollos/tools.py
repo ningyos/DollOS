@@ -104,6 +104,7 @@ class ToolCtx:
     subagent_runner: "SubagentRunner | None" = None
     subagent_report: dict | None = None
     process_registry: ProcessRegistry | None = None
+    pending_signal: asyncio.Event | None = None
 
 
 class Say(BaseModel):
@@ -238,22 +239,97 @@ class Monitor(BaseModel):
                 f"(already monitored or not found)"
             )
         proc = managed.proc
+        proc_task = asyncio.create_task(proc.communicate())
+        pending_signal = ctx.pending_signal
+        pending_task: asyncio.Task | None = None
+        waiters: list[asyncio.Task] = [proc_task]
+        if pending_signal is not None:
+            pending_task = asyncio.create_task(pending_signal.wait())
+            waiters.append(pending_task)
+
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout_s
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=self.timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
             )
-        except asyncio.TimeoutError:
-            # Keep the handle around so Doll can Monitor again or Cancel.
+        except asyncio.CancelledError:
+            proc_task.cancel()
+            if pending_task is not None:
+                pending_task.cancel()
+            raise
+
+        # Pending event won the race — early return; process keeps running.
+        if pending_task is not None and pending_task in done:
+            proc_task.cancel()
             return (
-                f"Monitor({self.handle!r}) timed out after "
-                f"{self.timeout_s}s. Process still running. "
-                f"Use Monitor again or Cancel."
+                f"Monitor({self.handle!r}) interrupted by pending event. "
+                f"Process still running. Use Cancel({self.handle!r}) to kill, "
+                f"or skip and respond to pending."
             )
-        output = stdout.decode("utf-8", errors="replace") if stdout else ""
-        ctx.process_registry.remove(self.handle)
-        return _truncate(
-            f"[exit {proc.returncode}]\n{output}", SHELL_OUTPUT_MAX_CHARS
+
+        # Process completed naturally.
+        if proc_task in done:
+            if pending_task is not None:
+                pending_task.cancel()
+            try:
+                stdout, _ = proc_task.result()
+            except Exception as e:
+                return (
+                    f"Monitor({self.handle!r}) error reading output: {e}"
+                )
+            output = stdout.decode("utf-8", errors="replace") if stdout else ""
+            ctx.process_registry.remove(self.handle)
+            return _truncate(
+                f"[exit {proc.returncode}]\n{output}",
+                SHELL_OUTPUT_MAX_CHARS,
+            )
+
+        # Timeout — neither task completed.
+        proc_task.cancel()
+        if pending_task is not None:
+            pending_task.cancel()
+        return (
+            f"Monitor({self.handle!r}) timed out after "
+            f"{self.timeout_s}s. Process still running. "
+            f"Use Monitor again or Cancel."
         )
+
+
+class Cancel(BaseModel):
+    """Kill a background process started by Shell.
+
+    Sends SIGKILL. Process must already be registered (via Shell). Use when
+    Monitor was interrupted and you don't need the result, or when a process
+    times out and you want to stop it.
+    """
+
+    handle: str = Field(
+        description="Handle returned by Shell (e.g., 'sh-1')."
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        if ctx.process_registry is None:
+            return "[Cancel unavailable: no process_registry on this ctx]"
+        managed = ctx.process_registry.get(self.handle)
+        if managed is None:
+            return f"unknown handle {self.handle!r}"
+        proc = managed.proc
+        if proc.returncode is not None:
+            ctx.process_registry.remove(self.handle)
+            return (
+                f"process {self.handle!r} already exited with code "
+                f"{proc.returncode}"
+            )
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass  # process already gone
+        except Exception as e:
+            return f"failed to kill {self.handle!r}: {e}"
+        ctx.process_registry.remove(self.handle)
+        return f"killed {self.handle!r}"
 
 
 class InvokeSkill(BaseModel):
@@ -475,12 +551,12 @@ class WriteSchedule(BaseModel):
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, Monitor, InvokeSkill,
-    Recall, SpawnSubagent,
+    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, Monitor, Cancel,
+    InvokeSkill, Recall, SpawnSubagent,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
-    Shell, Monitor, NoteMemory, Recall, InvokeSkill, Report,
+    Shell, Monitor, Cancel, NoteMemory, Recall, InvokeSkill, Report,
 ]
 
 # Back-compat alias — many modules / tests import TOOLS directly.
