@@ -90,17 +90,23 @@ DollOS/
 | Roadmap step 18 — Time awareness ([Now] + HH:MM:SS + time-aware Recall) | Merged |
 | Roadmap step 19 — Mood (Self-First emotional state via big-model think field) | Merged |
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
+| Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
 
 ### 下一個
 
-**下一個候選**（按用戶決定挑一個）：
-- **Self-initiated events** — Doll 自己 wake（閒置太久關心、累積 mood 講話）
-- **Drone**（spec 提的，跟 subagent 對偶）— persistent + scheduled
+**Phase 2-4** of self-initiated events / interrupt design:
+- **Phase 2: Async Shell + Monitor 工具** — Shell return handle，Monitor 工具 block 等任務完成；process_registry
+- **Phase 3: Cancel + interrupt-aware Monitor** — Monitor 真的能被 pending events early-return；Cancel tool
+- **Phase 4: Subagent 統一 async pattern** — 跟 Phase 2 工具集合一個介面
+
+**其他候選**：
 - **Voice pipeline**（基礎建設，跟 Doll 行為無關）
+- **Drone**（persistent agents — Phase 4 統一後可一起做）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 **已收的設計準則**：
 - 偏好學習 / 習慣學習不是新 subsystem，是 prompt engineering — Doll 用 NoteMemory 自記
+- Bootstrap 是 daemon-internal planning，用 dummy sink 不對外發送（用戶 greeting 由 scheduled entry 提供）
 
 完整 roadmap：`docs/roadmap.md`。
 

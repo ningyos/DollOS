@@ -294,6 +294,32 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 21. Schedule + pending awareness — Phase 1 of 4  ✅ Merged
+
+**動機**：Doll 是 event-driven agent 不是 chatbot。她該能規劃自己一天時程、按時間執行、面對中斷時知道有事情排隊等。Phase 1 是 4-phase 大計劃的基礎。
+
+**4-phase 概觀**：
+1. ✅ Schedule + pending awareness（這 step）
+2. Async Shell + Monitor 工具（Phase 2）
+3. Cancel + interrupt-aware Monitor early-return（Phase 3）
+4. Subagent 統一進 async pattern（Phase 4）
+
+**Phase 1 範圍**：
+- `WriteSchedule(entries=[{time, intent}, ...])` 新 tool — Doll 寫一日計劃，存 `data/memory/schedule/{date}.toml` (scheduler 機讀) + markdown summary 進 `shared/{date}.md` (memsearch index → Recall 找得到)
+- `ScheduledEvent` / `DailyPlanEvent` 新 RawEvents
+- Daemon `_schedule_runner` background task 每 30s 檢查；過期 1 分鐘以上的 entry 自動 skip
+- Bootstrap on first WS connect: 沒今日 schedule → fire DailyPlanEvent **with dummy sink**（silent / internal planning）— 用戶 greeting 從 scheduled 07:30 entry 來，不從 bootstrap
+- Dispatcher serialize `UserTextEvent / ScheduledEvent / DailyPlanEvent / DiaryEvent`（並發 queue）；`SubagentResultEvent` 仍 parallel（gap #2）
+- Cascade iter 注入 `[Pending events]` block（informational only — Phase 1 沒 Suspend tool）
+- IPC server 加 `on_connect / on_disconnect` lifecycle hooks，kernel 用來追 `_active_sink`
+- Scaffolding `# Behavior` 教 Doll `[Pending events]` 語意
+
+**8 個 plan-review gaps 全補**：sink lifecycle / SubagentResult 平行 / memsearch index / scaffolding 教學 / dummy-sink bootstrap / strict ISO time / 1-min past window / pure-function `due_entries`。
+
+**Smoke 驗證**：bootstrap 安靜 fire、schedule.toml 寫 5 entries、shared.md 也寫 + memsearch index、T1-T8 8/8 沒 off-by-one。Scheduled event 觸發跑 30s polling；smoke 1 min 窗口看不到實際 fire（unit tests cover）。
+
+**Tests**：317 passed（40+ new）。
+
 ### 20. Cascade decision log + structlog  ✅ Merged
 
 **動機**：dev observability。每 cascade iter 的 SEEN/INTENT/REVIEW/MOOD/TOOL + tool_args + result 沒持久化，cascade 結束就消失。要看 Doll 怎麼決策、debug 為什麼選某 tool、統計 mood vs decision 相關性，需要結構化 log。
