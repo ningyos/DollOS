@@ -294,6 +294,26 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 23. Cancel + interrupt-aware Monitor — Phase 3 of 4  ✅ Merged
+
+**範圍**：
+- Dispatcher `_pending_signal: asyncio.Event`，dispatch SERIALIZE_TYPES 事件 queue 時 set、cascade 結束 clear
+- Monitor 用 `asyncio.wait` 競賽 `proc.communicate` vs `pending_signal.wait`，FIRST_COMPLETED；pending 贏 → cancel proc_task（不 kill process）→ 回 interrupt 訊息、handle 留在 registry
+- 新 `Cancel(handle)` tool：proc.kill + await wait + 移除 handle；ProcessLookupError 吞掉
+- ToolCtx 加 `pending_signal`；subagent ctx 設 None（subagent 不共享 main 的 pending queue）
+- Scaffolding 教 Doll 看到 interrupted 訊息怎麼反應
+
+**Doll interrupt flow（不再需要 Suspend/Resume tools）**：
+```
+mid-Monitor → pending event 來 → Monitor early-return 「interrupted」
+  → cascade iter 結束 → 下個 iter 看到 [Pending events] block
+  → Doll 自然決定 Cancel / 再 Monitor / Say 收尾
+```
+
+**Smoke**：T1-T8 8/8。T7 觀察到最強 cross-turn 回顧：「你剛才讓我跑 pwd、問我是誰、說喜歡喝咖啡或茶，還有讓我記下今天學會了 Qwen3 prompt format」。
+
+**Tests**：349 passed（12 new）。
+
 ### 22. Async Shell + Monitor + ProcessRegistry — Phase 2 of 4  ✅ Merged
 
 **範圍**：

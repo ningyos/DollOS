@@ -92,12 +92,14 @@ DollOS/
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
 | Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Merged |
+| Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Merged |
 
 ### 下一個
 
-**Phase 3-4** of self-initiated events / interrupt design:
-- **Phase 3: Cancel + interrupt-aware Monitor** — Monitor 真的能被 pending events early-return；Cancel tool
-- **Phase 4: Subagent 統一 async pattern** — 跟 Phase 2 工具集合一個介面
+- **Phase 4: Subagent 統一 async pattern？**（待重新評估）— 原計畫讓 SpawnSubagent return handle、Doll Monitor wait result。但這會失去當前 subagent 的 fire-and-forget 性質（自動 SubagentResultEvent 重入 event queue）。可能 YAGNI——Shell 跟 Subagent 服務不同 use case，兩種 async pattern 各得其所
+- **Voice pipeline**（基礎建設，跟 Doll 行為無關）
+- **Drone**（persistent agents — 跟 subagent 對偶）
+- **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 **其他候選**：
 - **Voice pipeline**（基礎建設，跟 Doll 行為無關）
