@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import signal
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from memsearch import MemSearch
 
@@ -12,7 +12,8 @@ from dollos.character import DollPack
 from dollos.config import Settings
 from dollos.dispatcher import EventDispatcher
 from dollos.logging_config import configure_cascade_logging
-from dollos.events import DiaryEvent, UserTextEvent
+from dollos.events import DailyPlanEvent, DiaryEvent, ScheduledEvent, UserTextEvent
+from dollos.schedule import due_entries, load_schedule
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct, SmallModelInstinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TextInput
@@ -152,14 +153,94 @@ class DollOS:
             host=settings.ipc.host,
             port=settings.ipc.port,
             handler=self._handle_text_input,
+            on_connect=self._handle_connect,
+            on_disconnect=self._handle_disconnect,
         )
         self._shutdown = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
+        self._schedule_task: asyncio.Task[None] | None = None
+        # Active connection sink — set by _handle_connect, cleared by
+        # _handle_disconnect. Used by scheduler-fired events that need a
+        # sink (Phase 1 ScheduledEvent / DailyPlanEvent).
+        self._active_sink: "asyncio.Queue[ServerMessage | None] | None" = None
+        # Per-day fired set — scheduler dedupe across its 30s polling.
+        self._fired_today: dict[date, set[time]] = {}
+        # Track per-day bootstrap so reconnects within a day don't refire.
+        self._bootstrapped_dates: set[date] = set()
 
     async def _handle_text_input(
         self, msg: TextInput, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
         self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
+
+    async def _handle_connect(
+        self, sink: "asyncio.Queue[ServerMessage | None]"
+    ) -> None:
+        """WebSocketServer on_connect hook — exposes the live sink.
+
+        Scheduled / bootstrap events fired while a client is connected use
+        this sink so output reaches that client. Bootstrap deferred to the
+        first connect (gap #5) so DailyPlanEvent's response can stream
+        straight to a real consumer.
+        """
+        self._active_sink = sink
+        await self._maybe_bootstrap_plan()
+
+    async def _handle_disconnect(self) -> None:
+        """WebSocketServer on_disconnect hook — drops the live sink.
+
+        Subsequent scheduler-fired events fall back to the dummy sink
+        until another client connects.
+        """
+        self._active_sink = None
+
+    def _active_sink_or_dummy(
+        self,
+    ) -> "asyncio.Queue[ServerMessage | None]":
+        """Return live client sink if connected, else a fresh queue.
+
+        The dummy queue is never read — pushes succeed and are silently
+        discarded with the queue at GC. Sufficient for fire-and-forget
+        scheduler events when no UI is listening.
+        """
+        if self._active_sink is not None:
+            return self._active_sink
+        return asyncio.Queue()
+
+    def _dummy_sink(self) -> "asyncio.Queue[ServerMessage | None]":
+        """Always returns a fresh dummy queue, regardless of active sink.
+
+        Used for daemon-internal events (e.g. bootstrap planning) where
+        Doll should plan/act but not produce user-visible output. Say tool
+        output gets discarded; the day's first user-facing greeting comes
+        from a scheduled entry, not bootstrap.
+        """
+        return asyncio.Queue()
+
+    async def _maybe_bootstrap_plan(self) -> None:
+        """Fire DailyPlanEvent if today has no schedule yet (gap #5).
+
+        Runs on every connect but only fires once per day (the
+        ``_bootstrapped_dates`` guard) and only if no schedule.toml exists.
+        """
+        today = date.today()
+        if today in self._bootstrapped_dates:
+            return
+        path = (
+            self.settings.data.root
+            / "memory"
+            / "schedule"
+            / f"{today:%Y-%m-%d}.toml"
+        )
+        if path.exists():
+            self._bootstrapped_dates.add(today)
+            return
+        self._bootstrapped_dates.add(today)
+        # Bootstrap is daemon-internal planning — Doll's Say output goes to
+        # /dev/null so the smoke client doesn't see it as a turn response.
+        # WriteSchedule still works (writes to file regardless of sink).
+        sink = self._dummy_sink()
+        self.dispatcher.dispatch(DailyPlanEvent(response_sink=sink))
 
     async def _diary_scheduler(self) -> None:
         """Background task: fires DiaryEvent daily at DIARY_HOUR:DIARY_MINUTE."""
@@ -183,6 +264,46 @@ class DollOS:
             asyncio.create_task(self._drain_diary_sink(sink))
             self.dispatcher.dispatch(DiaryEvent(response_sink=sink))
 
+    async def _schedule_runner(self) -> None:
+        """Background task: every 30s, fire any due ScheduledEvents.
+
+        Reads ``data/memory/schedule/{today}.toml``, finds entries within a
+        1-minute window of now (per ``due_entries``), and dispatches a
+        ``ScheduledEvent`` for each. Past entries from earlier in the day
+        are skipped (gap #7) — daemon-offline misses are not replayed.
+        """
+        while not self._shutdown.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown.wait(), timeout=30.0
+                )
+                return  # shutdown signaled
+            except TimeoutError:
+                pass
+
+            today = date.today()
+            path = (
+                self.settings.data.root
+                / "memory"
+                / "schedule"
+                / f"{today:%Y-%m-%d}.toml"
+            )
+            schedule = load_schedule(path)
+            if schedule is None:
+                continue
+            now = datetime.now()
+            fired = self._fired_today.setdefault(today, set())
+            for entry in due_entries(schedule, now, fired):
+                fired.add(entry.time)
+                sink = self._active_sink_or_dummy()
+                self.dispatcher.dispatch(
+                    ScheduledEvent(
+                        entry_time=entry.time,
+                        intent=entry.intent,
+                        response_sink=sink,
+                    )
+                )
+
     async def _drain_diary_sink(
         self, sink: asyncio.Queue[ServerMessage | None]
     ) -> None:
@@ -201,6 +322,7 @@ class DollOS:
             await self.server.start()
             # Start diary scheduler
             self._scheduler_task = asyncio.create_task(self._diary_scheduler())
+            self._schedule_task = asyncio.create_task(self._schedule_runner())
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown.set)
@@ -214,6 +336,11 @@ class DollOS:
                     self._scheduler_task.cancel()
                     await asyncio.gather(
                         self._scheduler_task, return_exceptions=True
+                    )
+                if self._schedule_task is not None:
+                    self._schedule_task.cancel()
+                    await asyncio.gather(
+                        self._schedule_task, return_exceptions=True
                     )
                 # Stop subagents BEFORE dispatcher so any final result
                 # event has a live dispatcher to enter (in practice

@@ -92,6 +92,11 @@ async def test_full_round_trip_with_mocked_llamacpp(
     monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
 
     dollos = DollOS(settings)
+    # Phase 1 schedule (2026-05-10): on first WS connect, kernel fires a
+    # DailyPlanEvent if today has no schedule. Mark today as already
+    # bootstrapped so this test exercises only the user turn.
+    from datetime import date as _date
+    dollos._bootstrapped_dates.add(_date.today())
 
     _tc = '<tool_call>{"name":"Say","arguments":{"text":"Hi there"}}</tool_call>'
     sse_body = (

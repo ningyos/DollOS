@@ -142,3 +142,61 @@ async def test_pump_forwards_items_from_sink_to_ws_send():
         assert '"turn_end"' in raw2
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_server_calls_on_connect_with_sink():
+    """on_connect is invoked with the per-connection sink before the first
+    inbound message is handled."""
+    captured: list[asyncio.Queue] = []
+
+    async def _on_connect(sink: "asyncio.Queue[ServerMessage | None]") -> None:
+        captured.append(sink)
+
+    server = WebSocketServer(
+        host="127.0.0.1", port=0,
+        handler=_make_echo_handler(),
+        on_connect=_on_connect,
+    )
+    await server.start()
+    try:
+        port = server.port
+        assert port is not None
+        uri = f"ws://127.0.0.1:{port}"
+        async with websockets.connect(uri) as ws:
+            await ws.send('{"type": "text_input", "text": "x"}')
+            # Drain at least one message to force handler invocation.
+            await asyncio.wait_for(ws.recv(), timeout=2.0)
+        # Allow the disconnect path to settle.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert len(captured) == 1
+        assert isinstance(captured[0], asyncio.Queue)
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_ws_server_calls_on_disconnect_after_disconnect():
+    """on_disconnect fires after the client closes the websocket."""
+    disconnected = asyncio.Event()
+
+    async def _on_disconnect() -> None:
+        disconnected.set()
+
+    server = WebSocketServer(
+        host="127.0.0.1", port=0,
+        handler=_make_echo_handler(),
+        on_disconnect=_on_disconnect,
+    )
+    await server.start()
+    try:
+        port = server.port
+        assert port is not None
+        uri = f"ws://127.0.0.1:{port}"
+        async with websockets.connect(uri) as ws:
+            await ws.send('{"type": "text_input", "text": "x"}')
+            await asyncio.wait_for(ws.recv(), timeout=2.0)
+        await asyncio.wait_for(disconnected.wait(), timeout=2.0)
+    finally:
+        await server.stop()
