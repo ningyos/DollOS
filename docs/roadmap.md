@@ -294,6 +294,31 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 20. Cascade decision log + structlog  ✅ Merged
+
+**動機**：dev observability。每 cascade iter 的 SEEN/INTENT/REVIEW/MOOD/TOOL + tool_args + result 沒持久化，cascade 結束就消失。要看 Doll 怎麼決策、debug 為什麼選某 tool、統計 mood vs decision 相關性，需要結構化 log。
+
+範圍：
+- 新模組 `cascade_log.py`：`CascadeLogger.log_iter()` 每 iter 寫一行 JSONL 進 `data/cascade_log/{date}.jsonl`，含 turn_id / iter / 解析的 5 個 think fields / tool_calls / results / duration_ms
+- 新模組 `logging_config.py`：`configure_cascade_logging()` 設 structlog（JSONRenderer + timestamp processor）+ stdlib FileHandler 在 "cascade" logger
+- `dispatcher.py`：cascade loop 累積 `parsed_tool_calls`、計時、每 iter call `log_iter`
+- `kernel.py` boot：configure + build CascadeLogger
+- `pyproject.toml` 加 `structlog>=24.0`
+- stdlib logging（`getLogger("dollos.tool_parser")` 等）**不動**，coexist
+
+**設計選擇 structlog over rich**：
+- structlog 直接服務需求（structured JSON file output、context binding、processors chain）
+- rich 純 ergonomic（pretty terminal output），沒 unlock 新功能
+- 未來想要 console pretty 可以加 rich 當 structlog console renderer
+
+**沒做的**：log rotation / retention、replay UI、streaming WS dev tap、config disable flag、surface 給 Doll（這純 dev observability 不是 Self）、把所有 stdlib log call 改 structlog（漸進遷移）。
+
+**Smoke 驗證**：8-turn smoke 寫入 14KB JSONL。範例 turn=13525edf 兩 iter 串在一起：iter 1 Recall(query="喜歡喝的飲品") mood「好奇主人的喜好」→ iter 2 Say mood「有點困惑，因為不知道主人的喜好」。Decision chain + mood 演化都可見。
+
+Tests：290 passed（8 new — 6 cascade_log unit + 2 dispatcher integration）。
+
+**設計準則收穫**：「**偏好學習 / 習慣學習不是新 subsystem，是 prompt engineering**」。Doll 用 NoteMemory 自記主人偏好 / 自己觀察，scaffolding 引導即可。沒必要做新 layer。
+
 ### 19. Mood — Self-First emotional state via big-model think field  ✅ Merged
 
 **動機**：Spec §8 Self-First killer feature。Doll 該有持續的情緒狀態，每 cascade 演化、surface 進下個 perception 影響行為、可被 Recall。
