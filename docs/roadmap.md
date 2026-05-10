@@ -294,7 +294,35 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
-### 23. Cancel + interrupt-aware Monitor — Phase 3 of 4  ✅ Merged
+### 24. External actions = fire-and-forget（Shell ≈ Subagent）  ✅ Merged
+
+**動機**：Phase 2-3 的 Monitor (active-wait) 是錯的設計——強迫 Doll 同 turn 等。用戶釐清：「awaits 應該作為 doll 的運作方式，而不是 tool」。內部能力（Say/NoteMemory/Recall）不能 await（你不會等自己的嘴講完）；外部動作（Shell/Subagent）是別人的事，背景跑、結果以 event 方式回來。
+
+**範圍**：
+- 新 `ShellResultEvent`（mirror SubagentResultEvent）：`command / status / exit_code / output / response_sink`
+- 新 `ShellRunner`（mirror SubagentRunner）：`spawn(command, timeout_s, response_sink)` fire-and-forget；內部 watcher task 等 proc 完成 → fire ShellResultEvent via `dispatch_fn`；用 `start_new_session=True` + `os.killpg` 確保 timeout 真的殺掉子進程
+- `Shell` tool 改成 thin delegation：return `"shell dispatched..."` 立刻退出
+- 砍 `Monitor` tool（active-wait）、`Cancel` tool、`ProcessRegistry` 模組、`ToolCtx.pending_signal`、dispatcher `_pending_signal` 機制
+- Dispatcher `_perceive(ShellResultEvent)` → 「你執行的 shell 命令回來了」perception；`_sink_of` 加 ShellResultEvent；**不**進 SERIALIZE_TYPES（parallel 處理 like SubagentResultEvent）
+- Kernel build ShellRunner、wire `set_dispatch_fn(dispatcher.dispatch)`、shutdown 時 stop
+- Scaffolding 改：解釋外部動作 fire-and-forget 模式、無 wait/monitor/cancel、`Shell.timeout_s` 要估準
+
+**Doll cascade flow**：
+```
+iter 1: Shell long_task + Say「我去查」 → cascade end
+（背景跑）
+proc done → ShellResultEvent fire → 新 turn perception 「你執行的 shell 命令回來了」
+iter 2: Doll Say 結果
+```
+若 cascade 還活著時 result 來，會以 parallel event 觸發新 turn（不 inject 進當前 cascade，符合 SubagentResult 既有模式）。
+
+**Smoke**：T1 「用 shell 看一下 /tmp 目錄有幾個檔案」→ Doll Say「正在看」→ turn end → ShellResultEvent fire → T2 Doll Say「/tmp 目錄裡有 136 個檔案」。
+
+**Tests**：321 passed（new ShellRunner unit tests、ShellResultEvent perceive test、shell delegation tests；刪掉 Monitor/Cancel/ProcessRegistry 相關 ~33 tests）。
+
+**Phase 22-23 superseded**：原 Phase 2-3 的 Monitor (active-wait) + Cancel 已移除。原 Phase 4 「Subagent 統一 async pattern」改為相反方向——Shell 對齊 Subagent 的 fire-and-forget，而不是反過來。
+
+### 23. Cancel + interrupt-aware Monitor — Phase 3 of 4  ✅ Merged → Superseded by step 24
 
 **範圍**：
 - Dispatcher `_pending_signal: asyncio.Event`，dispatch SERIALIZE_TYPES 事件 queue 時 set、cascade 結束 clear
@@ -314,7 +342,7 @@ mid-Monitor → pending event 來 → Monitor early-return 「interrupted」
 
 **Tests**：349 passed（12 new）。
 
-### 22. Async Shell + Monitor + ProcessRegistry — Phase 2 of 4  ✅ Merged
+### 22. Async Shell + Monitor + ProcessRegistry — Phase 2 of 4  ✅ Merged → Superseded by step 24
 
 **範圍**：
 - 新模組 `process_registry.py`：`ProcessRegistry` 追蹤 running subprocess，handle 格式 `sh-N`，shutdown 時 kill 殘留
