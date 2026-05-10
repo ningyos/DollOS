@@ -28,13 +28,13 @@ async def append_transcript(
 ) -> None:
     """Append a turn line to today's transcript and reindex.
 
-    Format per line: `- [HH:MM <role>] <text>\\n`. role is typically
+    Format per line: `- [HH:MM:SS <role>] <text>\\n`. role is typically
     "user" or "doll". Caller is responsible for ensuring transcripts_root
     is a directory dedicated to transcripts (separate from shared LT memory).
     """
     path = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%H:%M")
+    timestamp = datetime.now().strftime("%H:%M:%S")
     if role == "user":
         speaker = "主人"
     elif role == "doll":
