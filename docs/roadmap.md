@@ -294,6 +294,28 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 17. Doll pack — directory + doll.toml manifest  ✅ Merged
+
+**動機**：`experiments/test_character.jinja` 是當前 character source，單 jinja 整塊內容塞 `{{ character }}` 變數。問題：identity content 跟 mechanism content 混在一起（思考方式 / 工具方式 已過時且 scaffolding 重複）；無結構容納未來 voice / avatar / wake；命名 `experiments/` 暗示 scratch。
+
+按 incremental 原則只做需要的：
+- 目錄當 pack：`character_packs/gura/` 純 dir，無 `.doll` 後綴 / 無 archive
+- `doll.toml` 單一 manifest，分 `[meta]`（id, name）+ `[identity]`（self / personality / taboos）
+- TOML 給結構，每個 value 是 Markdown blob → scaffolding template 控制 layout
+- Stale mechanism sections 搬遷時直接砍
+
+**沒做的**（將來需要再加）：pack/templates override、voice / avatar / wake / seed_memory / skills 子目錄、per-character memory namespace、archive 格式、簽章 / store、hot-reload、Markdown validator、`version` / `description` / `author` 欄位。
+
+範圍：
+- 新 `dollos.character` 模組 — `PackMeta` / `Identity` / `DollPack` pydantic models（extra=forbid）+ `DollPack.load(pack_dir)`
+- `scaffolding.jinja` `{{ character }}` → `{{ identity.self }}` / `{{ identity.personality }}` / `{{ identity.taboos }}`，layout 在 scaffolding，data 在 doll.toml
+- `CharacterConfig.profile_path` → `pack`
+- `kernel.py` boot：load DollPack → 傳 identity 進 dispatcher
+- `dispatcher.py` `character_profile: str` → `identity: Identity`
+- 刪 `experiments/test_character.jinja`
+
+Smoke：T1-T8 8/8（identical behavior，純 refactor）。Tests：258（5 個新 pack loader tests）。
+
 ### 16. IPC pump — per-connection persistent sink  ✅ Merged
 
 **動機**：step 15 e2e smoke 揭露 IPC 架構不支援 daemon-initiated events。WS handler 每 text_input 開新 sink、turn 結束推 None → handler iterator return → sink 死。Subagent 之後 fire SubagentResultEvent 拿到死 sink → Doll 的 TURN 2 Say 寫到 /dev/null。
