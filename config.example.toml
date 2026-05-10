@@ -22,7 +22,7 @@ root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-gene
 top_k = 10   # InnerVoice.recall default; memsearch uses ONNX bge-m3 by default.
 
 [character]
-profile_path = "experiments/test_character.jinja"   # development character profile (Gura mock)
+pack = "character_packs/gura"   # directory containing doll.toml manifest
 
 [inner_voice]
 base_url = "http://127.0.0.1:8003"   # separate llama-server with small Qwen3 instruct (e.g. Qwen3-0.6B-Instruct)

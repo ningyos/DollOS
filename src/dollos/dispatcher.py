@@ -17,6 +17,7 @@ from pathlib import Path
 from memsearch import MemSearch
 from pydantic import ValidationError
 
+from dollos.character import Identity
 from dollos.events import (
     DiaryEvent,
     DollEvent,
@@ -65,7 +66,7 @@ class EventDispatcher:
         inner_voice: InnerVoice,
         instinct: Instinct,
         renderer: PromptRenderer,
-        character_profile: str,
+        identity: Identity,
         memory_root: Path,
         memsearch: MemSearch,
         transcripts_root: Path,
@@ -75,7 +76,7 @@ class EventDispatcher:
         self._inner_voice = inner_voice
         self._instinct = instinct
         self._renderer = renderer
-        self._character_profile = character_profile
+        self._identity = identity
         self._memory_root = memory_root
         self._memsearch = memsearch
         self._transcripts_root = transcripts_root
@@ -194,7 +195,7 @@ class EventDispatcher:
             available_skills = []
         system = self._renderer.render(
             "scaffolding",
-            character=self._character_profile,
+            identity=self._identity,
             available_skills=available_skills,
         )
 

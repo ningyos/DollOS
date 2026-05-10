@@ -3,12 +3,21 @@
 import pytest
 from jinja2 import TemplateNotFound
 
+from dollos.character import Identity
 from dollos.prompts import PromptRenderer
+
+
+def _identity(
+    self_: str = "You are Doll.",
+    personality: str = "- chill",
+    taboos: str = "- no LARP",
+) -> Identity:
+    return Identity(self=self_, personality=personality, taboos=taboos)
 
 
 def test_render_scaffolding_with_character_includes_text():
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Gura.")
+    out = renderer.render("scaffolding", identity=_identity(self_="You are Gura."))
     assert "You are Gura." in out
 
 
@@ -74,7 +83,7 @@ def test_render_blocks_unknown_template_raises():
 
 def test_scaffolding_includes_meta_rule_about_multi_try():
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render("scaffolding", identity=_identity())
     assert "嘗試多次" in out or "tried multiple times" in out.lower()
     assert "換方法" in out or "change approach" in out.lower() or "different" in out.lower()
     assert "停止" in out or "stop" in out.lower()
@@ -85,7 +94,7 @@ def test_scaffolding_omits_skills_section_when_no_skills_available():
     never see InvokeSkill / skill_bodies references when no skills exist."""
     renderer = PromptRenderer()
     out = renderer.render(
-        "scaffolding", character="You are Doll.", available_skills=[]
+        "scaffolding", identity=_identity(), available_skills=[]
     )
     assert "# Skills" not in out
     assert "InvokeSkill" not in out
@@ -95,7 +104,7 @@ def test_scaffolding_omits_skills_section_when_no_skills_available():
 def test_scaffolding_omits_skills_section_when_argument_missing():
     """Same as above but available_skills not passed at all."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render("scaffolding", identity=_identity())
     assert "# Skills" not in out
     assert "InvokeSkill" not in out
     assert "skill_bodies" not in out
@@ -107,7 +116,7 @@ def test_scaffolding_renders_skill_list_when_available():
     renderer = PromptRenderer()
     out = renderer.render(
         "scaffolding",
-        character="You are Doll.",
+        identity=_identity(),
         available_skills=["morning", "bedtime"],
     )
     assert "# Skills" in out
@@ -123,7 +132,7 @@ def test_scaffolding_has_partitioned_sections():
     renderer = PromptRenderer()
     out = renderer.render(
         "scaffolding",
-        character="You are Doll.",
+        identity=_identity(),
         available_skills=["x"],
     )
     assert "# Identity" in out
@@ -135,7 +144,7 @@ def test_scaffolding_has_partitioned_sections():
 def test_scaffolding_includes_think_bridging_rule():
     """Behavior section explains tool result -> think bridging."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render("scaffolding", identity=_identity())
     assert "Tool 結果回來" in out or "tool" in out.lower()
     assert "<think>" in out
 
@@ -143,7 +152,7 @@ def test_scaffolding_includes_think_bridging_rule():
 def test_scaffolding_includes_act_after_thinking_rule():
     """Behavior section explicitly forbids ACTION: / plan plaintext."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render("scaffolding", identity=_identity())
     assert "思考後動手" in out
     assert "ACTION" in out  # mentioned as anti-pattern
 
@@ -152,7 +161,7 @@ def test_scaffolding_memory_section_includes_curiosity_fallback():
     """The # Memory section includes the don't-know fallback flow:
     Recall first, then ask user, then NoteMemory after they tell."""
     renderer = PromptRenderer()
-    rendered = renderer.render("scaffolding", character="Test")
+    rendered = renderer.render("scaffolding", identity=_identity(self_="Test"))
     # Anchor on the `# Memory` section.
     assert "# Memory" in rendered
     # The fallback flow mentions both tools by name.
@@ -168,7 +177,7 @@ def test_scaffolding_has_think_structure_section():
     is for. REVIEW is the self-reflection slot that unblocks cascade
     looping."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", character="You are Doll.")
+    out = renderer.render("scaffolding", identity=_identity())
     assert "# Think structure" in out
     for label in ("SEEN", "INTENT", "REVIEW", "TOOL"):
         assert f"**{label}**:" in out, f"missing labeled bullet for {label}"
@@ -178,8 +187,26 @@ def test_scaffolding_behavior_disambiguates_user_first_person():
     """Model previously misread user '我' as referring to Doll (T2 fabrication
     bug). Scaffolding now anchors '我' = speaker = user."""
     renderer = PromptRenderer()
-    rendered = renderer.render("scaffolding", character="Test")
+    rendered = renderer.render("scaffolding", identity=_identity(self_="Test"))
     assert "主人說的「我」永遠是主人" in rendered
+
+
+def test_scaffolding_renders_identity_sections():
+    """Scaffolding renders all three Identity fields under labeled sections."""
+    renderer = PromptRenderer()
+    identity = Identity(
+        self="我是測試 Doll。",
+        personality="- 簡短\n- 好奇",
+        taboos="- 不 LARP",
+    )
+    out = renderer.render("scaffolding", identity=identity)
+    assert "# Identity" in out
+    assert "我是測試 Doll。" in out
+    assert "## 個性" in out
+    assert "- 簡短" in out
+    assert "- 好奇" in out
+    assert "## 禁忌" in out
+    assert "- 不 LARP" in out
 
 
 def test_iv_compact_template_renders_with_perception_and_messages():

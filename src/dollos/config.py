@@ -54,9 +54,9 @@ class MemsearchConfig(BaseModel):
 class CharacterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    profile_path: Path
+    pack: Path
 
-    @field_validator("profile_path", mode="before")
+    @field_validator("pack", mode="before")
     @classmethod
     def _expand_user(cls, v: object) -> object:
         if isinstance(v, str):
