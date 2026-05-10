@@ -22,6 +22,7 @@ from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
+from dollos.process_registry import ProcessRegistry
 from dollos.prompts import PromptRenderer
 from dollos.subagent import SubagentRunner
 
@@ -125,6 +126,11 @@ class DollOS:
         cascade_log_root = settings.data.root / "cascade_log"
         configure_cascade_logging(cascade_log_root)
         self._cascade_logger = CascadeLogger(cascade_log_root)
+        # Phase 2: shared registry for async Shell handles. Both main
+        # cascade (via dispatcher) and subagents (via SubagentRunner)
+        # use the same instance — one global registry keeps handle
+        # namespace consistent across the daemon.
+        self.process_registry = ProcessRegistry()
         # Two-stage wiring: SubagentRunner needs a dispatch_fn, dispatcher
         # needs a runner. Build runner first with no dispatch_fn, then build
         # dispatcher referencing the runner, then point runner at
@@ -135,6 +141,7 @@ class DollOS:
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
+            process_registry=self.process_registry,
         )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
@@ -147,6 +154,7 @@ class DollOS:
             transcripts_root=settings.data.root / "memory" / "transcripts",
             subagent_runner=self.subagent_runner,
             cascade_logger=self._cascade_logger,
+            process_registry=self.process_registry,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.server = WebSocketServer(
@@ -348,5 +356,7 @@ class DollOS:
                 # explicit per plan).
                 await self.subagent_runner.stop()
                 await self.dispatcher.stop()
+                # Kill any background Shell subprocesses still running.
+                await self.process_registry.shutdown()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based

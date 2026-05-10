@@ -14,9 +14,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import subprocess
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -25,6 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
+from dollos.process_registry import ProcessRegistry
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -33,9 +33,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SHELL_DEFAULT_TIMEOUT_S = 30
-SHELL_MAX_TIMEOUT_S = 300
 SHELL_OUTPUT_MAX_CHARS = 8000
+MONITOR_DEFAULT_TIMEOUT_S = 60
+MONITOR_MAX_TIMEOUT_S = 600
 
 _FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
 
@@ -103,6 +103,7 @@ class ToolCtx:
     transcripts_root: Path
     subagent_runner: "SubagentRunner | None" = None
     subagent_report: dict | None = None
+    process_registry: ProcessRegistry | None = None
 
 
 class Say(BaseModel):
@@ -166,48 +167,93 @@ class WriteDiary(BaseModel):
 
 
 class Shell(BaseModel):
-    """Execute a shell command. Returns combined stdout+stderr.
+    """Spawn a shell command in the background. Returns a handle immediately.
 
-    Subprocess runs with the daemon's user permissions. Working directory
-    starts at settings.data.root each call (cd does NOT persist between
-    calls — each Shell invocation is a fresh subprocess).
+    The command runs as a fresh subprocess (no cd persistence between calls)
+    with the daemon's user permissions and ``cwd = data/`` (the parent of
+    memory/). stdout + stderr are merged on the pipe.
 
-    Use this for any system inspection (ls, cat, find, ps, ...) or any
-    command-line task. Output is truncated to 8000 chars total if longer.
+    This call **does not block** — Shell returns a handle string like
+    ``"sh-1"``. Use ``Monitor(handle=...)`` to wait for the output and exit
+    code. For short commands (pwd, ls), feel free to emit Shell + Monitor in
+    the same cascade iteration; for long commands, you can do other work and
+    Monitor later.
     """
 
     command: str = Field(
         description="The shell command to run (will be passed to bash -c)."
     )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        if ctx.process_registry is None:
+            return (
+                "[Shell unavailable: no process_registry on this ctx — "
+                "cannot dispatch background subprocess]"
+            )
+        cwd = ctx.memory_root.parent
+        proc = await asyncio.create_subprocess_shell(
+            self.command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd),
+        )
+        handle = ctx.process_registry.register(proc, self.command)
+        return (
+            f"shell {handle} dispatched (command={self.command!r}). "
+            f"Use Monitor({handle!r}) to wait."
+        )
+
+
+class Monitor(BaseModel):
+    """Wait for a background process (from Shell) to finish.
+
+    Blocks the cascade iteration until the process exits or the timeout
+    elapses. On success, returns ``[exit N]\\n{output}`` (output truncated
+    to 8000 chars). On timeout, the process is left running — Monitor again
+    or Cancel it.
+    """
+
+    handle: str = Field(
+        description="Handle returned by Shell (e.g., 'sh-1')."
+    )
     timeout_s: int = Field(
-        default=SHELL_DEFAULT_TIMEOUT_S,
+        default=MONITOR_DEFAULT_TIMEOUT_S,
         ge=1,
-        le=SHELL_MAX_TIMEOUT_S,
+        le=MONITOR_MAX_TIMEOUT_S,
         description=(
-            f"Seconds before timeout. Default {SHELL_DEFAULT_TIMEOUT_S}, "
-            f"max {SHELL_MAX_TIMEOUT_S}."
+            f"Wait at most this many seconds. Default "
+            f"{MONITOR_DEFAULT_TIMEOUT_S}, max {MONITOR_MAX_TIMEOUT_S}."
         ),
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        cwd = ctx.memory_root.parent
-        try:
-            proc = await asyncio.to_thread(
-                subprocess.run,
-                ["bash", "-c", self.command],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_s,
+        if ctx.process_registry is None:
+            return (
+                "[Monitor unavailable: no process_registry on this ctx]"
             )
-        except subprocess.TimeoutExpired:
-            return f"[shell timeout after {self.timeout_s}s]"
-        combined = proc.stdout
-        if proc.stderr:
-            combined += proc.stderr
-        prefix = f"[exit {proc.returncode}]\n"
-        body = _truncate(combined, SHELL_OUTPUT_MAX_CHARS)
-        return prefix + body
+        managed = ctx.process_registry.get(self.handle)
+        if managed is None:
+            return (
+                f"unknown handle {self.handle!r} "
+                f"(already monitored or not found)"
+            )
+        proc = managed.proc
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self.timeout_s
+            )
+        except asyncio.TimeoutError:
+            # Keep the handle around so Doll can Monitor again or Cancel.
+            return (
+                f"Monitor({self.handle!r}) timed out after "
+                f"{self.timeout_s}s. Process still running. "
+                f"Use Monitor again or Cancel."
+            )
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+        ctx.process_registry.remove(self.handle)
+        return _truncate(
+            f"[exit {proc.returncode}]\n{output}", SHELL_OUTPUT_MAX_CHARS
+        )
 
 
 class InvokeSkill(BaseModel):
@@ -429,12 +475,12 @@ class WriteSchedule(BaseModel):
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, InvokeSkill, Recall,
-    SpawnSubagent,
+    Say, NoteMemory, WriteDiary, WriteSchedule, Shell, Monitor, InvokeSkill,
+    Recall, SpawnSubagent,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
-    Shell, NoteMemory, Recall, InvokeSkill, Report,
+    Shell, Monitor, NoteMemory, Recall, InvokeSkill, Report,
 ]
 
 # Back-compat alias — many modules / tests import TOOLS directly.
