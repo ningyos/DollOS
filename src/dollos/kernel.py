@@ -7,9 +7,11 @@ from datetime import datetime, timedelta
 
 from memsearch import MemSearch
 
+from dollos.cascade_log import CascadeLogger
 from dollos.character import DollPack
 from dollos.config import Settings
 from dollos.dispatcher import EventDispatcher
+from dollos.logging_config import configure_cascade_logging
 from dollos.events import DiaryEvent, UserTextEvent
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct, SmallModelInstinct
@@ -119,6 +121,9 @@ class DollOS:
         self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
         self.instinct = build_instinct(settings, self.renderer)
         self._doll_pack = DollPack.load(settings.character.pack)
+        cascade_log_root = settings.data.root / "cascade_log"
+        configure_cascade_logging(cascade_log_root)
+        self._cascade_logger = CascadeLogger(cascade_log_root)
         # Two-stage wiring: SubagentRunner needs a dispatch_fn, dispatcher
         # needs a runner. Build runner first with no dispatch_fn, then build
         # dispatcher referencing the runner, then point runner at
@@ -140,6 +145,7 @@ class DollOS:
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
             subagent_runner=self.subagent_runner,
+            cascade_logger=self._cascade_logger,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.server = WebSocketServer(
