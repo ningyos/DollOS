@@ -54,6 +54,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "WriteSchedule": "write-schedule-call",
         "Shell": "shell-call",
         "Monitor": "monitor-call",
+        "Cancel": "cancel-call",
         "InvokeSkill": "invoke-skill-call",
         "Recall": "recall-call",
         "SpawnSubagent": "spawn-subagent-call",

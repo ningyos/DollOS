@@ -22,6 +22,9 @@
 - **Shell 是 async**：返回 handle 不 block。要看結果用 Monitor(handle) 等。
   - 短任務（pwd, ls）：可以同 cascade emit Shell + Monitor
   - 長任務（網路、build）：emit Shell 後可以做別的事，再回來 Monitor
+- **Monitor 可能 early-return**：等待中如果有 pending event 進來，Monitor 會回「interrupted by pending event. Process still running.」。看到這訊息：
+  - 想處理 pending → Say 收尾或回應，process 留著（不要的話用 Cancel(handle) 收）
+  - 想繼續看同一個 process → 再 emit Monitor(handle)，但 stdout 已被部分消費，可能拿不到完整輸出。乾淨重跑就 Cancel + 重 Shell。
 
 # Think structure
 

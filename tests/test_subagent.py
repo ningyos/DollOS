@@ -475,6 +475,10 @@ async def test_subagent_ctx_has_process_registry(tmp_path: Path):
 
         assert captured, "tool was not invoked inside sub-cascade"
         assert captured[0].process_registry is registry
+        # Phase 3: subagent's ToolCtx never inherits a pending_signal —
+        # sub-cascades have their own loop and shouldn't early-return on
+        # the main dispatcher's pending queue.
+        assert captured[0].pending_signal is None
     finally:
         SUB_TOOLS.clear()
         SUB_TOOLS.extend(SUB_TOOLS_orig)
