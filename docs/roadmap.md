@@ -294,6 +294,33 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 19. Mood — Self-First emotional state via big-model think field  ✅ Merged
+
+**動機**：Spec §8 Self-First killer feature。Doll 該有持續的情緒狀態，每 cascade 演化、surface 進下個 perception 影響行為、可被 Recall。
+
+**設計轉折**：原計畫小模型 post-hoc compact 同時出 summary + mood。實作後發現小模型寫 mood 不可靠（meta leak、paragraph 爆炸、思考出聲）— 0.6-1.7B 模型在 cascade 上下文壓力下分不清 emotional snapshot 跟 cascade summary。
+
+**改設計**：mood 由大模型在 `<think>` 區塊內決定（B4-typed grammar 加第 5 欄位 MOOD，介於 REVIEW 和 TOOL 之間）。
+
+範圍：
+- Grammar：`think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "MOOD: " line "TOOL: " tool-name "</think>"`
+- Scaffolding `# Think structure` 加 MOOD 欄位描述（範例「平淡」/「有點累」/「好奇主人提的新東西」/「鬆了一口氣」）
+- Dispatcher：`_current_mood: str` 默認「平靜，剛醒來」；`[Mood]` block 注入 perception（在 `[Now]` 後）；cascade 結束 parse last assistant 的 MOOD line → update + persist
+- Persistence：`data/memory/mood/{date}.md` 累積 `## (HH:MM:SS) {mood}` lines；memsearch.index_file 索引 → Doll 可 Recall 過去心情
+- 小模型 `compact_cascade` 簡化回 summary-only
+
+**沒做的**（incremental）：discrete emotion categories、PAD 模型、衰減 timer、mood-gated reflex、跨 daemon restart 持久化、character-level mood baseline。
+
+**為什麼大模型寫好過小模型**：
+- B4 grammar 強約束 — 不會 paragraph 爆炸
+- 大模型語境敏感 — 不寫 meta annotations
+- 哲學上：mood 是 Doll **此刻怎麼感受**，不是觀察者事後評
+- 整合 deliberation：mood 跟 SEEN/INTENT/REVIEW 一起評估，model 用 mood guide 自己語氣
+
+Smoke：T1-T8 ~7/8。Mood 條目全部單句乾淨：「平靜、溫和。」「平靜但帶點好奇，因為主人剛醒來問問題。」「平靜，幫主人記筆記。」T1 行為「早安呀，今天週日想做點什麼？」展示 time + mood + character 完整整合。
+
+Tests：282 passed。
+
 ### 18. Time awareness — [Now] block + HH:MM:SS + time-aware Recall  ✅ Merged
 
 **動機**：DollOS 有檔案系統級時間（`{YYYY-MM-DD}.md` 檔名、`[HH:MM role]` 行 prefix、diary header），但 **Doll 的 perception 無時間感**。Diary、memory、recall 都該有時間軸才合理。
