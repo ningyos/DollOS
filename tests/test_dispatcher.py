@@ -11,7 +11,12 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from dollos.character import Identity
 from dollos.dispatcher import EventDispatcher, ToolResult
+
+
+def _doll_identity(self_: str = "You are Doll.") -> Identity:
+    return Identity(self=self_, personality="- chill", taboos="- no LARP")
 from dollos.events import RawEvent, UserTextEvent
 from dollos.ipc.messages import ErrorMsg, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -212,7 +217,7 @@ def _make_dispatcher(
         inner_voice=inner_voice,
         instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
-        character_profile="You are Doll.",
+        identity=_doll_identity(),
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
@@ -455,7 +460,7 @@ async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="You are Doll.",
+        identity=_doll_identity(),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -499,7 +504,7 @@ async def test_dispatcher_uses_stream_messages_not_stream_completion(tmp_path: P
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="You are Doll.",
+        identity=_doll_identity(),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -537,7 +542,7 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="You are Doll.",
+        identity=_doll_identity(),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -579,7 +584,7 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="You are Doll.",
+        identity=_doll_identity(),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -619,7 +624,7 @@ async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -654,7 +659,7 @@ async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -692,7 +697,7 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -731,7 +736,7 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -760,7 +765,7 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -784,7 +789,7 @@ async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -809,7 +814,7 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -833,7 +838,7 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -862,7 +867,7 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -889,7 +894,7 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -945,7 +950,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1003,7 +1008,7 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1050,7 +1055,7 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1088,7 +1093,7 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
     transcripts_root = tmp_path / "transcripts"
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
     )
@@ -1137,7 +1142,7 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
     transcripts_root = tmp_path / "transcripts"
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
     )
@@ -1180,7 +1185,7 @@ async def test_dispatch_tool_call_returns_none_when_tool_run_returns_none(tmp_pa
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1209,7 +1214,7 @@ async def test_dispatch_tool_call_returns_success_result_when_tool_returns_str(t
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1240,7 +1245,7 @@ async def test_dispatch_tool_call_returns_success_result_with_empty_str(tmp_path
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
         inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1304,7 +1309,7 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1376,7 +1381,7 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1696,7 +1701,7 @@ async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_pa
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=_SpyRenderer(), character_profile="x",
+        renderer=_SpyRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1729,7 +1734,7 @@ async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path)
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1794,7 +1799,7 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1830,7 +1835,7 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1879,7 +1884,7 @@ async def test_dispatcher_compact_called_with_full_cascade_messages(tmp_path: Pa
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1929,7 +1934,7 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -1963,7 +1968,7 @@ async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, ca
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), character_profile="x",
+        renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
     )
@@ -2021,7 +2026,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="x",
+        identity=_doll_identity("x"),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -2102,7 +2107,7 @@ async def test_dispatcher_passes_subagent_runner_into_tool_ctx(tmp_path: Path):
         inner_voice=iv,
         instinct=inst,
         renderer=PromptRenderer(),
-        character_profile="x",
+        identity=_doll_identity("x"),
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
