@@ -294,6 +294,24 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 22. Async Shell + Monitor + ProcessRegistry — Phase 2 of 4  ✅ Merged
+
+**範圍**：
+- 新模組 `process_registry.py`：`ProcessRegistry` 追蹤 running subprocess，handle 格式 `sh-N`，shutdown 時 kill 殘留
+- `Shell` 改 async：return handle "shell sh-1 dispatched..."，**不 block**；`timeout_s` 欄位移除（Monitor 處理）
+- 新 `Monitor(handle, timeout_s)` tool：block 直到 process 退出或 timeout；返回 `[exit N]\n{output}` truncated
+- `ToolCtx` 加 `process_registry`；kernel/dispatcher/SubagentRunner 全 thread through
+- Scaffolding `# Behavior` 加 async 模式提示
+
+**Trade-off**：
+- 短 Shell 任務變 2 iter（vs 之前 1 iter），多 ~3-5s big-model latency
+- 長 Shell 任務 cascade 不再 freeze
+- Phase 3 加 Monitor early-return 才完整補回
+
+**Smoke 驗證**：T1-T8 8/8。Doll 自然學 async pattern：T4 pwd 走 `Shell→Monitor→Say`（3 iter）；T5 ls data 跑 2 條 Shell+Monitor pair（5 iter，Doll pwd + ls）；T8 build skill 同 2-Shell pattern。
+
+**Tests**：337 passed（12+ new across process_registry / tools / dispatcher / kernel / subagent / llm_grammar）。
+
 ### 21. Schedule + pending awareness — Phase 1 of 4  ✅ Merged
 
 **動機**：Doll 是 event-driven agent 不是 chatbot。她該能規劃自己一天時程、按時間執行、面對中斷時知道有事情排隊等。Phase 1 是 4-phase 大計劃的基礎。
