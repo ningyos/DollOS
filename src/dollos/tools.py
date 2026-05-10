@@ -14,10 +14,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,8 @@ from dollos.memory_writer import append_transcript
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
+
+    from dollos.subagent import SubagentRunner
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +49,24 @@ def _truncate(text: str, cap: int) -> str:
 
 @dataclass
 class ToolCtx:
-    """Narrow execution context passed to Tool.run()."""
+    """Narrow execution context passed to Tool.run().
 
-    sink: asyncio.Queue[ServerMessage | None]
+    `subagent_runner` is set on the main-cascade ctx so SpawnSubagent can
+    schedule background workers; remains None inside a sub-cascade (and
+    SUB_TOOLS doesn't include SpawnSubagent anyway, so subagent recursion
+    is structurally impossible).
+
+    `subagent_report` is None in the main cascade and set by the Report
+    tool inside a sub-cascade — SubagentRunner reads it back to build the
+    SubagentResultEvent.
+    """
+
+    sink: asyncio.Queue[ServerMessage | None] | None
     memory_root: Path
     memsearch: MemSearch
     transcripts_root: Path
+    subagent_runner: "SubagentRunner | None" = None
+    subagent_report: dict | None = None
 
 
 class Say(BaseModel):
@@ -214,6 +229,96 @@ class Recall(BaseModel):
         return "\n".join(f"- {h['content']}" for h in hits)
 
 
-TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, Shell, InvokeSkill, Recall,
+class SpawnSubagent(BaseModel):
+    """Dispatch an ephemeral sub-worker to handle a task in the background.
+
+    Returns immediately with a dispatch confirmation. The subagent runs in
+    parallel with its own minimal toolset (Shell / NoteMemory / Recall /
+    InvokeSkill / Report) and MUST end by calling Report. When it finishes
+    (or times out / errors), the structured outcome comes back as a NEW
+    turn's perception — you'll see it as a fresh user message starting with
+    「你派出的 subagent 回來了」 and can react to it then.
+    """
+
+    task: str = Field(
+        description=(
+            "What the subagent should do. Be concrete: it has no character, "
+            "no memory context, and no Doll persona — just the SUB_TOOLS toolkit "
+            "and this single instruction string."
+        )
+    )
+    timeout_s: int = Field(
+        ge=1,
+        le=600,
+        description=(
+            "Wall-clock seconds before the subagent is killed. Estimate from "
+            "task complexity (30 short, 300 long; max 600). No default — pick "
+            "a number every time."
+        ),
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        if ctx.subagent_runner is None:
+            return (
+                "[SpawnSubagent unavailable: no subagent runner on this ctx — "
+                "you may be running inside a subagent, which cannot recurse]"
+            )
+        sub_id = str(uuid.uuid4())[:8]
+        ctx.subagent_runner.spawn(
+            sub_id=sub_id,
+            task=self.task,
+            timeout_s=self.timeout_s,
+            response_sink=ctx.sink,
+        )
+        return (
+            f"subagent {sub_id} dispatched "
+            f"(task={self.task!r}, timeout={self.timeout_s}s). "
+            f"Result will arrive as a new turn when it finishes."
+        )
+
+
+class Report(BaseModel):
+    """Terminate this subagent and report the structured outcome to Doll.
+
+    Subagent-only tool. MUST be called exactly once before the subagent ends
+    — the cascade ends naturally after the call (Report.run returns None).
+    The args become the SubagentResultEvent fields Doll sees on her next turn.
+    """
+
+    status: Literal["ok", "incomplete"] = Field(
+        description=(
+            "ok = task completed as requested. "
+            "incomplete = partially done (give details on why)."
+        )
+    )
+    summary: str = Field(
+        description="One-sentence summary of what happened."
+    )
+    details: str = Field(
+        description=(
+            "Findings / output / data Doll asked for. Plain text. "
+            "Include enough that Doll can act on it without re-running you."
+        )
+    )
+
+    async def run(self, ctx: ToolCtx) -> None:
+        # Side-effect: stash args into ctx for SubagentRunner to pick up.
+        # Returning None ends the cascade naturally (no tool_response cycle).
+        ctx.subagent_report = {
+            "status": self.status,
+            "summary": self.summary,
+            "details": self.details,
+        }
+        return None
+
+
+MAIN_TOOLS: list[type[BaseModel]] = [
+    Say, NoteMemory, WriteDiary, Shell, InvokeSkill, Recall, SpawnSubagent,
 ]
+
+SUB_TOOLS: list[type[BaseModel]] = [
+    Shell, NoteMemory, Recall, InvokeSkill, Report,
+]
+
+# Back-compat alias — many modules / tests import TOOLS directly.
+TOOLS: list[type[BaseModel]] = MAIN_TOOLS

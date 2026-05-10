@@ -1981,3 +1981,137 @@ async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, ca
     assert disp._rolling == []
     # Failure was logged.
     assert any("compact_cascade" in r.message for r in caplog.records)
+
+
+# ----- SubagentResultEvent (2026-05-09) -----
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
+    """SubagentResultEvent flows through perceive/respond. The first user
+    message body contains all four subagent fields (task / status /
+    summary / details) so Doll can react to them."""
+    from dollos.events import SubagentResultEvent
+
+    captured_user_message: list[str] = []
+
+    class _CaptureAdapter:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        async def stream_messages(self, **kw):
+            self.calls.append(
+                {**kw, "messages": list(kw["messages"])}
+                if "messages" in kw
+                else kw
+            )
+            captured_user_message.append(kw["messages"][0]["content"])
+            yield StreamChunk(
+                text='<tool_call>{"name":"Say","arguments":{"text":"ack"}}</tool_call>',
+                done=False,
+            )
+            yield StreamChunk(text="", done=True)
+
+    adapter = _CaptureAdapter()
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="x",
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+    )
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(
+        SubagentResultEvent(
+            subagent_id="abc1",
+            task="search transcripts for coffee",
+            status="ok",
+            summary="found 3 hits",
+            details="a.md, b.md, c.md",
+            response_sink=sink,
+        )
+    )
+    items = await _drain(sink)
+
+    # The perception (which becomes [Message] body) lists all four fields.
+    perception_body = captured_user_message[0]
+    assert "你派出的 subagent 回來了" in perception_body
+    assert "search transcripts for coffee" in perception_body
+    assert "ok" in perception_body
+    assert "found 3 hits" in perception_body
+    assert "a.md, b.md, c.md" in perception_body
+    # Doll responded with Say "ack" (we wired the adapter that way).
+    assert any(isinstance(m, TextChunk) and m.text == "ack" for m in items)
+    assert any(isinstance(m, TurnEnd) for m in items)
+
+
+@pytest.mark.asyncio
+async def test_subagent_result_event_uses_event_response_sink(tmp_path: Path):
+    """_sink_of(SubagentResultEvent) returns event.response_sink."""
+    from dollos.events import SubagentResultEvent
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ev = SubagentResultEvent(
+        subagent_id="x",
+        task="t",
+        status="ok",
+        summary="s",
+        details="d",
+        response_sink=sink,
+    )
+    assert EventDispatcher._sink_of(ev) is sink
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_passes_subagent_runner_into_tool_ctx(tmp_path: Path):
+    """When a subagent_runner is wired, _respond's ToolCtx carries it
+    through so SpawnSubagent.run() can dispatch new tasks."""
+
+    captured: list[object] = []
+
+    class _CaptureRunnerTool(BaseModel):
+        async def run(self, ctx) -> None:
+            # Side-effect capture; return None so cascade ends after this iter.
+            captured.append(ctx.subagent_runner)
+
+    class _FakeRunner:
+        def __repr__(self) -> str:
+            return "FAKE_RUNNER"
+
+    runner = _FakeRunner()
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text='<tool_call>{"name":"_CaptureRunner","arguments":{}}</tool_call>',
+                done=True,
+            ),
+        ]
+    )
+    iv = _FakeInnerVoice()
+    inst = _FakeInstinct(summaries=[""])
+    ms = _FakeMemSearch()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=inst,
+        renderer=PromptRenderer(),
+        character_profile="x",
+        memory_root=tmp_path,
+        memsearch=ms,
+        transcripts_root=tmp_path / "transcripts",
+        subagent_runner=runner,  # type: ignore[arg-type]
+    )
+    disp._tools_by_name["_CaptureRunner"] = _CaptureRunnerTool
+
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+    # Tool ran exactly once and saw `runner` in ctx.
+    assert captured == [runner]
