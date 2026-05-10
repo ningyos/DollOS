@@ -1,7 +1,8 @@
 """WebSocket IPC server."""
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Awaitable, Callable
 
 import websockets
 from websockets.asyncio.server import ServerConnection, serve
@@ -17,15 +18,24 @@ from dollos.ipc.messages import (
 logger = logging.getLogger(__name__)
 
 
-Handler = Callable[[TextInput], AsyncIterator[ServerMessage]]
-"""A handler takes a typed client message and yields server messages."""
+Handler = Callable[
+    [TextInput, "asyncio.Queue[ServerMessage | None]"], Awaitable[None]
+]
+"""A handler takes a typed client message and a per-connection sink.
+
+It dispatches work and returns immediately. Output is delivered
+asynchronously through the sink, drained by the connection's pump task.
+"""
 
 
 class WebSocketServer:
     """Async WebSocket server.
 
-    Each incoming client message is dispatched to the handler callback. The
-    handler is expected to yield a stream of ServerMessage objects.
+    Each connection owns a persistent sink Queue and a pump task. Incoming
+    client messages are handed to the handler with the sink; the handler
+    dispatches and returns. The pump drains the sink to ws.send forever
+    until the connection closes. None items in the sink are turn separators
+    (skipped), not stream terminators.
     """
 
     def __init__(self, host: str, port: int, handler: Handler):
@@ -54,6 +64,8 @@ class WebSocketServer:
 
     async def _on_connect(self, ws: ServerConnection) -> None:
         logger.info("client connected: %s", ws.remote_address)
+        sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
+        pump_task = asyncio.create_task(self._pump(ws, sink), name="ipc-pump")
         try:
             async for raw in ws:
                 if not isinstance(raw, str):
@@ -64,13 +76,41 @@ class WebSocketServer:
                 except ValueError as e:
                     await self._send_error(ws, f"decode error: {e}")
                     continue
-
-                async for out in self._handler(msg):
-                    await ws.send(encode_server_message(out))
+                await self._handler(msg, sink)
         except websockets.exceptions.ConnectionClosed:
             pass
         finally:
+            pump_task.cancel()
+            try:
+                await pump_task
+            except asyncio.CancelledError:
+                pass
             logger.info("client disconnected: %s", ws.remote_address)
+
+    async def _pump(
+        self,
+        ws: ServerConnection,
+        sink: "asyncio.Queue[ServerMessage | None]",
+    ) -> None:
+        """Drain sink → ws.send forever.
+
+        None items are turn separators (skip and keep going); only
+        connection close or task cancellation terminates the pump.
+        """
+        try:
+            while True:
+                item = await sink.get()
+                if item is None:
+                    continue  # turn separator, not stream end
+                try:
+                    await ws.send(encode_server_message(item))
+                except websockets.exceptions.ConnectionClosed:
+                    return
+                except Exception:
+                    logger.exception("pump send failed")
+                    return
+        except asyncio.CancelledError:
+            return
 
     async def _send_error(self, ws: ServerConnection, message: str) -> None:
         await ws.send(encode_server_message(ErrorMsg(message=message)))
