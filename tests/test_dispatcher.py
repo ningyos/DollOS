@@ -2980,3 +2980,26 @@ async def test_dispatcher_provides_pending_signal_to_tool_ctx(tmp_path: Path):
 
     assert captured, "tool didn't run"
     assert captured[0] is dispatcher._pending_signal
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_perceives_shell_result_event(tmp_path: Path):
+    from dollos.events import ShellResultEvent
+
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    sink: asyncio.Queue = asyncio.Queue()
+    ev = ShellResultEvent(
+        command="ls /tmp",
+        status="ok",
+        exit_code=0,
+        output="a\nb\n",
+        response_sink=sink,
+    )
+    doll_event = await dispatcher._perceive(ev)
+    p = doll_event.perception
+    assert "shell 命令" in p or "Shell 命令" in p
+    assert "ls /tmp" in p
+    assert "exit 0" in p
+    assert "a\nb" in p
