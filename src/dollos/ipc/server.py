@@ -38,11 +38,24 @@ class WebSocketServer:
     (skipped), not stream terminators.
     """
 
-    def __init__(self, host: str, port: int, handler: Handler):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        handler: Handler,
+        *,
+        on_connect: (
+            Callable[["asyncio.Queue[ServerMessage | None]"], Awaitable[None]]
+            | None
+        ) = None,
+        on_disconnect: Callable[[], Awaitable[None]] | None = None,
+    ):
         self._host = host
         self._port_requested = port
         self._handler = handler
         self._server: websockets.asyncio.server.Server | None = None
+        self._on_connect_hook = on_connect
+        self._on_disconnect_hook = on_disconnect
 
     @property
     def port(self) -> int | None:
@@ -66,6 +79,11 @@ class WebSocketServer:
         logger.info("client connected: %s", ws.remote_address)
         sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
         pump_task = asyncio.create_task(self._pump(ws, sink), name="ipc-pump")
+        if self._on_connect_hook is not None:
+            try:
+                await self._on_connect_hook(sink)
+            except Exception:
+                logger.exception("on_connect hook failed")
         try:
             async for raw in ws:
                 if not isinstance(raw, str):
@@ -85,6 +103,11 @@ class WebSocketServer:
                 await pump_task
             except asyncio.CancelledError:
                 pass
+            if self._on_disconnect_hook is not None:
+                try:
+                    await self._on_disconnect_hook()
+                except Exception:
+                    logger.exception("on_disconnect hook failed")
             logger.info("client disconnected: %s", ws.remote_address)
 
     async def _pump(
