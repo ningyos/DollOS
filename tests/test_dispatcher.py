@@ -198,6 +198,22 @@ class _FakeMemSearch:
         return self._hits
 
 
+class _FakeCascadeLogger:
+    """Records start_turn/log_iter calls for assertion."""
+
+    def __init__(self) -> None:
+        self.turn_ids: list[str] = []
+        self.iters: list[dict] = []
+
+    def start_turn(self) -> str:
+        tid = f"fake-turn-{len(self.turn_ids) + 1}"
+        self.turn_ids.append(tid)
+        return tid
+
+    def log_iter(self, **kwargs) -> None:
+        self.iters.append(dict(kwargs))
+
+
 def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
     return ToolCtx(
         sink=sink,
@@ -2449,3 +2465,94 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
 
     second_user = adapter.calls[1]["messages"][0]["content"]
     assert "[Mood]\n第一輪心情" in second_user
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_logs_cascade_iter_per_iter(tmp_path: Path):
+    """Cascade with one failing tool then a successful Say should log_iter twice."""
+    adapter = _FakeAdapter(
+        chunks=[
+            # Iter 1: emit a tool that doesn't exist -> failure -> cascade
+            StreamChunk(
+                text=(
+                    "<think>\nSEEN: hi\nINTENT: try\nREVIEW: -\n"
+                    "MOOD: ok\nTOOL: Bogus\n</think>\n"
+                    '<tool_call>{"name":"Bogus","arguments":{}}</tool_call>'
+                ),
+                done=True,
+            ),
+        ]
+    )
+    # Second adapter response (after cascade) — must drain via re-call:
+    # _FakeAdapter replays the same `chunks` each call, so the second call
+    # also produces the bogus tool. Cascade aborts on consecutive 3 fails;
+    # we just need >=2 iters logged. Run until natural termination.
+    iv = _FakeInnerVoice("")
+    fcl = _FakeCascadeLogger()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=_FakeInstinct(),
+        renderer=PromptRenderer(),
+        identity=_doll_identity(),
+        memory_root=tmp_path,
+        memsearch=_FakeMemSearch(),
+        transcripts_root=tmp_path / "transcripts",
+        cascade_logger=fcl,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    # At least 2 iters logged (cascade ran more than once).
+    assert len(fcl.iters) >= 2
+    # All iters share the same turn_id.
+    turn_ids = {row["turn_id"] for row in fcl.iters}
+    assert len(turn_ids) == 1
+    # Iter numbers increment.
+    assert [row["iter"] for row in fcl.iters[:2]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_log_iter_includes_parsed_think_and_tool_calls(tmp_path: Path):
+    """log_iter receives assistant_text + tool_calls + results from the iter."""
+    adapter = _FakeAdapter(
+        chunks=[
+            StreamChunk(
+                text=(
+                    "<think>\nSEEN: greet\nINTENT: reply\nREVIEW: -\n"
+                    "MOOD: 開心\nTOOL: Say\n</think>\n"
+                    '<tool_call>{"name":"Say","arguments":{"text":"hi"}}</tool_call>'
+                ),
+                done=True,
+            ),
+        ]
+    )
+    iv = _FakeInnerVoice("")
+    fcl = _FakeCascadeLogger()
+    disp = EventDispatcher(
+        adapter=adapter,
+        inner_voice=iv,
+        instinct=_FakeInstinct(),
+        renderer=PromptRenderer(),
+        identity=_doll_identity(),
+        memory_root=tmp_path,
+        memsearch=_FakeMemSearch(),
+        transcripts_root=tmp_path / "transcripts",
+        cascade_logger=fcl,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
+    await _drain(sink)
+
+    assert len(fcl.iters) >= 1
+    first = fcl.iters[0]
+    assert first["turn_id"].startswith("fake-turn-")
+    assert first["iter"] == 1
+    assert "SEEN: greet" in first["assistant_text"]
+    assert first["tool_calls"] == [
+        {"name": "Say", "arguments": {"text": "hi"}}
+    ]
+    # Say returns None -> no ToolResult; results list is empty.
+    assert first["results"] == []
+    assert isinstance(first["duration_ms"], int)
