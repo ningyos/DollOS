@@ -53,8 +53,6 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "WriteDiary": "write-diary-call",
         "WriteSchedule": "write-schedule-call",
         "Shell": "shell-call",
-        "Monitor": "monitor-call",
-        "Cancel": "cancel-call",
         "InvokeSkill": "invoke-skill-call",
         "Recall": "recall-call",
         "SpawnSubagent": "spawn-subagent-call",
@@ -71,7 +69,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
 def test_grammar_per_tool_field_names_match_required_strings():
     """Each tool's call rule must reference its required-string field names.
 
-    Shell.timeout_s is optional → should NOT appear in grammar.
+    Shell.timeout_s is required → MUST appear in grammar.
     """
     g = build_qwen3_think_tool_grammar(TOOLS)
     # Required string fields per tool (current TOOLS definitions):
@@ -79,13 +77,12 @@ def test_grammar_per_tool_field_names_match_required_strings():
     assert r'\"content\":' in g  # WriteDiary
     assert r'\"command\":' in g  # Shell
     assert r'\"name\":' in g  # InvokeSkill (and the envelope "name")
-    # Shell's optional timeout_s must not appear in the Shell call rule
-    # body. SpawnSubagent has a REQUIRED timeout_s so the substring may
-    # appear elsewhere — scope the check to the shell-call line.
+    # Shell.timeout_s is a required integer field — it must appear in
+    # the shell-call rule body.
     shell_rule = next(
         line for line in g.splitlines() if line.startswith("shell-call ::=")
     )
-    assert "timeout_s" not in shell_rule
+    assert "timeout_s" in shell_rule
 
 
 def test_grammar_includes_recall_tool():

@@ -2816,30 +2816,25 @@ async def test_dispatcher_no_pending_block_when_empty(tmp_path: Path):
     assert "[Pending events]" not in user
 
 
-# ----- Phase 2: process_registry wiring -----
+# ----- ShellRunner wiring -----
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_threads_process_registry_into_tool_ctx(tmp_path: Path):
-    """EventDispatcher is built with a ProcessRegistry; that exact instance
-    must reach tool ctx during a cascade. We assert by instrumenting a fake
-    tool that captures the ctx and verifying ctx.process_registry is the
-    one we passed in."""
-    from dollos.process_registry import ProcessRegistry
+async def test_dispatcher_threads_shell_runner_into_tool_ctx(tmp_path: Path):
+    """EventDispatcher is built with a ShellRunner; that exact instance
+    must reach tool ctx during a cascade."""
+    from dollos.shell_runner import ShellRunner
     from dollos.tools import TOOLS
 
     captured: list[ToolCtx] = []
 
     class _CaptureTool(BaseModel):
-        # Same interface as a real tool — pydantic + run.
         token: str = "x"
 
         async def run(self, ctx: ToolCtx):  # noqa: D401
             captured.append(ctx)
-            # Return None → side-effect tool, no cascade re-iter.
             return None
 
-    # Replace tools list temporarily so dispatcher recognises the capture tool.
     TOOLS_orig = list(TOOLS)
     TOOLS.clear()
     TOOLS.extend([_CaptureTool])
@@ -2854,7 +2849,7 @@ async def test_dispatcher_threads_process_registry_into_tool_ctx(tmp_path: Path)
             ],
         )
         iv = _FakeInnerVoice()
-        registry = ProcessRegistry()
+        runner = ShellRunner(cwd=tmp_path)
         dispatcher = EventDispatcher(
             adapter=adapter,
             inner_voice=iv,
@@ -2864,7 +2859,7 @@ async def test_dispatcher_threads_process_registry_into_tool_ctx(tmp_path: Path)
             memory_root=tmp_path,
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
-            process_registry=registry,
+            shell_runner=runner,
         )
 
         sink: asyncio.Queue = asyncio.Queue()
@@ -2872,114 +2867,20 @@ async def test_dispatcher_threads_process_registry_into_tool_ctx(tmp_path: Path)
         await _drain(sink)
 
         assert captured, "tool was not invoked"
-        assert captured[0].process_registry is registry
+        assert captured[0].shell_runner is runner
     finally:
         TOOLS.clear()
         TOOLS.extend(TOOLS_orig)
 
 
-def test_dispatcher_accepts_no_process_registry(tmp_path: Path):
-    """Default ctor: process_registry is None (back-compat with tests)."""
+def test_dispatcher_accepts_no_shell_runner(tmp_path: Path):
+    """Default ctor: shell_runner is None (back-compat with tests)."""
     iv = _FakeInnerVoice()
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     dispatcher = _make_dispatcher(
         adapter=adapter, inner_voice=iv, tmp_path=tmp_path
     )
-    assert dispatcher._process_registry is None
-
-
-# ----- Phase 3: pending_signal threading -----
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_pending_signal_set_when_serialize_event_queued(
-    tmp_path: Path,
-):
-    """While the active cascade hangs, dispatching a UserTextEvent queues
-    it AND sets the pending_signal so any in-flight Monitor can early-return."""
-    hang = _HangAdapter()
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=hang, inner_voice=iv, tmp_path=tmp_path)
-
-    sink_a: asyncio.Queue = asyncio.Queue()
-    sink_b: asyncio.Queue = asyncio.Queue()
-
-    dispatcher.dispatch(UserTextEvent(text="a", response_sink=sink_a))
-    await asyncio.wait_for(hang.entered.wait(), timeout=1.0)
-    # First event is the active cascade, signal must still be cleared.
-    assert not dispatcher._pending_signal.is_set()
-
-    dispatcher.dispatch(UserTextEvent(text="b", response_sink=sink_b))
-    # Second event queued + signal set.
-    assert dispatcher._pending == [
-        ev for ev in dispatcher._pending  # snapshot
-    ]
-    assert len(dispatcher._pending) == 1
-    assert dispatcher._pending_signal.is_set()
-
-    # Cleanup — cancel the hanging cascade.
-    await dispatcher.stop()
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_pending_signal_cleared_after_cascade_ends(
-    tmp_path: Path,
-):
-    """When the cascade finishes (and the next pending one starts/ends),
-    pending_signal returns to clear so the next cascade starts fresh."""
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"x"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ],
-        delay=0.02,
-    )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
-
-    sink_a: asyncio.Queue = asyncio.Queue()
-    sink_b: asyncio.Queue = asyncio.Queue()
-
-    dispatcher.dispatch(UserTextEvent(text="a", response_sink=sink_a))
-    dispatcher.dispatch(UserTextEvent(text="b", response_sink=sink_b))
-
-    await _drain(sink_a)
-    await _drain(sink_b)
-
-    assert not dispatcher._pending_signal.is_set()
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_provides_pending_signal_to_tool_ctx(tmp_path: Path):
-    """The dispatcher's pending_signal is threaded into ToolCtx so Monitor
-    can race against it."""
-    captured: list[object] = []
-
-    class _CaptureSignalTool(BaseModel):
-        async def run(self, ctx) -> None:
-            captured.append(ctx.pending_signal)
-
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"_CaptureSignal","arguments":{}}</tool_call>',
-                done=True,
-            ),
-        ]
-    )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
-    dispatcher._tools_by_name["_CaptureSignal"] = _CaptureSignalTool
-
-    sink: asyncio.Queue = asyncio.Queue()
-    dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))
-    await _drain(sink)
-
-    assert captured, "tool didn't run"
-    assert captured[0] is dispatcher._pending_signal
+    assert dispatcher._shell_runner is None
 
 
 @pytest.mark.asyncio
