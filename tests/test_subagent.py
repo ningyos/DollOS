@@ -15,6 +15,7 @@ from dollos.events import RawEvent, SubagentResultEvent
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.prompts import PromptRenderer
+from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
 
@@ -419,14 +420,13 @@ async def test_subagent_uses_subagent_scaffolding(tmp_path: Path):
     assert msgs[0] == {"role": "user", "content": "hello"}
 
 
-# ----- Phase 2: process_registry on sub-cascade ctx -----
+# ----- ShellRunner on sub-cascade ctx -----
 
 
 @pytest.mark.asyncio
-async def test_subagent_ctx_has_process_registry(tmp_path: Path):
-    """SubagentRunner forwards its process_registry into the sub-cascade
-    ToolCtx so subagents can use Shell + Monitor."""
-    from dollos.process_registry import ProcessRegistry
+async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
+    """SubagentRunner forwards its shell_runner into the sub-cascade
+    ToolCtx so subagents can use Shell."""
     from dollos.tools import SUB_TOOLS, ToolCtx
 
     captured: list[ToolCtx] = []
@@ -454,14 +454,14 @@ async def test_subagent_ctx_has_process_registry(tmp_path: Path):
             ]
         )
         events: list[RawEvent] = []
-        registry = ProcessRegistry()
+        shell_runner = ShellRunner(cwd=tmp_path)
         runner = SubagentRunner(
             adapter=adapter,
             renderer=PromptRenderer(),
             memory_root=tmp_path / "memory",
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
-            process_registry=registry,
+            shell_runner=shell_runner,
         )
         runner.set_dispatch_fn(events.append)
         sink: asyncio.Queue = asyncio.Queue()
@@ -474,11 +474,7 @@ async def test_subagent_ctx_has_process_registry(tmp_path: Path):
         await _wait_for_event(events, timeout=3.0)
 
         assert captured, "tool was not invoked inside sub-cascade"
-        assert captured[0].process_registry is registry
-        # Phase 3: subagent's ToolCtx never inherits a pending_signal —
-        # sub-cascades have their own loop and shouldn't early-return on
-        # the main dispatcher's pending queue.
-        assert captured[0].pending_signal is None
+        assert captured[0].shell_runner is shell_runner
     finally:
         SUB_TOOLS.clear()
         SUB_TOOLS.extend(SUB_TOOLS_orig)

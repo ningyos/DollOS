@@ -405,36 +405,27 @@ async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
     )
 
 
-# ----- Phase 2: process_registry wiring -----
+# ----- ShellRunner wiring -----
 
 
 @pytest.mark.asyncio
-async def test_kernel_creates_process_registry(tmp_path: Path):
-    """DollOS exposes a ProcessRegistry on construction; the dispatcher and
+async def test_kernel_creates_shell_runner(tmp_path: Path):
+    """DollOS exposes a ShellRunner on construction; the dispatcher and
     SubagentRunner share that same instance."""
-    from dollos.process_registry import ProcessRegistry
+    from dollos.shell_runner import ShellRunner
 
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
-    assert isinstance(dollos.process_registry, ProcessRegistry)
-    assert dollos.dispatcher._process_registry is dollos.process_registry
-    assert dollos.subagent_runner._process_registry is dollos.process_registry
+    assert isinstance(dollos.shell_runner, ShellRunner)
+    assert dollos.dispatcher._shell_runner is dollos.shell_runner
+    assert dollos.subagent_runner._shell_runner is dollos.shell_runner
 
 
 @pytest.mark.asyncio
-async def test_kernel_shutdown_cleans_processes(tmp_path: Path):
-    """Calling registry.shutdown() kills any still-running subprocess and
-    clears the registry. We exercise it directly (kernel.run lifecycle is
-    covered elsewhere)."""
+async def test_kernel_shell_runner_dispatch_fn_wired(tmp_path: Path):
+    """ShellRunner's dispatch_fn is set to dispatcher.dispatch after
+    both are constructed."""
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
-    proc = await asyncio.create_subprocess_shell(
-        "sleep 30",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    handle = dollos.process_registry.register(proc, "sleep 30")
-    assert proc.returncode is None
-    await dollos.process_registry.shutdown()
-    assert proc.returncode is not None
-    assert dollos.process_registry.get(handle) is None
+    # Bound methods compare equal (==) but are not identical (is) on each access.
+    assert dollos.shell_runner._dispatch_fn == dollos.dispatcher.dispatch

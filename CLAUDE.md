@@ -48,6 +48,7 @@ DollOS/
 
 ## Key Architecture Decisions
 
+- **External actions are fire-and-forget**: Shell and SpawnSubagent both spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent`. There is no Doll-callable wait/cancel tool. "Wait" is implicit — Doll's cascade either keeps going (and the result triggers a new turn after) or ends (and the result triggers a new turn). Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
 - **BYO big LLM**: DollOS hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
@@ -91,19 +92,15 @@ DollOS/
 | Roadmap step 19 — Mood (Self-First emotional state via big-model think field) | Merged |
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
-| Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Merged |
-| Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Merged |
+| Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Superseded by step 24 |
+| Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Superseded by step 24 |
+| Roadmap step 24 — External actions = fire-and-forget (Shell ≈ Subagent) | Merged |
 
 ### 下一個
 
-- **Phase 4: Subagent 統一 async pattern？**（待重新評估）— 原計畫讓 SpawnSubagent return handle、Doll Monitor wait result。但這會失去當前 subagent 的 fire-and-forget 性質（自動 SubagentResultEvent 重入 event queue）。可能 YAGNI——Shell 跟 Subagent 服務不同 use case，兩種 async pattern 各得其所
+- **真 Monitor watcher**（fire-and-forget command runner with stdout-line-as-event）— 用戶原本構想的 Monitor，跟 Drone 對偶
 - **Voice pipeline**（基礎建設，跟 Doll 行為無關）
-- **Drone**（persistent agents — 跟 subagent 對偶）
-- **Wake gating** — 等 voice / drone events 進來才有 ROI
-
-**其他候選**：
-- **Voice pipeline**（基礎建設，跟 Doll 行為無關）
-- **Drone**（persistent agents — Phase 4 統一後可一起做）
+- **Drone**（persistent agents — 跟 Subagent 對偶）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 **已收的設計準則**：
