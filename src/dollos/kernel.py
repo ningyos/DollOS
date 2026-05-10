@@ -20,6 +20,7 @@ from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
+from dollos.subagent import SubagentRunner
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,17 @@ class DollOS:
         self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
         self.instinct = build_instinct(settings, self.renderer)
         self._character_profile = settings.character.profile_path.read_text()
+        # Two-stage wiring: SubagentRunner needs a dispatch_fn, dispatcher
+        # needs a runner. Build runner first with no dispatch_fn, then build
+        # dispatcher referencing the runner, then point runner at
+        # dispatcher.dispatch.
+        self.subagent_runner = SubagentRunner(
+            adapter=self.adapter,
+            renderer=self.renderer,
+            memory_root=settings.data.root / "memory",
+            memsearch=self.memsearch,
+            transcripts_root=settings.data.root / "memory" / "transcripts",
+        )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
             inner_voice=self.inner_voice,
@@ -127,7 +139,9 @@ class DollOS:
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
+            subagent_runner=self.subagent_runner,
         )
+        self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -199,6 +213,11 @@ class DollOS:
                     await asyncio.gather(
                         self._scheduler_task, return_exceptions=True
                     )
+                # Stop subagents BEFORE dispatcher so any final result
+                # event has a live dispatcher to enter (in practice
+                # cancellation skips the result event; ordering kept
+                # explicit per plan).
+                await self.subagent_runner.stop()
                 await self.dispatcher.stop()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based

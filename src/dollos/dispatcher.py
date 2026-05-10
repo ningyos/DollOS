@@ -17,7 +17,13 @@ from pathlib import Path
 from memsearch import MemSearch
 from pydantic import ValidationError
 
-from dollos.events import DiaryEvent, DollEvent, RawEvent, UserTextEvent
+from dollos.events import (
+    DiaryEvent,
+    DollEvent,
+    RawEvent,
+    SubagentResultEvent,
+    UserTextEvent,
+)
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
@@ -25,6 +31,7 @@ from dollos.llm.adapter import LLMAdapter
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.memory_writer import append_transcript
 from dollos.prompts import PromptRenderer
+from dollos.subagent import SubagentRunner
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import TOOLS, ToolCtx
 
@@ -62,6 +69,7 @@ class EventDispatcher:
         memory_root: Path,
         memsearch: MemSearch,
         transcripts_root: Path,
+        subagent_runner: SubagentRunner | None = None,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -71,6 +79,7 @@ class EventDispatcher:
         self._memory_root = memory_root
         self._memsearch = memsearch
         self._transcripts_root = transcripts_root
+        self._subagent_runner = subagent_runner
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -143,6 +152,15 @@ class EventDispatcher:
                 "用 WriteDiary tool 寫一段反思。誠實寫，不需要表演。"
             )
             return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, SubagentResultEvent):
+            perception = (
+                "你派出的 subagent 回來了：\n"
+                f"- task: {raw.task}\n"
+                f"- status: {raw.status}\n"
+                f"- summary: {raw.summary}\n"
+                f"- details: {raw.details}"
+            )
+            return DollEvent(perception=perception, raw=raw)
         raise TypeError(f"no stub perceive for {type(raw).__name__}")
 
     async def _respond(
@@ -190,6 +208,7 @@ class EventDispatcher:
                 memory_root=self._memory_root,
                 memsearch=self._memsearch,
                 transcripts_root=self._transcripts_root,
+                subagent_runner=self._subagent_runner,
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []
@@ -316,6 +335,6 @@ class EventDispatcher:
 
     @staticmethod
     def _sink_of(raw: RawEvent) -> asyncio.Queue[ServerMessage | None]:
-        if isinstance(raw, (UserTextEvent, DiaryEvent)):
+        if isinstance(raw, (UserTextEvent, DiaryEvent, SubagentResultEvent)):
             return raw.response_sink
         raise TypeError(f"no sink for {type(raw).__name__}")

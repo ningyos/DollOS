@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC
 from dataclasses import dataclass
+from typing import Literal
 
 from dollos.ipc.messages import ServerMessage
 
@@ -45,6 +46,28 @@ class DiaryEvent(RawEvent):
     and calls the WriteDiary tool.
     """
 
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
+class SubagentResultEvent(RawEvent):
+    """A subagent task finished — result re-enters the event queue.
+
+    Fired by SubagentRunner once the spawned worker either calls Report,
+    times out, errors, or ends without reporting. The dispatcher renders
+    this into a perception so Doll's main cascade fires for it.
+
+    response_sink: forwarded from the originating SpawnSubagent call so
+        the result-turn streams back to the same client. May reference a
+        sink whose original consumer has already disconnected (see plan
+        §Risks); push attempts on a dead queue are tolerated by asyncio.
+    """
+
+    subagent_id: str
+    task: str
+    status: Literal["ok", "incomplete", "timeout", "error", "no_report"]
+    summary: str
+    details: str
     response_sink: asyncio.Queue[ServerMessage | None]
 
 

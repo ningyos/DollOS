@@ -106,6 +106,10 @@ _JSON_STR_RULES = (
     "\"\\\\\" [\"\\\\/bfnrt] | "
     "\"\\\\u\" hex hex hex hex\n"
     "hex ::= [0-9a-fA-F]\n"
+    # Non-negative JSON integer (no leading zeros except for the literal 0).
+    # Sufficient for current tools (timeout_s: 1..600 — pydantic still
+    # validates bounds after grammar accepts the digits).
+    "integer ::= \"0\" | [1-9] [0-9]*\n"
 )
 
 
@@ -157,13 +161,34 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
         for fname in required:
             _check_ident(fname, "field name")
             finfo = props.get(fname, {})
-            if finfo.get("type") != "string":
-                raise NotImplementedError(
-                    f"tool {name} required field {fname!r} is not a string "
-                    f"(type={finfo.get('type')!r}); grammar build unsupported"
+            ftype = finfo.get("type")
+            enum_vals = finfo.get("enum")
+            if ftype == "string" and enum_vals:
+                # Literal[...] / enum string: emit a quoted alternation.
+                # Each enum value gets its own JSON-string literal.
+                for v in enum_vals:
+                    if not isinstance(v, str):
+                        raise NotImplementedError(
+                            f"tool {name} field {fname!r} enum value {v!r} "
+                            f"is not a string; grammar build unsupported"
+                        )
+                    _check_ident(v, "enum value")
+                alt = " | ".join(f'"\\"{v}\\""' for v in enum_vals)
+                # body emits: "fname": (<alt>)
+                body_parts.append(
+                    f'\\"{fname}\\": " ({alt}) "'
                 )
-            # Each required string field: "fname": <str>
-            body_parts.append(f'\\"{fname}\\": " str "')
+            elif ftype == "string":
+                # Each required string field: "fname": <str>
+                body_parts.append(f'\\"{fname}\\": " str "')
+            elif ftype == "integer":
+                # Required integer field: "fname": <integer>
+                body_parts.append(f'\\"{fname}\\": " integer "')
+            else:
+                raise NotImplementedError(
+                    f"tool {name} required field {fname!r} has unsupported "
+                    f"type {ftype!r}; grammar build unsupported"
+                )
         joined = ', '.join(body_parts) if len(body_parts) > 1 else (body_parts[0] if body_parts else "")
         # Build literal: <tool_call>\n{"name": "ToolName", "arguments": {<fields>}}\n</tool_call>
         rule_id = _rule_id(name)
