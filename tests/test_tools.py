@@ -761,3 +761,88 @@ def test_write_schedule_validates_time_format():
         ScheduleEntryArg(time="25:00:00", intent="x")
 
 
+@pytest.mark.asyncio
+async def test_spawn_monitor_delegates_to_runner(tmp_path):
+    from dollos.tools import SpawnMonitor, ToolCtx
+    from unittest.mock import MagicMock
+
+    runner = MagicMock()
+    runner.spawn.return_value = "mon-1"
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = ToolCtx(
+        sink=sink,
+        memory_root=tmp_path,
+        memsearch=MagicMock(),
+        transcripts_root=tmp_path,
+        monitor_runner=runner,
+    )
+    out = await SpawnMonitor(
+        command="tail -F /var/log/x",
+        match_regex=r"ERROR",
+        rate_limit_s=60,
+    ).run(ctx)
+    runner.spawn.assert_called_once_with(
+        command="tail -F /var/log/x",
+        match_regex=r"ERROR",
+        rate_limit_s=60,
+        response_sink=sink,
+    )
+    assert "mon-1" in out
+
+
+@pytest.mark.asyncio
+async def test_spawn_monitor_unavailable_when_no_runner(tmp_path):
+    from dollos.tools import SpawnMonitor, ToolCtx
+    from unittest.mock import MagicMock
+
+    ctx = ToolCtx(
+        sink=asyncio.Queue(),
+        memory_root=tmp_path,
+        memsearch=MagicMock(),
+        transcripts_root=tmp_path,
+        monitor_runner=None,
+    )
+    out = await SpawnMonitor(
+        command="echo hi", match_regex=None, rate_limit_s=0
+    ).run(ctx)
+    assert "unavailable" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_remove_monitor_delegates(tmp_path):
+    from dollos.tools import RemoveMonitor, ToolCtx
+    from unittest.mock import AsyncMock, MagicMock
+
+    runner = MagicMock()
+    runner.remove = AsyncMock(return_value=True)
+    ctx = ToolCtx(
+        sink=asyncio.Queue(),
+        memory_root=tmp_path,
+        memsearch=MagicMock(),
+        transcripts_root=tmp_path,
+        monitor_runner=runner,
+    )
+    out = await RemoveMonitor(monitor_id="mon-3").run(ctx)
+    runner.remove.assert_awaited_once_with("mon-3")
+    assert "mon-3" in out
+    assert "removed" in out.lower() or "kill" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_remove_monitor_unknown_id(tmp_path):
+    from dollos.tools import RemoveMonitor, ToolCtx
+    from unittest.mock import AsyncMock, MagicMock
+
+    runner = MagicMock()
+    runner.remove = AsyncMock(return_value=False)
+    ctx = ToolCtx(
+        sink=asyncio.Queue(),
+        memory_root=tmp_path,
+        memsearch=MagicMock(),
+        transcripts_root=tmp_path,
+        monitor_runner=runner,
+    )
+    out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
+    assert "mon-999" in out
+    assert "unknown" in out.lower() or "not found" in out.lower()
+
