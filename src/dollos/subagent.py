@@ -34,7 +34,7 @@ from dollos.ipc.messages import ServerMessage
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.prompts import PromptRenderer
 from dollos.tool_parser import ToolStreamParser
-from dollos.tools import SUB_TOOLS, ToolCtx
+from dollos.tools import SUB_TOOLS, SubagentToolCtx, ToolCtx
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -183,13 +183,12 @@ class SubagentRunner:
         system = self._renderer.render("subagent_scaffolding")
         messages: list[dict] = [{"role": "user", "content": task}]
 
-        ctx = ToolCtx(
+        ctx = SubagentToolCtx(
             sink=None,  # subagent has no live user sink
             memory_root=self._memory_root,
             memsearch=self._memsearch,
             transcripts_root=self._transcripts_root,
             subagent_runner=None,  # no recursion
-            subagent_report=None,
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
         )
