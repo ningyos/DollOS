@@ -310,7 +310,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.24.0" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "luxtts-onnx", editable = "../../../luxtts-onnx" },
+    { name = "luxtts-onnx", git = "https://github.com/ningyos/luxtts-onnx.git" },
     { name = "memsearch", extras = ["onnx"], specifier = ">=0.1" },
     { name = "onnxruntime", specifier = ">=1.17,<1.25" },
     { name = "pydantic", specifier = ">=2.6" },
@@ -646,7 +646,7 @@ wheels = [
 [[package]]
 name = "luxtts-onnx"
 version = "0.1.0"
-source = { editable = "../../../luxtts-onnx" }
+source = { git = "https://github.com/ningyos/luxtts-onnx.git#8ea5e568bff5e221791e7a2561973101a51cdab7" }
 dependencies = [
     { name = "cn2an" },
     { name = "huggingface-hub" },
@@ -659,34 +659,6 @@ dependencies = [
     { name = "pypinyin" },
     { name = "soundfile" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "cn2an", specifier = ">=0.5" },
-    { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "inflect", specifier = ">=7.0" },
-    { name = "jieba", specifier = ">=0.42" },
-    { name = "librosa", specifier = ">=0.10" },
-    { name = "linacodec", marker = "extra == 'export'", git = "https://github.com/ysharma3501/LinaCodec.git" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "nvidia-cublas-cu12", marker = "extra == 'gpu'", specifier = ">=12.4" },
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "extra == 'gpu'", specifier = ">=12.4" },
-    { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'gpu'", specifier = ">=12.4" },
-    { name = "nvidia-cudnn-cu12", marker = "extra == 'gpu'", specifier = ">=9.5" },
-    { name = "nvidia-cufft-cu12", marker = "extra == 'gpu'", specifier = ">=11.2" },
-    { name = "onnx", marker = "extra == 'export'", specifier = ">=1.17" },
-    { name = "onnxruntime", specifier = ">=1.17" },
-    { name = "onnxruntime-gpu", marker = "extra == 'gpu'", specifier = ">=1.17" },
-    { name = "piper-phonemize", specifier = ">=1.2" },
-    { name = "pypinyin", specifier = ">=0.53" },
-    { name = "safetensors", marker = "extra == 'export'", specifier = ">=0.4" },
-    { name = "soundfile", specifier = ">=0.12" },
-    { name = "torch", marker = "extra == 'export'", specifier = ">=2.0" },
-    { name = "torchaudio", marker = "extra == 'export'", specifier = ">=2.0" },
-    { name = "transformers", marker = "extra == 'export'", specifier = ">=4.40" },
-    { name = "vocos", marker = "extra == 'export'" },
-]
-provides-extras = ["gpu", "export"]
 
 [[package]]
 name = "markdown-it-py"
