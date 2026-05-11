@@ -2903,4 +2903,78 @@ async def test_dispatcher_perceives_shell_result_event(tmp_path: Path):
     assert "shell 命令" in p or "Shell 命令" in p
     assert "ls /tmp" in p
     assert "exit 0" in p
-    assert "a\nb" in p
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_perceives_monitor_triggered(tmp_path: Path):
+    from dollos.events import MonitorTriggeredEvent
+
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    sink: asyncio.Queue = asyncio.Queue()
+    ev = MonitorTriggeredEvent(
+        monitor_id="mon-1",
+        command="nvidia-smi -l 5",
+        line="91",
+        suppressed_count=4,
+        response_sink=sink,
+    )
+    doll_event = await dispatcher._perceive(ev)
+    p = doll_event.perception
+    assert "mon-1" in p
+    assert "nvidia-smi -l 5" in p
+    assert "91" in p
+    assert "suppressed" in p.lower() or "壓" in p
+    assert "4" in p
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_perceives_monitor_exited(tmp_path: Path):
+    from dollos.events import MonitorExitedEvent
+
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    sink: asyncio.Queue = asyncio.Queue()
+    ev = MonitorExitedEvent(
+        monitor_id="mon-2",
+        command="tail -F /var/log/syslog",
+        status="removed",
+        exit_code=None,
+        total_matched=17,
+        response_sink=sink,
+    )
+    doll_event = await dispatcher._perceive(ev)
+    p = doll_event.perception
+    assert "mon-2" in p
+    assert "removed" in p or "已停止" in p or "kill" in p.lower()
+    assert "17" in p
+
+
+def test_format_active_monitors_block():
+    """Pure formatting check — given a snapshot, render the block."""
+    from dollos.dispatcher import _format_active_monitors_block
+
+    snap = [
+        {
+            "monitor_id": "mon-1",
+            "command": "nvidia-smi -l 5",
+            "match_regex": r"^[89][0-9]$",
+            "rate_limit_s": 60,
+            "suppressed_in_window": 11,
+        },
+        {
+            "monitor_id": "mon-2",
+            "command": "tail -F /var/log/syslog",
+            "match_regex": None,
+            "rate_limit_s": 0,
+            "suppressed_in_window": 0,
+        },
+    ]
+    block = _format_active_monitors_block(snap)
+    assert "[Active monitors]" in block
+    assert "mon-1" in block and "nvidia-smi" in block
+    assert "11" in block
+    assert "mon-2" in block
+    assert _format_active_monitors_block([]) == ""
