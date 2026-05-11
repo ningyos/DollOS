@@ -294,6 +294,27 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 25. Monitor watcher — fire-and-forget command watcher with rate-limit  ✅ Merged
+
+**範圍**：
+- 新 `MonitorRunner`（mirror Shell/Subagent runners）：spawn long-running command；逐行讀 stdout；可選 regex 過濾；per-monitor rate-limit window（0 disable，可到 3600s）；自然退出 / RemoveMonitor / runtime error 都 fire 一次 ExitedEvent
+- 新 events: `MonitorTriggeredEvent`（command + line + suppressed_count）、`MonitorExitedEvent`（natural / removed / error + exit_code + total_matched）
+- 兩 events 進 `SERIALIZE_TYPES`（避免高頻 monitor 撞 cascade）
+- 新 tools: `SpawnMonitor(command, match_regex, rate_limit_s)`、`RemoveMonitor(monitor_id)`；MAIN_TOOLS + SUB_TOOLS 都加
+- Dispatcher 渲染 `[Active monitors]` block：每行 mon-id / command / match regex / rate-limit window / suppressed count；first user 跟 per-iter 都重渲（mirror `[Pending events]`）
+- Subagent 也能 spawn/remove monitor（共享同個 runner）
+- Scaffolding 加 Monitor 段：fire-and-forget、rate-limit 語意、[Active monitors] 解讀
+
+**設計選擇**：
+- 沒有 ListMonitors tool：active state 透過 [Active monitors] block 自動 surface
+- 沒有觸發歷史：只顯示 suppressed count，歷史靠 NoteMemory / 之前的 perception
+- 自然退出 vs RemoveMonitor: 都走 MonitorExitedEvent，status 區分 (natural / removed / error)
+- rate_limit window 是 per-monitor 滑動 window，不全域
+
+**Smoke**：T1 spawn 短命令 `for i in 1 2 3; do echo hit-$i; sleep 0.3; done` → Doll 回「monitor id 是 mon-1」→ 3 個 trigger turn 各 Say 收到 hit-N → 1 個 exit turn「mon-1 跑完了！三聲都收到了」。完美。
+
+**Tests**：338 passed（new MonitorRunner unit tests + 4 SpawnMonitor/RemoveMonitor tool tests + 3 dispatcher perceive/format tests + 3 kernel/subagent wiring tests）。
+
 ### 24. External actions = fire-and-forget（Shell ≈ Subagent）  ✅ Merged
 
 **動機**：Phase 2-3 的 Monitor (active-wait) 是錯的設計——強迫 Doll 同 turn 等。用戶釐清：「awaits 應該作為 doll 的運作方式，而不是 tool」。內部能力（Say/NoteMemory/Recall）不能 await（你不會等自己的嘴講完）；外部動作（Shell/Subagent）是別人的事，背景跑、結果以 event 方式回來。
