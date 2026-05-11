@@ -217,16 +217,6 @@ class DollOS:
             return self._active_sink
         return asyncio.Queue()
 
-    def _dummy_sink(self) -> "asyncio.Queue[ServerMessage | None]":
-        """Always returns a fresh dummy queue, regardless of active sink.
-
-        Used for daemon-internal events (e.g. bootstrap planning) where
-        Doll should plan/act but not produce user-visible output. Say tool
-        output gets discarded; the day's first user-facing greeting comes
-        from a scheduled entry, not bootstrap.
-        """
-        return asyncio.Queue()
-
     async def _maybe_bootstrap_plan(self) -> None:
         """Fire DailyPlanEvent if today has no schedule yet (gap #5).
 
@@ -249,8 +239,7 @@ class DollOS:
         # Bootstrap is daemon-internal planning — Doll's Say output goes to
         # /dev/null so the smoke client doesn't see it as a turn response.
         # WriteSchedule still works (writes to file regardless of sink).
-        sink = self._dummy_sink()
-        self.dispatcher.dispatch(DailyPlanEvent(response_sink=sink))
+        self.dispatcher.dispatch(DailyPlanEvent(response_sink=asyncio.Queue()))
 
     async def _diary_scheduler(self) -> None:
         """Background task: fires DiaryEvent daily at DIARY_HOUR:DIARY_MINUTE."""

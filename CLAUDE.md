@@ -97,10 +97,15 @@ DollOS/
 | Roadmap step 19 — Mood (Self-First emotional state via big-model think field) | Merged |
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
-| Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Superseded by step 24 |
-| Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Superseded by step 24 |
 | Roadmap step 24 — External actions = fire-and-forget (Shell ≈ Subagent) | Merged |
 | Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged |
+
+### 已歸檔（被後續 step 取代）
+
+| Plan | Status |
+|---|---|
+| Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Superseded by step 24 |
+| Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Superseded by step 24 |
 
 ### 下一個
 

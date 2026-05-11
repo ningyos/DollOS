@@ -58,9 +58,7 @@ class ActiveMonitor:
 class MonitorRunner:
     """Spawn-and-track set of long-running monitor commands.
 
-    Built before the dispatcher (chicken-and-egg: SpawnMonitor.run needs
-    the runner; the runner needs to dispatch events into the dispatcher).
-    `set_dispatch_fn` wires the sink after dispatcher build.
+    Dispatch sink is wired post-build via set_dispatch_fn (see kernel.py).
     """
 
     def __init__(
