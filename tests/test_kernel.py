@@ -141,6 +141,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=dollos._cascade_logger,
     )
     return dollos, fake_adapter
 

@@ -49,11 +49,7 @@ logger = logging.getLogger(__name__)
 class SubagentRunner:
     """Spawn-and-track set of background subagent tasks.
 
-    Built before the dispatcher (chicken-and-egg: SpawnSubagent.run needs
-    a runner; SubagentRunner needs to fire events into the dispatcher).
-    The dispatch sink is provided as a callable (`dispatch_fn`) which the
-    kernel sets to `dispatcher.dispatch` after the dispatcher is built.
-    Until set, runner falls back to logging an error.
+    Dispatch sink is wired post-build via set_dispatch_fn (see kernel.py).
     """
 
     def __init__(

@@ -11,7 +11,6 @@ from dollos.ipc.messages import TextChunk
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
-    TOOLS,
     InvokeSkill,
     NoteMemory,
     Recall,
@@ -56,8 +55,8 @@ def test_note_memory_schema_has_text_field():
 
 
 def test_tools_list_contains_both():
-    assert Say in TOOLS
-    assert NoteMemory in TOOLS
+    assert Say in MAIN_TOOLS
+    assert NoteMemory in MAIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -135,8 +134,7 @@ def test_write_diary_schema_has_content_field():
 
 
 def test_write_diary_in_tools_list():
-    from dollos.tools import TOOLS
-    assert WriteDiary in TOOLS
+    assert WriteDiary in MAIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -164,8 +162,7 @@ async def test_say_run_also_appends_to_transcript(tmp_path):
 
 
 def test_shell_in_tools_list():
-    from dollos.tools import TOOLS
-    assert Shell in TOOLS
+    assert Shell in MAIN_TOOLS
 
 
 def test_shell_schema_has_command_and_timeout_s():
@@ -230,8 +227,7 @@ async def test_shell_tool_unavailable_when_no_runner(tmp_path):
 
 
 def test_invoke_skill_in_tools_list():
-    from dollos.tools import TOOLS
-    assert InvokeSkill in TOOLS
+    assert InvokeSkill in MAIN_TOOLS
 
 
 def test_invoke_skill_schema_has_name_field():
@@ -347,7 +343,7 @@ class _SearchableMemSearch:
 
 
 def test_recall_in_tools_list():
-    assert Recall in TOOLS
+    assert Recall in MAIN_TOOLS
 
 
 def test_recall_schema_has_query_field():

@@ -238,6 +238,7 @@ def _make_dispatcher(
         memory_root=tmp_path,
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
 
@@ -493,6 +494,7 @@ async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -537,6 +539,7 @@ async def test_dispatcher_uses_stream_messages_not_stream_completion(tmp_path: P
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -575,6 +578,7 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -617,6 +621,7 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -656,6 +661,7 @@ async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -691,6 +697,7 @@ async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -729,6 +736,7 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -768,6 +776,7 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -797,6 +806,7 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -806,8 +816,8 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
             break
 
     assert len(adapter.calls) == 1
-    from dollos.tools import TOOLS
-    assert adapter.calls[0].get("tools") == TOOLS
+    from dollos.tools import MAIN_TOOLS
+    assert adapter.calls[0].get("tools") == MAIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -821,6 +831,7 @@ async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -846,6 +857,7 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -870,6 +882,7 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -899,6 +912,7 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_BoomTool"] = _BoomTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -926,6 +940,7 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -982,6 +997,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1040,6 +1056,7 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1087,6 +1104,7 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1125,6 +1143,7 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1174,6 +1193,7 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(DiaryEvent(response_sink=sink))
@@ -1217,6 +1237,7 @@ async def test_dispatch_tool_call_returns_none_when_tool_run_returns_none(tmp_pa
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -1246,6 +1267,7 @@ async def test_dispatch_tool_call_returns_success_result_when_tool_returns_str(t
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_ReturningTool"] = _ReturningTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -1277,6 +1299,7 @@ async def test_dispatch_tool_call_returns_success_result_with_empty_str(tmp_path
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_EmptyReturningTool"] = _EmptyReturningTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -1341,6 +1364,7 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_Echo"] = _Echo
 
@@ -1413,6 +1437,7 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_Empty"] = _Empty
 
@@ -1733,6 +1758,7 @@ async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_pa
         renderer=_SpyRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1766,6 +1792,7 @@ async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path)
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1831,6 +1858,7 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     for text in ("a", "b", "c"):
@@ -1867,6 +1895,7 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     for text in ("first", "second"):
@@ -1917,6 +1946,7 @@ async def test_dispatcher_compact_called_with_full_cascade_messages(tmp_path: Pa
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     disp._tools_by_name["_Echo"] = _Echo
 
@@ -1967,6 +1997,7 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -2001,6 +2032,7 @@ async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, ca
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
@@ -2060,6 +2092,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -2141,6 +2174,7 @@ async def test_dispatcher_passes_subagent_runner_into_tool_ctx(tmp_path: Path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
         subagent_runner=runner,  # type: ignore[arg-type]
     )
     disp._tools_by_name["_CaptureRunner"] = _CaptureRunnerTool
@@ -2347,6 +2381,7 @@ async def test_dispatcher_parses_mood_from_last_assistant_message(tmp_path: Path
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -2377,6 +2412,7 @@ async def test_dispatcher_no_mood_update_when_assistant_lacks_mood_line(
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -2404,6 +2440,7 @@ async def test_dispatcher_appends_mood_to_file_when_parsed(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -2432,6 +2469,7 @@ async def test_dispatcher_indexes_mood_file_with_memsearch(tmp_path: Path):
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -2468,6 +2506,7 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        cascade_logger=_FakeCascadeLogger(),
     )
 
     for text in ("first", "second"):
@@ -2824,7 +2863,7 @@ async def test_dispatcher_threads_shell_runner_into_tool_ctx(tmp_path: Path):
     """EventDispatcher is built with a ShellRunner; that exact instance
     must reach tool ctx during a cascade."""
     from dollos.shell_runner import ShellRunner
-    from dollos.tools import TOOLS
+    from dollos.tools import MAIN_TOOLS
 
     captured: list[ToolCtx] = []
 
@@ -2835,9 +2874,9 @@ async def test_dispatcher_threads_shell_runner_into_tool_ctx(tmp_path: Path):
             captured.append(ctx)
             return None
 
-    TOOLS_orig = list(TOOLS)
-    TOOLS.clear()
-    TOOLS.extend([_CaptureTool])
+    TOOLS_orig = list(MAIN_TOOLS)
+    MAIN_TOOLS.clear()
+    MAIN_TOOLS.extend([_CaptureTool])
     try:
         adapter = _FakeAdapter(
             chunks=[
@@ -2859,6 +2898,7 @@ async def test_dispatcher_threads_shell_runner_into_tool_ctx(tmp_path: Path):
             memory_root=tmp_path,
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
+            cascade_logger=_FakeCascadeLogger(),
             shell_runner=runner,
         )
 
@@ -2869,8 +2909,8 @@ async def test_dispatcher_threads_shell_runner_into_tool_ctx(tmp_path: Path):
         assert captured, "tool was not invoked"
         assert captured[0].shell_runner is runner
     finally:
-        TOOLS.clear()
-        TOOLS.extend(TOOLS_orig)
+        MAIN_TOOLS.clear()
+        MAIN_TOOLS.extend(TOOLS_orig)
 
 
 def test_dispatcher_accepts_no_shell_runner(tmp_path: Path):

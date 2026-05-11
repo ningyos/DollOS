@@ -48,7 +48,7 @@ from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_parser import ToolStreamParser
-from dollos.tools import TOOLS, ToolCtx
+from dollos.tools import MAIN_TOOLS, ToolCtx
 
 logger = logging.getLogger(__name__)
 
@@ -142,16 +142,6 @@ class ToolResult:
     detail: str
 
 
-class _NoOpCascadeLogger:
-    """No-op CascadeLogger used as default when none is wired (tests)."""
-
-    def start_turn(self) -> str:
-        return "noop"
-
-    def log_iter(self, **_kwargs) -> None:
-        return None
-
-
 class EventDispatcher:
     """Spawns one asyncio.Task per RawEvent. No worker, no queue."""
 
@@ -167,7 +157,7 @@ class EventDispatcher:
         memsearch: MemSearch,
         transcripts_root: Path,
         subagent_runner: SubagentRunner | None = None,
-        cascade_logger: CascadeLogger | None = None,
+        cascade_logger: CascadeLogger,
         shell_runner: ShellRunner | None = None,
         monitor_runner: "MonitorRunner | None" = None,
     ) -> None:
@@ -180,11 +170,11 @@ class EventDispatcher:
         self._memsearch = memsearch
         self._transcripts_root = transcripts_root
         self._subagent_runner = subagent_runner
-        self._cascade_logger = cascade_logger or _NoOpCascadeLogger()
+        self._cascade_logger = cascade_logger
         self._shell_runner = shell_runner
         self._monitor_runner = monitor_runner
         self._tools_by_name: dict[str, type] = {
-            cls.__name__: cls for cls in TOOLS
+            cls.__name__: cls for cls in MAIN_TOOLS
         }
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
@@ -299,8 +289,14 @@ class EventDispatcher:
                 lines.append("- DailyPlanEvent: 該規劃今天時程")
             elif isinstance(ev, DiaryEvent):
                 lines.append("- DiaryEvent: 該寫今日 diary")
-            else:  # defensive — unknown serialize type
-                lines.append(f"- {type(ev).__name__}")
+            elif isinstance(ev, MonitorTriggeredEvent):
+                lines.append(
+                    f"- MonitorTriggeredEvent: {ev.monitor_id} line={ev.line!r}"
+                )
+            elif isinstance(ev, MonitorExitedEvent):
+                lines.append(
+                    f"- MonitorExitedEvent: {ev.monitor_id} status={ev.status}"
+                )
         return "[Pending events]\n" + "\n".join(lines) + "\n\n"
 
     async def _handle(self, raw: RawEvent) -> None:
@@ -400,7 +396,7 @@ class EventDispatcher:
         doll_event: DollEvent,
         sink: asyncio.Queue[ServerMessage | None],
     ) -> None:
-        grammar = build_qwen3_think_tool_grammar(TOOLS)
+        grammar = build_qwen3_think_tool_grammar(MAIN_TOOLS)
 
         # Per-turn one-time setup: recall + scaffolding (system) + skills
         # discovery. The cascade preserves history within the turn via the
@@ -485,7 +481,7 @@ class EventDispatcher:
             async for chunk in self._adapter.stream_messages(
                 system=system,
                 messages=messages,
-                tools=TOOLS,
+                tools=MAIN_TOOLS,
                 max_tokens=4096,
                 grammar=grammar,
             ):
