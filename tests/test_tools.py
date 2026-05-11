@@ -16,6 +16,7 @@ from dollos.tools import (
     Recall,
     Say,
     Shell,
+    SubagentToolCtx,
     ToolCtx,
     WriteDiary,
 )
@@ -612,7 +613,7 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
 
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
-    ctx = ToolCtx(
+    ctx = SubagentToolCtx(
         sink=sink,
         memory_root=tmp_path,
         memsearch=ms,

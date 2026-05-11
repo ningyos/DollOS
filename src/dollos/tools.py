@@ -84,9 +84,17 @@ class ToolCtx:
     memsearch: MemSearch
     transcripts_root: Path
     subagent_runner: "SubagentRunner | None" = None
-    subagent_report: dict | None = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None
+
+
+@dataclass
+class SubagentToolCtx(ToolCtx):
+    """ToolCtx used inside a subagent's sub-cascade. Adds a slot for the
+    Report tool to stash its structured outcome — the SubagentRunner
+    reads it back to build the SubagentResultEvent."""
+
+    subagent_report: dict | None = None
 
 
 class Say(BaseModel):
@@ -414,7 +422,7 @@ class Report(BaseModel):
         )
     )
 
-    async def run(self, ctx: ToolCtx) -> None:
+    async def run(self, ctx: "SubagentToolCtx") -> None:  # type: ignore[override]
         # Side-effect: stash args into ctx for SubagentRunner to pick up.
         # Returning None ends the cascade naturally (no tool_response cycle).
         ctx.subagent_report = {
