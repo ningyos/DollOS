@@ -38,7 +38,7 @@ dev = [
 find-links = ["https://k2-fsa.github.io/icefall/piper_phonemize.html"]
 
 [tool.uv.sources]
-luxtts-onnx = { path = "../../../luxtts-onnx", editable = true }
+luxtts-onnx = { path = "../luxtts-onnx", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
