@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from dollos.events import RawEvent, SubagentResultEvent
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.llm.templates import build_qwen3_think_tool_grammar
+from dollos.monitor_runner import MonitorRunner
 from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
@@ -475,6 +476,66 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
 
         assert captured, "tool was not invoked inside sub-cascade"
         assert captured[0].shell_runner is shell_runner
+    finally:
+        SUB_TOOLS.clear()
+        SUB_TOOLS.extend(SUB_TOOLS_orig)
+
+
+# ----- MonitorRunner on sub-cascade ctx -----
+
+
+@pytest.mark.asyncio
+async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
+    """SubagentRunner forwards its monitor_runner into the sub-cascade
+    ToolCtx so subagents can use SpawnMonitor/RemoveMonitor."""
+    from dollos.tools import SUB_TOOLS, ToolCtx
+
+    captured: list[ToolCtx] = []
+
+    class _CaptureTool(BaseModel):
+        token: str = "x"
+
+        async def run(self, ctx) -> str:
+            captured.append(ctx)
+            return None  # side-effect tool, ends sub-cascade naturally
+
+    SUB_TOOLS_orig = list(SUB_TOOLS)
+    SUB_TOOLS.clear()
+    SUB_TOOLS.extend([_CaptureTool])
+    try:
+        adapter = _ScriptedAdapter(
+            scripts=[
+                [
+                    StreamChunk(
+                        text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
+                        done=False,
+                    ),
+                    StreamChunk(text="", done=True),
+                ],
+            ]
+        )
+        events: list[RawEvent] = []
+        monitor_runner = MonitorRunner(cwd=tmp_path)
+        runner = SubagentRunner(
+            adapter=adapter,
+            renderer=PromptRenderer(),
+            memory_root=tmp_path / "memory",
+            memsearch=_FakeMemSearch(),
+            transcripts_root=tmp_path / "transcripts",
+            monitor_runner=monitor_runner,
+        )
+        runner.set_dispatch_fn(events.append)
+        sink: asyncio.Queue = asyncio.Queue()
+        runner.spawn(
+            sub_id="reg2",
+            task="capture ctx",
+            timeout_s=10,
+            response_sink=sink,
+        )
+        await _wait_for_event(events, timeout=3.0)
+
+        assert captured, "tool was not invoked inside sub-cascade"
+        assert captured[0].monitor_runner is monitor_runner
     finally:
         SUB_TOOLS.clear()
         SUB_TOOLS.extend(SUB_TOOLS_orig)

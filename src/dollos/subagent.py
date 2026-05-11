@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from memsearch import MemSearch
 
     from dollos.llm.adapter import LLMAdapter
+    from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ class SubagentRunner:
         transcripts_root: Path,
         dispatch_fn: Callable[[RawEvent], None] | None = None,
         shell_runner: "ShellRunner | None" = None,
+        monitor_runner: "MonitorRunner | None" = None,
     ) -> None:
         self._adapter = adapter
         self._renderer = renderer
@@ -73,6 +75,7 @@ class SubagentRunner:
         self._transcripts_root = transcripts_root
         self._dispatch_fn = dispatch_fn
         self._shell_runner = shell_runner
+        self._monitor_runner = monitor_runner
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in SUB_TOOLS
         }
@@ -192,6 +195,7 @@ class SubagentRunner:
             subagent_runner=None,  # no recursion
             subagent_report=None,
             shell_runner=self._shell_runner,
+            monitor_runner=self._monitor_runner,
         )
 
         consecutive_fails: dict[str, int] = {}
