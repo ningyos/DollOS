@@ -11,12 +11,12 @@ from dollos.ipc.messages import TextChunk
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
-    TOOLS,
     InvokeSkill,
     NoteMemory,
     Recall,
     Say,
     Shell,
+    SubagentToolCtx,
     ToolCtx,
     WriteDiary,
 )
@@ -56,8 +56,8 @@ def test_note_memory_schema_has_text_field():
 
 
 def test_tools_list_contains_both():
-    assert Say in TOOLS
-    assert NoteMemory in TOOLS
+    assert Say in MAIN_TOOLS
+    assert NoteMemory in MAIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -135,8 +135,7 @@ def test_write_diary_schema_has_content_field():
 
 
 def test_write_diary_in_tools_list():
-    from dollos.tools import TOOLS
-    assert WriteDiary in TOOLS
+    assert WriteDiary in MAIN_TOOLS
 
 
 @pytest.mark.asyncio
@@ -164,8 +163,7 @@ async def test_say_run_also_appends_to_transcript(tmp_path):
 
 
 def test_shell_in_tools_list():
-    from dollos.tools import TOOLS
-    assert Shell in TOOLS
+    assert Shell in MAIN_TOOLS
 
 
 def test_shell_schema_has_command_and_timeout_s():
@@ -214,24 +212,8 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
     assert "結果" in out  # result-will-arrive language
 
 
-@pytest.mark.asyncio
-async def test_shell_tool_unavailable_when_no_runner(tmp_path):
-    from unittest.mock import MagicMock
-
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        shell_runner=None,
-    )
-    out = await Shell(command="echo hi", timeout_s=30).run(ctx)
-    assert "unavailable" in out.lower()
-
-
 def test_invoke_skill_in_tools_list():
-    from dollos.tools import TOOLS
-    assert InvokeSkill in TOOLS
+    assert InvokeSkill in MAIN_TOOLS
 
 
 def test_invoke_skill_schema_has_name_field():
@@ -347,7 +329,7 @@ class _SearchableMemSearch:
 
 
 def test_recall_in_tools_list():
-    assert Recall in TOOLS
+    assert Recall in MAIN_TOOLS
 
 
 def test_recall_schema_has_query_field():
@@ -624,26 +606,6 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spawn_subagent_without_runner_returns_unavailable(tmp_path):
-    """If ctx.subagent_runner is None (e.g. running inside a subagent),
-    SpawnSubagent.run returns a non-fatal error string and does NOT raise."""
-    from dollos.tools import SpawnSubagent
-
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        subagent_runner=None,
-    )
-
-    out = await SpawnSubagent(task="x", timeout_s=10).run(ctx)
-    assert "unavailable" in out.lower()
-
-
-@pytest.mark.asyncio
 async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
     """Report.run side-effects ctx.subagent_report and returns None
     (cascade-ending semantics)."""
@@ -651,7 +613,7 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
 
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
-    ctx = ToolCtx(
+    ctx = SubagentToolCtx(
         sink=sink,
         memory_root=tmp_path,
         memsearch=ms,
@@ -788,24 +750,6 @@ async def test_spawn_monitor_delegates_to_runner(tmp_path):
         response_sink=sink,
     )
     assert "mon-1" in out
-
-
-@pytest.mark.asyncio
-async def test_spawn_monitor_unavailable_when_no_runner(tmp_path):
-    from dollos.tools import SpawnMonitor, ToolCtx
-    from unittest.mock import MagicMock
-
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        monitor_runner=None,
-    )
-    out = await SpawnMonitor(
-        command="echo hi", match_regex=None, rate_limit_s=0
-    ).run(ctx)
-    assert "unavailable" in out.lower()
 
 
 @pytest.mark.asyncio

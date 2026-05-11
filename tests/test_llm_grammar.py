@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from dollos.llm.templates import build_qwen3_think_tool_grammar
-from dollos.tools import TOOLS
+from dollos.tools import MAIN_TOOLS as TOOLS
 
 
 def test_grammar_starts_with_root_rule():

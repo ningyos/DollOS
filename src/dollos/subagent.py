@@ -23,18 +23,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
-
+from dollos.cascade import run_tool_cascade
 from dollos.events import RawEvent, SubagentResultEvent
 from dollos.ipc.messages import ServerMessage
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.prompts import PromptRenderer
-from dollos.tool_parser import ToolStreamParser
-from dollos.tools import SUB_TOOLS, ToolCtx
+from dollos.tools import SUB_TOOLS, SubagentToolCtx, ToolCtx
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -49,11 +46,7 @@ logger = logging.getLogger(__name__)
 class SubagentRunner:
     """Spawn-and-track set of background subagent tasks.
 
-    Built before the dispatcher (chicken-and-egg: SpawnSubagent.run needs
-    a runner; SubagentRunner needs to fire events into the dispatcher).
-    The dispatch sink is provided as a callable (`dispatch_fn`) which the
-    kernel sets to `dispatcher.dispatch` after the dispatcher is built.
-    Until set, runner falls back to logging an error.
+    Dispatch sink is wired post-build via set_dispatch_fn (see kernel.py).
     """
 
     def __init__(
@@ -187,134 +180,32 @@ class SubagentRunner:
         system = self._renderer.render("subagent_scaffolding")
         messages: list[dict] = [{"role": "user", "content": task}]
 
-        ctx = ToolCtx(
+        ctx = SubagentToolCtx(
             sink=None,  # subagent has no live user sink
             memory_root=self._memory_root,
             memsearch=self._memsearch,
             transcripts_root=self._transcripts_root,
             subagent_runner=None,  # no recursion
-            subagent_report=None,
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
         )
 
-        consecutive_fails: dict[str, int] = {}
-        last_failed_tool: str | None = None
-
-        while True:
-            parser = ToolStreamParser()
-            results: list[_SubToolResult] = []
-            assistant_buf: list[str] = []
-
-            async for chunk in self._adapter.stream_messages(
-                system=system,
-                messages=messages,
-                tools=SUB_TOOLS,
-                max_tokens=4096,
-                grammar=grammar,
-            ):
-                if chunk.text:
-                    assistant_buf.append(chunk.text)
-                for call in parser.feed(chunk.text):
-                    r = await self._dispatch_tool(call, ctx)
-                    if r is not None:
-                        results.append(r)
-                if chunk.done:
-                    break
-            for call in parser.flush():
-                r = await self._dispatch_tool(call, ctx)
-                if r is not None:
-                    results.append(r)
-
-            messages.append(
-                {"role": "assistant", "content": "".join(assistant_buf)}
-            )
-
+        def _check_early_exit(iter_num: int, ctx: ToolCtx) -> bool:
             # Report fires as a side-effect tool (returns None → not in
-            # results). If it ran, ctx.subagent_report is set; ship it.
-            if ctx.subagent_report is not None:
-                return ctx.subagent_report
+            # results). If it ran, ctx.subagent_report is set; signal exit.
+            return ctx.subagent_report is not None
 
-            if not results:
-                # No tool calls and no Report → cascade ended unproductively.
-                return None
+        await run_tool_cascade(
+            adapter=self._adapter,
+            system=system,
+            messages=messages,
+            tools=SUB_TOOLS,
+            tools_by_name=self._tools_by_name,
+            ctx=ctx,
+            grammar=grammar,
+            sink=None,
+            max_tokens=4096,
+            check_early_exit=_check_early_exit,
+        )
 
-            for r in results:
-                detail = r.detail if r.detail else "(no output)"
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"<tool_response>\n{detail}\n</tool_response>",
-                    }
-                )
-
-            for r in results:
-                if r.success:
-                    consecutive_fails.clear()
-                    last_failed_tool = None
-                else:
-                    if r.tool_name == last_failed_tool:
-                        consecutive_fails[r.tool_name] = (
-                            consecutive_fails.get(r.tool_name, 1) + 1
-                        )
-                    else:
-                        last_failed_tool = r.tool_name
-                        consecutive_fails = {r.tool_name: 1}
-
-            stuck_tool = next(
-                (n for n, c in consecutive_fails.items() if c >= 3),
-                None,
-            )
-            if stuck_tool is not None:
-                logger.info(
-                    "subagent stuck on %s (3x); aborting without Report", stuck_tool
-                )
-                return None
-
-    async def _dispatch_tool(
-        self, call: dict, ctx: ToolCtx
-    ) -> "_SubToolResult | None":
-        """Mirror EventDispatcher._dispatch_tool_call but with SUB_TOOLS lookup
-        and no sink-pushed ErrorMsg (subagent has no live sink)."""
-        name = call.get("name")
-        if not isinstance(name, str):
-            return _SubToolResult(
-                tool_name=str(name),
-                success=False,
-                detail="missing or non-string 'name' field in tool_call",
-            )
-        tool_cls = self._tools_by_name.get(name)
-        if tool_cls is None:
-            logger.warning("subagent unknown tool: %r", name)
-            return _SubToolResult(
-                tool_name=name, success=False, detail="unknown tool"
-            )
-        try:
-            tool = tool_cls.model_validate(call.get("arguments", {}))
-        except ValidationError as e:
-            logger.warning("subagent tool args validation failed for %s: %s", name, e)
-            return _SubToolResult(
-                tool_name=name,
-                success=False,
-                detail=f"args validation: {e}",
-            )
-        try:
-            returned = await tool.run(ctx)
-        except Exception as e:
-            logger.exception("subagent tool %s raised", name)
-            return _SubToolResult(
-                tool_name=name,
-                success=False,
-                detail=f"runtime error: {e}",
-            )
-        if returned is None:
-            return None
-        return _SubToolResult(tool_name=name, success=True, detail=returned)
-
-
-# Internal mirror of dispatcher.ToolResult (kept private to avoid coupling).
-@dataclass
-class _SubToolResult:
-    tool_name: str
-    success: bool
-    detail: str
+        return ctx.subagent_report
