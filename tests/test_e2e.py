@@ -10,6 +10,7 @@ The full chain runs, but with two cheap stubs:
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -318,3 +319,95 @@ async def test_monitor_round_trip_with_mocked_llamacpp(
             assert call_count == 5, f"expected 5 LLM calls, got {call_count}"
         finally:
             await dollos.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_voice_session_offer_answer_with_mocked_aiortc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A WS client sends webrtc_offer → daemon answers; aiortc is fully mocked.
+
+    Verifies: signaling messages are routed, VoiceSession is created with
+    the correct engines, answer SDP comes back over WS.
+    """
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\nid="gura"\nname="Gura"\n[identity]\nself="x"\npersonality="x"\ntaboos="x"\n'
+    )
+    voice_dir = pack_dir / "voice"
+    voice_dir.mkdir()
+    (voice_dir / "engine.toml").write_text(
+        '[asr]\nengine="e2e-asr"\n\n[tts]\nengine="e2e-tts"\n'
+    )
+
+    settings = Settings(
+        llm=LLMConfig(
+            provider="llamacpp", template="qwen3-thinking",
+            base_url="http://test.local:8001", model_alias="mock",
+        ),
+        ipc=IPCConfig(host="127.0.0.1", port=0),
+        log=LogConfig(level="ERROR"),
+        data=DataConfig(root=tmp_path / "data"),
+        memsearch=MemsearchConfig(top_k=10),
+        character=CharacterConfig(pack=pack_dir),
+        inner_voice=InnerVoiceConfig(
+            base_url="http://test.local:8003", timeout_s=5.0,
+        ),
+    )
+
+    async def _stub_recall(self, q, **kw): return ""
+    async def _stub_process(self, e): return ""
+    async def _stub_compact(self, *, perception, cascade_messages): return ""
+    async def _noop_index(self): return None
+
+    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
+    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_process)
+    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact)
+    monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
+
+    from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
+
+    class _E2EASR(ASREngine):
+        def __init__(self, **kw): pass
+        async def transcribe(self, audio_pcm, sample_rate): return ""
+        async def aclose(self): pass
+
+    class _E2ETTS(TTSEngine):
+        sample_rate = 48000
+        def __init__(self, **kw): pass
+        async def synthesize(self, text):
+            if False: yield b""
+        async def aclose(self): pass
+
+    ASR_REGISTRY["e2e-asr"] = _E2EASR
+    TTS_REGISTRY["e2e-tts"] = _E2ETTS
+
+    fake_peer = MagicMock()
+    fake_peer.setRemoteDescription = AsyncMock()
+    fake_peer.createAnswer = AsyncMock(return_value=MagicMock(sdp="answer-sdp"))
+    fake_peer.setLocalDescription = AsyncMock()
+    fake_peer.localDescription = MagicMock(sdp="answer-sdp")
+    fake_peer.addIceCandidate = AsyncMock()
+    fake_peer.close = AsyncMock()
+    fake_peer.addTrack = MagicMock()
+    fake_peer.on = MagicMock()
+    monkeypatch.setattr("dollos.voice.session.RTCPeerConnection", lambda: fake_peer)
+
+    dollos = DollOS(settings)
+    from datetime import date as _date
+    dollos._bootstrapped_dates.add(_date.today())
+
+    try:
+        await dollos.memsearch.index()
+        await dollos.server.start()
+        uri = f"ws://127.0.0.1:{dollos.server.port}"
+        async with websockets.connect(uri) as ws:
+            await ws.send(json.dumps({"type": "webrtc_offer", "sdp": "offer-sdp"}))
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            assert msg["type"] == "webrtc_answer"
+            assert msg["sdp"] == "answer-sdp"
+    finally:
+        await dollos.server.stop()
+        del ASR_REGISTRY["e2e-asr"]
+        del TTS_REGISTRY["e2e-tts"]
