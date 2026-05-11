@@ -48,7 +48,12 @@ DollOS/
 
 ## Key Architecture Decisions
 
-- **External actions are fire-and-forget**: Shell and SpawnSubagent both spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent`. There is no Doll-callable wait/cancel tool. "Wait" is implicit — Doll's cascade either keeps going (and the result triggers a new turn after) or ends (and the result triggers a new turn). Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
+- **External actions are fire-and-forget**: Shell, SpawnSubagent, and SpawnMonitor all spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent` (or `MonitorTriggeredEvent` / `MonitorExitedEvent`). There is no Doll-callable wait tool. "Wait" is implicit — Doll's cascade either keeps going or ends; results come back as new perceptions. Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
+- **Monitor vs Shell vs Subagent vs Drone**: All four are external actions.
+  - **Shell** — one-shot command, single result event.
+  - **Subagent** — ephemeral sub-LLM cascade, one Report-driven result event.
+  - **Monitor** — long-running command, per-line trigger events (regex + rate-limit) + exit event. Stateless watcher; no LLM in the loop. Active state surfaces via `[Active monitors]` perception block.
+  - **Drone** (future) — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
 - **BYO big LLM**: DollOS hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
@@ -95,12 +100,12 @@ DollOS/
 | Roadmap step 22 — Async Shell + Monitor + ProcessRegistry (Phase 2 of 4) | Superseded by step 24 |
 | Roadmap step 23 — Cancel + interrupt-aware Monitor (Phase 3 of 4) | Superseded by step 24 |
 | Roadmap step 24 — External actions = fire-and-forget (Shell ≈ Subagent) | Merged |
+| Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged |
 
 ### 下一個
 
-- **真 Monitor watcher**（fire-and-forget command runner with stdout-line-as-event）— 用戶原本構想的 Monitor，跟 Drone 對偶
 - **Voice pipeline**（基礎建設，跟 Doll 行為無關）
-- **Drone**（persistent agents — 跟 Subagent 對偶）
+- **Drone**（persistent agents — 跟 Subagent 對偶；Monitor 是無大腦版，Drone 是有大腦版）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 **已收的設計準則**：

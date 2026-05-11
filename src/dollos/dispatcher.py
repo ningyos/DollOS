@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from memsearch import MemSearch
 from pydantic import ValidationError
@@ -26,12 +27,17 @@ from dollos.events import (
     DailyPlanEvent,
     DiaryEvent,
     DollEvent,
+    MonitorExitedEvent,
+    MonitorTriggeredEvent,
     RawEvent,
     ScheduledEvent,
     ShellResultEvent,
     SubagentResultEvent,
     UserTextEvent,
 )
+
+if TYPE_CHECKING:
+    from dollos.monitor_runner import MonitorRunner
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
@@ -53,6 +59,7 @@ logger = logging.getLogger(__name__)
 # Doll started" so queueing them just makes the user wait artificially.
 SERIALIZE_TYPES: tuple[type, ...] = (
     UserTextEvent, ScheduledEvent, DailyPlanEvent, DiaryEvent,
+    MonitorTriggeredEvent, MonitorExitedEvent,
 )
 
 
@@ -92,6 +99,30 @@ def _format_now(now: datetime) -> str:
         f"{now:%Y-%m-%d %H:%M:%S} "
         f"{_WEEKDAYS[now.weekday()]}{_period_of_day(now.hour)}\n\n"
     )
+
+
+def _format_active_monitors_block(snapshot: list[dict]) -> str:
+    """Render the [Active monitors] block from MonitorRunner.active_state()."""
+    if not snapshot:
+        return ""
+    lines: list[str] = ["[Active monitors]"]
+    for s in snapshot:
+        match_part = (
+            f" (match: {s['match_regex']!r})" if s["match_regex"] else ""
+        )
+        rl = s["rate_limit_s"]
+        if rl > 0:
+            sup = s["suppressed_in_window"]
+            if sup > 0:
+                rl_part = f" [rate-limit: {rl}s, suppressed {sup} in last {rl}s]"
+            else:
+                rl_part = f" [rate-limit: {rl}s]"
+        else:
+            rl_part = ""
+        lines.append(
+            f"- {s['monitor_id']}: {s['command']}{match_part}{rl_part}"
+        )
+    return "\n".join(lines) + "\n\n"
 
 
 @dataclass
@@ -138,6 +169,7 @@ class EventDispatcher:
         subagent_runner: SubagentRunner | None = None,
         cascade_logger: CascadeLogger | None = None,
         shell_runner: ShellRunner | None = None,
+        monitor_runner: "MonitorRunner | None" = None,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -150,6 +182,7 @@ class EventDispatcher:
         self._subagent_runner = subagent_runner
         self._cascade_logger = cascade_logger or _NoOpCascadeLogger()
         self._shell_runner = shell_runner
+        self._monitor_runner = monitor_runner
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in TOOLS
         }
@@ -327,6 +360,25 @@ class EventDispatcher:
                 f"- output:\n{raw.output}"
             )
             return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, MonitorTriggeredEvent):
+            extra = (
+                f"（過去 window 內被 rate-limit 壓住的命中數: {raw.suppressed_count}）"
+                if raw.suppressed_count > 0 else ""
+            )
+            perception = (
+                f"monitor {raw.monitor_id} 觸發：\n"
+                f"- command: {raw.command}\n"
+                f"- line: {raw.line}\n"
+                f"{extra}".rstrip()
+            )
+            return DollEvent(perception=perception, raw=raw)
+        if isinstance(raw, MonitorExitedEvent):
+            perception = (
+                f"monitor {raw.monitor_id} 結束（status={raw.status}, "
+                f"exit={raw.exit_code}, 共觸發 {raw.total_matched} 行）：\n"
+                f"- command: {raw.command}"
+            )
+            return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, DailyPlanEvent):
             perception = (
                 "早安。要規劃今天的時程。看一下昨天的 schedule（Recall 找）"
@@ -360,10 +412,17 @@ class EventDispatcher:
             memory_block = f"[Memory context]\n{recall_text}\n\n"
         else:
             memory_block = "[Memory context]\n(no relevant memory)\n\n"
+        if self._monitor_runner is not None:
+            active_monitors_block = _format_active_monitors_block(
+                self._monitor_runner.active_state()
+            )
+        else:
+            active_monitors_block = ""
         first_user = (
             _format_now(datetime.now())
             + self._format_mood()
             + self._format_pending()
+            + active_monitors_block
             + recent_activity
             + memory_block
             + f"[Message]\n{doll_event.perception}"
@@ -400,6 +459,15 @@ class EventDispatcher:
                         "role": "user",
                         "content": pending_block.rstrip(),
                     })
+                if self._monitor_runner is not None:
+                    active_block = _format_active_monitors_block(
+                        self._monitor_runner.active_state()
+                    )
+                    if active_block:
+                        messages.append({
+                            "role": "user",
+                            "content": active_block.rstrip(),
+                        })
             parser = ToolStreamParser()
             ctx = ToolCtx(
                 sink=sink,
@@ -408,6 +476,7 @@ class EventDispatcher:
                 transcripts_root=self._transcripts_root,
                 subagent_runner=self._subagent_runner,
                 shell_runner=self._shell_runner,
+                monitor_runner=self._monitor_runner,
             )
             results: list[ToolResult] = []
             assistant_buf: list[str] = []
@@ -564,6 +633,8 @@ class EventDispatcher:
                 ShellResultEvent,
                 ScheduledEvent,
                 DailyPlanEvent,
+                MonitorTriggeredEvent,
+                MonitorExitedEvent,
             ),
         ):
             return raw.response_sink

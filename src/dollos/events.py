@@ -95,6 +95,44 @@ class ShellResultEvent(RawEvent):
 
 
 @dataclass
+class MonitorTriggeredEvent(RawEvent):
+    """A monitor command emitted a matched stdout line.
+
+    Fired by MonitorRunner when a watched process emits a line that
+    matches the monitor's `match_regex` (or any line if regex is None),
+    subject to rate-limit. Dispatcher renders this into a perception so
+    Doll's cascade fires for it.
+
+    suppressed_count: when > 0, this fire represents one matched line
+        plus N suppressed-by-rate-limit lines in the prior window. Doll
+        sees the number in the perception to gauge frequency.
+    """
+
+    monitor_id: str
+    command: str
+    line: str
+    suppressed_count: int
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
+class MonitorExitedEvent(RawEvent):
+    """A monitor's command exited (naturally or via RemoveMonitor).
+
+    Always fired exactly once per monitor, regardless of rate-limit.
+    `status`: 'natural' if the proc exited on its own, 'removed' if
+    RemoveMonitor killed it, 'error' if the runner raised.
+    """
+
+    monitor_id: str
+    command: str
+    status: Literal["natural", "removed", "error"]
+    exit_code: int | None
+    total_matched: int
+    response_sink: asyncio.Queue[ServerMessage | None]
+
+
+@dataclass
 class ScheduledEvent(RawEvent):
     """Fired by the daemon scheduler when a scheduled entry's time arrives.
 

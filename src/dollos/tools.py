@@ -28,6 +28,7 @@ from dollos.memory_writer import append_transcript
 if TYPE_CHECKING:
     from memsearch import MemSearch
 
+    from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
 
@@ -73,9 +74,10 @@ def _format_hit(hit: dict) -> str:
 class ToolCtx:
     """Narrow execution context passed to Tool.run().
 
-    `subagent_runner` and `shell_runner` carry the dispatch sinks for
-    fire-and-forget external actions. Both can be None inside isolated
-    test contexts; tools surface a clear "unavailable" message when so.
+    `subagent_runner`, `shell_runner`, and `monitor_runner` carry the
+    dispatch sinks for fire-and-forget external actions. All can be None
+    inside isolated test contexts; tools surface a clear "unavailable"
+    message when so.
     """
 
     sink: asyncio.Queue[ServerMessage | None] | None
@@ -85,6 +87,7 @@ class ToolCtx:
     subagent_runner: "SubagentRunner | None" = None
     subagent_report: dict | None = None
     shell_runner: "ShellRunner | None" = None
+    monitor_runner: "MonitorRunner | None" = None
 
 
 class Say(BaseModel):
@@ -315,6 +318,91 @@ class SpawnSubagent(BaseModel):
         )
 
 
+class SpawnMonitor(BaseModel):
+    """Spawn a background command watcher. Returns a monitor_id immediately.
+
+    The command runs as a long-lived subprocess. Each stdout line
+    (optionally regex-filtered) fires a MonitorTriggeredEvent that
+    arrives as a new turn's perception starting with 「monitor 觸發」.
+    When the command exits (naturally or via RemoveMonitor), a
+    MonitorExitedEvent fires.
+
+    Rate-limit: within `rate_limit_s` seconds, at most ONE matched line
+    fires an event; subsequent matches are counted as suppressed and
+    surface in the [Active monitors] block (and in the next firing
+    event's `suppressed_count`). Set `rate_limit_s=0` to disable.
+
+    Examples:
+        SpawnMonitor(command="nvidia-smi -l 5 --query-gpu=temperature.gpu "
+                             "--format=csv,noheader",
+                     match_regex=r"^[89][0-9]$", rate_limit_s=60)
+        SpawnMonitor(command="tail -F /var/log/syslog",
+                     match_regex=r"ERROR|CRITICAL", rate_limit_s=60)
+    """
+
+    command: str = Field(
+        description="Shell command (passed to bash -c). Run long; daemon kills on shutdown.",
+    )
+    match_regex: str | None = Field(
+        default=None,
+        description=(
+            "Optional Python regex. None = every line fires. Use to "
+            "pre-filter inside the runner (cheaper than firing events "
+            "and ignoring them)."
+        ),
+    )
+    rate_limit_s: int = Field(
+        ge=0,
+        le=3600,
+        description=(
+            "Per-monitor seconds-between-fires window. 0 disables. "
+            "60 is a reasonable default for noisy sources."
+        ),
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        if ctx.monitor_runner is None:
+            return "[SpawnMonitor unavailable: no monitor_runner on this ctx]"
+        try:
+            monitor_id = ctx.monitor_runner.spawn(
+                command=self.command,
+                match_regex=self.match_regex,
+                rate_limit_s=self.rate_limit_s,
+                response_sink=ctx.sink,
+            )
+        except re.error as e:
+            return f"[SpawnMonitor regex error: {e}]"
+        if not monitor_id:
+            return "[SpawnMonitor failed: runner is stopping]"
+        return (
+            f"monitor {monitor_id} dispatched "
+            f"(command={self.command!r}, "
+            f"match={self.match_regex!r}, "
+            f"rate_limit_s={self.rate_limit_s})."
+        )
+
+
+class RemoveMonitor(BaseModel):
+    """Kill an active monitor by id.
+
+    The process is killed (SIGKILL on its process group). The watcher
+    fires a MonitorExitedEvent with status='removed'. Active monitors
+    surface in the [Active monitors] block of every cascade iter.
+    """
+
+    monitor_id: str = Field(
+        description="Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
+    )
+
+    async def run(self, ctx: ToolCtx) -> str:
+        if ctx.monitor_runner is None:
+            return "[RemoveMonitor unavailable: no monitor_runner on this ctx]"
+        ok = await ctx.monitor_runner.remove(self.monitor_id)
+        if ok:
+            return f"monitor {self.monitor_id} kill requested."
+        return f"monitor {self.monitor_id} unknown (already gone or not found)."
+
+
 class Report(BaseModel):
     """Terminate this subagent and report the structured outcome to Doll.
 
@@ -411,11 +499,12 @@ class WriteSchedule(BaseModel):
 
 MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
-    InvokeSkill, Recall, SpawnSubagent,
+    InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
+    SpawnMonitor, RemoveMonitor,
 ]
 
 # Back-compat alias — many modules / tests import TOOLS directly.
