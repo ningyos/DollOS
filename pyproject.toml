@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "DollOS — Python brain: event loop, Instinct, Memory, Conversation Engine"
 requires-python = ">=3.13"
 dependencies = [
+    "aiortc>=1.9",
     "httpx>=0.27",
     "huggingface-hub>=0.24.0",
     "jinja2>=3.1",
@@ -11,6 +12,7 @@ dependencies = [
     "memsearch[onnx]>=0.1",
     "onnxruntime>=1.17,<1.25",
     "pydantic>=2.6",
+    "scipy>=1.13",
     "sherpa-onnx>=1.10.0",
     "structlog>=24.0",
     "websockets>=12.0",
