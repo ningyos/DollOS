@@ -17,7 +17,31 @@ class TextInput(BaseModel):
     text: str
 
 
-ClientMessage = Annotated[TextInput, Field(discriminator="type")]
+class WebRTCOfferIn(BaseModel):
+    type: Literal["webrtc_offer"] = "webrtc_offer"
+    sdp: str
+
+
+class ICECandidateIn(BaseModel):
+    type: Literal["ice_candidate"] = "ice_candidate"
+    candidate: str
+    sdpMid: str | None = None
+    sdpMLineIndex: int | None = None
+
+
+class UtteranceStart(BaseModel):
+    type: Literal["utterance_start"] = "utterance_start"
+    sample_rate: int
+
+
+class UtteranceEnd(BaseModel):
+    type: Literal["utterance_end"] = "utterance_end"
+
+
+ClientMessage = Annotated[
+    TextInput | WebRTCOfferIn | ICECandidateIn | UtteranceStart | UtteranceEnd,
+    Field(discriminator="type"),
+]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(ClientMessage)
 
 
@@ -49,8 +73,22 @@ class ErrorMsg(BaseModel):
     message: str
 
 
+# ===== Server → Client (additions) =====
+
+class WebRTCAnswerOut(BaseModel):
+    type: Literal["webrtc_answer"] = "webrtc_answer"
+    sdp: str
+
+
+class ICECandidateOut(BaseModel):
+    type: Literal["ice_candidate"] = "ice_candidate"
+    candidate: str
+    sdpMid: str | None = None
+    sdpMLineIndex: int | None = None
+
+
 ServerMessage = Annotated[
-    TextChunk | TurnEnd | ErrorMsg,
+    TextChunk | TurnEnd | ErrorMsg | WebRTCAnswerOut | ICECandidateOut,
     Field(discriminator="type"),
 ]
 

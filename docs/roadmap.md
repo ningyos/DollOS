@@ -294,6 +294,30 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 27. Voice pipeline Phase B — WebRTC + VoiceSession + IPC integration  ✅ Merged
+
+**範圍**：
+- aiortc 接入；新 `src/dollos/voice/session.py` 包含 `VoiceSession`（per-WS-client）
+- 新 `src/dollos/voice/codec.py`：PCM ↔ AudioFrame + scipy resample
+- 新 `src/dollos/voice/sink.py`：`TTSObservingSink`（put_nowait TextChunk → 觸發 voice_session.speak）
+- 擴展 IPC messages：`webrtc_offer/answer`、`ice_candidate`、`utterance_start/end`
+- IPC server `on_disconnect` hook 多收一個 sink 參數（給 kernel 清理 per-connection state）
+- WebSocketServer 加 `sink_factory` 參數，讓 kernel 注入 TTSObservingSink
+- Kernel `build_voice_engines(pack_dir, data_root)` from character pack voice config；per-connection VoiceSession map keyed by `id(sink)`
+- `_handle_message` dispatch by type：TextInput / WebRTCOfferIn / ICECandidateIn / UtteranceStart / UtteranceEnd
+- E2E：WS webrtc_offer → daemon answer round-trip（mocked aiortc + engines）
+
+**設計選擇**：
+- VoiceSession 只負責 orchestration，aiortc 的網路機制 trusted upstream
+- TTS 在 sink layer 攔截，Doll.Say 路徑零改動（Say 還是 `ctx.sink.put_nowait(TextChunk)`，sink 自己會觸發 voice.speak）
+- ASR 結果 fire UserTextEvent，跟文字輸入走同一個 dispatcher 流程
+- 每個 WS 連線一個 VoiceSession；第一個 webrtc_offer 才 lazy build engines
+
+**Tests**：379 passed（25 new voice / signaling / IPC / kernel / e2e tests）
+
+**Phase 後續**：
+- C (next plan)：local-audio-bridge process + 真實 WebRTC E2E smoke
+
 ### 26. Voice engines + character pack voice config (Phase A of voice pipeline)  ✅ Merged
 
 **範圍**：

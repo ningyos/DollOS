@@ -181,7 +181,7 @@ async def test_ws_server_calls_on_disconnect_after_disconnect():
     """on_disconnect fires after the client closes the websocket."""
     disconnected = asyncio.Event()
 
-    async def _on_disconnect() -> None:
+    async def _on_disconnect(sink) -> None:
         disconnected.set()
 
     server = WebSocketServer(
