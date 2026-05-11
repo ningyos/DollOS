@@ -211,21 +211,6 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
     assert "結果" in out  # result-will-arrive language
 
 
-@pytest.mark.asyncio
-async def test_shell_tool_unavailable_when_no_runner(tmp_path):
-    from unittest.mock import MagicMock
-
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        shell_runner=None,
-    )
-    out = await Shell(command="echo hi", timeout_s=30).run(ctx)
-    assert "unavailable" in out.lower()
-
-
 def test_invoke_skill_in_tools_list():
     assert InvokeSkill in MAIN_TOOLS
 
@@ -620,26 +605,6 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spawn_subagent_without_runner_returns_unavailable(tmp_path):
-    """If ctx.subagent_runner is None (e.g. running inside a subagent),
-    SpawnSubagent.run returns a non-fatal error string and does NOT raise."""
-    from dollos.tools import SpawnSubagent
-
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        subagent_runner=None,
-    )
-
-    out = await SpawnSubagent(task="x", timeout_s=10).run(ctx)
-    assert "unavailable" in out.lower()
-
-
-@pytest.mark.asyncio
 async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
     """Report.run side-effects ctx.subagent_report and returns None
     (cascade-ending semantics)."""
@@ -784,24 +749,6 @@ async def test_spawn_monitor_delegates_to_runner(tmp_path):
         response_sink=sink,
     )
     assert "mon-1" in out
-
-
-@pytest.mark.asyncio
-async def test_spawn_monitor_unavailable_when_no_runner(tmp_path):
-    from dollos.tools import SpawnMonitor, ToolCtx
-    from unittest.mock import MagicMock
-
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        monitor_runner=None,
-    )
-    out = await SpawnMonitor(
-        command="echo hi", match_regex=None, rate_limit_s=0
-    ).run(ctx)
-    assert "unavailable" in out.lower()
 
 
 @pytest.mark.asyncio

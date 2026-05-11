@@ -75,9 +75,8 @@ class ToolCtx:
     """Narrow execution context passed to Tool.run().
 
     `subagent_runner`, `shell_runner`, and `monitor_runner` carry the
-    dispatch sinks for fire-and-forget external actions. All can be None
-    inside isolated test contexts; tools surface a clear "unavailable"
-    message when so.
+    dispatch sinks for fire-and-forget external actions. The production
+    kernel always wires all runners.
     """
 
     sink: asyncio.Queue[ServerMessage | None] | None
@@ -179,10 +178,6 @@ class Shell(BaseModel):
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        if ctx.shell_runner is None:
-            return (
-                "[Shell unavailable: no shell_runner on this ctx]"
-            )
         ctx.shell_runner.spawn(
             command=self.command,
             timeout_s=self.timeout_s,
@@ -190,7 +185,7 @@ class Shell(BaseModel):
         )
         return (
             f"shell dispatched (command={self.command!r}, "
-            f"timeout={self.timeout_s}s). 結果完成時會以新事件回來。"
+            f"timeout={self.timeout_s}s). 結果會以新事件回來。"
         )
 
 
@@ -299,11 +294,6 @@ class SpawnSubagent(BaseModel):
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        if ctx.subagent_runner is None:
-            return (
-                "[SpawnSubagent unavailable: no subagent runner on this ctx — "
-                "you may be running inside a subagent, which cannot recurse]"
-            )
         sub_id = str(uuid.uuid4())[:8]
         ctx.subagent_runner.spawn(
             sub_id=sub_id,
@@ -314,7 +304,7 @@ class SpawnSubagent(BaseModel):
         return (
             f"subagent {sub_id} dispatched "
             f"(task={self.task!r}, timeout={self.timeout_s}s). "
-            f"Result will arrive as a new turn when it finishes."
+            f"結果會以新事件回來。"
         )
 
 
@@ -361,8 +351,6 @@ class SpawnMonitor(BaseModel):
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        if ctx.monitor_runner is None:
-            return "[SpawnMonitor unavailable: no monitor_runner on this ctx]"
         try:
             monitor_id = ctx.monitor_runner.spawn(
                 command=self.command,
@@ -378,7 +366,8 @@ class SpawnMonitor(BaseModel):
             f"monitor {monitor_id} dispatched "
             f"(command={self.command!r}, "
             f"match={self.match_regex!r}, "
-            f"rate_limit_s={self.rate_limit_s})."
+            f"rate_limit_s={self.rate_limit_s}). "
+            f"觸發 / 結束都會以新事件回來。"
         )
 
 
@@ -395,8 +384,6 @@ class RemoveMonitor(BaseModel):
     )
 
     async def run(self, ctx: ToolCtx) -> str:
-        if ctx.monitor_runner is None:
-            return "[RemoveMonitor unavailable: no monitor_runner on this ctx]"
         ok = await ctx.monitor_runner.remove(self.monitor_id)
         if ok:
             return f"monitor {self.monitor_id} kill requested."
