@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 from memsearch import MemSearch
 
@@ -16,8 +17,21 @@ from dollos.events import DailyPlanEvent, DiaryEvent, ScheduledEvent, UserTextEv
 from dollos.schedule import due_entries, load_schedule
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct, SmallModelInstinct
-from dollos.ipc.messages import ErrorMsg, ServerMessage, TextInput
+from dollos.ipc.messages import (
+    ErrorMsg,
+    ICECandidateIn,
+    ServerMessage,
+    TextInput,
+    UtteranceEnd,
+    UtteranceStart,
+    WebRTCAnswerOut,
+    WebRTCOfferIn,
+)
 from dollos.ipc.server import WebSocketServer
+from dollos.voice.engines import ASR_REGISTRY, ASREngine, TTS_REGISTRY, TTSEngine
+from dollos.voice.pack import load_voice_config
+from dollos.voice.session import VoiceSession
+from dollos.voice.sink import TTSObservingSink
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
@@ -112,6 +126,35 @@ def build_instinct(
     return SmallModelInstinct(adapter=adapter, renderer=renderer)
 
 
+def build_voice_engines(
+    pack_dir: Path, *, data_root: Path
+) -> "tuple[ASREngine, TTSEngine] | None":
+    """Construct ASR+TTS engines from a character pack's voice config.
+
+    Returns None if the pack has no voice/engine.toml (or either asr/tts section
+    is absent). Raises ValueError if the config references an unregistered engine.
+    """
+    cfg = load_voice_config(Path(pack_dir))
+    if cfg.asr is None or cfg.tts is None:
+        return None
+
+    asr_name = cfg.asr["engine"]
+    if asr_name not in ASR_REGISTRY:
+        raise ValueError(f"unknown ASR engine in voice/engine.toml: {asr_name!r}")
+    tts_name = cfg.tts["engine"]
+    if tts_name not in TTS_REGISTRY:
+        raise ValueError(f"unknown TTS engine in voice/engine.toml: {tts_name!r}")
+
+    asr_kwargs = {k: v for k, v in cfg.asr.items() if k != "engine"}
+    asr_kwargs.setdefault("data_root", data_root)
+    tts_kwargs = {k: v for k, v in cfg.tts.items() if k != "engine"}
+    tts_kwargs.setdefault("data_root", data_root)
+
+    asr = ASR_REGISTRY[asr_name](**asr_kwargs)
+    tts = TTS_REGISTRY[tts_name](**tts_kwargs)
+    return asr, tts
+
+
 class DollOS:
     DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see spec §12.3)
     DIARY_MINUTE = 0
@@ -159,12 +202,16 @@ class DollOS:
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.monitor_runner.set_dispatch_fn(self.dispatcher.dispatch)
+        self._voice_sessions: dict[int, VoiceSession] = {}  # keyed by id(sink)
+        self._pack_dir = Path(settings.character.pack)
+        self._data_root = settings.data.root
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
-            handler=self._handle_text_input,
+            handler=self._handle_message,
             on_connect=self._handle_connect,
             on_disconnect=self._handle_disconnect,
+            sink_factory=self._make_sink,
         )
         self._shutdown = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
@@ -178,10 +225,62 @@ class DollOS:
         # Track per-day bootstrap so reconnects within a day don't refire.
         self._bootstrapped_dates: set[date] = set()
 
-    async def _handle_text_input(
-        self, msg: TextInput, sink: "asyncio.Queue[ServerMessage | None]"
+    def _make_sink(self) -> "asyncio.Queue[ServerMessage | None]":
+        """Build a TTSObservingSink that fetches the voice session at speak-time."""
+        holder: dict = {}
+        sink = TTSObservingSink(
+            voice_session_provider=lambda: self._voice_sessions.get(holder["id"]),
+        )
+        holder["id"] = id(sink)
+        return sink
+
+    async def _handle_message(
+        self, msg, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
-        self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
+        if isinstance(msg, TextInput):
+            self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
+        elif isinstance(msg, WebRTCOfferIn):
+            answer_sdp = await self._handle_offer(msg.sdp, sink)
+            sink.put_nowait(WebRTCAnswerOut(sdp=answer_sdp))
+        elif isinstance(msg, ICECandidateIn):
+            session = self._voice_sessions.get(id(sink))
+            if session is not None:
+                await session.handle_ice_candidate(
+                    candidate=msg.candidate,
+                    sdpMid=msg.sdpMid,
+                    sdpMLineIndex=msg.sdpMLineIndex,
+                )
+        elif isinstance(msg, UtteranceStart):
+            session = self._voice_sessions.get(id(sink))
+            if session is not None:
+                await session.handle_utterance_start(sample_rate=msg.sample_rate)
+        elif isinstance(msg, UtteranceEnd):
+            session = self._voice_sessions.get(id(sink))
+            if session is not None:
+                await session.handle_utterance_end()
+        else:
+            logger.warning("unhandled message type: %r", type(msg).__name__)
+
+    async def _handle_offer(
+        self, offer_sdp: str, sink: "asyncio.Queue[ServerMessage | None]"
+    ) -> str:
+        engines = build_voice_engines(self._pack_dir, data_root=self._data_root)
+        if engines is None:
+            raise RuntimeError(
+                "voice not configured for the active character pack; "
+                f"missing {self._pack_dir}/voice/engine.toml"
+            )
+        asr, tts = engines
+
+        async def _on_user_text(text: str) -> None:
+            self.dispatcher.dispatch(UserTextEvent(text=text, response_sink=sink))
+
+        session = VoiceSession(asr=asr, tts=tts, on_user_text=_on_user_text)
+        self._voice_sessions[id(sink)] = session
+        return await session.handle_offer(offer_sdp)
+
+    # Keep legacy name for backward compatibility with any external callers.
+    _handle_text_input = _handle_message
 
     async def _handle_connect(
         self, sink: "asyncio.Queue[ServerMessage | None]"
@@ -196,13 +295,17 @@ class DollOS:
         self._active_sink = sink
         await self._maybe_bootstrap_plan()
 
-    async def _handle_disconnect(self) -> None:
-        """WebSocketServer on_disconnect hook — drops the live sink.
-
-        Subsequent scheduler-fired events fall back to the dummy sink
-        until another client connects.
-        """
-        self._active_sink = None
+    async def _handle_disconnect(self, sink: "asyncio.Queue[ServerMessage | None]") -> None:
+        """WebSocketServer on_disconnect hook — drops the live sink and closes
+        any associated VoiceSession."""
+        session = self._voice_sessions.pop(id(sink), None)
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                logger.exception("voice session close raised")
+        if self._active_sink is sink:
+            self._active_sink = None
 
     def _active_sink_or_dummy(
         self,

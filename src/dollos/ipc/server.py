@@ -48,7 +48,13 @@ class WebSocketServer:
             Callable[["asyncio.Queue[ServerMessage | None]"], Awaitable[None]]
             | None
         ) = None,
-        on_disconnect: Callable[[], Awaitable[None]] | None = None,
+        on_disconnect: (
+            Callable[["asyncio.Queue[ServerMessage | None]"], Awaitable[None]]
+            | None
+        ) = None,
+        sink_factory: (
+            Callable[[], "asyncio.Queue[ServerMessage | None]"] | None
+        ) = None,
     ):
         self._host = host
         self._port_requested = port
@@ -56,6 +62,7 @@ class WebSocketServer:
         self._server: websockets.asyncio.server.Server | None = None
         self._on_connect_hook = on_connect
         self._on_disconnect_hook = on_disconnect
+        self._sink_factory = sink_factory
 
     @property
     def port(self) -> int | None:
@@ -77,7 +84,9 @@ class WebSocketServer:
 
     async def _on_connect(self, ws: ServerConnection) -> None:
         logger.info("client connected: %s", ws.remote_address)
-        sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
+        sink: asyncio.Queue[ServerMessage | None] = (
+            self._sink_factory() if self._sink_factory is not None else asyncio.Queue()
+        )
         pump_task = asyncio.create_task(self._pump(ws, sink), name="ipc-pump")
         if self._on_connect_hook is not None:
             try:
@@ -105,7 +114,7 @@ class WebSocketServer:
                 pass
             if self._on_disconnect_hook is not None:
                 try:
-                    await self._on_disconnect_hook()
+                    await self._on_disconnect_hook(sink)
                 except Exception:
                     logger.exception("on_disconnect hook failed")
             logger.info("client disconnected: %s", ws.remote_address)
