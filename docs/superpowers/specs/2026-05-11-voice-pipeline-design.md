@@ -137,7 +137,23 @@ Engines load configuration from a per-character pack file (see "Character pack v
 - Bundled with Paraformer / Whisper-ONNX / SenseVoice / Zipformer support — same engine handles many model families
 - Single dependency: `sherpa-onnx-core` (compiled native)
 - API shape used: `OfflineRecognizer.create_paraformer(...)` → `recognizer.create_stream() → stream.accept_waveform(rate, pcm) → recognizer.decode_stream(stream) → stream.result.text`
-- MVP model: Paraformer ZH-EN (FunASR's flagship, multilingual)
+- MVP default model: **SenseVoice ZH-EN-JA-KO-YUE int8** (239 MB; multilingual, accuracy parity with Whisper-medium)
+- `SherpaOnnxASR` carries a small **model registry** mapping config strings → HF repos:
+  ```python
+  SHERPA_MODELS = {
+      "sense-voice-zh-en-ja-ko-yue": {
+          "hf_repo": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+          "files": ["model.int8.onnx", "tokens.txt"],
+          "loader": "sense_voice",
+      },
+      "paraformer-zh": {
+          "hf_repo": "csukuangfj/sherpa-onnx-paraformer-zh-2023-09-14",
+          "files": ["model.int8.onnx", "tokens.txt"],
+          "loader": "paraformer",
+      },
+  }
+  ```
+- **Auto-download on first use** (mirrors luxtts-onnx behavior): if `model_dir` unset, engine uses `~/.cache/dollos/voice/asr/<model_id>/` and lazily pulls via `huggingface_hub.hf_hub_download`. SHA256 / size verification per file. If `model_dir` is set, engine reads from there and refuses to download.
 
 **TTS — luxtts-onnx**
 - User's existing repo (`~/Projects/luxtts-onnx`)
@@ -146,6 +162,17 @@ Engines load configuration from a per-character pack file (see "Character pack v
 - Voice cloning: encode a reference audio + transcript once → `.npz` prompt; load instantly on subsequent runs
 - Output: float32 array at **48 kHz**, whole utterance (not streaming generator)
 - For our streaming-out ABC: run `tts.generate()` in `asyncio.to_thread`, then chunk the result into 20ms PCM frames for the AsyncIterator
+- **Auto-downloads** model files (`text_encoder.onnx` 17 MB / `fm_decoder.onnx` 456 MB / `vocos.onnx` 69 MB / `tokens.txt`) from `YatharthS/LuxTTS` + `ProgCat/luxtts-onnx` HF repos on first use, SHA256-verified. Total ~542 MB.
+
+### Model lifecycle summary
+
+Both engines auto-download model files on first use:
+- ASR (sherpa-onnx, SenseVoice int8): ~239 MB → `~/.cache/dollos/voice/asr/sense-voice-...`
+- TTS (luxtts-onnx): ~542 MB → `~/.cache/luxtts-onnx/models/` (or our `model_dir` override)
+
+**First-run total: ~780 MB.** Subsequent runs read from cache. First daemon start with voice enabled needs internet; document this clearly in README.
+
+Per-character voice clone prompts (`.npz`) live inside the character pack and are tiny (~few KB-MB).
 
 ### Character pack voice layout
 
