@@ -429,3 +429,29 @@ async def test_kernel_shell_runner_dispatch_fn_wired(tmp_path: Path):
     dollos = DollOS(settings)
     # Bound methods compare equal (==) but are not identical (is) on each access.
     assert dollos.shell_runner._dispatch_fn == dollos.dispatcher.dispatch
+
+
+# ----- MonitorRunner wiring -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_creates_monitor_runner(tmp_path: Path):
+    """DollOS exposes a MonitorRunner on construction; the dispatcher and
+    SubagentRunner share that same instance."""
+    from dollos.monitor_runner import MonitorRunner
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.monitor_runner, MonitorRunner)
+    assert dollos.dispatcher._monitor_runner is dollos.monitor_runner
+    assert dollos.subagent_runner._monitor_runner is dollos.monitor_runner
+
+
+@pytest.mark.asyncio
+async def test_kernel_monitor_runner_dispatch_fn_wired(tmp_path: Path):
+    """MonitorRunner's dispatch_fn is set to dispatcher.dispatch after
+    both are constructed."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    # Bound methods compare equal (==) but are not identical (is) on each access.
+    assert dollos.monitor_runner._dispatch_fn == dollos.dispatcher.dispatch

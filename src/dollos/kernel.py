@@ -23,6 +23,7 @@ from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
+from dollos.monitor_runner import MonitorRunner
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 
@@ -131,6 +132,7 @@ class DollOS:
         # then build dispatcher referencing them, then point runners at
         # dispatcher.dispatch.
         self.shell_runner = ShellRunner(cwd=settings.data.root)
+        self.monitor_runner = MonitorRunner(cwd=settings.data.root)
         self.subagent_runner = SubagentRunner(
             adapter=self.adapter,
             renderer=self.renderer,
@@ -138,6 +140,7 @@ class DollOS:
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
             shell_runner=self.shell_runner,
+            monitor_runner=self.monitor_runner,
         )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
@@ -151,9 +154,11 @@ class DollOS:
             subagent_runner=self.subagent_runner,
             cascade_logger=self._cascade_logger,
             shell_runner=self.shell_runner,
+            monitor_runner=self.monitor_runner,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)
+        self.monitor_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -353,6 +358,7 @@ class DollOS:
                 # kept explicit per plan).
                 await self.subagent_runner.stop()
                 await self.shell_runner.stop()
+                await self.monitor_runner.stop()
                 await self.dispatcher.stop()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based
