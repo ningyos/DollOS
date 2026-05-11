@@ -43,11 +43,7 @@ def _truncate(text: str, cap: int) -> str:
 class ShellRunner:
     """Spawn-and-track set of background shell subprocesses.
 
-    Built before the dispatcher (chicken-and-egg: Shell.run needs a
-    runner; the runner needs to dispatch result events into the
-    dispatcher). The dispatch sink is set via `set_dispatch_fn` after
-    the dispatcher is built. Until set, completed shell results are
-    logged and dropped (defensive — should not happen in production).
+    Dispatch sink is wired post-build via set_dispatch_fn (see kernel.py).
     """
 
     def __init__(

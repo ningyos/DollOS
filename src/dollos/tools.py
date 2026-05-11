@@ -506,6 +506,3 @@ SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor,
 ]
-
-# Back-compat alias — many modules / tests import TOOLS directly.
-TOOLS: list[type[BaseModel]] = MAIN_TOOLS
