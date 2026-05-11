@@ -99,6 +99,7 @@ DollOS/
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
 | Roadmap step 24 — External actions = fire-and-forget (Shell ≈ Subagent) | Merged |
 | Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged |
+| Roadmap step 26 — Voice engines + pack config (Voice Phase A) | Merged |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -109,7 +110,8 @@ DollOS/
 
 ### 下一個
 
-- **Voice pipeline**（基礎建設，跟 Doll 行為無關）
+- **Voice pipeline Phase B**：WebRTC + VoiceSession + IPC integration
+- **Voice pipeline Phase C**：local-audio-bridge + E2E
 - **Drone**（persistent agents — 跟 Subagent 對偶；Monitor 是無大腦版，Drone 是有大腦版）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
 
