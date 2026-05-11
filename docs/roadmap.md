@@ -294,6 +294,33 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 28. Voice pipeline Phase C — local-audio-bridge + 真實 E2E  ✅ Merged
+
+**範圍**：
+- 新 `src/dollos/voice/bridge/` 子套件：
+  - `vad.py` — SileroVAD wrapper（onnxruntime，無 torch；HF auto-download silero_vad.onnx 2.3MB 進 `data/voice/vad/`）
+  - `mic.py` — MicrophoneTrack（sounddevice InputStream → aiortc audio track）
+  - `speaker.py` — SpeakerPlayer（aiortc 遠端 track → sounddevice OutputStream）
+  - `signaling.py` — BridgeSignaling（WS + aiortc client peer，bridge 當 offerer）
+  - `controller.py` — UtteranceStateMachine（VAD speech_prob 序列 → utterance_start/end 標記）+ BridgeController
+  - `__main__.py` — CLI: `python -m dollos.voice.bridge --daemon ws://...`
+- 加 `sounddevice>=0.5` dep（需 `libportaudio2` 系統套件）
+- Tests：unit-level 全 mock aiortc + sounddevice；VAD 真模型載入測試標 voice_integration（首跑下載）
+- Live E2E：daemon + llama-server + bridge 三方跑通，使用者講話 → ASR → Doll cascade → TTS → 喇叭
+
+**設計選擇**：
+- VAD 走 ONNX 不走 torch（silero PyPI 強制 torch；直接 hf_hub_download silero ONNX export + onnxruntime）
+- VAD chunk 32ms（silero v5 預設 512 samples @ 16kHz）；silence_chunks_to_end 預設 25 = 800ms 沉默才結束 utterance
+- Bridge 是 WebRTC offerer，daemon 是 answerer（matching Phase B 預期）
+- Mic 16k mono、speaker 48k mono，sounddevice 各自獨立 stream
+- Bridge tests 全 mock 真實裝置；真實裝置驗證走 manual smoke
+
+**Phase 後續（未來 plan）**：
+- Zero-shot wake word + speaker ID（已存 memory）
+- Phone app / UI client（同個 WS+WebRTC protocol）
+- 多 client 同時 voice
+- 回應延遲壓縮（LLM-side 工程，已存 memory）
+
 ### 27. Voice pipeline Phase B — WebRTC + VoiceSession + IPC integration  ✅ Merged
 
 **範圍**：

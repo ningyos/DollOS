@@ -100,6 +100,7 @@ DollOS/
 | Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged |
 | Roadmap step 26 — Voice engines + pack config (Voice Phase A) | Merged |
 | Roadmap step 27 — Voice pipeline Phase B (WebRTC + VoiceSession + IPC) | Merged |
+| Roadmap step 28 — Voice pipeline Phase C (local-audio-bridge + E2E) | Merged |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -110,8 +111,9 @@ DollOS/
 
 ### 下一個
 
-- **Voice pipeline Phase C**：local-audio-bridge + 真實 WebRTC E2E smoke
 - **Drone**（persistent agents — 跟 Subagent 對偶；Monitor 是無大腦版，Drone 是有大腦版）
+- **Zero-shot wake word + Speaker ID**（取代 train-per-character KWS；研究 CLAP-like embedding）
+- **回應延遲壓縮**（LLM-side 工程，見 memory）
 - **Wake gating** — 等 voice / drone events 進來才有 ROI
 
 **已收的設計準則**：
