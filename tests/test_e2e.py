@@ -159,3 +159,162 @@ async def test_full_round_trip_with_mocked_llamacpp(
             assert prompt.count("<|im_start|>user\n") == 1
         finally:
             await dollos.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_monitor_round_trip_with_mocked_llamacpp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SpawnMonitor → 2 MonitorTriggeredEvents (per line) → MonitorExitedEvent.
+
+    Mocked LLM emits SpawnMonitor on call 1, Say('ok') on every subsequent
+    call. Real MonitorRunner spawns a `printf 'a\\nb\\n'` proc — it exits
+    immediately producing 2 lines + EOF. We expect 4 turn_ends:
+      T1 — SpawnMonitor cascade (2 LLM iters: tool + Say)
+      T2/T3 — MonitorTriggered for 'a' / 'b'
+      T4 — MonitorExited
+    """
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\n'
+        'id = "gura"\n'
+        'name = "Gura"\n'
+        '\n'
+        '[identity]\n'
+        'self = "You are Gura."\n'
+        'personality = "- chill"\n'
+        'taboos = "- no LARP"\n'
+    )
+
+    settings = Settings(
+        llm=LLMConfig(
+            provider="llamacpp",
+            template="qwen3-thinking",
+            base_url="http://test.local:8001",
+            model_alias="mock",
+        ),
+        ipc=IPCConfig(host="127.0.0.1", port=0),
+        log=LogConfig(level="WARNING"),
+        data=DataConfig(root=tmp_path / "data"),
+        memsearch=MemsearchConfig(top_k=10),
+        character=CharacterConfig(pack=pack_dir),
+        inner_voice=InnerVoiceConfig(
+            base_url="http://test.local:8003",
+            timeout_s=5.0,
+        ),
+    )
+
+    async def _stub_recall(self, query, **kwargs):
+        return ""
+
+    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
+
+    async def _stub_instinct_process(self, event):
+        return ""
+
+    monkeypatch.setattr(
+        "dollos.instinct.SmallModelInstinct.process", _stub_instinct_process
+    )
+
+    async def _stub_compact_cascade(self, *, perception, cascade_messages):
+        return "test summary"
+
+    monkeypatch.setattr(
+        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
+    )
+
+    async def _noop_index(self):
+        return None
+
+    monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
+
+    dollos = DollOS(settings)
+    from datetime import date as _date
+    dollos._bootstrapped_dates.add(_date.today())
+
+    spawn_payload = {
+        "name": "SpawnMonitor",
+        "arguments": {
+            # Raw r-string so the JSON value carries literal \n (two chars)
+            # — bash + printf interprets them as newlines at run time.
+            "command": r"printf 'a\nb\n'",
+            "rate_limit_s": 0,
+        },
+    }
+    spawn_tc = f"<tool_call>{json.dumps(spawn_payload)}</tool_call>"
+    say_tc = '<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>'
+
+    def _sse(content: str) -> str:
+        return (
+            "data: " + json.dumps({"content": content, "stop": False}) + "\n\n"
+            + "data: " + json.dumps({"content": "", "stop": True}) + "\n\n"
+        )
+
+    captured_prompts: list[str] = []
+    call_count = 0
+
+    def _capture_and_respond(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        body = json.loads(request.content)
+        captured_prompts.append(body["prompt"])
+        call_count += 1
+        tc = spawn_tc if call_count == 1 else say_tc
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_sse(tc),
+        )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(side_effect=_capture_and_respond)
+
+        await dollos.memsearch.index()
+        await dollos.server.start()
+        try:
+            port = dollos.server.port
+            assert port is not None
+            uri = f"ws://127.0.0.1:{port}"
+            async with websockets.connect(uri) as ws:
+                await ws.send(json.dumps({
+                    "type": "text_input", "text": "monitor 兩行",
+                }))
+
+                turn_ends = 0
+                received: list[dict] = []
+                # Each turn: LLM call (mocked, instant) + minor scheduling
+                # latency. 4 turns should land well under 10s even on slow CI.
+                deadline = asyncio.get_event_loop().time() + 10.0
+                while turn_ends < 4:
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        break
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    msg = json.loads(raw)
+                    received.append(msg)
+                    if msg["type"] == "turn_end":
+                        turn_ends += 1
+
+            assert turn_ends == 4, (
+                f"expected 4 turn_ends, got {turn_ends}; "
+                f"received types={[m['type'] for m in received]}"
+            )
+
+            # Exited handler pops from _active; give it a beat to drain.
+            for _ in range(20):
+                if dollos.monitor_runner.active_state() == []:
+                    break
+                await asyncio.sleep(0.05)
+            assert dollos.monitor_runner.active_state() == []
+
+            joined = "\n".join(captured_prompts)
+            # Triggered perceptions for both lines reached the LLM:
+            assert "monitor mon-1 觸發" in joined
+            assert "line: a" in joined and "line: b" in joined
+            # Exited perception also reached the LLM:
+            assert "monitor mon-1 結束" in joined
+            # 5 LLM calls total: T1 cascade has 2 iters (SpawnMonitor + Say),
+            # T2/T3/T4 each have 1 iter (Say).
+            assert call_count == 5, f"expected 5 LLM calls, got {call_count}"
+        finally:
+            await dollos.server.stop()
