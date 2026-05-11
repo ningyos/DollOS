@@ -17,10 +17,14 @@ from typing import Any
 
 
 def _ensure_sherpa_onnx_symlink() -> None:
-    """Self-heal sherpa-onnx 1.13.1's missing libonnxruntime.so symlink.
+    """Self-heal sherpa-onnx 1.13.1's missing libonnxruntime.so dependency.
 
-    The wheel ships only the versioned .so file but its RPATH looks for
-    the unversioned name. Create the symlink if missing — idempotent.
+    sherpa-onnx's _sherpa_onnx.so links libonnxruntime.so (unversioned)
+    via RPATH=$ORIGIN, but the wheel does not always ship the lib in
+    sherpa_onnx/lib/. The Python onnxruntime package always has
+    libonnxruntime.so.X.Y.Z in its capi/ directory; symlink it across.
+
+    Idempotent — early-returns when the symlink already exists.
     """
     import importlib.util
 
@@ -31,11 +35,22 @@ def _ensure_sherpa_onnx_symlink() -> None:
     target = lib_dir / "libonnxruntime.so"
     if target.exists():
         return
+
+    # Source 1: sherpa_onnx/lib/libonnxruntime.so.X.Y.Z
     versioned = next(lib_dir.glob("libonnxruntime.so.*"), None)
+
+    # Source 2: onnxruntime/capi/libonnxruntime.so.X.Y.Z (sibling package)
+    if versioned is None:
+        ort_spec = importlib.util.find_spec("onnxruntime")
+        if ort_spec is not None and ort_spec.origin is not None:
+            ort_capi = Path(ort_spec.origin).parent / "capi"
+            versioned = next(ort_capi.glob("libonnxruntime.so.*"), None)
+
     if versioned is None:
         return
     try:
-        target.symlink_to(versioned.name)
+        # Absolute path so it works even when the file lives in a sibling package.
+        target.symlink_to(versioned.resolve())
     except OSError:
         pass  # race / permission denied — let import fail naturally
 
