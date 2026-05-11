@@ -1,4 +1,4 @@
-"""Integration tests for DollOS._handle_text_input via EventDispatcher."""
+"""Integration tests for DollOS._handle_message via EventDispatcher."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -157,7 +157,7 @@ async def _drain_until_separator(sink: asyncio.Queue) -> list:
 
 
 @pytest.mark.asyncio
-async def test_handle_text_input_yields_chunks_then_turnend(
+async def test_handle_message_text_input_yields_chunks_then_turnend(
     dollos_with_fakes, monkeypatch
 ):
     dollos, adapter = dollos_with_fakes
@@ -171,7 +171,7 @@ async def test_handle_text_input_yields_chunks_then_turnend(
     _install_fake_inner_voice(monkeypatch, "- foo")
 
     sink: asyncio.Queue = asyncio.Queue()
-    result = await dollos._handle_text_input(TextInput(text="hi"), sink)
+    result = await dollos._handle_message(TextInput(text="hi"), sink)
     assert result is None  # void return; output flows via sink
     items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
@@ -179,14 +179,14 @@ async def test_handle_text_input_yields_chunks_then_turnend(
 
 
 @pytest.mark.asyncio
-async def test_handle_text_input_yields_errormsg_on_dispatch_failure(
+async def test_handle_message_text_input_yields_errormsg_on_dispatch_failure(
     dollos_with_fakes, monkeypatch
 ):
     dollos, _adapter = dollos_with_fakes
     _install_fake_inner_voice(monkeypatch, raises=RuntimeError("boom"))
 
     sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_text_input(TextInput(text="x"), sink)
+    await dollos._handle_message(TextInput(text="x"), sink)
     items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert len(items) == 1
     assert isinstance(items[0], ErrorMsg)
@@ -204,7 +204,7 @@ async def test_dispatch_user_text_uses_stream_messages(
     _install_fake_inner_voice(monkeypatch, "- foo")
 
     sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_text_input(TextInput(text="hi"), sink)
+    await dollos._handle_message(TextInput(text="hi"), sink)
     await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     assert len(adapter.calls) == 1
     assert "messages" in adapter.calls[0]
@@ -220,7 +220,7 @@ async def test_dispatch_user_text_uses_text_as_user_role(
     _install_fake_inner_voice(monkeypatch)
 
     sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_text_input(TextInput(text="hello world"), sink)
+    await dollos._handle_message(TextInput(text="hello world"), sink)
     await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
     user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
@@ -456,3 +456,63 @@ async def test_kernel_monitor_runner_dispatch_fn_wired(tmp_path: Path):
     dollos = DollOS(settings)
     # Bound methods compare equal (==) but are not identical (is) on each access.
     assert dollos.monitor_runner._dispatch_fn == dollos.dispatcher.dispatch
+
+
+# ----- Voice engine builder -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_builds_voice_engines_from_pack(tmp_path: Path, monkeypatch):
+    """When character pack has voice/engine.toml, kernel loads engines."""
+    from dollos.voice import engines as eng_mod
+    from dollos.voice.engines import ASREngine, TTSEngine
+
+    # Fake engines registered for this test.
+    class _FakeASR(ASREngine):
+        def __init__(self, **kw): pass
+        async def transcribe(self, audio_pcm, sample_rate): return ""
+        async def aclose(self): pass
+
+    class _FakeTTS(TTSEngine):
+        sample_rate = 48000
+        def __init__(self, **kw): pass
+        async def synthesize(self, text):
+            yield b""
+        async def aclose(self): pass
+
+    eng_mod.ASR_REGISTRY["fake-asr"] = _FakeASR
+    eng_mod.TTS_REGISTRY["fake-tts"] = _FakeTTS
+
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\nid="t"\nname="T"\n[identity]\nself="x"\npersonality="x"\ntaboos="x"\n'
+    )
+    voice_dir = pack_dir / "voice"
+    voice_dir.mkdir()
+    (voice_dir / "engine.toml").write_text(
+        '[asr]\nengine="fake-asr"\n\n[tts]\nengine="fake-tts"\n'
+    )
+
+    from dollos.kernel import build_voice_engines
+    asr, tts = build_voice_engines(pack_dir, data_root=tmp_path / "data")
+    assert isinstance(asr, _FakeASR)
+    assert isinstance(tts, _FakeTTS)
+
+    # Cleanup the test registrations.
+    del eng_mod.ASR_REGISTRY["fake-asr"]
+    del eng_mod.TTS_REGISTRY["fake-tts"]
+
+
+@pytest.mark.asyncio
+async def test_kernel_no_voice_when_pack_has_none(tmp_path: Path):
+    from dollos.kernel import build_voice_engines
+
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\nid="t"\nname="T"\n[identity]\nself="x"\npersonality="x"\ntaboos="x"\n'
+    )
+
+    out = build_voice_engines(pack_dir, data_root=tmp_path / "data")
+    assert out is None
