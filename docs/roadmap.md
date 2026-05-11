@@ -294,6 +294,27 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 26. Voice engines + character pack voice config (Phase A of voice pipeline)  ✅ Merged
+
+**範圍**：
+- 新 `src/dollos/voice/` 模組：ABC + decorator registry、SherpaOnnxASR、LuxTTSEngine、character pack `voice/engine.toml` 讀取、voice prepare CLI
+- Engines auto-download：sherpa-onnx 拉 SenseVoice int8 (~239 MB) 到 `data/voice/asr/`，luxtts-onnx 拉它的 onnx 檔 (~542 MB) 到 `data/voice/tts/luxtts/`
+- Voice clone prompt 留在 character pack（`character_packs/<id>/voice/luxtts/prompt.npz`），用 `python -m dollos.voice.prepare` 一次性編好
+- 暫時還沒接 daemon — engines + config 都 standalone testable
+
+**設計選擇**：
+- ABC + registry：新 engine = 一個 file + 一個 decorator，不改核心
+- ASR 用 sherpa-onnx（torch-free，多語 SenseVoice 支援好）；TTS 用 luxtts-onnx（torch-free，voice clone）
+- 模型住 `data/voice/...`，跟 memory / schedule 同根；voice clone prompt 住 character pack（角色身份）
+- Voice config 用獨立 `voice/engine.toml`，跟 `doll.toml` 分開（engine 細節跟角色身份分層）
+- **Packaging quirk 修復**：sherpa-onnx 1.13.1 wheel 缺 `libonnxruntime.so` symlink，在 `asr_sherpa.py` 加 self-healing bootstrap 自動建立。`onnxruntime` 鎖 `>=1.17,<1.25`（ABI 配 sherpa-onnx 1.13.1 內建的 1.24.4）
+
+**Tests**：354 passed (18 new voice unit tests + 2 voice_integration markers，後者預設 skip)
+
+**Phase 後續**：
+- B (next plan)：WebRTC + VoiceSession + IPC integration
+- C (next plan)：local-audio-bridge + E2E
+
 ### 25. Monitor watcher — fire-and-forget command watcher with rate-limit  ✅ Merged
 
 **範圍**：
