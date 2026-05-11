@@ -274,6 +274,38 @@ class EventDispatcher:
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
         self._active_cascade = None
 
+    def _build_perception_blocks(
+        self,
+        *,
+        include_static: bool,
+        memory_block: str = "",
+    ) -> str:
+        """Return the user-side block prefix for a cascade iteration.
+
+        include_static=True (first iter): [Now] + [Mood] + [Pending] +
+            [Active monitors] + [Recent activity].
+        include_static=False (iter > 1): [Pending] + [Active monitors] only
+            — Now/Mood/Recent are stable within a turn.
+
+        memory_block is per-turn (recall_text-derived) and must be passed in
+        for the first iter; leave default "" for subsequent iters.
+        """
+        active_block = (
+            _format_active_monitors_block(self._monitor_runner.active_state())
+            if self._monitor_runner is not None
+            else ""
+        )
+        if include_static:
+            return (
+                _format_now(datetime.now())
+                + self._format_mood()
+                + self._format_pending()
+                + active_block
+                + self._format_recent_activity()
+                + memory_block
+            )
+        return self._format_pending() + active_block
+
     def _format_pending(self) -> str:
         if not self._pending:
             return ""
@@ -403,24 +435,14 @@ class EventDispatcher:
         # `messages` list; `[Memory context]` only appears in the first
         # user message, never re-injected.
         recall_text = await self._inner_voice.recall(doll_event.perception)
-        recent_activity = self._format_recent_activity()
         if recall_text:
             memory_block = f"[Memory context]\n{recall_text}\n\n"
         else:
             memory_block = "[Memory context]\n(no relevant memory)\n\n"
-        if self._monitor_runner is not None:
-            active_monitors_block = _format_active_monitors_block(
-                self._monitor_runner.active_state()
-            )
-        else:
-            active_monitors_block = ""
         first_user = (
-            _format_now(datetime.now())
-            + self._format_mood()
-            + self._format_pending()
-            + active_monitors_block
-            + recent_activity
-            + memory_block
+            self._build_perception_blocks(
+                include_static=True, memory_block=memory_block
+            )
             + f"[Message]\n{doll_event.perception}"
         )
         messages: list[dict] = [{"role": "user", "content": first_user}]
@@ -446,24 +468,15 @@ class EventDispatcher:
             iter_start = time.monotonic()
             # On iter >= 2 we may have new pending events that arrived
             # while the previous iter ran. Inject a fresh `[Pending events]`
-            # block as a standalone user message so Doll can react before
-            # her next think (gap #4 — re-check per iter).
+            # + `[Active monitors]` block as a standalone user message so
+            # Doll can react before her next think (gap #4 — re-check per iter).
             if iter_num > 1:
-                pending_block = self._format_pending()
-                if pending_block:
+                dynamic_blocks = self._build_perception_blocks(include_static=False)
+                if dynamic_blocks:
                     messages.append({
                         "role": "user",
-                        "content": pending_block.rstrip(),
+                        "content": dynamic_blocks.rstrip(),
                     })
-                if self._monitor_runner is not None:
-                    active_block = _format_active_monitors_block(
-                        self._monitor_runner.active_state()
-                    )
-                    if active_block:
-                        messages.append({
-                            "role": "user",
-                            "content": active_block.rstrip(),
-                        })
             parser = ToolStreamParser()
             ctx = ToolCtx(
                 sink=sink,
