@@ -16,6 +16,24 @@ dependencies = [
     "websockets>=12.0",
 ]
 
+[project.optional-dependencies]
+# `uv sync --extra gpu` enables GPU TTS via onnxruntime-gpu + cuDNN.
+# sherpa-onnx (ASR) PyPI wheel is CPU-only — for ASR GPU you'd need a
+# custom build with -DSHERPA_ONNX_ENABLE_GPU=ON, not addressed here.
+# Note: onnxruntime-gpu replaces onnxruntime in site-packages; if you
+# install [gpu] you'll also need LD_LIBRARY_PATH pointing at the
+# nvidia/cudnn/lib + nvidia/cublas/lib + nvidia/cuda_runtime/lib +
+# nvidia/cufft/lib + nvidia/cuda_nvrtc/lib + nvidia/nvjitlink/lib dirs
+# from your venv. See docs for the helper export.
+gpu = [
+    "onnxruntime-gpu>=1.24,<1.25",
+    "nvidia-cudnn-cu12>=9.5",
+    "nvidia-cublas-cu12>=12.4",
+    "nvidia-cuda-runtime-cu12>=12.4",
+    "nvidia-cufft-cu12>=11.2",
+    "nvidia-cuda-nvrtc-cu12>=12.4",
+]
+
 [project.scripts]
 dollos = "dollos.__main__:main"
 
