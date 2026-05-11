@@ -48,7 +48,10 @@ class WebSocketServer:
             Callable[["asyncio.Queue[ServerMessage | None]"], Awaitable[None]]
             | None
         ) = None,
-        on_disconnect: Callable[[], Awaitable[None]] | None = None,
+        on_disconnect: (
+            Callable[["asyncio.Queue[ServerMessage | None]"], Awaitable[None]]
+            | None
+        ) = None,
     ):
         self._host = host
         self._port_requested = port
@@ -105,7 +108,7 @@ class WebSocketServer:
                 pass
             if self._on_disconnect_hook is not None:
                 try:
-                    await self._on_disconnect_hook()
+                    await self._on_disconnect_hook(sink)
                 except Exception:
                     logger.exception("on_disconnect hook failed")
             logger.info("client disconnected: %s", ws.remote_address)

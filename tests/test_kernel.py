@@ -340,7 +340,7 @@ async def test_kernel_active_sink_set_on_connect_cleared_on_disconnect(tmp_path)
     sink: asyncio.Queue = asyncio.Queue()
     await dollos._handle_connect(sink)
     assert dollos._active_sink is sink
-    await dollos._handle_disconnect()
+    await dollos._handle_disconnect(sink)
     assert dollos._active_sink is None
 
 
