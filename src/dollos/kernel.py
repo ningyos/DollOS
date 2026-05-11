@@ -196,11 +196,12 @@ class DollOS:
         self._active_sink = sink
         await self._maybe_bootstrap_plan()
 
-    async def _handle_disconnect(self) -> None:
+    async def _handle_disconnect(self, sink: "asyncio.Queue[ServerMessage | None]") -> None:
         """WebSocketServer on_disconnect hook — drops the live sink.
 
         Subsequent scheduler-fired events fall back to the dummy sink
-        until another client connects.
+        until another client connects. The sink arg is accepted for
+        Task 7 (voice session cleanup) but not used yet.
         """
         self._active_sink = None
 
