@@ -153,7 +153,7 @@ Engines load configuration from a per-character pack file (see "Character pack v
       },
   }
   ```
-- **Auto-download on first use** (mirrors luxtts-onnx behavior): if `model_dir` unset, engine uses `~/.cache/dollos/voice/asr/<model_id>/` and lazily pulls via `huggingface_hub.hf_hub_download`. SHA256 / size verification per file. If `model_dir` is set, engine reads from there and refuses to download.
+- **Auto-download on first use** (mirrors luxtts-onnx behavior): if `model_dir` unset, engine uses `<data_root>/voice/asr/<model_id>/` (where `data_root` is the daemon's configured data root) and lazily pulls via `huggingface_hub.hf_hub_download`. SHA256 / size verification per file. If `model_dir` is set, engine reads from there and refuses to download.
 
 **TTS — luxtts-onnx**
 - User's existing repo (`~/Projects/luxtts-onnx`)
@@ -162,17 +162,20 @@ Engines load configuration from a per-character pack file (see "Character pack v
 - Voice cloning: encode a reference audio + transcript once → `.npz` prompt; load instantly on subsequent runs
 - Output: float32 array at **48 kHz**, whole utterance (not streaming generator)
 - For our streaming-out ABC: run `tts.generate()` in `asyncio.to_thread`, then chunk the result into 20ms PCM frames for the AsyncIterator
-- **Auto-downloads** model files (`text_encoder.onnx` 17 MB / `fm_decoder.onnx` 456 MB / `vocos.onnx` 69 MB / `tokens.txt`) from `YatharthS/LuxTTS` + `ProgCat/luxtts-onnx` HF repos on first use, SHA256-verified. Total ~542 MB.
+- **Auto-downloads** model files (`text_encoder.onnx` 17 MB / `fm_decoder.onnx` 456 MB / `vocos.onnx` 69 MB / `tokens.txt`) from `YatharthS/LuxTTS` + `ProgCat/luxtts-onnx` HF repos on first use, SHA256-verified. Total ~542 MB. Daemon passes `model_dir = <data_root>/voice/tts/luxtts/` so cache lives with the project, not in `~/.cache/`.
 
 ### Model lifecycle summary
 
-Both engines auto-download model files on first use:
-- ASR (sherpa-onnx, SenseVoice int8): ~239 MB → `~/.cache/dollos/voice/asr/sense-voice-...`
-- TTS (luxtts-onnx): ~542 MB → `~/.cache/luxtts-onnx/models/` (or our `model_dir` override)
+Both engines auto-download model files into the project's data root on first use:
+
+- ASR (sherpa-onnx, SenseVoice int8): ~239 MB → `<data_root>/voice/asr/sense-voice-zh-en-ja-ko-yue/`
+- TTS (luxtts-onnx): ~542 MB → `<data_root>/voice/tts/luxtts/`
+
+`<data_root>` is the daemon's configured `[data].root` from `config.toml` (default `data/`). This co-locates voice models with memory / schedules / transcripts, matching the project's "everything generated lives under data/" pattern. Cache is project-scoped — different DollOS deployments don't share.
 
 **First-run total: ~780 MB.** Subsequent runs read from cache. First daemon start with voice enabled needs internet; document this clearly in README.
 
-Per-character voice clone prompts (`.npz`) live inside the character pack and are tiny (~few KB-MB).
+Per-character voice clone prompts (`.npz`) live inside the character pack (`character_packs/<id>/voice/luxtts/prompt.npz`), NOT in `data/`. Prompts are part of the character's identity and travel with the pack; models are shared infrastructure that lives under `data/`.
 
 ### Character pack voice layout
 
