@@ -1,0 +1,5 @@
+# voice-clone prompt provenance
+ref_path = "wake-up.mp3"
+transcript = """wake up! 喂！喂！wake up! Yeah you yeah you I'm talking to you that's right up and Adam come on come on come on feet on the floor let's go chop chop you're gonna be late and then what's gonna happened, you not gonna have time for breadfast, you not gonna have time for a snack, you can't prep a snack, and then what? you gonna be grumpy and you gonna be hungry, and who's fault is that? it's gotta be your fault. Alright?  Com-on get up! let's go! It's time to go!"""
+duration_s = 30.0
+encoded_at = "2026-05-12T05:49:34"

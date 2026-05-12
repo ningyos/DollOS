@@ -1,0 +1,13 @@
+[asr]
+engine = "sherpa-onnx"
+model_id = "sense-voice-zh-en-ja-ko-yue"
+device = "cpu"
+
+[tts]
+engine = "luxtts-onnx"
+model_dir = "../../data/voice/tts/luxtts"
+prompt_path = "voice/luxtts/prompt.npz"
+device = "cpu"
+num_steps = 8
+t_shift = 0.9
+guidance_scale = 3.0
