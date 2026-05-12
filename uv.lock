@@ -822,8 +822,8 @@ wheels = [
 
 [[package]]
 name = "luxtts-onnx"
-version = "0.1.0"
-source = { git = "https://github.com/ningyos/luxtts-onnx.git#8ea5e568bff5e221791e7a2561973101a51cdab7" }
+version = "0.1.1"
+source = { git = "https://github.com/ningyos/luxtts-onnx.git#d29f673417d3bd8f82b8a2dda0131eb3eb6078e2" }
 dependencies = [
     { name = "cn2an" },
     { name = "huggingface-hub" },
