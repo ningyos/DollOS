@@ -29,7 +29,7 @@ device = "cpu"
 
 [tts]
 engine = "luxtts-onnx"
-prompt = "voice/luxtts/prompt.npz"
+prompt_path = "voice/luxtts/prompt.npz"
 device = "cpu"
 num_steps = 8
 t_shift = 0.9
@@ -48,8 +48,8 @@ def test_load_voice_config_present(tmp_path: Path):
     assert cfg.asr["model_id"] == "sense-voice-zh-en-ja-ko-yue"
     assert cfg.tts is not None
     assert cfg.tts["engine"] == "luxtts-onnx"
-    # Relative prompt path resolved against pack_dir
-    assert cfg.tts["prompt"] == pack_dir / "voice/luxtts/prompt.npz"
+    # Relative prompt_path resolved against pack_dir
+    assert cfg.tts["prompt_path"] == pack_dir / "voice/luxtts/prompt.npz"
 
 
 def test_load_voice_config_absent_returns_no_voice(tmp_path: Path):
@@ -73,7 +73,7 @@ def test_load_voice_config_missing_asr_section_ok(tmp_path: Path):
         """
 [tts]
 engine = "luxtts-onnx"
-prompt = "voice/luxtts/prompt.npz"
+prompt_path = "voice/luxtts/prompt.npz"
 """
     )
     cfg = load_voice_config(pack_dir)

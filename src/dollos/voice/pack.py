@@ -21,10 +21,12 @@ def no_voice_config() -> VoiceConfig:
 def _resolve_path_fields(section: dict, pack_dir: Path) -> dict:
     """Resolve relative path-like fields against pack_dir.
 
-    Recognized path keys: `model_dir`, `prompt`. Absolute paths are kept.
+    Recognized path keys: `model_dir`, `prompt_path`. Absolute paths are kept.
+    Keys match the constructor kwargs of the engine classes so the dict
+    can be passed through as **kwargs.
     """
     out = dict(section)
-    for key in ("model_dir", "prompt"):
+    for key in ("model_dir", "prompt_path"):
         if key in out and isinstance(out[key], str):
             p = Path(out[key])
             out[key] = p if p.is_absolute() else (pack_dir / p)
@@ -34,7 +36,7 @@ def _resolve_path_fields(section: dict, pack_dir: Path) -> dict:
 def load_voice_config(pack_dir: Path) -> VoiceConfig:
     """Read pack_dir/voice/engine.toml. Returns empty config if file absent.
 
-    Relative `model_dir` / `prompt` paths are resolved against pack_dir.
+    Relative `model_dir` / `prompt_path` paths are resolved against pack_dir.
     """
     engine_toml = pack_dir / "voice" / "engine.toml"
     if not engine_toml.exists():
