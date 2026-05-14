@@ -28,12 +28,16 @@ dependencies = [
 # nvidia/cufft/lib + nvidia/cuda_nvrtc/lib + nvidia/nvjitlink/lib dirs
 # from your venv. See docs for the helper export.
 fish = [
-    "fish-tts @ git+https://github.com/smolGura/fish-tts",
+    "fish-tts @ git+https://github.com/ningyos/fish-tts",
     "descript-audio-codec",
     "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
     # pycryptodomex unblocks yt-dlp's Cryptodome passthrough that otherwise
     # makes torch.compile/inductor try to import a sentinel `no_Cryptodome`.
     "pycryptodomex",
+    # fish-tts streaming deadlocks on torch >= 2.12 (triton 3.7 + inductor
+    # streaming graph changes). 2.10 is the version fish-tts is tested against.
+    "torch>=2.10,<2.12",
+    "torchaudio>=2.10,<2.12",
 ]
 piper = [
     "piper-tts>=1.2",

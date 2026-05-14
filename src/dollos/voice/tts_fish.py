@@ -2,7 +2,8 @@
 
 Wraps the fish_tts singleton so multiple characters share the loaded model.
 First call triggers torch.compile warmup (~4 min); subsequent calls only swap
-`set_references`. Yields 20ms int16 PCM chunks at 44.1 kHz.
+`set_references`. Yields 20ms int16 PCM chunks at 44.1 kHz from fish-tts's
+`synthesize_stream` (true streaming, first chunk ~1s for short text).
 """
 from __future__ import annotations
 
