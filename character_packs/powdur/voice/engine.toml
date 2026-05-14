@@ -1,0 +1,9 @@
+[asr]
+engine = "sherpa-onnx"
+model_id = "sense-voice-zh-en-ja-ko-yue"
+device = "cpu"
+
+[tts]
+engine = "fish-tts"
+voice_profile_path = "voice/fish/powdur_voice.npy"
+transcript = "I still need to find myself. Yeah, okay. I need to find myself is some excuse to go have a hoe phase. Find myself? What the"

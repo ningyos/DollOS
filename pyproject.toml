@@ -29,6 +29,11 @@ dependencies = [
 # from your venv. See docs for the helper export.
 fish = [
     "fish-tts @ git+https://github.com/smolGura/fish-tts",
+    "descript-audio-codec",
+    "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
+    # pycryptodomex unblocks yt-dlp's Cryptodome passthrough that otherwise
+    # makes torch.compile/inductor try to import a sentinel `no_Cryptodome`.
+    "pycryptodomex",
 ]
 piper = [
     "piper-tts>=1.2",
@@ -64,6 +69,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "ruff>=0.4",
+    "yt-dlp>=2026.3.17",
 ]
 
 [tool.uv]

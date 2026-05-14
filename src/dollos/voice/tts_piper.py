@@ -40,7 +40,13 @@ class PiperVITSEngine(TTSEngine):
         for p in (voice_onnx_path, voice_config_path):
             if not p.exists():
                 raise FileNotFoundError(f"piper file not found: {p}")
-        from piper import PiperVoice  # lazy
+        try:
+            from piper import PiperVoice  # lazy
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "piper-vits backend requires the `piper` optional dependency. "
+                "Install with: `uv sync --extra piper`."
+            ) from e
 
         self._voice = PiperVoice.load(str(voice_onnx_path), str(voice_config_path))
         self.sample_rate: int = int(self._voice.config.sample_rate)
