@@ -41,7 +41,14 @@ class FishTTSEngine(TTSEngine):
             raise FileNotFoundError(
                 f"fish-tts voice profile not found: {voice_profile_path}"
             )
-        from fish_tts import get_instance, VoiceProfile  # lazy: torch heavy
+        try:
+            from fish_tts import get_instance, VoiceProfile  # lazy: torch heavy
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "fish-tts backend requires the `fish` optional dependency. "
+                "Install with: `uv sync --extra fish` (or "
+                "`uv pip install 'dollos[fish]'` in a downstream project)."
+            ) from e
         self._synth = get_instance()  # singleton, blocks on first call
         profile = VoiceProfile.load(str(voice_profile_path), text=transcript)
         self._profile = profile
