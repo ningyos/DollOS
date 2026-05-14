@@ -27,6 +27,12 @@ dependencies = [
 # nvidia/cudnn/lib + nvidia/cublas/lib + nvidia/cuda_runtime/lib +
 # nvidia/cufft/lib + nvidia/cuda_nvrtc/lib + nvidia/nvjitlink/lib dirs
 # from your venv. See docs for the helper export.
+fish = [
+    "fish-tts @ git+https://github.com/smolGura/fish-tts",
+]
+piper = [
+    "piper-tts>=1.2",
+]
 gpu = [
     "onnxruntime-gpu>=1.24,<1.25",
     "nvidia-cudnn-cu12>=9.5",

@@ -1,0 +1,4 @@
+[tts]
+engine = "piper-vits"
+voice_onnx_path = "voice/piper/en_US-amy-medium.onnx"
+voice_config_path = "voice/piper/en_US-amy-medium.onnx.json"
