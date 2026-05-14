@@ -26,7 +26,7 @@ def _resolve_path_fields(section: dict, pack_dir: Path) -> dict:
     can be passed through as **kwargs.
     """
     out = dict(section)
-    for key in ("model_dir", "prompt_path"):
+    for key in ("model_dir", "prompt_path", "voice_profile_path", "voice_onnx_path", "voice_config_path"):
         if key in out and isinstance(out[key], str):
             p = Path(out[key])
             out[key] = p if p.is_absolute() else (pack_dir / p)
