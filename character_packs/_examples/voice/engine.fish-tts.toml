@@ -1,0 +1,4 @@
+[tts]
+engine = "fish-tts"
+voice_profile_path = "voice/fish/gura_voice.npy"
+transcript = "Hello! I'm Gura, the great shark Goomba."
