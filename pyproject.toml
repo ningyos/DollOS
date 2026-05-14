@@ -33,6 +33,9 @@ fish = [
 piper = [
     "piper-tts>=1.2",
 ]
+openai-tts = [
+    "httpx>=0.27",
+]
 gpu = [
     "onnxruntime-gpu>=1.24,<1.25",
     "nvidia-cudnn-cu12>=9.5",
