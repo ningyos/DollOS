@@ -61,6 +61,27 @@ def test_load_voice_config_absent_returns_no_voice(tmp_path: Path):
     assert cfg.tts is None
 
 
+def test_load_voice_config_resolves_ref_audio(tmp_path: Path):
+    """ref_audio in [tts] is resolved to an absolute pack path."""
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "voice").mkdir()
+    (pack_dir / "voice" / "engine.toml").write_text(
+        """
+[tts]
+engine = "qwen3-tts"
+model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+device = "cuda:0"
+ref_audio = "voice/qwen3/ref.wav"
+ref_text = "hi"
+language = "English"
+"""
+    )
+    cfg = load_voice_config(pack_dir)
+    assert cfg.tts is not None
+    assert cfg.tts["ref_audio"] == pack_dir / "voice/qwen3/ref.wav"
+
+
 def test_load_voice_config_missing_asr_section_ok(tmp_path: Path):
     """A pack can have TTS without ASR (or vice versa)."""
     pack_dir = tmp_path / "pack"
