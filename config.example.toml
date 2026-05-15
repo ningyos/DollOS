@@ -27,3 +27,52 @@ pack = "character_packs/gura"   # directory containing doll.toml manifest
 [inner_voice]
 base_url = "http://127.0.0.1:8003"   # separate llama-server with small Qwen3 instruct (e.g. Qwen3-0.6B-Instruct)
 timeout_s = 30.0
+
+# ----------------------------------------------------------------------
+# Voice pipeline (ASR + TTS). Character packs hold ONLY per-character
+# identity (ref audio, voice profile, transcript, instruction); engine
+# selection + infra + sampling defaults live here.
+# ----------------------------------------------------------------------
+
+[voice.asr]
+engine = "sherpa-onnx"
+model_id = "sense-voice-zh-en-ja-ko-yue"
+device = "cpu"
+
+# Primary TTS example: Qwen3-TTS (in-process, voice cloning + emotion).
+# The character pack must include a [tts.qwen3-tts] block with
+# ref_audio / ref_text / instruction.
+[voice.tts]
+engine = "qwen3-tts"
+model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+device = "cuda:0"
+language = "English"
+# temperature = 0.9   # engine-specific sampling defaults can live here too
+
+# Alternative: luxtts-onnx (CPU-friendly, prompt-driven).
+# Pack carries [tts.luxtts-onnx] with prompt_path.
+# [voice.tts]
+# engine = "luxtts-onnx"
+# model_dir = "data/voice/tts/luxtts"
+# device = "cpu"
+# num_steps = 8
+# t_shift = 0.9
+# guidance_scale = 3.0
+
+# Alternative: fish-tts (DualAR + DAC vocoder, voice cloning).
+# Pack carries [tts.fish-tts] with voice_profile_path + transcript.
+# [voice.tts]
+# engine = "fish-tts"
+# device = "cuda:0"
+
+# Alternative: piper-vits (lightweight ONNX VITS).
+# Pack carries [tts.piper-vits] with voice_onnx_path + voice_config_path.
+# [voice.tts]
+# engine = "piper-vits"
+
+# Alternative: openai-compat-tts (HTTP API backend).
+# Pack carries [tts.openai-compat-tts] with model + voice identifiers.
+# [voice.tts]
+# engine = "openai-compat-tts"
+# base_url = "https://api.openai.com/v1"
+# api_key = "sk-..."

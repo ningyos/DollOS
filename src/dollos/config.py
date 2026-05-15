@@ -71,6 +71,41 @@ class InnerVoiceConfig(BaseModel):
     timeout_s: float = 30.0
 
 
+class VoiceASRSettings(BaseModel):
+    """DollOS-level ASR config (character-agnostic).
+
+    All extra keys are passed through as kwargs to the ASR engine
+    constructor, so engine-specific knobs (model_id, device, etc.) live
+    here directly.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    engine: str
+
+
+class VoiceTTSSettings(BaseModel):
+    """DollOS-level TTS config (infra + engine selection).
+
+    Per-character identity (ref_audio, transcript, instruction, voice
+    profile path, ...) lives in the character pack's
+    ``voice/engine.toml``.  Everything else (engine selection, model_id,
+    device, sampling defaults) lives here and is merged with the pack at
+    session-build time.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    engine: str
+
+
+class VoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asr: VoiceASRSettings | None = None
+    tts: VoiceTTSSettings | None = None
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,6 +116,7 @@ class Settings(BaseModel):
     memsearch: MemsearchConfig = Field(default_factory=lambda: MemsearchConfig())
     character: CharacterConfig
     inner_voice: InnerVoiceConfig
+    voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
 
 
 def load_settings(path: Path) -> Settings:

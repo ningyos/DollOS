@@ -26,6 +26,9 @@ from dollos.config import (
     LogConfig,
     MemsearchConfig,
     Settings,
+    VoiceASRSettings,
+    VoiceSettings,
+    VoiceTTSSettings,
 )
 from dollos.kernel import DollOS
 
@@ -338,7 +341,7 @@ async def test_voice_session_offer_answer_with_mocked_aiortc(
     voice_dir = pack_dir / "voice"
     voice_dir.mkdir()
     (voice_dir / "engine.toml").write_text(
-        '[asr]\nengine="e2e-asr"\n\n[tts]\nengine="e2e-tts"\n'
+        '[tts.e2e-tts]\n'
     )
 
     settings = Settings(
@@ -353,6 +356,10 @@ async def test_voice_session_offer_answer_with_mocked_aiortc(
         character=CharacterConfig(pack=pack_dir),
         inner_voice=InnerVoiceConfig(
             base_url="http://test.local:8003", timeout_s=5.0,
+        ),
+        voice=VoiceSettings(
+            asr=VoiceASRSettings(engine="e2e-asr"),
+            tts=VoiceTTSSettings(engine="e2e-tts"),
         ),
     )
 

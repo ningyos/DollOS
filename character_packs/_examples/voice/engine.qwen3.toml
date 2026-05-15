@@ -1,15 +1,6 @@
-[asr]
-engine = "sherpa-onnx"
-model_id = "sense-voice-zh-en-ja-ko-yue"
-device = "cpu"
-
-[tts]
-engine = "qwen3-tts"
-model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-device = "cuda:0"
+[tts.qwen3-tts]
 ref_audio = "voice/qwen3/ref.wav"
 ref_text = "REFERENCE_TRANSCRIPT"
-language = "English"
 # Free-form natural-language voice direction. Examples:
 #   "excited, energetic, animated"
 #   "speak in a soft, conspiratorial whisper"
