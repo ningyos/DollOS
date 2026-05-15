@@ -14,6 +14,7 @@ from dollos.tools import (
     SUB_TOOLS,
     InvokeSkill,
     NoteMemory,
+    ReadToolOutput,
     Recall,
     Say,
     Shell,
@@ -807,4 +808,44 @@ async def test_remove_monitor_unknown_id(tmp_path):
     out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
     assert "mon-999" in out
     assert "unknown" in out.lower() or "not found" in out.lower()
+
+
+# ---------- ReadToolOutput ----------
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_returns_slice(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"row {i}" for i in range(50)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    # Replace the ctx's store with the one we just wrote to.
+    ctx.tool_output_store = store
+
+    tool = ReadToolOutput(id=output_id, offset=10, limit=5)
+    result = await tool.run(ctx)
+
+    assert "row 10" in result
+    assert "row 14" in result
+    assert "row 15" not in result
+    assert "lines 10–15 of 50" in result
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_invalid_id(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+    tool = ReadToolOutput(id="../etc/passwd", offset=0, limit=10)
+    with pytest.raises(ValueError):
+        await tool.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_not_found(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+    tool = ReadToolOutput(id="out-deadbeef", offset=0, limit=10)
+    with pytest.raises(FileNotFoundError):
+        await tool.run(ctx)
 

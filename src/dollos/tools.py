@@ -494,12 +494,45 @@ class WriteSchedule(BaseModel):
         return f"Schedule written: {len(parsed)} entries"
 
 
+class ReadToolOutput(BaseModel):
+    """Read a slice of a stored tool output by id.
+
+    Tool outputs come from Shell / Subagent. The originating result perception
+    shows the output_id and total line count; use this tool to page deeper
+    than the preview.
+    """
+
+    id: str = Field(
+        ...,
+        description="output id from a tool result perception (e.g. 'out-abc12345')",
+    )
+    offset: int = Field(
+        0,
+        description="zero-indexed line to start at; negative counts from end",
+    )
+    limit: int = Field(
+        50,
+        ge=1,
+        le=500,
+        description="max lines to return; default 50, hard cap 500",
+    )
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        slice_ = ctx.tool_output_store.read(self.id, offset=self.offset, limit=self.limit)
+        header = (
+            f"lines {slice_.start_offset}–{slice_.end_offset} of {slice_.total_lines}:"
+        )
+        body = "\n".join(slice_.lines) if slice_.lines else "(empty slice)"
+        return f"{header}\n{body}"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
+    ReadToolOutput,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
-    SpawnMonitor, RemoveMonitor,
+    SpawnMonitor, RemoveMonitor, ReadToolOutput,
 ]
