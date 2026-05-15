@@ -31,6 +31,7 @@ _PATH_KEYS = (
     "voice_onnx_path",
     "voice_config_path",
     "ref_audio",
+    "voice_clone_prompt_path",
 )
 
 

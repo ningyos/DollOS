@@ -1,8 +1,9 @@
 """Qwen3TTSEngine — TTS via Qwen3-TTS (Alibaba) in-process.
 
-Voice cloning via `model.generate_voice_clone(text, language, ref_audio, ref_text)`.
-Emotion / style control via natural-language `instruction` text prefixed to the
-input (Qwen3-TTS conditions on the leading text describing tone).
+Two cloning paths:
+  1) ref_audio + ref_text — run create_voice_clone_prompt at synth time.
+  2) voice_clone_prompt_path — load a pre-built .pt (built by the
+     "Voice Design then Clone" workflow); skips ref_audio/ref_text entirely.
 """
 from __future__ import annotations
 
@@ -53,6 +54,41 @@ def _get_model(model_id: str, device: str):
         return _MODEL
 
 
+def _load_voice_clone_prompt(path: Path):
+    """Load a .pt produced by build_powdur_voice_prompt.py / qwen-tts demo."""
+    import torch
+    from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
+
+    payload = torch.load(str(path), map_location="cpu", weights_only=True)
+    if not isinstance(payload, dict) or "items" not in payload:
+        raise ValueError(
+            f"voice_clone_prompt file has invalid format: {path}"
+        )
+    items_raw = payload["items"]
+    if not isinstance(items_raw, list) or not items_raw:
+        raise ValueError(f"voice_clone_prompt file has no items: {path}")
+    items = []
+    for d in items_raw:
+        ref_code = d.get("ref_code", None)
+        if ref_code is not None and not torch.is_tensor(ref_code):
+            ref_code = torch.tensor(ref_code)
+        ref_spk = d.get("ref_spk_embedding", None)
+        if ref_spk is None:
+            raise ValueError(f"item missing ref_spk_embedding in {path}")
+        if not torch.is_tensor(ref_spk):
+            ref_spk = torch.tensor(ref_spk)
+        items.append(
+            VoiceClonePromptItem(
+                ref_code=ref_code,
+                ref_spk_embedding=ref_spk,
+                x_vector_only_mode=bool(d.get("x_vector_only_mode", False)),
+                icl_mode=bool(d.get("icl_mode", not bool(d.get("x_vector_only_mode", False)))),
+                ref_text=d.get("ref_text", None),
+            )
+        )
+    return items
+
+
 @register_tts("qwen3-tts")
 class Qwen3TTSEngine(TTSEngine):
     """TTS engine wrapping Qwen3-TTS with voice cloning + emotion instruction."""
@@ -62,32 +98,66 @@ class Qwen3TTSEngine(TTSEngine):
         *,
         model_id: str = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         device: str = "cuda:0",
-        ref_audio: Path,
-        ref_text: str,
+        ref_audio: Path | str | None = None,
+        ref_text: str | None = None,
+        voice_clone_prompt_path: Path | str | None = None,
         language: str = "English",
         instruction: str = "",
+        peak_target: float = 0.95,
     ) -> None:
-        if not Path(ref_audio).exists():
-            raise FileNotFoundError(f"Qwen3-TTS ref_audio not found: {ref_audio}")
+        self._peak_target = float(peak_target)
+        has_prompt = voice_clone_prompt_path is not None
+        has_ref = ref_audio is not None or ref_text is not None
+        if has_prompt and has_ref:
+            raise ValueError(
+                "Qwen3TTSEngine: provide exactly one of voice_clone_prompt_path "
+                "or (ref_audio + ref_text), not both."
+            )
+        if not has_prompt and not has_ref:
+            raise ValueError(
+                "Qwen3TTSEngine: must provide either voice_clone_prompt_path "
+                "or (ref_audio + ref_text)."
+            )
+
         self._model = _get_model(model_id, device)
-        self._ref_audio = str(ref_audio)
-        self._ref_text = ref_text
         self._language = language
         self._instruction = instruction
-        # Sample rate is whatever the model returns on first synthesize;
-        # we initialise with 24000 (qwen-tts default codec rate). Re-set
-        # dynamically on first synthesis.
+        self._voice_clone_prompt = None
+        self._ref_audio: str | None = None
+        self._ref_text: str | None = None
+
+        if has_prompt:
+            p = Path(voice_clone_prompt_path)
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"Qwen3-TTS voice_clone_prompt_path not found: {p}"
+                )
+            self._voice_clone_prompt = _load_voice_clone_prompt(p)
+        else:
+            if ref_audio is None or ref_text is None:
+                raise ValueError(
+                    "Qwen3TTSEngine: ref_audio and ref_text must both be set."
+                )
+            if not Path(ref_audio).exists():
+                raise FileNotFoundError(f"Qwen3-TTS ref_audio not found: {ref_audio}")
+            self._ref_audio = str(ref_audio)
+            self._ref_text = ref_text
+
+        # qwen-tts default codec rate; re-set dynamically after first synth.
         self.sample_rate = 24000
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
-        # Compose input: if the package supports a separate `instruction`
-        # kwarg use it; otherwise prepend to the text body. Try kwarg first,
-        # fall back to prefix on TypeError.
         prefixed_text = (
             f"{self._instruction}. {text}" if self._instruction else text
         )
 
         def _generate():
+            if self._voice_clone_prompt is not None:
+                return self._model.generate_voice_clone(
+                    text=text,
+                    language=self._language,
+                    voice_clone_prompt=self._voice_clone_prompt,
+                )
             try:
                 return self._model.generate_voice_clone(
                     text=text,
@@ -107,16 +177,24 @@ class Qwen3TTSEngine(TTSEngine):
 
         wavs, sr = await asyncio.to_thread(_generate)
         self.sample_rate = int(sr)
-        # wavs is a (B, N) int16 numpy array OR list of arrays. Take first.
         import numpy as np
         wave = wavs[0] if hasattr(wavs, "__getitem__") else wavs
         if hasattr(wave, "astype"):
-            pcm = wave.astype(np.int16, copy=False).tobytes()
+            if np.issubdtype(wave.dtype, np.floating):
+                # Peak-normalize to target before int16 to give consistent loudness;
+                # Qwen3-TTS output peak is typically ~0.3, much quieter than other engines.
+                w = np.asarray(wave, dtype=np.float32)
+                peak = float(np.max(np.abs(w))) if w.size else 0.0
+                if peak > 1e-6:
+                    w = w * (self._peak_target / peak)
+                w = np.clip(w, -1.0, 1.0)
+                pcm = (w * 32767.0).astype(np.int16, copy=False).tobytes()
+            else:
+                pcm = wave.astype(np.int16, copy=False).tobytes()
         else:
             pcm = bytes(wave)
         for chunk in _rechunk_int16(pcm, self.sample_rate):
             yield chunk
 
     async def aclose(self) -> None:
-        # Drop our handle — singleton model stays alive for other characters.
         pass
