@@ -1,4 +1,4 @@
-"""Voice config loading from character packs."""
+"""Voice config loading from character packs (per-engine variant schema)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +9,7 @@ from dollos.voice.pack import (
     VoiceConfig,
     load_voice_config,
     no_voice_config,
+    resolve_voice_kwargs,
 )
 
 
@@ -22,18 +23,8 @@ def _write_pack(pack_dir: Path, *, with_voice: bool = True) -> None:
         voice_dir.mkdir()
         (voice_dir / "engine.toml").write_text(
             """
-[asr]
-engine = "sherpa-onnx"
-model_id = "sense-voice-zh-en-ja-ko-yue"
-device = "cpu"
-
-[tts]
-engine = "luxtts-onnx"
+[tts.luxtts-onnx]
 prompt_path = "voice/luxtts/prompt.npz"
-device = "cpu"
-num_steps = 8
-t_shift = 0.9
-guidance_scale = 3.0
 """
         )
 
@@ -43,13 +34,9 @@ def test_load_voice_config_present(tmp_path: Path):
     _write_pack(pack_dir, with_voice=True)
     cfg = load_voice_config(pack_dir)
     assert isinstance(cfg, VoiceConfig)
-    assert cfg.asr is not None
-    assert cfg.asr["engine"] == "sherpa-onnx"
-    assert cfg.asr["model_id"] == "sense-voice-zh-en-ja-ko-yue"
     assert cfg.tts is not None
-    assert cfg.tts["engine"] == "luxtts-onnx"
-    # Relative prompt_path resolved against pack_dir
-    assert cfg.tts["prompt_path"] == pack_dir / "voice/luxtts/prompt.npz"
+    assert "luxtts-onnx" in cfg.tts
+    assert cfg.tts["luxtts-onnx"]["prompt_path"] == pack_dir / "voice/luxtts/prompt.npz"
 
 
 def test_load_voice_config_absent_returns_no_voice(tmp_path: Path):
@@ -57,25 +44,108 @@ def test_load_voice_config_absent_returns_no_voice(tmp_path: Path):
     _write_pack(pack_dir, with_voice=False)
     cfg = load_voice_config(pack_dir)
     assert cfg == no_voice_config()
-    assert cfg.asr is None
     assert cfg.tts is None
 
 
-def test_load_voice_config_missing_asr_section_ok(tmp_path: Path):
-    """A pack can have TTS without ASR (or vice versa)."""
+def test_load_voice_config_resolves_ref_audio(tmp_path: Path):
+    """ref_audio in [tts.qwen3-tts] is resolved to an absolute pack path."""
     pack_dir = tmp_path / "pack"
     pack_dir.mkdir()
-    (pack_dir / "doll.toml").write_text(
-        '[meta]\nid = "test"\nname = "Test"\n[identity]\nself=""\npersonality=""\ntaboos=""\n'
-    )
     (pack_dir / "voice").mkdir()
     (pack_dir / "voice" / "engine.toml").write_text(
         """
-[tts]
-engine = "luxtts-onnx"
-prompt_path = "voice/luxtts/prompt.npz"
+[tts.qwen3-tts]
+ref_audio = "voice/qwen3/ref.wav"
+ref_text = "hi"
+instruction = "excited"
 """
     )
     cfg = load_voice_config(pack_dir)
-    assert cfg.asr is None
     assert cfg.tts is not None
+    assert cfg.tts["qwen3-tts"]["ref_audio"] == pack_dir / "voice/qwen3/ref.wav"
+
+
+def test_load_voice_config_multiple_variants(tmp_path: Path):
+    """A pack can carry identity for multiple TTS engines side-by-side."""
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "voice").mkdir()
+    (pack_dir / "voice" / "engine.toml").write_text(
+        """
+[tts.fish-tts]
+voice_profile_path = "voice/fish/v.npy"
+transcript = "abc"
+
+[tts.qwen3-tts]
+ref_audio = "voice/qwen3/ref.wav"
+ref_text = "abc"
+instruction = "excited"
+"""
+    )
+    cfg = load_voice_config(pack_dir)
+    assert cfg.tts is not None
+    assert set(cfg.tts) == {"fish-tts", "qwen3-tts"}
+    assert cfg.tts["fish-tts"]["voice_profile_path"] == pack_dir / "voice/fish/v.npy"
+    assert cfg.tts["qwen3-tts"]["ref_audio"] == pack_dir / "voice/qwen3/ref.wav"
+
+
+# ----- resolve_voice_kwargs -----
+
+
+def test_resolve_voice_kwargs_happy_path(tmp_path: Path):
+    cfg = VoiceConfig(
+        tts={
+            "qwen3-tts": {
+                "ref_audio": tmp_path / "ref.wav",
+                "ref_text": "hi",
+                "instruction": "excited",
+            },
+        }
+    )
+    dollos_tts = {
+        "engine": "qwen3-tts",
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "device": "cuda:0",
+    }
+    name, kwargs = resolve_voice_kwargs(cfg, dollos_tts)
+    assert name == "qwen3-tts"
+    assert kwargs == {
+        "ref_audio": tmp_path / "ref.wav",
+        "ref_text": "hi",
+        "instruction": "excited",
+        "model_id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "device": "cuda:0",
+    }
+
+
+def test_resolve_voice_kwargs_missing_variant_raises():
+    cfg = VoiceConfig(tts={"fish-tts": {"voice_profile_path": "x"}})
+    with pytest.raises(ValueError, match=r"\[tts.qwen3-tts\]"):
+        resolve_voice_kwargs(cfg, {"engine": "qwen3-tts"})
+
+
+def test_resolve_voice_kwargs_no_tts_section_raises():
+    with pytest.raises(ValueError, match=r"\[tts.fish-tts\]"):
+        resolve_voice_kwargs(VoiceConfig(tts=None), {"engine": "fish-tts"})
+
+
+def test_resolve_voice_kwargs_missing_engine_key_raises():
+    cfg = VoiceConfig(tts={"qwen3-tts": {"ref_text": "x"}})
+    with pytest.raises(ValueError, match="engine"):
+        resolve_voice_kwargs(cfg, {"model_id": "x"})
+
+
+def test_resolve_voice_kwargs_dollos_wins_on_overlap():
+    """DollOS config overrides the pack on overlapping keys.
+
+    Rationale documented in pack.py: pack owns identity; operator owns
+    infra/runtime. If both happen to set the same key, the operator's
+    override wins so deployment-time tuning sticks.
+    """
+    cfg = VoiceConfig(tts={"qwen3-tts": {"device": "cpu", "ref_text": "hi"}})
+    name, kwargs = resolve_voice_kwargs(
+        cfg, {"engine": "qwen3-tts", "device": "cuda:0"}
+    )
+    assert name == "qwen3-tts"
+    assert kwargs["device"] == "cuda:0"
+    assert kwargs["ref_text"] == "hi"

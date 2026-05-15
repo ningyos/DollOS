@@ -29,7 +29,7 @@ from dollos.ipc.messages import (
 )
 from dollos.ipc.server import WebSocketServer
 from dollos.voice.engines import ASR_REGISTRY, ASREngine, TTS_REGISTRY, TTSEngine
-from dollos.voice.pack import load_voice_config
+from dollos.voice.pack import load_voice_config, resolve_voice_kwargs
 from dollos.voice.session import VoiceSession
 from dollos.voice.sink import TTSObservingSink
 from dollos.llm.adapter import LLMAdapter
@@ -127,30 +127,38 @@ def build_instinct(
 
 
 def build_voice_engines(
-    pack_dir: Path, *, data_root: Path
+    pack_dir: Path,
+    *,
+    data_root: Path,
+    voice_asr: dict | None,
+    voice_tts: dict | None,
 ) -> "tuple[ASREngine, TTSEngine] | None":
-    """Construct ASR+TTS engines from a character pack's voice config.
+    """Construct ASR+TTS engines for the active session.
 
-    Returns None if the pack has no voice/engine.toml (or either asr/tts section
-    is absent). Raises ValueError if the config references an unregistered engine.
+    ASR is built straight from the DollOS-level ``[voice.asr]`` config —
+    it is character-agnostic.
+
+    TTS merges the DollOS-level ``[voice.tts]`` config (engine selection +
+    infra) with the character pack's per-engine identity block.
+
+    Returns ``None`` if either DollOS-level section is missing. Raises
+    ``ValueError`` for unknown engine names or a missing pack variant.
     """
-    cfg = load_voice_config(Path(pack_dir))
-    if cfg.asr is None or cfg.tts is None:
+    if voice_asr is None or voice_tts is None:
         return None
 
-    asr_name = cfg.asr["engine"]
+    asr_name = voice_asr.get("engine")
     if asr_name not in ASR_REGISTRY:
-        raise ValueError(f"unknown ASR engine in voice/engine.toml: {asr_name!r}")
-    tts_name = cfg.tts["engine"]
-    if tts_name not in TTS_REGISTRY:
-        raise ValueError(f"unknown TTS engine in voice/engine.toml: {tts_name!r}")
-
-    asr_kwargs = {k: v for k, v in cfg.asr.items() if k != "engine"}
+        raise ValueError(f"unknown ASR engine in [voice.asr]: {asr_name!r}")
+    asr_kwargs = {k: v for k, v in voice_asr.items() if k != "engine"}
     asr_kwargs.setdefault("data_root", data_root)
-    tts_kwargs = {k: v for k, v in cfg.tts.items() if k != "engine"}
-    tts_kwargs.setdefault("data_root", data_root)
-
     asr = ASR_REGISTRY[asr_name](**asr_kwargs)
+
+    cfg = load_voice_config(Path(pack_dir))
+    tts_name, tts_kwargs = resolve_voice_kwargs(cfg, voice_tts)
+    if tts_name not in TTS_REGISTRY:
+        raise ValueError(f"unknown TTS engine in [voice.tts]: {tts_name!r}")
+    tts_kwargs.setdefault("data_root", data_root)
     tts = TTS_REGISTRY[tts_name](**tts_kwargs)
     return asr, tts
 
@@ -264,11 +272,27 @@ class DollOS:
     async def _handle_offer(
         self, offer_sdp: str, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> str:
-        engines = build_voice_engines(self._pack_dir, data_root=self._data_root)
+        voice_asr = (
+            self.settings.voice.asr.model_dump()
+            if self.settings.voice.asr is not None
+            else None
+        )
+        voice_tts = (
+            self.settings.voice.tts.model_dump()
+            if self.settings.voice.tts is not None
+            else None
+        )
+        engines = build_voice_engines(
+            self._pack_dir,
+            data_root=self._data_root,
+            voice_asr=voice_asr,
+            voice_tts=voice_tts,
+        )
         if engines is None:
             raise RuntimeError(
-                "voice not configured for the active character pack; "
-                f"missing {self._pack_dir}/voice/engine.toml"
+                "voice not configured: DollOS [voice.asr] and [voice.tts] "
+                "must both be set, and the active character pack must "
+                f"include a matching [tts.<engine>] block at {self._pack_dir}/voice/engine.toml"
             )
         asr, tts = engines
 
