@@ -355,14 +355,21 @@ class EventDispatcher:
             )
             return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, SubagentResultEvent):
-            perception = (
-                "你派出的 subagent 回來了：\n"
+            body = (
+                f"subagent finished:\n"
                 f"- task: {raw.task}\n"
                 f"- status: {raw.status}\n"
                 f"- summary: {raw.summary}\n"
-                f"- details: {raw.details}"
+                f"- details_output_id: {raw.details_output_id}\n"
+                f"- details total lines: {raw.details_line_count}\n"
+                f"- details preview ({len(raw.details.splitlines())} lines):\n{raw.details}\n"
             )
-            return DollEvent(perception=perception, raw=raw)
+            if raw.details_output_id is not None:
+                body += (
+                    f"(use ReadToolOutput(id='{raw.details_output_id}', offset=0, limit=N) "
+                    f"for full details)"
+                )
+            return DollEvent(perception=body, raw=raw)
         if isinstance(raw, ShellResultEvent):
             body = (
                 f"shell command finished:\n"
@@ -371,9 +378,12 @@ class EventDispatcher:
                 f"- output_id: {raw.output_id}\n"
                 f"- total lines: {raw.line_count}\n"
                 f"- preview (first {len(raw.output.splitlines())} lines):\n{raw.output}\n"
-                f"(use ReadToolOutput(id='{raw.output_id}', offset=0, limit=N) "
-                f"or GrepToolOutput(id='{raw.output_id}', pattern='...') for more)"
             )
+            if raw.output_id is not None:
+                body += (
+                    f"(use ReadToolOutput(id='{raw.output_id}', offset=0, limit=N) "
+                    f"or GrepToolOutput(id='{raw.output_id}', pattern='...') for more)"
+                )
             return DollEvent(perception=body, raw=raw)
         if isinstance(raw, MonitorTriggeredEvent):
             extra = (
