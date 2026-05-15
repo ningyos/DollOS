@@ -36,7 +36,11 @@ from tests._dispatcher_helpers import (
         (
             "shell_runner",
             lambda tmp_path: __import__("dollos.shell_runner", fromlist=["ShellRunner"])
-            .ShellRunner(cwd=tmp_path),
+            .ShellRunner(
+                cwd=tmp_path,
+                tool_output_store=__import__("dollos.tool_outputs", fromlist=["ToolOutputStore"])
+                .ToolOutputStore(tmp_path / "tool_outputs"),
+            ),
         ),
     ],
 )

@@ -186,7 +186,10 @@ class DollOS:
         # dispatcher needs the runners. Build runners first with no dispatch_fn,
         # then build dispatcher referencing them, then point runners at
         # dispatcher.dispatch.
-        self.shell_runner = ShellRunner(cwd=settings.data.root)
+        self.shell_runner = ShellRunner(
+            cwd=settings.data.root,
+            tool_output_store=self._tool_output_store,
+        )
         self.monitor_runner = MonitorRunner(cwd=settings.data.root)
         self.subagent_runner = SubagentRunner(
             adapter=self.adapter,
