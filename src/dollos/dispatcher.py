@@ -364,13 +364,17 @@ class EventDispatcher:
             )
             return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, ShellResultEvent):
-            perception = (
-                "你執行的 shell 命令回來了：\n"
+            body = (
+                f"shell command finished:\n"
                 f"- command: {raw.command}\n"
                 f"- status: {raw.status} (exit {raw.exit_code})\n"
-                f"- output:\n{raw.output}"
+                f"- output_id: {raw.output_id}\n"
+                f"- total lines: {raw.line_count}\n"
+                f"- preview (first {len(raw.output.splitlines())} lines):\n{raw.output}\n"
+                f"(use ReadToolOutput(id='{raw.output_id}', offset=0, limit=N) "
+                f"or GrepToolOutput(id='{raw.output_id}', pattern='...') for more)"
             )
-            return DollEvent(perception=perception, raw=raw)
+            return DollEvent(perception=body, raw=raw)
         if isinstance(raw, MonitorTriggeredEvent):
             extra = (
                 f"（過去 window 內被 rate-limit 壓住的命中數: {raw.suppressed_count}）"

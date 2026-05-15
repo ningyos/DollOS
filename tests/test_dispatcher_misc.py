@@ -14,7 +14,7 @@ import pytest
 
 from dollos.dispatcher import EventDispatcher, ToolResult
 from dollos.tool_outputs import ToolOutputStore
-from dollos.events import UserTextEvent
+from dollos.events import ShellResultEvent, UserTextEvent
 from dollos.ipc.messages import TextChunk, TurnEnd
 from dollos.llm.adapter import StreamChunk
 from dollos.prompts import PromptRenderer
@@ -335,3 +335,31 @@ async def test_dispatcher_recent_activity_uses_full_date_for_old_entries(
     assert "[Recent activity]" in user
     expected_prefix = f"- {yesterday:%Y-%m-%d %H:%M:%S} old chat"
     assert expected_prefix in user
+
+
+# ----- ShellResultEvent perception rendering -----
+
+
+@pytest.mark.asyncio
+async def test_shell_result_perception_includes_paging_hints(tmp_path: Path) -> None:
+    """ShellResultEvent perception text includes output_id, total lines, and ReadToolOutput hint."""
+    disp = _make_dispatcher(
+        adapter=_FakeAdapter(chunks=[]),
+        inner_voice=_FakeInnerVoice(),
+        tmp_path=tmp_path,
+    )
+    sink: asyncio.Queue = asyncio.Queue()
+    evt = ShellResultEvent(
+        command="ls -la",
+        status="ok",
+        exit_code=0,
+        output="line1\nline2\nline3",
+        output_id="abc123",
+        line_count=42,
+        response_sink=sink,
+    )
+    doll_event = await disp._perceive(evt)
+    p = doll_event.perception
+    assert "output_id: abc123" in p
+    assert "total lines: 42" in p
+    assert "ReadToolOutput" in p

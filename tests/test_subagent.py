@@ -457,7 +457,7 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
             ]
         )
         events: list[RawEvent] = []
-        shell_runner = ShellRunner(cwd=tmp_path)
+        shell_runner = ShellRunner(cwd=tmp_path, tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"))
         runner = SubagentRunner(
             adapter=adapter,
             renderer=PromptRenderer(),

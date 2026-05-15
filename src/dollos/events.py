@@ -90,7 +90,9 @@ class ShellResultEvent(RawEvent):
     command: str
     status: Literal["ok", "nonzero", "timeout", "error"]
     exit_code: int | None
-    output: str
+    output: str   # preview head only (~10 lines)
+    output_id: str | None   # None only if runner-level error before any output captured
+    line_count: int   # total lines of the full output
     response_sink: asyncio.Queue[ServerMessage | None]
 
 

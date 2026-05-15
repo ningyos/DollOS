@@ -218,14 +218,19 @@ async def test_dispatcher_perceives_shell_result_event(tmp_path: Path):
         command="ls /tmp",
         status="ok",
         exit_code=0,
-        output="a\nb\n",
+        output="a\nb",
+        output_id="test-id-42",
+        line_count=2,
         response_sink=sink,
     )
     doll_event = await dispatcher._perceive(ev)
     p = doll_event.perception
-    assert "shell 命令" in p or "Shell 命令" in p
+    assert "shell command finished" in p
     assert "ls /tmp" in p
     assert "exit 0" in p
+    assert "output_id: test-id-42" in p
+    assert "total lines: 2" in p
+    assert "ReadToolOutput" in p
 
 
 @pytest.mark.asyncio

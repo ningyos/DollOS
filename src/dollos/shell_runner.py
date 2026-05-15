@@ -20,24 +20,14 @@ import os
 import signal
 from collections.abc import Callable
 from pathlib import Path
-
 from dollos.events import RawEvent, ShellResultEvent
 from dollos.ipc.messages import ServerMessage
+from dollos.tool_outputs import ToolOutputStore
 
 logger = logging.getLogger(__name__)
 
 
-SHELL_OUTPUT_MAX_CHARS = 8000
-
-
-def _truncate(text: str, cap: int) -> str:
-    if len(text) <= cap:
-        return text
-    half = cap // 2
-    head = text[:half]
-    tail = text[-half:]
-    dropped = len(text) - 2 * half
-    return f"{head}\n...[truncated {dropped} chars]...\n{tail}"
+SHELL_PREVIEW_LINES = 10
 
 
 class ShellRunner:
@@ -51,9 +41,11 @@ class ShellRunner:
         *,
         cwd: Path,
         dispatch_fn: Callable[[RawEvent], None] | None = None,
+        tool_output_store: ToolOutputStore,
     ) -> None:
         self._cwd = cwd
         self._dispatch_fn = dispatch_fn
+        self._tool_output_store = tool_output_store
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 
@@ -112,24 +104,31 @@ class ShellRunner:
                     await proc.wait()
                 except Exception:
                     pass
+                timeout_msg = f"[timed out after {timeout_s}s]"
+                output_id: str = self._tool_output_store.write(timeout_msg)
                 self._fire(ShellResultEvent(
                     command=command,
                     status="timeout",
                     exit_code=None,
-                    output=f"[timed out after {timeout_s}s]",
+                    output=timeout_msg,
+                    output_id=output_id,
+                    line_count=1,
                     response_sink=response_sink,
                 ))
                 return
-            output = _truncate(
-                (stdout or b"").decode("utf-8", errors="replace"),
-                SHELL_OUTPUT_MAX_CHARS,
-            )
+            full_output = (stdout or b"").decode("utf-8", errors="replace")
+            all_lines = full_output.splitlines()
+            line_count = len(all_lines)
+            preview = "\n".join(all_lines[:SHELL_PREVIEW_LINES])
+            output_id = self._tool_output_store.write(full_output)
             status = "ok" if proc.returncode == 0 else "nonzero"
             self._fire(ShellResultEvent(
                 command=command,
                 status=status,
                 exit_code=proc.returncode,
-                output=output,
+                output=preview,
+                output_id=output_id,
+                line_count=line_count,
                 response_sink=response_sink,
             ))
         except asyncio.CancelledError:
@@ -147,6 +146,8 @@ class ShellRunner:
                 status="error",
                 exit_code=None,
                 output=f"[runner error: {e}]",
+                output_id=None,
+                line_count=1,
                 response_sink=response_sink,
             ))
 
