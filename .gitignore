@@ -23,3 +23,9 @@ config.toml
 
 # Runtime logs
 logs/
+
+# Local agent harness state
+.claude/
+
+# Smoke / exploration audio output at repo root
+/*.wav
