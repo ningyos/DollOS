@@ -263,3 +263,13 @@ def test_scaffolding_explains_pending_events_block():
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
     assert "[Pending events]" in out
+
+
+def test_scaffolding_documents_tool_output_paging():
+    """Scaffolding teaches Doll how to use ReadToolOutput / GrepToolOutput
+    for paginated reads of Shell and Subagent results."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    assert "ReadToolOutput" in out
+    assert "GrepToolOutput" in out
+    assert "output_id" in out
