@@ -31,6 +31,7 @@ from dollos.events import RawEvent, SubagentResultEvent
 from dollos.ipc.messages import ServerMessage
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.prompts import PromptRenderer
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import SUB_TOOLS, SubagentToolCtx, ToolCtx
 
 if TYPE_CHECKING:
@@ -60,6 +61,7 @@ class SubagentRunner:
         dispatch_fn: Callable[[RawEvent], None] | None = None,
         shell_runner: "ShellRunner | None" = None,
         monitor_runner: "MonitorRunner | None" = None,
+        tool_output_store: ToolOutputStore,
     ) -> None:
         self._adapter = adapter
         self._renderer = renderer
@@ -69,6 +71,7 @@ class SubagentRunner:
         self._dispatch_fn = dispatch_fn
         self._shell_runner = shell_runner
         self._monitor_runner = monitor_runner
+        self._tool_output_store = tool_output_store
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in SUB_TOOLS
         }
@@ -188,6 +191,7 @@ class SubagentRunner:
             subagent_runner=None,  # no recursion
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
+            tool_output_store=self._tool_output_store,
         )
 
         def _check_early_exit(iter_num: int, ctx: ToolCtx) -> bool:

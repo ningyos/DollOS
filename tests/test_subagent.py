@@ -18,6 +18,7 @@ from dollos.monitor_runner import MonitorRunner
 from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
 
 
@@ -116,6 +117,7 @@ def _make_runner(
         memory_root=tmp_path / "memory",
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     if dispatched is not None:
         runner.set_dispatch_fn(dispatched.append)
@@ -463,6 +465,7 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
             shell_runner=shell_runner,
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         )
         runner.set_dispatch_fn(events.append)
         sink: asyncio.Queue = asyncio.Queue()
@@ -523,6 +526,7 @@ async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
             monitor_runner=monitor_runner,
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         )
         runner.set_dispatch_fn(events.append)
         sink: asyncio.Queue = asyncio.Queue()

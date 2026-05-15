@@ -142,6 +142,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=dollos._cascade_logger,
+        tool_output_store=dollos._tool_output_store,
     )
     return dollos, fake_adapter
 
@@ -404,6 +405,20 @@ async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
         isinstance(d, ScheduledEvent) and d.intent == "morning"
         for d in dispatched
     )
+
+
+# ----- ToolOutputStore wiring -----
+
+
+def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
+    from dollos.tool_outputs import ToolOutputStore
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._tool_output_store, ToolOutputStore)
+    assert dollos._tool_output_dir.exists()
+    dollos._tool_output_store.cleanup()
+    assert not dollos._tool_output_dir.exists()
 
 
 # ----- ShellRunner wiring -----

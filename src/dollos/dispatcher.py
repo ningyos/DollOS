@@ -36,6 +36,7 @@ from dollos.events import (
 
 if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
+    from dollos.tool_outputs import ToolOutputStore
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
@@ -140,6 +141,7 @@ class EventDispatcher:
         cascade_logger: CascadeLogger,
         shell_runner: ShellRunner | None = None,
         monitor_runner: "MonitorRunner | None" = None,
+        tool_output_store: "ToolOutputStore",
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -153,6 +155,7 @@ class EventDispatcher:
         self._cascade_logger = cascade_logger
         self._shell_runner = shell_runner
         self._monitor_runner = monitor_runner
+        self._tool_output_store = tool_output_store
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in MAIN_TOOLS
         }
@@ -447,6 +450,7 @@ class EventDispatcher:
             subagent_runner=self._subagent_runner,
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
+            tool_output_store=self._tool_output_store,
         )
 
         def _on_iter_start(iter_num: int, msgs: list[dict]) -> None:

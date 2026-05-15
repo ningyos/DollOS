@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
+    from dollos.tool_outputs import ToolOutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class ToolCtx:
     memory_root: Path
     memsearch: MemSearch
     transcripts_root: Path
+    tool_output_store: "ToolOutputStore"
     subagent_runner: "SubagentRunner | None" = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None
