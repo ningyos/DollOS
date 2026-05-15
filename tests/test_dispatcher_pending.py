@@ -54,7 +54,9 @@ async def test_concurrent_dispatch_runs_in_parallel(tmp_path: Path):
     dispatcher.dispatch(UserTextEvent(text="a", response_sink=sink_a))
     dispatcher.dispatch(SubagentResultEvent(
         subagent_id="x", task="t", status="ok",
-        summary="s", details="d", response_sink=sink_b,
+        summary="s", details="d",
+        details_output_id="fake-id", details_line_count=1,
+        response_sink=sink_b,
     ))
 
     items_a, items_b = await asyncio.gather(_drain(sink_a), _drain(sink_b))
@@ -123,7 +125,9 @@ async def test_dispatcher_does_not_serialize_subagent_result(tmp_path: Path):
     dispatcher.dispatch(UserTextEvent(text="a", response_sink=sink_a))
     dispatcher.dispatch(SubagentResultEvent(
         subagent_id="x", task="t", status="ok",
-        summary="s", details="d", response_sink=sink_b,
+        summary="s", details="d",
+        details_output_id="fake-id", details_line_count=1,
+        response_sink=sink_b,
     ))
 
     items_a, items_b = await asyncio.gather(_drain(sink_a), _drain(sink_b))

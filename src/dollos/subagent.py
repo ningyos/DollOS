@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+SUBAGENT_PREVIEW_LINES = 15
+
 
 class SubagentRunner:
     """Spawn-and-track set of background subagent tasks.
@@ -122,41 +124,65 @@ class SubagentRunner:
             # Runner.stop() — don't dispatch a result event; just exit.
             raise
         except asyncio.TimeoutError:
+            details_full = f"timeout was {timeout_s}s"
+            details_id = self._tool_output_store.write(details_full)
+            detail_lines = details_full.splitlines()
+            preview = "\n".join(detail_lines[:SUBAGENT_PREVIEW_LINES])
             event = SubagentResultEvent(
                 subagent_id=sub_id,
                 task=task,
                 status="timeout",
                 summary="subagent exceeded wall-clock timeout",
-                details=f"timeout was {timeout_s}s",
+                details=preview,
+                details_output_id=details_id,
+                details_line_count=len(detail_lines),
                 response_sink=response_sink,
             )
         except Exception as e:
             logger.exception("subagent %s crashed", sub_id)
+            details_full = str(e)
+            details_id = self._tool_output_store.write(details_full)
+            detail_lines = details_full.splitlines()
+            preview = "\n".join(detail_lines[:SUBAGENT_PREVIEW_LINES])
             event = SubagentResultEvent(
                 subagent_id=sub_id,
                 task=task,
                 status="error",
                 summary=f"subagent crashed: {type(e).__name__}",
-                details=str(e),
+                details=preview,
+                details_output_id=details_id,
+                details_line_count=len(detail_lines),
                 response_sink=response_sink,
             )
         else:
             if report is None:
+                details_full = ""
+                details_id = self._tool_output_store.write(details_full)
+                detail_lines = details_full.splitlines()
+                preview = "\n".join(detail_lines[:SUBAGENT_PREVIEW_LINES])
                 event = SubagentResultEvent(
                     subagent_id=sub_id,
                     task=task,
                     status="no_report",
                     summary="subagent ended without calling Report",
-                    details="",
+                    details=preview,
+                    details_output_id=details_id,
+                    details_line_count=len(detail_lines),
                     response_sink=response_sink,
                 )
             else:
+                details_full = report["details"]
+                details_id = self._tool_output_store.write(details_full)
+                detail_lines = details_full.splitlines()
+                preview = "\n".join(detail_lines[:SUBAGENT_PREVIEW_LINES])
                 event = SubagentResultEvent(
                     subagent_id=sub_id,
                     task=task,
                     status=report["status"],
                     summary=report["summary"],
-                    details=report["details"],
+                    details=preview,
+                    details_output_id=details_id,
+                    details_line_count=len(detail_lines),
                     response_sink=response_sink,
                 )
         self._fire(event)
