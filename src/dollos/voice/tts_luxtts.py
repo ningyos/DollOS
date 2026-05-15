@@ -53,7 +53,9 @@ class LuxTTSEngine(TTSEngine):
         num_steps: int = 8,
         t_shift: float = 0.9,
         guidance_scale: float = 3.0,
+        speed: float = 1.0,
     ) -> None:
+        self._speed = speed
         if not prompt_path.exists():
             raise FileNotFoundError(
                 f"luxtts prompt file not found: {prompt_path}; "
@@ -74,6 +76,7 @@ class LuxTTSEngine(TTSEngine):
             self._num_steps,
             self._t_shift,
             self._guidance_scale,
+            self._speed,
         )
         for chunk in _pcm_chunks(audio):
             yield chunk
