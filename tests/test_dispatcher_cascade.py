@@ -15,6 +15,7 @@ import pytest
 from pydantic import BaseModel
 
 from dollos.dispatcher import EventDispatcher, ToolResult
+from dollos.tool_outputs import ToolOutputStore
 from dollos.events import RawEvent, UserTextEvent
 from dollos.ipc.messages import ErrorMsg, TextChunk, TurnEnd
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -199,6 +200,7 @@ async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -244,6 +246,7 @@ async def test_dispatcher_uses_stream_messages_not_stream_completion(tmp_path: P
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -283,6 +286,7 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -326,6 +330,7 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -366,6 +371,7 @@ async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -402,6 +408,7 @@ async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -441,6 +448,7 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -481,6 +489,7 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level("WARNING"):
@@ -511,6 +520,7 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -539,6 +549,7 @@ async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -565,6 +576,7 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -590,6 +602,7 @@ async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -620,6 +633,7 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_BoomTool"] = _BoomTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -648,6 +662,7 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -671,6 +686,7 @@ async def test_dispatch_tool_call_returns_none_when_tool_run_returns_none(tmp_pa
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     ctx = _make_tool_ctx(sink, tmp_path, ms)
@@ -701,6 +717,7 @@ async def test_dispatch_tool_call_returns_success_result_when_tool_returns_str(t
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_ReturningTool"] = _ReturningTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -733,6 +750,7 @@ async def test_dispatch_tool_call_returns_success_result_with_empty_str(tmp_path
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_EmptyReturningTool"] = _EmptyReturningTool
     sink: asyncio.Queue = asyncio.Queue()
@@ -797,6 +815,7 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -860,6 +879,7 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -913,6 +933,7 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -981,6 +1002,7 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_Echo"] = _Echo
 
@@ -1054,6 +1076,7 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_Empty"] = _Empty
 
@@ -1356,6 +1379,7 @@ async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path)
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1422,6 +1446,7 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     for text in ("a", "b", "c"):
@@ -1459,6 +1484,7 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     for text in ("first", "second"):
@@ -1510,6 +1536,7 @@ async def test_dispatcher_compact_called_with_full_cascade_messages(tmp_path: Pa
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     disp._tools_by_name["_Echo"] = _Echo
 
@@ -1561,6 +1588,7 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1596,6 +1624,7 @@ async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, ca
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
@@ -1656,6 +1685,7 @@ async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_pa
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))

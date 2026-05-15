@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from dollos.dispatcher import EventDispatcher, ToolResult
+from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
 from dollos.ipc.messages import TextChunk, TurnEnd
 from dollos.llm.adapter import StreamChunk
@@ -74,6 +75,7 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -124,6 +126,7 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(DiaryEvent(response_sink=sink))
@@ -175,6 +178,7 @@ async def test_dispatcher_logs_cascade_iter_per_iter(tmp_path: Path):
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=fcl,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -216,6 +220,7 @@ async def test_dispatcher_log_iter_includes_parsed_think_and_tool_calls(tmp_path
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=fcl,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))

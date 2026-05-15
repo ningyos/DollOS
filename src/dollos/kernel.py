@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from dollos.prompts import PromptRenderer
 from dollos.monitor_runner import MonitorRunner
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
+from dollos.tool_outputs import ToolOutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +180,8 @@ class DollOS:
         cascade_log_root = settings.data.root / "cascade_log"
         configure_cascade_logging(cascade_log_root)
         self._cascade_logger = CascadeLogger(cascade_log_root)
+        self._tool_output_dir = Path(tempfile.mkdtemp(prefix="dollos-tools-"))
+        self._tool_output_store = ToolOutputStore(self._tool_output_dir)
         # Two-stage wiring: SubagentRunner / ShellRunner need a dispatch_fn,
         # dispatcher needs the runners. Build runners first with no dispatch_fn,
         # then build dispatcher referencing them, then point runners at
@@ -192,6 +196,7 @@ class DollOS:
             transcripts_root=settings.data.root / "memory" / "transcripts",
             shell_runner=self.shell_runner,
             monitor_runner=self.monitor_runner,
+            tool_output_store=self._tool_output_store,
         )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
@@ -206,6 +211,7 @@ class DollOS:
             cascade_logger=self._cascade_logger,
             shell_runner=self.shell_runner,
             monitor_runner=self.monitor_runner,
+            tool_output_store=self._tool_output_store,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)
@@ -476,5 +482,6 @@ class DollOS:
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
                 await self.dispatcher.stop()
+                self._tool_output_store.cleanup()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based

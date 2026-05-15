@@ -14,6 +14,7 @@ from dollos.dispatcher import EventDispatcher
 from dollos.events import UserTextEvent
 from dollos.llm.adapter import StreamChunk
 from dollos.prompts import PromptRenderer
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import ToolCtx
 
 from tests._dispatcher_helpers import (
@@ -85,6 +86,7 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
             memsearch=ms,
             transcripts_root=tmp_path / "transcripts",
             cascade_logger=_FakeCascadeLogger(),
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         )
         kwargs[runner_field] = runner
 

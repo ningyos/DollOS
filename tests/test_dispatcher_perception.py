@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from dollos.dispatcher import EventDispatcher
+from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
 from dollos.ipc.messages import TextChunk, TurnEnd
 from dollos.llm.adapter import StreamChunk
@@ -115,6 +116,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
