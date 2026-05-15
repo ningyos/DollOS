@@ -1,6 +1,7 @@
 """Tests for Tool classes (Say, NoteMemory) and ToolCtx."""
 
 import asyncio
+import re
 from datetime import date
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
+    GrepToolOutput,
     InvokeSkill,
     NoteMemory,
     ReadToolOutput,
@@ -34,7 +36,10 @@ class _FakeMemSearch:
         self.indexed.append(Path(path))
 
 
-def _make_ctx(tmp_path: Path) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
+def _make_ctx(
+    tmp_path: Path,
+    tool_output_store: ToolOutputStore | None = None,
+) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
     ctx = ToolCtx(
@@ -42,7 +47,7 @@ def _make_ctx(tmp_path: Path) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
     )
     return ctx, ms, sink
 
@@ -847,5 +852,44 @@ async def test_read_tool_output_not_found(tmp_path: Path) -> None:
     ctx.tool_output_store = store
     tool = ReadToolOutput(id="out-deadbeef", offset=0, limit=10)
     with pytest.raises(FileNotFoundError):
+        await tool.run(ctx)
+
+
+# ---------- GrepToolOutput ----------
+
+
+@pytest.mark.asyncio
+async def test_grep_tool_output_finds_matches(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    text = "error: foo\nok\nerror: bar\nok\nERROR: baz\n"
+    output_id = store.write(text)
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+
+    tool = GrepToolOutput(id=output_id, pattern=r"error:", max_matches=10)
+    result = await tool.run(ctx)
+
+    assert "line 0: error: foo" in result
+    assert "line 2: error: bar" in result
+    assert "ERROR" not in result   # case-sensitive by default
+
+
+@pytest.mark.asyncio
+async def test_grep_no_match(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("hello\nworld\n")
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+    tool = GrepToolOutput(id=output_id, pattern=r"^nothing$", max_matches=10)
+    result = await tool.run(ctx)
+    assert "no matches" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("hello\n")
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+    # Trailing unbalanced paren — re.error at run time
+    tool = GrepToolOutput(id=output_id, pattern=r"(", max_matches=10)
+    with pytest.raises(re.error):
         await tool.run(ctx)
 

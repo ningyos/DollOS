@@ -526,13 +526,33 @@ class ReadToolOutput(BaseModel):
         return f"{header}\n{body}"
 
 
+class GrepToolOutput(BaseModel):
+    """Grep a stored tool output for a regex pattern. Returns matching lines
+    with their line index, capped by max_matches.
+    """
+
+    id: str = Field(..., description="output id from a tool result perception")
+    pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")
+    max_matches: int = Field(20, ge=1, le=200, description="max matching lines to return")
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        matches = ctx.tool_output_store.grep(
+            self.id, pattern=self.pattern, max_matches=self.max_matches
+        )
+        if not matches:
+            return f"no matches for {self.pattern!r}"
+        header = f"{len(matches)} match(es) for {self.pattern!r}:"
+        body = "\n".join(f"line {m.line_index}: {m.line}" for m in matches)
+        return f"{header}\n{body}"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
-    ReadToolOutput,
+    ReadToolOutput, GrepToolOutput,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
-    SpawnMonitor, RemoveMonitor, ReadToolOutput,
+    SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
 ]
