@@ -1,0 +1,8 @@
+[tts.qwen3-tts]
+ref_audio = "voice/qwen3/ref.wav"
+ref_text = "REFERENCE_TRANSCRIPT"
+# Free-form natural-language voice direction. Examples:
+#   "excited, energetic, animated"
+#   "speak in a soft, conspiratorial whisper"
+#   "用激動的語氣說"
+instruction = "excited, energetic, animated"

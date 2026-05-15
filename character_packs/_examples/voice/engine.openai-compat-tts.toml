@@ -1,6 +1,4 @@
-[tts]
-engine = "openai-compat-tts"
-base_url = "https://api.openai.com/v1"
-api_key = "${OPENAI_API_KEY}"  # interpolation TBD; use a literal string or null for local endpoints
-model = "tts-1"
+# Per-character identity for the openai-compat-tts backend.
+# Infra (base_url / api_key / model) lives in DollOS [voice.tts].
+[tts.openai-compat-tts]
 voice = "alloy"

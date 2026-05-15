@@ -491,11 +491,16 @@ async def test_kernel_builds_voice_engines_from_pack(tmp_path: Path, monkeypatch
     voice_dir = pack_dir / "voice"
     voice_dir.mkdir()
     (voice_dir / "engine.toml").write_text(
-        '[asr]\nengine="fake-asr"\n\n[tts]\nengine="fake-tts"\n'
+        '[tts.fake-tts]\n'
     )
 
     from dollos.kernel import build_voice_engines
-    asr, tts = build_voice_engines(pack_dir, data_root=tmp_path / "data")
+    asr, tts = build_voice_engines(
+        pack_dir,
+        data_root=tmp_path / "data",
+        voice_asr={"engine": "fake-asr"},
+        voice_tts={"engine": "fake-tts"},
+    )
     assert isinstance(asr, _FakeASR)
     assert isinstance(tts, _FakeTTS)
 
@@ -505,7 +510,7 @@ async def test_kernel_builds_voice_engines_from_pack(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_kernel_no_voice_when_pack_has_none(tmp_path: Path):
+async def test_kernel_no_voice_when_dollos_config_absent(tmp_path: Path):
     from dollos.kernel import build_voice_engines
 
     pack_dir = tmp_path / "pack"
@@ -514,5 +519,10 @@ async def test_kernel_no_voice_when_pack_has_none(tmp_path: Path):
         '[meta]\nid="t"\nname="T"\n[identity]\nself="x"\npersonality="x"\ntaboos="x"\n'
     )
 
-    out = build_voice_engines(pack_dir, data_root=tmp_path / "data")
+    out = build_voice_engines(
+        pack_dir,
+        data_root=tmp_path / "data",
+        voice_asr=None,
+        voice_tts=None,
+    )
     assert out is None
