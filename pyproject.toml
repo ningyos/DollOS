@@ -51,6 +51,13 @@ qwen3 = [
     "torch>=2.10,<2.12",
     "torchaudio>=2.10,<2.12",
 ]
+eval = [
+    "speechbrain>=1.0",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "torch>=2.10,<2.12",
+    "torchaudio>=2.10,<2.12",
+]
 gpu = [
     "onnxruntime-gpu>=1.24,<1.25",
     "nvidia-cudnn-cu12>=9.5",
