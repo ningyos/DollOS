@@ -70,20 +70,20 @@ Replaces the current `EventDispatcher` entirely.
 @dataclass
 class MindState:
     # Always-on state (persists across daemon restart)
-    mood: Mood
-    focus: str          # one sentence: what I'm currently attending to
-    energy: float       # 0-1, decays on idle, restored by perceptions
-    scratchpad: str     # Doll-mutable freetext (replaces existing Scratchpad)
+    mood: Mood                            # see Mood spec from existing step-19 work; unchanged
+    focus: str                            # one sentence: what I'm currently attending to
+    energy: float                         # 0-1, decays on idle, restored by perceptions
+    scratchpad: str                       # Doll-mutable freetext (replaces existing Scratchpad)
 
     # Multi-concern (auto-synced from external sources per iteration)
-    active_tasks: list[ActiveTask]      # from ProcessRegistry: running shells/subagents/monitors
-    pending_events: list[PendingEvent]  # from Schedule: upcoming scheduled fires
-    open_loops: list[OpenLoop]          # Doll-explicit TODO commitments
+    active_tasks: list[ActiveTask]        # from ProcessRegistry
+    pending_events: list[PendingEvent]    # from Schedule
+    open_loops: list[OpenLoop]            # Doll-explicit TODO commitments
 
     # Working memory (bounded deques)
-    recent_perceptions: deque[Perception]   # last 20 inputs (UserSpoke / ToolResult / IdleTick / ...)
-    recent_outputs: deque[OutputRecord]     # last 15 own actions — anti-repeat
-    recent_thoughts: deque[Thought]         # last 10 Think outputs — internal trail
+    recent_perceptions: deque[Perception]
+    recent_outputs: deque[OutputRecord]
+    recent_thoughts: deque[Thought]
 
     # Continuity
     last_user_at: float
@@ -91,6 +91,56 @@ class MindState:
     iter_count: int
     session_started_at: float
 ```
+
+#### Supporting types
+
+```python
+@dataclass
+class ActiveTask:
+    task_id: str                  # "shell-N" / "subagent-N" / "monitor-N"
+    kind: Literal["shell", "subagent", "monitor"]
+    summary: str                  # "ls /tmp" / task description / monitor command
+    started_at: float
+    @property
+    def elapsed_s(self) -> float: ...
+
+@dataclass
+class PendingEvent:
+    fire_at: float                # scheduled time (epoch)
+    summary: str                  # "18:00 evening check-in"
+
+@dataclass
+class OpenLoop:
+    id: str                       # short slug Doll picks
+    desc: str
+    opened_at: float
+
+@dataclass
+class Perception:
+    kind: Literal["UserSpoke", "ToolResultArrived", "MonitorFired",
+                  "MonitorEnded", "ScheduledMoment", "IdleTick", "Awoke"]
+    t: float                      # arrival timestamp
+    data: dict                    # kind-specific payload
+
+@dataclass
+class OutputRecord:
+    t: float
+    kind: str                     # action kind: "Say", "Dispatch", etc.
+    summary: str                  # short rendered summary (≤80 chars)
+
+@dataclass
+class Thought:
+    t: float
+    text: str                     # raw Think action text or Recall result digest
+```
+
+Deque maxlens: `recent_perceptions=20`, `recent_outputs=15`, `recent_thoughts=10`. Tunable via config.
+
+#### Mind state persistence
+
+`MindState` serializes to `data/mind_state.json` via **atomic write** (write to `mind_state.json.tmp`, fsync, rename). On daemon start, load if present; on parse failure, log loudly and start fresh (no silent fallback to partial state).
+
+Deques serialize as JSON arrays. `Mood` follows its existing serialization. Some fields refresh on load: `energy=1.0`, `session_started_at=now()`. Others keep disk value: `iter_count`, `mood`, `focus`, `scratchpad`, `open_loops`, `recent_perceptions/outputs/thoughts`.
 
 `MindState` replaces `Scratchpad` (folded in) + `ConversationHistory` (replaced by `recent_perceptions` + `recent_outputs` + `recent_thoughts`).
 
@@ -131,13 +181,19 @@ LLM outputs JSON array of 0..N actions per iteration. Multiple actions in one it
 | `Sleep(seconds)` | Extend next `idle_interval`; signals "nothing urgent for N seconds" |
 | `RemoveMonitor(id)` | Stop a running monitor |
 
-**Async dispatch (fire-and-forget, no return value)**:
+**Async dispatch (fire-and-forget, no return value)** — three distinct action types (separate to keep grammar simple and pydantic schemas tight):
 
-| Action | Effect |
-|---|---|
-| `Dispatch(tool="Shell", command, timeout_s)` | Spawn shell; on exit → `ToolResultArrived` perception |
-| `Dispatch(tool="Subagent", task, timeout_s)` | Spawn subagent; on Report → `ToolResultArrived` |
-| `Dispatch(tool="Monitor", command, match_regex, rate_limit_s)` | Spawn monitor; per line → `MonitorFired` |
+| Action | Args | Effect |
+|---|---|---|
+| `Shell` | `command: str, timeout_s: int` | Spawn shell; on exit → `ToolResultArrived` perception |
+| `SpawnSubagent` | `task: str, timeout_s: int` | Spawn subagent; on Report → `ToolResultArrived` |
+| `SpawnMonitor` | `command: str, match_regex: str\|None, rate_limit_s: float` | Spawn monitor; per matched line → `MonitorFired`; on exit → `MonitorEnded` |
+
+(Same names as current DollOS tools — easier migration; no new vocabulary for Doll to learn.)
+
+**Empty action array** is valid output and equivalent to `[{"action": "Idle"}]` (no-op for the iteration). Prefer explicit `[{"action": "Idle"}]` for clarity in mind_log.
+
+**Scratchpad action ABI**: `WriteScratchpad / AppendScratchpad / EditScratchpad / ClearScratchpad` action names and arg shapes are preserved from the existing `src/dollos/scratchpad.py`. Only the storage backend changes — instead of mutating a separate `Scratchpad` instance, they mutate `MindState.scratchpad`. Same 2000-char hard cap, same error semantics.
 
 ### Prompt structure (always-rendered)
 
@@ -188,13 +244,22 @@ iter: {iter_count}
 What do you do this iteration? Output a JSON array of 0..N actions.
 ```
 
-Block ordering choice: `[Memory context]` first (most contextual), then `[Mind state]` (who I am right now), then concerns (`[Active tasks]` / `[Open loops]` / `[Pending]` / `[Scratchpad]`), then memory (`[Recent perceptions]` / `[Recent outputs]` / `[Recent thoughts]`), then `[Decision time]`. The stable prefix (system through Mind state) gets KV cache reuse.
+Block ordering chosen for two reasons:
+1. **Cache-warmth gradient**: most stable content earlier (system → Mind state core → ... → recent_thoughts). llama.cpp `--cache-reuse` matches the longest common prefix; deeper into the prompt where content shifts every iter, less benefit but lower cost (later tokens cost the same as earlier).
+2. **Cognitive flow for the LLM**: knowledge (`[Memory context]`) before self-state (`[Mind state]`) before situational concerns (active tasks / loops / pending) before recent history. Empirically, in the prototype the LLM consistently grounded answers in the last-rendered block ("recent outputs") and used the earlier blocks as background — so anti-repeat info goes near the bottom where attention focuses.
+
+When `recent_perceptions` is empty (initial cold start before any event arrives), `[Memory context]` block renders `(no relevant memories — query was empty)`. Memsearch is queried with an empty string only on the first iteration; otherwise the most recent UserSpoke text (or last-3 perception summaries if no recent UserSpoke) is the query.
 
 ### Output to user (Say streaming)
 
-When LLM outputs `Say(text)` action, dispatcher streams text chunks to the **currently-active sink** (the WS connection that most recently sent a UserSpoke OR the dummy sink if no connection). Each Say wraps in TurnStart/TurnEnd brackets so the client knows when one Say ends and the next begins.
+`SinkResolver` is a daemon-level callable that returns the currently-active sink: the WS sink of the most-recently-connected client whose connection is still open. If no client connected, returns a dummy sink that drops messages (with a log line so we know Doll was talking to a wall).
 
-There's no longer a per-cascade "response_sink" passed through tools — sink is daemon-level, looked up on each Say execution. Solves the IV-removal bug at the architectural level.
+When `Say(text)` action executes, the action handler calls `sink_resolver()` AT EMIT TIME, NOT at action-creation time. This means:
+- If multiple Says fire across iterations, they each resolve fresh — surviving WS reconnects gracefully.
+- If WS dropped between iterations, the new client (when it reconnects) starts fresh; the lost-in-disconnect Say is gone.
+- No more per-cascade `response_sink` parameter threading through tools. Solves the IV-removal sink-sharing bug architecturally.
+
+Each `Say` wraps its chunks in `TurnStart` / `TurnEnd` markers on the sink so the client knows utterance boundaries (multiple Says in one iteration = multiple TurnStart/TurnEnd pairs).
 
 ### Idle behavior + Sleep
 
@@ -244,7 +309,7 @@ Deques serialize as lists. Some fields are ephemeral by intent (energy at 1.0 on
 | Component | New shape |
 |---|---|
 | `Kernel` | Spawns one `MindLoop` coroutine on start; `await mind_loop_task` is the main waiting point |
-| `ToolCtx` | Replaced by `MindCtx` containing `mind_state`, `memsearch`, `process_registry`, `tool_output_store`, `tool_runners`, `sink_resolver` |
+| `ToolCtx` | Replaced by `MindCtx` containing `mind_state` (the live MindState reference), `memsearch`, `process_registry`, `tool_output_store`, `shell_runner` / `subagent_runner` / `monitor_runner`, `sink_resolver` (callable: () → sink), `memory_root` (for NoteMemory writes), `transcripts_root` |
 | Tool `run()` methods | Take `MindCtx` instead of `ToolCtx`; mutate `mind_state` directly |
 | Cascade logging | Per-iteration log (not per-cascade) |
 | Tests | Per-iteration unit tests; new fixtures (`_make_mind`, `inject_perception`) |
@@ -335,8 +400,16 @@ Replaces cascade_log. Smaller granularity (per-iter not per-cascade). Same disk 
 
 ## Acceptance criteria
 
-- Existing real-LLM e2e (paging, scratchpad, conversation_history, multi-turn) all behaviorally pass
-- New multi-task progress query test passes
-- Day-long stability: daemon survives 24-hour idle + intermittent prompts without crash, prompt size stable, no runaway state growth
-- Crash recovery: kill daemon → restart → mind resumes coherently
-- No port 8003 dependency (already removed)
+### v1 (day-1 ship)
+
+- All four real-LLM e2e smokes (paging, scratchpad, conversation_history, multi-turn) behaviorally pass — same prompts, same expected outcomes
+- New multi-task progress query test passes (3 parallel shells, mind reports progress accurately)
+- New `IdleTick + Sleep` test: 5-minute idle run, no say-spam, mind Sleep-escalates
+- New persistence test: kill daemon mid-cascade, restart, `Awoke(reason="resumed")` perception fires, MindState fields preserved
+- Full pytest suite passes (existing tests adapted to MindLoop, no regressions)
+- No port 8003 dependency (already removed; this is a regression guard)
+
+### v1.x (post-ship, not blocking)
+
+- Day-long (24h) stability: daemon survives extended idle + intermittent prompts, prompt size bounded, no runaway state growth
+- mind_log analysis tool: read JSONL log to surface usage patterns (idle ratio, action distribution, latency percentiles)
