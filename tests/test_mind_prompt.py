@@ -1,0 +1,98 @@
+"""Tests for render_mind — the MindLoop prompt renderer."""
+import time
+from collections import deque
+
+import pytest
+
+from dollos.mind.mind_state import (
+    MindState, Mood, ActiveTask, OpenLoop, PendingEvent,
+    Perception, OutputRecord, Thought,
+)
+from dollos.mind.mind_prompt import render_mind
+
+
+def test_renders_all_blocks_in_order():
+    state = MindState(focus="testing", mood=Mood(emotion="calm", reason="just woke up"))
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYSTEM PROMPT HERE")
+    # Order check via index-of
+    expected_order = [
+        "SYSTEM PROMPT HERE",
+        "[Memory context]",
+        "[Mind state]",
+        "[Active tasks]",
+        "[Open loops]",
+        "[Pending]",
+        "[Scratchpad]",
+        "[Recent perceptions]",
+        "[Recent outputs]",
+        "[Recent thoughts]",
+        "[Decision time]",
+    ]
+    last_idx = -1
+    for marker in expected_order:
+        idx = prompt.index(marker)
+        assert idx > last_idx, f"{marker} out of order"
+        last_idx = idx
+
+
+def test_empty_state_renders_none_placeholders():
+    state = MindState()
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    assert "(no relevant memories)" in prompt
+    assert "[Active tasks]" in prompt and "(none)" in prompt
+    assert "(empty)" in prompt  # scratchpad
+
+
+def test_memory_hits_rendered_as_bullets():
+    state = MindState()
+    hits = [
+        {"content": "user likes coffee", "source": "shared/2026-05-12.md"},
+        {"content": "user lives in Taipei", "source": "shared/2026-05-13.md"},
+    ]
+    prompt = render_mind(state, memsearch_hits=hits, system_prompt="SYS")
+    assert "- user likes coffee" in prompt
+    assert "- user lives in Taipei" in prompt
+
+
+def test_active_tasks_show_elapsed():
+    state = MindState()
+    state.active_tasks.append(ActiveTask(
+        task_id="shell-1", kind="shell", summary="ls /tmp",
+        started_at=time.time() - 5.0,
+    ))
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    assert "shell-1" in prompt
+    assert "ls /tmp" in prompt
+    # elapsed shown
+    assert "5" in prompt  # ~5s elapsed
+
+
+def test_open_loops_rendered():
+    state = MindState()
+    state.open_loops.append(OpenLoop(id="t1", desc="check tmp", opened_at=time.time() - 10))
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    assert "t1" in prompt and "check tmp" in prompt
+
+
+def test_recent_perceptions_newest_last():
+    state = MindState()
+    state.recent_perceptions.append(Perception(kind="UserSpoke", t=100.0, data={"text": "first"}))
+    state.recent_perceptions.append(Perception(kind="UserSpoke", t=200.0, data={"text": "second"}))
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    idx_first = prompt.index("first")
+    idx_second = prompt.index("second")
+    assert idx_first < idx_second  # newest last
+
+
+def test_recent_outputs_block():
+    state = MindState()
+    state.recent_outputs.append(OutputRecord(t=time.time() - 3, kind="Say", summary="Said: hi"))
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    assert "Said: hi" in prompt
+    assert "don't repeat yourself" in prompt.lower()
+
+
+def test_decision_time_marker_is_last():
+    state = MindState()
+    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
+    assert prompt.rstrip().endswith("0..N actions.") or "JSON array" in prompt[prompt.rfind("[Decision time]"):]
