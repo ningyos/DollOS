@@ -70,3 +70,55 @@ class Scratchpad:
 
     def clear(self) -> None:
         self._content = ""
+
+
+class WriteScratchpad(BaseModel):
+    """Overwrite the scratchpad with new content.
+
+    Hard cap 2000 chars. Use this when starting fresh or when existing
+    content is irrelevant to current work.
+    """
+
+    content: str = Field(..., description="full new scratchpad contents (≤2000 chars)")
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        ctx.scratchpad.write(self.content)
+        return f"scratchpad set ({len(self.content)} chars)"
+
+
+class AppendScratchpad(BaseModel):
+    """Append a line to the end of the scratchpad.
+
+    A newline separator is auto-prepended if the scratchpad is non-empty.
+    Raises ValueError if appending would exceed 2000 chars.
+    """
+
+    text: str = Field(..., description="text to append as a new line")
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        new_total = ctx.scratchpad.append(self.text)
+        return f"scratchpad now {new_total} chars"
+
+
+class EditScratchpad(BaseModel):
+    """Replace a unique substring in the scratchpad.
+
+    Same semantics as Claude Code's Edit tool: old_string must appear
+    exactly once in the current contents. Use longer old_string with
+    surrounding context if a short substring is ambiguous.
+    """
+
+    old_string: str = Field(..., description="exact substring to replace; must appear exactly once")
+    new_string: str = Field(..., description="replacement text")
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        ctx.scratchpad.edit(self.old_string, self.new_string)
+        return "scratchpad edited"
+
+
+class ClearScratchpad(BaseModel):
+    """Wipe the scratchpad to empty."""
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        ctx.scratchpad.clear()
+        return "scratchpad cleared"
