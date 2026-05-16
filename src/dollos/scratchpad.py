@@ -1,0 +1,72 @@
+"""Scratchpad — Doll's ephemeral working memory.
+
+A 2000-char text document, auto-rendered at the top of every Doll
+perception. Doll writes / edits / clears via the four pydantic tools
+in this module. Lifetime: daemon process. Storage: in-memory string,
+no file backing.
+
+See docs/superpowers/specs/2026-05-16-scratchpad-design.md.
+"""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from dollos.tools import ToolCtx
+
+
+class Scratchpad:
+    """In-memory working memory for Doll. Bounded at 2000 chars."""
+
+    HARD_CAP = 2000
+
+    def __init__(self) -> None:
+        self._content = ""
+        # No lock: tool calls within a cascade iter are awaited sequentially.
+        # If true concurrent mutation becomes a real scenario, add asyncio.Lock.
+
+    def read(self) -> str:
+        return self._content
+
+    def write(self, content: str) -> None:
+        if len(content) > self.HARD_CAP:
+            raise ValueError(
+                f"scratchpad write exceeds {self.HARD_CAP} char cap "
+                f"({len(content)} chars). Edit or Clear first."
+            )
+        self._content = content
+
+    def append(self, text: str) -> int:
+        sep = "\n" if self._content else ""
+        new_total = len(self._content) + len(sep) + len(text)
+        if new_total > self.HARD_CAP:
+            raise ValueError(
+                f"scratchpad append would exceed {self.HARD_CAP} chars "
+                f"({new_total} after append). Edit or Clear first."
+            )
+        self._content = self._content + sep + text
+        return new_total
+
+    def edit(self, old: str, new: str) -> None:
+        count = self._content.count(old)
+        if count == 0:
+            raise ValueError(f"old_string not found in scratchpad: {old!r}")
+        if count > 1:
+            raise ValueError(
+                f"old_string appears {count} times — add more context to disambiguate"
+            )
+        new_content = self._content.replace(old, new, 1)
+        if len(new_content) > self.HARD_CAP:
+            raise ValueError(
+                f"edit would push scratchpad to {len(new_content)} chars "
+                f"(cap {self.HARD_CAP})."
+            )
+        self._content = new_content
+
+    def clear(self) -> None:
+        self._content = ""
