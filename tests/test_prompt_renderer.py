@@ -84,7 +84,7 @@ def test_render_blocks_unknown_template_raises():
 def test_scaffolding_includes_meta_rule_about_multi_try():
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
-    assert "嘗試多次" in out or "tried multiple times" in out.lower()
+    assert "嘗試多次" in out or "repeated attempts" in out.lower()
     assert "換方法" in out or "change approach" in out.lower() or "different" in out.lower()
     assert "停止" in out or "stop" in out.lower()
 
@@ -153,7 +153,7 @@ def test_scaffolding_includes_act_after_thinking_rule():
     """Behavior section explicitly forbids ACTION: / plan plaintext."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
-    assert "思考後動手" in out
+    assert "Think first, then act" in out
     assert "ACTION" in out  # mentioned as anti-pattern
 
 
@@ -168,7 +168,7 @@ def test_scaffolding_memory_section_includes_curiosity_fallback():
     assert "Recall" in rendered
     assert "NoteMemory" in rendered
     # The flow language anchors the don't-know case.
-    assert "不確定" in rendered or "不瞎掰" in rendered
+    assert "unsure" in rendered or "don't fabricate" in rendered
 
 
 def test_scaffolding_has_think_structure_section():
@@ -188,7 +188,7 @@ def test_scaffolding_behavior_disambiguates_user_first_person():
     bug). Scaffolding now anchors '我' = speaker = user."""
     renderer = PromptRenderer()
     rendered = renderer.render("scaffolding", identity=_identity(self_="Test"))
-    assert "主人說的「我」永遠是主人" in rendered
+    assert 'When the user says "I" / "me", they always mean themselves, not you.' in rendered
 
 
 def test_scaffolding_renders_identity_sections():
@@ -202,10 +202,10 @@ def test_scaffolding_renders_identity_sections():
     out = renderer.render("scaffolding", identity=identity)
     assert "# Identity" in out
     assert "我是測試 Doll。" in out
-    assert "## 個性" in out
+    assert "## Personality" in out
     assert "- 簡短" in out
     assert "- 好奇" in out
-    assert "## 禁忌" in out
+    assert "## Taboos" in out
     assert "- 不 LARP" in out
 
 
