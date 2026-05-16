@@ -1,8 +1,10 @@
-"""Integration tests for DollOS._handle_message via EventDispatcher."""
+"""Integration tests for DollOS kernel — MindLoop-based architecture."""
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import date as _date
 from pathlib import Path
 
 import pytest
@@ -16,7 +18,7 @@ from dollos.config import (
     MemsearchConfig,
     Settings,
 )
-from dollos.ipc.messages import ErrorMsg, TextChunk, TextInput, TurnEnd
+from dollos.ipc.messages import TextInput
 from dollos.kernel import DollOS
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 
@@ -49,194 +51,206 @@ def _make_settings(tmp_path: Path) -> Settings:
     )
 
 
-@dataclass
-class _FakeAdapter(LLMAdapter):
-    chunks: list[StreamChunk] = field(default_factory=list)
-    calls: list[dict] = field(default_factory=list)
-
-    async def stream_completion(
-        self,
-        *,
-        system: str,
-        user: str,
-        prefill: str = "",
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        self.calls.append({"system": system, "user": user, "prefill": prefill})
-        for c in self.chunks:
-            yield c
-
-    async def stream_messages(
-        self,
-        *,
-        system: str,
-        messages: list[dict],
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        self.calls.append({"system": system, "messages": list(messages)})
-        for c in self.chunks:
-            yield c
+# ----- Basic wiring tests -----
 
 
-class _FakeMemSearch:
-    def __init__(self) -> None:
-        self.indexed: list = []
+def test_kernel_has_mind_loop(tmp_path: Path) -> None:
+    """DollOS constructs a MindLoop."""
+    from dollos.mind.mind_loop import MindLoop
 
-    async def index_file(self, path):
-        self.indexed.append(path)
-
-    async def search(self, query: str, top_k: int = 10) -> list:
-        return []
-
-
-def _install_fake_memsearch(monkeypatch, recall_text: str | None = None, raises=None):
-    """Stub memsearch.search to return fake hits (or raise) without touching a real model."""
-    captured: list[str] = []
-
-    async def _stub_search(self, query, top_k=10):
-        captured.append(query)
-        if raises is not None:
-            raise raises
-        text = recall_text if recall_text is not None else "- foo"
-        if not text:
-            return []
-        return [{"content": line.lstrip("- "), "source": "test"} for line in text.splitlines() if line.strip()]
-
-    monkeypatch.setattr("memsearch.MemSearch.search", _stub_search)
-    return captured
-
-
-@pytest.fixture
-def dollos_with_fakes(tmp_path, monkeypatch):
-    """Build a DollOS with fake adapter swapped in. Returns (dollos, adapter,
-    iv_calls)."""
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
-
-    fake_adapter = _FakeAdapter()
-    dollos.adapter = fake_adapter
-    # Re-build dispatcher to point at the fake adapter.
-    from dollos.conversation_history import ConversationHistory
-    from dollos.dispatcher import EventDispatcher
-    from dollos.scratchpad import Scratchpad
-
-    dollos.dispatcher = EventDispatcher(
-        adapter=fake_adapter,
-        renderer=dollos.renderer,
-        identity=dollos._doll_pack.identity,
-        memory_root=tmp_path,
-        memsearch=dollos.memsearch,  # keep real MemSearch so class-level patches work
-        transcripts_root=tmp_path / "transcripts",
-        cascade_logger=dollos._cascade_logger,
-        tool_output_store=dollos._tool_output_store,
-        scratchpad=Scratchpad(),
-        conversation_history=ConversationHistory(),
-    )
-    return dollos, fake_adapter
+    assert isinstance(dollos._mind_loop, MindLoop)
 
 
-async def _drain_until_separator(sink: asyncio.Queue) -> list:
-    """Drain a sink until the first None separator (turn boundary)."""
-    out = []
-    while True:
-        item = await sink.get()
-        if item is None:
-            return out
-        out.append(item)
+def test_kernel_has_mind_state(tmp_path: Path) -> None:
+    """DollOS loads a MindState."""
+    from dollos.mind.mind_state import MindState
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._mind_state, MindState)
 
 
-@pytest.mark.xfail(
-    reason="dispatcher uses ToolCtx; Task 8 deletes dispatcher and migrates kernel to MindLoop/MindCtx"
-)
-@pytest.mark.asyncio
-async def test_handle_message_text_input_yields_chunks_then_turnend(
-    dollos_with_fakes, monkeypatch
-):
-    dollos, adapter = dollos_with_fakes
-    adapter.chunks = [
-        StreamChunk(
-            text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-            done=False,
-        ),
-        StreamChunk(text="", done=True),
-    ]
-    _install_fake_memsearch(monkeypatch, "- foo")
+def test_kernel_has_perception_queue(tmp_path: Path) -> None:
+    """DollOS creates a PerceptionQueue."""
+    from dollos.mind.perception_queue import PerceptionQueue
 
-    sink: asyncio.Queue = asyncio.Queue()
-    result = await dollos._handle_message(TextInput(text="hi"), sink)
-    assert result is None  # void return; output flows via sink
-    items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
-    assert any(isinstance(m, TextChunk) and m.text == "ok" for m in items)
-    assert isinstance(items[-1], TurnEnd)
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._perception_queue, PerceptionQueue)
 
 
-@pytest.mark.asyncio
-async def test_handle_message_text_input_yields_errormsg_on_dispatch_failure(
-    dollos_with_fakes, monkeypatch
-):
-    dollos, _adapter = dollos_with_fakes
-    _install_fake_memsearch(monkeypatch, raises=RuntimeError("boom"))
+def test_kernel_has_sink_resolver(tmp_path: Path) -> None:
+    """DollOS creates a SinkResolver."""
+    from dollos.mind.sink_resolver import SinkResolver
 
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_message(TextInput(text="x"), sink)
-    items = await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
-    assert len(items) == 1
-    assert isinstance(items[0], ErrorMsg)
-    assert "boom" in items[0].message
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._sink_resolver, SinkResolver)
+
+
+def test_kernel_has_mind_ctx(tmp_path: Path) -> None:
+    """DollOS creates a MindCtx wired to MindState."""
+    from dollos.mind.mind_ctx import MindCtx
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._mind_ctx, MindCtx)
+    assert dollos._mind_ctx.mind_state is dollos._mind_state
+
+
+def test_kernel_mind_loop_uses_same_state(tmp_path: Path) -> None:
+    """MindLoop shares the same MindState as the kernel."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert dollos._mind_loop._state is dollos._mind_state
+
+
+def test_kernel_mind_loop_uses_same_queue(tmp_path: Path) -> None:
+    """MindLoop shares the same PerceptionQueue as the kernel."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert dollos._mind_loop._queue is dollos._perception_queue
+
+
+def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
+    from dollos.tool_outputs import ToolOutputStore
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._tool_output_store, ToolOutputStore)
+    assert dollos._tool_output_dir.exists()
+    dollos._tool_output_store.cleanup()
+    assert not dollos._tool_output_dir.exists()
+
+
+# ----- Runner wiring tests -----
 
 
 @pytest.mark.asyncio
-async def test_dispatch_user_text_uses_stream_messages(
-    dollos_with_fakes, monkeypatch
-):
-    """Cascade uses multi-message API (2026-05-08); legacy stream_completion
-    is reserved for small-model callers."""
-    dollos, adapter = dollos_with_fakes
-    adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_memsearch(monkeypatch, "- foo")
+async def test_kernel_creates_shell_runner(tmp_path: Path):
+    """DollOS exposes a ShellRunner wired to the PerceptionQueue."""
+    from dollos.shell_runner import ShellRunner
 
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_message(TextInput(text="hi"), sink)
-    await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
-    assert len(adapter.calls) == 1
-    assert "messages" in adapter.calls[0]
-    assert "prefill" not in adapter.calls[0]
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.shell_runner, ShellRunner)
+    # Shell runner is wired to the perception queue
+    assert dollos.shell_runner._perception_queue is dollos._perception_queue
+    # MindCtx references the same shell_runner
+    assert dollos._mind_ctx.shell_runner is dollos.shell_runner
 
 
 @pytest.mark.asyncio
-async def test_dispatch_user_text_uses_text_as_user_role(
-    dollos_with_fakes, monkeypatch
-):
-    dollos, adapter = dollos_with_fakes
-    adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_memsearch(monkeypatch)
+async def test_kernel_creates_monitor_runner(tmp_path: Path):
+    """DollOS exposes a MonitorRunner wired to the PerceptionQueue."""
+    from dollos.monitor_runner import MonitorRunner
 
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_message(TextInput(text="hello world"), sink)
-    await asyncio.wait_for(_drain_until_separator(sink), timeout=2.0)
-    user = adapter.calls[0]["messages"][0]["content"]
-    assert "[Memory context]" in user
-    assert "[Message]" in user
-    assert "hello world" in user
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.monitor_runner, MonitorRunner)
+    assert dollos.monitor_runner._perception_queue is dollos._perception_queue
+    assert dollos._mind_ctx.monitor_runner is dollos.monitor_runner
 
 
 @pytest.mark.asyncio
-async def test_drain_diary_sink_consumes_until_sentinel(tmp_path):
-    """_drain_diary_sink eats messages and returns on None sentinel."""
+async def test_kernel_subagent_runner_wired(tmp_path: Path):
+    """SubagentRunner is wired to PerceptionQueue and MindCtx."""
+    from dollos.subagent import SubagentRunner
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.subagent_runner, SubagentRunner)
+    assert dollos.subagent_runner._perception_queue is dollos._perception_queue
+    assert dollos._mind_ctx.subagent_runner is dollos.subagent_runner
+
+
+# ----- IPC wiring tests -----
+
+
+@pytest.mark.asyncio
+async def test_handle_message_text_input_enqueues_perception(tmp_path: Path):
+    """TextInput → Perception(kind='UserSpoke') pushed to PerceptionQueue."""
+    from dollos.mind.mind_state import Perception
+
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
     sink: asyncio.Queue = asyncio.Queue()
-    sink.put_nowait(TextChunk(text="ignored"))
-    sink.put_nowait(ErrorMsg(message="logged"))
-    sink.put_nowait(TurnEnd())
-    sink.put_nowait(None)
-    await asyncio.wait_for(dollos._drain_diary_sink(sink), timeout=1.0)
+
+    await dollos._handle_message(TextInput(text="hello"), sink)
+
+    # Drain the queue
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
+    assert any(p.kind == "UserSpoke" and p.data["text"] == "hello" for p in perceptions)
+
+
+@pytest.mark.asyncio
+async def test_handle_connect_registers_sink_with_resolver(tmp_path: Path):
+    """On WS connect, sink is registered with SinkResolver."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    # Suppress bootstrap
+    dollos._bootstrapped_dates.add(_date.today())
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+    # Sink is now in the resolver stack
+    assert dollos._sink_resolver() is sink
+
+
+@pytest.mark.asyncio
+async def test_handle_disconnect_unregisters_sink(tmp_path: Path):
+    """On WS disconnect, sink is unregistered from SinkResolver."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    dollos._bootstrapped_dates.add(_date.today())
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+    # Sanity: registered
+    assert dollos._sink_resolver() is sink
+    await dollos._handle_disconnect(sink)
+    # After disconnect, resolver returns DummySink (stack empty)
+    from dollos.mind.sink_resolver import DummySink
+    assert isinstance(dollos._sink_resolver(), DummySink)
+
+
+# ----- Bootstrap perception tests -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_pushes_perception_on_first_connect_if_no_schedule(tmp_path):
+    """On first connect with no schedule.toml, a ScheduledMoment bootstrap
+    perception is pushed to the queue."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
+    assert any(p.kind == "ScheduledMoment" for p in perceptions)
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_skips_when_schedule_exists(tmp_path):
+    """If a schedule.toml exists for today, no bootstrap perception is pushed."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    today_str = f"{_date.today():%Y-%m-%d}"
+    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
+    sched_path.parent.mkdir(parents=True, exist_ok=True)
+    sched_path.write_text('[[entry]]\ntime = "07:00:00"\nintent = "x"\n')
+
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink)
+
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
+    assert not any(p.kind == "ScheduledMoment" for p in perceptions)
+
+
+# ----- Scheduler tests -----
 
 
 @pytest.mark.asyncio
@@ -253,118 +267,18 @@ async def test_diary_scheduler_returns_on_shutdown(tmp_path):
     await asyncio.wait_for(dollos._diary_scheduler(), timeout=2.0)
 
 
-# ----- Phase 1 schedule: bootstrap + sink lifecycle -----
-
-
 @pytest.mark.asyncio
-async def test_kernel_bootstrap_fires_daily_plan_on_first_connect_if_no_schedule(tmp_path):
-    """gap #5: DailyPlanEvent fires when first connection sees no
-    schedule.toml for today."""
-    from dollos.events import DailyPlanEvent
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    dispatched: list = []
-    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
-
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_connect(sink)
-    plan_events = [d for d in dispatched if isinstance(d, DailyPlanEvent)]
-    assert plan_events
-    # Bootstrap is daemon-internal: the dispatched event must NOT carry the
-    # active connection's sink. Its Say tool output goes to a throwaway queue.
-    assert plan_events[0].response_sink is not dollos._active_sink
-    assert plan_events[0].response_sink is not sink
-
-
-@pytest.mark.asyncio
-async def test_kernel_bootstrap_uses_dummy_sink_not_active(tmp_path):
-    """Bootstrap dispatches with a fresh dummy sink, never the active sink.
-
-    Architectural guarantee: daemon-internal planning (bootstrap) must not
-    emit Say output to the connected client; the day's first user-facing
-    greeting comes from a scheduled entry instead.
-    """
-    from dollos.events import DailyPlanEvent
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    dispatched: list = []
-    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
-
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_connect(sink)
-
-    plan_events = [d for d in dispatched if isinstance(d, DailyPlanEvent)]
-    assert len(plan_events) == 1
-    bootstrap_sink = plan_events[0].response_sink
-    assert bootstrap_sink is not sink
-    assert bootstrap_sink is not dollos._active_sink
-    assert isinstance(bootstrap_sink, asyncio.Queue)
-
-
-@pytest.mark.asyncio
-async def test_kernel_bootstrap_skips_daily_plan_when_schedule_exists(tmp_path):
-    """If a schedule.toml already exists for today, no DailyPlanEvent is fired."""
-    from datetime import date as _date
-
-    from dollos.events import DailyPlanEvent
-
+async def test_kernel_scheduler_pushes_perception_for_due_entry(tmp_path, monkeypatch):
+    """The schedule runner pushes a ScheduledMoment perception for due entries."""
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
     today_str = f"{_date.today():%Y-%m-%d}"
     sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
     sched_path.parent.mkdir(parents=True, exist_ok=True)
-    sched_path.write_text('[[entry]]\ntime = "07:00:00"\nintent = "x"\n')
+    sched_path.write_text('[[entry]]\ntime = "07:30:00"\nintent = "morning"\n')
 
-    dispatched: list = []
-    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
-
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_connect(sink)
-    assert not any(isinstance(d, DailyPlanEvent) for d in dispatched)
-
-
-@pytest.mark.asyncio
-async def test_kernel_active_sink_set_on_connect_cleared_on_disconnect(tmp_path):
-    """gap #1: _active_sink lifecycle tracks the live connection."""
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    # Pretend we already bootstrapped so connect doesn't dispatch.
-    from datetime import date as _date
-    dollos._bootstrapped_dates.add(_date.today())
-
-    assert dollos._active_sink is None
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_connect(sink)
-    assert dollos._active_sink is sink
-    await dollos._handle_disconnect(sink)
-    assert dollos._active_sink is None
-
-
-@pytest.mark.asyncio
-async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
-    """The scheduler runner reads schedule.toml, calls due_entries, and
-    dispatches a ScheduledEvent for each entry whose time arrived."""
-    from datetime import date as _date
-    from datetime import time as _time
-
-    from dollos.events import ScheduledEvent
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    today_str = f"{_date.today():%Y-%m-%d}"
-    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
-    sched_path.parent.mkdir(parents=True, exist_ok=True)
-    sched_path.write_text(
-        '[[entry]]\ntime = "07:30:00"\nintent = "morning"\n'
-    )
-
-    dispatched: list = []
-    dollos.dispatcher.dispatch = lambda raw: dispatched.append(raw)
-
-    # Patch due_entries to yield the entry on the first poll, then nothing.
     from dollos.schedule import ScheduleEntry
+    from datetime import time as _time
     import dollos.kernel as kernel_mod
 
     poll_count = {"n": 0}
@@ -377,143 +291,25 @@ async def test_kernel_scheduler_fires_due_event(tmp_path, monkeypatch):
 
     monkeypatch.setattr(kernel_mod, "due_entries", _fake_due_entries)
 
-    # Short-circuit the 30s sleep inside the runner so it polls quickly.
-    # We replace the bound asyncio module reference inside dollos.kernel
-    # via a tiny stub that only handles the runner's two call sites
-    # (shutdown.wait + a sentinel awaitable).
     real_wait_for = asyncio.wait_for
     tick_count = {"n": 0}
 
     async def _fast_wait_for(awaitable, timeout):
         tick_count["n"] += 1
-        # Always close the awaitable so it doesn't leak.
         if tick_count["n"] == 1:
             awaitable.close()
             raise TimeoutError
-        # Second tick: signal shutdown then let the awaitable resolve.
         dollos._shutdown.set()
         return await real_wait_for(awaitable, timeout=0.5)
 
-    # Patch on the kernel module's asyncio binding so only the runner sees it.
     monkeypatch.setattr(kernel_mod.asyncio, "wait_for", _fast_wait_for)
 
     await real_wait_for(dollos._schedule_runner(), timeout=2.0)
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     assert any(
-        isinstance(d, ScheduledEvent) and d.intent == "morning"
-        for d in dispatched
+        p.kind == "ScheduledMoment" and p.data.get("intent") == "morning"
+        for p in perceptions
     )
-
-
-# ----- ToolOutputStore wiring -----
-
-
-def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
-    from dollos.tool_outputs import ToolOutputStore
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos._tool_output_store, ToolOutputStore)
-    assert dollos._tool_output_dir.exists()
-    dollos._tool_output_store.cleanup()
-    assert not dollos._tool_output_dir.exists()
-
-
-# ----- Scratchpad wiring -----
-
-
-def test_kernel_has_scratchpad(tmp_path: Path) -> None:
-    from dollos.scratchpad import Scratchpad
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos._scratchpad, Scratchpad)
-    assert dollos._scratchpad.read() == ""
-
-
-# ----- ConversationHistory wiring -----
-
-
-def test_kernel_has_conversation_history(tmp_path: Path) -> None:
-    from dollos.conversation_history import ConversationHistory
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos._conversation_history, ConversationHistory)
-    assert dollos._conversation_history.turn_count() == 0
-
-
-def test_kernel_uses_configured_max_turns(tmp_path: Path) -> None:
-    from dollos.config import ConversationHistoryConfig
-    from dollos.conversation_history import ConversationHistory
-
-    settings = _make_settings(tmp_path)
-    settings = settings.model_copy(
-        update={"conversation_history": ConversationHistoryConfig(max_turns=10)}
-    )
-    dollos = DollOS(settings)
-    assert isinstance(dollos._conversation_history, ConversationHistory)
-    assert dollos._conversation_history._max_turns == 10
-
-
-def test_kernel_dispatcher_has_conversation_history(tmp_path: Path) -> None:
-    from dollos.conversation_history import ConversationHistory
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos.dispatcher._conversation_history, ConversationHistory)
-    assert dollos.dispatcher._conversation_history is dollos._conversation_history
-
-
-# ----- ShellRunner wiring -----
-
-
-@pytest.mark.asyncio
-async def test_kernel_creates_shell_runner(tmp_path: Path):
-    """DollOS exposes a ShellRunner on construction; the dispatcher and
-    SubagentRunner share that same instance."""
-    from dollos.shell_runner import ShellRunner
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos.shell_runner, ShellRunner)
-    assert dollos.dispatcher._shell_runner is dollos.shell_runner
-    assert dollos.subagent_runner._shell_runner is dollos.shell_runner
-
-
-@pytest.mark.asyncio
-async def test_kernel_shell_runner_dispatch_fn_wired(tmp_path: Path):
-    """ShellRunner's dispatch_fn is set to dispatcher.dispatch after
-    both are constructed."""
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    # Bound methods compare equal (==) but are not identical (is) on each access.
-    assert dollos.shell_runner._dispatch_fn == dollos.dispatcher.dispatch
-
-
-# ----- MonitorRunner wiring -----
-
-
-@pytest.mark.asyncio
-async def test_kernel_creates_monitor_runner(tmp_path: Path):
-    """DollOS exposes a MonitorRunner on construction; the dispatcher and
-    SubagentRunner share that same instance."""
-    from dollos.monitor_runner import MonitorRunner
-
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    assert isinstance(dollos.monitor_runner, MonitorRunner)
-    assert dollos.dispatcher._monitor_runner is dollos.monitor_runner
-    assert dollos.subagent_runner._monitor_runner is dollos.monitor_runner
-
-
-@pytest.mark.asyncio
-async def test_kernel_monitor_runner_dispatch_fn_wired(tmp_path: Path):
-    """MonitorRunner's dispatch_fn is set to dispatcher.dispatch after
-    both are constructed."""
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    # Bound methods compare equal (==) but are not identical (is) on each access.
-    assert dollos.monitor_runner._dispatch_fn == dollos.dispatcher.dispatch
 
 
 # ----- Voice engine builder -----

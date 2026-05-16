@@ -18,18 +18,14 @@ import logging
 import os
 import re
 import signal
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from dollos.events import (
-    MonitorExitedEvent,
-    MonitorTriggeredEvent,
-    RawEvent,
-)
-from dollos.ipc.messages import ServerMessage
+if TYPE_CHECKING:
+    from dollos.mind.mind_state import Perception
+    from dollos.mind.perception_queue import PerceptionQueue
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +37,6 @@ class ActiveMonitor:
     match_regex: str | None  # raw pattern string for display
     rate_limit_s: int
     started_at: datetime
-    response_sink: asyncio.Queue[ServerMessage | None] | None
     # Compiled regex (None if match_regex is None).
     _compiled: re.Pattern[str] | None = None
     # Rate-limit state. window_start is when the last fire happened; None
@@ -58,23 +53,23 @@ class ActiveMonitor:
 class MonitorRunner:
     """Spawn-and-track set of long-running monitor commands.
 
-    Dispatch sink is wired post-build via set_dispatch_fn (see kernel.py).
+    PerceptionQueue is wired post-build via set_perception_queue (see kernel.py).
     """
 
     def __init__(
         self,
         *,
         cwd: Path,
-        dispatch_fn: Callable[[RawEvent], None] | None = None,
+        perception_queue: "PerceptionQueue | None" = None,
     ) -> None:
         self._cwd = cwd
-        self._dispatch_fn = dispatch_fn
+        self._perception_queue = perception_queue
         self._active: dict[str, ActiveMonitor] = {}
         self._counter = 0
         self._stopping = False
 
-    def set_dispatch_fn(self, fn: Callable[[RawEvent], None]) -> None:
-        self._dispatch_fn = fn
+    def set_perception_queue(self, queue: "PerceptionQueue") -> None:
+        self._perception_queue = queue
 
     def spawn(
         self,
@@ -82,7 +77,7 @@ class MonitorRunner:
         command: str,
         match_regex: str | None,
         rate_limit_s: int,
-        response_sink: asyncio.Queue[ServerMessage | None] | None,
+        response_sink=None,  # kept for call-site compatibility; ignored
     ) -> str:
         """Spawn a monitor. Returns monitor_id (e.g., 'mon-1').
 
@@ -100,7 +95,6 @@ class MonitorRunner:
             match_regex=match_regex,
             rate_limit_s=rate_limit_s,
             started_at=datetime.now(),
-            response_sink=response_sink,
             _compiled=compiled,
         )
         mon.task = asyncio.create_task(
@@ -156,19 +150,21 @@ class MonitorRunner:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._active.clear()
 
-    def _fire(self, ev: RawEvent) -> None:
-        if self._dispatch_fn is None:
+    def _enqueue(self, perception: "Perception") -> None:
+        if self._perception_queue is None:
             logger.error(
-                "monitor event dropped: dispatch_fn not set "
-                "(type=%s)", type(ev).__name__,
+                "monitor event dropped: perception_queue not set "
+                "(kind=%s)", perception.kind,
             )
             return
         try:
-            self._dispatch_fn(ev)
+            self._perception_queue.put(perception)
         except Exception:
-            logger.exception("dispatch_fn raised on monitor event")
+            logger.exception("perception_queue.put raised on monitor event")
 
     async def _watch(self, mon: ActiveMonitor) -> None:
+        from dollos.mind.mind_state import Perception
+        import time as _time
         status: str = "natural"
         exit_code: int | None = None
         try:
@@ -202,48 +198,62 @@ class MonitorRunner:
             raise
         except Exception as e:
             logger.exception("MonitorRunner._watch unexpected error")
-            self._fire(MonitorExitedEvent(
-                monitor_id=mon.monitor_id,
-                command=mon.command,
-                status="error",
-                exit_code=None,
-                total_matched=mon.total_matched,
-                response_sink=mon.response_sink,
+            self._enqueue(Perception(
+                kind="MonitorEnded",
+                t=_time.time(),
+                data={
+                    "monitor_id": mon.monitor_id,
+                    "command": mon.command,
+                    "exit_status": "error",
+                    "exit_code": None,
+                    "total_matched": mon.total_matched,
+                },
             ))
             self._active.pop(mon.monitor_id, None)
             return
-        # Natural / removed path — fire exit + drop from active set.
-        self._fire(MonitorExitedEvent(
-            monitor_id=mon.monitor_id,
-            command=mon.command,
-            status=status,
-            exit_code=exit_code,
-            total_matched=mon.total_matched,
-            response_sink=mon.response_sink,
+        # Natural / removed path — enqueue exit + drop from active set.
+        self._enqueue(Perception(
+            kind="MonitorEnded",
+            t=_time.time(),
+            data={
+                "monitor_id": mon.monitor_id,
+                "command": mon.command,
+                "exit_status": status,
+                "exit_code": exit_code,
+                "total_matched": mon.total_matched,
+            },
         ))
         self._active.pop(mon.monitor_id, None)
 
     def _consider_fire(self, mon: ActiveMonitor, line: str) -> None:
+        from dollos.mind.mind_state import Perception
+        import time as _time
         now = datetime.now()
         rate = mon.rate_limit_s
         if rate <= 0:
-            self._fire(MonitorTriggeredEvent(
-                monitor_id=mon.monitor_id,
-                command=mon.command,
-                line=line,
-                suppressed_count=0,
-                response_sink=mon.response_sink,
+            self._enqueue(Perception(
+                kind="MonitorFired",
+                t=_time.time(),
+                data={
+                    "monitor_id": mon.monitor_id,
+                    "command": mon.command,
+                    "line": line,
+                    "suppressed_count": 0,
+                },
             ))
             return
         if mon.window_start is None:
             mon.window_start = now
             mon.suppressed_in_window = 0
-            self._fire(MonitorTriggeredEvent(
-                monitor_id=mon.monitor_id,
-                command=mon.command,
-                line=line,
-                suppressed_count=0,
-                response_sink=mon.response_sink,
+            self._enqueue(Perception(
+                kind="MonitorFired",
+                t=_time.time(),
+                data={
+                    "monitor_id": mon.monitor_id,
+                    "command": mon.command,
+                    "line": line,
+                    "suppressed_count": 0,
+                },
             ))
             return
         elapsed = (now - mon.window_start).total_seconds()
@@ -251,12 +261,15 @@ class MonitorRunner:
             fired_suppressed = mon.suppressed_in_window
             mon.window_start = now
             mon.suppressed_in_window = 0
-            self._fire(MonitorTriggeredEvent(
-                monitor_id=mon.monitor_id,
-                command=mon.command,
-                line=line,
-                suppressed_count=fired_suppressed,
-                response_sink=mon.response_sink,
+            self._enqueue(Perception(
+                kind="MonitorFired",
+                t=_time.time(),
+                data={
+                    "monitor_id": mon.monitor_id,
+                    "command": mon.command,
+                    "line": line,
+                    "suppressed_count": fired_suppressed,
+                },
             ))
             return
         mon.suppressed_in_window += 1

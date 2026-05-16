@@ -1,4 +1,4 @@
-"""Shared fakes + factory functions for dispatcher / cascade tests."""
+"""Shared fakes + factory functions for MindLoop / tool tests."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -8,7 +8,6 @@ from pathlib import Path
 from dollos.character import Identity
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import ToolCtx  # DEPRECATED — kept for dispatcher tests (Task 8 cleans up)
 
 
 def _doll_identity(self_: str = "You are Doll.") -> Identity:
@@ -132,19 +131,6 @@ class _FakeCascadeLogger:
         self.iters.append(dict(kwargs))
 
 
-def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
-    from dollos.scratchpad import Scratchpad
-
-    return ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=memsearch,
-        transcripts_root=memory_root / "transcripts",
-        tool_output_store=ToolOutputStore(memory_root / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
-
-
 def _make_mind_ctx(
     tmp_path: Path,
     memsearch=None,
@@ -196,32 +182,6 @@ def _make_mind_ctx(
         shell_runner=shell_runner or _FakeShellRunner(),
         subagent_runner=subagent_runner or _FakeSubagentRunner(),
         monitor_runner=monitor_runner or _FakeMonitorRunner(),
-    )
-
-
-def _make_dispatcher(
-    *,
-    adapter: LLMAdapter,
-    tmp_path: Path,
-    memsearch: "_FakeMemSearch | None" = None,
-):
-    from dollos.dispatcher import EventDispatcher
-    from dollos.prompts import PromptRenderer
-
-    from dollos.conversation_history import ConversationHistory
-    from dollos.scratchpad import Scratchpad
-
-    return EventDispatcher(
-        adapter=adapter,
-        renderer=PromptRenderer(),
-        identity=_doll_identity(),
-        memory_root=tmp_path,
-        memsearch=memsearch or _FakeMemSearch(),
-        transcripts_root=tmp_path / "transcripts",
-        cascade_logger=_FakeCascadeLogger(),
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-        conversation_history=ConversationHistory(),
     )
 
 

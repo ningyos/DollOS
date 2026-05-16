@@ -70,6 +70,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "Idle": "idle-call",
         "Sleep": "sleep-call",
         "MoodTool": "mood-tool-call",
+        "Think": "think-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]
