@@ -516,14 +516,14 @@ class ReadToolOutput(BaseModel):
         description="output id from a tool result perception (e.g. 'out-abc12345')",
     )
     offset: int = Field(
-        0,
-        description="zero-indexed line to start at; negative counts from end",
+        ...,
+        description="zero-indexed line to start at; 0 = beginning; negative counts from end. REQUIRED — do not omit.",
     )
     limit: int = Field(
-        50,
+        ...,
         ge=1,
         le=500,
-        description="max lines to return; default 50, hard cap 500",
+        description="max lines to return (1-500). REQUIRED — do not omit.",
     )
 
     async def run(self, ctx: "ToolCtx") -> str:
