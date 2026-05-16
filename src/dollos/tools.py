@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from memsearch import MemSearch
 
     from dollos.monitor_runner import MonitorRunner
+    from dollos.scratchpad import Scratchpad
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
     from dollos.tool_outputs import ToolOutputStore
@@ -85,6 +86,7 @@ class ToolCtx:
     memsearch: MemSearch
     transcripts_root: Path
     tool_output_store: "ToolOutputStore"
+    scratchpad: "Scratchpad"
     subagent_runner: "SubagentRunner | None" = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None

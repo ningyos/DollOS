@@ -204,12 +204,15 @@ class _FakeCascadeLogger:
 
 
 def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
+    from dollos.scratchpad import Scratchpad
+
     return ToolCtx(
         sink=sink,
         memory_root=memory_root,
         memsearch=memsearch,
         transcripts_root=memory_root / "transcripts",
         tool_output_store=ToolOutputStore(memory_root / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
 
@@ -222,6 +225,8 @@ def _make_dispatcher(
     from dollos.dispatcher import EventDispatcher
     from dollos.prompts import PromptRenderer
 
+    from dollos.scratchpad import Scratchpad
+
     return EventDispatcher(
         adapter=adapter,
         inner_voice=inner_voice,
@@ -233,6 +238,7 @@ def _make_dispatcher(
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
 

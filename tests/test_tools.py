@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.ipc.messages import TextChunk
+from dollos.scratchpad import Scratchpad
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
@@ -48,6 +49,7 @@ def _make_ctx(
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     return ctx, ms, sink
 
@@ -125,6 +127,7 @@ async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     diary = WriteDiary(content="今天我學會了 transcript 跟 diary。")
     await diary.run(ctx)
@@ -158,6 +161,7 @@ async def test_say_run_also_appends_to_transcript(tmp_path):
         memsearch=ms,
         transcripts_root=transcripts_root,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     await Say(text="hello").run(ctx)
 
@@ -214,6 +218,7 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
         transcripts_root=tmp_path,
         shell_runner=runner,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     out = await Shell(command="echo hi", timeout_s=30).run(ctx)
     runner.spawn.assert_called_once_with(
@@ -249,6 +254,7 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await InvokeSkill(name="my_skill").run(ctx)
@@ -271,6 +277,7 @@ async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await InvokeSkill(name="nope").run(ctx)
@@ -296,6 +303,7 @@ async def test_invoke_skill_missing_lists_existing_skills(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await InvokeSkill(name="nope").run(ctx)
@@ -320,6 +328,7 @@ async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await InvokeSkill(name="x").run(ctx)
@@ -368,6 +377,7 @@ async def test_recall_run_returns_bullet_list_for_hits(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await Recall(query="coffee").run(ctx)
@@ -388,6 +398,7 @@ async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await Recall(query="anything").run(ctx)
@@ -407,6 +418,7 @@ def _ctx_with_search(tmp_path, hits):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     return ctx
 
@@ -541,6 +553,7 @@ async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     await WriteDiary(content="今天好累").run(ctx)
     expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
@@ -609,6 +622,7 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
         transcripts_root=tmp_path / "transcripts",
         subagent_runner=_FakeRunner(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     out = await SpawnSubagent(
@@ -639,6 +653,7 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     assert ctx.subagent_report is None
 
@@ -759,6 +774,7 @@ async def test_spawn_monitor_delegates_to_runner(tmp_path):
         transcripts_root=tmp_path,
         monitor_runner=runner,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     out = await SpawnMonitor(
         command="tail -F /var/log/x",
@@ -788,6 +804,7 @@ async def test_remove_monitor_delegates(tmp_path):
         transcripts_root=tmp_path,
         monitor_runner=runner,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     out = await RemoveMonitor(monitor_id="mon-3").run(ctx)
     runner.remove.assert_awaited_once_with("mon-3")
@@ -809,6 +826,7 @@ async def test_remove_monitor_unknown_id(tmp_path):
         transcripts_root=tmp_path,
         monitor_runner=runner,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
     assert "mon-999" in out
