@@ -332,7 +332,7 @@ def test_perception_includes_empty_scratchpad_block(tmp_path: Path):
         memory_block="[Memory context]\n(no relevant memory)\n\n",
     )
     # [Scratchpad] must be the very first block
-    assert body.startswith("[Scratchpad]\n(empty)\n\n")
+    assert body.startswith("[Scratchpad]\n(empty — write your goal here before calling Shell/SpawnSubagent)\n\n")
     # [Memory context] must also appear somewhere in the body
     assert "[Memory context]" in body
 
