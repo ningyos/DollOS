@@ -36,6 +36,7 @@ from dollos.events import (
 
 if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
+    from dollos.tool_outputs import ToolOutputStore
 from dollos.inner_voice import InnerVoice
 from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
@@ -140,6 +141,7 @@ class EventDispatcher:
         cascade_logger: CascadeLogger,
         shell_runner: ShellRunner | None = None,
         monitor_runner: "MonitorRunner | None" = None,
+        tool_output_store: "ToolOutputStore",
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -153,6 +155,7 @@ class EventDispatcher:
         self._cascade_logger = cascade_logger
         self._shell_runner = shell_runner
         self._monitor_runner = monitor_runner
+        self._tool_output_store = tool_output_store
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in MAIN_TOOLS
         }
@@ -352,22 +355,36 @@ class EventDispatcher:
             )
             return DollEvent(perception=perception, raw=raw)
         if isinstance(raw, SubagentResultEvent):
-            perception = (
-                "你派出的 subagent 回來了：\n"
+            body = (
+                f"subagent finished:\n"
                 f"- task: {raw.task}\n"
                 f"- status: {raw.status}\n"
                 f"- summary: {raw.summary}\n"
-                f"- details: {raw.details}"
+                f"- details_output_id: {raw.details_output_id}\n"
+                f"- details total lines: {raw.details_line_count}\n"
+                f"- details preview ({len(raw.details.splitlines())} lines):\n{raw.details}\n"
             )
-            return DollEvent(perception=perception, raw=raw)
+            if raw.details_output_id is not None:
+                body += (
+                    f"(use ReadToolOutput(id='{raw.details_output_id}', offset=0, limit=N) "
+                    f"for full details)"
+                )
+            return DollEvent(perception=body, raw=raw)
         if isinstance(raw, ShellResultEvent):
-            perception = (
-                "你執行的 shell 命令回來了：\n"
+            body = (
+                f"shell command finished:\n"
                 f"- command: {raw.command}\n"
                 f"- status: {raw.status} (exit {raw.exit_code})\n"
-                f"- output:\n{raw.output}"
+                f"- output_id: {raw.output_id}\n"
+                f"- total lines: {raw.line_count}\n"
+                f"- preview (first {len(raw.output.splitlines())} lines):\n{raw.output}\n"
             )
-            return DollEvent(perception=perception, raw=raw)
+            if raw.output_id is not None:
+                body += (
+                    f"(use ReadToolOutput(id='{raw.output_id}', offset=0, limit=N) "
+                    f"or GrepToolOutput(id='{raw.output_id}', pattern='...') for more)"
+                )
+            return DollEvent(perception=body, raw=raw)
         if isinstance(raw, MonitorTriggeredEvent):
             extra = (
                 f"（過去 window 內被 rate-limit 壓住的命中數: {raw.suppressed_count}）"
@@ -447,6 +464,7 @@ class EventDispatcher:
             subagent_runner=self._subagent_runner,
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
+            tool_output_store=self._tool_output_store,
         )
 
         def _on_iter_start(iter_num: int, msgs: list[dict]) -> None:

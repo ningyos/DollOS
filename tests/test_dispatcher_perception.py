@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from dollos.dispatcher import EventDispatcher
+from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
 from dollos.ipc.messages import TextChunk, TurnEnd
 from dollos.llm.adapter import StreamChunk
@@ -115,6 +116,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -125,18 +127,23 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
             status="ok",
             summary="found 3 hits",
             details="a.md, b.md, c.md",
+            details_output_id="test-subagent-id",
+            details_line_count=1,
             response_sink=sink,
         )
     )
     items = await _drain(sink)
 
-    # The perception (which becomes [Message] body) lists all four fields.
+    # The perception (which becomes [Message] body) lists all fields.
     perception_body = captured_user_message[0]
-    assert "你派出的 subagent 回來了" in perception_body
+    assert "subagent finished" in perception_body
     assert "search transcripts for coffee" in perception_body
     assert "ok" in perception_body
     assert "found 3 hits" in perception_body
     assert "a.md, b.md, c.md" in perception_body
+    assert "details_output_id: test-subagent-id" in perception_body
+    assert "details total lines: 1" in perception_body
+    assert "ReadToolOutput" in perception_body
     # Doll responded with Say "ack" (we wired the adapter that way).
     assert any(isinstance(m, TextChunk) and m.text == "ack" for m in items)
     assert any(isinstance(m, TurnEnd) for m in items)
@@ -154,6 +161,8 @@ async def test_subagent_result_event_uses_event_response_sink(tmp_path: Path):
         status="ok",
         summary="s",
         details="d",
+        details_output_id="oid",
+        details_line_count=1,
         response_sink=sink,
     )
     assert EventDispatcher._sink_of(ev) is sink
@@ -216,14 +225,19 @@ async def test_dispatcher_perceives_shell_result_event(tmp_path: Path):
         command="ls /tmp",
         status="ok",
         exit_code=0,
-        output="a\nb\n",
+        output="a\nb",
+        output_id="test-id-42",
+        line_count=2,
         response_sink=sink,
     )
     doll_event = await dispatcher._perceive(ev)
     p = doll_event.perception
-    assert "shell 命令" in p or "Shell 命令" in p
+    assert "shell command finished" in p
     assert "ls /tmp" in p
     assert "exit 0" in p
+    assert "output_id: test-id-42" in p
+    assert "total lines: 2" in p
+    assert "ReadToolOutput" in p
 
 
 @pytest.mark.asyncio

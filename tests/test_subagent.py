@@ -18,6 +18,7 @@ from dollos.monitor_runner import MonitorRunner
 from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
 
 
@@ -116,6 +117,7 @@ def _make_runner(
         memory_root=tmp_path / "memory",
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     if dispatched is not None:
         runner.set_dispatch_fn(dispatched.append)
@@ -313,6 +315,52 @@ async def test_subagent_stuck_tool_aborts_with_no_report(tmp_path: Path):
     assert ev.status == "no_report"
 
 
+@pytest.mark.asyncio
+async def test_subagent_writes_full_details_to_store(tmp_path: Path) -> None:
+    """Happy path: subagent with long details writes all lines to store,
+    event carries preview + output_id + line_count."""
+    long_details = "\n".join(f"finding {i}" for i in range(50))
+    adapter = _ScriptedAdapter(
+        scripts=[
+            [
+                StreamChunk(
+                    text=_report_call("ok", "50 findings", long_details),
+                    done=False,
+                ),
+                StreamChunk(text="", done=True),
+            ],
+        ]
+    )
+    events: list[RawEvent] = []
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    runner = SubagentRunner(
+        adapter=adapter,
+        renderer=PromptRenderer(),
+        memory_root=tmp_path / "memory",
+        memsearch=_FakeMemSearch(),
+        transcripts_root=tmp_path / "transcripts",
+        tool_output_store=store,
+        dispatch_fn=events.append,
+    )
+
+    runner.spawn(
+        sub_id="paging1",
+        task="find findings",
+        timeout_s=30,
+        response_sink=None,
+    )
+
+    ev = await _wait_for_event(events)
+    assert isinstance(ev, SubagentResultEvent)
+    assert ev.details_output_id is not None
+    assert ev.details_line_count == 50
+    assert len(ev.details.splitlines()) <= 20  # preview only (15 lines)
+    # Full content is in the store
+    full = store.read(ev.details_output_id, offset=0, limit=100)
+    assert full.lines[0] == "finding 0"
+    assert full.lines[49] == "finding 49"
+
+
 def test_sub_tools_excludes_say_and_spawn_subagent():
     """Subagent toolkit explicitly omits Say and SpawnSubagent; includes Report."""
     assert Say not in SUB_TOOLS
@@ -455,7 +503,7 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
             ]
         )
         events: list[RawEvent] = []
-        shell_runner = ShellRunner(cwd=tmp_path)
+        shell_runner = ShellRunner(cwd=tmp_path, tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"))
         runner = SubagentRunner(
             adapter=adapter,
             renderer=PromptRenderer(),
@@ -463,6 +511,7 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
             shell_runner=shell_runner,
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         )
         runner.set_dispatch_fn(events.append)
         sink: asyncio.Queue = asyncio.Queue()
@@ -523,6 +572,7 @@ async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
             memsearch=_FakeMemSearch(),
             transcripts_root=tmp_path / "transcripts",
             monitor_runner=monitor_runner,
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         )
         runner.set_dispatch_fn(events.append)
         sink: asyncio.Queue = asyncio.Queue()
