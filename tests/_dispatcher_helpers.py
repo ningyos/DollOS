@@ -225,6 +225,7 @@ def _make_dispatcher(
     from dollos.dispatcher import EventDispatcher
     from dollos.prompts import PromptRenderer
 
+    from dollos.conversation_history import ConversationHistory
     from dollos.scratchpad import Scratchpad
 
     return EventDispatcher(
@@ -239,6 +240,7 @@ def _make_dispatcher(
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
 
 
