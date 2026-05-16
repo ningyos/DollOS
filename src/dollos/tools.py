@@ -720,6 +720,91 @@ class ClearScratchpad(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Loop actions — manage focus, open_loops, and sleep hints
+# ---------------------------------------------------------------------------
+
+
+class SetFocus(BaseModel):
+    """Update Doll's current focus — what she's attending to right now."""
+
+    text: str = Field(..., description="one-sentence current focus, ≤200 chars")
+
+    def _summary(self) -> str:
+        return f"focus → {self.text[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        ctx.mind_state.focus = self.text[:200]
+        _record(ctx, "SetFocus", self._summary())
+        return f"focus set to: {self.text[:60]}"
+
+
+class OpenLoop(BaseModel):
+    """Add a TODO commitment Doll will remember across iterations."""
+
+    id: str = Field(..., description="short slug id (e.g. 'check_tmp')")
+    desc: str = Field(..., description="what to follow up on")
+
+    def _summary(self) -> str:
+        return f"opened loop {self.id}: {self.desc[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.mind_state import OpenLoop as OpenLoopT
+
+        ctx.mind_state.open_loops.append(
+            OpenLoopT(id=self.id, desc=self.desc, opened_at=time.time())
+        )
+        _record(ctx, "OpenLoop", self._summary())
+        return f"opened loop {self.id}"
+
+
+class CloseLoop(BaseModel):
+    """Mark a TODO commitment resolved."""
+
+    id: str = Field(..., description="loop id to close")
+    outcome: str = Field(..., description="how it resolved")
+
+    def _summary(self) -> str:
+        return f"closed loop {self.id}: {self.outcome[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        before = len(ctx.mind_state.open_loops)
+        ctx.mind_state.open_loops = [
+            ol for ol in ctx.mind_state.open_loops if ol.id != self.id
+        ]
+        if len(ctx.mind_state.open_loops) == before:
+            logger.warning("close_loop: unknown id %r — no-op", self.id)
+        _record(ctx, "CloseLoop", self._summary())
+        return f"closed loop {self.id}"
+
+
+class Idle(BaseModel):
+    """Explicit no-op for this iteration. Does NOT record an OutputRecord."""
+
+    def _summary(self) -> str:
+        return "idle"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        # Idle is the only action that skips _record (spec: don't pollute recent_outputs)
+        return "idle"
+
+
+class Sleep(BaseModel):
+    """Hint to MindLoop to extend next idle_interval by N seconds."""
+
+    seconds: int = Field(
+        ..., ge=1, le=3600, description="how long to extend next drain"
+    )
+
+    def _summary(self) -> str:
+        return f"sleep {self.seconds}s"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        ctx.mind_state._sleep_hint_until = time.time() + self.seconds
+        _record(ctx, "Sleep", self._summary())
+        return f"sleep {self.seconds}s hint set"
+
+
+# ---------------------------------------------------------------------------
 # Mood tool — mutates ctx.mind_state.mood
 # ---------------------------------------------------------------------------
 
@@ -757,6 +842,7 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    SetFocus, OpenLoop, CloseLoop, Idle, Sleep,
     MoodTool,
 ]
 
@@ -764,4 +850,5 @@ SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    SetFocus, OpenLoop, CloseLoop, Idle, Sleep,
 ]

@@ -89,6 +89,7 @@ class MindState:
     last_iter_at: float = 0.0
     iter_count: int = 0
     session_started_at: float = field(default_factory=time.time)
+    _sleep_hint_until: float = 0.0
 
 
 def save_state(state: MindState, path: Path) -> None:
