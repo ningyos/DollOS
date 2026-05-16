@@ -1,4 +1,4 @@
-"""Tests for Tool classes (Say, NoteMemory) and ToolCtx."""
+"""Tests for Tool classes and MindCtx."""
 
 import asyncio
 import re
@@ -9,17 +9,16 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.ipc.messages import TextChunk
-from dollos.scratchpad import (
-    AppendScratchpad,
-    ClearScratchpad,
-    EditScratchpad,
-    Scratchpad,
-    WriteScratchpad,
-)
+from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.mind_state import MindState, Mood
+from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
+    AppendScratchpad,
+    ClearScratchpad,
+    EditScratchpad,
     GrepToolOutput,
     InvokeSkill,
     NoteMemory,
@@ -27,9 +26,8 @@ from dollos.tools import (
     Recall,
     Say,
     Shell,
-    SubagentToolCtx,
-    ToolCtx,
     WriteDiary,
+    WriteScratchpad,
 )
 
 
@@ -43,20 +41,67 @@ class _FakeMemSearch:
         self.indexed.append(Path(path))
 
 
+class _FakeShellRunner:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def spawn(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class _FakeSubagentRunner:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def spawn(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class _FakeMonitorRunner:
+    def __init__(self, monitor_id="mon-1"):
+        self.calls: list[dict] = []
+        self._monitor_id = monitor_id
+        self._remove_result = True
+
+    def spawn(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._monitor_id
+
+    async def remove(self, monitor_id: str) -> bool:
+        return self._remove_result
+
+
+def _fake_sink_resolver(sink=None):
+    """Returns a SinkResolver pre-registered with the given sink (or a fresh queue)."""
+    r = SinkResolver()
+    if sink is not None:
+        r.register(sink)
+    return r
+
+
 def _make_ctx(
     tmp_path: Path,
     tool_output_store: ToolOutputStore | None = None,
-    scratchpad: Scratchpad | None = None,
-) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
-    sink: asyncio.Queue = asyncio.Queue()
+    state: MindState | None = None,
+    sink: asyncio.Queue | None = None,
+    shell_runner=None,
+    subagent_runner=None,
+    monitor_runner=None,
+) -> tuple[MindCtx, _FakeMemSearch, asyncio.Queue]:
+    if sink is None:
+        sink = asyncio.Queue()
     ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
+    mind_state = state or MindState()
+    ctx = MindCtx(
+        mind_state=mind_state,
         memsearch=ms,
+        memory_root=tmp_path,
         transcripts_root=tmp_path / "transcripts",
+        sink_resolver=_fake_sink_resolver(sink),
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=scratchpad or Scratchpad(),
+        shell_runner=shell_runner or _FakeShellRunner(),
+        subagent_runner=subagent_runner or _FakeSubagentRunner(),
+        monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
     return ctx, ms, sink
 
@@ -126,16 +171,7 @@ async def test_note_memory_run_appends_to_existing_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, ms, _sink = _make_ctx(tmp_path)
     diary = WriteDiary(content="今天我學會了 transcript 跟 diary。")
     await diary.run(ctx)
 
@@ -160,16 +196,9 @@ def test_write_diary_in_tools_list():
 @pytest.mark.asyncio
 async def test_say_run_also_appends_to_transcript(tmp_path):
     sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
     transcripts_root = tmp_path / "transcripts"
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=transcripts_root,
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, ms, _ = _make_ctx(tmp_path, sink=sink)
+    ctx.transcripts_root = transcripts_root
     await Say(text="hello").run(ctx)
 
     msg = sink.get_nowait()
@@ -214,23 +243,14 @@ def test_shell_timeout_s_validation_upper_bound():
 @pytest.mark.asyncio
 async def test_shell_tool_delegates_to_runner(tmp_path):
     """Shell.run dispatches via ShellRunner.spawn and returns immediate ack."""
-    from unittest.mock import MagicMock
-
-    runner = MagicMock()
-    sink: asyncio.Queue = asyncio.Queue()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        shell_runner=runner,
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    runner = _FakeShellRunner()
+    ctx, _ms, _sink = _make_ctx(tmp_path, shell_runner=runner)
     out = await Shell(command="echo hi", timeout_s=30).run(ctx)
-    runner.spawn.assert_called_once_with(
-        command="echo hi", timeout_s=30, response_sink=sink,
-    )
+    assert len(runner.calls) == 1
+    kw = runner.calls[0]
+    assert kw["command"] == "echo hi"
+    assert kw["timeout_s"] == 30
+    assert kw["response_sink"] is None  # Task 8 wires perception_queue here
     assert "shell" in out.lower()
     assert "結果" in out  # result-will-arrive language
 
@@ -247,21 +267,23 @@ def test_invoke_skill_schema_has_name_field():
 
 @pytest.mark.asyncio
 async def test_invoke_skill_run_returns_body_content(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
     bodies_dir = memory_root / "skill_bodies"
     bodies_dir.mkdir(parents=True)
     body_path = bodies_dir / "my_skill.md"
     body_content = "# Steps\n\n1. Step one\n2. Step two\n"
     body_path.write_text(body_content)
-    ctx = ToolCtx(
-        sink=sink,
+    state = MindState()
+    ctx = MindCtx(
+        mind_state=state,
+        memsearch=_FakeMemSearch(),
         memory_root=memory_root,
-        memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        sink_resolver=_fake_sink_resolver(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
+        shell_runner=_FakeShellRunner(),
+        subagent_runner=_FakeSubagentRunner(),
+        monitor_runner=_FakeMonitorRunner(),
     )
 
     out = await InvokeSkill(name="my_skill").run(ctx)
@@ -273,19 +295,11 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
 async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
     """ENOENT -> success-cascade str (no exception). Message includes
     '(none yet)' for empty skill dir + Shell/Recall guidance."""
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
     bodies_dir = memory_root / "skill_bodies"
     bodies_dir.mkdir(parents=True)  # empty dir
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.memory_root = memory_root
 
     out = await InvokeSkill(name="nope").run(ctx)
     assert "(none yet)" in out
@@ -297,21 +311,13 @@ async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
 @pytest.mark.asyncio
 async def test_invoke_skill_missing_lists_existing_skills(tmp_path):
     """ENOENT -> message lists existing skills sorted by stem."""
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
     bodies_dir = memory_root / "skill_bodies"
     bodies_dir.mkdir(parents=True)
     (bodies_dir / "morning.md").write_text("...")
     (bodies_dir / "bedtime.md").write_text("...")
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.memory_root = memory_root
 
     out = await InvokeSkill(name="nope").run(ctx)
     assert "bedtime, morning" in out
@@ -320,8 +326,6 @@ async def test_invoke_skill_missing_lists_existing_skills(tmp_path):
 @pytest.mark.asyncio
 async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
     """Verify path goes to skill_bodies/, not skills/."""
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
     memory_root = tmp_path / "memory"
     skills_dir = memory_root / "skills"
     bodies_dir = memory_root / "skill_bodies"
@@ -329,14 +333,8 @@ async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
     bodies_dir.mkdir(parents=True)
     (skills_dir / "x.md").write_text("ENTRY CONTENT")
     (bodies_dir / "x.md").write_text("BODY CONTENT")
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=memory_root,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.memory_root = memory_root
 
     out = await InvokeSkill(name="x").run(ctx)
     assert out == "BODY CONTENT"
@@ -369,65 +367,45 @@ def test_recall_schema_has_query_field():
     assert schema["properties"]["query"]["type"] == "string"
 
 
+def _ctx_with_search(tmp_path, hits):
+    ms = _SearchableMemSearch(hits=hits)
+    state = MindState()
+    ctx = MindCtx(
+        mind_state=state,
+        memsearch=ms,
+        memory_root=tmp_path,
+        transcripts_root=tmp_path / "transcripts",
+        sink_resolver=_fake_sink_resolver(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        shell_runner=_FakeShellRunner(),
+        subagent_runner=_FakeSubagentRunner(),
+        monitor_runner=_FakeMonitorRunner(),
+    )
+    return ctx
+
+
 @pytest.mark.asyncio
 async def test_recall_run_returns_bullet_list_for_hits(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _SearchableMemSearch(
+    ctx = _ctx_with_search(
+        tmp_path,
         hits=[
             {"content": "user likes coffee", "score": 0.9, "source": "x.md"},
             {"content": "the sky is blue", "score": 0.8, "source": "x.md"},
-        ]
+        ],
     )
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
-
     out = await Recall(query="coffee").run(ctx)
 
-    assert ms.last_query == "coffee"
-    assert ms.last_top_k == 5
+    assert ctx.memsearch.last_query == "coffee"
+    assert ctx.memsearch.last_top_k == 5
     assert "- user likes coffee" in out
     assert "- the sky is blue" in out
 
 
 @pytest.mark.asyncio
 async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _SearchableMemSearch(hits=[])
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
-
+    ctx = _ctx_with_search(tmp_path, hits=[])
     out = await Recall(query="anything").run(ctx)
-
     assert out == "[no relevant memory]"
-
-
-# ---------- Recall date filter / formatting (2026-05-10) ----------
-
-
-def _ctx_with_search(tmp_path, hits):
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _SearchableMemSearch(hits=hits)
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
-    return ctx
 
 
 @pytest.mark.asyncio
@@ -552,16 +530,7 @@ async def test_recall_formats_hits_with_date_prefix(tmp_path):
 async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
     import re as _re
 
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, _ms, _sink = _make_ctx(tmp_path)
     await WriteDiary(content="今天好累").run(ctx)
     expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     content = expected.read_text()
@@ -614,33 +583,18 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
     confirmation string mentioning dispatch + the task + the timeout."""
     from dollos.tools import SpawnSubagent
 
-    captured: list[dict] = []
-
-    class _FakeRunner:
-        def spawn(self, **kwargs):
-            captured.append(kwargs)
-
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        subagent_runner=_FakeRunner(),
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    runner = _FakeSubagentRunner()
+    ctx, _ms, _sink = _make_ctx(tmp_path, subagent_runner=runner)
 
     out = await SpawnSubagent(
         task="search transcripts for coffee", timeout_s=30
     ).run(ctx)
 
-    assert len(captured) == 1
-    kw = captured[0]
+    assert len(runner.calls) == 1
+    kw = runner.calls[0]
     assert kw["task"] == "search transcripts for coffee"
     assert kw["timeout_s"] == 30
-    assert kw["response_sink"] is sink
+    assert kw["response_sink"] is None  # Task 8 wires perception_queue here
     assert "sub_id" in kw and len(kw["sub_id"]) >= 4
     assert "dispatched" in out
     assert "30" in out
@@ -650,10 +604,11 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
 async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
     """Report.run side-effects ctx.subagent_report and returns None
     (cascade-ending semantics)."""
-    from dollos.tools import Report
+    from dollos.tools import Report, SubagentToolCtx
 
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
+    from dollos.scratchpad import Scratchpad
     ctx = SubagentToolCtx(
         sink=sink,
         memory_root=tmp_path,
@@ -768,73 +723,43 @@ def test_write_schedule_validates_time_format():
 
 @pytest.mark.asyncio
 async def test_spawn_monitor_delegates_to_runner(tmp_path):
-    from dollos.tools import SpawnMonitor, ToolCtx
-    from unittest.mock import MagicMock
+    from dollos.tools import SpawnMonitor
 
-    runner = MagicMock()
-    runner.spawn.return_value = "mon-1"
-    sink: asyncio.Queue = asyncio.Queue()
-    ctx = ToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        monitor_runner=runner,
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    runner = _FakeMonitorRunner(monitor_id="mon-1")
+    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
     out = await SpawnMonitor(
         command="tail -F /var/log/x",
         match_regex=r"ERROR",
         rate_limit_s=60,
     ).run(ctx)
-    runner.spawn.assert_called_once_with(
-        command="tail -F /var/log/x",
-        match_regex=r"ERROR",
-        rate_limit_s=60,
-        response_sink=sink,
-    )
+    assert len(runner.calls) == 1
+    kw = runner.calls[0]
+    assert kw["command"] == "tail -F /var/log/x"
+    assert kw["match_regex"] == r"ERROR"
+    assert kw["rate_limit_s"] == 60
+    assert kw["response_sink"] is None  # Task 8 wires perception_queue here
     assert "mon-1" in out
 
 
 @pytest.mark.asyncio
 async def test_remove_monitor_delegates(tmp_path):
-    from dollos.tools import RemoveMonitor, ToolCtx
-    from unittest.mock import AsyncMock, MagicMock
+    from dollos.tools import RemoveMonitor
 
-    runner = MagicMock()
-    runner.remove = AsyncMock(return_value=True)
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        monitor_runner=runner,
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    runner = _FakeMonitorRunner()
+    runner._remove_result = True
+    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
     out = await RemoveMonitor(monitor_id="mon-3").run(ctx)
-    runner.remove.assert_awaited_once_with("mon-3")
     assert "mon-3" in out
     assert "removed" in out.lower() or "kill" in out.lower()
 
 
 @pytest.mark.asyncio
 async def test_remove_monitor_unknown_id(tmp_path):
-    from dollos.tools import RemoveMonitor, ToolCtx
-    from unittest.mock import AsyncMock, MagicMock
+    from dollos.tools import RemoveMonitor
 
-    runner = MagicMock()
-    runner.remove = AsyncMock(return_value=False)
-    ctx = ToolCtx(
-        sink=asyncio.Queue(),
-        memory_root=tmp_path,
-        memsearch=MagicMock(),
-        transcripts_root=tmp_path,
-        monitor_runner=runner,
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    runner = _FakeMonitorRunner()
+    runner._remove_result = False
+    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
     out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
     assert "mon-999" in out
     assert "unknown" in out.lower() or "not found" in out.lower()
@@ -848,7 +773,6 @@ async def test_read_tool_output_returns_slice(tmp_path: Path) -> None:
     store = ToolOutputStore(tmp_path)
     output_id = store.write("\n".join(f"row {i}" for i in range(50)))
     ctx, _ms, _sink = _make_ctx(tmp_path)
-    # Replace the ctx's store with the one we just wrote to.
     ctx.tool_output_store = store
 
     tool = ReadToolOutput(id=output_id, offset=10, limit=5)
@@ -924,18 +848,18 @@ async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_write_scratchpad_tool(tmp_path):
-    sp = Scratchpad()
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = WriteScratchpad(content="hello world")
     result = await tool.run(ctx)
     assert "11 chars" in result
-    assert sp.read() == "hello world"
+    assert state.scratchpad == "hello world"
 
 
 @pytest.mark.asyncio
 async def test_write_scratchpad_overflow_raises(tmp_path):
-    sp = Scratchpad()
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = WriteScratchpad(content="x" * 2001)
     with pytest.raises(ValueError, match="exceeds 2000"):
         await tool.run(ctx)
@@ -943,31 +867,31 @@ async def test_write_scratchpad_overflow_raises(tmp_path):
 
 @pytest.mark.asyncio
 async def test_append_scratchpad_tool(tmp_path):
-    sp = Scratchpad()
-    sp.write("first")
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    state.scratchpad = "first"
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = AppendScratchpad(text="second")
     result = await tool.run(ctx)
     assert "12 chars" in result   # "first\nsecond"
-    assert sp.read() == "first\nsecond"
+    assert state.scratchpad == "first\nsecond"
 
 
 @pytest.mark.asyncio
 async def test_edit_scratchpad_tool(tmp_path):
-    sp = Scratchpad()
-    sp.write("hello world")
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    state.scratchpad = "hello world"
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = EditScratchpad(old_string="world", new_string="there")
     result = await tool.run(ctx)
     assert "edited" in result
-    assert sp.read() == "hello there"
+    assert state.scratchpad == "hello there"
 
 
 @pytest.mark.asyncio
 async def test_edit_scratchpad_no_match_raises(tmp_path):
-    sp = Scratchpad()
-    sp.write("hello")
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    state.scratchpad = "hello"
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = EditScratchpad(old_string="missing", new_string="x")
     with pytest.raises(ValueError, match="not found"):
         await tool.run(ctx)
@@ -975,11 +899,95 @@ async def test_edit_scratchpad_no_match_raises(tmp_path):
 
 @pytest.mark.asyncio
 async def test_clear_scratchpad_tool(tmp_path):
-    sp = Scratchpad()
-    sp.write("something")
-    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    state = MindState()
+    state.scratchpad = "something"
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
     tool = ClearScratchpad()
     result = await tool.run(ctx)
     assert "cleared" in result
-    assert sp.read() == ""
+    assert state.scratchpad == ""
 
+
+# ---------- MoodTool ----------
+
+
+@pytest.mark.asyncio
+async def test_mood_tool_updates_mind_state(tmp_path):
+    from dollos.tools import MoodTool
+
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    result = await MoodTool(emotion="開心", reason="因為今天天氣好").run(ctx)
+    assert state.mood.emotion == "開心"
+    assert state.mood.reason == "因為今天天氣好"
+    assert "開心" in result
+
+
+@pytest.mark.asyncio
+async def test_mood_tool_no_reason(tmp_path):
+    from dollos.tools import MoodTool
+
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    await MoodTool(emotion="平靜").run(ctx)
+    assert state.mood.emotion == "平靜"
+    assert state.mood.reason == ""
+
+
+def test_mood_tool_in_main_tools():
+    from dollos.tools import MAIN_TOOLS, MoodTool
+    assert MoodTool in MAIN_TOOLS
+
+
+# ---------- OutputRecord side-effects ----------
+
+
+@pytest.mark.asyncio
+async def test_say_appends_output_record(tmp_path):
+    state = MindState()
+    ctx, _ms, sink = _make_ctx(tmp_path, state=state)
+    assert len(state.recent_outputs) == 0
+    await Say(text="hello").run(ctx)
+    assert len(state.recent_outputs) == 1
+    rec = state.recent_outputs[0]
+    assert rec.kind == "Say"
+    assert "hello" in rec.summary
+    assert rec.t > 0
+
+
+@pytest.mark.asyncio
+async def test_note_memory_appends_output_record(tmp_path):
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    await NoteMemory(text="主人喜歡咖啡").run(ctx)
+    assert len(state.recent_outputs) == 1
+    assert state.recent_outputs[0].kind == "NoteMemory"
+
+
+@pytest.mark.asyncio
+async def test_recall_appends_output_record_and_thought(tmp_path):
+    state = MindState()
+    ctx = _ctx_with_search(tmp_path, hits=[{"content": "x", "source": "a.md"}])
+    ctx.mind_state = state
+    await Recall(query="test").run(ctx)
+    assert len(state.recent_outputs) == 1
+    assert state.recent_outputs[0].kind == "Recall"
+    assert len(state.recent_thoughts) == 1
+    assert "test" in state.recent_thoughts[0].text
+
+
+@pytest.mark.asyncio
+async def test_write_scratchpad_appends_output_record(tmp_path):
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    await WriteScratchpad(content="notes").run(ctx)
+    assert len(state.recent_outputs) == 1
+    assert state.recent_outputs[0].kind == "WriteScratchpad"
+
+
+@pytest.mark.asyncio
+async def test_clear_scratchpad_appends_output_record(tmp_path):
+    state = MindState()
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    await ClearScratchpad().run(ctx)
+    assert state.recent_outputs[0].kind == "ClearScratchpad"

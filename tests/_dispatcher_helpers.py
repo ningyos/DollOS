@@ -8,7 +8,7 @@ from pathlib import Path
 from dollos.character import Identity
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import ToolCtx
+from dollos.tools import ToolCtx  # DEPRECATED — kept for dispatcher tests (Task 8 cleans up)
 
 
 def _doll_identity(self_: str = "You are Doll.") -> Identity:
@@ -142,6 +142,60 @@ def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
         transcripts_root=memory_root / "transcripts",
         tool_output_store=ToolOutputStore(memory_root / "tool_outputs"),
         scratchpad=Scratchpad(),
+    )
+
+
+def _make_mind_ctx(
+    tmp_path: Path,
+    memsearch=None,
+    sink=None,
+    state=None,
+    shell_runner=None,
+    subagent_runner=None,
+    monitor_runner=None,
+    tool_output_store=None,
+):
+    """Factory for MindCtx — for use in tool tests and future MindLoop tests."""
+    from dollos.mind.mind_ctx import MindCtx
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.sink_resolver import SinkResolver
+
+    resolver = SinkResolver()
+    if sink is not None:
+        resolver.register(sink)
+
+    class _FakeShellRunner:
+        def __init__(self):
+            self.calls = []
+        def spawn(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class _FakeSubagentRunner:
+        def __init__(self):
+            self.calls = []
+        def spawn(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class _FakeMonitorRunner:
+        def __init__(self):
+            self.calls = []
+            self._monitor_id = "mon-1"
+        def spawn(self, **kwargs):
+            self.calls.append(kwargs)
+            return self._monitor_id
+        async def remove(self, monitor_id):
+            return True
+
+    return MindCtx(
+        mind_state=state or MindState(),
+        memsearch=memsearch or _FakeMemSearch(),
+        memory_root=tmp_path,
+        transcripts_root=tmp_path / "transcripts",
+        sink_resolver=resolver,
+        tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
+        shell_runner=shell_runner or _FakeShellRunner(),
+        subagent_runner=subagent_runner or _FakeSubagentRunner(),
+        monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
 
 
