@@ -283,7 +283,7 @@ class EventDispatcher:
         )
         if include_static:
             contents = self._scratchpad.read()
-            scratchpad_block = f"[Scratchpad]\n{contents if contents else '(empty)'}\n\n"
+            scratchpad_block = f"[Scratchpad]\n{contents if contents else '(empty — write your goal here before calling Shell/SpawnSubagent)'}\n\n"
             return (
                 scratchpad_block
                 + _format_now(datetime.now())
