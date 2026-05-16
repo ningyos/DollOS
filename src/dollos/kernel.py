@@ -38,6 +38,7 @@ from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
+from dollos.conversation_history import ConversationHistory
 from dollos.monitor_runner import MonitorRunner
 from dollos.scratchpad import Scratchpad
 from dollos.shell_runner import ShellRunner
@@ -184,6 +185,9 @@ class DollOS:
         self._tool_output_dir = Path(tempfile.mkdtemp(prefix="dollos-tools-"))
         self._tool_output_store = ToolOutputStore(self._tool_output_dir)
         self._scratchpad = Scratchpad()
+        self._conversation_history = ConversationHistory(
+            max_turns=settings.conversation_history.max_turns,
+        )
         # Two-stage wiring: SubagentRunner / ShellRunner need a dispatch_fn,
         # dispatcher needs the runners. Build runners first with no dispatch_fn,
         # then build dispatcher referencing them, then point runners at
@@ -218,6 +222,7 @@ class DollOS:
             monitor_runner=self.monitor_runner,
             tool_output_store=self._tool_output_store,
             scratchpad=self._scratchpad,
+            conversation_history=self._conversation_history,
         )
         self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
         self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)

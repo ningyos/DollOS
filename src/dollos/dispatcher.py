@@ -37,6 +37,7 @@ from dollos.events import (
 if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
     from dollos.tool_outputs import ToolOutputStore
+from dollos.conversation_history import ConversationHistory
 from dollos.inner_voice import InnerVoice
 from dollos.scratchpad import Scratchpad
 from dollos.instinct import Instinct
@@ -144,6 +145,7 @@ class EventDispatcher:
         monitor_runner: "MonitorRunner | None" = None,
         tool_output_store: "ToolOutputStore",
         scratchpad: Scratchpad,
+        conversation_history: ConversationHistory,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -159,6 +161,7 @@ class EventDispatcher:
         self._monitor_runner = monitor_runner
         self._tool_output_store = tool_output_store
         self._scratchpad = scratchpad
+        self._conversation_history = conversation_history
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in MAIN_TOOLS
         }
@@ -448,7 +451,11 @@ class EventDispatcher:
             )
             + f"[Message]\n{doll_event.perception}"
         )
-        messages: list[dict] = [{"role": "user", "content": first_user}]
+        history_messages = self._conversation_history.recent_messages()
+        messages: list[dict] = [
+            *history_messages,
+            {"role": "user", "content": first_user},
+        ]
 
         skills_dir = self._memory_root / "skills"
         if skills_dir.exists():
@@ -503,19 +510,29 @@ class EventDispatcher:
                 duration_ms=duration_ms,
             )
 
-        await run_tool_cascade(
-            adapter=self._adapter,
-            system=system,
-            messages=messages,
-            tools=MAIN_TOOLS,
-            tools_by_name=self._tools_by_name,
-            ctx=ctx,
-            grammar=grammar,
-            sink=sink,
-            max_tokens=4096,
-            on_iter_start=_on_iter_start,
-            on_iter_end=_on_iter_end,
-        )
+        try:
+            await run_tool_cascade(
+                adapter=self._adapter,
+                system=system,
+                messages=messages,
+                tools=MAIN_TOOLS,
+                tools_by_name=self._tools_by_name,
+                ctx=ctx,
+                grammar=grammar,
+                sink=sink,
+                max_tokens=4096,
+                on_iter_start=_on_iter_start,
+                on_iter_end=_on_iter_end,
+            )
+        finally:
+            # Snapshot full turn (everything except prepended history) into
+            # conversation history. Fires on both success and exception paths
+            # so partial cascades are still preserved (spec: store partial too).
+            # Slice off the history prefix: history_messages were prepended at
+            # the start, so the new content starts at index len(history_messages).
+            history_len = len(history_messages)
+            turn_messages = messages[history_len:]
+            self._conversation_history.add_turn(turn_messages)
 
         # Parse mood from last assistant message's MOOD: line (think field).
         # Big model writes mood in <think> as part of every cascade iteration;

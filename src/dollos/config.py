@@ -51,6 +51,19 @@ class MemsearchConfig(BaseModel):
     top_k: int = 10
 
 
+class ConversationHistoryConfig(BaseModel):
+    """Conversation history sliding window — recent turn transcripts prepended
+    to every LLM call so Doll sees her own prior reasoning across turns."""
+    model_config = ConfigDict(extra="forbid")
+
+    max_turns: int = Field(
+        6,
+        ge=1,
+        le=50,
+        description="conversation window size in turns; default 6 (industry standard tail buffer)",
+    )
+
+
 class CharacterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -114,6 +127,9 @@ class Settings(BaseModel):
     log: LogConfig = Field(default_factory=lambda: LogConfig())
     data: DataConfig = Field(default_factory=lambda: DataConfig())
     memsearch: MemsearchConfig = Field(default_factory=lambda: MemsearchConfig())
+    conversation_history: ConversationHistoryConfig = Field(
+        default_factory=lambda: ConversationHistoryConfig()
+    )
     character: CharacterConfig
     inner_voice: InnerVoiceConfig
     voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
