@@ -92,7 +92,8 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
 def test_grammar_per_tool_field_names_match_required_strings():
     """Each tool's call rule must reference its required-string field names.
 
-    Shell.timeout_s is required → MUST appear in grammar.
+    Shell.timeout_s now has a default (60) so it is optional and NOT in grammar.
+    Shell.command is the only required field for Shell.
     """
     g = build_qwen3_think_tool_grammar(TOOLS)
     # Required string fields per tool (current TOOLS definitions):
@@ -100,12 +101,13 @@ def test_grammar_per_tool_field_names_match_required_strings():
     assert r'\"content\":' in g  # WriteDiary
     assert r'\"command\":' in g  # Shell
     assert r'\"name\":' in g  # InvokeSkill (and the envelope "name")
-    # Shell.timeout_s is a required integer field — it must appear in
-    # the shell-call rule body.
+    # Shell.timeout_s is now optional (default=60) — must NOT constrain grammar
+    # to include it (model may omit it and get the default).
     shell_rule = next(
         line for line in g.splitlines() if line.startswith("shell-call ::=")
     )
-    assert "timeout_s" in shell_rule
+    assert r'\"command\":' in shell_rule  # only required field appears
+    assert "timeout_s" not in shell_rule  # optional field is absent from grammar
 
 
 def test_grammar_includes_recall_tool():
