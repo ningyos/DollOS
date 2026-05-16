@@ -144,11 +144,20 @@ class _MindLLMAdapter:
     def __init__(self, adapter: LLMAdapter) -> None:
         self._adapter = adapter
 
-    async def stream_completion(self, system: str, user: str, prefill: str = ""):
+    async def stream_completion(
+        self,
+        system: str,
+        user: str,
+        prefill: str = "",
+        max_tokens: int = 1024,
+        grammar: str | None = None,
+    ):
         async for chunk in self._adapter.stream_completion(
             system=system,
             user=user,
             prefill=prefill,
+            max_tokens=max_tokens,
+            grammar=grammar,
         ):
             yield chunk
 

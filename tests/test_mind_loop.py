@@ -16,7 +16,7 @@ class _FakeLLM:
     def __init__(self, returns: str):
         self._returns = returns
 
-    async def stream_completion(self, system, user, prefill):
+    async def stream_completion(self, system, user, prefill, max_tokens=1024, grammar=None):
         class _Chunk:
             def __init__(self, text, done):
                 self.text = text
