@@ -26,22 +26,29 @@ class PerceptionQueue:
         """Signal drain() to unblock and return empty list on next call."""
         self._shutdown_event.set()
 
-    async def drain(self) -> list[Perception]:
+    async def drain(self, timeout_s: float | None = None) -> list[Perception]:
         """Block until the first perception arrives, then drain any others
         already queued. Returns at least one perception, or empty list if
-        shutdown() was called while waiting."""
-        # Race between queue.get() and shutdown signal.
+        shutdown() was called while waiting or timeout_s elapsed."""
+        # Race between queue.get(), shutdown signal, and optional timeout.
         get_task = asyncio.ensure_future(self._queue.get())
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
+        wait_tasks: set = {get_task, shutdown_task}
+        timeout_task: asyncio.Task | None = None
+        if timeout_s is not None:
+            timeout_task = asyncio.ensure_future(asyncio.sleep(timeout_s))
+            wait_tasks.add(timeout_task)
         done, pending = await asyncio.wait(
-            {get_task, shutdown_task},
+            wait_tasks,
             return_when=asyncio.FIRST_COMPLETED,
         )
         for t in pending:
             t.cancel()
-        if shutdown_task in done:
-            # Shutdown signaled — cancel queue.get and return empty
+        if shutdown_task in done or (timeout_task is not None and timeout_task in done and get_task not in done):
+            # Shutdown signaled or timeout elapsed before any perception
             get_task.cancel()
+            return []
+        if get_task not in done:
             return []
         first = get_task.result()
         out = [first]

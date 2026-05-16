@@ -67,7 +67,16 @@ External (fire-and-forget, result arrives as next perception):
 - `{"action": "SpawnSubagent", "task": "...", "timeout_s": N}` — spawn ephemeral sub-LLM
 - `{"action": "SpawnMonitor", "command": "...", "match_regex": "...", "rate_limit_s": N}` — long-running watcher
 - `{"action": "RemoveMonitor", "monitor_id": "..."}` — stop a monitor
+{%- if available_skills %}
 - `{"action": "InvokeSkill", "name": "..."}` — load a skill body
+{%- endif %}
+
+# Perception blocks
+
+Each iteration may include contextual blocks prepended to the perceptions:
+- `[Memory context]` — facts auto-retrieved from memory relevant to recent perceptions
+- `[Active monitors]` — monitors currently running (with suppression stats)
+- `[Pending events]` — scheduled moments or deferred events queued for this turn
 
 {%- if available_skills %}
 # Skills
