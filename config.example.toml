@@ -21,6 +21,15 @@ root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-gene
 [memsearch]
 top_k = 10   # InnerVoice.recall default; memsearch uses ONNX bge-m3 by default.
 
+# ----------------------------------------------------------------------
+# Conversation history sliding window — recent turn transcripts prepended
+# to every LLM call so Doll sees her own prior reasoning across turns.
+# Default 6; tune for context budget if cascades are long.
+# ----------------------------------------------------------------------
+
+[conversation_history]
+max_turns = 6
+
 [character]
 pack = "character_packs/gura"   # directory containing doll.toml manifest
 

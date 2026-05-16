@@ -130,8 +130,8 @@ def dollos_with_fakes(tmp_path, monkeypatch):
     fake_adapter = _FakeAdapter()
     dollos.adapter = fake_adapter
     # Re-build dispatcher to point at the fake adapter.
+    from dollos.conversation_history import ConversationHistory
     from dollos.dispatcher import EventDispatcher
-
     from dollos.scratchpad import Scratchpad
 
     dollos.dispatcher = EventDispatcher(
@@ -146,6 +146,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         cascade_logger=dollos._cascade_logger,
         tool_output_store=dollos._tool_output_store,
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
     return dollos, fake_adapter
 
@@ -434,6 +435,40 @@ def test_kernel_has_scratchpad(tmp_path: Path) -> None:
     dollos = DollOS(settings)
     assert isinstance(dollos._scratchpad, Scratchpad)
     assert dollos._scratchpad.read() == ""
+
+
+# ----- ConversationHistory wiring -----
+
+
+def test_kernel_has_conversation_history(tmp_path: Path) -> None:
+    from dollos.conversation_history import ConversationHistory
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._conversation_history, ConversationHistory)
+    assert dollos._conversation_history.turn_count() == 0
+
+
+def test_kernel_uses_configured_max_turns(tmp_path: Path) -> None:
+    from dollos.config import ConversationHistoryConfig
+    from dollos.conversation_history import ConversationHistory
+
+    settings = _make_settings(tmp_path)
+    settings = settings.model_copy(
+        update={"conversation_history": ConversationHistoryConfig(max_turns=10)}
+    )
+    dollos = DollOS(settings)
+    assert isinstance(dollos._conversation_history, ConversationHistory)
+    assert dollos._conversation_history._max_turns == 10
+
+
+def test_kernel_dispatcher_has_conversation_history(tmp_path: Path) -> None:
+    from dollos.conversation_history import ConversationHistory
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos.dispatcher._conversation_history, ConversationHistory)
+    assert dollos.dispatcher._conversation_history is dollos._conversation_history
 
 
 # ----- ShellRunner wiring -----

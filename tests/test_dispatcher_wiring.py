@@ -80,6 +80,7 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
         inst = _FakeInstinct(summaries=[""])
         ms = _FakeMemSearch()
 
+        from dollos.conversation_history import ConversationHistory
         from dollos.scratchpad import Scratchpad
 
         kwargs = dict(
@@ -94,6 +95,7 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
             cascade_logger=_FakeCascadeLogger(),
             tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
             scratchpad=Scratchpad(),
+            conversation_history=ConversationHistory(),
         )
         kwargs[runner_field] = runner
 
