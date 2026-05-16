@@ -58,13 +58,10 @@ def _render_mindstate(state: MindState, now: float) -> str:
     mood_str = state.mood.emotion
     if state.mood.reason:
         mood_str = f"{state.mood.emotion} ({state.mood.reason})"
-    session_age = _human_secs(now - state.session_started_at)
     last_user = _human_secs(now - state.last_user_at) + " ago" if state.last_user_at else "never"
     return (
         f"focus: {state.focus}\n"
         f"mood: {mood_str}\n"
-        f"energy: {state.energy:.2f}\n"
-        f"session_age: {session_age}\n"
         f"last_user: {last_user}\n"
         f"iter: {state.iter_count}"
     )
@@ -120,8 +117,6 @@ def _percep_body(p) -> str:
         return f"{d.get('monitor_id', '?')} (exit {d.get('exit_status', '?')})"
     if p.kind == "ScheduledMoment":
         return d.get("text", "")[:200]
-    if p.kind == "IdleTick":
-        return ""
     if p.kind == "Awoke":
         return f"reason={d.get('reason', '?')}"
     return str(d)[:120]

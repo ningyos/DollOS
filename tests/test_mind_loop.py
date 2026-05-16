@@ -63,7 +63,7 @@ async def test_iterate_handles_malformed_llm_output(tmp_path):
 
     state = MindState()
     queue = PerceptionQueue()
-    queue.put(Perception(kind="IdleTick", t=1.0, data={}))
+    queue.put(Perception(kind="Awoke", t=1.0, data={}))
 
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
@@ -80,25 +80,25 @@ async def test_iterate_handles_malformed_llm_output(tmp_path):
     )
 
     await loop.iterate()
-    # Tolerant fallback: Think action recorded (or Idle if Think fails)
+    # Tolerant fallback: Think action recorded (or empty if Think fails)
     assert state.iter_count == 1
     # Either a Think output recorded OR no outputs — both acceptable
     # The important thing is we don't crash
 
 
 @pytest.mark.asyncio
-async def test_iterate_idle_tick_no_user(tmp_path):
+async def test_iterate_non_user_perception_no_user_at(tmp_path):
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
 
     state = MindState()
     queue = PerceptionQueue()
-    queue.put(Perception(kind="IdleTick", t=2.0, data={}))
+    queue.put(Perception(kind="Awoke", t=2.0, data={}))
 
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    fake_llm = _FakeLLM('[{"action": "Idle"}]')
+    fake_llm = _FakeLLM('[{"action": "Think", "text": "awoke"}]')
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -121,12 +121,12 @@ async def test_iterate_unknown_action_skipped(tmp_path):
 
     state = MindState()
     queue = PerceptionQueue()
-    queue.put(Perception(kind="IdleTick", t=1.0, data={}))
+    queue.put(Perception(kind="Awoke", t=1.0, data={}))
 
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    fake_llm = _FakeLLM('[{"action": "NonExistentAction", "foo": "bar"}, {"action": "Idle"}]')
+    fake_llm = _FakeLLM('[{"action": "NonExistentAction", "foo": "bar"}, {"action": "Think", "text": "ok"}]')
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -138,7 +138,7 @@ async def test_iterate_unknown_action_skipped(tmp_path):
     )
 
     await loop.iterate()
-    # Should not crash; unknown action is skipped; Idle runs fine
+    # Should not crash; unknown action is skipped; Think runs fine
     assert state.iter_count == 1
 
 
@@ -149,12 +149,12 @@ async def test_iterate_persists_state(tmp_path):
 
     state = MindState()
     queue = PerceptionQueue()
-    queue.put(Perception(kind="IdleTick", t=1.0, data={}))
+    queue.put(Perception(kind="Awoke", t=1.0, data={}))
 
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    fake_llm = _FakeLLM('[{"action": "Idle"}]')
+    fake_llm = _FakeLLM('[{"action": "Think", "text": "ok"}]')
     persist_path = tmp_path / "mind_state.json"
     loop = MindLoop(
         state=state,
@@ -188,7 +188,7 @@ async def test_iterate_multiple_perceptions(tmp_path):
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    fake_llm = _FakeLLM('[{"action": "Idle"}]')
+    fake_llm = _FakeLLM('[{"action": "Think", "text": "ok"}]')
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -217,7 +217,7 @@ async def test_shutdown_stops_run(tmp_path):
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    fake_llm = _FakeLLM('[{"action": "Idle"}]')
+    fake_llm = _FakeLLM('[{"action": "Think", "text": "stopping"}]')
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -226,7 +226,6 @@ async def test_shutdown_stops_run(tmp_path):
         system_prompt="SYS",
         state_persist_path=tmp_path / "mind_state.json",
         tool_registry=tool_registry,
-        idle_interval_s=0.05,  # short timeout for fast test
     )
 
     # Mark shutdown before run; the while loop should never enter iterate
@@ -243,7 +242,7 @@ async def test_iterate_think_action_records_thought(tmp_path):
 
     state = MindState()
     queue = PerceptionQueue()
-    queue.put(Perception(kind="IdleTick", t=1.0, data={}))
+    queue.put(Perception(kind="Awoke", t=1.0, data={}))
 
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)

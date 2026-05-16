@@ -777,33 +777,6 @@ class CloseLoop(BaseModel):
         return f"closed loop {self.id}"
 
 
-class Idle(BaseModel):
-    """Explicit no-op for this iteration. Does NOT record an OutputRecord."""
-
-    def _summary(self) -> str:
-        return "idle"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        # Idle is the only action that skips _record (spec: don't pollute recent_outputs)
-        return "idle"
-
-
-class Sleep(BaseModel):
-    """Hint to MindLoop to extend next idle_interval by N seconds."""
-
-    seconds: int = Field(
-        ..., ge=1, le=3600, description="how long to extend next drain"
-    )
-
-    def _summary(self) -> str:
-        return f"sleep {self.seconds}s"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        ctx.mind_state._sleep_hint_until = time.time() + self.seconds
-        _record(ctx, "Sleep", self._summary())
-        return f"sleep {self.seconds}s hint set"
-
-
 # ---------------------------------------------------------------------------
 # Mood tool — mutates ctx.mind_state.mood
 # ---------------------------------------------------------------------------
@@ -858,7 +831,7 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
-    SetFocus, OpenLoop, CloseLoop, Idle, Sleep,
+    SetFocus, OpenLoop, CloseLoop,
     MoodTool, Think,
 ]
 
@@ -866,5 +839,5 @@ SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
-    SetFocus, OpenLoop, CloseLoop, Idle, Sleep, Think,
+    SetFocus, OpenLoop, CloseLoop, Think,
 ]

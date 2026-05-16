@@ -51,7 +51,7 @@ class OpenLoop:
 class Perception:
     kind: Literal[
         "UserSpoke", "ToolResultArrived", "MonitorFired",
-        "MonitorEnded", "ScheduledMoment", "IdleTick", "Awoke",
+        "MonitorEnded", "ScheduledMoment", "Awoke",
     ]
     t: float
     data: dict
@@ -74,7 +74,6 @@ class Thought:
 class MindState:
     mood: Mood = field(default_factory=Mood)
     focus: str = "idle"
-    energy: float = 1.0
     scratchpad: str = ""
 
     active_tasks: list[ActiveTask] = field(default_factory=list)
@@ -89,7 +88,6 @@ class MindState:
     last_iter_at: float = 0.0
     iter_count: int = 0
     session_started_at: float = field(default_factory=time.time)
-    _sleep_hint_until: float = 0.0
 
 
 def save_state(state: MindState, path: Path) -> None:
@@ -132,7 +130,7 @@ def load_state(path: Path) -> MindState:
 
     Missing file returns fresh MindState.
     Malformed JSON logs error and returns fresh MindState.
-    Refreshes energy=1.0 and session_started_at=time.time() on load.
+    Refreshes session_started_at=time.time() on load.
     """
     path = Path(path)
 
@@ -171,7 +169,6 @@ def load_state(path: Path) -> MindState:
         state = MindState(
             mood=mood,
             focus=data.get("focus", "idle"),
-            energy=1.0,  # REFRESH: always reset to full
             scratchpad=data.get("scratchpad", ""),
             active_tasks=active_tasks,
             pending_events=pending_events,

@@ -1,11 +1,9 @@
-"""Tests for Task 6 loop actions: SetFocus, OpenLoop, CloseLoop, Idle, Sleep."""
-
-import time
+"""Tests for Task 6 loop actions: SetFocus, OpenLoop, CloseLoop."""
 
 import pytest
 
 from dollos.mind.mind_state import MindState
-from dollos.tools import SetFocus, OpenLoop, CloseLoop, Idle, Sleep
+from dollos.tools import SetFocus, OpenLoop, CloseLoop
 from tests._dispatcher_helpers import _make_mind_ctx
 
 
@@ -46,28 +44,6 @@ async def test_close_loop_unknown_id_no_raise(tmp_path):
     await CloseLoop(id="missing", outcome="x").run(ctx)
     # no exception; loop list unchanged
     assert state.open_loops == []
-
-
-@pytest.mark.asyncio
-async def test_idle_is_noop(tmp_path):
-    state = MindState()
-    ctx = _make_mind_ctx(tmp_path, state=state)
-    await Idle().run(ctx)
-    # state unchanged; Idle does NOT record an OutputRecord
-    assert len(state.recent_outputs) == 0
-    assert state.focus == "idle"
-
-
-@pytest.mark.asyncio
-async def test_sleep_does_not_block(tmp_path):
-    state = MindState()
-    ctx = _make_mind_ctx(tmp_path, state=state)
-    start = time.time()
-    await Sleep(seconds=30).run(ctx)
-    assert time.time() - start < 0.1  # didn't actually sleep
-    # Sleep records a hint on the state
-    assert state._sleep_hint_until > time.time() + 25
-    assert state._sleep_hint_until <= time.time() + 30 + 1
 
 
 @pytest.mark.asyncio
