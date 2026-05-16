@@ -174,3 +174,25 @@ base_url = "http://127.0.0.1:8003"
     )
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def test_settings_includes_conversation_history_default(tmp_path: Path) -> None:
+    """Conversation history config includes default max_turns."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    settings = load_settings(config_path)
+    assert settings.conversation_history.max_turns == 6
+
+
+def test_settings_conversation_history_custom_max_turns(tmp_path: Path) -> None:
+    """Conversation history max_turns can be customized."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[conversation_history]
+max_turns = 10
+"""
+    )
+    settings = load_settings(config_path)
+    assert settings.conversation_history.max_turns == 10
