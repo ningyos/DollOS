@@ -238,7 +238,7 @@ def test_mind_actions_grammar_has_mind_actions_rule():
 def test_mind_actions_grammar_action_name_enum_includes_all_actions():
     g = build_mind_actions_grammar(_MIND_ACTIONS)
     for name in _MIND_ACTIONS:
-        assert f'\\"{name}\\"' in g
+        assert f'"{name}"' in g
 
 
 def test_mind_actions_grammar_action_call_has_action_key():
@@ -291,7 +291,7 @@ def test_mind_actions_grammar_ws_rule_present():
 def test_mind_actions_grammar_single_action_subset():
     """Grammar builds correctly for a minimal one-action list."""
     g = build_mind_actions_grammar(["Think"])
-    assert '\\"Think\\"' in g
+    assert '"Think"' in g
     assert "root ::= mind-actions\n" in g
 
 
@@ -300,7 +300,7 @@ def test_mind_actions_grammar_all_main_tools_names():
     names = [cls.__name__ for cls in TOOLS]
     g = build_mind_actions_grammar(names)
     for name in names:
-        assert f'\\"{name}\\"' in g
+        assert f'"{name}"' in g
 
 
 def test_mind_actions_grammar_no_line_rule():

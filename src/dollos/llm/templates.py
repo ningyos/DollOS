@@ -324,7 +324,7 @@ def build_mind_actions_grammar(action_names: list[str]) -> str:
                 "grammar escape unsupported"
             )
 
-    action_name_alts = " | ".join(f'\\"{name}\\"' for name in action_names)
+    action_name_alts = " | ".join(f'"{name}"' for name in action_names)
 
     head = (
         "root ::= mind-actions\n"
