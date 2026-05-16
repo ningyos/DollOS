@@ -318,3 +318,35 @@ def test_format_active_monitors_block():
     assert "11" in block
     assert "mon-2" in block
     assert _format_active_monitors_block([]) == ""
+
+
+# ----- Scratchpad block rendering -----
+
+
+def test_perception_includes_empty_scratchpad_block(tmp_path: Path):
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    body = dispatcher._build_perception_blocks(
+        include_static=True,
+        memory_block="[Memory context]\n(no relevant memory)\n\n",
+    )
+    # [Scratchpad] must be the very first block
+    assert body.startswith("[Scratchpad]\n(empty)\n\n")
+    # [Memory context] must also appear somewhere in the body
+    assert "[Memory context]" in body
+
+
+def test_perception_includes_filled_scratchpad_block(tmp_path: Path):
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher._scratchpad.write("# Current goal\nfind line 150")
+    body = dispatcher._build_perception_blocks(
+        include_static=True,
+        memory_block="[Memory context]\n(no relevant memory)\n\n",
+    )
+    # [Scratchpad] must be the very first block with non-empty content
+    assert body.startswith("[Scratchpad]\n# Current goal\nfind line 150\n\n")
+    # [Memory context] must also appear somewhere in the body
+    assert "[Memory context]" in body

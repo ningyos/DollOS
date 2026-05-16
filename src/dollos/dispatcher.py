@@ -282,8 +282,11 @@ class EventDispatcher:
             else ""
         )
         if include_static:
+            contents = self._scratchpad.read()
+            scratchpad_block = f"[Scratchpad]\n{contents if contents else '(empty)'}\n\n"
             return (
-                _format_now(datetime.now())
+                scratchpad_block
+                + _format_now(datetime.now())
                 + self._format_mood()
                 + self._format_pending()
                 + active_block
