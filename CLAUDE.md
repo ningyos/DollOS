@@ -139,7 +139,7 @@ uv run pytest                   # tests
 
 ```bash
 ./llama.cpp/llama-server \
-    -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL \
+    -hf HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q4_K_M \
     --alias "unsloth/Qwen3.6" \
     --jinja \
     --reasoning-format none \
