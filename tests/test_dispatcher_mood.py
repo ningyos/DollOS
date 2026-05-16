@@ -258,5 +258,5 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
         disp.dispatch(UserTextEvent(text=text, response_sink=sink))
         await _drain(sink)
 
-    second_user = adapter.calls[1]["messages"][0]["content"]
+    second_user = adapter.calls[1]["messages"][-1]["content"]
     assert "[Mood]\n第一輪心情" in second_user

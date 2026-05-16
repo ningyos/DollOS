@@ -1544,7 +1544,7 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
         disp.dispatch(UserTextEvent(text=text, response_sink=sink))
         await _drain(sink)
 
-    second_user = adapter.calls[1]["messages"][0]["content"]
+    second_user = adapter.calls[1]["messages"][-1]["content"]
     assert "[Recent activity]\n" in second_user
     assert "summary 1" in second_user
     # And the [Recent activity] block precedes [Memory context].
