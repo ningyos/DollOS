@@ -38,9 +38,7 @@ if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
     from dollos.tool_outputs import ToolOutputStore
 from dollos.conversation_history import ConversationHistory
-from dollos.inner_voice import InnerVoice
 from dollos.scratchpad import Scratchpad
-from dollos.instinct import Instinct
 from dollos.ipc.messages import ErrorMsg, ServerMessage, TurnEnd
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.templates import build_qwen3_think_tool_grammar
@@ -132,12 +130,11 @@ class EventDispatcher:
         self,
         *,
         adapter: LLMAdapter,
-        inner_voice: InnerVoice,
-        instinct: Instinct,
         renderer: PromptRenderer,
         identity: Identity,
         memory_root: Path,
         memsearch: MemSearch,
+        memsearch_top_k: int = 10,
         transcripts_root: Path,
         subagent_runner: SubagentRunner | None = None,
         cascade_logger: CascadeLogger,
@@ -148,12 +145,11 @@ class EventDispatcher:
         conversation_history: ConversationHistory,
     ) -> None:
         self._adapter = adapter
-        self._inner_voice = inner_voice
-        self._instinct = instinct
         self._renderer = renderer
         self._identity = identity
         self._memory_root = memory_root
         self._memsearch = memsearch
+        self._memsearch_top_k = memsearch_top_k
         self._transcripts_root = transcripts_root
         self._subagent_runner = subagent_runner
         self._cascade_logger = cascade_logger
@@ -179,7 +175,7 @@ class EventDispatcher:
         # Each entry is (timestamp, summary) — timestamp captured at compact time.
         self._rolling: list[tuple[datetime, str]] = []
         # Doll's current mood — natural-language sentence updated each cascade.
-        # Default at daemon start; evolves via `Instinct.compact_cascade`.
+        # Default at daemon start; evolves via MOOD: line in big-model <think>.
         # Surfaces as `[Mood]` block on each turn's first user message.
         self._current_mood: str = "平靜，剛醒來"
 
@@ -440,11 +436,14 @@ class EventDispatcher:
         # discovery. The cascade preserves history within the turn via the
         # `messages` list; `[Memory context]` only appears in the first
         # user message, never re-injected.
-        recall_text = await self._inner_voice.recall(doll_event.perception)
-        if recall_text:
-            memory_block = f"[Memory context]\n{recall_text}\n\n"
+        hits = await self._memsearch.search(
+            doll_event.perception, top_k=self._memsearch_top_k
+        )
+        if hits:
+            mem_text = "\n".join(f"- {h['content']}" for h in hits)
         else:
-            memory_block = "[Memory context]\n(no relevant memory)\n\n"
+            mem_text = "(no relevant memory)"
+        memory_block = f"[Memory context]\n{mem_text}\n\n"
         first_user = (
             self._build_perception_blocks(
                 include_static=True, memory_block=memory_block
@@ -542,18 +541,13 @@ class EventDispatcher:
             self._current_mood = new_mood
             await self._append_mood(new_mood)
 
-        # Compact the cascade into a 1-sentence summary; append to rolling
-        # buffer for `[Recent activity]` block on next turn. Runs regardless
-        # of cascade exit reason (natural / same-tool-abort).
-        try:
-            summary = await self._instinct.compact_cascade(
-                perception=doll_event.perception,
-                cascade_messages=messages,
-            )
-            if summary:
-                self._rolling.append((datetime.now(), summary))
-        except Exception:
-            logger.exception("compact_cascade failed; rolling unchanged")
+        # Record the perception as a rolling activity entry.
+        # InnerVoice/Instinct compact_cascade removed (2026-05-16); the
+        # perception string itself is a sufficient activity label for the
+        # [Recent activity] block — no small-LLM required.
+        first_line = doll_event.perception.split("\n", 1)[0].strip()
+        if first_line:
+            self._rolling.append((datetime.now(), first_line))
 
         sink.put_nowait(TurnEnd())
 

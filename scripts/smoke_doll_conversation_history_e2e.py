@@ -34,7 +34,6 @@ from dollos.config import (  # noqa: E402
     CharacterConfig,
     ConversationHistoryConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
@@ -76,10 +75,6 @@ def _build_settings(tmp_root: Path) -> Settings:
         data=DataConfig(root=tmp_root / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://127.0.0.1:8003",
-            timeout_s=30.0,
-        ),
         conversation_history=ConversationHistoryConfig(max_turns=6),
     )
 

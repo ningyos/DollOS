@@ -77,13 +77,6 @@ class CharacterConfig(BaseModel):
         return v
 
 
-class InnerVoiceConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    base_url: str
-    timeout_s: float = 30.0
-
-
 class VoiceASRSettings(BaseModel):
     """DollOS-level ASR config (character-agnostic).
 
@@ -131,7 +124,6 @@ class Settings(BaseModel):
         default_factory=lambda: ConversationHistoryConfig()
     )
     character: CharacterConfig
-    inner_voice: InnerVoiceConfig
     voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
 
 

@@ -1,11 +1,11 @@
 """Real-LLM end-to-end smoke for tool-output paging.
 
-Runs DollOS daemon against the live big LLM (port 8001) and inner-voice
-small LLM (port 8003), sends a single user prompt over WS that should
-provoke a Shell call with long output followed by ReadToolOutput /
-GrepToolOutput. Observes the cascade, prints a chronological trace, and
-reports what Doll actually did. Pass/fail is purely observational —
-the point is behavior insight, not a strict assertion gate.
+Runs DollOS daemon against the live big LLM (port 8001), sends a single
+user prompt over WS that should provoke a Shell call with long output
+followed by ReadToolOutput / GrepToolOutput. Observes the cascade, prints
+a chronological trace, and reports what Doll actually did. Pass/fail is
+purely observational — the point is behavior insight, not a strict assertion
+gate.
 
 Run from worktree root:
 
@@ -32,7 +32,6 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from dollos.config import (  # noqa: E402
     CharacterConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
@@ -76,10 +75,6 @@ def _build_settings(tmp_root: Path) -> Settings:
         data=DataConfig(root=tmp_root / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://127.0.0.1:8003",
-            timeout_s=30.0,
-        ),
     )
 
 

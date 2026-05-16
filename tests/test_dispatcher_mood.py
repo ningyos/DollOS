@@ -21,8 +21,6 @@ from dollos.prompts import PromptRenderer
 from tests._dispatcher_helpers import (
     _FakeAdapter,
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -34,8 +32,7 @@ from tests._dispatcher_helpers import (
 @pytest.mark.asyncio
 async def test_dispatcher_initial_mood_is_default(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     assert disp._current_mood == "平靜，剛醒來"
 
 
@@ -51,8 +48,7 @@ async def test_dispatcher_injects_mood_block(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
     await _drain(sink)
@@ -74,8 +70,7 @@ async def test_dispatcher_mood_block_position(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice("- foo")
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     today = _dt.now().replace(hour=12, minute=0, second=0, microsecond=0)
     disp._rolling = [(today, "did stuff")]
 
@@ -102,11 +97,9 @@ async def test_dispatcher_parses_mood_from_last_assistant_message(tmp_path: Path
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct()
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -136,11 +129,9 @@ async def test_dispatcher_no_mood_update_when_assistant_lacks_mood_line(
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct()
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -167,11 +158,9 @@ async def test_dispatcher_appends_mood_to_file_when_parsed(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct()
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -199,11 +188,9 @@ async def test_dispatcher_indexes_mood_file_with_memsearch(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct()
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -239,11 +226,9 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
         _think_with_mood("第一輪心情"),
         _think_with_mood("第二輪心情"),
     ])
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct()
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",

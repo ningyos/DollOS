@@ -104,77 +104,6 @@ class _HangAdapter(LLMAdapter):
         yield StreamChunk(text="", done=True)  # pragma: no cover
 
 
-class _FakeInnerVoice:
-    """Fake InnerVoice.recall — returns a plain filtered string, captures args.
-
-    Post 2026-05-08 wire format: recall returns plain text (no "RECALL:"
-    prefix). Empty-string return signals "no relevant memory".
-    """
-
-    def __init__(
-        self,
-        recall_text: str = "- foo",
-        raises: Exception | None = None,
-    ) -> None:
-        self._text = recall_text
-        self._raises = raises
-        self.calls: list[str] = []
-
-    async def recall(self, query: str, **kwargs) -> str:
-        self.calls.append(query)
-        if self._raises is not None:
-            raise self._raises
-        return self._text
-
-
-class _FakeInstinct:
-    """Fake Instinct — captures process()/compact_cascade() calls.
-
-    `summaries` controls process() return values (legacy path).
-    `compact_summaries` controls compact_cascade() return values (active
-    path, post 2026-05-09 rolling-compact). When exhausted, compact
-    falls back to `f"summary {N}"` numbered by call count.
-    `compact_raises` makes compact_cascade raise instead of returning.
-    `raises` only applies to process() (not compact_cascade) so the
-    "instinct should not be called" sentinel test still works.
-    """
-
-    def __init__(
-        self,
-        summaries: list[str] | None = None,
-        raises: Exception | None = None,
-        compact_summaries: list[str] | None = None,
-        compact_raises: Exception | None = None,
-    ) -> None:
-        self._summaries = list(summaries) if summaries is not None else [""]
-        self._raises = raises
-        self._compact_summaries = (
-            list(compact_summaries) if compact_summaries is not None else []
-        )
-        self._compact_raises = compact_raises
-        self.calls: list[str] = []
-        self.compact_calls: list[dict] = []
-
-    async def process(self, event):  # type: ignore[no-untyped-def]
-        self.calls.append(event.perception)
-        if self._raises:
-            raise self._raises
-        if self._summaries:
-            return self._summaries.pop(0)
-        return ""
-
-    async def compact_cascade(self, *, perception, cascade_messages):
-        self.compact_calls.append({
-            "perception": perception,
-            "cascade_messages": list(cascade_messages),
-        })
-        if self._compact_raises is not None:
-            raise self._compact_raises
-        if self._compact_summaries:
-            return self._compact_summaries.pop(0)
-        return f"summary {len(self.compact_calls)}"
-
-
 class _FakeMemSearch:
     def __init__(self, hits: list | None = None) -> None:
         self.indexed: list = []
@@ -219,8 +148,8 @@ def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
 def _make_dispatcher(
     *,
     adapter: LLMAdapter,
-    inner_voice: _FakeInnerVoice,
     tmp_path: Path,
+    memsearch: "_FakeMemSearch | None" = None,
 ):
     from dollos.dispatcher import EventDispatcher
     from dollos.prompts import PromptRenderer
@@ -230,12 +159,10 @@ def _make_dispatcher(
 
     return EventDispatcher(
         adapter=adapter,
-        inner_voice=inner_voice,
-        instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
-        memsearch=_FakeMemSearch(),
+        memsearch=memsearch or _FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),

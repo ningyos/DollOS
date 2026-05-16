@@ -1,10 +1,8 @@
 """End-to-end test: WebSocket client → DollOS → mocked llama.cpp → response.
 
-The full chain runs, but with two cheap stubs:
-- InnerVoice.recall returns a fixed RECALL block (recall behavior is
-  covered by tests/test_inner_voice.py).
-- MemSearch.index is no-op'd (a real index() would download the
-  ~558MB ONNX model on first run).
+The full chain runs, but with a cheap stub:
+- MemSearch.index and MemSearch.search are no-op'd (a real index() would
+  download the ~558MB ONNX model on first run; search returns empty hits).
 """
 
 import asyncio
@@ -20,7 +18,6 @@ import websockets
 from dollos.config import (
     CharacterConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
@@ -62,38 +59,17 @@ async def test_full_round_trip_with_mocked_llamacpp(
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack_dir),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://test.local:8003",
-            timeout_s=5.0,
-        ),
     )
 
-    # Stub InnerVoice.recall — recall behavior is covered by test_inner_voice.py.
-    async def _stub_recall(self, query, **kwargs):
-        return "- user likes coffee"
-
-    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
-
-    # Stub SmallModelInstinct.process — legacy path (not called by current
-    # dispatcher, but kept for symmetry).
-    async def _stub_instinct_process(self, event):
-        return ""
-
-    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
-
-    # Stub SmallModelInstinct.compact_cascade — avoids real small-LLM call.
-    async def _stub_compact_cascade(self, *, perception, cascade_messages):
-        return "test summary"
-
-    monkeypatch.setattr(
-        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
-    )
-
-    # No-op memsearch.index() to avoid downloading the ONNX model in tests.
+    # No-op memsearch.index() + fake search to avoid downloading the ONNX model.
     async def _noop_index(self):
         return None
 
+    async def _stub_search(self, query, top_k=10):
+        return [{"content": "user likes coffee", "source": "test"}]
+
     monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
+    monkeypatch.setattr("memsearch.MemSearch.search", _stub_search)
 
     dollos = DollOS(settings)
     # Phase 1 schedule (2026-05-10): on first WS connect, kernel fires a
@@ -203,35 +179,16 @@ async def test_monitor_round_trip_with_mocked_llamacpp(
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack_dir),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://test.local:8003",
-            timeout_s=5.0,
-        ),
-    )
-
-    async def _stub_recall(self, query, **kwargs):
-        return ""
-
-    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
-
-    async def _stub_instinct_process(self, event):
-        return ""
-
-    monkeypatch.setattr(
-        "dollos.instinct.SmallModelInstinct.process", _stub_instinct_process
-    )
-
-    async def _stub_compact_cascade(self, *, perception, cascade_messages):
-        return "test summary"
-
-    monkeypatch.setattr(
-        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
     )
 
     async def _noop_index(self):
         return None
 
+    async def _stub_search(self, query, top_k=10):
+        return []
+
     monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
+    monkeypatch.setattr("memsearch.MemSearch.search", _stub_search)
 
     dollos = DollOS(settings)
     from datetime import date as _date
@@ -354,24 +311,17 @@ async def test_voice_session_offer_answer_with_mocked_aiortc(
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack_dir),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://test.local:8003", timeout_s=5.0,
-        ),
         voice=VoiceSettings(
             asr=VoiceASRSettings(engine="e2e-asr"),
             tts=VoiceTTSSettings(engine="e2e-tts"),
         ),
     )
 
-    async def _stub_recall(self, q, **kw): return ""
-    async def _stub_process(self, e): return ""
-    async def _stub_compact(self, *, perception, cascade_messages): return ""
     async def _noop_index(self): return None
+    async def _stub_search(self, query, top_k=10): return []
 
-    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
-    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_process)
-    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact)
     monkeypatch.setattr("memsearch.MemSearch.index", _noop_index)
+    monkeypatch.setattr("memsearch.MemSearch.search", _stub_search)
 
     from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
 

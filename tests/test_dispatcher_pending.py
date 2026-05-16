@@ -17,7 +17,6 @@ from dollos.llm.adapter import LLMAdapter, StreamChunk
 
 from tests._dispatcher_helpers import (
     _FakeAdapter,
-    _FakeInnerVoice,
     _drain,
     _make_dispatcher,
 )
@@ -44,8 +43,7 @@ async def test_concurrent_dispatch_runs_in_parallel(tmp_path: Path):
         ],
         delay=0.05,
     )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink_a: asyncio.Queue = asyncio.Queue()
     sink_b: asyncio.Queue = asyncio.Queue()
@@ -80,8 +78,7 @@ async def test_dispatcher_serializes_user_facing_events(tmp_path: Path):
         ],
         delay=0.05,
     )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink_a: asyncio.Queue = asyncio.Queue()
     sink_b: asyncio.Queue = asyncio.Queue()
@@ -115,8 +112,7 @@ async def test_dispatcher_does_not_serialize_subagent_result(tmp_path: Path):
         ],
         delay=0.05,
     )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink_a: asyncio.Queue = asyncio.Queue()
     sink_b: asyncio.Queue = asyncio.Queue()
@@ -151,8 +147,7 @@ async def test_dispatcher_processes_pending_after_cascade_ends(tmp_path: Path):
         ],
         delay=0.02,
     )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink_a: asyncio.Queue = asyncio.Queue()
     sink_b: asyncio.Queue = asyncio.Queue()
@@ -225,8 +220,7 @@ async def test_dispatcher_injects_pending_block_into_iter_perception(tmp_path: P
                 yield c
 
     adapter = _TwoIterAdapter()
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     # Patch the adapter into the dispatcher.
     dispatcher._adapter = adapter
@@ -259,8 +253,7 @@ async def test_dispatcher_injects_pending_block_into_iter_perception(tmp_path: P
 async def test_dispatcher_no_pending_block_when_empty(tmp_path: Path):
     """With no other events queued, no `[Pending events]` block appears."""
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))

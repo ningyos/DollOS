@@ -5,17 +5,13 @@ from pathlib import Path
 from dollos.config import (
     CharacterConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
     MemsearchConfig,
     Settings,
 )
-from dollos.inner_voice import InnerVoice
-from dollos.instinct import SmallModelInstinct
-from dollos.kernel import build_inner_voice, build_instinct, build_memsearch
-from dollos.prompts import PromptRenderer
+from dollos.kernel import build_memsearch
 
 
 def _make_settings(tmp_path: Path) -> Settings:
@@ -43,10 +39,6 @@ def _make_settings(tmp_path: Path) -> Settings:
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=7),
         character=CharacterConfig(pack=pack_dir),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://test.local:8003",
-            timeout_s=15.0,
-        ),
     )
 
 
@@ -77,57 +69,6 @@ def test_build_memsearch_returns_memsearch_instance(tmp_path: Path):
     instance = build_memsearch(settings)
     assert hasattr(instance, "search")
     assert callable(instance.search)
-
-
-def test_build_inner_voice_returns_innervoice_with_top_k_from_settings(tmp_path: Path):
-    settings = _make_settings(tmp_path)
-    memsearch = build_memsearch(settings)
-    iv = build_inner_voice(settings, memsearch, PromptRenderer())
-    assert isinstance(iv, InnerVoice)
-    assert iv._default_top_k == 7  # from MemsearchConfig.top_k
-
-
-def test_build_inner_voice_uses_inner_voice_config_base_url(tmp_path: Path):
-    """The factory must point InnerVoice's small-LLM provider at inner_voice.base_url,
-    not the main LLM's base_url."""
-    settings = _make_settings(tmp_path)
-    memsearch = build_memsearch(settings)
-    iv = build_inner_voice(settings, memsearch, PromptRenderer())
-    assert iv._llm._provider._base_url == "http://test.local:8003"
-    assert iv._llm._provider._timeout_s == 15.0
-
-
-def test_build_inner_voice_uses_qwen3_plain_template(tmp_path: Path):
-    from dollos.llm.templates import Qwen3PlainTemplate
-
-    settings = _make_settings(tmp_path)
-    memsearch = build_memsearch(settings)
-    iv = build_inner_voice(settings, memsearch, PromptRenderer())
-    assert isinstance(iv._llm._template, Qwen3PlainTemplate)
-
-
-def test_build_instinct_returns_small_model_instinct(tmp_path: Path):
-    settings = _make_settings(tmp_path)
-    renderer = PromptRenderer()
-    inst = build_instinct(settings, renderer)
-    assert isinstance(inst, SmallModelInstinct)
-
-
-def test_build_instinct_uses_inner_voice_config_base_url(tmp_path: Path):
-    settings = _make_settings(tmp_path)
-    renderer = PromptRenderer()
-    inst = build_instinct(settings, renderer)
-    assert inst._adapter._provider._base_url == "http://test.local:8003"
-    assert inst._adapter._provider._timeout_s == 15.0
-
-
-def test_build_instinct_uses_qwen3_plain_template(tmp_path: Path):
-    from dollos.llm.templates import Qwen3PlainTemplate
-
-    settings = _make_settings(tmp_path)
-    renderer = PromptRenderer()
-    inst = build_instinct(settings, renderer)
-    assert isinstance(inst._adapter._template, Qwen3PlainTemplate)
 
 
 def test_build_memsearch_indexes_skills_dir(tmp_path):

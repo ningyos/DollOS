@@ -1,9 +1,8 @@
 # scripts/smoke_doll_scratchpad_e2e.py
 """Real-LLM e2e smoke verifying scratchpad solves the T2-forgetting problem.
 
-Requires running llama-servers:
+Requires running llama-server:
 - Big LLM (Doll) at http://127.0.0.1:8001
-- Inner Voice small LLM at http://127.0.0.1:8003
 
 Sends Doll a multi-turn task: run `seq 1 200`, find line 150, report.
 Observes whether Doll writes the scratchpad before Shell, sees it in T2,
@@ -33,7 +32,6 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from dollos.config import (  # noqa: E402
     CharacterConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
@@ -75,10 +73,6 @@ def _build_settings(tmp_root: Path) -> Settings:
         data=DataConfig(root=tmp_root / "data"),
         memsearch=MemsearchConfig(top_k=10),
         character=CharacterConfig(pack=pack),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://127.0.0.1:8003",
-            timeout_s=30.0,
-        ),
     )
 
 

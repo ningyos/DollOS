@@ -10,7 +10,6 @@ import pytest
 from dollos.config import (
     CharacterConfig,
     DataConfig,
-    InnerVoiceConfig,
     IPCConfig,
     LLMConfig,
     LogConfig,
@@ -47,10 +46,6 @@ def _make_settings(tmp_path: Path) -> Settings:
         data=DataConfig(root=tmp_path / "data"),
         memsearch=MemsearchConfig(top_k=7),
         character=CharacterConfig(pack=pack_dir),
-        inner_voice=InnerVoiceConfig(
-            base_url="http://test.local:8003",
-            timeout_s=15.0,
-        ),
     )
 
 
@@ -96,27 +91,24 @@ class _FakeMemSearch:
     async def index_file(self, path):
         self.indexed.append(path)
 
+    async def search(self, query: str, top_k: int = 10) -> list:
+        return []
 
-def _install_fake_inner_voice(monkeypatch, recall_text: str | None = None, raises=None):
+
+def _install_fake_memsearch(monkeypatch, recall_text: str | None = None, raises=None):
+    """Stub memsearch.search to return fake hits (or raise) without touching a real model."""
     captured: list[str] = []
 
-    async def _stub_recall(self, query, **kwargs):
+    async def _stub_search(self, query, top_k=10):
         captured.append(query)
         if raises is not None:
             raise raises
-        return recall_text if recall_text is not None else "- foo"
+        text = recall_text if recall_text is not None else "- foo"
+        if not text:
+            return []
+        return [{"content": line.lstrip("- "), "source": "test"} for line in text.splitlines() if line.strip()]
 
-    async def _stub_instinct_process(self, event):
-        return ""
-
-    async def _stub_compact_cascade(self, *, perception, cascade_messages):
-        return "test summary"
-
-    monkeypatch.setattr("dollos.inner_voice.InnerVoice.recall", _stub_recall)
-    monkeypatch.setattr("dollos.instinct.SmallModelInstinct.process", _stub_instinct_process)
-    monkeypatch.setattr(
-        "dollos.instinct.SmallModelInstinct.compact_cascade", _stub_compact_cascade
-    )
+    monkeypatch.setattr("memsearch.MemSearch.search", _stub_search)
     return captured
 
 
@@ -136,12 +128,10 @@ def dollos_with_fakes(tmp_path, monkeypatch):
 
     dollos.dispatcher = EventDispatcher(
         adapter=fake_adapter,
-        inner_voice=dollos.inner_voice,
-        instinct=dollos.instinct,
         renderer=dollos.renderer,
         identity=dollos._doll_pack.identity,
         memory_root=tmp_path,
-        memsearch=_FakeMemSearch(),
+        memsearch=dollos.memsearch,  # keep real MemSearch so class-level patches work
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=dollos._cascade_logger,
         tool_output_store=dollos._tool_output_store,
@@ -173,7 +163,7 @@ async def test_handle_message_text_input_yields_chunks_then_turnend(
         ),
         StreamChunk(text="", done=True),
     ]
-    _install_fake_inner_voice(monkeypatch, "- foo")
+    _install_fake_memsearch(monkeypatch, "- foo")
 
     sink: asyncio.Queue = asyncio.Queue()
     result = await dollos._handle_message(TextInput(text="hi"), sink)
@@ -188,7 +178,7 @@ async def test_handle_message_text_input_yields_errormsg_on_dispatch_failure(
     dollos_with_fakes, monkeypatch
 ):
     dollos, _adapter = dollos_with_fakes
-    _install_fake_inner_voice(monkeypatch, raises=RuntimeError("boom"))
+    _install_fake_memsearch(monkeypatch, raises=RuntimeError("boom"))
 
     sink: asyncio.Queue = asyncio.Queue()
     await dollos._handle_message(TextInput(text="x"), sink)
@@ -206,7 +196,7 @@ async def test_dispatch_user_text_uses_stream_messages(
     is reserved for small-model callers."""
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_inner_voice(monkeypatch, "- foo")
+    _install_fake_memsearch(monkeypatch, "- foo")
 
     sink: asyncio.Queue = asyncio.Queue()
     await dollos._handle_message(TextInput(text="hi"), sink)
@@ -222,7 +212,7 @@ async def test_dispatch_user_text_uses_text_as_user_role(
 ):
     dollos, adapter = dollos_with_fakes
     adapter.chunks = [StreamChunk(text="", done=True)]
-    _install_fake_inner_voice(monkeypatch)
+    _install_fake_memsearch(monkeypatch)
 
     sink: asyncio.Queue = asyncio.Queue()
     await dollos._handle_message(TextInput(text="hello world"), sink)
