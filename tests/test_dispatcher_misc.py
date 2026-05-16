@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from dollos.conversation_history import ConversationHistory
 from dollos.scratchpad import Scratchpad
 from dollos.dispatcher import EventDispatcher, ToolResult
 from dollos.tool_outputs import ToolOutputStore
@@ -78,6 +79,7 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -130,6 +132,7 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(DiaryEvent(response_sink=sink))
@@ -183,6 +186,7 @@ async def test_dispatcher_logs_cascade_iter_per_iter(tmp_path: Path):
         cascade_logger=fcl,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -226,6 +230,7 @@ async def test_dispatcher_log_iter_includes_parsed_think_and_tool_calls(tmp_path
         cascade_logger=fcl,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         scratchpad=Scratchpad(),
+        conversation_history=ConversationHistory(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))

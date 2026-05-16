@@ -37,6 +37,7 @@ from dollos.events import (
 if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
     from dollos.tool_outputs import ToolOutputStore
+from dollos.conversation_history import ConversationHistory
 from dollos.inner_voice import InnerVoice
 from dollos.scratchpad import Scratchpad
 from dollos.instinct import Instinct
@@ -144,6 +145,7 @@ class EventDispatcher:
         monitor_runner: "MonitorRunner | None" = None,
         tool_output_store: "ToolOutputStore",
         scratchpad: Scratchpad,
+        conversation_history: ConversationHistory,
     ) -> None:
         self._adapter = adapter
         self._inner_voice = inner_voice
@@ -159,6 +161,7 @@ class EventDispatcher:
         self._monitor_runner = monitor_runner
         self._tool_output_store = tool_output_store
         self._scratchpad = scratchpad
+        self._conversation_history = conversation_history
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in MAIN_TOOLS
         }
