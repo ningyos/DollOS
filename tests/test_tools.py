@@ -228,9 +228,10 @@ def test_shell_schema_has_command_and_timeout_s():
     assert schema["properties"]["timeout_s"]["maximum"] == 600
 
 
-def test_shell_timeout_s_required():
-    with pytest.raises(ValidationError):
-        Shell(command="echo hi")  # timeout_s missing
+def test_shell_timeout_s_has_default():
+    # timeout_s now has a default (60); omitting it should succeed
+    s = Shell(command="echo hi")
+    assert s.timeout_s == 60
 
 
 def test_shell_timeout_s_validation_lower_bound():
@@ -565,9 +566,11 @@ def test_spawn_subagent_schema_has_task_and_timeout_s():
     assert "task" in schema["properties"]
     assert "timeout_s" in schema["properties"]
     assert "task" in schema["required"]
-    assert "timeout_s" in schema["required"]
+    # timeout_s now has a default (300); it is no longer in required
+    assert "timeout_s" not in schema.get("required", [])
     assert schema["properties"]["timeout_s"]["minimum"] == 1
     assert schema["properties"]["timeout_s"]["maximum"] == 600
+    assert schema["properties"]["timeout_s"]["default"] == 300
 
 
 def test_report_schema_has_status_summary_details():

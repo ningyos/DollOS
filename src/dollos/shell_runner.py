@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,10 +67,12 @@ class ShellRunner:
         if self._stopping:
             logger.warning("shell spawn ignored: runner stopping")
             return
-        coro = self._run(command, timeout_s)
-        t = asyncio.create_task(coro, name=f"shell-{command[:20]!r}")
+        task_id = f"shell-{uuid.uuid4().hex[:8]}"
+        coro = self._run(command, timeout_s, task_id)
+        t = asyncio.create_task(coro, name=task_id)
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
+
 
     async def stop(self) -> None:
         self._stopping = True
@@ -79,7 +82,7 @@ class ShellRunner:
             t.cancel()
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
-    async def _run(self, command: str, timeout_s: int) -> None:
+    async def _run(self, command: str, timeout_s: int, task_id: str) -> None:
         from dollos.mind.mind_state import Perception
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -110,7 +113,7 @@ class ShellRunner:
                     t=time.time(),
                     data={
                         "tool": "Shell",
-                        "task_id": f"shell-{command[:20]}",
+                        "task_id": task_id,
                         "status": "timeout",
                         "summary": f"shell timed out after {timeout_s}s",
                         "output_id": output_id,

@@ -225,12 +225,13 @@ class Shell(BaseModel):
         description="Shell command to run (passed to bash -c).",
     )
     timeout_s: int = Field(
+        60,
         ge=1,
         le=600,
         description=(
             "Wall-clock seconds before the proc is killed. Estimate "
             "from the command (5 short, 60 medium, 300 long; max 600). "
-            "No default — pick a number every time."
+            "Default 60s."
         ),
     )
 
@@ -360,12 +361,12 @@ class SpawnSubagent(BaseModel):
         )
     )
     timeout_s: int = Field(
+        300,
         ge=1,
         le=600,
         description=(
             "Wall-clock seconds before the subagent is killed. Estimate from "
-            "task complexity (30 short, 300 long; max 600). No default — pick "
-            "a number every time."
+            "task complexity (30 short, 300 long; max 600). Default 300s."
         ),
     )
 
@@ -423,11 +424,12 @@ class SpawnMonitor(BaseModel):
         ),
     )
     rate_limit_s: int = Field(
+        60,
         ge=0,
         le=3600,
         description=(
             "Per-monitor seconds-between-fires window. 0 disables. "
-            "60 is a reasonable default for noisy sources."
+            "Default 60s (reasonable for noisy sources)."
         ),
     )
 
