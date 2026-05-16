@@ -16,8 +16,6 @@ from dollos.dispatcher import EventDispatcher
 from dollos.logging_config import configure_cascade_logging
 from dollos.events import DailyPlanEvent, DiaryEvent, ScheduledEvent, UserTextEvent
 from dollos.schedule import due_entries, load_schedule
-from dollos.inner_voice import InnerVoice
-from dollos.instinct import Instinct, SmallModelInstinct
 from dollos.ipc.messages import (
     ErrorMsg,
     ICECandidateIn,
@@ -35,7 +33,7 @@ from dollos.voice.session import VoiceSession
 from dollos.voice.sink import TTSObservingSink
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
-from dollos.llm.templates import Qwen3PlainTemplate, Qwen3ThinkingTemplate
+from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
 from dollos.conversation_history import ConversationHistory
@@ -94,42 +92,6 @@ def build_memsearch(settings: Settings) -> MemSearch:
     )
 
 
-def build_inner_voice(
-    settings: Settings, memsearch: MemSearch, renderer: PromptRenderer
-) -> InnerVoice:
-    """Construct InnerVoice wired to a small llama.cpp model + memsearch.
-
-    v1 hardcodes (LlamaCppProvider, Qwen3PlainTemplate) for the small LLM.
-    """
-    provider = LlamaCppProvider(
-        base_url=settings.inner_voice.base_url,
-        timeout_s=settings.inner_voice.timeout_s,
-    )
-    llm = ComposedLLMAdapter(provider=provider, template=Qwen3PlainTemplate())
-    return InnerVoice(
-        memsearch=memsearch,
-        llm=llm,
-        renderer=renderer,
-        default_top_k=settings.memsearch.top_k,
-    )
-
-
-def build_instinct(
-    settings: Settings, renderer: PromptRenderer
-) -> Instinct:
-    """Construct SmallModelInstinct wired to the small llama.cpp model.
-
-    Uses the same `inner_voice` config block as InnerVoice — both are
-    small-model utilities. v1 hardcodes (LlamaCppProvider, Qwen3PlainTemplate).
-    """
-    provider = LlamaCppProvider(
-        base_url=settings.inner_voice.base_url,
-        timeout_s=settings.inner_voice.timeout_s,
-    )
-    adapter = ComposedLLMAdapter(provider=provider, template=Qwen3PlainTemplate())
-    return SmallModelInstinct(adapter=adapter, renderer=renderer)
-
-
 def build_voice_engines(
     pack_dir: Path,
     *,
@@ -176,8 +138,6 @@ class DollOS:
         self.adapter = build_adapter(settings)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
-        self.inner_voice = build_inner_voice(settings, self.memsearch, self.renderer)
-        self.instinct = build_instinct(settings, self.renderer)
         self._doll_pack = DollPack.load(settings.character.pack)
         cascade_log_root = settings.data.root / "cascade_log"
         configure_cascade_logging(cascade_log_root)
@@ -209,12 +169,11 @@ class DollOS:
         )
         self.dispatcher = EventDispatcher(
             adapter=self.adapter,
-            inner_voice=self.inner_voice,
-            instinct=self.instinct,
             renderer=self.renderer,
             identity=self._doll_pack.identity,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
+            memsearch_top_k=settings.memsearch.top_k,
             transcripts_root=settings.data.root / "memory" / "transcripts",
             subagent_runner=self.subagent_runner,
             cascade_logger=self._cascade_logger,

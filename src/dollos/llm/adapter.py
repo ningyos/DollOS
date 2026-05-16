@@ -64,6 +64,5 @@ class LLMAdapter(ABC):
         opens a fresh assistant `<think>` turn at the end regardless of the
         last message's role.
 
-        Single-shot small-model callers (InnerVoice / Instinct) keep using
-        `stream_completion`."""
+        Single-shot non-cascade callers keep using `stream_completion`."""
         ...

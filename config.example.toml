@@ -19,7 +19,7 @@ level = "INFO"
 root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-generated data lives here.
 
 [memsearch]
-top_k = 10   # InnerVoice.recall default; memsearch uses ONNX bge-m3 by default.
+top_k = 10   # memsearch uses ONNX bge-m3 by default.
 
 # ----------------------------------------------------------------------
 # Conversation history sliding window — recent turn transcripts prepended
@@ -32,10 +32,6 @@ max_turns = 6
 
 [character]
 pack = "character_packs/gura"   # directory containing doll.toml manifest
-
-[inner_voice]
-base_url = "http://127.0.0.1:8003"   # separate llama-server with small Qwen3 instruct (e.g. Qwen3-0.6B-Instruct)
-timeout_s = 30.0
 
 # ----------------------------------------------------------------------
 # Voice pipeline (ASR + TTS). Character packs hold ONLY per-character

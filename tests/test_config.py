@@ -21,9 +21,6 @@ port = 9876
 
 [character]
 pack = "character_packs/gura"
-
-[inner_voice]
-base_url = "http://127.0.0.1:8003"
 """
 
 
@@ -146,9 +143,6 @@ model_alias = "test-model"
 
 [character]
 profile_path = "experiments/test_character.jinja"
-
-[inner_voice]
-base_url = "http://127.0.0.1:8003"
 """
     )
     with pytest.raises(ValidationError):
@@ -167,9 +161,6 @@ model_alias = "test-model"
 
 [character]
 pack = "character_packs/gura"
-
-[inner_voice]
-base_url = "http://127.0.0.1:8003"
 """
     )
     with pytest.raises(ValidationError):

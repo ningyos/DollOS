@@ -20,8 +20,6 @@ from dollos.tools import ToolCtx
 from tests._dispatcher_helpers import (
     _FakeAdapter,
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -76,8 +74,6 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
                 ),
             ]
         )
-        iv = _FakeInnerVoice()
-        inst = _FakeInstinct(summaries=[""])
         ms = _FakeMemSearch()
 
         from dollos.conversation_history import ConversationHistory
@@ -85,8 +81,6 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
 
         kwargs = dict(
             adapter=adapter,
-            inner_voice=iv,
-            instinct=inst,
             renderer=PromptRenderer(),
             identity=_doll_identity("x"),
             memory_root=tmp_path,
@@ -117,9 +111,8 @@ async def test_dispatcher_threads_runner_into_tool_ctx(
 
 def test_dispatcher_accepts_no_shell_runner(tmp_path: Path):
     """Default ctor: shell_runner is None (back-compat with tests)."""
-    iv = _FakeInnerVoice()
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
     dispatcher = _make_dispatcher(
-        adapter=adapter, inner_voice=iv, tmp_path=tmp_path
+        adapter=adapter, tmp_path=tmp_path
     )
     assert dispatcher._shell_runner is None

@@ -20,8 +20,6 @@ from dollos.llm.adapter import StreamChunk
 from tests._dispatcher_helpers import (
     _FakeAdapter,
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -34,22 +32,21 @@ from tests._dispatcher_helpers import (
 
 @pytest.mark.asyncio
 async def test_recall_result_wraps_user_message_with_memory_context(tmp_path: Path):
-    """IV.recall result is wrapped in [Memory context] block prepended to
+    """memsearch.search result is wrapped in [Memory context] block prepended to
     user message (RAG context pattern, 2026-05-08). Prefill stays empty."""
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("- user likes coffee")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    ms = _FakeMemSearch(hits=[{"content": "user likes coffee", "source": "test"}])
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path, memsearch=ms)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hello world", response_sink=sink))
 
     await _drain(sink)
 
-    assert iv.calls == ["hello world"]
     assert len(adapter.calls) == 1
     user = adapter.calls[0]["messages"][0]["content"]
     assert "[Memory context]" in user
-    assert "- user likes coffee" in user
+    assert "user likes coffee" in user
     assert "[Message]" in user
     assert "hello world" in user
     assert "RECALL:" not in user
@@ -60,8 +57,7 @@ async def test_empty_recall_still_emits_memory_context_block(tmp_path: Path):
     """Empty IV.recall result still produces an explicit (no relevant memory)
     line in the [Memory context] block."""
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("")  # no hits
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -105,13 +101,9 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
             yield StreamChunk(text="", done=True)
 
     adapter = _CaptureAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
         renderer=__import__("dollos.prompts", fromlist=["PromptRenderer"]).PromptRenderer(),
         identity=_doll_identity("x"),
         memory_root=tmp_path,
@@ -182,8 +174,7 @@ async def test_dispatcher_perceives_scheduled_event(tmp_path: Path):
     from dollos.events import ScheduledEvent
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(ScheduledEvent(
@@ -203,8 +194,7 @@ async def test_dispatcher_perceives_daily_plan_event(tmp_path: Path):
     from dollos.events import DailyPlanEvent
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice("")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(DailyPlanEvent(response_sink=sink))
@@ -222,8 +212,7 @@ async def test_dispatcher_perceives_shell_result_event(tmp_path: Path):
     from dollos.events import ShellResultEvent
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     sink: asyncio.Queue = asyncio.Queue()
     ev = ShellResultEvent(
         command="ls /tmp",
@@ -249,8 +238,7 @@ async def test_dispatcher_perceives_monitor_triggered(tmp_path: Path):
     from dollos.events import MonitorTriggeredEvent
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     sink: asyncio.Queue = asyncio.Queue()
     ev = MonitorTriggeredEvent(
         monitor_id="mon-1",
@@ -273,8 +261,7 @@ async def test_dispatcher_perceives_monitor_exited(tmp_path: Path):
     from dollos.events import MonitorExitedEvent
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     sink: asyncio.Queue = asyncio.Queue()
     ev = MonitorExitedEvent(
         monitor_id="mon-2",
@@ -327,8 +314,7 @@ def test_format_active_monitors_block():
 
 def test_perception_includes_empty_scratchpad_block(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     body = dispatcher._build_perception_blocks(
         include_static=True,
         memory_block="[Memory context]\n(no relevant memory)\n\n",
@@ -341,8 +327,7 @@ def test_perception_includes_empty_scratchpad_block(tmp_path: Path):
 
 def test_perception_includes_filled_scratchpad_block(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     dispatcher._scratchpad.write("# Current goal\nfind line 150")
     body = dispatcher._build_perception_blocks(
         include_static=True,

@@ -24,8 +24,6 @@ from dollos.prompts import PromptRenderer
 from tests._dispatcher_helpers import (
     _FakeAdapter,
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -67,12 +65,10 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     transcripts_root = tmp_path / "transcripts"
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
@@ -120,12 +116,10 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
 
     from dollos.events import DiaryEvent
     adapter = _CaptureAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     transcripts_root = tmp_path / "transcripts"
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=transcripts_root,
@@ -172,12 +166,9 @@ async def test_dispatcher_logs_cascade_iter_per_iter(tmp_path: Path):
     # _FakeAdapter replays the same `chunks` each call, so the second call
     # also produces the bogus tool. Cascade aborts on consecutive 3 fails;
     # we just need >=2 iters logged. Run until natural termination.
-    iv = _FakeInnerVoice("")
     fcl = _FakeCascadeLogger()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
@@ -216,12 +207,9 @@ async def test_dispatcher_log_iter_includes_parsed_think_and_tool_calls(tmp_path
             ),
         ]
     )
-    iv = _FakeInnerVoice("")
     fcl = _FakeCascadeLogger()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
@@ -266,8 +254,7 @@ async def test_dispatcher_injects_now_block_in_first_user_message(tmp_path: Path
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -302,8 +289,7 @@ async def test_dispatcher_recent_activity_renders_with_seconds(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     today = _dt.now().replace(hour=14, minute=15, second=30, microsecond=0)
     disp._rolling = [(today, "主人查 pwd")]
 
@@ -333,8 +319,7 @@ async def test_dispatcher_recent_activity_uses_full_date_for_old_entries(
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     yesterday = _dt.now().replace(
         hour=10, minute=5, second=0, microsecond=0
     ) - _td(days=1)
@@ -358,7 +343,6 @@ async def test_shell_result_perception_includes_paging_hints(tmp_path: Path) -> 
     """ShellResultEvent perception text includes output_id, total lines, and ReadToolOutput hint."""
     disp = _make_dispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=_FakeInnerVoice(),
         tmp_path=tmp_path,
     )
     sink: asyncio.Queue = asyncio.Queue()

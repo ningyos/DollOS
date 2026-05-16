@@ -1,12 +1,8 @@
 """Event types — two-tier model.
 
 RawEvent: structured event from a source (IPC text, voice, timer, ...).
-DollEvent: natural-language perception emitted by Inner Voice's perceive(),
-           consumed by the big LLM as the `user` role.
-
-Step 4 ships RawEvent + UserTextEvent + DollEvent dataclasses. The
-RawEvent → DollEvent conversion is stubbed (passthrough). Step 5 will
-replace the stub with InnerVoice.perceive().
+DollEvent: natural-language perception consumed by the big LLM as the
+           `user` role.
 """
 
 from __future__ import annotations

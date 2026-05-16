@@ -209,54 +209,6 @@ def test_scaffolding_renders_identity_sections():
     assert "- 不 LARP" in out
 
 
-def test_iv_compact_template_renders_with_perception_and_messages():
-    """iv_compact template renders system + user blocks, threading
-    perception + cascade_messages content into the user block."""
-    renderer = PromptRenderer()
-    msgs = [
-        {"role": "assistant", "content": "想了一下要不要 Recall"},
-        {"role": "user", "content": "<tool_response>\n找到了\n</tool_response>"},
-    ]
-    blocks = renderer.render_blocks(
-        "iv_compact",
-        perception="我剛才說了什麼",
-        cascade_messages=msgs,
-    )
-    assert set(blocks.keys()) >= {"system", "user"}
-    # System: voice / language rules.
-    assert "第一人稱" in blocks["system"] or "first-person" in blocks["system"].lower()
-    assert "1-2" in blocks["system"] or "一" in blocks["system"]
-    # User: perception + cascade content threaded.
-    assert "我剛才說了什麼" in blocks["user"]
-    assert "想了一下要不要 Recall" in blocks["user"]
-    assert "找到了" in blocks["user"]
-    # User block markers per plan §1.
-    assert "[我]" in blocks["user"]
-    assert "[Result]" in blocks["user"]
-
-
-def test_iv_compact_template_no_longer_references_mood():
-    """Mood is now produced by the big model in <think>, not the small
-    model post-hoc. iv_compact must not mention prior_mood / MOOD output."""
-    renderer = PromptRenderer()
-    blocks = renderer.render_blocks(
-        "iv_compact",
-        perception="hi",
-        cascade_messages=[],
-    )
-    assert "我之前的心情" not in blocks["user"]
-    assert "MOOD" not in blocks["system"]
-    assert "SUMMARY:" not in blocks["system"]
-
-
-def test_iv_summary_template_includes_language_rule():
-    """Inner Voice prompt must enforce 繁體中文 output."""
-    renderer = PromptRenderer()
-    blocks = renderer.render_blocks(
-        "iv_summary", prev_summary="(none)", perception="hello"
-    )
-    assert "繁體中文" in blocks["system"] or "Traditional Chinese" in blocks["system"]
-
 
 def test_scaffolding_explains_pending_events_block():
     """gap #4: scaffolding teaches Doll what `[Pending events]` means."""

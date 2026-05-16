@@ -19,8 +19,6 @@ from dollos.tool_outputs import ToolOutputStore
 
 from tests._dispatcher_helpers import (
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -37,8 +35,6 @@ def _make_dispatcher_with_history(
 
     return EventDispatcher(
         adapter=adapter,
-        inner_voice=_FakeInnerVoice(""),
-        instinct=_FakeInstinct(),
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,

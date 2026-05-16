@@ -26,8 +26,6 @@ from dollos.prompts import PromptRenderer
 from tests._dispatcher_helpers import (
     _FakeAdapter,
     _FakeCascadeLogger,
-    _FakeInstinct,
-    _FakeInnerVoice,
     _FakeMemSearch,
     _doll_identity,
     _drain,
@@ -51,8 +49,7 @@ async def test_dispatch_is_sync_returns_immediately(tmp_path: Path):
         ],
         delay=0.05,
     )
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     ev = UserTextEvent(text="hi", response_sink=sink)
@@ -78,8 +75,7 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: 
             StreamChunk(text="", done=True),
         ],
     )
-    iv = _FakeInnerVoice("RECALL:\n- foo\n")
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -96,8 +92,14 @@ async def test_dispatch_pushes_chunks_then_turnend_then_none_sentinel(tmp_path: 
 @pytest.mark.asyncio
 async def test_handler_exception_pushes_errormsg_and_sentinel(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice(raises=RuntimeError("boom"))
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+
+    class _RaisingMemSearch(_FakeMemSearch):
+        async def search(self, query: str, top_k: int = 10) -> list:
+            raise RuntimeError("boom")
+
+    dispatcher = _make_dispatcher(
+        adapter=adapter, tmp_path=tmp_path, memsearch=_RaisingMemSearch()
+    )
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="x", response_sink=sink))
@@ -118,8 +120,7 @@ async def test_perceive_typeerror_for_unsupported_raw_logged(tmp_path: Path, cap
         pass
 
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
         dispatcher.dispatch(FooEvent())
@@ -143,8 +144,7 @@ async def test_stop_cancels_in_flight_tasks(tmp_path: Path):
     from tests._dispatcher_helpers import _HangAdapter
 
     hang = _HangAdapter()
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=hang, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=hang, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     dispatcher.dispatch(UserTextEvent(text="hang", response_sink=sink))
@@ -161,8 +161,7 @@ async def test_stop_cancels_in_flight_tasks(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_dispatch_after_stop_raises_runtime_error(tmp_path: Path):
     adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
-    iv = _FakeInnerVoice()
-    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     await dispatcher.stop()
 
@@ -173,54 +172,6 @@ async def test_dispatch_after_stop_raises_runtime_error(tmp_path: Path):
 
 # ----- Tool dispatch / cascade mechanics -----
 
-
-@pytest.mark.asyncio
-async def test_dispatcher_does_not_call_instinct_process(tmp_path: Path):
-    """Instinct.process is no longer called from the dispatcher hot path
-    (post 2026-05-08). Class still constructible (kernel builds it), just
-    not consumed here."""
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ]
-    )
-    iv = _FakeInnerVoice()
-    # Instinct that would raise if called — proves dispatcher never calls it.
-    inst = _FakeInstinct(raises=RuntimeError("instinct should not be called"))
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
-        renderer=PromptRenderer(),
-        identity=_doll_identity(),
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        cascade_logger=_FakeCascadeLogger(),
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-        conversation_history=ConversationHistory(),
-    )
-
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-
-    items = []
-    while True:
-        item = await sink.get()
-        if item is None:
-            break
-        items.append(item)
-
-    assert inst.calls == []
-    # Adapter still ran (no instinct error surfaced).
-    assert len(adapter.calls) == 1
-    assert any(isinstance(m, TextChunk) for m in items)
 
 
 @pytest.mark.asyncio
@@ -237,13 +188,9 @@ async def test_dispatcher_uses_stream_messages_not_stream_completion(tmp_path: P
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice("- foo")
-    inst = _FakeInstinct(summaries=["主人剛打招呼。"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
@@ -279,13 +226,9 @@ async def test_dispatcher_routes_say_tool_call_to_text_chunk(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
@@ -325,13 +268,9 @@ async def test_dispatcher_routes_note_memory_tool_call(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=adapter,
-        inner_voice=iv,
-        instinct=inst,
         renderer=PromptRenderer(),
         identity=_doll_identity(),
         memory_root=tmp_path,
@@ -372,11 +311,9 @@ async def test_dispatcher_executes_multiple_tool_calls_in_order(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -411,11 +348,9 @@ async def test_dispatcher_naked_text_is_dropped(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -453,11 +388,9 @@ async def test_dispatcher_unknown_tool_logs_and_skips(tmp_path: Path, caplog):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -496,11 +429,9 @@ async def test_dispatcher_validation_error_logs_and_skips(tmp_path: Path, caplog
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -529,11 +460,9 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
     adapter = _FakeAdapter(
         chunks=[StreamChunk(text="", done=True)]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -559,12 +488,9 @@ async def test_dispatcher_passes_tools_to_adapter(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -588,12 +514,9 @@ async def test_dispatch_tool_call_returns_none_on_success(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -616,12 +539,9 @@ async def test_dispatch_tool_call_returns_failure_on_unknown_tool(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_returns_failure_on_validation_error(tmp_path):
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -648,13 +568,9 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
         text: str
         async def run(self, ctx):
             raise RuntimeError("kaboom")
-
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -680,12 +596,9 @@ async def test_dispatch_tool_call_returns_failure_and_emits_errormsg_on_runtime_
 
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -706,12 +619,9 @@ async def test_dispatch_tool_call_non_string_name_returns_failure(tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_tool_call_returns_none_when_tool_run_returns_none(tmp_path):
     """Side-effect tool (Say) returning None → _dispatch_tool_call returns None (no cascade)."""
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -738,13 +648,9 @@ async def test_dispatch_tool_call_returns_success_result_when_tool_returns_str(t
         text: str
         async def run(self, ctx) -> str:
             return f"echoed: {self.text}"
-
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -773,13 +679,9 @@ async def test_dispatch_tool_call_returns_success_result_with_empty_str(tmp_path
     class _EmptyReturningTool(BaseModel):
         async def run(self, ctx) -> str:
             return ""
-
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
         adapter=_FakeAdapter(chunks=[]),
-        inner_voice=iv, instinct=inst,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -842,11 +744,9 @@ async def test_respond_cascades_after_unknown_tool(tmp_path: Path):
         ],
     ]
     adapter = _RoundedFakeAdapter(rounds)
-    iv = _FakeInnerVoice(recall_text="RECALL:\n- foo\n")
-    inst = _FakeInstinct(summaries=["", ""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -908,11 +808,9 @@ async def test_respond_no_cascade_when_no_fails(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -964,11 +862,9 @@ async def test_respond_cascade_perception_includes_multiple_fails(tmp_path: Path
                 yield StreamChunk(text="", done=True)
 
     adapter = _TwoRoundAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=["", ""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1035,11 +931,9 @@ async def test_respond_cascades_success_with_returning_tool(tmp_path: Path):
         ],
     ]
     adapter = _RoundedFakeAdapter(rounds)
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=["", ""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1111,11 +1005,9 @@ async def test_respond_cascades_success_with_empty_str_perception(tmp_path: Path
         ],
     ]
     adapter = _RoundedFakeAdapter(rounds)
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=["", ""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1163,8 +1055,7 @@ async def test_cascade_breaks_on_same_tool_consecutive_3_failures(tmp_path: Path
             yield StreamChunk(text="", done=True)
 
     adapter = _RoundedAdapter()
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1213,8 +1104,7 @@ async def test_cascade_resets_consecutive_counter_on_success(tmp_path: Path):
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1252,8 +1142,7 @@ async def test_cascade_does_not_break_on_alternating_tool_failures(tmp_path: Pat
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
 
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -1293,8 +1182,7 @@ async def test_cascade_preserves_original_user_in_messages_first(tmp_path: Path)
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     disp._tools_by_name["_Echo"] = _Echo
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -1343,8 +1231,7 @@ async def test_cascade_appends_assistant_then_tool_response(tmp_path: Path):
                 yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     disp._tools_by_name["_Path"] = _Path
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -1387,8 +1274,7 @@ async def test_cascade_does_not_reinject_memory_context_per_iteration(tmp_path: 
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice("foo")
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     disp._tools_by_name["_Echo"] = _Echo
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -1416,11 +1302,9 @@ async def test_respond_no_cascade_when_only_none_returning_tools(tmp_path: Path)
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1455,8 +1339,7 @@ async def test_dispatcher_rolling_starts_empty(tmp_path: Path):
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice("- foo")
-    disp = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    disp = _make_dispatcher(adapter=adapter, tmp_path=tmp_path)
     assert disp._rolling == []
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -1485,11 +1368,9 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(compact_summaries=["s1", "s2", "s3"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1504,7 +1385,8 @@ async def test_dispatcher_rolling_appends_after_each_turn(tmp_path: Path):
         disp.dispatch(UserTextEvent(text=text, response_sink=sink))
         await _drain(sink)
 
-    assert [s for _, s in disp._rolling] == ["s1", "s2", "s3"]
+    # Rolling now uses perception first line (no small-LLM compact).
+    assert [s for _, s in disp._rolling] == ["a", "b", "c"]
 
 
 @pytest.mark.asyncio
@@ -1525,11 +1407,9 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
             yield StreamChunk(text="", done=True)
 
     adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(compact_summaries=["summary 1", "summary 2"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1546,76 +1426,19 @@ async def test_dispatcher_subsequent_turn_includes_recent_activity_block(tmp_pat
 
     second_user = adapter.calls[1]["messages"][-1]["content"]
     assert "[Recent activity]\n" in second_user
-    assert "summary 1" in second_user
+    # Rolling now uses perception first line (no small-LLM compact).
+    assert "first" in second_user
     # And the [Recent activity] block precedes [Memory context].
     ra_idx = second_user.index("[Recent activity]")
     mc_idx = second_user.index("[Memory context]")
     assert ra_idx < mc_idx
 
 
-@pytest.mark.asyncio
-async def test_dispatcher_compact_called_with_full_cascade_messages(tmp_path: Path):
-    """After a 2-iteration cascade (returning tool then Say), compact_cascade
-    receives the full messages list (user, assistant, user(<tool_response>),
-    assistant)."""
-
-    class _Echo(BaseModel):
-        text: str
-        async def run(self, ctx) -> str:
-            return f"e:{self.text}"
-
-    class _ScriptedAdapter:
-        def __init__(self):
-            self.calls: list[dict] = []
-
-        async def stream_messages(self, **kw):
-            idx = len(self.calls)
-            self.calls.append({**kw, "messages": list(kw["messages"])})
-            scripts = [
-                '<tool_call>{"name":"_Echo","arguments":{"text":"x"}}</tool_call>',
-                '<tool_call>{"name":"Say","arguments":{"text":"done"}}</tool_call>',
-            ]
-            yield StreamChunk(text=scripts[min(idx, 1)], done=False)
-            yield StreamChunk(text="", done=True)
-
-    adapter = _ScriptedAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(compact_summaries=["s"])
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), identity=_doll_identity("x"),
-        memory_root=tmp_path, memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        cascade_logger=_FakeCascadeLogger(),
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-        conversation_history=ConversationHistory(),
-    )
-    disp._tools_by_name["_Echo"] = _Echo
-
-    sink: asyncio.Queue = asyncio.Queue()
-    disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-    await _drain(sink)
-
-    assert len(inst.compact_calls) == 1
-    call = inst.compact_calls[0]
-    assert call["perception"] == "hi"
-    msgs = call["cascade_messages"]
-    # user(framed) + assistant(round1) + user(<tool_response>) + assistant(round2)
-    assert len(msgs) == 4
-    assert msgs[0]["role"] == "user"
-    assert "[Message]" in msgs[0]["content"]
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[2]["role"] == "user"
-    assert "<tool_response>" in msgs[2]["content"]
-    assert msgs[3]["role"] == "assistant"
 
 
 @pytest.mark.asyncio
 async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
-    """Same-tool 3-fail abort: compact_cascade still runs, summary still
-    appends to _rolling."""
+    """Same-tool 3-fail abort: rolling entry still appended (perception first line)."""
 
     class _RoundedAdapter:
         def __init__(self):
@@ -1633,11 +1456,9 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
             yield StreamChunk(text="", done=True)
 
     adapter = _RoundedAdapter()
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(compact_summaries=["abort-summary"])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=PromptRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
@@ -1654,50 +1475,8 @@ async def test_dispatcher_compact_runs_after_same_tool_abort(tmp_path: Path):
         isinstance(m, ErrorMsg) and "連續 3 次 InvokeSkill" in m.message
         for m in items
     )
-    assert len(inst.compact_calls) == 1
-    assert [s for _, s in disp._rolling] == ["abort-summary"]
-
-
-@pytest.mark.asyncio
-async def test_dispatcher_compact_failure_does_not_crash_turn(tmp_path: Path, caplog):
-    """compact_cascade raising must not crash the turn: TurnEnd still
-    fires, no extra ErrorMsg for compact, _rolling stays empty."""
-    adapter = _FakeAdapter(
-        chunks=[
-            StreamChunk(
-                text='<tool_call>{"name":"Say","arguments":{"text":"ok"}}</tool_call>',
-                done=False,
-            ),
-            StreamChunk(text="", done=True),
-        ]
-    )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(compact_raises=RuntimeError("compact-boom"))
-    ms = _FakeMemSearch()
-    disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
-        renderer=PromptRenderer(), identity=_doll_identity("x"),
-        memory_root=tmp_path, memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        cascade_logger=_FakeCascadeLogger(),
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-        conversation_history=ConversationHistory(),
-    )
-    sink: asyncio.Queue = asyncio.Queue()
-    with caplog.at_level(logging.ERROR, logger="dollos.dispatcher"):
-        disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
-        items = await _drain(sink)
-
-    # TurnEnd still arrives, plus the None sentinel.
-    assert any(isinstance(m, TurnEnd) for m in items)
-    # No ErrorMsg surfaced for compact failure (logged only).
-    error_msgs = [m for m in items if isinstance(m, ErrorMsg)]
-    assert not any("compact-boom" in m.message for m in error_msgs)
-    # _rolling stays empty.
-    assert disp._rolling == []
-    # Failure was logged.
-    assert any("compact_cascade" in r.message for r in caplog.records)
+    # Rolling gets the perception first line.
+    assert len(disp._rolling) == 1
 
 
 # ----- Skills rendering -----
@@ -1734,11 +1513,9 @@ async def test_dispatcher_passes_available_skills_to_scaffolding_renderer(tmp_pa
             StreamChunk(text="", done=True),
         ]
     )
-    iv = _FakeInnerVoice()
-    inst = _FakeInstinct(summaries=[""])
     ms = _FakeMemSearch()
     disp = EventDispatcher(
-        adapter=adapter, inner_voice=iv, instinct=inst,
+        adapter=adapter,
         renderer=_SpyRenderer(), identity=_doll_identity("x"),
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",

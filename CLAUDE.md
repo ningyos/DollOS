@@ -7,17 +7,16 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 **Product positioning (2026-05-01 pivot — see `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md`):**
 
 - **Doll** — the AI companion herself. Soul, memory, personality, decisions all live in DollOS on the computer.
-- **DollOS** — Python process: event loop + Inner Voice (Instinct) + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
+- **DollOS** — Python process: event loop + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
 - **DollOS UI** — Tauri (Rust shell + Web frontend) with Cubism Web SDK rendering Live2D. Win/Mac get transparent overlay desktop pet; Linux gets a normal window.
 - **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from DollOS.
-- **Big LLM** — user's choice (cloud API / self-host llama.cpp). DollOS only hosts the **small Inner Voice model** (0.6B–1.7B) locally.
-- **VoM (Voice of Mind) + grammar injection** — small model digests memory + events; result reaches the big model via a `[Memory context]` block prepended to the user message + an explicit `Recall` tool. **Wire format pivoted 2026-05-08**: structured STATE/RECALL prefill into `<think>` was abandoned (LLM training distribution has no precedent for ReAct-style memory labels → mimicry / list-continuation failure). Two-tier architecture preserved; only the wire format between layers changed. See `docs/research/grammar_injection_techreport.md` (think-block grammar) and `docs/superpowers/plans/2026-05-08-memory-rag-tool.md` (current wire format).
-- **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Instinct's involuntary state + Memory's self-history + character description), not from prompt commands. See main spec §8.
+- **Big LLM** — user's choice (cloud API / self-host llama.cpp). Single LLM dependency (port 8001). No small model.
+- **Memory pipeline** — `memsearch.search(query, top_k)` → format as bullet list → `[Memory context]` block prepended to the user message + explicit `Recall` tool for on-demand deeper search. **2026-05-16**: Inner Voice (small-LLM filter) removed — A/B showed net-negative (slower + worse). Direct memsearch top-K is now the wire format. See `docs/superpowers/plans/2026-05-08-memory-rag-tool.md`.
+- **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Memory's self-history + character description), not from prompt commands. See main spec §8.
 
-**Three-layer intelligence:**
-1. **Instinct (Inner Voice)** — small model, always-on, reactive. Digest / classify / triage / decide-to-wake / reflex / VoM recall. Per-event preprocessing.
-2. **Doll** — user's chosen large model, deliberative. Wakes when Instinct decides this event needs her conscious attention.
-3. **Subagent / 分身** (ephemeral) and **Drone** (persistent) — task-specific agents Doll dispatches.
+**Two-layer intelligence:**
+1. **Doll** — user's chosen large model, deliberative. Handles all events (conversation, schedule, monitors, subagent results).
+2. **Subagent / 分身** (ephemeral) and **Drone** (persistent) — task-specific agents Doll dispatches.
 
 ## Repo Map
 
@@ -56,8 +55,8 @@ DollOS/
   - **Drone** (future) — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
-- **BYO big LLM**: DollOS hosts only the small Inner Voice model. Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
-- **VoM wire format**: Inner Voice's small-LLM-filtered recall result is wrapped in a `[Memory context]` block prepended to the user message; the explicit `Recall` pydantic tool gives Doll on-demand deeper search (raw memsearch hits). No prefill into `<think>`. Backend-portable (works on any provider that accepts a user message).
+- **BYO big LLM**: DollOS has a single LLM dependency (port 8001). No small model (Inner Voice removed 2026-05-16). Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
+- **Memory wire format**: `memsearch.search(query, top_k)` → bullet list → `[Memory context]` block prepended to the user message. Explicit `Recall` pydantic tool for on-demand deeper search. No prefill into `<think>`. Backend-portable.
 - **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
 - **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from character description + Doll's own memory entries (self-history, preferences, mood) surfacing through the `[Memory context]` block + `Recall` tool. The 2026-05-08 smoke confirmed Self-First behavior emerges this way (T2 「我自己愛冰美式，你呢？」).
@@ -190,12 +189,10 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
 
 ```
 電腦端（DollOS）
-  Event Loop ── Instinct（Inner Voice 小模型 + 規則 + reflex）
-                  ↓ wake / drop / fire
-              Doll Turn（大模型 + [Memory context] block + Recall tool）
+  Event Loop ── Doll Turn（大模型 + [Memory context] block + Recall tool）
                   ↓ tool calls
               Subagent（即時）/ Drone（持久）
-              Memory SoT（sqlite-vec + FTS5）
+              Memory SoT（memsearch: Milvus Lite + ONNX bge-m3）
               Character Pack Manager（.doll v3）
               Voice Pipeline Server（ASR/TTS）
               IPC Server (localhost WS / network WS)
