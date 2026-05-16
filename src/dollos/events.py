@@ -62,13 +62,20 @@ class SubagentResultEvent(RawEvent):
         the result-turn streams back to the same client. May reference a
         sink whose original consumer has already disconnected (see plan
         §Risks); push attempts on a dead queue are tolerated by asyncio.
+
+    details: preview head of full details (~SUBAGENT_PREVIEW_LINES lines).
+    details_output_id: ToolOutputStore key for the full details text;
+        None on error paths where no details were captured.
+    details_line_count: total line count of the full details text.
     """
 
     subagent_id: str
     task: str
     status: Literal["ok", "incomplete", "timeout", "error", "no_report"]
-    summary: str
-    details: str
+    summary: str   # unchanged — subagent's structured Report.summary (short by design)
+    details: str   # preview head of full details (~SUBAGENT_PREVIEW_LINES lines)
+    details_output_id: str | None   # None on error before any details captured
+    details_line_count: int
     response_sink: asyncio.Queue[ServerMessage | None]
 
 
@@ -90,7 +97,9 @@ class ShellResultEvent(RawEvent):
     command: str
     status: Literal["ok", "nonzero", "timeout", "error"]
     exit_code: int | None
-    output: str
+    output: str   # preview head only (~10 lines)
+    output_id: str | None   # None only if runner-level error before any output captured
+    line_count: int   # total lines of the full output
     response_sink: asyncio.Queue[ServerMessage | None]
 
 

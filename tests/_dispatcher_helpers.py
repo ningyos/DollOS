@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dollos.character import Identity
 from dollos.llm.adapter import LLMAdapter, StreamChunk
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import ToolCtx
 
 
@@ -208,6 +209,7 @@ def _make_tool_ctx(sink, memory_root, memsearch) -> ToolCtx:
         memory_root=memory_root,
         memsearch=memsearch,
         transcripts_root=memory_root / "transcripts",
+        tool_output_store=ToolOutputStore(memory_root / "tool_outputs"),
     )
 
 
@@ -230,6 +232,7 @@ def _make_dispatcher(
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
 

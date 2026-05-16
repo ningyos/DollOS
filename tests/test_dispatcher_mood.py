@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from dollos.dispatcher import EventDispatcher
+from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
 from dollos.ipc.messages import TextChunk
 from dollos.llm.adapter import StreamChunk
@@ -108,6 +109,7 @@ async def test_dispatcher_parses_mood_from_last_assistant_message(tmp_path: Path
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -139,6 +141,7 @@ async def test_dispatcher_no_mood_update_when_assistant_lacks_mood_line(
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -167,6 +170,7 @@ async def test_dispatcher_appends_mood_to_file_when_parsed(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -196,6 +200,7 @@ async def test_dispatcher_indexes_mood_file_with_memsearch(tmp_path: Path):
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -233,6 +238,7 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
         memory_root=tmp_path, memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     for text in ("first", "second"):

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
+    from dollos.tool_outputs import ToolOutputStore
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class ToolCtx:
     memory_root: Path
     memsearch: MemSearch
     transcripts_root: Path
+    tool_output_store: "ToolOutputStore"
     subagent_runner: "SubagentRunner | None" = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None
@@ -492,12 +494,65 @@ class WriteSchedule(BaseModel):
         return f"Schedule written: {len(parsed)} entries"
 
 
+class ReadToolOutput(BaseModel):
+    """Read a slice of a stored tool output by id.
+
+    Tool outputs come from Shell / Subagent. The originating result perception
+    shows the output_id and total line count; use this tool to page deeper
+    than the preview.
+    """
+
+    id: str = Field(
+        ...,
+        description="output id from a tool result perception (e.g. 'out-abc12345')",
+    )
+    offset: int = Field(
+        0,
+        description="zero-indexed line to start at; negative counts from end",
+    )
+    limit: int = Field(
+        50,
+        ge=1,
+        le=500,
+        description="max lines to return; default 50, hard cap 500",
+    )
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        slice_ = ctx.tool_output_store.read(self.id, offset=self.offset, limit=self.limit)
+        header = (
+            f"lines {slice_.start_offset}–{slice_.end_offset} of {slice_.total_lines}:"
+        )
+        body = "\n".join(slice_.lines) if slice_.lines else "(empty slice)"
+        return f"{header}\n{body}"
+
+
+class GrepToolOutput(BaseModel):
+    """Grep a stored tool output for a regex pattern. Returns matching lines
+    with their line index, capped by max_matches.
+    """
+
+    id: str = Field(..., description="output id from a tool result perception")
+    pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")
+    max_matches: int = Field(20, ge=1, le=200, description="max matching lines to return")
+
+    async def run(self, ctx: "ToolCtx") -> str:
+        matches = ctx.tool_output_store.grep(
+            self.id, pattern=self.pattern, max_matches=self.max_matches
+        )
+        if not matches:
+            return f"no matches for {self.pattern!r}"
+        header = f"{len(matches)} match(es) for {self.pattern!r}:"
+        body = "\n".join(f"line {m.line_index}: {m.line}" for m in matches)
+        return f"{header}\n{body}"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
+    ReadToolOutput, GrepToolOutput,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
-    SpawnMonitor, RemoveMonitor,
+    SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
 ]

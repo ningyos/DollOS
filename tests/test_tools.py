@@ -1,6 +1,7 @@
 """Tests for Tool classes (Say, NoteMemory) and ToolCtx."""
 
 import asyncio
+import re
 from datetime import date
 from pathlib import Path
 
@@ -8,11 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.ipc.messages import TextChunk
+from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
+    GrepToolOutput,
     InvokeSkill,
     NoteMemory,
+    ReadToolOutput,
     Recall,
     Say,
     Shell,
@@ -32,7 +36,10 @@ class _FakeMemSearch:
         self.indexed.append(Path(path))
 
 
-def _make_ctx(tmp_path: Path) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
+def _make_ctx(
+    tmp_path: Path,
+    tool_output_store: ToolOutputStore | None = None,
+) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
     ctx = ToolCtx(
@@ -40,6 +47,7 @@ def _make_ctx(tmp_path: Path) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
     )
     return ctx, ms, sink
 
@@ -116,6 +124,7 @@ async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     diary = WriteDiary(content="今天我學會了 transcript 跟 diary。")
     await diary.run(ctx)
@@ -148,6 +157,7 @@ async def test_say_run_also_appends_to_transcript(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=transcripts_root,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     await Say(text="hello").run(ctx)
 
@@ -203,6 +213,7 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
         memsearch=MagicMock(),
         transcripts_root=tmp_path,
         shell_runner=runner,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     out = await Shell(command="echo hi", timeout_s=30).run(ctx)
     runner.spawn.assert_called_once_with(
@@ -237,6 +248,7 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await InvokeSkill(name="my_skill").run(ctx)
@@ -258,6 +270,7 @@ async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await InvokeSkill(name="nope").run(ctx)
@@ -282,6 +295,7 @@ async def test_invoke_skill_missing_lists_existing_skills(tmp_path):
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await InvokeSkill(name="nope").run(ctx)
@@ -305,6 +319,7 @@ async def test_invoke_skill_reads_from_skill_bodies_not_skills(tmp_path):
         memory_root=memory_root,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await InvokeSkill(name="x").run(ctx)
@@ -352,6 +367,7 @@ async def test_recall_run_returns_bullet_list_for_hits(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await Recall(query="coffee").run(ctx)
@@ -371,6 +387,7 @@ async def test_recall_run_returns_no_relevant_memory_for_empty_hits(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await Recall(query="anything").run(ctx)
@@ -389,6 +406,7 @@ def _ctx_with_search(tmp_path, hits):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     return ctx
 
@@ -522,6 +540,7 @@ async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     await WriteDiary(content="今天好累").run(ctx)
     expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
@@ -589,6 +608,7 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         subagent_runner=_FakeRunner(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
 
     out = await SpawnSubagent(
@@ -618,6 +638,7 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
         memory_root=tmp_path,
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     assert ctx.subagent_report is None
 
@@ -737,6 +758,7 @@ async def test_spawn_monitor_delegates_to_runner(tmp_path):
         memsearch=MagicMock(),
         transcripts_root=tmp_path,
         monitor_runner=runner,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     out = await SpawnMonitor(
         command="tail -F /var/log/x",
@@ -765,6 +787,7 @@ async def test_remove_monitor_delegates(tmp_path):
         memsearch=MagicMock(),
         transcripts_root=tmp_path,
         monitor_runner=runner,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     out = await RemoveMonitor(monitor_id="mon-3").run(ctx)
     runner.remove.assert_awaited_once_with("mon-3")
@@ -785,8 +808,88 @@ async def test_remove_monitor_unknown_id(tmp_path):
         memsearch=MagicMock(),
         transcripts_root=tmp_path,
         monitor_runner=runner,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
     )
     out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
     assert "mon-999" in out
     assert "unknown" in out.lower() or "not found" in out.lower()
+
+
+# ---------- ReadToolOutput ----------
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_returns_slice(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"row {i}" for i in range(50)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    # Replace the ctx's store with the one we just wrote to.
+    ctx.tool_output_store = store
+
+    tool = ReadToolOutput(id=output_id, offset=10, limit=5)
+    result = await tool.run(ctx)
+
+    assert "row 10" in result
+    assert "row 14" in result
+    assert "row 15" not in result
+    assert "lines 10–15 of 50" in result
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_invalid_id(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+    tool = ReadToolOutput(id="../etc/passwd", offset=0, limit=10)
+    with pytest.raises(ValueError):
+        await tool.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_not_found(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+    tool = ReadToolOutput(id="out-deadbeef", offset=0, limit=10)
+    with pytest.raises(FileNotFoundError):
+        await tool.run(ctx)
+
+
+# ---------- GrepToolOutput ----------
+
+
+@pytest.mark.asyncio
+async def test_grep_tool_output_finds_matches(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    text = "error: foo\nok\nerror: bar\nok\nERROR: baz\n"
+    output_id = store.write(text)
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+
+    tool = GrepToolOutput(id=output_id, pattern=r"error:", max_matches=10)
+    result = await tool.run(ctx)
+
+    assert "line 0: error: foo" in result
+    assert "line 2: error: bar" in result
+    assert "ERROR" not in result   # case-sensitive by default
+
+
+@pytest.mark.asyncio
+async def test_grep_no_match(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("hello\nworld\n")
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+    tool = GrepToolOutput(id=output_id, pattern=r"^nothing$", max_matches=10)
+    result = await tool.run(ctx)
+    assert "no matches" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("hello\n")
+    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
+    # Trailing unbalanced paren — re.error at run time
+    tool = GrepToolOutput(id=output_id, pattern=r"(", max_matches=10)
+    with pytest.raises(re.error):
+        await tool.run(ctx)
 
