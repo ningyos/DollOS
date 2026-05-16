@@ -25,10 +25,18 @@ from pydantic import BaseModel, Field, field_validator
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
 
+from dollos.scratchpad import (
+    AppendScratchpad,
+    ClearScratchpad,
+    EditScratchpad,
+    WriteScratchpad,
+)
+
 if TYPE_CHECKING:
     from memsearch import MemSearch
 
     from dollos.monitor_runner import MonitorRunner
+    from dollos.scratchpad import Scratchpad
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
     from dollos.tool_outputs import ToolOutputStore
@@ -85,6 +93,7 @@ class ToolCtx:
     memsearch: MemSearch
     transcripts_root: Path
     tool_output_store: "ToolOutputStore"
+    scratchpad: "Scratchpad"
     subagent_runner: "SubagentRunner | None" = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None
@@ -550,9 +559,11 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
+    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
+    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
 ]

@@ -132,6 +132,8 @@ def dollos_with_fakes(tmp_path, monkeypatch):
     # Re-build dispatcher to point at the fake adapter.
     from dollos.dispatcher import EventDispatcher
 
+    from dollos.scratchpad import Scratchpad
+
     dollos.dispatcher = EventDispatcher(
         adapter=fake_adapter,
         inner_voice=dollos.inner_voice,
@@ -143,6 +145,7 @@ def dollos_with_fakes(tmp_path, monkeypatch):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=dollos._cascade_logger,
         tool_output_store=dollos._tool_output_store,
+        scratchpad=Scratchpad(),
     )
     return dollos, fake_adapter
 
@@ -419,6 +422,18 @@ def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
     assert dollos._tool_output_dir.exists()
     dollos._tool_output_store.cleanup()
     assert not dollos._tool_output_dir.exists()
+
+
+# ----- Scratchpad wiring -----
+
+
+def test_kernel_has_scratchpad(tmp_path: Path) -> None:
+    from dollos.scratchpad import Scratchpad
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._scratchpad, Scratchpad)
+    assert dollos._scratchpad.read() == ""
 
 
 # ----- ShellRunner wiring -----
