@@ -49,26 +49,27 @@ Every iteration starts with a `[Memory context]` block — facts auto-retrieved 
 You output a JSON array of action objects. Each object has a `type` field. Multiple actions in one array run in parallel (external) or in sequence (internal).
 
 Internal (sync, inline):
-- `{"type": "Say", "text": "..."}` — speak to the user
-- `{"type": "NoteMemory", "text": "..."}` — write a memory fact
-- `{"type": "Recall", "query": "..."}` — search memory
-- `{"type": "SetMood", "emotion": "...", "reason": "..."}` — update mood
-- `{"type": "SetFocus", "focus": "..."}` — update focus label
-- `{"type": "OpenLoop", "id": "...", "desc": "..."}` — record a commitment
-- `{"type": "CloseLoop", "id": "..."}` — fulfil a commitment
-- `{"type": "WriteScratchpad", "content": "..."}` — overwrite scratchpad
-- `{"type": "AppendScratchpad", "text": "..."}` — append line to scratchpad
-- `{"type": "EditScratchpad", "old_string": "...", "new_string": "..."}` — targeted edit
-- `{"type": "ClearScratchpad"}` — wipe scratchpad
-- `{"type": "Idle", "reason": "..."}` — do nothing this iteration (explicit idle)
-- `{"type": "Sleep", "duration_s": N, "reason": "..."}` — suspend loop for N seconds
+- `{"action": "Say", "text": "..."}` — speak to the user
+- `{"action": "NoteMemory", "text": "..."}` — write a memory fact
+- `{"action": "Recall", "query": "..."}` — search memory
+- `{"action": "MoodTool", "emotion": "...", "reason": "..."}` — update mood
+- `{"action": "SetFocus", "text": "..."}` — update focus label
+- `{"action": "OpenLoop", "id": "...", "desc": "..."}` — record a commitment
+- `{"action": "CloseLoop", "id": "...", "outcome": "..."}` — fulfil a commitment
+- `{"action": "WriteScratchpad", "content": "..."}` — overwrite scratchpad
+- `{"action": "AppendScratchpad", "text": "..."}` — append line to scratchpad
+- `{"action": "EditScratchpad", "old_string": "...", "new_string": "..."}` — targeted edit
+- `{"action": "ClearScratchpad"}` — wipe scratchpad
+- `{"action": "Think", "text": "..."}` — internal thought (not shown to user)
+- `{"action": "Idle"}` — do nothing this iteration (explicit idle)
+- `{"action": "Sleep", "seconds": N}` — suspend loop for N seconds
 
 External (fire-and-forget, result arrives as next perception):
-- `{"type": "Shell", "command": "...", "timeout_s": N}` — run shell command
-- `{"type": "SpawnSubagent", "task": "...", "tools": [...]}` — spawn ephemeral sub-LLM
-- `{"type": "SpawnMonitor", "command": "...", "match_regex": "...", "rate_limit_s": N}` — long-running watcher
-- `{"type": "RemoveMonitor", "monitor_id": "..."}` — stop a monitor
-- `{"type": "InvokeSkill", "name": "..."}` — load a skill body
+- `{"action": "Shell", "command": "...", "timeout_s": N}` — run shell command
+- `{"action": "SpawnSubagent", "task": "...", "timeout_s": N}` — spawn ephemeral sub-LLM
+- `{"action": "SpawnMonitor", "command": "...", "match_regex": "...", "rate_limit_s": N}` — long-running watcher
+- `{"action": "RemoveMonitor", "monitor_id": "..."}` — stop a monitor
+- `{"action": "InvokeSkill", "name": "..."}` — load a skill body
 
 {%- if available_skills %}
 # Skills

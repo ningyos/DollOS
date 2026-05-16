@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from dollos.llm.templates import build_mind_actions_grammar
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import (
@@ -60,6 +61,19 @@ class MindLoop:
         self._base_idle_interval = idle_interval_s
         self._tool_registry = tool_registry or {}
         self._shutdown = False
+
+        # Build GBNF grammar from action registry to constrain LLM output.
+        # Uses prefill="\n\n</think>\n\n" so grammar applies to JSON-only output.
+        if self._tool_registry:
+            try:
+                self._grammar = build_mind_actions_grammar(
+                    list(self._tool_registry.keys())
+                )
+            except Exception:
+                logger.exception("failed to build mind actions grammar; running unconstrained")
+                self._grammar = None
+        else:
+            self._grammar = None
 
     async def run(self) -> None:
         """Main loop. Runs until shutdown."""
@@ -133,9 +147,20 @@ class MindLoop:
         return self._parse_actions(raw)
 
     async def _llm_call(self, prompt: str) -> str:
-        """Stream completion from LLM. Adapter to existing LLM provider."""
+        """Stream completion from LLM. Adapter to existing LLM provider.
+
+        Uses prefill="\n\n</think>\n\n" to close the thinking block immediately
+        so grammar applies to the JSON output only (reasoning bypasses grammar
+        in llama-server with --reasoning-format none).
+        """
         chunks = []
-        async for chunk in self._llm.stream_completion(system="", user=prompt, prefill=""):
+        async for chunk in self._llm.stream_completion(
+            system="",
+            user=prompt,
+            prefill="\n\n</think>\n\n",
+            max_tokens=2048,
+            grammar=self._grammar,
+        ):
             if chunk.text:
                 chunks.append(chunk.text)
             if chunk.done:
@@ -145,6 +170,12 @@ class MindLoop:
     def _parse_actions(self, raw: str) -> list[BaseModel]:
         """Parse LLM output. Expect JSON array of action objects. Tolerant fallback."""
         text = raw.strip()
+
+        # Strip any residual <think>...</think> block just in case
+        think_end = text.find("</think>")
+        if think_end != -1:
+            text = text[think_end + len("</think>"):].strip()
+
         # Strip markdown fences
         if text.startswith("```"):
             text = text.split("\n", 1)[1] if "\n" in text else text
@@ -183,14 +214,18 @@ class MindLoop:
         # Instantiate pydantic action classes
         actions: list[BaseModel] = []
         for item in data:
-            if not isinstance(item, dict) or "action" not in item:
+            if not isinstance(item, dict):
                 continue
-            kind = item["action"]
+            # Accept both "action" (canonical) and "type" (scaffolding template compat)
+            kind = item.get("action") or item.get("type")
+            if not kind:
+                continue
             action_cls = self._tool_registry.get(kind)
             if action_cls is None:
                 logger.warning("unknown action: %s", kind)
                 continue
-            args = {k: v for k, v in item.items() if k != "action"}
+            discriminator_key = "action" if "action" in item else "type"
+            args = {k: v for k, v in item.items() if k != discriminator_key}
             try:
                 actions.append(action_cls(**args))
             except ValidationError as e:

@@ -299,21 +299,17 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
 
 
 def build_mind_actions_grammar(action_names: list[str]) -> str:
-    """Build a GBNF grammar for MindLoop output: <think>...</think> + JSON array.
+    """Build a GBNF grammar for MindLoop output: JSON action array.
 
-    Constrains the model to:
-      <think>
-      SEEN: <line>
-      INTENT: <line>
-      MOOD: <line>
-      </think>
+    MindLoop uses prefill="\\n\\n</think>\\n\\n" to close the reasoning block
+    so grammar applies directly to JSON-only output. Grammar root is the
+    action array (no think-block wrapper needed).
 
+    Constrains the model to output:
       [{"action": "<name>", ...}, ...]
 
-    Each element of the array must have an ``"action"`` key whose value is one
-    of the registered action names.  The remaining fields in each object are
-    free-form JSON (any key/value pairs), so no pydantic schema enumeration is
-    needed — the tolerant parser in ``parse_actions`` handles field extraction.
+    Each element must have an ``"action"`` key whose value is one of the
+    registered action names. Remaining fields are free-form JSON.
 
     Raises ValueError if ``action_names`` is empty or contains names that
     require backslash/quote escaping (unsupported).
@@ -331,10 +327,7 @@ def build_mind_actions_grammar(action_names: list[str]) -> str:
     action_name_alts = " | ".join(f'\\"{name}\\"' for name in action_names)
 
     head = (
-        "root ::= think-block mind-actions\n"
-        'think-block ::= "<think>\\n" think-body "\\n</think>\\n\\n"\n'
-        'think-body ::= "SEEN: " line "INTENT: " line "MOOD: " line\n'
-        'line ::= [^\\n]+ "\\n"\n'
+        "root ::= mind-actions\n"
         "ws ::= [ \\t\\n]*\n"
         f"action-name ::= {action_name_alts}\n"
         'mind-actions ::= "[" ws "]" | "[" ws action-call (ws "," ws action-call)* ws "]"\n'
