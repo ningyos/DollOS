@@ -64,6 +64,12 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "AppendScratchpad": "append-scratchpad-call",
         "EditScratchpad": "edit-scratchpad-call",
         "ClearScratchpad": "clear-scratchpad-call",
+        "SetFocus": "set-focus-call",
+        "OpenLoop": "open-loop-call",
+        "CloseLoop": "close-loop-call",
+        "Idle": "idle-call",
+        "Sleep": "sleep-call",
+        "MoodTool": "mood-tool-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]

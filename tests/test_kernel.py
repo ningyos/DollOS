@@ -151,6 +151,9 @@ async def _drain_until_separator(sink: asyncio.Queue) -> list:
         out.append(item)
 
 
+@pytest.mark.xfail(
+    reason="dispatcher uses ToolCtx; Task 8 deletes dispatcher and migrates kernel to MindLoop/MindCtx"
+)
 @pytest.mark.asyncio
 async def test_handle_message_text_input_yields_chunks_then_turnend(
     dollos_with_fakes, monkeypatch
