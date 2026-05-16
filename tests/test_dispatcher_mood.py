@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from dollos.scratchpad import Scratchpad
 from dollos.dispatcher import EventDispatcher
 from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
@@ -110,6 +111,7 @@ async def test_dispatcher_parses_mood_from_last_assistant_message(tmp_path: Path
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -142,6 +144,7 @@ async def test_dispatcher_no_mood_update_when_assistant_lacks_mood_line(
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -171,6 +174,7 @@ async def test_dispatcher_appends_mood_to_file_when_parsed(tmp_path: Path):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -201,6 +205,7 @@ async def test_dispatcher_indexes_mood_file_with_memsearch(tmp_path: Path):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -239,6 +244,7 @@ async def test_dispatcher_mood_block_uses_updated_mood_in_subsequent_turn(
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     for text in ("first", "second"):

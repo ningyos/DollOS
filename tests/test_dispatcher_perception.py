@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from dollos.scratchpad import Scratchpad
 from dollos.dispatcher import EventDispatcher
 from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
@@ -117,6 +118,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
@@ -316,3 +318,35 @@ def test_format_active_monitors_block():
     assert "11" in block
     assert "mon-2" in block
     assert _format_active_monitors_block([]) == ""
+
+
+# ----- Scratchpad block rendering -----
+
+
+def test_perception_includes_empty_scratchpad_block(tmp_path: Path):
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    body = dispatcher._build_perception_blocks(
+        include_static=True,
+        memory_block="[Memory context]\n(no relevant memory)\n\n",
+    )
+    # [Scratchpad] must be the very first block
+    assert body.startswith("[Scratchpad]\n(empty — write your goal here before calling Shell/SpawnSubagent)\n\n")
+    # [Memory context] must also appear somewhere in the body
+    assert "[Memory context]" in body
+
+
+def test_perception_includes_filled_scratchpad_block(tmp_path: Path):
+    adapter = _FakeAdapter(chunks=[StreamChunk(text="", done=True)])
+    iv = _FakeInnerVoice()
+    dispatcher = _make_dispatcher(adapter=adapter, inner_voice=iv, tmp_path=tmp_path)
+    dispatcher._scratchpad.write("# Current goal\nfind line 150")
+    body = dispatcher._build_perception_blocks(
+        include_static=True,
+        memory_block="[Memory context]\n(no relevant memory)\n\n",
+    )
+    # [Scratchpad] must be the very first block with non-empty content
+    assert body.startswith("[Scratchpad]\n# Current goal\nfind line 150\n\n")
+    # [Memory context] must also appear somewhere in the body
+    assert "[Memory context]" in body

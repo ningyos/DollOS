@@ -273,3 +273,22 @@ def test_scaffolding_documents_tool_output_paging():
     assert "ReadToolOutput" in out
     assert "GrepToolOutput" in out
     assert "output_id" in out
+
+
+def test_scaffolding_documents_scratchpad():
+    """Scaffolding teaches Doll about the Scratchpad working memory."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity(), available_skills=[])
+    assert "WriteScratchpad" in out
+    assert "AppendScratchpad" in out
+    assert "EditScratchpad" in out
+    assert "ClearScratchpad" in out
+    assert "working memory" in out.lower()
+
+
+def test_subagent_scaffolding_documents_scratchpad():
+    """Subagent scaffolding documents Scratchpad as independent memory."""
+    renderer = PromptRenderer()
+    out = renderer.render("subagent_scaffolding")
+    assert "WriteScratchpad" in out
+    assert "your own private" in out.lower()

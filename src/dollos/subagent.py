@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from dollos.cascade import run_tool_cascade
 from dollos.events import RawEvent, SubagentResultEvent
+from dollos.scratchpad import Scratchpad
 from dollos.ipc.messages import ServerMessage
 from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.prompts import PromptRenderer
@@ -214,10 +215,11 @@ class SubagentRunner:
             memory_root=self._memory_root,
             memsearch=self._memsearch,
             transcripts_root=self._transcripts_root,
+            tool_output_store=self._tool_output_store,
+            scratchpad=Scratchpad(),  # fresh per-spawn; independent from Doll's
             subagent_runner=None,  # no recursion
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
-            tool_output_store=self._tool_output_store,
         )
 
         def _check_early_exit(iter_num: int, ctx: ToolCtx) -> bool:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from dollos.scratchpad import Scratchpad
 from dollos.dispatcher import EventDispatcher, ToolResult
 from dollos.tool_outputs import ToolOutputStore
 from dollos.events import ShellResultEvent, UserTextEvent
@@ -76,6 +77,7 @@ async def test_dispatcher_writes_user_text_transcript_after_turn(tmp_path: Path)
         transcripts_root=transcripts_root,
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -127,6 +129,7 @@ async def test_dispatcher_handles_diary_event(tmp_path: Path):
         transcripts_root=transcripts_root,
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(DiaryEvent(response_sink=sink))
@@ -179,6 +182,7 @@ async def test_dispatcher_logs_cascade_iter_per_iter(tmp_path: Path):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=fcl,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -221,6 +225,7 @@ async def test_dispatcher_log_iter_includes_parsed_think_and_tool_calls(tmp_path
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=fcl,
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
     sink: asyncio.Queue = asyncio.Queue()
     disp.dispatch(UserTextEvent(text="hi", response_sink=sink))
@@ -264,14 +269,17 @@ async def test_dispatcher_injects_now_block_in_first_user_message(tmp_path: Path
     await _drain(sink)
 
     user = adapter.calls[0]["messages"][0]["content"]
-    assert user.startswith("[Now]\n")
+    # [Scratchpad] is now the very first block (Task 3)
+    assert user.startswith("[Scratchpad]\n")
+    # [Now] must also be present
+    assert "[Now]\n" in user
     # Date YYYY-MM-DD HH:MM:SS pattern
     assert _re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", user)
     # Chinese weekday + period descriptor
     assert _re.search(r"週[一二三四五六日]", user)
     assert any(p in user for p in ("深夜", "早上", "上午", "下午", "晚上"))
-    # Order: [Now] before [Memory context] before [Message]
-    assert user.index("[Now]") < user.index("[Memory context]") < user.index("[Message]")
+    # Order: [Scratchpad] before [Now] before [Memory context] before [Message]
+    assert user.index("[Scratchpad]") < user.index("[Now]") < user.index("[Memory context]") < user.index("[Message]")
 
 
 @pytest.mark.asyncio
