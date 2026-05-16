@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from dollos.scratchpad import Scratchpad
 from dollos.dispatcher import EventDispatcher
 from dollos.tool_outputs import ToolOutputStore
 from dollos.events import UserTextEvent
@@ -117,6 +118,7 @@ async def test_dispatcher_handles_subagent_result_event(tmp_path: Path):
         transcripts_root=tmp_path / "transcripts",
         cascade_logger=_FakeCascadeLogger(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        scratchpad=Scratchpad(),
     )
 
     sink: asyncio.Queue = asyncio.Queue()
