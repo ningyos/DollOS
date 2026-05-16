@@ -9,7 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.ipc.messages import TextChunk
-from dollos.scratchpad import Scratchpad
+from dollos.scratchpad import (
+    AppendScratchpad,
+    ClearScratchpad,
+    EditScratchpad,
+    Scratchpad,
+    WriteScratchpad,
+)
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
@@ -40,6 +46,7 @@ class _FakeMemSearch:
 def _make_ctx(
     tmp_path: Path,
     tool_output_store: ToolOutputStore | None = None,
+    scratchpad: Scratchpad | None = None,
 ) -> tuple[ToolCtx, _FakeMemSearch, asyncio.Queue]:
     sink: asyncio.Queue = asyncio.Queue()
     ms = _FakeMemSearch()
@@ -49,7 +56,7 @@ def _make_ctx(
         memsearch=ms,
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
+        scratchpad=scratchpad or Scratchpad(),
     )
     return ctx, ms, sink
 
@@ -910,4 +917,69 @@ async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
     tool = GrepToolOutput(id=output_id, pattern=r"(", max_matches=10)
     with pytest.raises(re.error):
         await tool.run(ctx)
+
+
+# ---------- WriteScratchpad / AppendScratchpad / EditScratchpad / ClearScratchpad ----------
+
+
+@pytest.mark.asyncio
+async def test_write_scratchpad_tool(tmp_path):
+    sp = Scratchpad()
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = WriteScratchpad(content="hello world")
+    result = await tool.run(ctx)
+    assert "11 chars" in result
+    assert sp.read() == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_write_scratchpad_overflow_raises(tmp_path):
+    sp = Scratchpad()
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = WriteScratchpad(content="x" * 2001)
+    with pytest.raises(ValueError, match="exceeds 2000"):
+        await tool.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_append_scratchpad_tool(tmp_path):
+    sp = Scratchpad()
+    sp.write("first")
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = AppendScratchpad(text="second")
+    result = await tool.run(ctx)
+    assert "12 chars" in result   # "first\nsecond"
+    assert sp.read() == "first\nsecond"
+
+
+@pytest.mark.asyncio
+async def test_edit_scratchpad_tool(tmp_path):
+    sp = Scratchpad()
+    sp.write("hello world")
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = EditScratchpad(old_string="world", new_string="there")
+    result = await tool.run(ctx)
+    assert "edited" in result
+    assert sp.read() == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_edit_scratchpad_no_match_raises(tmp_path):
+    sp = Scratchpad()
+    sp.write("hello")
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = EditScratchpad(old_string="missing", new_string="x")
+    with pytest.raises(ValueError, match="not found"):
+        await tool.run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_clear_scratchpad_tool(tmp_path):
+    sp = Scratchpad()
+    sp.write("something")
+    ctx, _ms, _sink = _make_ctx(tmp_path, scratchpad=sp)
+    tool = ClearScratchpad()
+    result = await tool.run(ctx)
+    assert "cleared" in result
+    assert sp.read() == ""
 

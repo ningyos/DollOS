@@ -25,6 +25,13 @@ from pydantic import BaseModel, Field, field_validator
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
 
+from dollos.scratchpad import (
+    AppendScratchpad,
+    ClearScratchpad,
+    EditScratchpad,
+    WriteScratchpad,
+)
+
 if TYPE_CHECKING:
     from memsearch import MemSearch
 
@@ -552,9 +559,11 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
+    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
+    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
 ]
