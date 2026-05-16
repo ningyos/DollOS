@@ -15,7 +15,7 @@ from dollos.tools import MAIN_TOOLS as TOOLS
 # Action names used by the MindLoop experiment (actions.py _VALID_KINDS).
 _MIND_ACTIONS = [
     "Say", "Think", "SetFocus", "OpenLoop", "CloseLoop",
-    "Dispatch", "Idle", "Sleep",
+    "Dispatch",
 ]
 
 
@@ -77,8 +77,6 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "SetFocus": "set-focus-call",
         "OpenLoop": "open-loop-call",
         "CloseLoop": "close-loop-call",
-        "Idle": "idle-call",
-        "Sleep": "sleep-call",
         "MoodTool": "mood-tool-call",
         "Think": "think-call",
     }
@@ -208,22 +206,24 @@ def test_optional_only_tool_has_empty_args_body():
 
 
 def test_mind_actions_grammar_starts_with_root_rule():
+    """MindLoop uses prefill to close think block; grammar covers JSON array only."""
     g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert g.startswith("root ::= think-block mind-actions\n")
+    assert g.startswith("root ::= mind-actions\n")
 
 
-def test_mind_actions_grammar_has_think_block_rule():
+def test_mind_actions_grammar_no_think_block_rule():
+    """No think-block in mind actions grammar — prefill closes the think block."""
     g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert 'think-block ::= "<think>\\n"' in g
-    assert '"\\n</think>\\n\\n"' in g
+    assert "think-block" not in g
+    assert "<think>" not in g
 
 
-def test_mind_actions_grammar_think_body_has_seen_intent_mood():
-    """think-body must contain SEEN, INTENT, MOOD lines (no TOOL line)."""
+def test_mind_actions_grammar_no_seen_intent_mood_in_grammar():
+    """SEEN/INTENT/MOOD not in grammar — MindLoop uses prefill, not GBNF think enforcement."""
     g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert '"SEEN: " line "INTENT: " line "MOOD: " line' in g
-    # TOOL line must NOT be present in think-body for mind format
-    assert '"TOOL: "' not in g
+    assert "SEEN:" not in g
+    assert "INTENT:" not in g
+    assert "TOOL:" not in g
 
 
 def test_mind_actions_grammar_has_mind_actions_rule():
@@ -290,9 +290,9 @@ def test_mind_actions_grammar_ws_rule_present():
 
 def test_mind_actions_grammar_single_action_subset():
     """Grammar builds correctly for a minimal one-action list."""
-    g = build_mind_actions_grammar(["Idle"])
-    assert '"Idle"' in g or '\\"Idle\\"' in g
-    assert "root ::= think-block mind-actions\n" in g
+    g = build_mind_actions_grammar(["Think"])
+    assert '\\"Think\\"' in g
+    assert "root ::= mind-actions\n" in g
 
 
 def test_mind_actions_grammar_all_main_tools_names():
@@ -303,10 +303,10 @@ def test_mind_actions_grammar_all_main_tools_names():
         assert f'\\"{name}\\"' in g
 
 
-def test_mind_actions_grammar_has_line_rule():
+def test_mind_actions_grammar_no_line_rule():
+    """No line rule needed — grammar covers JSON only, no think body."""
     g = build_mind_actions_grammar(_MIND_ACTIONS)
-    # line rule used by think-body
-    assert 'line ::= [^\\n]+' in g
+    assert 'line ::= ' not in g
 
 
 def test_mind_actions_grammar_format_incompatible_with_tool_call_envelope():

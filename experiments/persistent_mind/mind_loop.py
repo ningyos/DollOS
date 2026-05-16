@@ -10,7 +10,7 @@ from typing import Callable
 from actions import Action, parse_actions
 from llm_client import LLMClient
 from mind_state import MindState
-from perceptions import IdleTick, Perception
+from perceptions import Perception
 from prompt import render_mind_prompt
 from shell_runner import ShellRunner
 
@@ -30,41 +30,26 @@ class MindLoop:
         self,
         llm: LLMClient,
         system_prompt: str,
-        idle_interval: float = 10.0,
-        max_sleep: float = 60.0,
         say_sink: Callable[[str], None] | None = None,
     ) -> None:
         self.llm = llm
         self.system_prompt = system_prompt
-        self.idle_interval = idle_interval
-        self.max_sleep = max_sleep
         self.queue: asyncio.Queue[Perception] = asyncio.Queue()
         self.state = MindState()
         self.shell = ShellRunner(self.queue)
         self.running = False
         self.say_sink = say_sink or (lambda txt: print(f"\n>>> DOLL SAYS: {txt}\n"))
-        self._sleep_extra = 0.0
 
     async def inject(self, perception: Perception) -> None:
         if perception.kind == "UserSpoke":
             self.state.last_user_at = time.time()
         await self.queue.put(perception)
 
-    async def _drain(self, timeout: float) -> list[Perception]:
-        perceptions: list[Perception] = []
-        # Block on first one (or timeout)
-        try:
-            first = await asyncio.wait_for(self.queue.get(), timeout=timeout)
-            perceptions.append(first)
-        except asyncio.TimeoutError:
-            return []
-        # Drain remaining without blocking
-        while True:
-            try:
-                p = self.queue.get_nowait()
-                perceptions.append(p)
-            except asyncio.QueueEmpty:
-                break
+    async def _drain(self) -> list[Perception]:
+        first = await self.queue.get()
+        perceptions = [first]
+        while not self.queue.empty():
+            perceptions.append(self.queue.get_nowait())
         return perceptions
 
     async def _execute(self, action: Action) -> None:
@@ -99,28 +84,13 @@ class MindLoop:
                 timeout_s = float(p.get("timeout_s", 30))
                 did = self.shell.dispatch(cmd, timeout_s)
                 trace({"event": "dispatch", "tool": "Shell", "command": cmd, "dispatch_id": did})
-        elif k == "Idle":
-            pass
-        elif k == "Sleep":
-            secs = float(p.get("seconds", self.idle_interval))
-            self._sleep_extra = min(secs, self.max_sleep)
-            trace({"event": "sleep_request", "seconds": self._sleep_extra})
 
     async def step(self) -> None:
         """One iteration: drain → render → call LLM → parse → execute."""
-        timeout = self.idle_interval + self._sleep_extra
-        self._sleep_extra = 0.0
-
-        perceptions = await self._drain(timeout)
-        if not perceptions:
-            perceptions = [IdleTick()]
+        perceptions = await self._drain()
 
         self.state.recent_perceptions.extend(perceptions)
         self.state.active_tasks = self.shell.snapshot()
-        # Energy decay
-        self.state.energy = max(0.0, self.state.energy - 0.01)
-        if any(p.kind == "UserSpoke" for p in perceptions):
-            self.state.energy = min(1.0, self.state.energy + 0.2)
 
         user_prompt = render_mind_prompt(self.state)
 
@@ -138,7 +108,7 @@ class MindLoop:
         print(f"\n===== ITER {iter_id} @ {time.strftime('%H:%M:%S')} =====")
         print(f"perceptions: {[p.kind for p in perceptions]}")
         print(f"active_tasks: {len(self.state.active_tasks)}, open_loops: {[l['id'] for l in self.state.open_loops]}")
-        print(f"focus={self.state.focus} mood={self.state.mood} energy={self.state.energy:.2f}")
+        print(f"focus={self.state.focus} mood={self.state.mood}")
 
         # Truncate prompt for stdout (still log full to trace)
         prompt_preview = user_prompt[:600] + ("...[truncated]" if len(user_prompt) > 600 else "")

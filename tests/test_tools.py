@@ -28,6 +28,9 @@ from dollos.tools import (
     Shell,
     WriteDiary,
     WriteScratchpad,
+    SetFocus,
+    OpenLoop,
+    CloseLoop,
 )
 
 

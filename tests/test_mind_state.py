@@ -12,7 +12,6 @@ from dollos.mind.mind_state import (
 def test_mindstate_initial_defaults() -> None:
     s = MindState()
     assert s.focus == "idle"
-    assert s.energy == 1.0
     assert s.scratchpad == ""
     assert s.iter_count == 0
     assert s.active_tasks == []
@@ -37,7 +36,7 @@ def test_deque_maxlens_configurable() -> None:
         recent_thoughts=deque(maxlen=5),
     )
     for i in range(10):
-        s.recent_perceptions.append(Perception(kind="IdleTick", t=float(i), data={}))
+        s.recent_perceptions.append(Perception(kind="UserSpoke", t=float(i), data={}))
     assert len(s.recent_perceptions) == 5
     assert s.recent_perceptions[0].t == 5.0
 

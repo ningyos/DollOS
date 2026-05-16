@@ -18,7 +18,7 @@ class Action:
 
 _VALID_KINDS = {
     "Say", "Think", "SetFocus", "OpenLoop", "CloseLoop",
-    "Dispatch", "Idle", "Sleep",
+    "Dispatch",
 }
 
 

@@ -13,7 +13,6 @@ from typing import Any
 class MindState:
     mood: str = "calm"
     focus: str = "idle"
-    energy: float = 1.0
     active_tasks: list[dict] = field(default_factory=list)
     open_loops: list[dict] = field(default_factory=list)
     recent_perceptions: deque = field(default_factory=lambda: deque(maxlen=20))
@@ -23,7 +22,6 @@ class MindState:
     last_iter_at: float = 0.0
     iter_count: int = 0
     session_started_at: float = field(default_factory=time.time)
-    sleep_until: float = 0.0  # if > now, extend idle interval
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

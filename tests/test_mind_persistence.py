@@ -59,15 +59,6 @@ def test_atomic_write_no_partial_on_crash(tmp_path: Path) -> None:
     assert loaded.focus == "task B"
 
 
-def test_energy_refreshes_on_load(tmp_path: Path) -> None:
-    """Test that energy is reset to 1.0 when loading."""
-    s = MindState(energy=0.2)
-    path = tmp_path / "mind_state.json"
-    save_state(s, path)
-    loaded = load_state(path)
-    assert loaded.energy == 1.0
-
-
 def test_session_started_at_refreshes_on_load(tmp_path: Path) -> None:
     """Test that session_started_at is reset to current time when loading."""
     s = MindState()

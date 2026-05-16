@@ -29,7 +29,7 @@ class MindLoop:
 
     Lifecycle: spawned once by Kernel at daemon startup. Runs forever
     until shutdown signaled. Each iteration:
-      1. Drain perceptions from queue (with idle-tick timeout)
+      1. Drain perceptions from queue (blocks until at least one arrives)
       2. Auto-sync external state (process_registry → active_tasks, etc.)
       3. Render full MindState as prompt
       4. Call LLM once
@@ -37,8 +37,6 @@ class MindLoop:
       6. Execute actions (sync inline or async dispatch)
       7. Persist state
     """
-
-    DEFAULT_IDLE_INTERVAL_S = 10.0
 
     def __init__(
         self,
@@ -49,7 +47,6 @@ class MindLoop:
         llm: Any,                    # LLM client with stream_completion API
         system_prompt: str,          # rendered from character pack
         state_persist_path: Path,
-        idle_interval_s: float = DEFAULT_IDLE_INTERVAL_S,
         tool_registry: dict[str, type[BaseModel]] | None = None,
     ) -> None:
         self._state = state
@@ -58,7 +55,6 @@ class MindLoop:
         self._llm = llm
         self._system_prompt = system_prompt
         self._persist_path = state_persist_path
-        self._base_idle_interval = idle_interval_s
         self._tool_registry = tool_registry or {}
         self._shutdown = False
 
@@ -85,13 +81,10 @@ class MindLoop:
 
     async def iterate(self) -> None:
         """One iteration: drain → sync → render → llm → execute → persist."""
-        # Sleep hint extends drain timeout
-        now = time.time()
-        effective_timeout = self._base_idle_interval
-        if self._state._sleep_hint_until > now:
-            effective_timeout = self._state._sleep_hint_until - now
-
-        perceptions = await self._queue.drain(timeout_s=effective_timeout)
+        perceptions = await self._queue.drain()
+        if not perceptions:
+            # drain() returned empty — shutdown signaled; skip this iteration
+            return
         for p in perceptions:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
@@ -197,15 +190,11 @@ class MindLoop:
                 data = None
 
         if data is None:
-            # Fallback: treat whole output as a Think action (if present) or Idle
+            # Fallback: treat whole output as a Think action (if present) or empty
             logger.warning("LLM output not JSON; treating as Think")
             think_cls = self._tool_registry.get("Think")
             if think_cls is not None:
                 return [think_cls(text=raw[:500])]
-            # Idle is always available as ultimate fallback
-            idle_cls = self._tool_registry.get("Idle")
-            if idle_cls is not None:
-                return [idle_cls()]
             return []
 
         if not isinstance(data, list):
@@ -233,4 +222,7 @@ class MindLoop:
         return actions
 
     def shutdown(self) -> None:
+        """Signal the loop to stop. Unblocks any pending drain()."""
         self._shutdown = True
+        self._queue.shutdown()
+

@@ -61,8 +61,6 @@ Internal (sync, inline):
 - `{"action": "EditScratchpad", "old_string": "...", "new_string": "..."}` — targeted edit
 - `{"action": "ClearScratchpad"}` — wipe scratchpad
 - `{"action": "Think", "text": "..."}` — internal thought (not shown to user)
-- `{"action": "Idle"}` — do nothing this iteration (explicit idle)
-- `{"action": "Sleep", "seconds": N}` — suspend loop for N seconds
 
 External (fire-and-forget, result arrives as next perception):
 - `{"action": "Shell", "command": "...", "timeout_s": N}` — run shell command
