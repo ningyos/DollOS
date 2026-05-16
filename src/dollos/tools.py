@@ -809,6 +809,22 @@ class Sleep(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class Think(BaseModel):
+    """Internal thought; appended to recent_thoughts, not externalized."""
+
+    text: str = Field(..., description="internal thought (≤500 chars)")
+
+    def _summary(self) -> str:
+        return f"Thought: {self.text[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        ctx.mind_state.recent_thoughts.append(
+            Thought(t=time.time(), text=self.text[:500])
+        )
+        _record(ctx, "Think", self._summary())
+        return "thought recorded"
+
+
 class MoodTool(BaseModel):
     """Update Doll's current emotional state.
 
@@ -843,12 +859,12 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
     SetFocus, OpenLoop, CloseLoop, Idle, Sleep,
-    MoodTool,
+    MoodTool, Think,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
-    SetFocus, OpenLoop, CloseLoop, Idle, Sleep,
+    SetFocus, OpenLoop, CloseLoop, Idle, Sleep, Think,
 ]

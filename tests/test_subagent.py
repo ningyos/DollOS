@@ -1,5 +1,5 @@
 """Tests for SubagentRunner — ephemeral asyncio worker that fires
-SubagentResultEvent back through the dispatcher's event queue."""
+ToolResultArrived Perception back through the PerceptionQueue."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from dollos.events import RawEvent, SubagentResultEvent
 from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.llm.templates import build_qwen3_think_tool_grammar
+from dollos.mind.mind_state import Perception
+from dollos.mind.perception_queue import PerceptionQueue
 from dollos.monitor_runner import MonitorRunner
 from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
@@ -27,13 +28,7 @@ from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
 
 @dataclass
 class _ScriptedAdapter(LLMAdapter):
-    """Fake LLMAdapter for sub-cascade testing.
-
-    `scripts` is a list-of-lists. Each outer entry is one cascade
-    iteration's stream of chunks. Each call to stream_messages pops the
-    next iteration's chunks. delay_per_iter optionally sleeps that long
-    in EACH iteration (used to drive timeouts).
-    """
+    """Fake LLMAdapter for sub-cascade testing."""
 
     scripts: list[list[StreamChunk]] = field(default_factory=list)
     delay_per_iter: float = 0.0
@@ -109,8 +104,9 @@ def _report_call(status: str, summary: str, details: str) -> str:
 
 
 def _make_runner(
-    adapter: LLMAdapter, tmp_path: Path, dispatched: list[RawEvent] | None = None
-) -> SubagentRunner:
+    adapter: LLMAdapter, tmp_path: Path, queue: PerceptionQueue | None = None
+) -> tuple[SubagentRunner, PerceptionQueue]:
+    q = queue if queue is not None else PerceptionQueue()
     runner = SubagentRunner(
         adapter=adapter,
         renderer=PromptRenderer(),
@@ -118,18 +114,19 @@ def _make_runner(
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        perception_queue=q,
     )
-    if dispatched is not None:
-        runner.set_dispatch_fn(dispatched.append)
-    return runner
+    return runner, q
 
 
-async def _wait_for_event(events: list[RawEvent], timeout: float = 2.0) -> RawEvent:
-    """Poll the event sink until non-empty."""
+async def _wait_for_tool_result(queue: PerceptionQueue, timeout: float = 2.0) -> Perception:
+    """Poll until a ToolResultArrived perception arrives, return first."""
     async with asyncio.timeout(timeout):
-        while not events:
-            await asyncio.sleep(0.01)
-    return events[0]
+        while True:
+            perceptions = await queue.drain(timeout_s=0.01)
+            for p in perceptions:
+                if p.kind == "ToolResultArrived":
+                    return p
 
 
 # ---------- Tests ----------
@@ -138,7 +135,7 @@ async def _wait_for_event(events: list[RawEvent], timeout: float = 2.0) -> RawEv
 @pytest.mark.asyncio
 async def test_subagent_emits_report_fires_result_event(tmp_path: Path):
     """Happy path: subagent's first iteration emits Report; runner converts
-    it into a SubagentResultEvent dispatched via dispatch_fn."""
+    it into a ToolResultArrived Perception."""
     adapter = _ScriptedAdapter(
         scripts=[
             [
@@ -150,25 +147,22 @@ async def test_subagent_emits_report_fires_result_event(tmp_path: Path):
             ],
         ]
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
+    runner, queue = _make_runner(adapter, tmp_path)
 
-    sink: asyncio.Queue = asyncio.Queue()
     runner.spawn(
         sub_id="abc12345",
         task="search transcripts for coffee",
         timeout_s=30,
-        response_sink=sink,
     )
 
-    ev = await _wait_for_event(events)
-    assert isinstance(ev, SubagentResultEvent)
-    assert ev.subagent_id == "abc12345"
-    assert ev.task == "search transcripts for coffee"
-    assert ev.status == "ok"
-    assert ev.summary == "found 3 files"
-    assert ev.details == "a.md, b.md, c.md"
-    assert ev.response_sink is sink
+    p = await _wait_for_tool_result(queue)
+    assert p.kind == "ToolResultArrived"
+    assert p.data["tool"] == "Subagent"
+    assert p.data["task_id"] == "abc12345"
+    assert p.data["task"] == "search transcripts for coffee"
+    assert p.data["status"] == "ok"
+    assert p.data["summary"] == "found 3 files"
+    assert "a.md" in p.data["details"]
 
 
 @pytest.mark.asyncio
@@ -177,21 +171,17 @@ async def test_subagent_timeout_fires_event_with_timeout_status(tmp_path: Path):
         scripts=[[StreamChunk(text="", done=True)]],
         delay_per_iter=10.0,  # adapter never returns within timeout
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
+    runner, queue = _make_runner(adapter, tmp_path)
 
-    sink: asyncio.Queue = asyncio.Queue()
     runner.spawn(
         sub_id="t1",
         task="something slow",
         timeout_s=1,
-        response_sink=sink,
     )
 
-    ev = await _wait_for_event(events, timeout=3.0)
-    assert isinstance(ev, SubagentResultEvent)
-    assert ev.status == "timeout"
-    assert "timeout" in ev.summary.lower()
+    p = await _wait_for_tool_result(queue, timeout=3.0)
+    assert p.data["status"] == "timeout"
+    assert "timeout" in p.data["summary"].lower()
 
 
 @pytest.mark.asyncio
@@ -204,19 +194,16 @@ async def test_subagent_no_report_fires_no_report_status(tmp_path: Path):
              StreamChunk(text="", done=True)],
         ]
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
+    runner, queue = _make_runner(adapter, tmp_path)
 
-    sink: asyncio.Queue = asyncio.Queue()
     runner.spawn(
         sub_id="nr1",
         task="do nothing",
         timeout_s=10,
-        response_sink=sink,
     )
 
-    ev = await _wait_for_event(events)
-    assert ev.status == "no_report"
+    p = await _wait_for_tool_result(queue)
+    assert p.data["status"] == "no_report"
 
 
 @pytest.mark.asyncio
@@ -231,26 +218,23 @@ async def test_subagent_runtime_error_fires_error_status(tmp_path: Path):
             raise RuntimeError("kaboom")
             yield  # pragma: no cover — make this an async generator
 
-    events: list[RawEvent] = []
-    runner = _make_runner(_BoomAdapter(), tmp_path, events)
+    runner, queue = _make_runner(_BoomAdapter(), tmp_path)
 
-    sink: asyncio.Queue = asyncio.Queue()
     runner.spawn(
         sub_id="err1",
         task="anything",
         timeout_s=10,
-        response_sink=sink,
     )
 
-    ev = await _wait_for_event(events)
-    assert ev.status == "error"
-    assert "kaboom" in ev.details
-    assert "RuntimeError" in ev.summary
+    p = await _wait_for_tool_result(queue)
+    assert p.data["status"] == "error"
+    assert "kaboom" in p.data["details"]
+    assert "RuntimeError" in p.data["summary"]
 
 
 @pytest.mark.asyncio
 async def test_multiple_subagents_run_concurrently(tmp_path: Path):
-    """Spawn 3 — all complete and 3 events fire."""
+    """Spawn 3 — all complete and 3 perceptions fire."""
     adapter = _ScriptedAdapter(
         scripts=[
             [StreamChunk(text=_report_call("ok", f"s{i}", "d"), done=False),
@@ -258,36 +242,30 @@ async def test_multiple_subagents_run_concurrently(tmp_path: Path):
             for i in range(3)
         ]
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
+    runner, queue = _make_runner(adapter, tmp_path)
 
     for i in range(3):
-        sink: asyncio.Queue = asyncio.Queue()
         runner.spawn(
             sub_id=f"id{i}",
             task=f"task {i}",
             timeout_s=10,
-            response_sink=sink,
         )
 
+    perceptions: list[Perception] = []
     async with asyncio.timeout(2.0):
-        while len(events) < 3:
-            await asyncio.sleep(0.01)
-    assert len(events) == 3
-    statuses = {e.status for e in events}
+        while len(perceptions) < 3:
+            batch = await queue.drain(timeout_s=0.05)
+            perceptions.extend(p for p in batch if p.kind == "ToolResultArrived")
+    assert len(perceptions) == 3
+    statuses = {p.data["status"] for p in perceptions}
     assert statuses == {"ok"}
-    ids = {e.subagent_id for e in events}
+    ids = {p.data["task_id"] for p in perceptions}
     assert ids == {"id0", "id1", "id2"}
 
 
 @pytest.mark.asyncio
 async def test_subagent_stuck_tool_aborts_with_no_report(tmp_path: Path):
     """3 consecutive same-tool failures abort cascade → no_report event."""
-
-    # Each iteration: emit a Recall call with a query argument. ctx.memsearch.search
-    # returns []; Recall returns "[no relevant memory]". Recall always
-    # SUCCEEDS, so this is not a fail-cascade — let's instead emit a tool
-    # call with malformed args that fails validation 3 times.
     bad_call = (
         '<tool_call>{"name":"Shell","arguments":{}}</tool_call>'
     )
@@ -301,24 +279,22 @@ async def test_subagent_stuck_tool_aborts_with_no_report(tmp_path: Path):
              StreamChunk(text="", done=True)],
         ]
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
+    runner, queue = _make_runner(adapter, tmp_path)
 
     runner.spawn(
         sub_id="stuck1",
         task="stuck",
         timeout_s=10,
-        response_sink=None,
     )
 
-    ev = await _wait_for_event(events, timeout=2.0)
-    assert ev.status == "no_report"
+    p = await _wait_for_tool_result(queue, timeout=2.0)
+    assert p.data["status"] == "no_report"
 
 
 @pytest.mark.asyncio
 async def test_subagent_writes_full_details_to_store(tmp_path: Path) -> None:
     """Happy path: subagent with long details writes all lines to store,
-    event carries preview + output_id + line_count."""
+    perception carries preview + output_id + line_count."""
     long_details = "\n".join(f"finding {i}" for i in range(50))
     adapter = _ScriptedAdapter(
         scripts=[
@@ -331,8 +307,8 @@ async def test_subagent_writes_full_details_to_store(tmp_path: Path) -> None:
             ],
         ]
     )
-    events: list[RawEvent] = []
     store = ToolOutputStore(tmp_path / "tool_outputs")
+    queue = PerceptionQueue()
     runner = SubagentRunner(
         adapter=adapter,
         renderer=PromptRenderer(),
@@ -340,23 +316,21 @@ async def test_subagent_writes_full_details_to_store(tmp_path: Path) -> None:
         memsearch=_FakeMemSearch(),
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=store,
-        dispatch_fn=events.append,
+        perception_queue=queue,
     )
 
     runner.spawn(
         sub_id="paging1",
         task="find findings",
         timeout_s=30,
-        response_sink=None,
     )
 
-    ev = await _wait_for_event(events)
-    assert isinstance(ev, SubagentResultEvent)
-    assert ev.details_output_id is not None
-    assert ev.details_line_count == 50
-    assert len(ev.details.splitlines()) <= 20  # preview only (15 lines)
+    p = await _wait_for_tool_result(queue)
+    assert p.data["details_output_id"] is not None
+    assert p.data["details_line_count"] == 50
+    assert len(p.data["details"].splitlines()) <= 20  # preview only
     # Full content is in the store
-    full = store.read(ev.details_output_id, offset=0, limit=100)
+    full = store.read(p.data["details_output_id"], offset=0, limit=100)
     assert full.lines[0] == "finding 0"
     assert full.lines[49] == "finding 49"
 
@@ -382,10 +356,8 @@ def test_sub_grammar_excludes_say_and_spawn_subagent():
 
 
 @pytest.mark.asyncio
-async def test_subagent_dispatches_via_dispatch_fn_only_after_completion(
-    tmp_path: Path,
-):
-    """SubagentResultEvent is only dispatched when the cascade returns
+async def test_subagent_dispatches_only_after_completion(tmp_path: Path):
+    """ToolResultArrived is only enqueued when the cascade returns
     (not eagerly during streaming)."""
     completed = asyncio.Event()
 
@@ -405,21 +377,23 @@ async def test_subagent_dispatches_via_dispatch_fn_only_after_completion(
             )
             yield StreamChunk(text="", done=True)
 
-    events: list[RawEvent] = []
-    runner = _make_runner(_SlowAdapter(), tmp_path, events)
-    runner.spawn(sub_id="s1", task="x", timeout_s=5, response_sink=None)
+    runner, queue = _make_runner(_SlowAdapter(), tmp_path)
+    runner.spawn(sub_id="s1", task="x", timeout_s=5)
 
-    # Right after spawn — no event yet.
-    assert events == []
+    # Right after spawn — no ToolResultArrived yet.
+    batch = await queue.drain(timeout_s=0.01)
+    assert not any(p.kind == "ToolResultArrived" for p in batch)
+
     await asyncio.wait_for(completed.wait(), timeout=1.0)
-    # Give the runner a tick to dispatch.
+    # Give the runner a tick to enqueue.
     await asyncio.sleep(0.05)
-    assert len(events) == 1
+    p = await _wait_for_tool_result(queue, timeout=1.0)
+    assert p.kind == "ToolResultArrived"
 
 
 @pytest.mark.asyncio
 async def test_subagent_runner_stop_cancels_inflight(tmp_path: Path):
-    """stop() cancels in-flight tasks; no result event is dispatched for them."""
+    """stop() cancels in-flight tasks; no perception is enqueued for them."""
 
     class _HangAdapter(LLMAdapter):
         def __init__(self) -> None:
@@ -434,13 +408,16 @@ async def test_subagent_runner_stop_cancels_inflight(tmp_path: Path):
             yield StreamChunk(text="", done=True)  # pragma: no cover
 
     adapter = _HangAdapter()
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
-    runner.spawn(sub_id="hang1", task="x", timeout_s=60, response_sink=None)
+    runner, queue = _make_runner(adapter, tmp_path)
+    runner.spawn(sub_id="hang1", task="x", timeout_s=60)
     await asyncio.wait_for(adapter.entered.wait(), timeout=1.0)
     await asyncio.wait_for(runner.stop(), timeout=1.0)
-    # No event dispatched (cancellation skips the dispatch path).
-    assert events == []
+    # No ToolResultArrived dispatched (cancellation skips the dispatch path).
+    tool_results = []
+    for _ in range(5):
+        batch = await queue.drain(timeout_s=0.05)
+        tool_results.extend(p for p in batch if p.kind == "ToolResultArrived")
+    assert tool_results == []
 
 
 @pytest.mark.asyncio
@@ -453,10 +430,9 @@ async def test_subagent_uses_subagent_scaffolding(tmp_path: Path):
              StreamChunk(text="", done=True)],
         ]
     )
-    events: list[RawEvent] = []
-    runner = _make_runner(adapter, tmp_path, events)
-    runner.spawn(sub_id="s1", task="hello", timeout_s=10, response_sink=None)
-    await _wait_for_event(events)
+    runner, queue = _make_runner(adapter, tmp_path)
+    runner.spawn(sub_id="s1", task="hello", timeout_s=10)
+    await _wait_for_tool_result(queue)
 
     assert len(adapter.calls) == 1
     system = adapter.calls[0]["system"]
@@ -502,8 +478,12 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
                 ],
             ]
         )
-        events: list[RawEvent] = []
-        shell_runner = ShellRunner(cwd=tmp_path, tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"))
+        queue = PerceptionQueue()
+        shell_runner = ShellRunner(
+            cwd=tmp_path,
+            perception_queue=queue,
+            tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+        )
         runner = SubagentRunner(
             adapter=adapter,
             renderer=PromptRenderer(),
@@ -512,16 +492,14 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
             transcripts_root=tmp_path / "transcripts",
             shell_runner=shell_runner,
             tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+            perception_queue=queue,
         )
-        runner.set_dispatch_fn(events.append)
-        sink: asyncio.Queue = asyncio.Queue()
         runner.spawn(
             sub_id="reg1",
             task="capture ctx",
             timeout_s=10,
-            response_sink=sink,
         )
-        await _wait_for_event(events, timeout=3.0)
+        await _wait_for_tool_result(queue, timeout=3.0)
 
         assert captured, "tool was not invoked inside sub-cascade"
         assert captured[0].shell_runner is shell_runner
@@ -563,8 +541,8 @@ async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
                 ],
             ]
         )
-        events: list[RawEvent] = []
-        monitor_runner = MonitorRunner(cwd=tmp_path)
+        queue = PerceptionQueue()
+        monitor_runner = MonitorRunner(cwd=tmp_path, perception_queue=queue)
         runner = SubagentRunner(
             adapter=adapter,
             renderer=PromptRenderer(),
@@ -573,16 +551,14 @@ async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
             transcripts_root=tmp_path / "transcripts",
             monitor_runner=monitor_runner,
             tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+            perception_queue=queue,
         )
-        runner.set_dispatch_fn(events.append)
-        sink: asyncio.Queue = asyncio.Queue()
         runner.spawn(
             sub_id="reg2",
             task="capture ctx",
             timeout_s=10,
-            response_sink=sink,
         )
-        await _wait_for_event(events, timeout=3.0)
+        await _wait_for_tool_result(queue, timeout=3.0)
 
         assert captured, "tool was not invoked inside sub-cascade"
         assert captured[0].monitor_runner is monitor_runner

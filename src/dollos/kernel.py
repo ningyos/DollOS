@@ -1,20 +1,19 @@
-"""DollOS kernel: wires LLM adapter, memsearch, and IPC server together."""
+"""DollOS kernel: wires LLM adapter, memsearch, IPC server, and MindLoop together."""
 
 import asyncio
 import logging
 import signal
 import tempfile
-from datetime import date, datetime, time, timedelta
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from memsearch import MemSearch
 
-from dollos.cascade_log import CascadeLogger
 from dollos.character import DollPack
 from dollos.config import Settings
-from dollos.dispatcher import EventDispatcher
 from dollos.logging_config import configure_cascade_logging
-from dollos.events import DailyPlanEvent, DiaryEvent, ScheduledEvent, UserTextEvent
+from dollos.cascade_log import CascadeLogger
 from dollos.schedule import due_entries, load_schedule
 from dollos.ipc.messages import (
     ErrorMsg,
@@ -36,12 +35,16 @@ from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
-from dollos.conversation_history import ConversationHistory
 from dollos.monitor_runner import MonitorRunner
-from dollos.scratchpad import Scratchpad
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_outputs import ToolOutputStore
+from dollos.tools import MAIN_TOOLS
+from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.mind_loop import MindLoop
+from dollos.mind.mind_state import MindState, Perception, load_state
+from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.sink_resolver import SinkResolver
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,27 @@ def build_voice_engines(
     return asr, tts
 
 
+class _MindLLMAdapter:
+    """Thin adapter: wraps LLMAdapter.stream_completion for MindLoop._llm_call.
+
+    MindLoop expects an object with stream_completion(system, user, prefill)
+    that yields chunks with .text and .done attributes.
+    The underlying LLMAdapter.stream_completion is an async generator with
+    matching interface, so this is a transparent pass-through.
+    """
+
+    def __init__(self, adapter: LLMAdapter) -> None:
+        self._adapter = adapter
+
+    async def stream_completion(self, system: str, user: str, prefill: str = ""):
+        async for chunk in self._adapter.stream_completion(
+            system=system,
+            user=user,
+            prefill=prefill,
+        ):
+            yield chunk
+
+
 class DollOS:
     DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see spec §12.3)
     DIARY_MINUTE = 0
@@ -144,51 +168,78 @@ class DollOS:
         self._cascade_logger = CascadeLogger(cascade_log_root)
         self._tool_output_dir = Path(tempfile.mkdtemp(prefix="dollos-tools-"))
         self._tool_output_store = ToolOutputStore(self._tool_output_dir)
-        self._scratchpad = Scratchpad()
-        self._conversation_history = ConversationHistory(
-            max_turns=settings.conversation_history.max_turns,
-        )
-        # Two-stage wiring: SubagentRunner / ShellRunner need a dispatch_fn,
-        # dispatcher needs the runners. Build runners first with no dispatch_fn,
-        # then build dispatcher referencing them, then point runners at
-        # dispatcher.dispatch.
+
+        # ------------------------------------------------------------------ #
+        # MindLoop infrastructure                                              #
+        # ------------------------------------------------------------------ #
+        self._perception_queue = PerceptionQueue()
+        self._mind_state = load_state(settings.data.root / "mind_state.json")
+        self._sink_resolver = SinkResolver()
+
         self.shell_runner = ShellRunner(
             cwd=settings.data.root,
+            perception_queue=self._perception_queue,
             tool_output_store=self._tool_output_store,
         )
-        self.monitor_runner = MonitorRunner(cwd=settings.data.root)
+        self.monitor_runner = MonitorRunner(
+            cwd=settings.data.root,
+            perception_queue=self._perception_queue,
+        )
         self.subagent_runner = SubagentRunner(
             adapter=self.adapter,
             renderer=self.renderer,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
             transcripts_root=settings.data.root / "memory" / "transcripts",
+            perception_queue=self._perception_queue,
             shell_runner=self.shell_runner,
             monitor_runner=self.monitor_runner,
             tool_output_store=self._tool_output_store,
         )
-        self.dispatcher = EventDispatcher(
-            adapter=self.adapter,
-            renderer=self.renderer,
-            identity=self._doll_pack.identity,
-            memory_root=settings.data.root / "memory",
+
+        self._mind_ctx = MindCtx(
+            mind_state=self._mind_state,
             memsearch=self.memsearch,
-            memsearch_top_k=settings.memsearch.top_k,
+            memory_root=settings.data.root / "memory",
             transcripts_root=settings.data.root / "memory" / "transcripts",
-            subagent_runner=self.subagent_runner,
-            cascade_logger=self._cascade_logger,
-            shell_runner=self.shell_runner,
-            monitor_runner=self.monitor_runner,
+            sink_resolver=self._sink_resolver,
             tool_output_store=self._tool_output_store,
-            scratchpad=self._scratchpad,
-            conversation_history=self._conversation_history,
+            shell_runner=self.shell_runner,
+            subagent_runner=self.subagent_runner,
+            monitor_runner=self.monitor_runner,
         )
-        self.subagent_runner.set_dispatch_fn(self.dispatcher.dispatch)
-        self.shell_runner.set_dispatch_fn(self.dispatcher.dispatch)
-        self.monitor_runner.set_dispatch_fn(self.dispatcher.dispatch)
+
+        # Render the static system prompt from the character pack
+        skills_dir = settings.data.root / "memory" / "skills"
+        if skills_dir.exists():
+            available_skills = sorted(p.stem for p in skills_dir.glob("*.md"))
+        else:
+            available_skills = []
+        system_prompt = self.renderer.render(
+            "scaffolding",
+            identity=self._doll_pack.identity,
+            available_skills=available_skills,
+        )
+
+        tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+        self._mind_loop = MindLoop(
+            state=self._mind_state,
+            queue=self._perception_queue,
+            ctx=self._mind_ctx,
+            llm=_MindLLMAdapter(self.adapter),
+            system_prompt=system_prompt,
+            state_persist_path=settings.data.root / "mind_state.json",
+            tool_registry=tool_registry,
+        )
+
+        # ------------------------------------------------------------------ #
+        # IPC server                                                           #
+        # ------------------------------------------------------------------ #
         self._voice_sessions: dict[int, VoiceSession] = {}  # keyed by id(sink)
         self._pack_dir = Path(settings.character.pack)
         self._data_root = settings.data.root
+        # Maps id(sink) → sink_handle (int) for unregister on disconnect.
+        self._sink_handles: dict[int, int] = {}
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -200,12 +251,9 @@ class DollOS:
         self._shutdown = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
         self._schedule_task: asyncio.Task[None] | None = None
-        # Active connection sink — set by _handle_connect, cleared by
-        # _handle_disconnect. Used by scheduler-fired events that need a
-        # sink (Phase 1 ScheduledEvent / DailyPlanEvent).
-        self._active_sink: "asyncio.Queue[ServerMessage | None] | None" = None
+        self._mind_task: asyncio.Task[None] | None = None
         # Per-day fired set — scheduler dedupe across its 30s polling.
-        self._fired_today: dict[date, set[time]] = {}
+        self._fired_today: dict[date, set] = {}
         # Track per-day bootstrap so reconnects within a day don't refire.
         self._bootstrapped_dates: set[date] = set()
 
@@ -222,7 +270,14 @@ class DollOS:
         self, msg, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
         if isinstance(msg, TextInput):
-            self.dispatcher.dispatch(UserTextEvent(text=msg.text, response_sink=sink))
+            # Push as Perception into the queue; MindLoop drains it.
+            self._perception_queue.put(
+                Perception(
+                    kind="UserSpoke",
+                    t=time.time(),
+                    data={"text": msg.text},
+                )
+            )
         elif isinstance(msg, WebRTCOfferIn):
             answer_sdp = await self._handle_offer(msg.sdp, sink)
             sink.put_nowait(WebRTCAnswerOut(sdp=answer_sdp))
@@ -273,7 +328,13 @@ class DollOS:
         asr, tts = engines
 
         async def _on_user_text(text: str) -> None:
-            self.dispatcher.dispatch(UserTextEvent(text=text, response_sink=sink))
+            self._perception_queue.put(
+                Perception(
+                    kind="UserSpoke",
+                    t=time.time(),
+                    data={"text": text},
+                )
+            )
 
         session = VoiceSession(asr=asr, tts=tts, on_user_text=_on_user_text)
         self._voice_sessions[id(sink)] = session
@@ -285,43 +346,25 @@ class DollOS:
     async def _handle_connect(
         self, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
-        """WebSocketServer on_connect hook — exposes the live sink.
-
-        Scheduled / bootstrap events fired while a client is connected use
-        this sink so output reaches that client. Bootstrap deferred to the
-        first connect (gap #5) so DailyPlanEvent's response can stream
-        straight to a real consumer.
-        """
-        self._active_sink = sink
+        """WebSocketServer on_connect hook — register sink with SinkResolver."""
+        handle = self._sink_resolver.register(sink)
+        self._sink_handles[id(sink)] = handle
         await self._maybe_bootstrap_plan()
 
     async def _handle_disconnect(self, sink: "asyncio.Queue[ServerMessage | None]") -> None:
-        """WebSocketServer on_disconnect hook — drops the live sink and closes
-        any associated VoiceSession."""
+        """WebSocketServer on_disconnect hook — unregister sink and close VoiceSession."""
         session = self._voice_sessions.pop(id(sink), None)
         if session is not None:
             try:
                 await session.close()
             except Exception:
                 logger.exception("voice session close raised")
-        if self._active_sink is sink:
-            self._active_sink = None
-
-    def _active_sink_or_dummy(
-        self,
-    ) -> "asyncio.Queue[ServerMessage | None]":
-        """Return live client sink if connected, else a fresh queue.
-
-        The dummy queue is never read — pushes succeed and are silently
-        discarded with the queue at GC. Sufficient for fire-and-forget
-        scheduler events when no UI is listening.
-        """
-        if self._active_sink is not None:
-            return self._active_sink
-        return asyncio.Queue()
+        handle = self._sink_handles.pop(id(sink), None)
+        if handle is not None:
+            self._sink_resolver.unregister(handle)
 
     async def _maybe_bootstrap_plan(self) -> None:
-        """Fire DailyPlanEvent if today has no schedule yet (gap #5).
+        """Fire Awoke/bootstrap perception if today has no schedule yet.
 
         Runs on every connect but only fires once per day (the
         ``_bootstrapped_dates`` guard) and only if no schedule.toml exists.
@@ -339,13 +382,18 @@ class DollOS:
             self._bootstrapped_dates.add(today)
             return
         self._bootstrapped_dates.add(today)
-        # Bootstrap is daemon-internal planning — Doll's Say output goes to
-        # /dev/null so the smoke client doesn't see it as a turn response.
-        # WriteSchedule still works (writes to file regardless of sink).
-        self.dispatcher.dispatch(DailyPlanEvent(response_sink=asyncio.Queue()))
+        # Push a ScheduledMoment perception for daily plan bootstrap.
+        # MindLoop drains it; Doll decides to call WriteSchedule.
+        self._perception_queue.put(
+            Perception(
+                kind="ScheduledMoment",
+                t=time.time(),
+                data={"intent": "今天還沒有計劃，請呼叫 WriteSchedule 安排今天的行程。"},
+            )
+        )
 
     async def _diary_scheduler(self) -> None:
-        """Background task: fires DiaryEvent daily at DIARY_HOUR:DIARY_MINUTE."""
+        """Background task: fires DiaryEvent perception daily at DIARY_HOUR:DIARY_MINUTE."""
         while not self._shutdown.is_set():
             now = datetime.now()
             target = now.replace(
@@ -362,17 +410,20 @@ class DollOS:
                 return  # shutdown signaled
             except TimeoutError:
                 pass  # time to fire
-            sink: asyncio.Queue[ServerMessage | None] = asyncio.Queue()
-            asyncio.create_task(self._drain_diary_sink(sink))
-            self.dispatcher.dispatch(DiaryEvent(response_sink=sink))
+            self._perception_queue.put(
+                Perception(
+                    kind="ScheduledMoment",
+                    t=time.time(),
+                    data={"intent": "現在是 23:00，請寫今天的日記（呼叫 WriteDiary）。"},
+                )
+            )
 
     async def _schedule_runner(self) -> None:
-        """Background task: every 30s, fire any due ScheduledEvents.
+        """Background task: every 30s, fire any due scheduled perceptions.
 
         Reads ``data/memory/schedule/{today}.toml``, finds entries within a
-        1-minute window of now (per ``due_entries``), and dispatches a
-        ``ScheduledEvent`` for each. Past entries from earlier in the day
-        are skipped (gap #7) — daemon-offline misses are not replayed.
+        1-minute window of now (per ``due_entries``), and pushes a
+        ``ScheduledMoment`` Perception for each.
         """
         while not self._shutdown.is_set():
             try:
@@ -397,34 +448,41 @@ class DollOS:
             fired = self._fired_today.setdefault(today, set())
             for entry in due_entries(schedule, now, fired):
                 fired.add(entry.time)
-                sink = self._active_sink_or_dummy()
-                self.dispatcher.dispatch(
-                    ScheduledEvent(
-                        entry_time=entry.time,
-                        intent=entry.intent,
-                        response_sink=sink,
+                self._perception_queue.put(
+                    Perception(
+                        kind="ScheduledMoment",
+                        t=time.time(),
+                        data={
+                            "entry_time": entry.time.isoformat(),
+                            "intent": entry.intent,
+                        },
                     )
                 )
-
-    async def _drain_diary_sink(
-        self, sink: asyncio.Queue[ServerMessage | None]
-    ) -> None:
-        """Consume diary event sink to None sentinel; logs ErrorMsg only."""
-        while True:
-            item = await sink.get()
-            if item is None:
-                return
-            if isinstance(item, ErrorMsg):
-                logger.error("diary event error: %s", item.message)
-            # TextChunk / TurnEnd silently consumed
 
     async def run(self) -> None:
         await self.memsearch.index()
         try:
             await self.server.start()
-            # Start diary scheduler
+
+            # Start MindLoop as primary consciousness task
+            self._mind_task = asyncio.create_task(
+                self._mind_loop.run(), name="mind-loop"
+            )
+
+            # Push Awoke perception on startup
+            reason = "cold_start" if self._mind_state.iter_count == 0 else "resumed"
+            self._perception_queue.put(
+                Perception(
+                    kind="Awoke",
+                    t=time.time(),
+                    data={"reason": reason},
+                )
+            )
+
+            # Start diary scheduler and schedule runner
             self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             self._schedule_task = asyncio.create_task(self._schedule_runner())
+
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown.set)
@@ -432,8 +490,8 @@ class DollOS:
                 await self._shutdown.wait()
             finally:
                 await self.server.stop()
-                # Cancel scheduler before dispatcher.stop so any in-flight
-                # diary turn can finish via dispatcher's task tracking
+                # Cancel scheduler before mind_loop so any in-flight
+                # perceptions settle
                 if self._scheduler_task is not None:
                     self._scheduler_task.cancel()
                     await asyncio.gather(
@@ -444,14 +502,15 @@ class DollOS:
                     await asyncio.gather(
                         self._schedule_task, return_exceptions=True
                     )
-                # Stop subagents and shell runner BEFORE dispatcher so any
-                # final result event has a live dispatcher to enter (in
-                # practice cancellation skips the result event; ordering
-                # kept explicit per plan).
+                # Stop runners before MindLoop so result perceptions
+                # don't arrive after loop shuts down
                 await self.subagent_runner.stop()
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
-                await self.dispatcher.stop()
+                # Shutdown MindLoop
+                if self._mind_task is not None:
+                    self._mind_loop.shutdown()
+                    await asyncio.gather(self._mind_task, return_exceptions=True)
                 self._tool_output_store.cleanup()
         finally:
             pass   # memsearch has no close(); Milvus Lite is file-based
