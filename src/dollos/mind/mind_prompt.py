@@ -36,7 +36,7 @@ def render_mind(state: MindState, memsearch_hits: list[dict], system_prompt: str
         "[Recent perceptions] (newest last)",
         _render_perceptions(state.recent_perceptions, now),
         "",
-        "[Recent outputs] (what you did recently — don't repeat yourself)",
+        _render_outputs_header(state.recent_outputs, now),
         _render_outputs(state.recent_outputs, now),
         "",
         "[Recent thoughts]",
@@ -120,6 +120,28 @@ def _percep_body(p) -> str:
     if p.kind == "Awoke":
         return f"reason={d.get('reason', '?')}"
     return str(d)[:120]
+
+
+def _render_outputs_header(outs, now: float) -> str:
+    """Render the [Recent outputs] section header.
+
+    If the most recent output was a Say within the last 30 seconds, inject an
+    inline WARNING nudge so the model has a concrete signal not to say again.
+    """
+    base = "[Recent outputs] (what you did recently — avoid repeating the same content)"
+    if not outs:
+        return base
+    last = list(outs)[-1]
+    if last.kind == "Say":
+        age_s = now - last.t
+        if age_s < 30:
+            snippet = last.summary[len("said: "):60] if last.summary.startswith("said: ") else last.summary[:60]
+            return (
+                f"{base}\n"
+                f"⚠ WARNING: you just spoke {age_s:.0f}s ago ('{snippet}…'). "
+                f"Do NOT Say a similar message again. If there is nothing new to add, output an empty action array []."
+            )
+    return base
 
 
 def _render_outputs(outs, now: float) -> str:
