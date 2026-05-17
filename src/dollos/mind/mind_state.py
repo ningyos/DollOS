@@ -51,7 +51,7 @@ class OpenLoop:
 class Perception:
     kind: Literal[
         "UserSpoke", "ToolResultArrived", "MonitorFired",
-        "MonitorEnded", "ScheduledMoment", "Awoke",
+        "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
     ]
     t: float
     data: dict

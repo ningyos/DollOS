@@ -119,6 +119,8 @@ def _percep_body(p) -> str:
         return d.get("text", "")[:200]
     if p.kind == "Awoke":
         return f"reason={d.get('reason', '?')}"
+    if p.kind == "ReflectionMoment":
+        return f"(time to reflect — review recent activity and NoteMemory anything worth keeping; {d.get('iters_since_last', '?')} iters since last)"
     return str(d)[:120]
 
 
