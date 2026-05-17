@@ -16,14 +16,11 @@ def _fmt_time(seconds: float) -> str:
 
 def render_mind_prompt(state: MindState) -> str:
     now = time.time()
-    session_age = now - state.session_started_at if state.session_started_at else 0
 
     lines: list[str] = []
     lines.append("[Mind state]")
     lines.append(f"focus: {state.focus}")
     lines.append(f"mood: {state.mood}")
-    lines.append(f"energy: {state.energy:.2f}")
-    lines.append(f"session_age: {_fmt_time(session_age)}")
     lines.append(f"iter: {state.iter_count}")
     if state.last_user_at:
         lines.append(f"last_user: {_fmt_time(now - state.last_user_at)} ago")
@@ -74,7 +71,7 @@ def render_mind_prompt(state: MindState) -> str:
 
     lines.append("[Decision time]")
     lines.append(
-        "What do you do this iteration? Output one or more actions as a JSON array. "
-        "If nothing to do, output [{\"action\":\"Idle\"}]."
+        "What do you do this iteration? Output actions as a JSON array. "
+        "If nothing to do, output []."
     )
     return "\n".join(lines)

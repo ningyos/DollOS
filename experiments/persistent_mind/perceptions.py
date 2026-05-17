@@ -31,8 +31,6 @@ class Perception:
                 f"[{age_s}] ToolResultArrived: tool={tool} cmd={cmd!r} rc={rc}\n"
                 f"  stdout: {out}{err_s}"
             )
-        if self.kind == "IdleTick":
-            return f"[{age_s}] IdleTick"
         if self.kind == "Awoke":
             return f"[{age_s}] Awoke"
         return f"[{age_s}] {self.kind}: {self.data}"
@@ -56,10 +54,6 @@ def ToolResultArrived(
             "dispatch_id": dispatch_id,
         },
     )
-
-
-def IdleTick() -> Perception:
-    return Perception("IdleTick")
 
 
 def Awoke() -> Perception:
