@@ -25,11 +25,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dollos.cascade import run_tool_cascade
-from dollos.scratchpad import Scratchpad
 from dollos.llm.templates import build_qwen3_think_tool_grammar
+from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.mind_state import MindState, Perception
+from dollos.mind.sink_resolver import SinkResolver
 from dollos.prompts import PromptRenderer
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import SUB_TOOLS, SubagentToolCtx, ToolCtx
+from dollos.tools import SUB_TOOLS
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -113,7 +115,6 @@ class SubagentRunner:
         task: str,
         timeout_s: int,
     ) -> None:
-        from dollos.mind.mind_state import Perception
         try:
             report = await asyncio.wait_for(
                 self._run_cascade(task), timeout=timeout_s
@@ -224,19 +225,27 @@ class SubagentRunner:
         system = self._renderer.render("subagent_scaffolding")
         messages: list[dict] = [{"role": "user", "content": task}]
 
-        ctx = SubagentToolCtx(
-            sink=None,  # subagent has no live user sink
-            memory_root=self._memory_root,
+        # Build a fresh MindState for this subagent — private scratchpad,
+        # task as focus, no mood history, no shared state with Doll's loop.
+        sub_state = MindState(focus=task)
+
+        # Empty SinkResolver: subagent has no user-facing sink.
+        _dummy_resolver = SinkResolver()
+
+        ctx = MindCtx(
+            mind_state=sub_state,
             memsearch=self._memsearch,
+            memory_root=self._memory_root,
             transcripts_root=self._transcripts_root,
+            sink_resolver=_dummy_resolver,   # subagent never Says
             tool_output_store=self._tool_output_store,
-            scratchpad=Scratchpad(),  # fresh per-spawn; independent from Doll's
-            subagent_runner=None,  # no recursion
             shell_runner=self._shell_runner,
+            subagent_runner=None,            # no recursion
             monitor_runner=self._monitor_runner,
+            # subagent_report starts None; Report tool sets it to signal exit
         )
 
-        def _check_early_exit(iter_num: int, ctx: ToolCtx) -> bool:
+        def _check_early_exit(iter_num: int, ctx: MindCtx) -> bool:
             # Report fires as a side-effect tool (returns None → not in
             # results). If it ran, ctx.subagent_report is set; signal exit.
             return ctx.subagent_report is not None

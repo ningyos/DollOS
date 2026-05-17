@@ -610,19 +610,9 @@ async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
 async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
     """Report.run side-effects ctx.subagent_report and returns None
     (cascade-ending semantics)."""
-    from dollos.tools import Report, SubagentToolCtx
+    from dollos.tools import Report
 
-    sink: asyncio.Queue = asyncio.Queue()
-    ms = _FakeMemSearch()
-    from dollos.scratchpad import Scratchpad
-    ctx = SubagentToolCtx(
-        sink=sink,
-        memory_root=tmp_path,
-        memsearch=ms,
-        transcripts_root=tmp_path / "transcripts",
-        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
-        scratchpad=Scratchpad(),
-    )
+    ctx, _, _ = _make_ctx(tmp_path)
     assert ctx.subagent_report is None
 
     out = await Report(
