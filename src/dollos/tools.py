@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -24,22 +25,26 @@ from pydantic import BaseModel, Field, field_validator
 
 from dollos.ipc.messages import ServerMessage, TextChunk
 from dollos.memory_writer import append_transcript
-
-from dollos.scratchpad import (
-    AppendScratchpad,
-    ClearScratchpad,
-    EditScratchpad,
-    WriteScratchpad,
-)
+from dollos.mind import scratchpad_helpers
+from dollos.mind.mind_state import OutputRecord, Thought
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
 
+    from dollos.mind.mind_ctx import MindCtx
+    from dollos.mind.mind_state import MindState
     from dollos.monitor_runner import MonitorRunner
     from dollos.scratchpad import Scratchpad
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
     from dollos.tool_outputs import ToolOutputStore
+
+
+def _record(ctx: "MindCtx", kind: str, summary: str) -> None:
+    """Append an OutputRecord to ctx.mind_state.recent_outputs."""
+    ctx.mind_state.recent_outputs.append(
+        OutputRecord(t=time.time(), kind=kind, summary=summary)
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +84,16 @@ def _format_hit(hit: dict) -> str:
     return f"- {hit.get('content', '')}"
 
 
+# ---------------------------------------------------------------------------
+# DEPRECATED: ToolCtx — kept for dispatcher.py compatibility until Task 8
+# deletes dispatcher. Do NOT use in new code; use MindCtx instead.
+# ---------------------------------------------------------------------------
+
 @dataclass
 class ToolCtx:
     """Narrow execution context passed to Tool.run().
+
+    DEPRECATED — Task 8 deletes this. New code uses MindCtx.
 
     `subagent_runner`, `shell_runner`, and `monitor_runner` carry the
     dispatch sinks for fire-and-forget external actions. The production
@@ -90,7 +102,7 @@ class ToolCtx:
 
     sink: asyncio.Queue[ServerMessage | None] | None
     memory_root: Path
-    memsearch: MemSearch
+    memsearch: "MemSearch"
     transcripts_root: Path
     tool_output_store: "ToolOutputStore"
     scratchpad: "Scratchpad"
@@ -103,9 +115,17 @@ class ToolCtx:
 class SubagentToolCtx(ToolCtx):
     """ToolCtx used inside a subagent's sub-cascade. Adds a slot for the
     Report tool to stash its structured outcome — the SubagentRunner
-    reads it back to build the SubagentResultEvent."""
+    reads it back to build the SubagentResultEvent.
+
+    DEPRECATED — Task 8 migrates this to MindCtx-based subagent context.
+    """
 
     subagent_report: dict | None = None
+
+
+# ---------------------------------------------------------------------------
+# Tools — all run(ctx: MindCtx)
+# ---------------------------------------------------------------------------
 
 
 class Say(BaseModel):
@@ -113,8 +133,12 @@ class Say(BaseModel):
 
     text: str = Field(description="What Doll says to the user.")
 
-    async def run(self, ctx: ToolCtx) -> None:
-        ctx.sink.put_nowait(TextChunk(text=self.text))
+    def _summary(self) -> str:
+        return f"said: {self.text[:77]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        sink = ctx.sink_resolver()
+        sink.put_nowait(TextChunk(text=self.text))
         try:
             await append_transcript(
                 transcripts_root=ctx.transcripts_root,
@@ -124,6 +148,9 @@ class Say(BaseModel):
             )
         except Exception:
             logger.exception("transcript append failed for Say")
+        result = f"said: {self.text[:60]}"
+        _record(ctx, "Say", self._summary())
+        return result
 
 
 class NoteMemory(BaseModel):
@@ -133,7 +160,10 @@ class NoteMemory(BaseModel):
         description="The fact to record. One sentence, declarative."
     )
 
-    async def run(self, ctx: ToolCtx) -> None:
+    def _summary(self) -> str:
+        return f"noted: {self.text[:73]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         # Sync append + index inside async — append is a single small write
@@ -141,6 +171,9 @@ class NoteMemory(BaseModel):
         with path.open("a") as f:
             f.write(f"- {self.text}\n")
         await ctx.memsearch.index_file(path)
+        result = f"memory noted: {self.text[:60]}"
+        _record(ctx, "NoteMemory", self._summary())
+        return result
 
 
 class WriteDiary(BaseModel):
@@ -159,13 +192,18 @@ class WriteDiary(BaseModel):
         )
     )
 
-    async def run(self, ctx: ToolCtx) -> None:
+    def _summary(self) -> str:
+        return f"diary written ({len(self.content)} chars)"
+
+    async def run(self, ctx: "MindCtx") -> str:
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%H:%M:%S")
         with path.open("a") as f:
             f.write(f"\n## 日記 ({timestamp})\n\n{self.content}\n")
         await ctx.memsearch.index_file(path)
+        _record(ctx, "WriteDiary", self._summary())
+        return "diary written"
 
 
 class Shell(BaseModel):
@@ -187,25 +225,32 @@ class Shell(BaseModel):
         description="Shell command to run (passed to bash -c).",
     )
     timeout_s: int = Field(
+        60,
         ge=1,
         le=600,
         description=(
             "Wall-clock seconds before the proc is killed. Estimate "
             "from the command (5 short, 60 medium, 300 long; max 600). "
-            "No default — pick a number every time."
+            "Default 60s."
         ),
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        cmd = self.command[:60]
+        return f"shell: {cmd}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         ctx.shell_runner.spawn(
             command=self.command,
             timeout_s=self.timeout_s,
-            response_sink=ctx.sink,
+            response_sink=None,  # Task 8 wires perception_queue here
         )
-        return (
+        result = (
             f"shell dispatched (command={self.command!r}, "
             f"timeout={self.timeout_s}s). 結果會以新事件回來。"
         )
+        _record(ctx, "Shell", self._summary())
+        return result
 
 
 class InvokeSkill(BaseModel):
@@ -224,7 +269,10 @@ class InvokeSkill(BaseModel):
         )
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"invoked skill: {self.name}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         path = ctx.memory_root / "skill_bodies" / f"{self.name}.md"
         if not path.exists():
             skill_dir = ctx.memory_root / "skill_bodies"
@@ -239,6 +287,7 @@ class InvokeSkill(BaseModel):
                 f"建議：用 Shell 動手做 / Say 直接回答 / 用 Recall 找其他相關記憶。"
                 f"不要再猜其他 skill 名字。"
             )
+        _record(ctx, "InvokeSkill", self._summary())
         return path.read_text()
 
 
@@ -275,13 +324,22 @@ class Recall(BaseModel):
         ),
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"recalled: {self.query[:72]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         hits = await ctx.memsearch.search(self.query, top_k=5)
         if self.since is not None or self.until is not None:
             hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]
         if not hits:
-            return "[no relevant memory]"
-        return "\n".join(_format_hit(h) for h in hits)
+            result = "[no relevant memory]"
+        else:
+            result = "\n".join(_format_hit(h) for h in hits)
+        ctx.mind_state.recent_thoughts.append(
+            Thought(t=time.time(), text=f"Recall({self.query!r}): {result[:200]}")
+        )
+        _record(ctx, "Recall", self._summary())
+        return result
 
 
 class SpawnSubagent(BaseModel):
@@ -303,28 +361,33 @@ class SpawnSubagent(BaseModel):
         )
     )
     timeout_s: int = Field(
+        300,
         ge=1,
         le=600,
         description=(
             "Wall-clock seconds before the subagent is killed. Estimate from "
-            "task complexity (30 short, 300 long; max 600). No default — pick "
-            "a number every time."
+            "task complexity (30 short, 300 long; max 600). Default 300s."
         ),
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"subagent: {self.task[:68]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         sub_id = str(uuid.uuid4())[:8]
         ctx.subagent_runner.spawn(
             sub_id=sub_id,
             task=self.task,
             timeout_s=self.timeout_s,
-            response_sink=ctx.sink,
+            response_sink=None,  # Task 8 wires perception_queue here
         )
-        return (
+        result = (
             f"subagent {sub_id} dispatched "
             f"(task={self.task!r}, timeout={self.timeout_s}s). "
             f"結果會以新事件回來。"
         )
+        _record(ctx, "SpawnSubagent", self._summary())
+        return result
 
 
 class SpawnMonitor(BaseModel):
@@ -361,33 +424,39 @@ class SpawnMonitor(BaseModel):
         ),
     )
     rate_limit_s: int = Field(
+        60,
         ge=0,
         le=3600,
         description=(
             "Per-monitor seconds-between-fires window. 0 disables. "
-            "60 is a reasonable default for noisy sources."
+            "Default 60s (reasonable for noisy sources)."
         ),
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"monitor: {self.command[:68]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         try:
             monitor_id = ctx.monitor_runner.spawn(
                 command=self.command,
                 match_regex=self.match_regex,
                 rate_limit_s=self.rate_limit_s,
-                response_sink=ctx.sink,
+                response_sink=None,  # Task 8 wires perception_queue here
             )
         except re.error as e:
             return f"[SpawnMonitor regex error: {e}]"
         if not monitor_id:
             return "[SpawnMonitor failed: runner is stopping]"
-        return (
+        result = (
             f"monitor {monitor_id} dispatched "
             f"(command={self.command!r}, "
             f"match={self.match_regex!r}, "
             f"rate_limit_s={self.rate_limit_s}). "
             f"觸發 / 結束都會以新事件回來。"
         )
+        _record(ctx, "SpawnMonitor", self._summary())
+        return result
 
 
 class RemoveMonitor(BaseModel):
@@ -402,11 +471,17 @@ class RemoveMonitor(BaseModel):
         description="Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
     )
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"remove monitor: {self.monitor_id}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         ok = await ctx.monitor_runner.remove(self.monitor_id)
         if ok:
-            return f"monitor {self.monitor_id} kill requested."
-        return f"monitor {self.monitor_id} unknown (already gone or not found)."
+            result = f"monitor {self.monitor_id} kill requested."
+        else:
+            result = f"monitor {self.monitor_id} unknown (already gone or not found)."
+        _record(ctx, "RemoveMonitor", self._summary())
+        return result
 
 
 class Report(BaseModel):
@@ -475,7 +550,10 @@ class WriteSchedule(BaseModel):
 
     entries: list[ScheduleEntryArg]
 
-    async def run(self, ctx: ToolCtx) -> str:
+    def _summary(self) -> str:
+        return f"schedule: {len(self.entries)} entries"
+
+    async def run(self, ctx: "MindCtx") -> str:
         from dollos.schedule import ScheduleEntry, write_schedule
 
         today = date.today()
@@ -500,7 +578,9 @@ class WriteSchedule(BaseModel):
                 f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
         await ctx.memsearch.index_file(md_path)
 
-        return f"Schedule written: {len(parsed)} entries"
+        result = f"Schedule written: {len(parsed)} entries"
+        _record(ctx, "WriteSchedule", self._summary())
+        return result
 
 
 class ReadToolOutput(BaseModel):
@@ -526,13 +606,18 @@ class ReadToolOutput(BaseModel):
         description="max lines to return (1-500). REQUIRED — do not omit.",
     )
 
-    async def run(self, ctx: "ToolCtx") -> str:
+    def _summary(self) -> str:
+        return f"read tool output {self.id} offset={self.offset} limit={self.limit}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         slice_ = ctx.tool_output_store.read(self.id, offset=self.offset, limit=self.limit)
         header = (
             f"lines {slice_.start_offset}–{slice_.end_offset} of {slice_.total_lines}:"
         )
         body = "\n".join(slice_.lines) if slice_.lines else "(empty slice)"
-        return f"{header}\n{body}"
+        result = f"{header}\n{body}"
+        _record(ctx, "ReadToolOutput", self._summary())
+        return result
 
 
 class GrepToolOutput(BaseModel):
@@ -544,15 +629,203 @@ class GrepToolOutput(BaseModel):
     pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")
     max_matches: int = Field(20, ge=1, le=200, description="max matching lines to return")
 
-    async def run(self, ctx: "ToolCtx") -> str:
+    def _summary(self) -> str:
+        return f"grep tool output {self.id} pattern={self.pattern[:40]!r}"
+
+    async def run(self, ctx: "MindCtx") -> str:
         matches = ctx.tool_output_store.grep(
             self.id, pattern=self.pattern, max_matches=self.max_matches
         )
         if not matches:
-            return f"no matches for {self.pattern!r}"
-        header = f"{len(matches)} match(es) for {self.pattern!r}:"
-        body = "\n".join(f"line {m.line_index}: {m.line}" for m in matches)
-        return f"{header}\n{body}"
+            result = f"no matches for {self.pattern!r}"
+        else:
+            header = f"{len(matches)} match(es) for {self.pattern!r}:"
+            body = "\n".join(f"line {m.line_index}: {m.line}" for m in matches)
+            result = f"{header}\n{body}"
+        _record(ctx, "GrepToolOutput", self._summary())
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Scratchpad tools — mutate ctx.mind_state.scratchpad via helpers
+# ---------------------------------------------------------------------------
+
+
+class WriteScratchpad(BaseModel):
+    """Overwrite the scratchpad with new content.
+
+    Hard cap 2000 chars. Use this when starting fresh or when existing
+    content is irrelevant to current work.
+    """
+
+    content: str = Field(..., description="full new scratchpad contents (≤2000 chars)")
+
+    def _summary(self) -> str:
+        return f"write scratchpad ({len(self.content)} chars)"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        scratchpad_helpers.write(ctx.mind_state, self.content)
+        result = f"scratchpad set ({len(self.content)} chars)"
+        _record(ctx, "WriteScratchpad", self._summary())
+        return result
+
+
+class AppendScratchpad(BaseModel):
+    """Append a line to the end of the scratchpad.
+
+    A newline separator is auto-prepended if the scratchpad is non-empty.
+    Raises ValueError if appending would exceed 2000 chars.
+    """
+
+    text: str = Field(..., description="text to append as a new line")
+
+    def _summary(self) -> str:
+        return f"append scratchpad: {self.text[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        new_total = scratchpad_helpers.append(ctx.mind_state, self.text)
+        result = f"scratchpad now {new_total} chars"
+        _record(ctx, "AppendScratchpad", self._summary())
+        return result
+
+
+class EditScratchpad(BaseModel):
+    """Replace a unique substring in the scratchpad.
+
+    Same semantics as Claude Code's Edit tool: old_string must appear
+    exactly once in the current contents. Use longer old_string with
+    surrounding context if a short substring is ambiguous.
+    """
+
+    old_string: str = Field(..., description="exact substring to replace; must appear exactly once")
+    new_string: str = Field(..., description="replacement text")
+
+    def _summary(self) -> str:
+        return f"edit scratchpad: {self.old_string[:30]!r} → {self.new_string[:30]!r}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        scratchpad_helpers.edit(ctx.mind_state, self.old_string, self.new_string)
+        _record(ctx, "EditScratchpad", self._summary())
+        return "scratchpad edited"
+
+
+class ClearScratchpad(BaseModel):
+    """Wipe the scratchpad to empty."""
+
+    def _summary(self) -> str:
+        return "clear scratchpad"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        scratchpad_helpers.clear(ctx.mind_state)
+        _record(ctx, "ClearScratchpad", self._summary())
+        return "scratchpad cleared"
+
+
+# ---------------------------------------------------------------------------
+# Loop actions — manage focus, open_loops, and sleep hints
+# ---------------------------------------------------------------------------
+
+
+class SetFocus(BaseModel):
+    """Update Doll's current focus — what she's attending to right now."""
+
+    text: str = Field(..., description="one-sentence current focus, ≤200 chars")
+
+    def _summary(self) -> str:
+        return f"focus → {self.text[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        ctx.mind_state.focus = self.text[:200]
+        _record(ctx, "SetFocus", self._summary())
+        return f"focus set to: {self.text[:60]}"
+
+
+class OpenLoop(BaseModel):
+    """Add a TODO commitment Doll will remember across iterations."""
+
+    id: str = Field(..., description="short slug id (e.g. 'check_tmp')")
+    desc: str = Field(..., description="what to follow up on")
+
+    def _summary(self) -> str:
+        return f"opened loop {self.id}: {self.desc[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.mind_state import OpenLoop as OpenLoopT
+
+        ctx.mind_state.open_loops.append(
+            OpenLoopT(id=self.id, desc=self.desc, opened_at=time.time())
+        )
+        _record(ctx, "OpenLoop", self._summary())
+        return f"opened loop {self.id}"
+
+
+class CloseLoop(BaseModel):
+    """Mark a TODO commitment resolved."""
+
+    id: str = Field(..., description="loop id to close")
+    outcome: str = Field(..., description="how it resolved")
+
+    def _summary(self) -> str:
+        return f"closed loop {self.id}: {self.outcome[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        before = len(ctx.mind_state.open_loops)
+        ctx.mind_state.open_loops = [
+            ol for ol in ctx.mind_state.open_loops if ol.id != self.id
+        ]
+        if len(ctx.mind_state.open_loops) == before:
+            logger.warning("close_loop: unknown id %r — no-op", self.id)
+        _record(ctx, "CloseLoop", self._summary())
+        return f"closed loop {self.id}"
+
+
+# ---------------------------------------------------------------------------
+# Mood tool — mutates ctx.mind_state.mood
+# ---------------------------------------------------------------------------
+
+
+class Think(BaseModel):
+    """Internal thought; appended to recent_thoughts, not externalized."""
+
+    text: str = Field(..., description="internal thought (≤500 chars)")
+
+    def _summary(self) -> str:
+        return f"Thought: {self.text[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        ctx.mind_state.recent_thoughts.append(
+            Thought(t=time.time(), text=self.text[:500])
+        )
+        _record(ctx, "Think", self._summary())
+        return "thought recorded"
+
+
+class MoodTool(BaseModel):
+    """Update Doll's current emotional state.
+
+    Call this when your inner <think> mood assessment has shifted. The new
+    mood is stored in MindState and surfaces in every subsequent iteration's
+    [Mind state] block.
+    """
+
+    emotion: str = Field(
+        ...,
+        description="Current emotion in one Chinese word or short phrase (e.g. '開心', '有點擔心').",
+    )
+    reason: str = Field(
+        default="",
+        description="Brief reason for the mood shift (one sentence, optional).",
+    )
+
+    def _summary(self) -> str:
+        return f"mood → {self.emotion}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.mind_state import Mood
+        ctx.mind_state.mood = Mood(emotion=self.emotion, reason=self.reason)
+        result = f"mood → {self.emotion}"
+        _record(ctx, "MoodTool", self._summary())
+        return result
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
@@ -560,10 +833,13 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    SetFocus, OpenLoop, CloseLoop,
+    MoodTool, Think,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    SetFocus, OpenLoop, CloseLoop, Think,
 ]

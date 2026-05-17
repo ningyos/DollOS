@@ -298,6 +298,58 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
     return head + body + _JSON_STR_RULES
 
 
+def build_mind_actions_grammar(action_names: list[str]) -> str:
+    """Build a GBNF grammar for MindLoop output: JSON action array.
+
+    MindLoop uses prefill="\\n\\n</think>\\n\\n" to close the reasoning block
+    so grammar applies directly to JSON-only output. Grammar root is the
+    action array (no think-block wrapper needed).
+
+    Constrains the model to output:
+      [{"action": "<name>", ...}, ...]
+
+    Each element must have an ``"action"`` key whose value is one of the
+    registered action names. Remaining fields are free-form JSON.
+
+    Raises ValueError if ``action_names`` is empty or contains names that
+    require backslash/quote escaping (unsupported).
+    """
+    if not action_names:
+        raise ValueError("action_names must be non-empty for grammar build")
+
+    for name in action_names:
+        if "\\" in name or '"' in name:
+            raise ValueError(
+                f"action name {name!r} contains backslash/quote; "
+                "grammar escape unsupported"
+            )
+
+    action_name_alts = " | ".join(f'"{name}"' for name in action_names)
+
+    head = (
+        "root ::= mind-actions\n"
+        "ws ::= [ \\t\\n]*\n"
+        f"action-name ::= {action_name_alts}\n"
+        'mind-actions ::= "[" ws "]" | "[" ws action-call (ws "," ws action-call)* ws "]"\n'
+        'action-call ::= "{" ws "\\"action\\"" ws ":" ws "\\"" action-name "\\"" action-extra ws "}"\n'
+        'action-extra ::= ("," ws json-pair (ws "," ws json-pair)*)?\n'
+        'json-pair ::= str ws ":" ws json-value\n'
+    )
+
+    # Recursive JSON value rule — covers all JSON value types.
+    # json-object and json-array are mutually recursive via json-value.
+    json_rules = (
+        "json-value ::= str | json-number | json-object | json-array "
+        '| "true" | "false" | "null"\n'
+        'json-number ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? '
+        '(([eE] [+-]? [0-9]+))?\n'
+        'json-object ::= "{" ws "}" | "{" ws json-pair (ws "," ws json-pair)* ws "}"\n'
+        'json-array ::= "[" ws "]" | "[" ws json-value (ws "," ws json-value)* ws "]"\n'
+    )
+
+    return head + json_rules + _JSON_STR_RULES
+
+
 class Qwen3ThinkingTemplate(PromptTemplate):
     """Qwen3.x thinking-model ChatML.
 
