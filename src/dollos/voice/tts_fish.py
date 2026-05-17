@@ -16,19 +16,39 @@ from dollos.voice.engines import TTSEngine, register_tts
 
 logger = logging.getLogger(__name__)
 
-_SAMPLE_RATE = 44100
+# fish-tts API claims sample_rate=44100, but actual stream output is 88200 Hz
+# (DAC vocoder produces 2x). Verified empirically 2026-05-17 — 44100-labelled
+# wavs played at 0.5x speed. Upstream fish-tts has the same metadata bug.
+_SAMPLE_RATE = 88200
 _FRAME_MS = 20
-_SAMPLES_PER_CHUNK = _SAMPLE_RATE * _FRAME_MS // 1000  # 882
-_CHUNK_BYTES = _SAMPLES_PER_CHUNK * 2  # 1764
+_SAMPLES_PER_CHUNK = _SAMPLE_RATE * _FRAME_MS // 1000  # 1764
+_CHUNK_BYTES = _SAMPLES_PER_CHUNK * 2  # 3528
 
 
-def _chunk_pcm_bytes(raw_pcm: bytes) -> Iterator[bytes]:
-    """Re-chunk a stream of int16 PCM bytes into 20ms frames."""
-    for i in range(0, len(raw_pcm), _CHUNK_BYTES):
-        chunk = raw_pcm[i:i + _CHUNK_BYTES]
-        if len(chunk) < _CHUNK_BYTES:
-            chunk = chunk + b"\x00" * (_CHUNK_BYTES - len(chunk))
-        yield chunk
+class _PCMReChunker:
+    """Buffer arbitrary-sized PCM byte fragments into exact 20ms frames.
+
+    fish-tts's synthesize_stream yields fragments of arbitrary size. The
+    earlier per-fragment pad-with-zero approach inserted silence between
+    fragments, stretching effective duration ~2x. This buffers across
+    fragments and only zero-pads the final flush.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def push(self, raw: bytes) -> Iterator[bytes]:
+        self._buf.extend(raw)
+        while len(self._buf) >= _CHUNK_BYTES:
+            chunk = bytes(self._buf[:_CHUNK_BYTES])
+            del self._buf[:_CHUNK_BYTES]
+            yield chunk
+
+    def flush(self) -> Iterator[bytes]:
+        if self._buf:
+            chunk = bytes(self._buf) + b"\x00" * (_CHUNK_BYTES - len(self._buf))
+            self._buf.clear()
+            yield chunk
 
 
 @register_tts("fish-tts")
@@ -93,9 +113,12 @@ class FishTTSEngine(TTSEngine):
                 # Re-pin our references each call — singleton may have been
                 # used by another character since our __init__.
                 self._synth.set_references(self._profiles)
+                rechunker = _PCMReChunker()
                 for raw in self._synth.synthesize_stream(text):
-                    for chunk in _chunk_pcm_bytes(raw):
+                    for chunk in rechunker.push(raw):
                         loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                for chunk in rechunker.flush():
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except BaseException as e:
                 logger.exception("fish-tts synthesize error")
                 loop.call_soon_threadsafe(queue.put_nowait, e)
