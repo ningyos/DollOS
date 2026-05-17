@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from dollos.mind.mind_ctx import MindCtx
     from dollos.mind.mind_state import MindState
     from dollos.monitor_runner import MonitorRunner
-    from dollos.scratchpad import Scratchpad
     from dollos.shell_runner import ShellRunner
     from dollos.subagent import SubagentRunner
     from dollos.tool_outputs import ToolOutputStore
@@ -93,11 +92,8 @@ def _format_hit(hit: dict) -> str:
 class ToolCtx:
     """Narrow execution context passed to Tool.run().
 
-    DEPRECATED — Task 8 deletes this. New code uses MindCtx.
-
-    `subagent_runner`, `shell_runner`, and `monitor_runner` carry the
-    dispatch sinks for fire-and-forget external actions. The production
-    kernel always wires all runners.
+    DEPRECATED — kept for cascade.py / dispatcher.py type-hint compat only.
+    New code uses MindCtx. Will be removed when dispatcher.py is deleted.
     """
 
     sink: asyncio.Queue[ServerMessage | None] | None
@@ -105,22 +101,9 @@ class ToolCtx:
     memsearch: "MemSearch"
     transcripts_root: Path
     tool_output_store: "ToolOutputStore"
-    scratchpad: "Scratchpad"
     subagent_runner: "SubagentRunner | None" = None
     shell_runner: "ShellRunner | None" = None
     monitor_runner: "MonitorRunner | None" = None
-
-
-@dataclass
-class SubagentToolCtx(ToolCtx):
-    """ToolCtx used inside a subagent's sub-cascade. Adds a slot for the
-    Report tool to stash its structured outcome — the SubagentRunner
-    reads it back to build the SubagentResultEvent.
-
-    DEPRECATED — Task 8 migrates this to MindCtx-based subagent context.
-    """
-
-    subagent_report: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +491,7 @@ class Report(BaseModel):
         )
     )
 
-    async def run(self, ctx: "SubagentToolCtx") -> None:  # type: ignore[override]
+    async def run(self, ctx: "MindCtx") -> None:
         # Side-effect: stash args into ctx for SubagentRunner to pick up.
         # Returning None ends the cascade naturally (no tool_response cycle).
         ctx.subagent_report = {

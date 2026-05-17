@@ -451,10 +451,11 @@ async def test_subagent_uses_subagent_scaffolding(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
     """SubagentRunner forwards its shell_runner into the sub-cascade
-    ToolCtx so subagents can use Shell."""
-    from dollos.tools import SUB_TOOLS, ToolCtx
+    MindCtx so subagents can use Shell."""
+    from dollos.mind.mind_ctx import MindCtx
+    from dollos.tools import SUB_TOOLS
 
-    captured: list[ToolCtx] = []
+    captured: list[MindCtx] = []
 
     class _CaptureTool(BaseModel):
         token: str = "x"
@@ -514,10 +515,11 @@ async def test_subagent_ctx_has_shell_runner(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_subagent_ctx_has_monitor_runner(tmp_path: Path):
     """SubagentRunner forwards its monitor_runner into the sub-cascade
-    ToolCtx so subagents can use SpawnMonitor/RemoveMonitor."""
-    from dollos.tools import SUB_TOOLS, ToolCtx
+    MindCtx so subagents can use SpawnMonitor/RemoveMonitor."""
+    from dollos.mind.mind_ctx import MindCtx
+    from dollos.tools import SUB_TOOLS
 
-    captured: list[ToolCtx] = []
+    captured: list[MindCtx] = []
 
     class _CaptureTool(BaseModel):
         token: str = "x"
