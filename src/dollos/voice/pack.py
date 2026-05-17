@@ -34,6 +34,11 @@ _PATH_KEYS = (
     "voice_clone_prompt_path",
 )
 
+# Keys whose value is a list[str] of relative paths — each entry is resolved.
+_PATH_LIST_KEYS = (
+    "voice_profile_paths",
+)
+
 
 @dataclass(frozen=True)
 class VoiceConfig:
@@ -55,13 +60,24 @@ def no_voice_config() -> VoiceConfig:
 def _resolve_path_fields(section: dict, pack_dir: Path) -> dict:
     """Resolve relative path-like fields against ``pack_dir``.
 
-    Absolute paths are kept as-is.
+    Absolute paths are kept as-is.  List-of-path fields (``_PATH_LIST_KEYS``)
+    have each element resolved individually.
     """
     out = dict(section)
     for key in _PATH_KEYS:
         if key in out and isinstance(out[key], str):
             p = Path(out[key])
             out[key] = p if p.is_absolute() else (pack_dir / p)
+    for key in _PATH_LIST_KEYS:
+        if key in out and isinstance(out[key], list):
+            resolved = []
+            for entry in out[key]:
+                if isinstance(entry, str):
+                    p = Path(entry)
+                    resolved.append(p if p.is_absolute() else (pack_dir / p))
+                else:
+                    resolved.append(entry)
+            out[key] = resolved
     return out
 
 
