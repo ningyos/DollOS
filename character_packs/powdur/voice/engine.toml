@@ -1,8 +1,34 @@
-[tts.fish-tts]
-voice_profile_path = "voice/fish/powdur_voice.npy"
-transcript = "I still need to find myself. Yeah, okay. I need to find myself is some excuse to go have a hoe phase. Find myself? What the"
+# fish-tts multi-reference voice profile for Powdur.
+#
+# 6 clips selected to fit within fish-tts S1-mini's 6144-token reference
+# budget (8192 ctx - 2048 generation headroom). Total ≈ 5367 reference
+# tokens. All 10 encoded .npy files are kept in voice/fish/ for future use
+# (e.g. if a larger-context model is available).
+#
+# Clip selection: shortest 5 + one longer for stylistic range.
+# video_id        seq_len
+# Ub52Cpfht2U       699
+# 5SK5G5kU7zY       858
+# p3akdeB4MTk       869
+# VckETuZqtPk       984
+# wy4wfdjPnY0      1007
+# qCRz4eNbj4g       950
+# total            5367
 
-[tts.qwen3-tts]
-ref_audio = "voice/qwen3/ref.wav"
-ref_text = "I still need to find myself. Yeah, okay. I need to find myself is some"
-instruction = "excited, energetic, animated, with rising intonation"
+[tts.fish-tts]
+voice_profile_paths = [
+  "voice/fish/powdur_voice_Ub52Cpfht2U.npy",
+  "voice/fish/powdur_voice_5SK5G5kU7zY.npy",
+  "voice/fish/powdur_voice_p3akdeB4MTk.npy",
+  "voice/fish/powdur_voice_VckETuZqtPk.npy",
+  "voice/fish/powdur_voice_wy4wfdjPnY0.npy",
+  "voice/fish/powdur_voice_qCRz4eNbj4g.npy",
+]
+transcripts = [
+  "There's this guy oh what's the name, he posted about it on Twitter, he was like stop Asian hate went away real fast when people started asking who was hating on the Asians and they didn't want to answer that. [laughs]",
+  "I'm assuming you're a man, by the way you might be a girl, but 22. DUDE, you'll be okay, obviously I do think the younger the... hold-on! [laugh] That sentence was about to be weird.",
+  "You know, that post nut clarity probably hit hard. You're probably like, man. I need to go start a family. I need to get my life together because this weird little elf girl with a fucking party hat in the middle of her forehead is telling me that I need to save my race. Enjoy the post nut clarity. You fucking gooners.",
+  "You [short pause] guys over the weekend, were misbehaving so much someone sent in a ticket because you guys were being so gay in the general chat. someone was genuinely concerned that everyone in the general chat was gay [shout] What do I even say?!",
+  "I gotta say Powdur, the mob on Twitter that hate you hate on you have been really cracking me up all morning, they are really funny people. I know! They called me a lebotomized toddler [short laugh] WHAT? Also they called me ugly, that's not very nice, I like to think that I'm beautiful, look at my hat.",
+  "Frisco, Texas is in the north eastern part of Texas, so unless the tornado comes and picks up all the Indians and puts them somewhere else, mmm... they're just going keep growing what would you call that like a like a curry tornado or something a curry currynado shitnado oh damn? [burst to laughter]",
+]

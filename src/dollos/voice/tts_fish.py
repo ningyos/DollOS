@@ -37,11 +37,37 @@ class FishTTSEngine(TTSEngine):
 
     sample_rate = _SAMPLE_RATE
 
-    def __init__(self, *, voice_profile_path: Path, transcript: str) -> None:
-        if not voice_profile_path.exists():
-            raise FileNotFoundError(
-                f"fish-tts voice profile not found: {voice_profile_path}"
+    def __init__(
+        self,
+        *,
+        voice_profile_path: Path | None = None,
+        transcript: str | None = None,
+        voice_profile_paths: list[Path] | None = None,
+        transcripts: list[str] | None = None,
+    ) -> None:
+        # Resolve paths/transcripts from either singular or plural form.
+        if voice_profile_paths is not None:
+            if not voice_profile_paths or len(voice_profile_paths) != len(transcripts or []):
+                raise ValueError(
+                    "voice_profile_paths and transcripts must be non-empty lists of equal length"
+                )
+            paths: list[Path] = voice_profile_paths
+            texts: list[str] = transcripts  # type: ignore[assignment]
+        elif voice_profile_path is not None:
+            if transcript is None:
+                raise ValueError("voice_profile_path requires transcript")
+            paths = [voice_profile_path]
+            texts = [transcript]
+        else:
+            raise ValueError(
+                "must provide either voice_profile_path+transcript or "
+                "voice_profile_paths+transcripts"
             )
+
+        for p in paths:
+            if not p.exists():
+                raise FileNotFoundError(f"fish-tts voice profile not found: {p}")
+
         try:
             from fish_tts import get_instance, VoiceProfile  # lazy: torch heavy
         except ModuleNotFoundError as e:
@@ -51,9 +77,10 @@ class FishTTSEngine(TTSEngine):
                 "`uv pip install 'dollos[fish]'` in a downstream project)."
             ) from e
         self._synth = get_instance()  # singleton, blocks on first call
-        profile = VoiceProfile.load(str(voice_profile_path), text=transcript)
-        self._profile = profile
-        self._synth.set_references([profile])
+        self._profiles = [
+            VoiceProfile.load(str(p), text=t) for p, t in zip(paths, texts)
+        ]
+        self._synth.set_references(self._profiles)
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         # fish-tts's synthesize_stream is a sync generator. Run on a worker
@@ -63,9 +90,9 @@ class FishTTSEngine(TTSEngine):
 
         def producer():
             try:
-                # Re-pin our reference each call — singleton may have been
+                # Re-pin our references each call — singleton may have been
                 # used by another character since our __init__.
-                self._synth.set_references([self._profile])
+                self._synth.set_references(self._profiles)
                 for raw in self._synth.synthesize_stream(text):
                     for chunk in _chunk_pcm_bytes(raw):
                         loop.call_soon_threadsafe(queue.put_nowait, chunk)
@@ -87,6 +114,6 @@ class FishTTSEngine(TTSEngine):
             yield item
 
     async def aclose(self) -> None:
-        # Singleton stays alive for the process — just drop our reference.
+        # Singleton stays alive for the process — just drop our references.
         self._synth = None
-        self._profile = None
+        self._profiles = None

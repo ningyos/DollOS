@@ -135,6 +135,31 @@ def test_resolve_voice_kwargs_missing_engine_key_raises():
         resolve_voice_kwargs(cfg, {"model_id": "x"})
 
 
+def test_load_voice_config_resolves_voice_profile_paths(tmp_path: Path):
+    """voice_profile_paths list entries are resolved to absolute pack paths."""
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "voice").mkdir()
+    (pack_dir / "voice" / "engine.toml").write_text(
+        """
+[tts.fish-tts]
+voice_profile_paths = [
+  "voice/fish/clip_a.npy",
+  "voice/fish/clip_b.npy",
+]
+transcripts = ["text a", "text b"]
+"""
+    )
+    cfg = load_voice_config(pack_dir)
+    assert cfg.tts is not None
+    paths = cfg.tts["fish-tts"]["voice_profile_paths"]
+    assert len(paths) == 2
+    assert paths[0] == pack_dir / "voice/fish/clip_a.npy"
+    assert paths[1] == pack_dir / "voice/fish/clip_b.npy"
+    # transcripts are plain strings, not paths
+    assert cfg.tts["fish-tts"]["transcripts"] == ["text a", "text b"]
+
+
 def test_resolve_voice_kwargs_dollos_wins_on_overlap():
     """DollOS config overrides the pack on overlapping keys.
 

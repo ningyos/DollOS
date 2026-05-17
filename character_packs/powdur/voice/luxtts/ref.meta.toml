@@ -1,5 +1,0 @@
-# voice-clone prompt provenance
-ref_path = "/tmp/powdur_lux_short.wav"
-transcript = """You, guys. Over the weekend were misbehaving so much, someone sent in a ticket"""
-duration_s = 8.0
-encoded_at = "2026-05-15T10:36:44"
