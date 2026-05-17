@@ -44,6 +44,7 @@ from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception, load_state
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 
 logger = logging.getLogger(__name__)
@@ -241,6 +242,11 @@ class DollOS:
             tool_registry=tool_registry,
         )
 
+        self._reflection_observer = ReflectionObserver(
+            state=self._mind_state,
+            queue=self._perception_queue,
+        )
+
         # ------------------------------------------------------------------ #
         # IPC server                                                           #
         # ------------------------------------------------------------------ #
@@ -261,6 +267,7 @@ class DollOS:
         self._scheduler_task: asyncio.Task[None] | None = None
         self._schedule_task: asyncio.Task[None] | None = None
         self._mind_task: asyncio.Task[None] | None = None
+        self._reflection_task: asyncio.Task[None] | None = None
         # Per-day fired set — scheduler dedupe across its 30s polling.
         self._fired_today: dict[date, set] = {}
         # Track per-day bootstrap so reconnects within a day don't refire.
@@ -488,9 +495,12 @@ class DollOS:
                 )
             )
 
-            # Start diary scheduler and schedule runner
+            # Start diary scheduler, schedule runner, and reflection observer
             self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             self._schedule_task = asyncio.create_task(self._schedule_runner())
+            self._reflection_task = asyncio.create_task(
+                self._reflection_observer.run(), name="reflection-observer"
+            )
 
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -510,6 +520,12 @@ class DollOS:
                     self._schedule_task.cancel()
                     await asyncio.gather(
                         self._schedule_task, return_exceptions=True
+                    )
+                if self._reflection_task is not None:
+                    self._reflection_observer.shutdown()
+                    self._reflection_task.cancel()
+                    await asyncio.gather(
+                        self._reflection_task, return_exceptions=True
                     )
                 # Stop runners before MindLoop so result perceptions
                 # don't arrive after loop shuts down

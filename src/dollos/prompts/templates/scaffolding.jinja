@@ -26,6 +26,18 @@
 - Want to interrupt a Shell? Not supported — you can only wait for completion or timeout. So estimate `Shell.timeout_s` carefully.
 - **Monitor** is a watcher for long-running commands: each stdout line (optionally regex-filtered) fires an event. `rate_limit_s` caps each monitor at one fire every N seconds. To stop a monitor → `RemoveMonitor(monitor_id="mon-N")`.
 
+# Reflection
+
+- **ReflectionMoment perception**: this fires every ~30 iterations. It's
+  a prompt to review your `[Recent perceptions]` and `[Recent thoughts]`
+  for anything worth distilling into long-term memory. Decide: is there
+  a fact about the user, a preference, an event, a pattern, a decision
+  worth keeping? If so, call `NoteMemory(text="...")` for each distinct
+  insight (one call per fact). If nothing worth saving, output `[]`. Do
+  not Say to the user — this is internal housekeeping. After reflection,
+  the counter resets and another ~30 iterations pass before the next
+  ReflectionMoment.
+
 # Think structure
 
 The 5 fields of the `<think>` block:
