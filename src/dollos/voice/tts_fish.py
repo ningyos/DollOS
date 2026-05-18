@@ -16,10 +16,7 @@ from dollos.voice.engines import TTSEngine, register_tts
 
 logger = logging.getLogger(__name__)
 
-# fish-tts API claims sample_rate=44100, but actual stream output is 88200 Hz
-# (DAC vocoder produces 2x). Verified empirically 2026-05-17 — 44100-labelled
-# wavs played at 0.5x speed. Upstream fish-tts has the same metadata bug.
-_SAMPLE_RATE = 88200
+_SAMPLE_RATE = 44100
 _FRAME_MS = 20
 _SAMPLES_PER_CHUNK = _SAMPLE_RATE * _FRAME_MS // 1000  # 1764
 _CHUNK_BYTES = _SAMPLES_PER_CHUNK * 2  # 3528
