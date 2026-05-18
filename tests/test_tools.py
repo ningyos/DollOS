@@ -145,7 +145,10 @@ async def test_note_memory_run_appends_bullet_to_daily_file(tmp_path):
     expected_path = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     assert expected_path.exists()
     content = expected_path.read_text()
-    assert content.endswith("- 主人喜歡咖啡\n")
+    # New format: H2 heading with context tags, then body
+    assert "主人喜歡咖啡" in content
+    assert content.lstrip().startswith("## ")
+    assert "tod:" in content and "dow:" in content
 
 
 @pytest.mark.asyncio
@@ -169,7 +172,9 @@ async def test_note_memory_run_appends_to_existing_file(tmp_path):
 
     content = expected_path.read_text()
     assert "old fact" in content
-    assert content.endswith("- new fact\n")
+    assert "new fact" in content
+    # The new entry appends an H2 section.
+    assert "## " in content
 
 
 @pytest.mark.asyncio
@@ -181,7 +186,8 @@ async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
     expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     assert expected.exists()
     content = expected.read_text()
-    assert "## 日記 (" in content
+    assert "日記" in content
+    assert content.count("## ") >= 1
     assert "今天我學會了 transcript 跟 diary。" in content
     assert ms.indexed and Path(ms.indexed[-1]) == expected
 
@@ -538,7 +544,8 @@ async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
     await WriteDiary(content="今天好累").run(ctx)
     expected = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
     content = expected.read_text()
-    assert _re.search(r"## 日記 \(\d{2}:\d{2}:\d{2}\)", content)
+    # New heading format embeds full timestamp; 日記 is suffixed after the tag block.
+    assert _re.search(r"## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.*日記", content)
 
 
 # ---------- SpawnSubagent / Report ----------
@@ -688,7 +695,8 @@ async def test_write_schedule_writes_markdown_summary(tmp_path):
     md_path = tmp_path / "shared" / f"{today_str}.md"
     assert md_path.exists()
     body = md_path.read_text()
-    assert "## 計劃" in body
+    assert "計劃" in body
+    assert "## " in body
     assert "07:30:00 — morning" in body
 
 

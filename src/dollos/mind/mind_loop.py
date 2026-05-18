@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from dollos.llm.templates import build_mind_actions_grammar
+from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import (
@@ -101,6 +102,15 @@ class MindLoop:
         # Memsearch query from recent perceptions
         memsearch_hits = await self._derive_memory_hits()
 
+        # Context-associative recall (additive side-channel)
+        try:
+            associative_hits = await associative_search(
+                self._ctx.memsearch, self._state, top_k=3
+            )
+        except Exception:
+            logger.exception("associative_search failed; continuing without")
+            associative_hits = []
+
         # Pull self-pulse snapshot (None when no bucket shift since last emit)
         pulse_block: str | None = None
         if self._system_pulse is not None:
@@ -124,6 +134,7 @@ class MindLoop:
             self._system_prompt,
             pulse_block=pulse_block,
             cognition_block=cognition_block,
+            associative_hits=associative_hits,
         )
 
         # Call LLM (single iteration)

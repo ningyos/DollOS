@@ -16,6 +16,7 @@ def render_mind(
     *,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
+    associative_hits: list[dict] | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -33,6 +34,9 @@ def render_mind(
         "",
         "[Memory context]",
         _render_memory(memsearch_hits),
+        "",
+        "[Associative memories]",
+        _render_associative(associative_hits or []),
         "",
         "[Mind state]",
         _render_mindstate(state, now),
@@ -74,6 +78,27 @@ def _render_memory(hits: list[dict]) -> str:
     if not hits:
         return "(no relevant memories)"
     return "\n".join(f"- {h.get('content', str(h))}" for h in hits)
+
+
+def _render_associative(hits: list[dict]) -> str:
+    """Render context-associative recall hits.
+
+    Each bullet: ``- [axis=value] <snippet (100 chars)>``. Hits without
+    an ``_axis`` marker are skipped (they wouldn't be here in practice).
+    Capped to 6 bullets for token cost.
+    """
+    if not hits:
+        return "(none)"
+    lines: list[str] = []
+    for h in hits[:6]:
+        axis = h.get("_axis")
+        value = h.get("_axis_value", "")
+        snippet = (h.get("content") or "").strip().replace("\n", " ")
+        if len(snippet) > 100:
+            snippet = snippet[:97] + "..."
+        tag = f"{axis}={value}" if axis else "?"
+        lines.append(f"- [{tag}] {snippet}")
+    return "\n".join(lines)
 
 
 def _render_mindstate(state: MindState, now: float) -> str:
