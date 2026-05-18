@@ -37,6 +37,7 @@ class LLMAdapter(ABC):
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion. `tools` is forwarded to the template; transports
         ignore it (the prompt encodes tool definitions as text). `grammar` is
@@ -54,6 +55,7 @@ class LLMAdapter(ABC):
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from a multi-message conversation history.
 

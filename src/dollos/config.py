@@ -121,6 +121,22 @@ class SystemPulseConfig(BaseModel):
     include_active_window: bool = True   # privacy opt-out
 
 
+class CognitionConfig(BaseModel):
+    """Mind-state vitals — surfaces LLM consumption as a [Cognition] block.
+
+    Token quota is purely a "stamina" axis for Doll's self-awareness; it does
+    NOT block calls when exceeded. Set ``daily_token_quota = None`` to omit
+    the quota line entirely.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    daily_token_quota: int | None = 500_000
+    session_token_quota: int | None = None       # reserved; not yet surfaced
+    telemetry_dir_subpath: str = "telemetry"     # relative to data.root
+    max_context_tokens: int = 131_072            # Qwen3.6 default
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -135,6 +151,7 @@ class Settings(BaseModel):
     character: CharacterConfig
     voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
     system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
+    cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
 
 
 def load_settings(path: Path) -> Settings:

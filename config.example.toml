@@ -86,6 +86,19 @@ enabled = true
 poll_interval_s = 60
 include_active_window = true   # set false to hide focused window from Doll's perception
 
+# ----------------------------------------------------------------------
+# Cognition — Doll's awareness of her own LLM consumption (context
+# fullness, last-call latency vs trailing average, daily token quota,
+# recent errors). Surfaces as a [Cognition] block only when a bucket
+# transitions. Quota is a "stamina" signal, not an enforcement gate.
+# ----------------------------------------------------------------------
+
+[cognition]
+enabled = true
+daily_token_quota = 500000          # set null to omit the quota line
+# session_token_quota = 100000      # optional session cap (reserved; not yet surfaced)
+max_context_tokens = 131072         # matches Qwen3.6 default ctx
+
 # Alternative: openai-compat-tts (HTTP API backend).
 # Pack carries [tts.openai-compat-tts] with model + voice identifiers.
 # [voice.tts]

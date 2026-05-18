@@ -15,12 +15,17 @@ def render_mind(
     system_prompt: str,
     *,
     pulse_block: str | None = None,
+    cognition_block: str | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
     ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
     ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
     ``[Active tasks]`` (mirrors the ``[Active monitors]`` slot).
+
+    ``cognition_block`` — optional pre-rendered ``[Cognition]`` block from
+    ``perception.cognition.CognitionWorker.snapshot()``. Inserted right
+    after ``[Self pulse]``.
     """
     now = time.time()
     blocks = [
@@ -38,6 +43,8 @@ def render_mind(
     ]
     if pulse_block:
         blocks.extend([pulse_block, ""])
+    if cognition_block:
+        blocks.extend([cognition_block, ""])
     blocks.extend([
         "[Open loops] (commitments you have made)",
         _render_open_loops(state.open_loops, now),
