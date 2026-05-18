@@ -48,6 +48,7 @@ class MindLoop:
         system_prompt: str,          # rendered from character pack
         state_persist_path: Path,
         tool_registry: dict[str, type[BaseModel]] | None = None,
+        system_pulse: Any = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -56,6 +57,7 @@ class MindLoop:
         self._system_prompt = system_prompt
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
+        self._system_pulse = system_pulse
         self._shutdown = False
 
         # Build GBNF grammar from action registry to constrain LLM output.
@@ -97,8 +99,21 @@ class MindLoop:
         # Memsearch query from recent perceptions
         memsearch_hits = await self._derive_memory_hits()
 
+        # Pull self-pulse snapshot (None when no bucket shift since last emit)
+        pulse_block: str | None = None
+        if self._system_pulse is not None:
+            try:
+                pulse_block = self._system_pulse.snapshot()
+            except Exception:
+                logger.exception("system_pulse.snapshot raised; omitting block")
+
         # Render prompt
-        prompt = render_mind(self._state, memsearch_hits, self._system_prompt)
+        prompt = render_mind(
+            self._state,
+            memsearch_hits,
+            self._system_prompt,
+            pulse_block=pulse_block,
+        )
 
         # Call LLM (single iteration)
         actions = await self._llm_iterate(prompt)

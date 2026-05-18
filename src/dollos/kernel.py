@@ -36,6 +36,7 @@ from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
 from dollos.monitor_runner import MonitorRunner
+from dollos.perception.system_pulse import SystemPulse
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_outputs import ToolOutputStore
@@ -232,6 +233,14 @@ class DollOS:
         )
 
         tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+
+        # Self pulse — Doll's proprioception of her host.
+        self.system_pulse = SystemPulse(
+            poll_interval_s=settings.system_pulse.poll_interval_s,
+            include_active_window=settings.system_pulse.include_active_window,
+            enabled=settings.system_pulse.enabled,
+        )
+
         self._mind_loop = MindLoop(
             state=self._mind_state,
             queue=self._perception_queue,
@@ -240,6 +249,7 @@ class DollOS:
             system_prompt=system_prompt,
             state_persist_path=settings.data.root / "mind_state.json",
             tool_registry=tool_registry,
+            system_pulse=self.system_pulse,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -495,6 +505,9 @@ class DollOS:
                 )
             )
 
+            # Self pulse poller — proprioception of the host
+            self.system_pulse.start()
+
             # Start diary scheduler, schedule runner, and reflection observer
             self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             self._schedule_task = asyncio.create_task(self._schedule_runner())
@@ -532,6 +545,7 @@ class DollOS:
                 await self.subagent_runner.stop()
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
+                await self.system_pulse.stop()
                 # Shutdown MindLoop
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
