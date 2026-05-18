@@ -14,7 +14,9 @@ Run:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,7 +54,22 @@ def main() -> None:
             continue
 
         transcript = txt_path.read_text(encoding="utf-8").strip()
-        wav_bytes = wav_path.read_bytes()
+
+        # EBU R128 loudness normalize to -16 LUFS / TP -1.5 / LRA 11 via
+        # ffmpeg before encoding. Source YT clips have ~2x RMS variation
+        # which biases fish-tts speaker signature. Normalize for consistency.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path),
+                 "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                 "-ar", "44100", "-ac", "1", tmp_path],
+                check=True, capture_output=True,
+            )
+            wav_bytes = Path(tmp_path).read_bytes()
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
         print(f"  [{video_id}] transcript: {transcript[:60]!r}...")
         profile = synth.encode_reference(wav_bytes, transcript)
