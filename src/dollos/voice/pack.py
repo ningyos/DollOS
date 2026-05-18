@@ -32,6 +32,7 @@ _PATH_KEYS = (
     "voice_config_path",
     "ref_audio",
     "voice_clone_prompt_path",
+    "eq_curve_path",
 )
 
 # Keys whose value is a list[str] of relative paths — each entry is resolved.
