@@ -75,6 +75,17 @@ language = "English"
 # [voice.tts]
 # engine = "piper-vits"
 
+# ----------------------------------------------------------------------
+# Self pulse — Doll's proprioception of her host (CPU / mem / GPU /
+# battery / focused window / network). Surfaces as a [Self pulse] block
+# only when a bucket changes, not every iteration.
+# ----------------------------------------------------------------------
+
+[system_pulse]
+enabled = true
+poll_interval_s = 60
+include_active_window = true   # set false to hide focused window from Doll's perception
+
 # Alternative: openai-compat-tts (HTTP API backend).
 # Pack carries [tts.openai-compat-tts] with model + voice identifiers.
 # [voice.tts]

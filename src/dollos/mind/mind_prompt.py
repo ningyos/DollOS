@@ -9,8 +9,19 @@ import time
 from dollos.mind.mind_state import MindState
 
 
-def render_mind(state: MindState, memsearch_hits: list[dict], system_prompt: str) -> str:
-    """Compose: system_prompt + 10 dynamic blocks."""
+def render_mind(
+    state: MindState,
+    memsearch_hits: list[dict],
+    system_prompt: str,
+    *,
+    pulse_block: str | None = None,
+) -> str:
+    """Compose: system_prompt + 10 dynamic blocks.
+
+    ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
+    ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
+    ``[Active tasks]`` (mirrors the ``[Active monitors]`` slot).
+    """
     now = time.time()
     blocks = [
         system_prompt,
@@ -24,6 +35,10 @@ def render_mind(state: MindState, memsearch_hits: list[dict], system_prompt: str
         "[Active tasks] (currently running, you cannot cancel)",
         _render_active_tasks(state.active_tasks, now),
         "",
+    ]
+    if pulse_block:
+        blocks.extend([pulse_block, ""])
+    blocks.extend([
         "[Open loops] (commitments you have made)",
         _render_open_loops(state.open_loops, now),
         "",
@@ -44,7 +59,7 @@ def render_mind(state: MindState, memsearch_hits: list[dict], system_prompt: str
         "",
         "[Decision time]",
         "What do you do this iteration? Output a JSON array of 0..N actions.",
-    ]
+    ])
     return "\n".join(blocks)
 
 

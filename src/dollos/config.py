@@ -112,6 +112,15 @@ class VoiceSettings(BaseModel):
     tts: VoiceTTSSettings | None = None
 
 
+class SystemPulseConfig(BaseModel):
+    """Proprioception poller — surfaces host vitals as a [Self pulse] block."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    poll_interval_s: float = 60.0
+    include_active_window: bool = True   # privacy opt-out
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -125,6 +134,7 @@ class Settings(BaseModel):
     )
     character: CharacterConfig
     voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
+    system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
 
 
 def load_settings(path: Path) -> Settings:
