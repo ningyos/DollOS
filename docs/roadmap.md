@@ -577,4 +577,25 @@ T1-T8 smoke 8/8 無 regression。Tests: 250 passed。
 - Phone Tier B/C/D（A11y / Shizuku / Root）
 - 構想 / 長期：Twin Mode、Robot vision、AI 視覺、Galgame 介面、Latency calibration、Snapshot S、Multi-thread、Interrupt、Tick/idle、...
 
+### 2026-05-18 audit — good-to-have（已確認）
+
+基礎建設 / 可靠性（推薦先做）：
+
+- **Memory pruning / consolidation cron** — daily background cascade 找 stale 候選（低 retrieval / 過期 / 矛盾）→ merge / prune / 寫 diary。不做 memsearch 半年後撐不住。
+- **Crash recovery via event queue checkpoint** — 每 turn flush event queue + mind state 到 disk；啟動 replay 最後 N event。daemon crash 不丟 in-flight cascade。
+- **System pulse perception** — 每 N 分鐘 `[System pulse]` block：CPU/RAM/GPU/battery/active window/network。解鎖整類主動行為（電池低、CPU 熱、卡頓提醒）。
+- **Stale-result filter** — fire-and-forget Subagent/Shell 延遲回來時帶 `correlation_id`，perception 帶 staleness 標記。Doll 自己判斷要不要理會。
+- **Cost / latency vitals** — 每 turn 的 token / 秒 / $ 數字 surface 在 `[Vitals]`；壓力大時 Doll 可選擇短回 / 跳 Recall / 不 spawn subagent。
+- **Encrypted memory at rest** — `private` tag 條目用 machine-bound key 加密；phone ship 前必備（裝置丟失 → memory 不外洩）。
+
+UX / 體感：
+
+- **Episodic anniversary recall** — daily summary 已有，加 perception block「N 年前的今天你跟我說過 X」。trivial query，連續感大幅加強。
+- **Interruption / cancellation channel** — 用戶 mid-cascade 講「等等」打斷 Doll 的 Say queue + abort 現在 cascade。Say 從 sync inline → cancellable，Shell 加 cancel API。
+
+Voice tooling：
+
+- **Voice eval scorecard skill** — `voice-eval <pack>` 跑 WavLM speaker sim + UTMOSv2 + NISQA + prosody RMSE + WER。新角色 tuning 從 10hr 耳朵 A/B → 5min scorecard 排序。
+- **EQ derivation CLI** — 把 `scripts/derive_powdur_eq_json.py` 推廣成 `dollos voice tune-eq <pack>`。新角色 voice 自動 derive eq.json 落到 pack 裡。
+
 完整候選見 `docs/feature-list.md`。
