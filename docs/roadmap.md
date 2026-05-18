@@ -590,7 +590,7 @@ T1-T8 smoke 8/8 無 regression。Tests: 250 passed。
 
 UX / 體感：
 
-- **Episodic anniversary recall** — daily summary 已有，加 perception block「N 年前的今天你跟我說過 X」。trivial query，連續感大幅加強。
+- **Context-associative recall** — memsearch 現在只看 text 語義；加 structured metadata（time_of_day / weekday / mood / activity / location）並讓 retrieval 條件化。Anniversary（日期 modulo 年）/「上次我這麼焦慮」（mood filter）/「週末通常聊什麼」（weekday filter）都是這個的特例。新 perception block `[Associative memories]` 跟現有 `[Memory context]` 並列。
 - **Interruption / cancellation channel** — 用戶 mid-cascade 講「等等」打斷 Doll 的 Say queue + abort 現在 cascade。Say 從 sync inline → cancellable，Shell 加 cancel API。
 
 Voice tooling：
