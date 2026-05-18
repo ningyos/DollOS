@@ -49,6 +49,7 @@ class MindLoop:
         state_persist_path: Path,
         tool_registry: dict[str, type[BaseModel]] | None = None,
         system_pulse: Any = None,
+        cognition: Any = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -58,6 +59,7 @@ class MindLoop:
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
         self._system_pulse = system_pulse
+        self._cognition = cognition
         self._shutdown = False
 
         # Build GBNF grammar from action registry to constrain LLM output.
@@ -107,12 +109,21 @@ class MindLoop:
             except Exception:
                 logger.exception("system_pulse.snapshot raised; omitting block")
 
+        # Pull cognition snapshot (None when no mind-state shift)
+        cognition_block: str | None = None
+        if self._cognition is not None:
+            try:
+                cognition_block = self._cognition.snapshot()
+            except Exception:
+                logger.exception("cognition.snapshot raised; omitting block")
+
         # Render prompt
         prompt = render_mind(
             self._state,
             memsearch_hits,
             self._system_prompt,
             pulse_block=pulse_block,
+            cognition_block=cognition_block,
         )
 
         # Call LLM (single iteration)

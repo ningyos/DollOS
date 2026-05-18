@@ -30,12 +30,14 @@ class ComposedLLMAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         prompt = self._template.render(
             system=system, user=user, prefill=prefill, tools=tools
         )
         async for chunk in self._provider.stream(
-            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar
+            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar,
+            purpose=purpose,
         ):
             yield chunk
 
@@ -48,11 +50,13 @@ class ComposedLLMAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         prompt = self._template.render_messages(
             system=system, messages=messages, tools=tools
         )
         async for chunk in self._provider.stream(
-            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar
+            prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar,
+            purpose=purpose,
         ):
             yield chunk

@@ -1,12 +1,14 @@
 """Tests for Provider ABC + LlamaCppProvider."""
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
 from dollos.llm.transport import LlamaCppProvider, Provider
+from dollos.telemetry.llm_calls import LLMCallRecord, TelemetryRecorder
 
 
 def test_provider_is_abstract():
@@ -187,3 +189,68 @@ async def test_llamacpp_provider_omits_grammar_when_none():
             pass
 
     assert "grammar" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_llamacpp_provider_records_telemetry_on_success(tmp_path: Path):
+    recorder = TelemetryRecorder(tmp_path / "telemetry")
+    provider = LlamaCppProvider(
+        base_url="http://test.local:8001",
+        timeout_s=5.0,
+        recorder=recorder,
+        model_alias="Qwen3.6",
+        max_context_tokens=131_072,
+    )
+
+    # llama.cpp emits tokens_evaluated / tokens_predicted on the final SSE.
+    sse_body = (
+        'data: {"content": "Hello", "stop": false}\n\n'
+        'data: {"content": "", "stop": true, "tokens_evaluated": 1234, "tokens_predicted": 56}\n\n'
+    )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse_body,
+            )
+        )
+        async for _ in provider.stream(
+            prompt="hello", stop=None, max_tokens=128, purpose="cascade"
+        ):
+            pass
+
+    records = recorder.read_today()
+    assert len(records) == 1
+    r = records[0]
+    assert r.model == "Qwen3.6"
+    assert r.prompt_tokens == 1234
+    assert r.completion_tokens == 56
+    assert r.latency_total_ms is not None and r.latency_total_ms >= 0
+    assert r.latency_ttft_ms is not None
+    assert r.context_pct is not None
+    assert r.error is None
+    assert r.call_purpose == "cascade"
+
+
+@pytest.mark.asyncio
+async def test_llamacpp_provider_records_telemetry_on_http_error(tmp_path: Path):
+    recorder = TelemetryRecorder(tmp_path / "telemetry")
+    provider = LlamaCppProvider(
+        base_url="http://test.local:8001",
+        timeout_s=5.0,
+        recorder=recorder,
+        model_alias="Qwen3.6",
+    )
+
+    with respx.mock(base_url="http://test.local:8001") as m:
+        m.post("/completion").mock(return_value=httpx.Response(429))
+        with pytest.raises(httpx.HTTPStatusError):
+            async for _ in provider.stream(prompt="x", stop=None, max_tokens=128):
+                pass
+
+    records = recorder.read_today()
+    assert len(records) == 1
+    assert records[0].error == "http_429"
+    assert records[0].prompt_tokens is None     # no fake data

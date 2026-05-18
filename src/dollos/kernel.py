@@ -36,7 +36,9 @@ from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.prompts import PromptRenderer
 from dollos.monitor_runner import MonitorRunner
+from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
+from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_outputs import ToolOutputStore
@@ -51,17 +53,26 @@ from dollos.mind.sink_resolver import SinkResolver
 logger = logging.getLogger(__name__)
 
 
-def build_adapter(settings: Settings) -> LLMAdapter:
-    provider = _build_provider(settings)
+def build_adapter(
+    settings: Settings,
+    recorder: TelemetryRecorder | None = None,
+) -> LLMAdapter:
+    provider = _build_provider(settings, recorder=recorder)
     template = _build_template(settings)
     return ComposedLLMAdapter(provider=provider, template=template)
 
 
-def _build_provider(settings: Settings) -> LlamaCppProvider:
+def _build_provider(
+    settings: Settings,
+    recorder: TelemetryRecorder | None = None,
+) -> LlamaCppProvider:
     if settings.llm.provider == "llamacpp":
         return LlamaCppProvider(
             base_url=settings.llm.base_url,
             timeout_s=settings.llm.timeout_s,
+            recorder=recorder,
+            model_alias=settings.llm.model_alias,
+            max_context_tokens=settings.cognition.max_context_tokens,
         )
     raise ValueError(f"unknown provider: {settings.llm.provider}")
 
@@ -170,7 +181,11 @@ class DollOS:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.adapter = build_adapter(settings)
+        # Telemetry recorder feeds both the LLM provider (recording side)
+        # and the CognitionWorker (reading side).
+        telemetry_dir = settings.data.root / settings.cognition.telemetry_dir_subpath
+        self.telemetry_recorder = TelemetryRecorder(telemetry_dir)
+        self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
         self._doll_pack = DollPack.load(settings.character.pack)
@@ -241,6 +256,14 @@ class DollOS:
             enabled=settings.system_pulse.enabled,
         )
 
+        # Cognition — Doll's awareness of her own LLM consumption.
+        self.cognition = CognitionWorker(
+            recorder=self.telemetry_recorder,
+            enabled=settings.cognition.enabled,
+            daily_token_quota=settings.cognition.daily_token_quota,
+            max_context_tokens=settings.cognition.max_context_tokens,
+        )
+
         self._mind_loop = MindLoop(
             state=self._mind_state,
             queue=self._perception_queue,
@@ -250,6 +273,7 @@ class DollOS:
             state_persist_path=settings.data.root / "mind_state.json",
             tool_registry=tool_registry,
             system_pulse=self.system_pulse,
+            cognition=self.cognition,
         )
 
         self._reflection_observer = ReflectionObserver(
