@@ -584,7 +584,7 @@ T1-T8 smoke 8/8 無 regression。Tests: 250 passed。
 - **Memory pruning / consolidation cron** — daily background cascade 找 stale 候選（低 retrieval / 過期 / 矛盾）→ merge / prune / 寫 diary。**延後到遇到實際問題再做**（短期內 memsearch 撐得住，避免 premature optimization）。
 - **Crash recovery via event queue checkpoint** — 每 turn flush event queue + mind state 到 disk；啟動 replay 最後 N event。daemon crash 不丟 in-flight cascade。
 - **System pulse perception** — 每 N 分鐘 `[System pulse]` block：CPU/RAM/GPU/battery/active window/network。解鎖整類主動行為（電池低、CPU 熱、卡頓提醒）。
-- **Stale-result filter** — fire-and-forget Subagent/Shell 延遲回來時帶 `correlation_id`，perception 帶 staleness 標記。Doll 自己判斷要不要理會。
+- **Stale-result filter** — fire-and-forget Subagent/Shell 延遲回來時帶 `correlation_id`，perception 帶 staleness 標記。Doll 自己判斷要不要理會。**2026-05-18 dropped** — 跑 `scripts/smoke_stale_subagent.py` 沒觀察到 barge-in 行為；既有 `[Nm ago]` timestamp + 20-window 上下文 + Doll 預設 passive 沉默已經夠 graceful。等實際遇到 barge-in 案例再做。
 - **Cost / latency vitals** — 每 turn 的 token / 秒 / $ 數字 surface 在 `[Vitals]`；壓力大時 Doll 可選擇短回 / 跳 Recall / 不 spawn subagent。
 - **Encrypted memory at rest** — `private` tag 條目用 machine-bound key 加密；phone ship 前必備（裝置丟失 → memory 不外洩）。
 
