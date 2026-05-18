@@ -147,12 +147,15 @@ class NoteMemory(BaseModel):
         return f"noted: {self.text[:73]}"
 
     async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.context_tags import build_heading
+
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
+        heading = build_heading(ctx.mind_state)
         # Sync append + index inside async — append is a single small write
         # (microseconds). asyncio.to_thread wrap is YAGNI for step 6.
         with path.open("a") as f:
-            f.write(f"- {self.text}\n")
+            f.write(f"\n## {heading}\n\n{self.text}\n")
         await ctx.memsearch.index_file(path)
         result = f"memory noted: {self.text[:60]}"
         _record(ctx, "NoteMemory", self._summary())
@@ -179,11 +182,13 @@ class WriteDiary(BaseModel):
         return f"diary written ({len(self.content)} chars)"
 
     async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.context_tags import build_heading
+
         path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        heading = build_heading(ctx.mind_state)
         with path.open("a") as f:
-            f.write(f"\n## 日記 ({timestamp})\n\n{self.content}\n")
+            f.write(f"\n## {heading} 日記\n\n{self.content}\n")
         await ctx.memsearch.index_file(path)
         _record(ctx, "WriteDiary", self._summary())
         return "diary written"
@@ -554,9 +559,11 @@ class WriteSchedule(BaseModel):
         # plan (gap #3).
         md_path = ctx.memory_root / "shared" / f"{today:%Y-%m-%d}.md"
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        from dollos.mind.context_tags import build_heading
+
+        heading = build_heading(ctx.mind_state)
         with md_path.open("a") as f:
-            f.write(f"\n## 計劃 ({timestamp})\n\n")
+            f.write(f"\n## {heading} 計劃\n\n")
             for e in parsed:
                 f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
         await ctx.memsearch.index_file(md_path)
