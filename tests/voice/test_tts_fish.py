@@ -29,7 +29,7 @@ async def test_fish_engine_loads_singleton_and_sets_reference(fake_fish_tts, tmp
     eng = FishTTSEngine(voice_profile_path=voice_path, transcript="hi")
     _, fake_synth = fake_fish_tts
     fake_synth.set_references.assert_called_once()
-    assert eng.sample_rate == 88200
+    assert eng.sample_rate == 44100
 
 
 async def test_fish_engine_streams_pcm_chunks(fake_fish_tts, tmp_path):
@@ -67,7 +67,7 @@ async def test_fish_tts_engine_accepts_multi_ref(fake_fish_tts, tmp_path):
     # set_references should have been called with a list of 3 profiles
     args, _ = fake_synth.set_references.call_args
     assert len(args[0]) == 3
-    assert eng.sample_rate == 88200
+    assert eng.sample_rate == 44100
 
 
 async def test_fish_tts_engine_rejects_mismatched_lists(fake_fish_tts, tmp_path):
