@@ -1,0 +1,71 @@
+{
+  "name": "spectrum-match j3D",
+  "sample_rate": 24000,
+  "bands": [
+    {
+      "freq_hz": 93.0,
+      "gain_db": -2.0
+    },
+    {
+      "freq_hz": 127.0,
+      "gain_db": -0.72
+    },
+    {
+      "freq_hz": 174.0,
+      "gain_db": -5.26
+    },
+    {
+      "freq_hz": 237.0,
+      "gain_db": -3.27
+    },
+    {
+      "freq_hz": 324.0,
+      "gain_db": -3.82
+    },
+    {
+      "freq_hz": 441.0,
+      "gain_db": -6.07
+    },
+    {
+      "freq_hz": 602.0,
+      "gain_db": -3.62
+    },
+    {
+      "freq_hz": 821.0,
+      "gain_db": -1.4
+    },
+    {
+      "freq_hz": 1120.0,
+      "gain_db": -1.67
+    },
+    {
+      "freq_hz": 1528.0,
+      "gain_db": -1.67
+    },
+    {
+      "freq_hz": 2085.0,
+      "gain_db": -3.76
+    },
+    {
+      "freq_hz": 2844.0,
+      "gain_db": -2.64
+    },
+    {
+      "freq_hz": 3879.0,
+      "gain_db": -1.87
+    },
+    {
+      "freq_hz": 5291.0,
+      "gain_db": -1.86
+    },
+    {
+      "freq_hz": 7218.0,
+      "gain_db": -3.96
+    },
+    {
+      "freq_hz": 9846.0,
+      "gain_db": 2.52
+    }
+  ],
+  "peak_normalize": 0.95
+}

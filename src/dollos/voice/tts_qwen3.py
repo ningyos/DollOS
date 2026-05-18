@@ -8,6 +8,7 @@ Two cloning paths:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -52,6 +53,59 @@ def _get_model(model_id: str, device: str):
             _MODEL = Qwen3TTSModel.from_pretrained(model_id, device_map=device)
             _MODEL_ID = model_id
         return _MODEL
+
+
+def _load_eq_curve(path: Path, engine_sample_rate: int, n_taps: int = 511):
+    """Load JSON EQ curve and return ``(fir_coeffs, peak_normalize)``.
+
+    Schema::
+
+        {
+          "name": "...",
+          "sample_rate": 24000,
+          "bands": [{"freq_hz": 93, "gain_db": -0.10}, ...],
+          "peak_normalize": 0.95
+        }
+
+    Designs a linear-phase FIR via ``scipy.signal.firwin2`` matching the band
+    gains.  Raises if the JSON sample_rate doesn't match the engine.
+    """
+    import numpy as np
+    from scipy.signal import firwin2
+
+    payload = json.loads(Path(path).read_text())
+    sr = int(payload["sample_rate"])
+    if sr != engine_sample_rate:
+        raise ValueError(
+            f"EQ curve sample_rate={sr} mismatches engine sample_rate="
+            f"{engine_sample_rate} (path={path})"
+        )
+    bands = payload["bands"]
+    if not bands:
+        raise ValueError(f"EQ curve has no bands: {path}")
+    peak_normalize = float(payload.get("peak_normalize", 0.95))
+
+    freqs_hz = [float(b["freq_hz"]) for b in bands]
+    gains_db = [float(b["gain_db"]) for b in bands]
+    nyq = sr / 2.0
+    # firwin2 needs freqs strictly increasing, starting at 0 ending at nyq.
+    pts: list[tuple[float, float]] = [(0.0, gains_db[0])]
+    last = 0.0
+    for f, g in zip(freqs_hz, gains_db):
+        f_clamped = min(max(f, last + 1.0), nyq - 1.0)
+        if f_clamped <= last:
+            continue
+        pts.append((f_clamped, g))
+        last = f_clamped
+    pts.append((nyq, gains_db[-1]))
+
+    freqs_norm = np.array([p[0] / nyq for p in pts], dtype=np.float64)
+    gains_lin = np.array([10.0 ** (p[1] / 20.0) for p in pts], dtype=np.float64)
+    # firwin2 requires odd numtaps for type-I linear phase across full band.
+    if n_taps % 2 == 0:
+        n_taps += 1
+    fir = firwin2(n_taps, freqs_norm, gains_lin)
+    return fir.astype(np.float32), peak_normalize
 
 
 def _load_voice_clone_prompt(path: Path):
@@ -104,8 +158,14 @@ class Qwen3TTSEngine(TTSEngine):
         language: str = "English",
         instruction: str = "",
         peak_target: float = 0.95,
+        eq_curve_path: Path | str | None = None,
     ) -> None:
         self._peak_target = float(peak_target)
+        self._eq_fir = None
+        self._eq_peak_normalize: float | None = None
+        self._eq_curve_path = (
+            Path(eq_curve_path) if eq_curve_path is not None else None
+        )
         has_prompt = voice_clone_prompt_path is not None
         has_ref = ref_audio is not None or ref_text is not None
         if has_prompt and has_ref:
@@ -146,6 +206,19 @@ class Qwen3TTSEngine(TTSEngine):
         # qwen-tts default codec rate; re-set dynamically after first synth.
         self.sample_rate = 24000
 
+        if self._eq_curve_path is not None:
+            if not self._eq_curve_path.exists():
+                raise FileNotFoundError(
+                    f"Qwen3-TTS eq_curve_path not found: {self._eq_curve_path}"
+                )
+            fir, eq_peak = _load_eq_curve(self._eq_curve_path, self.sample_rate)
+            self._eq_fir = fir
+            self._eq_peak_normalize = eq_peak
+            logger.info(
+                "Qwen3-TTS EQ loaded from %s (%d taps, peak_normalize=%.3f)",
+                self._eq_curve_path, len(fir), eq_peak,
+            )
+
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         prefixed_text = (
             f"{self._instruction}. {text}" if self._instruction else text
@@ -176,17 +249,32 @@ class Qwen3TTSEngine(TTSEngine):
                 )
 
         wavs, sr = await asyncio.to_thread(_generate)
-        self.sample_rate = int(sr)
+        new_sr = int(sr)
+        if self._eq_fir is not None and new_sr != self.sample_rate:
+            raise RuntimeError(
+                f"Qwen3-TTS runtime sample_rate={new_sr} differs from EQ-designed "
+                f"sample_rate={self.sample_rate}; EQ curve is invalid."
+            )
+        self.sample_rate = new_sr
         import numpy as np
         wave = wavs[0] if hasattr(wavs, "__getitem__") else wavs
         if hasattr(wave, "astype"):
             if np.issubdtype(wave.dtype, np.floating):
-                # Peak-normalize to target before int16 to give consistent loudness;
-                # Qwen3-TTS output peak is typically ~0.3, much quieter than other engines.
                 w = np.asarray(wave, dtype=np.float32)
-                peak = float(np.max(np.abs(w))) if w.size else 0.0
-                if peak > 1e-6:
-                    w = w * (self._peak_target / peak)
+                if self._eq_fir is not None:
+                    # Apply spectrum-match FIR EQ, then EQ-defined peak normalize.
+                    from scipy.signal import lfilter
+                    w = lfilter(self._eq_fir, 1.0, w).astype(np.float32)
+                    peak = float(np.max(np.abs(w))) if w.size else 0.0
+                    target = self._eq_peak_normalize or self._peak_target
+                    if peak > 1e-6:
+                        w = w * (target / peak)
+                else:
+                    # Peak-normalize to target before int16 to give consistent loudness;
+                    # Qwen3-TTS output peak is typically ~0.3, much quieter than other engines.
+                    peak = float(np.max(np.abs(w))) if w.size else 0.0
+                    if peak > 1e-6:
+                        w = w * (self._peak_target / peak)
                 w = np.clip(w, -1.0, 1.0)
                 pcm = (w * 32767.0).astype(np.int16, copy=False).tobytes()
             else:

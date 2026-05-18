@@ -4,3 +4,4 @@
 ref_audio = "voice/transcripts/j3DAXXUiGJw.wav"
 ref_text = "I still need to find myself Yeah, okay, I need to find myself is some retarded excuse to go have a hoe phase find myself what the fuck does that mean you're gonna to find yourself alone and childless that's what you're going to find or with an STD have fun finding yourself, you whore."
 language = "English"
+eq_curve_path = "voice/eq.json"
