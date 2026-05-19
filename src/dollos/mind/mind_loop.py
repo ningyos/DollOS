@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -173,6 +174,7 @@ class MindLoop:
         """
         sink = self._ctx.sink_resolver()
         parser = ToolStreamParser(voice_mode=True)
+        chunker = SentenceChunker()
 
         async for chunk in self._llm.stream_completion(
             system="",
@@ -183,21 +185,36 @@ class MindLoop:
         ):
             if chunk.text:
                 for event in parser.feed(chunk.text):
-                    await self._handle_stream_event(event, sink)
+                    await self._handle_stream_event(event, sink, chunker)
             if chunk.done:
                 break
 
         for event in parser.flush():
-            await self._handle_stream_event(event, sink)
+            await self._handle_stream_event(event, sink, chunker)
 
-    async def _handle_stream_event(self, event, sink) -> None:
-        if isinstance(event, SpeakChunk):
-            if event.text:
-                sink.put_nowait(TextChunk(text=event.text))
+        # Flush the chunker tail — emit any remaining buffered text.
+        self._flush_chunker(chunker, sink)
+
+    def _flush_chunker(self, chunker: SentenceChunker, sink) -> None:
+        for sentence in chunker.flush():
+            if sentence:
+                sink.put_nowait(TextChunk(text=sentence))
                 self._state.recent_outputs.append(OutputRecord(
                     kind="Speech",
                     t=time.time(),
-                    summary=f"spoke: {event.text[:60]}",
+                    summary=f"spoke: {sentence[:60]}",
+                ))
+
+    async def _handle_stream_event(self, event, sink, chunker) -> None:
+        if isinstance(event, SpeakChunk):
+            if not event.text:
+                return
+            for sentence in chunker.feed(event.text):
+                sink.put_nowait(TextChunk(text=sentence))
+                self._state.recent_outputs.append(OutputRecord(
+                    kind="Speech",
+                    t=time.time(),
+                    summary=f"spoke: {sentence[:60]}",
                 ))
         elif isinstance(event, ToolCallReady):
             await self._dispatch_tool(event.name, event.arguments)

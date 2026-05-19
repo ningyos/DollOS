@@ -68,6 +68,16 @@ def test_render_blocks_strips_per_block_whitespace():
         assert v == v.strip()
 
 
+def test_scaffolding_no_longer_restricts_single_speak_block():
+    """Plan 2 lifted the Plan 1 'single trailing speak' restriction."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding")
+    assert "single block at the end of your turn" not in out
+    assert "Plan 2 fixes it" not in out
+    # The "interleave freely" line stays
+    assert "interleave" in out.lower()
+
+
 def test_render_blocks_substitutes_ctx_into_each_block():
     renderer = PromptRenderer()
     blocks = renderer.render_blocks("_test_blocks_fixture", greeting="yo", item="banana")

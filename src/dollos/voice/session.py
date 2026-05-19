@@ -84,6 +84,8 @@ class VoiceSession:
         self._utterance_rate: int = 16000
         self._inbound_consumer_task: asyncio.Task | None = None
         self._is_open: bool = False
+        self._speak_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._speak_worker_task: asyncio.Task | None = None
 
     @property
     def peer(self) -> RTCPeerConnection | None:
@@ -148,6 +150,49 @@ class VoiceSession:
         async for chunk in self._tts.synthesize(text):
             await self._push_outbound(chunk, self._tts.sample_rate)
 
+    async def _start_speak_worker(self) -> None:
+        """Launch the serialized speak worker. Idempotent."""
+        if self._speak_worker_task is None or self._speak_worker_task.done():
+            self._speak_worker_task = asyncio.create_task(
+                self._speak_worker_loop(), name="voice-speak-worker",
+            )
+
+    async def _stop_speak_worker(self) -> None:
+        """Signal worker shutdown and wait for it to exit."""
+        if self._speak_worker_task is not None and not self._speak_worker_task.done():
+            await self._speak_queue.put(None)  # sentinel
+            try:
+                await asyncio.wait_for(self._speak_worker_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self._speak_worker_task.cancel()
+
+    async def _speak_worker_loop(self) -> None:
+        """Pull text from speak_queue and synth one at a time."""
+        while True:
+            text = await self._speak_queue.get()
+            if text is None:
+                return
+            try:
+                await self.speak(text)
+            except Exception:
+                logger.exception("speak worker error on text=%r", text[:80])
+
+    async def enqueue_speak(self, text: str) -> None:
+        """Queue text for serialized TTS playback. Non-blocking once put completes."""
+        if self._speak_worker_task is None or self._speak_worker_task.done():
+            await self._start_speak_worker()
+        await self._speak_queue.put(text)
+
+    async def wait_speak_idle(self, timeout_s: float = 30.0) -> None:
+        """Wait for the speak queue to drain. For tests + tidy shutdown."""
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        while not self._speak_queue.empty():
+            await asyncio.sleep(0.02)
+            if asyncio.get_event_loop().time() > deadline:
+                raise asyncio.TimeoutError("speak queue did not drain")
+        # Small grace for the worker to finish the last item
+        await asyncio.sleep(0.05)
+
     async def _push_outbound(self, pcm_chunk: bytes, sample_rate: int) -> None:
         if self._outbound_track is None:
             logger.warning("speak() with no outbound track; dropping audio")
@@ -174,6 +219,7 @@ class VoiceSession:
 
     async def close(self) -> None:
         self._is_open = False
+        await self._stop_speak_worker()
         if self._inbound_consumer_task is not None:
             self._inbound_consumer_task.cancel()
             try:
