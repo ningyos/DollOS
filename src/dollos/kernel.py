@@ -18,6 +18,8 @@ from dollos.schedule import due_entries, load_schedule
 from dollos.ipc.messages import (
     ErrorMsg,
     ICECandidateIn,
+    Interrupt,
+    SayAborted,
     ServerMessage,
     TextInput,
     UtteranceEnd,
@@ -321,6 +323,9 @@ class DollOS:
         self, msg, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
         if isinstance(msg, TextInput):
+            # If a cascade is currently active, preempt it before pushing
+            # the new input so Doll responds to the latest message.
+            await self._maybe_preempt_for_new_input(sink)
             # Push as Perception into the queue; MindLoop drains it.
             self._perception_queue.put(
                 Perception(
@@ -329,6 +334,9 @@ class DollOS:
                     data={"text": msg.text},
                 )
             )
+        elif isinstance(msg, Interrupt):
+            # Explicit stop signal without new input.
+            await self._maybe_preempt_for_new_input(sink)
         elif isinstance(msg, WebRTCOfferIn):
             answer_sdp = await self._handle_offer(msg.sdp, sink)
             sink.put_nowait(WebRTCAnswerOut(sdp=answer_sdp))
@@ -350,6 +358,33 @@ class DollOS:
                 await session.handle_utterance_end()
         else:
             logger.warning("unhandled message type: %r", type(msg).__name__)
+
+    async def _maybe_preempt_for_new_input(
+        self, sink: "asyncio.Queue[ServerMessage | None]"
+    ) -> None:
+        """If a cascade is in flight, cancel it + abort speak + push Interrupted perception."""
+        if not self._mind_loop.is_cascade_active:
+            return  # idle, nothing to preempt
+
+        # 1. Cancel cascade
+        self._mind_loop.cancel_current_cascade()
+
+        # 2. Abort speak
+        session = self._voice_sessions.get(id(sink))
+        if session is not None:
+            await session.abort_speak()
+
+        # 3. Signal client
+        sink.put_nowait(SayAborted(reason="user_interrupted"))
+
+        # 4. Push Interrupted perception so Doll knows
+        self._perception_queue.put(
+            Perception(
+                kind="Interrupted",
+                t=time.time(),
+                data={"by": "user_text_input"},
+            )
+        )
 
     async def _handle_offer(
         self, offer_sdp: str, sink: "asyncio.Queue[ServerMessage | None]"
