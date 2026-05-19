@@ -86,10 +86,51 @@ def test_recent_perceptions_newest_last():
 
 def test_recent_outputs_block():
     state = MindState()
-    state.recent_outputs.append(OutputRecord(t=time.time() - 3, kind="Say", summary="Said: hi"))
+    state.recent_outputs.append(OutputRecord(t=time.time() - 3, kind="Speech", summary="spoke: hi"))
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert "Said: hi" in prompt
+    assert "spoke: hi" in prompt
     assert "don't repeat yourself" in prompt.lower()
+
+
+def test_recent_outputs_warns_on_recent_speech():
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    state.recent_outputs.append(OutputRecord(
+        kind="Speech",
+        t=time.time() - 10,
+        summary="spoke: 主人晚安",
+    ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" in out
+    assert "spoke" in out
+
+
+def test_recent_outputs_no_warn_old_speech():
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    state.recent_outputs.append(OutputRecord(
+        kind="Speech",
+        t=time.time() - 60,
+        summary="spoke: 早安",
+    ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" not in out
+
+
+def test_recent_outputs_ignores_non_speech_recent():
+    """Recent NoteMemory (e.g.) should not trigger spam warning."""
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    state.recent_outputs.append(OutputRecord(
+        kind="NoteMemory",
+        t=time.time() - 5,
+        summary="noted: x",
+    ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" not in out
 
 
 def test_decision_time_marker_is_last():
