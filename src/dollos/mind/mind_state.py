@@ -55,6 +55,7 @@ class Perception:
     ]
     t: float
     data: dict
+    seq: int | None = None  # set by PerceptionQueue when WAL is active
 
 
 @dataclass

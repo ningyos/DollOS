@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from dollos.mind.mind_state import Perception
+
+if TYPE_CHECKING:
+    from dollos.wal.perception_log import PerceptionWAL
 
 
 class PerceptionQueue:
@@ -12,14 +16,22 @@ class PerceptionQueue:
 
     Pure event-driven: no idle ticks, no timeouts.
     Supports graceful shutdown via shutdown() so drain() unblocks cleanly.
+
+    When a WAL is provided, every put() also appends to the WAL — so a
+    crash before mind_loop drains the queue doesn't lose user input.
+    Perceptions arriving from WAL replay (seq already set) skip the
+    append to avoid duplicate entries.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, wal: "PerceptionWAL | None" = None) -> None:
         self._queue: asyncio.Queue[Perception] = asyncio.Queue()
         self._shutdown_event = asyncio.Event()
+        self._wal = wal
 
     def put(self, perception: Perception) -> None:
-        """Non-blocking enqueue."""
+        """Non-blocking enqueue. Appends to WAL when present and seq is None."""
+        if self._wal is not None and perception.seq is None:
+            perception.seq = self._wal.append(perception)
         self._queue.put_nowait(perception)
 
     def shutdown(self) -> None:
