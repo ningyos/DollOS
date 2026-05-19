@@ -166,6 +166,31 @@ class VoiceSession:
             except asyncio.TimeoutError:
                 self._speak_worker_task.cancel()
 
+    async def abort_speak(self) -> None:
+        """Cancel current TTS task + drain queued texts. Worker becomes dormant;
+        next enqueue_speak lazy-starts a fresh worker.
+
+        Capped wait_for on task cancellation: if a TTS engine doesn't honor
+        CancelledError within 2s (e.g. GPU call), we move on and clear state.
+        """
+        task = self._speak_worker_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            except Exception:
+                logger.exception("speak worker raised during abort")
+        self._speak_worker_task = None
+
+        # Drain remaining queue
+        while not self._speak_queue.empty():
+            try:
+                self._speak_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
     async def _speak_worker_loop(self) -> None:
         """Pull text from speak_queue and synth one at a time."""
         while True:

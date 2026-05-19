@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
@@ -64,6 +65,7 @@ class MindLoop:
         self._system_pulse = system_pulse
         self._cognition = cognition
         self._shutdown = False
+        self._cascade_ctx: CascadeCtx | None = None
 
         # Build GBNF grammar from tool registry to constrain LLM output.
         # Voice-first grammar emits </think> itself; no prefill needed.
@@ -166,34 +168,64 @@ class MindLoop:
             logger.exception("memsearch query failed; continuing with empty hits")
             return []
 
+    @property
+    def is_cascade_active(self) -> bool:
+        """True iff _llm_iterate is currently running (a cascade is in flight)."""
+        return self._cascade_ctx is not None
+
+    def cancel_current_cascade(self) -> None:
+        """Set cancel on the active cascade context, if any. No-op otherwise."""
+        if self._cascade_ctx is not None:
+            self._cascade_ctx.cancel()
+
     async def _llm_iterate(self, prompt: str) -> None:
         """Stream LLM output through voice_first parser.
 
         SpeakChunks → resolved sink + recent_outputs("Speech");
         ToolCallReady → dispatch the named tool inline (sequential).
+
+        Honours cancel from `self._cascade_ctx` at every chunk / event /
+        flush boundary so an external `cancel_current_cascade()` returns
+        cleanly within ~one chunk window.
         """
         sink = self._ctx.sink_resolver()
         parser = ToolStreamParser(voice_mode=True)
         chunker = SentenceChunker()
+        self._cascade_ctx = CascadeCtx()
+        try:
+            async for chunk in self._llm.stream_completion(
+                system="",
+                user=prompt,
+                prefill="",  # voice_first grammar emits </think> itself
+                max_tokens=2048,
+                grammar=self._grammar,
+                purpose="cascade",
+            ):
+                if self._cascade_ctx.cancelled:
+                    logger.info("cascade cancelled mid-stream; exiting cleanly")
+                    return
+                if chunk.text:
+                    for event in parser.feed(chunk.text):
+                        if self._cascade_ctx.cancelled:
+                            logger.info("cascade cancelled before event dispatch; exiting")
+                            return
+                        await self._handle_stream_event(event, sink, chunker)
+                if chunk.done:
+                    break
 
-        async for chunk in self._llm.stream_completion(
-            system="",
-            user=prompt,
-            prefill="",  # voice_first grammar emits </think> itself
-            max_tokens=2048,
-            grammar=self._grammar,
-        ):
-            if chunk.text:
-                for event in parser.feed(chunk.text):
-                    await self._handle_stream_event(event, sink, chunker)
-            if chunk.done:
-                break
+            if self._cascade_ctx.cancelled:
+                return
 
-        for event in parser.flush():
-            await self._handle_stream_event(event, sink, chunker)
+            for event in parser.flush():
+                if self._cascade_ctx.cancelled:
+                    return
+                await self._handle_stream_event(event, sink, chunker)
 
-        # Flush the chunker tail — emit any remaining buffered text.
-        self._flush_chunker(chunker, sink)
+            if not self._cascade_ctx.cancelled:
+                # Flush the chunker tail — emit any remaining buffered text.
+                self._flush_chunker(chunker, sink)
+        finally:
+            self._cascade_ctx = None
 
     def _flush_chunker(self, chunker: SentenceChunker, sink) -> None:
         for sentence in chunker.flush():

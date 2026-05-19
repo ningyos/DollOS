@@ -39,6 +39,7 @@ class _FakeAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append(
             {"system": system, "user": user, "prefill": prefill, "tools": tools}
@@ -57,6 +58,7 @@ class _FakeAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         self.calls.append(
             {"system": system, "messages": list(messages), "tools": tools}
@@ -83,6 +85,7 @@ class _HangAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         self.entered.set()
         await asyncio.Event().wait()  # forever
@@ -97,6 +100,7 @@ class _HangAdapter(LLMAdapter):
         max_tokens: int = 1024,
         tools: list[type] | None = None,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ) -> AsyncIterator[StreamChunk]:
         self.entered.set()
         await asyncio.Event().wait()  # forever
