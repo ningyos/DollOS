@@ -303,3 +303,11 @@ def test_scaffolding_has_interrupts_section():
     out = renderer.render("scaffolding")
     assert "Interrupt" in out
     assert "cut short" in out.lower()
+
+
+def test_scaffolding_has_recovery_section():
+    """Scaffolding documents how Doll should react to Awoke(recovered)."""
+    from dollos.prompts.renderer import PromptRenderer
+    out = PromptRenderer().render("scaffolding")
+    # Either explicit "Recovery" header or "recovered" body text — flexible
+    assert "recover" in out.lower()
