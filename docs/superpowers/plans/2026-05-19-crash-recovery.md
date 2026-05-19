@@ -126,6 +126,21 @@ def test_wal_persists_across_instances(tmp_path: Path):
     pending = list(w2.iter_pending())
     assert pending[-1][0] == s
     assert pending[-1][1].kind == "C"
+
+
+def test_wal_truncate_is_atomic_via_tmpfile(tmp_path: Path):
+    """truncate_through uses tmpfile + os.replace; no partial-write window."""
+    import os
+    path = tmp_path / "wal.jsonl"
+    wal = PerceptionWAL(path)
+    s1 = wal.append(Perception(kind="A", t=1.0, data={}))
+    s2 = wal.append(Perception(kind="B", t=2.0, data={}))
+    wal.truncate_through(s1)
+
+    # No stale .tmp file left behind
+    assert not (path.with_suffix(".tmp")).exists()
+    pending = [p.kind for _, p in wal.iter_pending()]
+    assert pending == ["B"]
 ```
 
 - [ ] **Step 2: Run failing**
@@ -227,7 +242,13 @@ class PerceptionWAL:
                 continue
 
     def truncate_through(self, seq: int) -> None:
-        """Remove entries with sequence id <= seq. Idempotent."""
+        """Remove entries with sequence id <= seq. Idempotent + crash-safe.
+
+        Uses tmpfile + os.replace for POSIX-atomic rename — at any crash point
+        either the old file is intact (no progress) or the new file is fully
+        in place (truncation complete). No partial write window.
+        """
+        import os
         if not self._path.exists():
             return
         kept = []
@@ -238,11 +259,10 @@ class PerceptionWAL:
                     kept.append(line)
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 continue  # drop corrupt
-        if kept:
-            self._path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-        else:
-            # Truncate to empty (keep file for the future appends)
-            self._path.write_text("", encoding="utf-8")
+        tmp = self._path.with_suffix(".tmp")
+        body = ("\n".join(kept) + "\n") if kept else ""
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, self._path)
 ```
 
 - [ ] **Step 4: Pass**
@@ -731,16 +751,20 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 Since SIGKILL'ing an in-process daemon from within Python is awkward, the smoke uses subprocess + signals. The full script is long; the subagent should write it out following the pattern of other smokes but adapted to subprocess control.
 
 Key steps:
-1. Write a minimal config TOML to tmp
-2. Launch `uv run python -m dollos --config <tmp_config>` as a subprocess
-3. Wait for IPC port to be ready
-4. Connect WS, send `{"type": "text_input", "text": "你好, 第一次"}`
-5. After 0.3s (short enough that Doll's likely still in iterate but unlikely to have completed save_state), SIGKILL the subprocess
-6. Wait for it to die
-7. Inspect `<tmp>/wal/perceptions.jsonl` — should have unprocessed entries
-8. Inspect `<tmp>/daemon.pid` — should still exist (not cleanly removed)
-9. Relaunch the daemon, connect WS, drain messages
-10. Verify Doll responds (proving the replayed perception was processed)
+1. Pick a **unique random IPC port** (e.g. `9000 + os.getpid() % 1000`) to avoid stepping on other smokes
+2. Write a minimal config TOML to a unique tmp dir (so multiple smoke runs don't share state)
+3. Launch `uv run python -m dollos --config <tmp_config>` as a subprocess; redirect stdout/stderr to a per-test log file
+4. Wait for the chosen port to accept TCP (with bounded retry, e.g. 10s max)
+5. Connect WS, send `{"type": "text_input", "text": "你好, 第一次"}`
+6. After 0.3s (short enough that Doll's likely still in iterate but unlikely to have completed save_state), SIGKILL the subprocess
+7. `proc.wait()` to reap the zombie cleanly
+8. Inspect `<tmp>/wal/perceptions.jsonl` — should have unprocessed entries
+9. Inspect `<tmp>/daemon.pid` — should still exist (not cleanly removed)
+10. Relaunch the daemon (same config), wait for port ready, connect WS, drain messages
+11. Verify Doll responds (proving the replayed perception was processed)
+12. Cleanup: SIGTERM the second daemon; remove tmp dir
+
+Use `try / finally` to guarantee cleanup even on assertion failures, otherwise orphan daemon processes accumulate during iteration on the smoke.
 
 - [ ] **Step 2: Pre-flight**
 
@@ -792,9 +816,12 @@ git commit -m "test(recovery): crash recovery E2E smoke"
 - Subagent / Shell orphan handling
 - Mid-LLM-stream recovery
 
-**Known limitation:**
+**Known limitations:**
 - WAL has no fsync — last few ms of perceptions may be lost on hard crash. Acceptable for personal daemon.
 - WAL replay re-fires perceptions that may have been partially handled — e.g. NoteMemory written but Say not emitted. Doll might NoteMemory the same fact twice. Idempotency is the user's tolerance; rare in practice.
+- **Scheduled events may re-fire after dirty restart.** `schedule_runner._fired` set is in-memory; on dirty restart it's empty, so past-time entries get re-evaluated and could fire again. Separate fix needed (persist `fired` set or use an on-disk "fired before timestamp X" marker). Not addressed in Plan 4.
+- **Single-threaded asyncio assumption.** WAL append is not thread-safe — `_next_seq` increment + file write are sync but not protected by a lock. DollOS daemon is single-threaded asyncio so reentrancy within one event loop is safe; if future work introduces a thread pool that calls `perception_queue.put()`, add an `asyncio.Lock` or `threading.Lock` around `append`.
+- **`Perception.kind: Literal[...]`** in `mind_state.py` still uses the original tuple from Plan 1, missing `"Interrupted"` (added by Plan 3 via runtime kwarg) and won't include any new kinds from Plan 4 (we use existing `"Awoke"`). Cosmetic — dataclass doesn't enforce Literal at runtime. Cleanup task for a future plan.
 
 ---
 
