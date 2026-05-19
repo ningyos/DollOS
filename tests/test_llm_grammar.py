@@ -1,6 +1,4 @@
-"""Tests for build_qwen3_think_tool_grammar (B4-typed GBNF generator)
-and build_mind_actions_grammar (MindLoop JSON-array grammar).
-"""
+"""Tests for build_qwen3_think_tool_grammar (B4-typed GBNF generator)."""
 
 from __future__ import annotations
 
@@ -9,14 +7,8 @@ import re
 import pytest
 from pydantic import BaseModel, Field
 
-from dollos.llm.templates import build_mind_actions_grammar, build_qwen3_think_tool_grammar
+from dollos.llm.templates import build_qwen3_think_tool_grammar
 from dollos.tools import MAIN_TOOLS as TOOLS
-
-# Action names used by the MindLoop experiment (actions.py _VALID_KINDS).
-_MIND_ACTIONS = [
-    "Say", "SetFocus", "OpenLoop", "CloseLoop",
-    "Dispatch",
-]
 
 
 def test_grammar_starts_with_root_rule():
@@ -198,138 +190,6 @@ def test_optional_only_tool_has_empty_args_body():
     g = build_qwen3_think_tool_grammar([_OptionalOnlyTool])
     # Empty arguments block: "arguments": {}
     assert r'\"arguments\": {}}\n</tool_call>"' in g
-
-
-# ---------------------------------------------------------------------------
-# build_mind_actions_grammar tests
-# ---------------------------------------------------------------------------
-
-
-def test_mind_actions_grammar_starts_with_root_rule():
-    """MindLoop uses prefill to close think block; grammar covers JSON array only."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert g.startswith("root ::= mind-actions\n")
-
-
-def test_mind_actions_grammar_no_think_block_rule():
-    """No think-block in mind actions grammar — prefill closes the think block."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "think-block" not in g
-    assert "<think>" not in g
-
-
-def test_mind_actions_grammar_no_seen_intent_mood_in_grammar():
-    """SEEN/INTENT/MOOD not in grammar — MindLoop uses prefill, not GBNF think enforcement."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "SEEN:" not in g
-    assert "INTENT:" not in g
-    assert "TOOL:" not in g
-
-
-def test_mind_actions_grammar_has_mind_actions_rule():
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "mind-actions ::= " in g
-    # Must allow empty array
-    assert '"[" ws "]"' in g
-    # Must allow non-empty array
-    assert "action-call" in g
-
-
-def test_mind_actions_grammar_action_name_enum_includes_all_actions():
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    for name in _MIND_ACTIONS:
-        assert f'"{name}"' in g
-
-
-def test_mind_actions_grammar_action_call_has_action_key():
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert '"\\\"action\\\""' in g or '\\"action\\"' in g
-
-
-def test_mind_actions_grammar_has_recursive_json_value_rule():
-    """json-value must be present to allow arbitrary action payloads."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "json-value ::= " in g
-    assert "json-object ::= " in g
-    assert "json-array ::= " in g
-    assert "json-number ::= " in g
-
-
-def test_mind_actions_grammar_includes_json_str_rules():
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "str ::= " in g
-    assert "str-char ::= " in g
-    assert "hex ::= [0-9a-fA-F]" in g
-
-
-def test_mind_actions_grammar_str_char_denies_cjk_and_typographic_quotes():
-    """CJK corner-bracket and typographic quotes must be denied in str-char."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    str_char_line = next(
-        line for line in g.splitlines() if line.startswith("str-char ::=")
-    )
-    for code in ("\\u201C", "\\u201D", "\\u2018", "\\u2019",
-                 "\\u300C", "\\u300D", "\\u300E", "\\u300F"):
-        assert code in str_char_line, f"{code} missing from str-char deny list"
-
-
-def test_mind_actions_grammar_empty_names_raises():
-    with pytest.raises(ValueError):
-        build_mind_actions_grammar([])
-
-
-def test_mind_actions_grammar_name_with_quote_raises():
-    with pytest.raises(ValueError):
-        build_mind_actions_grammar(['Bad"Name'])
-
-
-def test_mind_actions_grammar_ws_rule_present():
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "ws ::= " in g
-
-
-def test_mind_actions_grammar_single_action_subset():
-    """Grammar builds correctly for a minimal one-action list."""
-    g = build_mind_actions_grammar(["Say"])
-    assert '"Say"' in g
-    assert "root ::= mind-actions\n" in g
-
-
-def test_mind_actions_grammar_all_main_tools_names():
-    """Grammar can be built from all MAIN_TOOLS class names (no crash)."""
-    names = [cls.__name__ for cls in TOOLS]
-    g = build_mind_actions_grammar(names)
-    for name in names:
-        assert f'"{name}"' in g
-
-
-def test_mind_actions_grammar_no_line_rule():
-    """No line rule needed — grammar covers JSON only, no think body."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert 'line ::= ' not in g
-
-
-def test_mind_actions_grammar_format_incompatible_with_tool_call_envelope():
-    """build_mind_actions_grammar output must NOT contain <tool_call> tags.
-
-    The MindLoop parser expects a plain JSON array, not tool_call XML blocks.
-    If <tool_call> appears, the formats are mixed — which would break _parse_actions.
-    """
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    assert "<tool_call>" not in g
-
-
-def test_mind_actions_grammar_action_call_rule_structure():
-    """action-call rule must enforce the 'action' key before the name enum."""
-    g = build_mind_actions_grammar(_MIND_ACTIONS)
-    # Find the action-call rule line
-    action_call_line = next(
-        (line for line in g.splitlines() if line.startswith("action-call ::=")),
-        None,
-    )
-    assert action_call_line is not None, "action-call rule not found"
-    # Must reference action-name rule (not inline literal list)
-    assert "action-name" in action_call_line
 
 
 def test_voice_first_grammar_smoke():
