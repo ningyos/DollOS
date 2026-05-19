@@ -94,6 +94,48 @@ async def test_iterate_streams_speech_to_sink_and_dispatches_tool(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_iterate_sentence_chunks_speech_to_sink(tmp_path):
+    """Multi-sentence LLM output should arrive as multiple TextChunks, one per sentence."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    stream = (
+        "SEEN: hi\n"
+        "INTENT: y\n"
+        "REVIEW: z\n"
+        "MOOD: q\n"
+        "TOOL: speak\n"
+        "</think>\n\n"
+        "Hello there. How are you? Fine."
+    )
+    fake_llm = _FakeLLM(stream)
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=fake_llm,
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    await loop.iterate()
+
+    chunks = _drain_queue(sink)
+    text_chunks = [c for c in chunks if isinstance(c, TextChunk)]
+    texts = [c.text for c in text_chunks]
+    assert texts == ["Hello there. ", "How are you? ", "Fine."]
+
+
+@pytest.mark.asyncio
 async def test_iterate_persists_state(tmp_path):
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
