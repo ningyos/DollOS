@@ -52,6 +52,7 @@ from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.wal.perception_log import PerceptionWAL
+from dollos.wal.pidfile import PidFile, RestartKind
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,8 @@ class DollOS:
         # ------------------------------------------------------------------ #
         wal_path = settings.data.root / "wal" / "perceptions.jsonl"
         self._wal = PerceptionWAL(wal_path)
+        self._pidfile = PidFile(settings.data.root / "daemon.pid")
+        self._restart_kind: RestartKind = RestartKind.COLD  # default, updated in run()
         self._perception_queue = PerceptionQueue(wal=self._wal)
         self._mind_state = load_state(settings.data.root / "mind_state.json")
         self._sink_resolver = SinkResolver()
@@ -570,6 +573,9 @@ class DollOS:
             self._perception_queue.put(p)
 
     async def run(self) -> None:
+        self._restart_kind = self._pidfile.acquire()
+        if self._restart_kind == RestartKind.DIRTY:
+            logger.warning("dirty restart detected — previous daemon crashed")
         await self.memsearch.index()
         try:
             await self.server.start()
@@ -639,4 +645,4 @@ class DollOS:
                     await asyncio.gather(self._mind_task, return_exceptions=True)
                 self._tool_output_store.cleanup()
         finally:
-            pass   # memsearch has no close(); Milvus Lite is file-based
+            self._pidfile.release()   # memsearch has no close(); Milvus Lite is file-based
