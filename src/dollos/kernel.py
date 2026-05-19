@@ -589,7 +589,12 @@ class DollOS:
             )
 
             # Push Awoke perception on startup
-            reason = "cold_start" if self._mind_state.iter_count == 0 else "resumed"
+            if self._restart_kind == RestartKind.DIRTY:
+                reason = "recovered"
+            elif self._mind_state.iter_count > 0:
+                reason = "resumed"
+            else:
+                reason = "cold_start"
             self._perception_queue.put(
                 Perception(
                     kind="Awoke",
