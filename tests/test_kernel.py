@@ -389,3 +389,9 @@ import pytest
 async def test_text_input_preempts_active_cascade():
     """Marker: kernel-level preempt covered by Task 7 E2E smoke."""
     pytest.skip("integration covered in Task 7 E2E smoke")
+
+
+@pytest.mark.asyncio
+async def test_kernel_replays_pending_wal_on_startup():
+    """WAL replay flow — covered by Task 7 E2E smoke."""
+    pytest.skip("integration covered in Task 7 smoke (scripts/smoke_crash_recovery.py)")

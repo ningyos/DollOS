@@ -51,6 +51,7 @@ from dollos.mind.mind_state import MindState, Perception, load_state
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
+from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,9 @@ class DollOS:
         # ------------------------------------------------------------------ #
         # MindLoop infrastructure                                              #
         # ------------------------------------------------------------------ #
-        self._perception_queue = PerceptionQueue()
+        wal_path = settings.data.root / "wal" / "perceptions.jsonl"
+        self._wal = PerceptionWAL(wal_path)
+        self._perception_queue = PerceptionQueue(wal=self._wal)
         self._mind_state = load_state(settings.data.root / "mind_state.json")
         self._sink_resolver = SinkResolver()
 
@@ -279,6 +282,7 @@ class DollOS:
             tool_registry=tool_registry,
             system_pulse=self.system_pulse,
             cognition=self.cognition,
+            wal=self._wal,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -547,10 +551,31 @@ class DollOS:
                     )
                 )
 
+    async def _replay_wal(self) -> None:
+        """Push any pending WAL perceptions back into the queue before mind_loop starts.
+
+        Perceptions arriving here have seq already set (from the previous run's
+        WAL); PerceptionQueue.put() will skip re-appending. They land in the
+        in-memory queue and mind_loop drains them in normal order.
+        """
+        pending = list(self._wal.iter_pending())
+        if not pending:
+            return
+        logger.info(
+            "wal: replaying %d pending perceptions from previous run",
+            len(pending),
+        )
+        for seq, p in pending:
+            p.seq = seq  # ensure seq is set so put() skips append
+            self._perception_queue.put(p)
+
     async def run(self) -> None:
         await self.memsearch.index()
         try:
             await self.server.start()
+
+            # Replay any pending WAL entries from a previous (possibly crashed) run
+            await self._replay_wal()
 
             # Start MindLoop as primary consciousness task
             self._mind_task = asyncio.create_task(
