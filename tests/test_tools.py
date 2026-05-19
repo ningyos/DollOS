@@ -916,15 +916,13 @@ async def test_note_memory_appends_output_record(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_recall_appends_output_record_and_thought(tmp_path):
+async def test_recall_appends_output_record(tmp_path):
     state = MindState()
     ctx = _ctx_with_search(tmp_path, hits=[{"content": "x", "source": "a.md"}])
     ctx.mind_state = state
     await Recall(query="test").run(ctx)
     assert len(state.recent_outputs) == 1
     assert state.recent_outputs[0].kind == "Recall"
-    assert len(state.recent_thoughts) == 1
-    assert "test" in state.recent_thoughts[0].text
 
 
 @pytest.mark.asyncio

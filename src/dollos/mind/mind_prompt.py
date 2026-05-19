@@ -65,9 +65,6 @@ def render_mind(
         _render_outputs_header(state.recent_outputs, now),
         _render_outputs(state.recent_outputs, now),
         "",
-        "[Recent thoughts]",
-        _render_thoughts(state.recent_thoughts, now),
-        "",
         "[Decision time]",
         "What do you do this iteration? Output a JSON array of 0..N actions.",
     ])
@@ -199,15 +196,6 @@ def _render_outputs(outs, now: float) -> str:
     return "\n".join(
         f"[{_human_secs(now - o.t)} ago] {o.summary}"
         for o in outs
-    )
-
-
-def _render_thoughts(thoughts, now: float) -> str:
-    if not thoughts:
-        return "(none)"
-    return "\n".join(
-        f"[{_human_secs(now - t.t)} ago] {t.text[:200]}"
-        for t in thoughts
     )
 
 
