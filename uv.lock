@@ -745,6 +745,7 @@ qwen3 = [
 voice-eval = [
     { name = "faster-whisper" },
     { name = "jiwer" },
+    { name = "librosa" },
     { name = "transformers" },
 ]
 
@@ -770,6 +771,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "jiwer", marker = "extra == 'voice-eval'", specifier = ">=3.0" },
     { name = "librosa", marker = "extra == 'eval'", specifier = ">=0.10" },
+    { name = "librosa", marker = "extra == 'voice-eval'", specifier = ">=0.10" },
     { name = "luxtts-onnx", git = "https://github.com/ningyos/luxtts-onnx.git" },
     { name = "memsearch", extras = ["onnx"], specifier = ">=0.1" },
     { name = "nvidia-cublas-cu12", marker = "extra == 'gpu'", specifier = ">=12.4" },
