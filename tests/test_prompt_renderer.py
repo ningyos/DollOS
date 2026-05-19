@@ -238,6 +238,48 @@ def test_scaffolding_documents_scratchpad():
     assert "working memory" in out.lower()
 
 
+def test_scaffolding_voice_framing_present():
+    """Voice-first output framing: scaffolding tells Doll that text outside
+    `<think>`/`<tool_call>` is spoken aloud via TTS, and explains silent turns."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
+    # Voice framing — text outside <think>/<tool_call> is spoken
+    assert "spoken aloud" in out or "the user hears" in out or "TTS" in out
+    # Tool call markup present
+    assert "<tool_call>" in out
+    # Silent turn convention — empty/nothing
+    assert "nothing" in out.lower() or "silent" in out.lower()
+
+
+def test_scaffolding_drops_legacy_json_action_array():
+    """Old `{"action": "..."}` JSON array convention must be gone."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
+    assert '"action":' not in out
+    assert "JSON array" not in out
+
+
+def test_scaffolding_renders_tools_doc():
+    """tool_registry → tools_doc rendered as `# Tools available` section."""
+    from dollos.tools import NoteMemory
+
+    renderer = PromptRenderer()
+    out = renderer.render(
+        "scaffolding",
+        identity=_identity(),
+        tool_registry={"NoteMemory": NoteMemory},
+    )
+    assert "NoteMemory" in out
+
+
+def test_scaffolding_no_recent_thoughts_block_doc():
+    """[Recent thoughts] block will be deleted in Task 8 — scaffolding no
+    longer references it (avoid having to revisit later)."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
+    assert "[Recent thoughts]" not in out
+
+
 def test_subagent_scaffolding_documents_scratchpad():
     """Subagent scaffolding documents Scratchpad as independent memory."""
     renderer = PromptRenderer()

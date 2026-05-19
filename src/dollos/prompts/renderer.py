@@ -24,7 +24,21 @@ class PromptRenderer:
         template_name must NOT include the `.jinja` suffix; "scaffolding" loads
         "scaffolding.jinja". Raises jinja2.TemplateNotFound if the template
         isn't found in the templates package.
+
+        If `tool_registry` is supplied (dict[str, type]), it is converted into
+        a `tools_doc` list of `(name, first_doc_line)` pairs and injected
+        alongside the other ctx vars. The template renders this as the
+        `# Tools available` section.
         """
+        tool_registry = ctx.pop("tool_registry", None)
+        if tool_registry is not None and "tools_doc" not in ctx:
+            tools_doc: list[tuple[str, str]] = []
+            for name, cls in tool_registry.items():
+                doc = ""
+                if getattr(cls, "__doc__", None):
+                    doc = cls.__doc__.strip().splitlines()[0]
+                tools_doc.append((name, doc))
+            ctx["tools_doc"] = tools_doc
         template = self._env.get_template(f"{template_name}.jinja")
         return template.render(**ctx)
 

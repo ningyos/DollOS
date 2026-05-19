@@ -65,12 +65,6 @@ class OutputRecord:
 
 
 @dataclass
-class Thought:
-    t: float
-    text: str
-
-
-@dataclass
 class MindState:
     mood: Mood = field(default_factory=Mood)
     focus: str = "idle"
@@ -82,7 +76,6 @@ class MindState:
 
     recent_perceptions: deque[Perception] = field(default_factory=lambda: deque(maxlen=20))
     recent_outputs: deque[OutputRecord] = field(default_factory=lambda: deque(maxlen=15))
-    recent_thoughts: deque[Thought] = field(default_factory=lambda: deque(maxlen=10))
 
     last_user_at: float = 0.0
     last_iter_at: float = 0.0
@@ -102,7 +95,6 @@ def save_state(state: MindState, path: Path) -> None:
     state_dict = asdict(state)
     state_dict["recent_perceptions"] = list(state.recent_perceptions)
     state_dict["recent_outputs"] = list(state.recent_outputs)
-    state_dict["recent_thoughts"] = list(state.recent_thoughts)
 
     # Convert dataclass instances to dicts for nested structures
     state_dict["mood"] = asdict(state.mood)
@@ -111,7 +103,6 @@ def save_state(state: MindState, path: Path) -> None:
     state_dict["open_loops"] = [asdict(l) for l in state.open_loops]
     state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
     state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
-    state_dict["recent_thoughts"] = [asdict(t) for t in state_dict["recent_thoughts"]]
 
     # Atomic write: write to temp, then rename
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -161,10 +152,6 @@ def load_state(path: Path) -> MindState:
             [OutputRecord(**o) for o in data.get("recent_outputs", [])],
             maxlen=15
         )
-        recent_thoughts = deque(
-            [Thought(**t) for t in data.get("recent_thoughts", [])],
-            maxlen=10
-        )
 
         state = MindState(
             mood=mood,
@@ -175,7 +162,6 @@ def load_state(path: Path) -> MindState:
             open_loops=open_loops,
             recent_perceptions=recent_perceptions,
             recent_outputs=recent_outputs,
-            recent_thoughts=recent_thoughts,
             last_user_at=data.get("last_user_at", 0.0),
             last_iter_at=data.get("last_iter_at", 0.0),
             iter_count=data.get("iter_count", 0),

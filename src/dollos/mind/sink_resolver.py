@@ -1,4 +1,4 @@
-"""SinkResolver — daemon-level current-sink lookup for Say streaming."""
+"""SinkResolver — daemon-level current-sink lookup for streaming Doll output."""
 from __future__ import annotations
 
 import logging

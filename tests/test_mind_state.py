@@ -5,7 +5,7 @@ import pytest
 
 from dollos.mind.mind_state import (
     MindState, ActiveTask, PendingEvent, OpenLoop,
-    Perception, OutputRecord, Thought,
+    Perception, OutputRecord,
 )
 
 
@@ -19,21 +19,18 @@ def test_mindstate_initial_defaults() -> None:
     assert s.open_loops == []
     assert len(s.recent_perceptions) == 0
     assert len(s.recent_outputs) == 0
-    assert len(s.recent_thoughts) == 0
 
 
 def test_deque_maxlens_default() -> None:
     s = MindState()
     assert s.recent_perceptions.maxlen == 20
     assert s.recent_outputs.maxlen == 15
-    assert s.recent_thoughts.maxlen == 10
 
 
 def test_deque_maxlens_configurable() -> None:
     s = MindState(
         recent_perceptions=deque(maxlen=5),
         recent_outputs=deque(maxlen=5),
-        recent_thoughts=deque(maxlen=5),
     )
     for i in range(10):
         s.recent_perceptions.append(Perception(kind="UserSpoke", t=float(i), data={}))

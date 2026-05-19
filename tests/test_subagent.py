@@ -20,7 +20,7 @@ from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.subagent import SubagentRunner
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
+from dollos.tools import SUB_TOOLS, Report, SpawnSubagent
 
 
 # ---------- Fakes ----------
@@ -335,20 +335,17 @@ async def test_subagent_writes_full_details_to_store(tmp_path: Path) -> None:
     assert full.lines[49] == "finding 49"
 
 
-def test_sub_tools_excludes_say_and_spawn_subagent():
-    """Subagent toolkit explicitly omits Say and SpawnSubagent; includes Report."""
-    assert Say not in SUB_TOOLS
+def test_sub_tools_excludes_spawn_subagent():
+    """Subagent toolkit explicitly omits SpawnSubagent; includes Report."""
     assert SpawnSubagent not in SUB_TOOLS
     assert Report in SUB_TOOLS
 
 
-def test_sub_grammar_excludes_say_and_spawn_subagent():
-    """Grammar built from SUB_TOOLS does not list Say / SpawnSubagent in
+def test_sub_grammar_excludes_spawn_subagent():
+    """Grammar built from SUB_TOOLS does not list SpawnSubagent in
     its tool-name enum or per-tool call rules."""
     g = build_qwen3_think_tool_grammar(SUB_TOOLS)
-    assert '"Say"' not in g
     assert '"SpawnSubagent"' not in g
-    assert "say-call" not in g
     assert "spawn-subagent-call" not in g
     # but Report IS there
     assert '"Report"' in g

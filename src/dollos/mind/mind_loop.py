@@ -1,26 +1,27 @@
 """MindLoop — the single persistent coroutine that IS Doll's consciousness."""
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from dollos.llm.templates import build_mind_actions_grammar
+from dollos.ipc.messages import TextChunk
+from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import (
     MindState,
+    OutputRecord,
     Perception,
     save_state,
 )
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.stream_events import SpeakChunk, ToolCallReady
+from dollos.tool_parser import ToolStreamParser
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +64,15 @@ class MindLoop:
         self._cognition = cognition
         self._shutdown = False
 
-        # Build GBNF grammar from action registry to constrain LLM output.
-        # Uses prefill="\n\n</think>\n\n" so grammar applies to JSON-only output.
+        # Build GBNF grammar from tool registry to constrain LLM output.
+        # Voice-first grammar emits </think> itself; no prefill needed.
         if self._tool_registry:
             try:
-                self._grammar = build_mind_actions_grammar(
-                    list(self._tool_registry.keys())
+                self._grammar = build_voice_first_grammar(
+                    list(self._tool_registry.values())
                 )
             except Exception:
-                logger.exception("failed to build mind actions grammar; running unconstrained")
+                logger.exception("failed to build voice_first grammar; running unconstrained")
                 self._grammar = None
         else:
             self._grammar = None
@@ -137,15 +138,8 @@ class MindLoop:
             associative_hits=associative_hits,
         )
 
-        # Call LLM (single iteration)
-        actions = await self._llm_iterate(prompt)
-
-        # Execute actions
-        for action in actions:
-            try:
-                await action.run(self._ctx)
-            except Exception:
-                logger.exception("action %s failed", type(action).__name__)
+        # Call LLM (streams text → sink; dispatches tool calls inline)
+        await self._llm_iterate(prompt)
 
         # Update counters + persist
         self._state.iter_count += 1
@@ -171,92 +165,57 @@ class MindLoop:
             logger.exception("memsearch query failed; continuing with empty hits")
             return []
 
-    async def _llm_iterate(self, prompt: str) -> list[BaseModel]:
-        """Call LLM, parse JSON action array, instantiate pydantic actions."""
-        raw = await self._llm_call(prompt)
-        return self._parse_actions(raw)
+    async def _llm_iterate(self, prompt: str) -> None:
+        """Stream LLM output through voice_first parser.
 
-    async def _llm_call(self, prompt: str) -> str:
-        """Stream completion from LLM. Adapter to existing LLM provider.
-
-        Uses prefill="\n\n</think>\n\n" to close the thinking block immediately
-        so grammar applies to the JSON output only (reasoning bypasses grammar
-        in llama-server with --reasoning-format none).
+        SpeakChunks → resolved sink + recent_outputs("Speech");
+        ToolCallReady → dispatch the named tool inline (sequential).
         """
-        chunks = []
+        sink = self._ctx.sink_resolver()
+        parser = ToolStreamParser(voice_mode=True)
+
         async for chunk in self._llm.stream_completion(
             system="",
             user=prompt,
-            prefill="\n\n</think>\n\n",
+            prefill="",  # voice_first grammar emits </think> itself
             max_tokens=2048,
             grammar=self._grammar,
         ):
             if chunk.text:
-                chunks.append(chunk.text)
+                for event in parser.feed(chunk.text):
+                    await self._handle_stream_event(event, sink)
             if chunk.done:
                 break
-        return "".join(chunks)
 
-    def _parse_actions(self, raw: str) -> list[BaseModel]:
-        """Parse LLM output. Expect JSON array of action objects. Tolerant fallback."""
-        text = raw.strip()
+        for event in parser.flush():
+            await self._handle_stream_event(event, sink)
 
-        # Strip any residual <think>...</think> block just in case
-        think_end = text.find("</think>")
-        if think_end != -1:
-            text = text[think_end + len("</think>"):].strip()
+    async def _handle_stream_event(self, event, sink) -> None:
+        if isinstance(event, SpeakChunk):
+            if event.text:
+                sink.put_nowait(TextChunk(text=event.text))
+                self._state.recent_outputs.append(OutputRecord(
+                    kind="Speech",
+                    t=time.time(),
+                    summary=f"spoke: {event.text[:60]}",
+                ))
+        elif isinstance(event, ToolCallReady):
+            await self._dispatch_tool(event.name, event.arguments)
 
-        # Strip markdown fences
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text
-            if text.endswith("```"):
-                text = text.rsplit("\n", 1)[0] if "\n" in text else text[:-3]
-
-        # Try strict JSON array parse
+    async def _dispatch_tool(self, name: str, arguments: dict) -> None:
+        tool_cls = self._tool_registry.get(name)
+        if tool_cls is None:
+            logger.warning("unknown tool: %s", name)
+            return
         try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            # Try to find balanced [...] substring
-            m = re.search(r"\[\s*\{.*\}\s*\]", text, re.DOTALL)
-            if m:
-                try:
-                    data = json.loads(m.group())
-                except json.JSONDecodeError:
-                    data = None
-            else:
-                data = None
-
-        if data is None:
-            # Fallback: treat whole output as a Think action (if present) or empty
-            logger.warning("LLM output not JSON; treating as Think")
-            think_cls = self._tool_registry.get("Think")
-            if think_cls is not None:
-                return [think_cls(text=raw[:500])]
-            return []
-
-        if not isinstance(data, list):
-            data = [data]  # single object → wrap
-
-        # Instantiate pydantic action classes
-        actions: list[BaseModel] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            # Accept both "action" (canonical) and "type" (scaffolding template compat)
-            kind = item.get("action") or item.get("type")
-            if not kind:
-                continue
-            action_cls = self._tool_registry.get(kind)
-            if action_cls is None:
-                logger.warning("unknown action: %s", kind)
-                continue
-            discriminator_key = "action" if "action" in item else "type"
-            args = {k: v for k, v in item.items() if k != discriminator_key}
-            try:
-                actions.append(action_cls(**args))
-            except ValidationError as e:
-                logger.warning("action validation failed for %s: %s", kind, e)
-        return actions
+            tool = tool_cls(**arguments)
+        except ValidationError as e:
+            logger.warning("tool validation failed for %s: %s", name, e)
+            return
+        try:
+            await tool.run(self._ctx)
+        except Exception:
+            logger.exception("tool %s failed", name)
 
     def shutdown(self) -> None:
         """Signal the loop to stop. Unblocks any pending drain()."""

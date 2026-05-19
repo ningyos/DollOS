@@ -196,16 +196,3 @@ async def _drain(sink: asyncio.Queue) -> list:
     return items  # pragma: no cover
 
 
-def _think_with_mood(mood: str, tool_text: str = "ok") -> str:
-    """Build an assistant emit containing a <think> block with a MOOD line
-    and a Say tool call."""
-    return (
-        "<think>\n"
-        "SEEN: 主人說了 hi\n"
-        "INTENT: 打招呼\n"
-        "REVIEW: first attempt\n"
-        f"MOOD: {mood}\n"
-        "TOOL: Say\n"
-        "</think>\n\n"
-        f'<tool_call>{{"name":"Say","arguments":{{"text":"{tool_text}"}}}}</tool_call>'
-    )
