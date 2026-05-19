@@ -78,11 +78,9 @@ TOOL: (next action — "speak", a tool name, or "none")
 (more spoken text if you have more to say)
 ```
 
-You may interleave speak and tool_call segments freely. **For this
-milestone, prefer putting your spoken text as a single block at the
-end of your turn** — the voice pipeline doesn't yet serialize multiple
-speak segments, so two back-to-back speaks can play over each other.
-(Temporary restriction; Plan 2 fixes it.)
+You may interleave speak and tool_call segments freely. Each sentence is
+streamed to TTS as a separate text_chunk and played strictly in order, so
+breaking up long replies with tool actions in the middle is fine.
 
 Concrete example — user says "幫我記下：明天要吃早餐":
 
