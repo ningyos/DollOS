@@ -24,6 +24,7 @@ from dollos.mind.mind_state import (
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
+from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class MindLoop:
         tool_registry: dict[str, type[BaseModel]] | None = None,
         system_pulse: Any = None,
         cognition: Any = None,
+        wal: PerceptionWAL | None = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -64,6 +66,7 @@ class MindLoop:
         self._tool_registry = tool_registry or {}
         self._system_pulse = system_pulse
         self._cognition = cognition
+        self._wal = wal
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
 
@@ -148,6 +151,17 @@ class MindLoop:
         self._state.iter_count += 1
         self._state.last_iter_at = time.time()
         save_state(self._state, self._persist_path)
+
+        # Truncate WAL through the highest seq among consumed perceptions.
+        # After save_state succeeds, the state durably reflects these perceptions,
+        # so they no longer need to be replayed on next startup.
+        if self._wal is not None and perceptions:
+            last_seq = max(
+                (p.seq for p in perceptions if p.seq is not None),
+                default=None,
+            )
+            if last_seq is not None:
+                self._wal.truncate_through(last_seq)
 
     async def _derive_memory_hits(self) -> list[dict]:
         """Query memsearch from the most recent UserSpoke or last 3 perceptions."""
