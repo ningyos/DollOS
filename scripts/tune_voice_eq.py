@@ -24,21 +24,10 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly, stft
 
+from dollos.voice_eval.synth_driver import TEST_CORPUS
+
 
 REPO = Path(__file__).resolve().parent.parent
-
-TEST_CORPUS = [
-    "Okay so let me tell you what happened today.",
-    "Hey, look at my hat. Isn't it beautiful?",
-    "Wait, why would you even do that? That makes zero sense.",
-    "Dude this is actually crazy, like genuinely insane.",
-    "I had the weirdest dream last night, you would not believe it.",
-    "Stop, stop, stop. We are not doing that today.",
-    "I genuinely cannot believe people are still arguing about this on Twitter.",
-    "Hold on, that sentence was about to be weird.",
-    "Honestly, I think I might just go to bed early tonight.",
-    "Oh my god, did you see what they posted? I cannot.",
-]
 
 N_BANDS = 16
 FMIN = 80.0
