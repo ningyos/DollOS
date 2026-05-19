@@ -332,3 +332,30 @@ def test_mind_actions_grammar_action_call_rule_structure():
     assert action_call_line is not None, "action-call rule not found"
     # Must reference action-name rule (not inline literal list)
     assert "action-name" in action_call_line
+
+
+def test_voice_first_grammar_smoke():
+    from dollos.tools import NoteMemory
+    from dollos.llm.templates import build_voice_first_grammar
+    g = build_voice_first_grammar([NoteMemory])
+    assert "root ::=" in g
+    assert "</think>" in g
+    assert "<tool_call>" in g
+    assert "NoteMemory" in g
+    assert "segments" in g
+
+
+def test_voice_first_grammar_rejects_empty_tools():
+    from dollos.llm.templates import build_voice_first_grammar
+    import pytest
+    with pytest.raises(ValueError):
+        build_voice_first_grammar([])
+
+
+def test_voice_first_grammar_accepts_silent_finish():
+    """Grammar must permit think then zero segments (silent turn)."""
+    from dollos.tools import NoteMemory
+    from dollos.llm.templates import build_voice_first_grammar
+    g = build_voice_first_grammar([NoteMemory])
+    # segments ::= segment* means zero allowed
+    assert "segment*" in g
