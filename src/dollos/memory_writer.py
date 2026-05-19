@@ -3,7 +3,7 @@
 These helpers append role-tagged turn lines to the daily transcript
 markdown and trigger memsearch index_file. Used by:
   - EventDispatcher (user turn) → role="user"
-  - Say.run() (Doll turn)        → role="doll"
+  - mind_loop (Doll turn naked text segments) → role="doll"
 
 Transcripts are ephemeral and indexed for same-day recall; they live in
 data/memory/transcripts/{date}.md (a separate path from shared LT memory).
