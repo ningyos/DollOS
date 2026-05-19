@@ -6,7 +6,7 @@ import pytest
 
 from dollos.mind.mind_state import (
     MindState, Mood, ActiveTask, OpenLoop, PendingEvent,
-    Perception, OutputRecord, Thought,
+    Perception, OutputRecord,
 )
 from dollos.mind.mind_prompt import render_mind
 
@@ -25,7 +25,6 @@ def test_renders_all_blocks_in_order():
         "[Scratchpad]",
         "[Recent perceptions]",
         "[Recent outputs]",
-        "[Recent thoughts]",
         "[Decision time]",
     ]
     last_idx = -1

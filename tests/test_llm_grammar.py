@@ -14,7 +14,7 @@ from dollos.tools import MAIN_TOOLS as TOOLS
 
 # Action names used by the MindLoop experiment (actions.py _VALID_KINDS).
 _MIND_ACTIONS = [
-    "Say", "Think", "SetFocus", "OpenLoop", "CloseLoop",
+    "Say", "SetFocus", "OpenLoop", "CloseLoop",
     "Dispatch",
 ]
 
@@ -77,7 +77,6 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "OpenLoop": "open-loop-call",
         "CloseLoop": "close-loop-call",
         "MoodTool": "mood-tool-call",
-        "Think": "think-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]
@@ -291,8 +290,8 @@ def test_mind_actions_grammar_ws_rule_present():
 
 def test_mind_actions_grammar_single_action_subset():
     """Grammar builds correctly for a minimal one-action list."""
-    g = build_mind_actions_grammar(["Think"])
-    assert '"Think"' in g
+    g = build_mind_actions_grammar(["Say"])
+    assert '"Say"' in g
     assert "root ::= mind-actions\n" in g
 
 

@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from dollos.ipc.messages import ServerMessage
 from dollos.mind import scratchpad_helpers
-from dollos.mind.mind_state import OutputRecord, Thought
+from dollos.mind.mind_state import OutputRecord
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -298,9 +298,6 @@ class Recall(BaseModel):
             result = "[no relevant memory]"
         else:
             result = "\n".join(_format_hit(h) for h in hits)
-        ctx.mind_state.recent_thoughts.append(
-            Thought(t=time.time(), text=f"Recall({self.query!r}): {result[:200]}")
-        )
         _record(ctx, "Recall", self._summary())
         return result
 
@@ -749,22 +746,6 @@ class CloseLoop(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class Think(BaseModel):
-    """Internal thought; appended to recent_thoughts, not externalized."""
-
-    text: str = Field(..., description="internal thought (≤500 chars)")
-
-    def _summary(self) -> str:
-        return f"Thought: {self.text[:60]}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        ctx.mind_state.recent_thoughts.append(
-            Thought(t=time.time(), text=self.text[:500])
-        )
-        _record(ctx, "Think", self._summary())
-        return "thought recorded"
-
-
 class MoodTool(BaseModel):
     """Update Doll's current emotional state.
 
@@ -799,12 +780,12 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
     SetFocus, OpenLoop, CloseLoop,
-    MoodTool, Think,
+    MoodTool,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
-    SetFocus, OpenLoop, CloseLoop, Think,
+    SetFocus, OpenLoop, CloseLoop,
 ]
