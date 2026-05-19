@@ -136,3 +136,25 @@ def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
     assert prompt.rstrip().endswith("0..N actions.") or "JSON array" in prompt[prompt.rfind("[Decision time]"):]
+
+
+def test_interrupted_perception_rendered():
+    import time
+    from dollos.mind.mind_state import Perception
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(kind="Interrupted", t=time.time(), data={"by": "user_text_input"})
+    body = _percep_body(p)
+    assert "cut short" in body.lower() or "interrupt" in body.lower()
+    assert "user" in body.lower()
+
+
+def test_interrupted_perception_fallback_by():
+    """If `by` is missing, default to 'user'."""
+    import time
+    from dollos.mind.mind_state import Perception
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(kind="Interrupted", t=time.time(), data={})
+    body = _percep_body(p)
+    assert "user" in body.lower()
