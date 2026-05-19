@@ -158,3 +158,24 @@ def test_interrupted_perception_fallback_by():
     p = Perception(kind="Interrupted", t=time.time(), data={})
     body = _percep_body(p)
     assert "user" in body.lower()
+
+
+def test_awoke_recovered_renders_distinctly():
+    import time
+    from dollos.mind.mind_state import Perception
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(kind="Awoke", t=time.time(), data={"reason": "recovered"})
+    body = _percep_body(p)
+    assert "recover" in body.lower() or "crash" in body.lower()
+
+
+def test_awoke_cold_start_unchanged():
+    """Existing cold_start rendering preserved."""
+    import time
+    from dollos.mind.mind_state import Perception
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(kind="Awoke", t=time.time(), data={"reason": "cold_start"})
+    body = _percep_body(p)
+    assert "cold_start" in body

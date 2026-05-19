@@ -162,7 +162,10 @@ def _percep_body(p) -> str:
     if p.kind == "ScheduledMoment":
         return d.get("text", "")[:200]
     if p.kind == "Awoke":
-        return f"reason={d.get('reason', '?')}"
+        reason = d.get("reason", "?")
+        if reason == "recovered":
+            return "the daemon just recovered from a crash — your previous in-flight thoughts may be partial or lost"
+        return f"reason={reason}"
     if p.kind == "ReflectionMoment":
         return f"(time to reflect — review recent activity and NoteMemory anything worth keeping; {d.get('iters_since_last', '?')} iters since last)"
     if p.kind == "Interrupted":
