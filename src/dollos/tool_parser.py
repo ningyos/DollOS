@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 
 OPEN = "<tool_call>"
 CLOSE = "</tool_call>"
+THINK_CLOSE = "</think>"
 
 
 class _State(Enum):
     OUTSIDE = auto()
     INSIDE = auto()
+    IN_THINK = auto()  # voice_mode only — initial state, content discarded
 
 
 class ToolStreamParser:
@@ -51,10 +53,12 @@ class ToolStreamParser:
     """
 
     def __init__(self, voice_mode: bool = False) -> None:
-        self._state = _State.OUTSIDE
+        self._voice_mode = voice_mode
+        # voice_mode starts inside the think block (the qwen3-thinking template
+        # prefills <think>, so the LLM stream begins inside it).
+        self._state = _State.IN_THINK if voice_mode else _State.OUTSIDE
         self._buf = ""           # rolling tail; may hold split markers
         self._inside_buf = ""    # accumulated JSON between markers
-        self._voice_mode = voice_mode
 
     def feed(self, chunk: str):
         """Process a chunk.
@@ -114,6 +118,24 @@ class ToolStreamParser:
 
     def _feed_voice(self):
         while True:
+            if self._state is _State.IN_THINK:
+                i = self._buf.find(THINK_CLOSE)
+                if i == -1:
+                    # No close yet. Hold back len(THINK_CLOSE)-1 for lookahead.
+                    safe = max(0, len(self._buf) - (len(THINK_CLOSE) - 1))
+                    if safe > 0:
+                        # Discard the discardable prefix.
+                        self._buf = self._buf[safe:]
+                    return
+                # Found close. Discard everything up to and including it.
+                end = i + len(THINK_CLOSE)
+                # Also consume any immediately-following newlines (grammar emits "\n\n").
+                while end < len(self._buf) and self._buf[end] == "\n":
+                    end += 1
+                self._buf = self._buf[end:]
+                self._state = _State.OUTSIDE
+                # Loop back; remainder of buf flows into OUTSIDE branch.
+                continue
             if self._state is _State.OUTSIDE:
                 i = self._buf.find(OPEN)
                 if i == -1:
@@ -181,6 +203,16 @@ class ToolStreamParser:
         return []
 
     def _flush_voice(self):
+        if self._state is _State.IN_THINK:
+            # Stream ended mid-think. Discard remaining buf; never closed.
+            if self._buf:
+                logger.warning(
+                    "voice flush still in IN_THINK; discarded %d chars of think content",
+                    len(self._buf),
+                )
+                self._buf = ""
+            self._state = _State.OUTSIDE
+            return
         if self._state is _State.OUTSIDE:
             if self._buf:
                 yield SpeakChunk(text=self._buf)
