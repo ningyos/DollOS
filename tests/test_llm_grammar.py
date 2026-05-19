@@ -58,7 +58,6 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
     g = build_qwen3_think_tool_grammar(TOOLS)
     # Per-tool rule ids: ToolName -> tool-name-call
     expected_rule_ids = {
-        "Say": "say-call",
         "NoteMemory": "note-memory-call",
         "WriteDiary": "write-diary-call",
         "WriteSchedule": "write-schedule-call",
@@ -97,7 +96,7 @@ def test_grammar_per_tool_field_names_match_required_strings():
     """
     g = build_qwen3_think_tool_grammar(TOOLS)
     # Required string fields per tool (current TOOLS definitions):
-    assert r'\"text\":' in g  # Say + NoteMemory both use "text"
+    assert r'\"text\":' in g  # NoteMemory uses "text"
     assert r'\"content\":' in g  # WriteDiary
     assert r'\"command\":' in g  # Shell
     assert r'\"name\":' in g  # InvokeSkill (and the envelope "name")
