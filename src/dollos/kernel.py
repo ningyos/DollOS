@@ -166,6 +166,7 @@ class _MindLLMAdapter:
         prefill: str = "",
         max_tokens: int = 1024,
         grammar: str | None = None,
+        purpose: str = "cascade",
     ):
         async for chunk in self._adapter.stream_completion(
             system=system,
@@ -173,6 +174,7 @@ class _MindLLMAdapter:
             prefill=prefill,
             max_tokens=max_tokens,
             grammar=grammar,
+            purpose=purpose,
         ):
             yield chunk
 
