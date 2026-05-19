@@ -18,7 +18,7 @@ class _FakeLLM:
         self._returns = returns
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
     ):
         class _Chunk:
             def __init__(self, text, done):
@@ -328,3 +328,90 @@ async def test_shutdown_stops_run(tmp_path):
     loop.shutdown()
     await asyncio.wait_for(loop.run(), timeout=1.0)
     assert state.iter_count == 0
+
+
+def _make_mind_loop(tmp_path=None, llm=None):
+    """Build a MindLoop with sensible defaults for cancel tests."""
+    import tempfile
+    from pathlib import Path
+
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    if tmp_path is None:
+        tmp_path = Path(tempfile.mkdtemp())
+    state = MindState()
+    queue = PerceptionQueue()
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    ctx = _make_mind_ctx(tmp_path, state=state)
+    if llm is None:
+        llm = _FakeLLM(
+            "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\nhi"
+        )
+    return MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=llm,
+        system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+
+@pytest.mark.asyncio
+async def test_is_cascade_active_false_when_idle(tmp_path):
+    """No active cascade → is_cascade_active is False."""
+    loop = _make_mind_loop(tmp_path)
+    assert loop.is_cascade_active is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_when_idle_is_noop(tmp_path):
+    """Calling cancel_current_cascade with no active cascade doesn't raise."""
+    loop = _make_mind_loop(tmp_path)
+    loop.cancel_current_cascade()  # should not raise
+    assert loop.is_cascade_active is False
+
+
+class _SlowFakeLLM:
+    """Yields many text chunks with delay between each."""
+
+    def __init__(self, chunks: list[str], delay: float):
+        self._chunks = chunks
+        self._delay = delay
+        self.consumed = 0
+
+    async def stream_completion(
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+    ):
+        class _Chunk:
+            def __init__(self, text, done):
+                self.text = text
+                self.done = done
+
+        # Emit </think> first so the parser starts producing SpeakChunks
+        yield _Chunk(text="</think>\n\n", done=False)
+        self.consumed += 1
+        for i, txt in enumerate(self._chunks):
+            await asyncio.sleep(self._delay)
+            yield _Chunk(text=txt, done=(i == len(self._chunks) - 1))
+            self.consumed += 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_mid_stream_exits_iterate_cleanly(tmp_path):
+    """When cancel is set mid-stream, _llm_iterate returns within ~one chunk window."""
+    chunks = [f"chunk{i} " for i in range(10)]
+    slow_llm = _SlowFakeLLM(chunks, delay=0.1)
+    loop = _make_mind_loop(tmp_path, llm=slow_llm)
+
+    task = asyncio.create_task(loop._llm_iterate("prompt"))
+    await asyncio.sleep(0.15)
+    assert loop.is_cascade_active is True
+    loop.cancel_current_cascade()
+    await asyncio.wait_for(task, timeout=0.4)
+    # After return, ctx is cleared
+    assert loop.is_cascade_active is False
+    # Not all 10 chunks consumed (proof of early exit)
+    assert slow_llm.consumed < len(chunks) + 1
