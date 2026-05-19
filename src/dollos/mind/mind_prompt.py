@@ -174,21 +174,21 @@ def _percep_body(p) -> str:
 def _render_outputs_header(outs, now: float) -> str:
     """Render the [Recent outputs] section header.
 
-    If the most recent output was a Say within the last 30 seconds, inject an
-    inline WARNING nudge so the model has a concrete signal not to say again.
+    If the most recent output was a Speech within the last 30 seconds, inject an
+    inline WARNING nudge so the model has a concrete signal not to speak again.
     """
     base = "[Recent outputs] (what you did recently — avoid repeating the same content)"
     if not outs:
         return base
     last = list(outs)[-1]
-    if last.kind == "Say":
+    if last.kind == "Speech":
         age_s = now - last.t
         if age_s < 30:
-            snippet = last.summary[len("said: "):60] if last.summary.startswith("said: ") else last.summary[:60]
+            snippet = last.summary[len("spoke: "):60] if last.summary.startswith("spoke: ") else last.summary[:60]
             return (
                 f"{base}\n"
                 f"⚠ WARNING: you just spoke {age_s:.0f}s ago ('{snippet}…'). "
-                f"Do NOT Say a similar message again. If there is nothing new to add, output an empty action array []."
+                f"Don't repeat yourself — if there's nothing new to say, stay silent (no text outside tool_call)."
             )
     return base
 
