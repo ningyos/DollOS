@@ -38,8 +38,17 @@ class UtteranceEnd(BaseModel):
     type: Literal["utterance_end"] = "utterance_end"
 
 
+class Interrupt(BaseModel):
+    """User explicitly requests cancellation (without new TextInput).
+
+    Also implicitly triggered by sending a new TextInput while a cascade
+    is active — see kernel._handle_message.
+    """
+    type: Literal["interrupt"] = "interrupt"
+
+
 ClientMessage = Annotated[
-    TextInput | WebRTCOfferIn | ICECandidateIn | UtteranceStart | UtteranceEnd,
+    TextInput | Interrupt | WebRTCOfferIn | ICECandidateIn | UtteranceStart | UtteranceEnd,
     Field(discriminator="type"),
 ]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(ClientMessage)
@@ -87,8 +96,18 @@ class ICECandidateOut(BaseModel):
     sdpMLineIndex: int | None = None
 
 
+class SayAborted(BaseModel):
+    """Server tells client the active TTS stream was cancelled.
+
+    Sent when a cascade is preempted by a new TextInput or explicit Interrupt.
+    Client should clear any visual cues / audio buffer indicators.
+    """
+    type: Literal["say_aborted"] = "say_aborted"
+    reason: str = "user_interrupted"
+
+
 ServerMessage = Annotated[
-    TextChunk | TurnEnd | ErrorMsg | WebRTCAnswerOut | ICECandidateOut,
+    TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut,
     Field(discriminator="type"),
 ]
 

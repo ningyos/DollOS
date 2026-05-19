@@ -110,3 +110,105 @@ async def test_speak_worker_continues_after_error():
         await session._stop_speak_worker()
 
     assert tts.calls == ["first", "boom", "after"]
+
+
+@pytest.mark.asyncio
+async def test_abort_speak_drains_queue_and_cancels_current():
+    """Abort cancels the active synth + drops the rest of the queue."""
+    from dollos.voice.session import VoiceSession
+
+    tts = _FakeTTS(delay_s=0.5)  # synth takes 500ms — long enough to interrupt
+    session = VoiceSession.__new__(VoiceSession)
+    session._tts = tts
+    session._outbound_track = None
+    session._is_open = True
+    session._speak_queue = asyncio.Queue()
+    session._speak_worker_task = None
+
+    await session.enqueue_speak("first")
+    await session.enqueue_speak("second")
+    await session.enqueue_speak("third")
+    await asyncio.sleep(0.1)  # let worker start the first synth
+
+    await session.abort_speak()
+
+    # After abort, queue empty, no further calls happen
+    await asyncio.sleep(0.6)
+    assert tts.calls == ["first"]
+    assert session._speak_queue.qsize() == 0
+    assert session._speak_worker_task is None or session._speak_worker_task.done()
+
+
+@pytest.mark.asyncio
+async def test_abort_speak_when_idle_is_noop():
+    from dollos.voice.session import VoiceSession
+    session = VoiceSession.__new__(VoiceSession)
+    session._tts = _FakeTTS()
+    session._outbound_track = None
+    session._is_open = True
+    session._speak_queue = asyncio.Queue()
+    session._speak_worker_task = None
+    # No worker started yet
+    await session.abort_speak()  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_speak_after_abort_works():
+    """After abort, a new enqueue_speak resumes normally."""
+    from dollos.voice.session import VoiceSession
+    tts = _FakeTTS(delay_s=0.05)
+    session = VoiceSession.__new__(VoiceSession)
+    session._tts = tts
+    session._outbound_track = None
+    session._is_open = True
+    session._speak_queue = asyncio.Queue()
+    session._speak_worker_task = None
+
+    await session.enqueue_speak("one")
+    await asyncio.sleep(0.02)
+    await session.abort_speak()
+
+    await session.enqueue_speak("after")
+    await session.wait_speak_idle(timeout_s=2.0)
+    assert "after" in tts.calls
+
+
+@pytest.mark.asyncio
+async def test_abort_speak_caps_wait_on_uncancellable_tts():
+    """If a TTS engine ignores CancelledError, abort_speak still returns within ~2s."""
+    import time
+    from dollos.voice.session import VoiceSession
+
+    class _StubbornTTS:
+        """A TTS that ignores cancellation — sleeps without await points."""
+        sample_rate = 16000
+
+        async def synthesize(self, text: str):
+            # Simulate a tight loop / blocking GPU call by sleeping in a
+            # protected block. Real GPU ops wouldn't propagate CancelledError
+            # synchronously either.
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                # Engine misbehaves: catches cancel and continues.
+                await asyncio.sleep(3.0)
+            yield b""
+
+        async def aclose(self):
+            pass
+
+    session = VoiceSession.__new__(VoiceSession)
+    session._tts = _StubbornTTS()
+    session._outbound_track = None
+    session._is_open = True
+    session._speak_queue = asyncio.Queue()
+    session._speak_worker_task = None
+
+    await session.enqueue_speak("stubborn")
+    await asyncio.sleep(0.1)
+
+    t0 = time.monotonic()
+    await session.abort_speak()
+    elapsed = time.monotonic() - t0
+    # abort_speak's wait_for cap is 2s; allow ~0.3s slack
+    assert elapsed < 2.5, f"abort_speak took {elapsed:.2f}s, expected ≤2s"

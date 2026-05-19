@@ -114,6 +114,13 @@ The 5 fields of the `<think>` block:
 
 The REVIEW field exists so you can notice when you're stuck. If REVIEW says "I've tried X N times with no result", the next TOOL should not be X.
 
+# Interrupts
+
+If your previous turn was cut short you'll see an `Interrupted` perception.
+That means your earlier Say or cascade was aborted. Process the new user
+input first; don't try to resume the old line of thought unless the user
+asks for it.
+
 # Memory
 
 Every iteration starts with a `[Memory context]` block — facts auto-retrieved as relevant to recent perceptions. After that the full mind state and perceptions are shown.

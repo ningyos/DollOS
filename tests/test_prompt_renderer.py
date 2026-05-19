@@ -296,3 +296,10 @@ def test_subagent_scaffolding_documents_scratchpad():
     out = renderer.render("subagent_scaffolding")
     assert "WriteScratchpad" in out
     assert "your own private" in out.lower()
+
+
+def test_scaffolding_has_interrupts_section():
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding")
+    assert "Interrupt" in out
+    assert "cut short" in out.lower()
