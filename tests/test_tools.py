@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from dollos.ipc.messages import TextChunk
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_state import MindState, Mood
 from dollos.mind.sink_resolver import SinkResolver
@@ -24,7 +23,6 @@ from dollos.tools import (
     NoteMemory,
     ReadToolOutput,
     Recall,
-    Say,
     Shell,
     WriteDiary,
     WriteScratchpad,
@@ -109,31 +107,13 @@ def _make_ctx(
     return ctx, ms, sink
 
 
-def test_say_schema_has_text_field():
-    schema = Say.model_json_schema()
-    assert "text" in schema["properties"]
-    assert schema["properties"]["text"]["type"] == "string"
-
-
 def test_note_memory_schema_has_text_field():
     schema = NoteMemory.model_json_schema()
     assert "text" in schema["properties"]
 
 
-def test_tools_list_contains_both():
-    assert Say in MAIN_TOOLS
+def test_tools_list_contains_note_memory():
     assert NoteMemory in MAIN_TOOLS
-
-
-@pytest.mark.asyncio
-async def test_say_run_pushes_text_chunk(tmp_path):
-    ctx, _ms, sink = _make_ctx(tmp_path)
-    say = Say(text="你好")
-    await say.run(ctx)
-
-    msg = sink.get_nowait()
-    assert isinstance(msg, TextChunk)
-    assert msg.text == "你好"
 
 
 @pytest.mark.asyncio
@@ -200,25 +180,6 @@ def test_write_diary_schema_has_content_field():
 
 def test_write_diary_in_tools_list():
     assert WriteDiary in MAIN_TOOLS
-
-
-@pytest.mark.asyncio
-async def test_say_run_also_appends_to_transcript(tmp_path):
-    sink: asyncio.Queue = asyncio.Queue()
-    transcripts_root = tmp_path / "transcripts"
-    ctx, ms, _ = _make_ctx(tmp_path, sink=sink)
-    ctx.transcripts_root = transcripts_root
-    await Say(text="hello").run(ctx)
-
-    msg = sink.get_nowait()
-    assert isinstance(msg, TextChunk) and msg.text == "hello"
-
-    expected = transcripts_root / f"{date.today():%Y-%m-%d}.md"
-    assert expected.exists()
-    content = expected.read_text()
-    assert "我說：hello" in content
-    # Say writes to transcript; NoteMemory writes to shared.
-    assert any(Path(p) == expected for p in ms.indexed)
 
 
 def test_shell_in_tools_list():
@@ -558,11 +519,10 @@ def test_main_tools_includes_spawn_subagent_not_report():
     assert Report not in MAIN_TOOLS
 
 
-def test_sub_tools_includes_report_not_say_or_spawn():
-    from dollos.tools import SUB_TOOLS, Report, Say, SpawnSubagent
+def test_sub_tools_includes_report_not_spawn():
+    from dollos.tools import SUB_TOOLS, Report, SpawnSubagent
 
     assert Report in SUB_TOOLS
-    assert Say not in SUB_TOOLS
     assert SpawnSubagent not in SUB_TOOLS
 
 
@@ -947,19 +907,6 @@ def test_mood_tool_in_main_tools():
 
 
 @pytest.mark.asyncio
-async def test_say_appends_output_record(tmp_path):
-    state = MindState()
-    ctx, _ms, sink = _make_ctx(tmp_path, state=state)
-    assert len(state.recent_outputs) == 0
-    await Say(text="hello").run(ctx)
-    assert len(state.recent_outputs) == 1
-    rec = state.recent_outputs[0]
-    assert rec.kind == "Say"
-    assert "hello" in rec.summary
-    assert rec.t > 0
-
-
-@pytest.mark.asyncio
 async def test_note_memory_appends_output_record(tmp_path):
     state = MindState()
     ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
@@ -969,15 +916,13 @@ async def test_note_memory_appends_output_record(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_recall_appends_output_record_and_thought(tmp_path):
+async def test_recall_appends_output_record(tmp_path):
     state = MindState()
     ctx = _ctx_with_search(tmp_path, hits=[{"content": "x", "source": "a.md"}])
     ctx.mind_state = state
     await Recall(query="test").run(ctx)
     assert len(state.recent_outputs) == 1
     assert state.recent_outputs[0].kind == "Recall"
-    assert len(state.recent_thoughts) == 1
-    assert "test" in state.recent_thoughts[0].text
 
 
 @pytest.mark.asyncio

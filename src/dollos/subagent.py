@@ -1,7 +1,7 @@
 """SubagentRunner — spawn ephemeral worker tasks; result re-enters perception queue.
 
 A subagent is a one-shot asyncio.Task with its own minimal sub-cascade
-(SUB_TOOLS, no character, no memory context block, no Say). It MUST call
+(SUB_TOOLS, no character, no memory context block, no naked-text output). It MUST call
 the `Report` tool to terminate — Report.run side-effects the structured
 outcome onto its ctx, and SubagentRunner converts that into a
 Perception("ToolResultArrived") enqueued into PerceptionQueue.
@@ -222,7 +222,11 @@ class SubagentRunner:
         """Run the sub-cascade. Returns Report args dict, or None if Report
         never called (cascade ended naturally / stuck-tool abort)."""
         grammar = build_qwen3_think_tool_grammar(SUB_TOOLS)
-        system = self._renderer.render("subagent_scaffolding")
+        sub_tool_registry = {cls.__name__: cls for cls in SUB_TOOLS}
+        system = self._renderer.render(
+            "subagent_scaffolding",
+            tool_registry=sub_tool_registry,
+        )
         messages: list[dict] = [{"role": "user", "content": task}]
 
         # Build a fresh MindState for this subagent — private scratchpad,
@@ -237,7 +241,7 @@ class SubagentRunner:
             memsearch=self._memsearch,
             memory_root=self._memory_root,
             transcripts_root=self._transcripts_root,
-            sink_resolver=_dummy_resolver,   # subagent never Says
+            sink_resolver=_dummy_resolver,   # subagent never speaks to user
             tool_output_store=self._tool_output_store,
             shell_runner=self._shell_runner,
             subagent_runner=None,            # no recursion

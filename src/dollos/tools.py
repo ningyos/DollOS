@@ -1,8 +1,9 @@
 """Tool definitions — pydantic models with run() methods.
 
-Step 6 minimal: two tools (Say, NoteMemory). Tool = BaseModel; args are
-fields; description = docstring; schema = model_json_schema(); execution
-= run(ctx). Single source of truth per tool.
+Tool = BaseModel; args are fields; description = docstring; schema =
+model_json_schema(); execution = run(ctx). Single source of truth per
+tool. (Voice-first output: Doll speaks via naked text streamed from
+mind_loop; there is no Say tool.)
 
 Future: step 7 adds reflex (whitelist via class attribute), step 9 adds
 spawn_subagent (fast=False async pattern). For now no permission /
@@ -23,10 +24,9 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from dollos.ipc.messages import ServerMessage, TextChunk
-from dollos.memory_writer import append_transcript
+from dollos.ipc.messages import ServerMessage
 from dollos.mind import scratchpad_helpers
-from dollos.mind.mind_state import OutputRecord, Thought
+from dollos.mind.mind_state import OutputRecord
 
 if TYPE_CHECKING:
     from memsearch import MemSearch
@@ -109,31 +109,6 @@ class ToolCtx:
 # ---------------------------------------------------------------------------
 # Tools — all run(ctx: MindCtx)
 # ---------------------------------------------------------------------------
-
-
-class Say(BaseModel):
-    """Stream text to the user. Call this whenever Doll wants to speak."""
-
-    text: str = Field(description="What Doll says to the user.")
-
-    def _summary(self) -> str:
-        return f"said: {self.text[:77]}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        sink = ctx.sink_resolver()
-        sink.put_nowait(TextChunk(text=self.text))
-        try:
-            await append_transcript(
-                transcripts_root=ctx.transcripts_root,
-                memsearch=ctx.memsearch,
-                role="doll",
-                text=self.text,
-            )
-        except Exception:
-            logger.exception("transcript append failed for Say")
-        result = f"said: {self.text[:60]}"
-        _record(ctx, "Say", self._summary())
-        return result
 
 
 class NoteMemory(BaseModel):
@@ -272,7 +247,7 @@ class InvokeSkill(BaseModel):
             return (
                 f"Skill '{self.name}' 不存在。"
                 f"目前可用 skills: {available}\n"
-                f"建議：用 Shell 動手做 / Say 直接回答 / 用 Recall 找其他相關記憶。"
+                f"建議：用 Shell 動手做 / 直接用語音回答 / 用 Recall 找其他相關記憶。"
                 f"不要再猜其他 skill 名字。"
             )
         _record(ctx, "InvokeSkill", self._summary())
@@ -323,9 +298,6 @@ class Recall(BaseModel):
             result = "[no relevant memory]"
         else:
             result = "\n".join(_format_hit(h) for h in hits)
-        ctx.mind_state.recent_thoughts.append(
-            Thought(t=time.time(), text=f"Recall({self.query!r}): {result[:200]}")
-        )
         _record(ctx, "Recall", self._summary())
         return result
 
@@ -774,22 +746,6 @@ class CloseLoop(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class Think(BaseModel):
-    """Internal thought; appended to recent_thoughts, not externalized."""
-
-    text: str = Field(..., description="internal thought (≤500 chars)")
-
-    def _summary(self) -> str:
-        return f"Thought: {self.text[:60]}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        ctx.mind_state.recent_thoughts.append(
-            Thought(t=time.time(), text=self.text[:500])
-        )
-        _record(ctx, "Think", self._summary())
-        return "thought recorded"
-
-
 class MoodTool(BaseModel):
     """Update Doll's current emotional state.
 
@@ -819,17 +775,17 @@ class MoodTool(BaseModel):
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
-    Say, NoteMemory, WriteDiary, WriteSchedule, Shell,
+    NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
     SetFocus, OpenLoop, CloseLoop,
-    MoodTool, Think,
+    MoodTool,
 ]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
     WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
-    SetFocus, OpenLoop, CloseLoop, Think,
+    SetFocus, OpenLoop, CloseLoop,
 ]

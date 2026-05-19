@@ -241,13 +241,14 @@ class DollOS:
             available_skills = sorted(p.stem for p in skills_dir.glob("*.md"))
         else:
             available_skills = []
+        tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+
         system_prompt = self.renderer.render(
             "scaffolding",
             identity=self._doll_pack.identity,
             available_skills=available_skills,
+            tool_registry=tool_registry,
         )
-
-        tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
 
         # Self pulse — Doll's proprioception of her host.
         self.system_pulse = SystemPulse(
