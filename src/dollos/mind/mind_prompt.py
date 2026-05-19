@@ -165,6 +165,9 @@ def _percep_body(p) -> str:
         return f"reason={d.get('reason', '?')}"
     if p.kind == "ReflectionMoment":
         return f"(time to reflect — review recent activity and NoteMemory anything worth keeping; {d.get('iters_since_last', '?')} iters since last)"
+    if p.kind == "Interrupted":
+        by = d.get("by", "user")
+        return f"your previous turn was cut short by {by}"
     return str(d)[:120]
 
 
