@@ -330,7 +330,7 @@ async def test_shutdown_stops_run(tmp_path):
     assert state.iter_count == 0
 
 
-def _make_mind_loop(tmp_path=None, llm=None):
+def _make_mind_loop(tmp_path=None, llm=None, queue=None, wal=None):
     """Build a MindLoop with sensible defaults for cancel tests."""
     import tempfile
     from pathlib import Path
@@ -341,7 +341,8 @@ def _make_mind_loop(tmp_path=None, llm=None):
     if tmp_path is None:
         tmp_path = Path(tempfile.mkdtemp())
     state = MindState()
-    queue = PerceptionQueue()
+    if queue is None:
+        queue = PerceptionQueue(wal=wal)
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
     if llm is None:
@@ -356,6 +357,7 @@ def _make_mind_loop(tmp_path=None, llm=None):
         system_prompt="SYS",
         state_persist_path=tmp_path / "mind_state.json",
         tool_registry=tool_registry,
+        wal=wal,
     )
 
 
@@ -415,3 +417,32 @@ async def test_cancel_mid_stream_exits_iterate_cleanly(tmp_path):
     assert loop.is_cascade_active is False
     # Not all 10 chunks consumed (proof of early exit)
     assert slow_llm.consumed < len(chunks) + 1
+
+
+@pytest.mark.asyncio
+async def test_iterate_truncates_wal_after_state_save(tmp_path):
+    """After iterate() persists mind_state, WAL is truncated through last consumed seq."""
+    from dollos.wal.perception_log import PerceptionWAL
+    from dollos.mind.perception_queue import PerceptionQueue
+    from dollos.mind.mind_state import Perception
+    import time
+
+    wal = PerceptionWAL(tmp_path / "wal.jsonl")
+    queue = PerceptionQueue(wal=wal)
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"}))
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "bye"}))
+
+    loop = _make_mind_loop(tmp_path, queue=queue, wal=wal)
+    await loop.iterate()
+
+    assert list(wal.iter_pending()) == []
+
+
+@pytest.mark.asyncio
+async def test_iterate_with_no_wal_unchanged(tmp_path):
+    """iterate() with wal=None still works (backwards compat)."""
+    from dollos.mind.mind_state import Perception
+    loop = _make_mind_loop(tmp_path)
+    # Put a perception so iterate() does real work
+    loop._queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    await loop.iterate()
