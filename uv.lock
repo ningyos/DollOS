@@ -715,6 +715,9 @@ qwen3 = [
     { name = "torch" },
     { name = "torchaudio" },
 ]
+voice-eval = [
+    { name = "transformers" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -760,9 +763,10 @@ requires-dist = [
     { name = "torchaudio", marker = "extra == 'eval'", specifier = ">=2.10,<2.12" },
     { name = "torchaudio", marker = "extra == 'fish'", specifier = ">=2.10,<2.12" },
     { name = "torchaudio", marker = "extra == 'qwen3'", specifier = ">=2.10,<2.12" },
+    { name = "transformers", marker = "extra == 'voice-eval'", specifier = ">=4.30" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["fish", "piper", "openai-tts", "qwen3", "eval", "gpu"]
+provides-extras = ["fish", "piper", "openai-tts", "qwen3", "eval", "voice-eval", "gpu"]
 
 [package.metadata.requires-dev]
 dev = [
