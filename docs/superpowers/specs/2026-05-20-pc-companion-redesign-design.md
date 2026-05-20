@@ -83,7 +83,7 @@ New deliverable. Tauri (Rust shell) + Web frontend with Cubism Web SDK rendering
 - Idle behavior when visible: breathing, occasional blink, optional look-at-cursor (Settings toggle, default on)
 - Does NOT track screen content. Look-at-cursor is local cursor coords only, never sent to daemon.
 - Click Live2D → activates voice input
-- Win/Mac get transparent overlay (click-through outside Live2D bounds); Linux gets a normal toplevel window (X/Wayland transparency is unreliable enough that "normal window" is the contract).
+- Win/Mac only. Transparent overlay (click-through outside Live2D bounds). Linux is out of scope — X/Wayland transparency / click-through is too unreliable to commit to, and the user base lives on Win/Mac.
 
 **Future**: "look at this region of my screen" — user can voice-command Doll to observe a screen region (e.g. cursor area). Triggers screen capture of that region only, sent to daemon as a one-shot Perception event. Out of scope this round; mention here so the IPC schema doesn't preclude it.
 
@@ -165,6 +165,7 @@ She can do all four tiers, but Tier 2 (mouse/keyboard simulation) is treated spe
 - Multi-user / household — single user
 - Calendar sync — future
 - Drone (persistent agent) — already planned separately
+- **Linux PC client** — Win/Mac only; the brain (daemon) still runs fine on Linux (NAS / home server case), but no Linux client UI
 
 ## Dependencies on existing work
 
@@ -182,7 +183,7 @@ This redesign does NOT depend on:
 - Tauri IPC bridge details (Rust ↔ Web ↔ daemon WS)
 - Cubism Web SDK licensing path (Live2D Cubism SDK has a free-tier license — verify before shipping)
 - BrainShell / HostShell tool split — naming, schema, how existing Shell call-sites migrate
-- Cross-platform actuator implementation (mouse/kbd sim, window mgmt) — likely needs a Rust crate per OS
+- Cross-platform actuator implementation (mouse/kbd sim, window mgmt) — Win + Mac only, likely one Rust crate per OS
 
 ## Success criteria
 
