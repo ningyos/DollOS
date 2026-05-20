@@ -44,6 +44,22 @@ Previous direction was muddy. Three concrete shifts:
 
 Client is identical in both cases. No "embedded" mode.
 
+### Critical architectural consequence — actuators move client-side
+
+Because the brain box can be a different machine from the PC, **all actuators that touch the user's PC must live in the client, not the daemon**:
+
+- File access on the user's PC — client-side tool (daemon calls `client.fs.read(path)` over WS)
+- Mouse/keyboard simulation — client-side only (NAS can't move PC's mouse)
+- Window management, app launch, OS notification — client-side only
+- Screen observation (future) — client-side only
+
+The daemon retains:
+- Its own filesystem (memory store, character packs, logs) — daemon-side
+- Network calls (web fetch) — daemon-side, no user-PC dependency
+- Subagent / shell against the daemon's own host — daemon-side (renamed from "Shell" to "BrainShell" to disambiguate)
+
+This means the existing daemon-side Shell tool needs to split into two tools: **BrainShell** (daemon's host) and **HostShell** (user's PC, via client). The client must implement these tools as IPC-callable actuators. This is a real restructure, not a cosmetic rename — implementation plan must own it.
+
 ## Components
 
 ### Daemon (no major changes from current architecture)
@@ -62,14 +78,14 @@ New deliverable. Tauri (Rust shell) + Web frontend with Cubism Web SDK rendering
 - Tray icon reflects state: idle / listening / talking / running-task
 
 **Live2D overlay**
-- Default: visible, transparent overlay at user-configured screen corner
-- Idle behavior: breathing, occasional blink, look at cursor — but does NOT track screen content
+- Two-state visibility: **visible** (overlay at user-configured screen corner) / **hidden**
+- Toggle via tray click, tray menu, or hotkey. State persists across sessions.
+- Idle behavior when visible: breathing, occasional blink, optional look-at-cursor (Settings toggle, default on)
+- Does NOT track screen content. Look-at-cursor is local cursor coords only, never sent to daemon.
 - Click Live2D → activates voice input
-- Display modes (configurable in Settings):
-  - **Always visible** (default) — overlay sits on top, never hides
-  - **Auto-hide on focus** — fades when another window is active
-  - **Hidden** — only appears when speaking or when summoned
 - Win/Mac get transparent overlay (click-through outside Live2D bounds); Linux gets a normal toplevel window (X/Wayland transparency is unreliable enough that "normal window" is the contract).
+
+**Future**: "look at this region of my screen" — user can voice-command Doll to observe a screen region (e.g. cursor area). Triggers screen capture of that region only, sent to daemon as a one-shot Perception event. Out of scope this round; mention here so the IPC schema doesn't preclude it.
 
 **Chat window**
 - Summoned via hotkey or tray menu — a single regular window, not an overlay
@@ -80,10 +96,12 @@ New deliverable. Tauri (Rust shell) + Web frontend with Cubism Web SDK rendering
 - Closing the window doesn't end the conversation; reopening shows the same transcript
 
 **Settings**
-- Display mode (3 modes above)
+- Default Live2D visibility on launch (visible / hidden)
+- Look-at-cursor (on / off)
 - Hotkeys (toggle visibility, summon chat, push-to-talk override)
 - Daemon connection (host:port, secret)
 - Task panel default (visible / silent)
+- Reply-window duration (default 3s)
 - Reminder voice (TTS engine selection — already in `.doll` pack)
 
 ### Voice I/O
@@ -92,9 +110,9 @@ New deliverable. Tauri (Rust shell) + Web frontend with Cubism Web SDK rendering
 
 **Endpoint**: VAD detects user pause → mic closes → turn submitted to daemon. User can also re-click Live2D mid-turn to force-close.
 
-**Mic default state**: OFF. Mic is hardware-gated to never run unless a click-to-talk or reply-window opened it. No KWS process. No "hot mic."
+**Mic default state**: OFF. The client only opens the OS audio capture stream when click-to-talk, push-to-talk, or a reply-window triggers it; it's closed again as soon as the turn ends. No KWS process. No "hot mic." (Software gate, not hardware — but the gate is the single code path that opens the stream, so there's no second way in.)
 
-**Proactive-speech reply window**: when Doll opens her mouth on her own (reminder, scheduled trigger, task interrupt for consent), her TTS finishes → mic auto-opens for N seconds (default 5s, configurable) → if user says nothing, mic closes. If user replies, turn proceeds as a normal voice turn.
+**Proactive-speech reply window**: when Doll opens her mouth on her own (reminder, scheduled trigger, task interrupt for consent), her TTS finishes → mic auto-opens for 3 seconds (default, configurable in Settings) → if user says nothing, mic closes. If user replies, turn proceeds as a normal voice turn.
 
 **Push-to-talk hotkey**: configurable global hotkey as a backup for when Live2D is hidden or the user doesn't want to mouse over.
 
@@ -109,12 +127,20 @@ No ambient observations. No "I noticed you've been idle for an hour."
 
 ### Task Execution & Computer Use
 
-Doll has full file system + computer-use capabilities, gated by consent on destructive actions.
+**Scope of "computer use"** (all client-side actuators):
+- **Tier 0 — Shell + filesystem on user's PC**: read, list, write, move, delete, run scripts
+- **Tier 1 — App-level**: launch applications, open URLs in browser, send OS notifications
+- **Tier 2 — GUI simulation**: mouse move/click, keyboard input — **always gated, every action**
+- **Tier 3 — Window management**: move, resize, focus, switch workspace
+
+She can do all four tiers, but Tier 2 (mouse/keyboard simulation) is treated specially: **every single click/keystroke must be consent-prompted**, not just destructive ones. The reasoning: synthetic input is the highest-risk capability and the user must remain the agent of last resort on their own GUI.
 
 **Permission model**:
-- ✅ Free: read, list, search, open-for-view, web fetch, anything reversible
-- 🛑 Gated: write, move, delete, overwrite, install, run-script-with-side-effects
-- Each gated action surfaces as: voice prompt + chat notification ("I want to move `X` to `Y` — OK?") → user replies yes/no via voice or chat button.
+- ✅ Free (no prompt): read, list, search, open-for-view, web fetch, app launch (Tier 1), OS notification, window move/resize (Tier 3 non-destructive)
+- 🛑 Gated (per-action voice + UI prompt): file write/move/delete/overwrite, script with side-effects, package install
+- 🛑🛑 Always-gated (Tier 2, every action): mouse simulation, keyboard simulation
+
+**Consent prompt surfacing**: when a gated action needs approval, Doll **forces Live2D visible** (overriding the user's hidden toggle), opens her mouth, and asks ("I want to move `X` to `Y` — OK?"). Mic auto-opens (3s reply window) for yes/no. Live2D returns to its prior state after the user responds. Consent prompts are non-suppressible — even silent task mode pops them.
 
 **Task progress visibility** (Task panel):
 - Default mode: **visible** — panel shows current step (`step 3/8: moved 5 files`), recent actions, time elapsed
@@ -139,7 +165,6 @@ Doll has full file system + computer-use capabilities, gated by consent on destr
 - Multi-user / household — single user
 - Calendar sync — future
 - Drone (persistent agent) — already planned separately
-- Voice Phase C local-audio-bridge — separate plan, but this redesign depends on it being done first
 
 ## Dependencies on existing work
 
@@ -156,10 +181,8 @@ This redesign does NOT depend on:
 - Auth model for non-localhost daemon connection (shared secret vs TLS vs Tailscale-only)
 - Tauri IPC bridge details (Rust ↔ Web ↔ daemon WS)
 - Cubism Web SDK licensing path (Live2D Cubism SDK has a free-tier license — verify before shipping)
-- File access surface: does the client expose a "file access tool" that the daemon calls back into, or does the daemon access files directly when daemon is co-located? Different in the NAS case vs PC-co-located case.
-- Computer use surface: same question — client-side actuator or daemon-side? Computer-use only makes sense client-side (the daemon on a NAS can't move the user's mouse).
-
-The last two are the meatiest — the implementation plan needs to nail down the client/daemon split for actuators.
+- BrainShell / HostShell tool split — naming, schema, how existing Shell call-sites migrate
+- Cross-platform actuator implementation (mouse/kbd sim, window mgmt) — likely needs a Rust crate per OS
 
 ## Success criteria
 
@@ -168,4 +191,5 @@ We'll know this redesign worked when:
 2. Click Live2D, say something, get a voice reply — no wake word, no setup beyond Settings.
 3. Set a voice reminder, wait, hear Doll speak at the scheduled time, reply within the auto-open window.
 4. Assign a multi-step file task, watch task panel, get consent prompts for destructive actions, get final report.
-5. PC sleeps, daemon keeps running, PC wakes, client reconnects, Doll picks up where she was.
+5. (NAS deployment only) PC sleeps, daemon keeps running on NAS, PC wakes, client reconnects, Doll picks up where she was. (Co-located deployment: PC sleep == daemon sleep — that's expected.)
+6. Doll asked to move the mouse → prompts before every click → user can decline and she stops.
