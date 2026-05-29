@@ -29,3 +29,6 @@ logs/
 
 # Smoke / exploration audio output at repo root
 /*.wav
+
+# CodeGraph local index
+.codegraph/

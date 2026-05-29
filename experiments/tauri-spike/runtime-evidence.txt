@@ -1,0 +1,47 @@
+DollOS Tauri spike — runtime evidence
+Captured: 2026-05-20 (resumed session)
+Session: SSH/pts only, no DISPLAY, no WAYLAND_DISPLAY
+
+# pkg-config check (system deps)
+$ pkg-config --exists webkit2gtk-4.1 && pkg-config --exists gtk+-3.0 && echo OK
+OK
+
+# Toolchain
+$ node --version && cargo --version
+v20.18.0
+cargo 1.95.0 (f2d3ce0bd 2026-03-21)
+
+# cargo check (after adding tray-icon feature)
+   Compiling dollos-spike v0.1.0 (.../src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.08s
+
+# npm run tauri dev — build phase
+     Running BeforeDevCommand (`npm run dev`)
+     Running DevCommand (`cargo run --no-default-features --color always --`)
+    ... 493 crates compiled ...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 18s
+     Running `target/debug/dollos-spike`
+
+# npm run tauri dev — launch phase (panic, expected on headless)
+thread 'main' (1342709) panicked at tao-0.35.2/src/platform_impl/linux/event_loop.rs:217:53:
+Failed to initialize gtk backend!: BoolError {
+  message: "Failed to initialize GTK",
+  filename: "gtk-0.18.2/src/rt.rs",
+  function: "gtk::rt::init",
+  line: 141
+}
+
+# Dummy daemon WS round-trip (probe client)
+IN:   {"type": "hello", "text": "Doll says hi (connect)"}
+IN:   {"type": "hello", "text": "Doll says hi (#1)"}
+IN:   {"type": "hello", "text": "Doll says hi (#2)"}
+PONG: {"type": "echo", "original": {"type": "ping", "t": 123}}
+
+# Verdict
+- System deps:                     OK
+- Cargo check / build:             OK (after adding `tray-icon` feature)
+- Tauri binary launches:           OK (process started)
+- GTK / webview initialises:       NO — no display server in this session
+- Daemon WS roundtrip:             OK (verified independently)
+- Real runtime screenshot:         NOT POSSIBLE without DISPLAY/WAYLAND_DISPLAY.
+                                   `spike-result.png` remains the original mock composite.

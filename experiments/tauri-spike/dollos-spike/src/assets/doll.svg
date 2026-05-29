@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" width="400" height="600">
+  <!-- placeholder Doll: stylised anime-girl silhouette, pastel -->
+  <defs>
+    <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a7c7ff"/>
+      <stop offset="1" stop-color="#7aa3e0"/>
+    </linearGradient>
+    <linearGradient id="dress" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd1e3"/>
+      <stop offset="1" stop-color="#e89bc1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- back hair -->
+  <path d="M110 230 Q90 360 130 500 L270 500 Q310 360 290 230 Z" fill="url(#hair)"/>
+
+  <!-- dress -->
+  <path d="M130 380 Q120 480 110 560 L290 560 Q280 480 270 380 Z" fill="url(#dress)"/>
+  <!-- collar -->
+  <rect x="175" y="350" width="50" height="40" rx="6" fill="#ffffff" opacity="0.85"/>
+
+  <!-- neck -->
+  <rect x="185" y="320" width="30" height="40" fill="#ffe4d2"/>
+
+  <!-- face -->
+  <ellipse cx="200" cy="265" rx="78" ry="92" fill="#ffe4d2"/>
+
+  <!-- front hair bangs -->
+  <path d="M122 240 Q140 170 200 160 Q260 170 278 240 Q260 215 235 220 Q220 200 200 200 Q180 200 165 220 Q140 215 122 240 Z" fill="url(#hair)"/>
+
+  <!-- side bangs -->
+  <path d="M122 240 Q118 300 130 340 Q128 290 138 260 Z" fill="url(#hair)"/>
+  <path d="M278 240 Q282 300 270 340 Q272 290 262 260 Z" fill="url(#hair)"/>
+
+  <!-- eyes (open). Will be hidden during blink frames by canvas overlay -->
+  <g id="eyes-open">
+    <ellipse cx="172" cy="278" rx="12" ry="16" fill="#1c1c2a"/>
+    <ellipse cx="228" cy="278" rx="12" ry="16" fill="#1c1c2a"/>
+    <circle cx="175" cy="273" r="3" fill="#fff"/>
+    <circle cx="231" cy="273" r="3" fill="#fff"/>
+  </g>
+
+  <!-- mouth -->
+  <path d="M188 312 Q200 320 212 312" stroke="#a8595d" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+
+  <!-- blush -->
+  <ellipse cx="155" cy="298" rx="10" ry="5" fill="#ffb8c8" opacity="0.6"/>
+  <ellipse cx="245" cy="298" rx="10" ry="5" fill="#ffb8c8" opacity="0.6"/>
+</svg>
