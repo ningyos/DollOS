@@ -176,3 +176,75 @@ src-tauri/src/
 ## Estimated complexity for Plan D
 
 **Medium** — the unknowns are now small. The Rust side is plumbing (tray + a handful of actuator commands), the TS side has a clear shape (dispatcher + renderer interface, both proven in this spike), and the WS protocol is whatever daemon emits. The medium-not-low rating comes from: actuator security model (capability scopes, consent UI), prod CSP, cross-platform tray/window behaviour (Mac menu bar vs Windows notification area), and asset/icon pipeline. None individually hard, collectively a week of fiddling.
+
+---
+
+## Running this spike on a fresh machine
+
+The repo carries source only — `node_modules/`, `src-tauri/target/`, `dist/` are
+gitignored and rebuilt locally. The dev box where this was written has no
+graphical seat (SSH/pts, no `DISPLAY`/`WAYLAND_DISPLAY`), so the webview never
+rendered here. Finish the runtime smoke on a machine with a real display.
+
+### 1. Clone
+
+```bash
+git clone https://github.com/ningyos/DollOS.git
+cd DollOS
+```
+
+### 2. System deps for Tauri
+
+**Linux (Ubuntu 24.04 / noble):**
+
+```bash
+sudo apt install \
+    libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+    librsvg2-dev libdbus-1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+    build-essential curl wget file pkg-config
+```
+
+**macOS:** `xcode-select --install`, then Rust (`rustup`) + Node (≥20).
+
+**Windows:** Microsoft C++ Build Tools + WebView2 runtime (bundled in Win11) +
+Rust (`rustup`) + Node (≥20).
+
+Rust + Node themselves need no sudo — `rustup` (default profile) and a Node ≥20
+install (system pkg, nvm, or portable tarball) are enough.
+
+### 3. Build & run
+
+```bash
+# Terminal 1 — dummy daemon (WS echo on ws://localhost:9876)
+cd experiments/tauri-spike
+uv run --with websockets python dummy_daemon.py
+
+# Terminal 2 — Tauri app
+cd experiments/tauri-spike/dollos-spike
+npm install              # restores node_modules (~60 MB)
+npm run tauri dev        # first run compiles ~280–490 crates, ~1–2 min
+```
+
+### 4. Expected result
+
+A 600×800 dark-grey window: pastel placeholder doll centred, breathing +
+blinking; a log box top-right streaming `IN {"type":"hello",…}` every 5 s; a
+"Send ping" button that round-trips an echo; a tray icon (left-click toggles the
+window, right-click menu = Show/Hide + Quit).
+
+### 5. Gotchas already resolved / to watch
+
+- **`tray-icon` Cargo feature is enabled** in `src-tauri/Cargo.toml`
+  (`tauri = { version = "2", features = ["tray-icon"] }`) — `create-tauri-app`
+  does NOT add it by default; don't remove it.
+- **GNOME-on-Wayland has no built-in tray** — install the "AppIndicator and
+  KStatusNotifierItem Support" GNOME extension or the tray icon won't appear,
+  even with `libayatana-appindicator3-dev` present. (Dev-only; prod is Win/Mac.)
+- **`.codegraph/` is not in the repo** — rebuild the index on the new box with
+  `codegraph init -i` if you want CodeGraph there.
+
+### 6. After it runs
+
+Capture a real screenshot over `spike-result.png` (currently a clearly-flagged
+mock), flip this NOTES file's BLOCKED markers to done, then proceed to spec
+update + Plan D.
