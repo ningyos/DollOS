@@ -39,6 +39,63 @@ def test_luxtts_prompt_missing_raises(tmp_path: Path):
         )
 
 
+@pytest.mark.asyncio
+async def test_luxtts_peak_normalize(tmp_path: Path, monkeypatch):
+    """synthesize() should boost a low-amplitude signal to near peak_target."""
+    from unittest.mock import MagicMock, patch
+
+    # Create a fake prompt file so the constructor doesn't raise.
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    # Stub LuxTTSOnnx so no real model is loaded.
+    fake_tts = MagicMock()
+    # generate() returns a float32 array whose peak is only 0.1 (too quiet).
+    low_amplitude = np.full(48000, 0.1, dtype=np.float32)
+    fake_tts.generate.return_value = low_amplitude
+    fake_tts.load_prompt.return_value = object()
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=fake_tts):
+        engine = LuxTTSEngine(
+            model_dir=tmp_path / "models",
+            prompt_path=prompt_path,
+            data_root=tmp_path,
+            peak_target=0.95,
+        )
+
+    chunks = [c async for c in engine.synthesize("hello")]
+    assert chunks, "no chunks produced"
+
+    # Reconstruct the int16 PCM and compute the peak.
+    raw = b"".join(chunks)
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
+    peak = float(np.max(np.abs(samples)))
+    assert abs(peak - 0.95) < 0.01, f"expected peak≈0.95, got {peak:.4f}"
+
+
+@pytest.mark.asyncio
+async def test_luxtts_peak_normalize_all_zero(tmp_path: Path, monkeypatch):
+    """All-zero audio should pass through without division-by-zero."""
+    from unittest.mock import MagicMock, patch
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    fake_tts = MagicMock()
+    fake_tts.generate.return_value = np.zeros(960, dtype=np.float32)
+    fake_tts.load_prompt.return_value = object()
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=fake_tts):
+        engine = LuxTTSEngine(
+            model_dir=tmp_path / "models",
+            prompt_path=prompt_path,
+            data_root=tmp_path,
+        )
+
+    chunks = [c async for c in engine.synthesize("silence")]
+    assert chunks, "no chunks for all-zero audio"
+
+
 @pytest.mark.voice_integration
 @pytest.mark.asyncio
 async def test_luxtts_synthesize_yields_audio(tmp_path: Path):
