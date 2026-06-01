@@ -96,6 +96,106 @@ async def test_luxtts_peak_normalize_all_zero(tmp_path: Path, monkeypatch):
     assert chunks, "no chunks for all-zero audio"
 
 
+@pytest.mark.asyncio
+async def test_luxtts_eq_curve_path(tmp_path: Path):
+    """synthesize() with eq_curve_path applies FIR + uses EQ peak_normalize."""
+    import json
+    from unittest.mock import MagicMock, patch
+
+    # Minimal EQ JSON at 48000 Hz (luxtts sample rate).
+    eq_json = {
+        "name": "test-eq",
+        "sample_rate": 48000,
+        "bands": [
+            {"freq_hz": 100, "gain_db": 0.0},
+            {"freq_hz": 1000, "gain_db": -3.0},
+            {"freq_hz": 10000, "gain_db": 0.0},
+        ],
+        "peak_normalize": 0.80,
+    }
+    eq_path = tmp_path / "test.eq.json"
+    eq_path.write_text(json.dumps(eq_json))
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    fake_tts = MagicMock()
+    # Use a sine wave so there's actual signal for FIR to process.
+    t = np.linspace(0, 1.0, 48000, dtype=np.float32)
+    sine = (np.sin(2 * np.pi * 440 * t) * 0.3).astype(np.float32)
+    fake_tts.generate.return_value = sine
+    fake_tts.load_prompt.return_value = object()
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=fake_tts):
+        engine = LuxTTSEngine(
+            model_dir=tmp_path / "models",
+            prompt_path=prompt_path,
+            data_root=tmp_path,
+            eq_curve_path=eq_path,
+        )
+
+    chunks = [c async for c in engine.synthesize("hello")]
+    assert chunks, "no chunks produced with EQ"
+
+    raw = b"".join(chunks)
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32767.0
+    assert np.isfinite(samples).all(), "non-finite samples in EQ output"
+    assert samples.size > 0
+    # Peak should be near the EQ's peak_normalize (0.80), not 0.95.
+    peak = float(np.max(np.abs(samples)))
+    assert abs(peak - 0.80) < 0.02, f"expected peak≈0.80 (EQ peak), got {peak:.4f}"
+
+
+def test_luxtts_eq_curve_path_missing_raises(tmp_path: Path):
+    """Constructor raises FileNotFoundError for a missing EQ file."""
+    from unittest.mock import MagicMock, patch
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    fake_tts = MagicMock()
+    fake_tts.load_prompt.return_value = object()
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=fake_tts):
+        with pytest.raises(FileNotFoundError):
+            LuxTTSEngine(
+                model_dir=tmp_path / "models",
+                prompt_path=prompt_path,
+                data_root=tmp_path,
+                eq_curve_path=tmp_path / "nonexistent.eq.json",
+            )
+
+
+def test_luxtts_eq_curve_wrong_sample_rate_raises(tmp_path: Path):
+    """Constructor raises ValueError when EQ sample_rate != 48000."""
+    import json
+    from unittest.mock import MagicMock, patch
+
+    eq_json = {
+        "name": "wrong-sr",
+        "sample_rate": 24000,
+        "bands": [{"freq_hz": 1000, "gain_db": 0.0}],
+        "peak_normalize": 0.90,
+    }
+    eq_path = tmp_path / "wrong.eq.json"
+    eq_path.write_text(json.dumps(eq_json))
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    fake_tts = MagicMock()
+    fake_tts.load_prompt.return_value = object()
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=fake_tts):
+        with pytest.raises(ValueError, match="sample_rate"):
+            LuxTTSEngine(
+                model_dir=tmp_path / "models",
+                prompt_path=prompt_path,
+                data_root=tmp_path,
+                eq_curve_path=eq_path,
+            )
+
+
 @pytest.mark.voice_integration
 @pytest.mark.asyncio
 async def test_luxtts_synthesize_yields_audio(tmp_path: Path):
