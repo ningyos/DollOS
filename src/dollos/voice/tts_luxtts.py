@@ -54,8 +54,10 @@ class LuxTTSEngine(TTSEngine):
         t_shift: float = 0.9,
         guidance_scale: float = 3.0,
         speed: float = 1.0,
+        peak_target: float = 0.95,
     ) -> None:
         self._speed = speed
+        self._peak_target = float(peak_target)
         if not prompt_path.exists():
             raise FileNotFoundError(
                 f"luxtts prompt file not found: {prompt_path}; "
@@ -78,6 +80,10 @@ class LuxTTSEngine(TTSEngine):
             self._guidance_scale,
             self._speed,
         )
+        # Peak-normalize to bring luxtts output up to a consistent loudness.
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        if peak > 1e-6:
+            audio = audio * (self._peak_target / peak)
         for chunk in _pcm_chunks(audio):
             yield chunk
 
