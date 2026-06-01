@@ -31,7 +31,7 @@ top_k = 10   # memsearch uses ONNX bge-m3 by default.
 max_turns = 6
 
 [character]
-pack = "character_packs/gura"   # directory containing doll.toml manifest
+pack = "character_packs/yesman"   # directory containing doll.toml manifest
 
 # ----------------------------------------------------------------------
 # Voice pipeline (ASR + TTS). Character packs hold ONLY per-character
