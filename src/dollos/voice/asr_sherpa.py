@@ -57,6 +57,10 @@ def _ensure_sherpa_onnx_symlink() -> None:
 
 _ensure_sherpa_onnx_symlink()
 
+from dollos.voice._cuda import preload_cudnn  # noqa: E402 — must follow bootstrap
+
+preload_cudnn()
+
 import numpy as np  # noqa: E402
 import sherpa_onnx  # noqa: E402 — must follow bootstrap
 from huggingface_hub import hf_hub_download  # noqa: E402

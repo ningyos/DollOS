@@ -14,8 +14,11 @@ from pathlib import Path
 import numpy as np
 from luxtts_onnx import LuxTTSOnnx
 
+from dollos.voice._cuda import preload_cudnn
 from dollos.voice.engines import TTSEngine, register_tts
 from dollos.voice.eq import load_eq_curve
+
+preload_cudnn()
 
 logger = logging.getLogger(__name__)
 
