@@ -7,7 +7,10 @@ nvidia-cudnn-cu12 wheel is installed and the .so files are present.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def _reset_module():
@@ -107,4 +110,49 @@ def test_preload_cudnn_idempotent_when_no_wheel():
                 sys.modules[key] = original[key]
             elif key in sys.modules:
                 del sys.modules[key]
+        _reset_module()
+
+
+def _has_cudnn_wheel_with_libs() -> bool:
+    """Detect if nvidia-cudnn-cu12 wheel is installed with lib dir and .so files."""
+    try:
+        import nvidia.cudnn
+        cudnn_path = nvidia.cudnn.__path__
+        if not cudnn_path:
+            return False
+        lib_dir = Path(cudnn_path[0]) / "lib"
+        if not lib_dir.exists():
+            return False
+        # Check if at least one libcudnn*.so.9 exists
+        return bool(list(lib_dir.glob("libcudnn*.so.9")))
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(
+    not _has_cudnn_wheel_with_libs(),
+    reason="nvidia-cudnn-cu12 wheel with libs not installed"
+)
+def test_preload_cudnn_with_real_wheel():
+    """When wheel is present, locate libs via __path__ and preload them."""
+    _reset_module()
+
+    try:
+        from dollos.voice._cuda import preload_cudnn
+        result = preload_cudnn()
+
+        # When the wheel is present, result must be > 0
+        assert result > 0, (
+            f"preload_cudnn() returned {result}, but wheel libs are present. "
+            "Libs must be located via __path__ not __file__."
+        )
+
+        # Count the actual libcudnn*.so.9 files to verify the count matches
+        import nvidia.cudnn
+        lib_dir = Path(nvidia.cudnn.__path__[0]) / "lib"
+        expected_count = len(list(lib_dir.glob("libcudnn*.so.9")))
+        assert result == expected_count, (
+            f"preload_cudnn returned {result} but found {expected_count} .so files"
+        )
+    finally:
         _reset_module()

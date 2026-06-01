@@ -36,14 +36,18 @@ def preload_cudnn() -> int:
     if _preloaded is not None:
         return _preloaded
 
-    # Locate the cudnn lib directory via the wheel's __file__.
+    # Locate the cudnn lib directory via the wheel's __path__.
+    # (nvidia.cudnn is a PEP-420 namespace package, so __file__ is None;
+    # use __path__[0] instead.)
     try:
         import nvidia.cudnn  # type: ignore[import]
-        cudnn_file = nvidia.cudnn.__file__
-        if cudnn_file is None:
-            raise ImportError("nvidia.cudnn.__file__ is None")
-        lib_dir = Path(cudnn_file).parent / "lib"
-    except (ImportError, AttributeError, TypeError):
+        cudnn_path = nvidia.cudnn.__path__
+        if not cudnn_path:
+            raise ImportError("nvidia.cudnn.__path__ is empty")
+        lib_dir = Path(cudnn_path[0]) / "lib"
+        if not lib_dir.exists():
+            raise ImportError(f"cudnn lib dir not found: {lib_dir}")
+    except (ImportError, AttributeError, TypeError, IndexError):
         logger.debug("nvidia.cudnn wheel not found — skipping cudnn preload")
         _preloaded = 0
         return 0
