@@ -15,6 +15,7 @@ import numpy as np
 from luxtts_onnx import LuxTTSOnnx
 
 from dollos.voice.engines import TTSEngine, register_tts
+from dollos.voice.eq import load_eq_curve
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +56,29 @@ class LuxTTSEngine(TTSEngine):
         guidance_scale: float = 3.0,
         speed: float = 1.0,
         peak_target: float = 0.95,
+        eq_curve_path: Path | str | None = None,
     ) -> None:
         self._speed = speed
         self._peak_target = float(peak_target)
+        self._eq_fir = None
+        self._eq_peak_normalize: float | None = None
         if not prompt_path.exists():
             raise FileNotFoundError(
                 f"luxtts prompt file not found: {prompt_path}; "
                 f"run `python -m dollos.voice.prepare` to encode one"
+            )
+        if eq_curve_path is not None:
+            eq_curve_path = Path(eq_curve_path)
+            if not eq_curve_path.exists():
+                raise FileNotFoundError(
+                    f"luxtts eq_curve_path not found: {eq_curve_path}"
+                )
+            fir, eq_peak = load_eq_curve(eq_curve_path, self.sample_rate)
+            self._eq_fir = fir
+            self._eq_peak_normalize = eq_peak
+            logger.info(
+                "luxtts EQ loaded from %s (%d taps, peak_normalize=%.3f)",
+                eq_curve_path, len(fir), eq_peak,
             )
         provider = "cuda" if device == "cuda" else "cpu"
         self._tts = LuxTTSOnnx(model_dir=str(model_dir), provider=provider)
@@ -80,10 +97,19 @@ class LuxTTSEngine(TTSEngine):
             self._guidance_scale,
             self._speed,
         )
-        # Peak-normalize to bring luxtts output up to a consistent loudness.
-        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
-        if peak > 1e-6:
-            audio = audio * (self._peak_target / peak)
+        if self._eq_fir is not None:
+            # Apply spectrum-match FIR EQ, then EQ-defined peak normalize.
+            from scipy.signal import lfilter
+            audio = lfilter(self._eq_fir, 1.0, audio).astype(np.float32)
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            target = self._eq_peak_normalize or self._peak_target
+            if peak > 1e-6:
+                audio = audio * (target / peak)
+        else:
+            # Peak-normalize to bring luxtts output up to a consistent loudness.
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            if peak > 1e-6:
+                audio = audio * (self._peak_target / peak)
         for chunk in _pcm_chunks(audio):
             yield chunk
 
