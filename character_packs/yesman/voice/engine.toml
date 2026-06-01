@@ -1,0 +1,8 @@
+# Yes Man voice — qwen3-tts cloned from a clean game-recording clip
+# (securitron filter intact; see spec §4.2 for why game-recording over
+# dry .bsa audio). EQ tuning deferred to a second pass if needed.
+[tts.qwen3-tts]
+ref_audio = "voice/qwen3/ref.wav"
+ref_text = "Hey, hi there! Good to meet you. What can I do for you today? Oh, hi again. Can I help you with something else? Hi, nice to see you again."
+instruction = "excited, energetic, upbeat, cheerful, slightly synthetic and robotic"
+language = "English"
