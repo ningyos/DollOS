@@ -49,9 +49,16 @@ class VoiceConfig:
     ``{"qwen3-tts": {"ref_audio": Path(...), "ref_text": "..."}}``).
     ``None`` when the pack has no ``voice/engine.toml`` or it has no
     ``[tts]`` section.
+
+    ``engine`` is an optional top-level override declared in the pack's
+    ``voice/engine.toml`` as a bare ``engine = "..."`` key (sibling of the
+    ``[tts.*]`` tables).  When set it overrides the DollOS-global
+    ``[voice.tts] engine`` for this character.  ``None`` means the pack
+    defers to the global default.
     """
 
     tts: dict[str, dict] | None = None
+    engine: str | None = None
 
 
 def no_voice_config() -> VoiceConfig:
@@ -95,9 +102,12 @@ def load_voice_config(pack_dir: Path) -> VoiceConfig:
         return no_voice_config()
     with engine_toml.open("rb") as f:
         raw = tomllib.load(f)
+    # Optional top-level engine override (bare key, NOT inside [tts.*]).
+    pack_engine: str | None = raw.get("engine")
+
     raw_tts = raw.get("tts")
     if not isinstance(raw_tts, dict) or not raw_tts:
-        return no_voice_config()
+        return VoiceConfig(engine=pack_engine) if pack_engine else no_voice_config()
     tts: dict[str, dict] = {}
     for engine_name, variant in raw_tts.items():
         if not isinstance(variant, dict):
@@ -105,7 +115,7 @@ def load_voice_config(pack_dir: Path) -> VoiceConfig:
                 f"voice/engine.toml: [tts.{engine_name}] must be a table"
             )
         tts[engine_name] = _resolve_path_fields(variant, pack_dir)
-    return VoiceConfig(tts=tts)
+    return VoiceConfig(tts=tts, engine=pack_engine)
 
 
 def resolve_voice_kwargs(
