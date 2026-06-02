@@ -35,7 +35,6 @@ def test_luxtts_prompt_missing_raises(tmp_path: Path):
         LuxTTSEngine(
             model_dir=tmp_path / "missing-models",
             prompt_path=tmp_path / "missing.npz",
-            data_root=tmp_path,
         )
 
 
@@ -59,7 +58,6 @@ async def test_luxtts_peak_normalize(tmp_path: Path, monkeypatch):
         engine = LuxTTSEngine(
             model_dir=tmp_path / "models",
             prompt_path=prompt_path,
-            data_root=tmp_path,
             peak_target=0.95,
         )
 
@@ -89,7 +87,6 @@ async def test_luxtts_peak_normalize_all_zero(tmp_path: Path, monkeypatch):
         engine = LuxTTSEngine(
             model_dir=tmp_path / "models",
             prompt_path=prompt_path,
-            data_root=tmp_path,
         )
 
     chunks = [c async for c in engine.synthesize("silence")]
@@ -130,7 +127,6 @@ async def test_luxtts_eq_curve_path(tmp_path: Path):
         engine = LuxTTSEngine(
             model_dir=tmp_path / "models",
             prompt_path=prompt_path,
-            data_root=tmp_path,
             eq_curve_path=eq_path,
         )
 
@@ -161,7 +157,6 @@ def test_luxtts_eq_curve_path_missing_raises(tmp_path: Path):
             LuxTTSEngine(
                 model_dir=tmp_path / "models",
                 prompt_path=prompt_path,
-                data_root=tmp_path,
                 eq_curve_path=tmp_path / "nonexistent.eq.json",
             )
 
@@ -191,7 +186,6 @@ def test_luxtts_eq_curve_wrong_sample_rate_raises(tmp_path: Path):
             LuxTTSEngine(
                 model_dir=tmp_path / "models",
                 prompt_path=prompt_path,
-                data_root=tmp_path,
                 eq_curve_path=eq_path,
             )
 
@@ -222,7 +216,6 @@ async def test_luxtts_synthesize_yields_audio(tmp_path: Path):
     engine = LuxTTSEngine(
         model_dir=tmp_path / "luxtts-models",
         prompt_path=prompt_path,
-        data_root=tmp_path,
     )
     chunks = []
     async for chunk in engine.synthesize("Hello world."):
@@ -271,7 +264,6 @@ async def test_voice_round_trip_tts_then_asr(tmp_path: Path):
     tts = LuxTTSEngine(
         model_dir=tmp_path / "luxtts-models",
         prompt_path=prompt_path,
-        data_root=tmp_path,
     )
     spoken_phrase = "The quick brown fox jumps over the lazy dog."
     pcm_chunks: list[bytes] = []
