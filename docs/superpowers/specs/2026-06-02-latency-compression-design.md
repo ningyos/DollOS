@@ -1,8 +1,23 @@
 # Latency Compression — Speculative Decoding
 
 **Date**: 2026-06-02
-**Status**: Design approved, pending implementation plan
+**Status**: **ABANDONED — Gate A failed.** Pivoted to think-restructuring; see
+`2026-06-02-latency-compression-think-restructuring-design.md`.
 **Scope**: llama-server inference configuration only. Zero DollOS code change.
+
+> ## Abandonment note (2026-06-02)
+>
+> Gate A (vocab compatibility) failed at pre-flight. The target
+> `Qwen3.6-35B-A3B` reports arch `qwen35moe` with a **248,320**-token vocab
+> (base `Qwen/Qwen3.6-35B-A3B`), not the standard Qwen3 **151,936**. The
+> Qwen3.6 line ships only two sizes — `Qwen3.6-27B` (dense) and
+> `Qwen3.6-35B-A3B` (MoE) — so **no small, vocab-compatible draft exists**.
+> Even ignoring vocab, the smallest sibling (27B dense) is ~9× more compute
+> than the target's 3B active params, making it useless as a draft.
+> Speculative decoding is therefore not viable for this model, and a
+> subset-vocab hack is disallowed by the no-fallback rule. Per user decision,
+> the latency effort pivots to DollOS-side think restructuring (keep Qwen3.6).
+> The rest of this document is preserved for the record.
 
 ## 1. Problem
 

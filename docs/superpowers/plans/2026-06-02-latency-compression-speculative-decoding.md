@@ -1,5 +1,12 @@
 # Latency Compression — Speculative Decoding Implementation Plan
 
+> **STATUS: ABANDONED (2026-06-02).** Halted at Task 2 / Gate A — the
+> `Qwen3.6-35B-A3B` target (vocab 248,320, arch `qwen35moe`) has no small
+> vocab-compatible draft model (the Qwen3.6 line is only 27B/35B). Tasks 1
+> (draft download) completed; Tasks 2–7 not executed. Pivoted to think
+> restructuring — see the design note in the spec. This plan is kept for
+> the record; do not execute it.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Speed up the `Qwen3.6-35B-A3B-UD-Q4_K_XL` big model losslessly by adding a speculative-decoding draft model to llama-server, lowering per-turn think+Say generation time.
