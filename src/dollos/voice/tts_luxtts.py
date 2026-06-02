@@ -52,7 +52,6 @@ class LuxTTSEngine(TTSEngine):
         *,
         model_dir: Path,
         prompt_path: Path,
-        data_root: Path,
         device: str = "cpu",
         num_steps: int = 8,
         t_shift: float = 0.9,
