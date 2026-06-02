@@ -69,27 +69,25 @@ async def test_server_sends_error_on_malformed_message():
 
 
 @pytest.mark.asyncio
-async def test_pump_treats_none_as_turn_separator_not_termination():
-    """After the handler pushes None (turn separator), the pump must keep
-    running so a subsequent push (e.g. from a delayed event like a
-    SubagentResultEvent) still reaches the client."""
+async def test_pump_converts_none_to_turn_end_and_keeps_running():
+    """None in the sink is converted to TurnEnd by the pump and the pump
+    keeps running so subsequent pushes (e.g. delayed SubagentResultEvent)
+    still reach the client."""
 
     second_chunk_pushed = asyncio.Event()
 
     async def _handler(
         msg: TextInput, sink: "asyncio.Queue[ServerMessage | None]"
     ) -> None:
-        # First "turn"
+        # First "turn" — None acts as the turn-end sentinel
         sink.put_nowait(TextChunk(text="A"))
-        sink.put_nowait(TurnEnd())
-        sink.put_nowait(None)  # separator
+        sink.put_nowait(None)  # pump converts this to TurnEnd
 
         # Schedule a second push as if from a delayed event.
         async def _later():
             await asyncio.sleep(0.05)
             sink.put_nowait(TextChunk(text="B"))
-            sink.put_nowait(TurnEnd())
-            sink.put_nowait(None)
+            sink.put_nowait(None)  # pump converts this to TurnEnd
             second_chunk_pushed.set()
 
         asyncio.create_task(_later())
@@ -103,7 +101,7 @@ async def test_pump_treats_none_as_turn_separator_not_termination():
         async with websockets.connect(uri) as ws:
             await ws.send('{"type": "text_input", "text": "x"}')
             msgs = []
-            for _ in range(4):  # A, turn_end, B, turn_end
+            for _ in range(4):  # A, turn_end(from None), B, turn_end(from None)
                 raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
                 msgs.append(raw)
             await asyncio.wait_for(second_chunk_pushed.wait(), timeout=1.0)
