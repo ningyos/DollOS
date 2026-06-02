@@ -174,3 +174,29 @@ def test_resolve_voice_kwargs_dollos_wins_on_overlap():
     assert name == "qwen3-tts"
     assert kwargs["device"] == "cuda:0"
     assert kwargs["ref_text"] == "hi"
+
+
+# ----- TASK 1: VoiceConfig.engine + parse top-level engine -----
+
+
+def test_voice_config_engine_defaults_none(tmp_path):
+    from dollos.voice.pack import load_voice_config
+    vdir = tmp_path / "voice"; vdir.mkdir(parents=True)
+    (vdir / "engine.toml").write_text(
+        '[tts.luxtts-onnx]\nprompt_path = "voice/luxtts/prompt.npz"\n'
+    )
+    cfg = load_voice_config(tmp_path)
+    assert cfg.engine is None
+    assert "luxtts-onnx" in cfg.tts
+
+
+def test_voice_config_parses_top_level_engine(tmp_path):
+    from dollos.voice.pack import load_voice_config
+    vdir = tmp_path / "voice"; vdir.mkdir(parents=True)
+    (vdir / "engine.toml").write_text(
+        'engine = "qwen3-tts"\n'
+        '[tts.qwen3-tts]\nref_audio = "voice/qwen3/ref.wav"\nref_text = "hi"\n'
+    )
+    cfg = load_voice_config(tmp_path)
+    assert cfg.engine == "qwen3-tts"
+    assert "qwen3-tts" in cfg.tts
