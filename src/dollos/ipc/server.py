@@ -11,6 +11,7 @@ from dollos.ipc.messages import (
     ErrorMsg,
     ServerMessage,
     TextInput,
+    TurnEnd,
     decode_client_message,
     encode_server_message,
 )
@@ -133,7 +134,7 @@ class WebSocketServer:
             while True:
                 item = await sink.get()
                 if item is None:
-                    continue  # turn separator, not stream end
+                    item = TurnEnd()  # turn separator → signal client
                 try:
                     await ws.send(encode_server_message(item))
                 except websockets.exceptions.ConnectionClosed:
