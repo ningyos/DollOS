@@ -200,3 +200,50 @@ def test_voice_config_parses_top_level_engine(tmp_path):
     cfg = load_voice_config(tmp_path)
     assert cfg.engine == "qwen3-tts"
     assert "qwen3-tts" in cfg.tts
+
+
+# ----- TASK 2: resolve pack-override + per-engine infra -----
+
+
+def test_resolve_uses_config_engine_when_pack_silent():
+    vc = VoiceConfig(tts={"luxtts-onnx": {"prompt_path": "p.npz"}}, engine=None)
+    name, kw = resolve_voice_kwargs(vc, {"engine": "luxtts-onnx", "device": "cuda"})
+    assert name == "luxtts-onnx"
+    assert kw["prompt_path"] == "p.npz"
+    assert kw["device"] == "cuda"
+
+
+def test_resolve_pack_engine_overrides_config():
+    vc = VoiceConfig(
+        tts={"qwen3-tts": {"ref_audio": "r.wav", "ref_text": "hi"}},
+        engine="qwen3-tts",
+    )
+    cfg_tts = {
+        "engine": "luxtts-onnx",
+        "luxtts-onnx": {"model_dir": "data/luxtts", "device": "cuda"},
+        "qwen3-tts": {"device": "cuda:0"},
+    }
+    name, kw = resolve_voice_kwargs(vc, cfg_tts)
+    assert name == "qwen3-tts"
+    assert kw["ref_audio"] == "r.wav"
+    assert kw["device"] == "cuda:0"
+    assert "model_dir" not in kw
+
+
+def test_resolve_per_engine_block_for_default_engine():
+    vc = VoiceConfig(tts={"luxtts-onnx": {"prompt_path": "p.npz"}}, engine=None)
+    cfg_tts = {
+        "engine": "luxtts-onnx",
+        "luxtts-onnx": {"model_dir": "data/luxtts", "device": "cuda"},
+    }
+    name, kw = resolve_voice_kwargs(vc, cfg_tts)
+    assert name == "luxtts-onnx"
+    assert kw["model_dir"] == "data/luxtts"
+    assert kw["device"] == "cuda"
+
+
+def test_resolve_raises_when_pack_lacks_variant():
+    import pytest
+    vc = VoiceConfig(tts={"luxtts-onnx": {"prompt_path": "p.npz"}}, engine="qwen3-tts")
+    with pytest.raises(ValueError, match="qwen3-tts"):
+        resolve_voice_kwargs(vc, {"engine": "luxtts-onnx"})

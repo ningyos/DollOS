@@ -123,35 +123,54 @@ def resolve_voice_kwargs(
 ) -> tuple[str, dict]:
     """Merge pack identity with DollOS infra into a single kwargs dict.
 
+    Engine selection (highest priority first):
+
+    1. ``voice_cfg.engine`` — pack-declared override (``engine = "..."`` top
+       key in ``voice/engine.toml``).
+    2. ``dollos_voice_tts["engine"]`` — global DollOS ``[voice.tts] engine``.
+
+    Infra merging for the resolved engine:
+
+    - Start with the pack's ``[tts.<engine>]`` identity block.
+    - If the resolved engine matches the global default, flat (non-dict)
+      keys from ``dollos_voice_tts`` (other than ``"engine"``) are merged in.
+    - Then the per-engine infra block ``dollos_voice_tts[engine_name]`` (if
+      present) is merged on top — operator wins on overlapping keys.
+
     Args:
-        voice_cfg: pack-loaded :class:`VoiceConfig` (per-engine identity).
+        voice_cfg: pack-loaded :class:`VoiceConfig` (per-engine identity +
+            optional pack engine override).
         dollos_voice_tts: ``[voice.tts]`` block from DollOS config; MUST
-            contain an ``"engine"`` key plus any infra/sampling kwargs.
+            contain an ``"engine"`` key.  May also contain nested per-engine
+            dicts (``"luxtts-onnx": {...}``, ``"qwen3-tts": {...}``) and flat
+            infra keys (``device``, ``model_id``, ...).
 
     Returns:
         ``(engine_name, merged_kwargs)`` ready for
         ``TTS_REGISTRY[engine_name](**merged_kwargs)``.
 
     Raises:
-        ValueError: if ``dollos_voice_tts`` lacks ``engine``, or the pack
-            has no matching ``[tts.<engine>]`` variant.
-
-    Merge precedence: **DollOS config wins** on overlapping keys.  The pack
-    owns character identity; the operator owns infra/runtime knobs
-    (model_id, device, sampling).  If the operator sets something in
-    DollOS config, that override takes effect even when an identity-style
-    key happens to overlap.
+        ValueError: if no engine can be determined, or the pack has no
+            matching ``[tts.<engine>]`` variant.
     """
-    if "engine" not in dollos_voice_tts:
-        raise ValueError("DollOS [voice.tts] is missing required 'engine' key")
-    engine_name = dollos_voice_tts["engine"]
-    if voice_cfg.tts is None or engine_name not in voice_cfg.tts:
+    default_engine = dollos_voice_tts.get("engine")
+    engine_name = voice_cfg.engine or default_engine
+    if engine_name is None:
         raise ValueError(
-            f"character pack lacks [tts.{engine_name}] variant"
+            "no TTS engine: pack declares none and [voice.tts] has no 'engine'"
         )
+    if voice_cfg.tts is None or engine_name not in voice_cfg.tts:
+        raise ValueError(f"character pack lacks [tts.{engine_name}] variant")
+
+    per_engine = {k: v for k, v in dollos_voice_tts.items() if isinstance(v, dict)}
+    flat_infra = {
+        k: v
+        for k, v in dollos_voice_tts.items()
+        if k != "engine" and not isinstance(v, dict)
+    }
+
     merged = dict(voice_cfg.tts[engine_name])
-    for k, v in dollos_voice_tts.items():
-        if k == "engine":
-            continue
-        merged[k] = v
+    if engine_name == default_engine:
+        merged.update(flat_infra)
+    merged.update(per_engine.get(engine_name, {}))
     return engine_name, merged
