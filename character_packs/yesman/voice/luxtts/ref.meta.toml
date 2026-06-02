@@ -1,0 +1,5 @@
+# voice-clone prompt provenance
+ref_path = "character_packs/yesman/voice/qwen3/ref.wav"
+transcript = """Hey, hi there! Good to meet you. What can I do for you today? Oh, hi again. Can I help you with something else? Hi, nice to see you again."""
+duration_s = 15.0
+encoded_at = "2026-06-01T18:02:48"

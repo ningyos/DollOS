@@ -1,6 +1,12 @@
-# Yes Man voice — qwen3-tts cloned from a clean game-recording clip
-# (securitron filter intact; see spec §4.2 for why game-recording over
-# dry .bsa audio). EQ tuning deferred to a second pass if needed.
+# Yes Man declares luxtts-onnx (low-latency English; RTF ~0.1 on GPU).
+# qwen3-tts block kept as an alternate (game-recording ref, securitron filter
+# intact) for a qwen3 default or quality-tier use.
+engine = "luxtts-onnx"
+
+[tts.luxtts-onnx]
+prompt_path = "voice/luxtts/prompt.npz"
+eq_curve_path = "voice/eq.json"
+
 [tts.qwen3-tts]
 ref_audio = "voice/qwen3/ref.wav"
 ref_text = "Hey, hi there! Good to meet you. What can I do for you today? Oh, hi again. Can I help you with something else? Hi, nice to see you again."

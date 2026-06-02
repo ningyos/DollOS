@@ -1,0 +1,19 @@
+{
+  "name": "yesman luxtts warm — +low-mid body, -harsh highs",
+  "sample_rate": 48000,
+  "peak_normalize": 0.95,
+  "bands": [
+    { "freq_hz": 80,    "gain_db": 2 },
+    { "freq_hz": 150,   "gain_db": 4 },
+    { "freq_hz": 250,   "gain_db": 3 },
+    { "freq_hz": 400,   "gain_db": 1.5 },
+    { "freq_hz": 700,   "gain_db": 0 },
+    { "freq_hz": 1200,  "gain_db": -1 },
+    { "freq_hz": 2500,  "gain_db": -2 },
+    { "freq_hz": 3500,  "gain_db": -4 },
+    { "freq_hz": 5000,  "gain_db": -5 },
+    { "freq_hz": 7000,  "gain_db": -4 },
+    { "freq_hz": 10000, "gain_db": -3 },
+    { "freq_hz": 14000, "gain_db": -2 }
+  ]
+}

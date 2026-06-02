@@ -44,25 +44,27 @@ engine = "sherpa-onnx"
 model_id = "sense-voice-zh-en-ja-ko-yue"
 device = "cpu"
 
-# Primary TTS example: Qwen3-TTS (in-process, voice cloning + emotion).
-# The character pack must include a [tts.qwen3-tts] block with
-# ref_audio / ref_text / instruction.
+# TTS engine selection + per-engine infra. A pack may override the engine
+# per-character via a top-level `engine = "..."` in its voice/engine.toml;
+# that engine's infra then comes from the matching [voice.tts.<engine>]
+# block below. `engine` here is the global default for packs that don't
+# declare their own.
 [voice.tts]
-engine = "qwen3-tts"
+engine = "luxtts-onnx"
+
+# luxtts-onnx — low-latency flow-matching (RTF ~0.1 on GPU). cudnn is
+# auto-preloaded for onnxruntime CUDA; CPU works but is ~40x slower.
+[voice.tts.luxtts-onnx]
+model_dir = "data/voice/tts/luxtts"
+device = "cuda"
+num_steps = 8
+t_shift = 0.9
+guidance_scale = 3.0
+
+# qwen3-tts — in-process voice cloning + emotion (Chinese-capable; RTF ~2).
+[voice.tts.qwen3-tts]
 model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 device = "cuda:0"
-language = "English"
-# temperature = 0.9   # engine-specific sampling defaults can live here too
-
-# Alternative: luxtts-onnx (CPU-friendly, prompt-driven).
-# Pack carries [tts.luxtts-onnx] with prompt_path.
-# [voice.tts]
-# engine = "luxtts-onnx"
-# model_dir = "data/voice/tts/luxtts"
-# device = "cpu"
-# num_steps = 8
-# t_shift = 0.9
-# guidance_scale = 3.0
 
 # Alternative: fish-tts (DualAR + DAC vocoder, voice cloning).
 # Pack carries [tts.fish-tts] with voice_profile_path + transcript.
