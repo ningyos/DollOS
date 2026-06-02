@@ -38,9 +38,10 @@ Say sentence` on **every** turn — including a bare "你好".
 ### Key insight
 The think structure is uniform across turns, but its value is not. On a simple
 conversational reply, `REVIEW` is vacuous (no prior attempt to review) and
-`MOOD` is usually unchanged (mood is persistent in `MindState`, updated only by
-`MoodTool` / the MOOD line). The five mandatory lines are a fixed latency tax
-that often buys nothing.
+`MOOD` is usually unchanged. Note: the MOOD and REVIEW *think lines are
+log-only* — they are parsed solely by `_parse_think` for the cascade log and
+drive no state; mood state is mutated only by the `MoodTool` call. The five
+mandatory lines are a fixed latency tax that often buys nothing.
 
 ### Decision
 Keep Qwen3.6 (user choice). Make **think depth vary by situation**, decided by
@@ -84,9 +85,11 @@ tool-call   ::= <existing per-tool rules>
 
 ## 4. Mood under reflex
 
-A reflex turn does not emit a MOOD line and does not call `MoodTool`, so it
-inherits the current persistent mood from `MindState` unchanged. Mood updates
-continue to happen on deliberate turns. Self-First emotional continuity is
+Mood state is mutated **only** by the `MoodTool` call (`src/dollos/tools.py`),
+never by the MOOD think line (which is log-only). A reflex turn is speak-only,
+so it cannot call `MoodTool` and therefore inherits the current persistent mood
+from `MindState` unchanged. Mood updates continue to happen on deliberate turns
+(where the model can call `MoodTool`). Self-First emotional continuity is
 preserved — mood simply isn't re-derived when Doll answers reflexively.
 
 ## 5. Prompt guidance (`src/dollos/mind/mind_prompt.py`)
@@ -144,6 +147,13 @@ their tests.
 
 **Do not touch**: the cascade loop, the parser state machine, tool dispatch,
 IPC, the model, or the inference engine.
+
+**Explicitly out of scope**: `build_qwen3_think_tool_grammar`
+(`src/dollos/llm/templates.py:268`) is used **only** by `subagent.py` for
+ephemeral background subagents, which are not user-facing real-time and gain
+nothing from reflex. It keeps its current full-think structure unchanged; do
+not "consistency-fix" it. Only `build_voice_first_grammar` (the live mind_loop
+voice/text path) gets the reflex branch.
 
 ## 10. Risks
 
