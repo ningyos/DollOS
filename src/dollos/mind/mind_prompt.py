@@ -32,6 +32,18 @@ def render_mind(
     blocks = [
         system_prompt,
         "",
+    ]
+    # Persistent [Safe mode] banner — rendered EVERY turn while safe_mode is set
+    # (not edge-triggered), so the narrowed-to-read-only state stays visible
+    # until a user turn clears it (spec §8.3).
+    if state.safe_mode:
+        reason = state.safe_mode_reason or "repeated tool failures"
+        blocks.extend([
+            f"[Safe mode] read-only — {reason}. Only Recall and read-only tools "
+            "are available right now; ask the user for help.",
+            "",
+        ])
+    blocks.extend([
         "[Memory context]",
         _render_memory(memsearch_hits),
         "",
@@ -44,7 +56,7 @@ def render_mind(
         "[Active tasks] (currently running, you cannot cancel)",
         _render_active_tasks(state.active_tasks, now),
         "",
-    ]
+    ])
     if pulse_block:
         blocks.extend([pulse_block, ""])
     if cognition_block:
@@ -179,6 +191,12 @@ def _percep_body(p) -> str:
     if p.kind == "Interrupted":
         by = d.get("by", "user")
         return f"your previous turn was cut short by {by}"
+    if p.kind == "SafeModeEntered":
+        reason = d.get("reason", "?")
+        return (
+            f"you have narrowed to read-only safe mode ({reason}); "
+            "ask the user for help"
+        )
     return str(d)[:120]
 
 
