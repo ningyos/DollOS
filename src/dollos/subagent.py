@@ -34,7 +34,7 @@ from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import SUB_TOOLS
 
 if TYPE_CHECKING:
-    from memsearch import MemSearch
+    from dollos.memory import FtsMemory
 
     from dollos.llm.adapter import LLMAdapter
     from dollos.mind.perception_queue import PerceptionQueue
@@ -58,7 +58,7 @@ class SubagentRunner:
         adapter: "LLMAdapter",
         renderer: PromptRenderer,
         memory_root: Path,
-        memsearch: "MemSearch",
+        memsearch: "FtsMemory",
         transcripts_root: Path,
         perception_queue: "PerceptionQueue | None" = None,
         shell_runner: "ShellRunner | None" = None,

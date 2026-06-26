@@ -28,7 +28,7 @@ from dollos.mind.context_tags import (
 )
 
 if TYPE_CHECKING:
-    from memsearch import MemSearch
+    from dollos.memory import FtsMemory
 
     from dollos.mind.mind_state import MindState
 
@@ -73,7 +73,7 @@ def _match_axis(hit: dict, axis: str, value: str) -> bool:
 
 
 async def associative_search(
-    memsearch: "MemSearch",
+    memsearch: "FtsMemory",
     mind_state: "MindState",
     *,
     top_k: int = 3,

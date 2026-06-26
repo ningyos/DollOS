@@ -19,7 +19,7 @@ level = "INFO"
 root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-generated data lives here.
 
 [memsearch]
-top_k = 10   # memsearch uses ONNX bge-m3 by default.
+top_k = 10   # embedder-free lexical backend: SQLite FTS5 (BM25) + jieba CJK tokenization.
 
 # ----------------------------------------------------------------------
 # Conversation history sliding window — recent turn transcripts prepended

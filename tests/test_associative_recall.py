@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
@@ -17,7 +16,6 @@ from dollos.mind.context_tags import (
     tod_bucket,
 )
 from dollos.mind.mind_state import MindState, Mood, Perception
-
 
 # ---------------------------------------------------------------------------
 # context_tags — round-trip
@@ -227,15 +225,13 @@ async def test_associative_search_legacy_headings_yield_no_match():
 
 
 # ---------------------------------------------------------------------------
-# End-to-end with real memsearch
+# End-to-end with the real FtsMemory backend
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_associative_search_e2e_real_memsearch(tmp_path):
-    pytest.importorskip("memsearch")
-    import memsearch
-    import os
+async def test_associative_search_e2e_real_fts_memory(tmp_path):
+    from dollos.memory import FtsMemory
 
     # Write a few markdown files with tagged headings.
     md = tmp_path / "shared" / "2026-05-18.md"
@@ -249,11 +245,9 @@ async def test_associative_search_e2e_real_memsearch(tmp_path):
         "Anniversary memory from a year ago today — feeling reflective.\n"
     )
 
-    ms = memsearch.MemSearch(
+    ms = FtsMemory(
         paths=[str(tmp_path / "shared")],
-        embedding_provider="onnx",
-        milvus_uri=str(tmp_path / "milvus.db"),
-        collection="t_" + os.urandom(4).hex(),
+        db_path=tmp_path / "fts.db",
     )
     await ms.index()
 
@@ -269,7 +263,4 @@ async def test_associative_search_e2e_real_memsearch(tmp_path):
     # We expect at least anxious-mood + evening-tod + Mon-dow + 05-18 date
     assert axes  # non-empty
     assert "Anxious evening monday" in contents or "Anniversary" in contents
-    try:
-        ms.close()
-    except Exception:
-        pass
+    ms.close()

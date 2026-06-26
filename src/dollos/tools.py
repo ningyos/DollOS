@@ -29,7 +29,7 @@ from dollos.mind import scratchpad_helpers
 from dollos.mind.mind_state import OutputRecord
 
 if TYPE_CHECKING:
-    from memsearch import MemSearch
+    from dollos.memory import FtsMemory
 
     from dollos.mind.mind_ctx import MindCtx
     from dollos.mind.mind_state import MindState
@@ -98,7 +98,7 @@ class ToolCtx:
 
     sink: asyncio.Queue[ServerMessage | None] | None
     memory_root: Path
-    memsearch: "MemSearch"
+    memsearch: "FtsMemory"
     transcripts_root: Path
     tool_output_store: "ToolOutputStore"
     subagent_runner: "SubagentRunner | None" = None
