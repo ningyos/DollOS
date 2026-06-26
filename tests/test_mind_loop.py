@@ -896,10 +896,34 @@ async def test_user_turn_clears_safe_mode(tmp_path):
 
 @pytest.mark.asyncio
 async def test_safe_mode_uses_reduced_grammar(tmp_path):
-    """In safe mode the per-pass grammar is built from the reduced registry."""
+    """In safe mode the per-pass grammar is a non-None CONSTRAINED grammar built
+    from the reduced registry — never None (which would be an unconstrained
+    decode, a no-fallback violation; spec §8.3 / finding 1)."""
     loop = _make_mind_loop(tmp_path)
     full_grammar = loop._active_grammar()
     loop._state.safe_mode = True
     safe_grammar = loop._active_grammar()
     assert safe_grammar is not None
+    assert "root ::=" in safe_grammar  # a real constrained GBNF, not None
     assert safe_grammar != full_grammar
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_grammar_build_failure_propagates(tmp_path, monkeypatch):
+    """A genuine safe-mode grammar build failure must SURFACE (raise), never be
+    swallowed into grammar=None — which would let safe mode decode fully
+    unconstrained (silent degradation, a no-fallback violation; spec §8.3 /
+    finding 1). The reduced-tool grammar build is deterministic and must
+    succeed; if it ever fails, that must halt loudly, not degrade silently."""
+    loop = _make_mind_loop(tmp_path)
+    loop._state.safe_mode = True
+    loop._safe_grammar = None
+
+    def _boom(_tools):
+        raise RuntimeError("grammar build broke")
+
+    monkeypatch.setattr(
+        "dollos.mind.mind_loop.build_voice_first_grammar", _boom
+    )
+    with pytest.raises(RuntimeError):
+        loop._active_grammar()

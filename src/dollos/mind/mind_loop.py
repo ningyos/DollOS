@@ -248,21 +248,19 @@ class MindLoop:
         Outside safe mode this is the once-built full grammar (no per-pass cost).
         In safe mode it is a lazily-built grammar over the reduced read-only set,
         cached so repeated safe-mode passes don't rebuild it.
+
+        Safe mode must ALWAYS decode under a constrained grammar (spec §8.3,
+        no-fallback rule). The reduced-tool grammar build is deterministic and
+        must succeed; a genuine build failure is surfaced (raises) rather than
+        swallowed into ``grammar=None`` — silently degrading to a fully
+        unconstrained decode would be a no-fallback violation.
         """
         if not self._state.safe_mode:
             return self._grammar
         if self._safe_grammar is None:
-            reg = self._active_tool_registry()
-            if reg:
-                try:
-                    self._safe_grammar = build_voice_first_grammar(
-                        list(reg.values())
-                    )
-                except Exception:
-                    logger.exception(
-                        "failed to build safe-mode grammar; running unconstrained"
-                    )
-                    self._safe_grammar = None
+            self._safe_grammar = build_voice_first_grammar(
+                list(self._active_tool_registry().values())
+            )
         return self._safe_grammar
 
     def _enter_safe_mode(self, reason: str) -> None:
