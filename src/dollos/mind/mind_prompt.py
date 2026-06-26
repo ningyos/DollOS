@@ -17,6 +17,7 @@ def render_mind(
     pulse_block: str | None = None,
     cognition_block: str | None = None,
     associative_hits: list[dict] | None = None,
+    primary_language: str = "繁體中文",
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -27,10 +28,18 @@ def render_mind(
     ``cognition_block`` — optional pre-rendered ``[Cognition]`` block from
     ``perception.cognition.CognitionWorker.snapshot()``. Inserted right
     after ``[Self pulse]``.
+
+    ``primary_language`` — the language Doll records memory in (NoteMemory /
+    diary). Rendered as a persistent ``[Memory guideline]`` block right before
+    ``[Memory context]`` so it is present EVERY turn (covers article-ingestion
+    turns, which arrive as ordinary user turns). It shapes WHAT she writes —
+    not a new tool, just a behavioral guideline (prompt engineering).
     """
     now = time.time()
     blocks = [
         system_prompt,
+        "",
+        _render_memory_guideline(primary_language),
         "",
     ]
     # Persistent [Safe mode] banner — rendered EVERY turn while safe_mode is set
@@ -89,6 +98,24 @@ def render_mind(
         "What do you do this iteration? Output a JSON array of 0..N actions.",
     ])
     return "\n".join(blocks)
+
+
+def _render_memory_guideline(primary_language: str) -> str:
+    """The persistent memory-WRITE guideline (primary language + own words).
+
+    Two rules, every turn: (1) record memory in the configured primary
+    language (proper nouns / technical terms may stay in their original
+    language where natural); (2) write your OWN understanding in your OWN
+    words — understand first, never copy source text verbatim. This shapes
+    NoteMemory / diary content, especially when ingesting articles.
+    """
+    return (
+        f"[Memory guideline] When you record anything to memory (NoteMemory or "
+        f"diary), write it in {primary_language} — you may keep proper nouns and "
+        f"technical terms in their original language where natural. Record your "
+        f"OWN understanding in your OWN words; never copy source text verbatim — "
+        f"understand first, then write what it means to you."
+    )
 
 
 def _render_memory(hits: list[dict]) -> str:

@@ -22,6 +22,17 @@ root = "data"   # repo-relative; data/ 不存在 = fresh launch. All system-gene
 top_k = 10   # embedder-free lexical backend: SQLite FTS5 (BM25) + jieba CJK tokenization.
 
 # ----------------------------------------------------------------------
+# Memory-WRITE policy (how Doll records memory, not where it's stored).
+# primary_language: the language Doll writes memory in (NoteMemory / diary),
+# regardless of the SOURCE language — proper nouns / technical terms may stay
+# in their original language where natural. Injected as a per-turn behavioral
+# guideline (prompt engineering), so it also covers article ingestion.
+# ----------------------------------------------------------------------
+
+[memory]
+primary_language = "繁體中文"
+
+# ----------------------------------------------------------------------
 # Conversation history sliding window — recent turn transcripts prepended
 # to every LLM call so Doll sees her own prior reasoning across turns.
 # Default 6; tune for context budget if cascades are long.

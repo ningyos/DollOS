@@ -92,12 +92,14 @@ class MindLoop:
         system_pulse: Any = None,
         cognition: Any = None,
         wal: PerceptionWAL | None = None,
+        primary_language: str = "繁體中文",
     ) -> None:
         self._state = state
         self._queue = queue
         self._ctx = ctx
         self._llm = llm
         self._system_prompt = system_prompt
+        self._primary_language = primary_language
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
         self._system_pulse = system_pulse
@@ -188,6 +190,7 @@ class MindLoop:
             pulse_block=pulse_block,
             cognition_block=cognition_block,
             associative_hits=associative_hits,
+            primary_language=self._primary_language,
         )
 
         # Call LLM (streams text → sink; dispatches tool calls inline)

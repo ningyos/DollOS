@@ -51,6 +51,19 @@ class MemsearchConfig(BaseModel):
     top_k: int = 10
 
 
+class MemoryConfig(BaseModel):
+    """Memory-WRITE policy knobs (how Doll records memory, not where it's stored).
+
+    ``primary_language`` is the language Doll writes memory in (NoteMemory /
+    diary), regardless of the source language — mixing original-language proper
+    nouns / technical terms where natural is fine. It is injected as a per-turn
+    behavioral guideline (prompt engineering), NOT enforced by a subsystem.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    primary_language: str = "繁體中文"
+
+
 class ConversationHistoryConfig(BaseModel):
     """Conversation history sliding window — recent turn transcripts prepended
     to every LLM call so Doll sees her own prior reasoning across turns."""
@@ -145,6 +158,7 @@ class Settings(BaseModel):
     log: LogConfig = Field(default_factory=lambda: LogConfig())
     data: DataConfig = Field(default_factory=lambda: DataConfig())
     memsearch: MemsearchConfig = Field(default_factory=lambda: MemsearchConfig())
+    memory: MemoryConfig = Field(default_factory=lambda: MemoryConfig())
     conversation_history: ConversationHistoryConfig = Field(
         default_factory=lambda: ConversationHistoryConfig()
     )

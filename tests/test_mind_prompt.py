@@ -229,3 +229,34 @@ def test_safe_mode_banner_omitted_when_off():
     s = MindState()
     out = render_mind(s, [], "SYS")
     assert "[Safe mode]" not in out
+
+
+# --- Memory-writing guideline (primary language + understand-then-write) ---
+
+
+def test_memory_guideline_present_with_default_language():
+    """Every turn carries a [Memory guideline] block; default language is 繁體中文."""
+    state = MindState()
+    out = render_mind(state, [], "SYS")
+    assert "[Memory guideline]" in out
+    assert "繁體中文" in out
+
+
+def test_memory_guideline_language_is_parameterized():
+    """The guideline interpolates the configured primary_language."""
+    state = MindState()
+    out = render_mind(state, [], "SYS", primary_language="English")
+    assert "[Memory guideline]" in out
+    assert "English" in out
+    # The default must NOT leak through when a different language is configured.
+    assert "繁體中文" not in out
+
+
+def test_memory_guideline_says_understand_then_write_own_words():
+    """The guideline must instruct understand-first, own-words, no verbatim copy."""
+    state = MindState()
+    out = render_mind(state, [], "SYS")
+    guideline = out[out.index("[Memory guideline]"):out.index("[Memory context]")]
+    lowered = guideline.lower()
+    assert "own words" in lowered
+    assert "verbatim" in lowered

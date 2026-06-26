@@ -1010,3 +1010,61 @@ async def test_safe_mode_grammar_build_failure_propagates(tmp_path, monkeypatch)
     )
     with pytest.raises(RuntimeError):
         loop._active_grammar()
+
+
+class _CaptureLLM:
+    """Captures the `user` prompt of pass 1; converges immediately."""
+
+    def __init__(self) -> None:
+        self.captured_user: str | None = None
+
+    async def stream_completion(
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+    ):
+        self.captured_user = user
+
+        class _Chunk:
+            text = "TOOL: none\n</think>\n\n"
+            done = True
+
+        yield _Chunk()
+
+    async def stream_messages(self, *a, **k):
+        class _Chunk:
+            text = ""
+            done = True
+
+        yield _Chunk()
+
+
+@pytest.mark.asyncio
+async def test_primary_language_threads_into_rendered_prompt(tmp_path):
+    """MindLoop receives primary_language and threads it into render_mind, so the
+    [Memory guideline] block appears in the per-turn prompt with the configured
+    language interpolated (covers article-ingestion turns too)."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    ctx = _make_mind_ctx(tmp_path, state=state)
+
+    llm = _CaptureLLM()
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=llm,
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+        primary_language="English",
+    )
+
+    await loop.iterate()
+
+    assert llm.captured_user is not None
+    assert "[Memory guideline]" in llm.captured_user
+    assert "English" in llm.captured_user

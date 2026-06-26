@@ -78,7 +78,8 @@ top_k = 5
 
 
 def test_load_settings_rejects_legacy_memory_section(tmp_path: Path):
-    """Old [memory] section should produce a validation error (extra fields)."""
+    """[memory] now exists (primary_language) but has extra='forbid', so the
+    legacy `db_path` field still produces a validation error."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         _BASE_TOML
@@ -187,3 +188,25 @@ max_turns = 10
     )
     settings = load_settings(config_path)
     assert settings.conversation_history.max_turns == 10
+
+
+def test_memory_primary_language_defaults_to_traditional_chinese(tmp_path: Path) -> None:
+    """[memory] is optional; primary_language defaults to 繁體中文 when absent."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    settings = load_settings(config_path)
+    assert settings.memory.primary_language == "繁體中文"
+
+
+def test_memory_primary_language_override(tmp_path: Path) -> None:
+    """primary_language can be configured via the [memory] section."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[memory]
+primary_language = "English"
+"""
+    )
+    settings = load_settings(config_path)
+    assert settings.memory.primary_language == "English"

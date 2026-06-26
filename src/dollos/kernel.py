@@ -311,6 +311,7 @@ class DollOS:
             system_pulse=self.system_pulse,
             cognition=self.cognition,
             wal=self._wal,
+            primary_language=settings.memory.primary_language,
         )
 
         self._reflection_observer = ReflectionObserver(
