@@ -37,12 +37,20 @@ def test_load_missing_file_returns_fresh(tmp_path: Path) -> None:
     assert loaded.iter_count == 0
 
 
-def test_load_malformed_returns_fresh(tmp_path: Path, caplog) -> None:
-    """Test that malformed JSON logs error and returns fresh MindState."""
+def test_load_malformed_surfaces_and_quarantines(tmp_path: Path) -> None:
+    """Malformed JSON surfaces (raises) + quarantines — never blank-resets.
+
+    Surface-not-blank policy (P5.1): a present-but-unreadable state file must
+    NOT silently load as a fresh blank self; it is quarantined and
+    MindStateLoadError is raised so startup halts loudly.
+    """
+    from dollos.mind.mind_state import MindStateLoadError
+
     path = tmp_path / "bad.json"
     path.write_text("{not valid json")
-    loaded = load_state(path)
-    assert loaded.iter_count == 0
+    with pytest.raises(MindStateLoadError):
+        load_state(path)
+    assert list(tmp_path.glob("bad.json.corrupt-*")), "corrupt file must be quarantined"
 
 
 def test_atomic_write_no_partial_on_crash(tmp_path: Path) -> None:

@@ -15,6 +15,28 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 
+class MindStateLoadError(Exception):
+    """Raised when a persisted MindState file is genuinely unreadable.
+
+    Surface-not-blank policy: rather than silently returning a blank
+    ``MindState()`` (total amnesia), a corrupt state file is quarantined and
+    this exception is raised so startup halts loudly instead of presenting a
+    fresh self as if nothing happened.
+    """
+
+
+def _coerce(cls, d: dict):
+    """Field-tolerant reconstruct of a dataclass from a dict.
+
+    Filters ``d`` to ``cls``'s declared dataclass fields before constructing,
+    so additive schema drift (a future extra key inside a record) is tolerated
+    rather than raising ``TypeError`` and blanking the whole self.
+    """
+    fields = cls.__dataclass_fields__
+    filtered = {k: v for k, v in d.items() if k in fields}
+    return cls(**filtered)
+
+
 @dataclass
 class Mood:
     """Doll's emotional state — a natural-language sentence."""
@@ -117,11 +139,32 @@ def save_state(state: MindState, path: Path) -> None:
             tmp_path.unlink()
 
 
+def _quarantine_and_raise(path: Path, reason: str) -> None:
+    """Move an unreadable state file aside and raise MindStateLoadError.
+
+    Surface-not-blank: never silently return a blank self. The unreadable file
+    is renamed to ``<name>.corrupt-<epoch>`` so it is preserved for inspection
+    and a fresh state is not written over it on the next save.
+    """
+    quarantine = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+    path.rename(quarantine)
+    msg = (
+        f"Failed to load MindState from {path}: {reason}. "
+        f"Quarantined to {quarantine}."
+    )
+    logger.error(msg)
+    raise MindStateLoadError(msg)
+
+
 def load_state(path: Path) -> MindState:
     """Load MindState from JSON file with state refresh.
 
-    Missing file returns fresh MindState.
-    Malformed JSON logs error and returns fresh MindState.
+    Missing file is a genuine cold start → fresh ``MindState()``.
+    Additive schema drift (extra top-level or nested keys) is tolerated
+    field-tolerantly, preserving the rest of the self.
+    Genuine corruption (malformed JSON or an unreconstructable record) is
+    surfaced — the file is quarantined and ``MindStateLoadError`` is raised.
+    Never blank-resets over a present-but-unreadable file.
     Refreshes session_started_at=time.time() on load.
     """
     path = Path(path)
@@ -133,24 +176,20 @@ def load_state(path: Path) -> MindState:
         with open(path, "r") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
-        logger.error(f"Malformed JSON in {path}: {e}")
-        return MindState()
-    except Exception as e:
-        logger.error(f"Failed to load MindState from {path}: {e}")
-        return MindState()
+        _quarantine_and_raise(path, f"malformed JSON ({e})")
 
-    # Reconstruct nested dataclasses
+    # Reconstruct nested dataclasses (field-tolerant for additive drift)
     try:
-        mood = Mood(**data.get("mood", {}))
-        active_tasks = [ActiveTask(**t) for t in data.get("active_tasks", [])]
-        pending_events = [PendingEvent(**e) for e in data.get("pending_events", [])]
-        open_loops = [OpenLoop(**l) for l in data.get("open_loops", [])]
+        mood = _coerce(Mood, data.get("mood", {}))
+        active_tasks = [_coerce(ActiveTask, t) for t in data.get("active_tasks", [])]
+        pending_events = [_coerce(PendingEvent, e) for e in data.get("pending_events", [])]
+        open_loops = [_coerce(OpenLoop, l) for l in data.get("open_loops", [])]
         recent_perceptions = deque(
-            [Perception(**p) for p in data.get("recent_perceptions", [])],
+            [_coerce(Perception, p) for p in data.get("recent_perceptions", [])],
             maxlen=20
         )
         recent_outputs = deque(
-            [OutputRecord(**o) for o in data.get("recent_outputs", [])],
+            [_coerce(OutputRecord, o) for o in data.get("recent_outputs", [])],
             maxlen=15
         )
 
@@ -170,5 +209,4 @@ def load_state(path: Path) -> MindState:
         )
         return state
     except Exception as e:
-        logger.error(f"Failed to reconstruct MindState from {path}: {e}")
-        return MindState()
+        _quarantine_and_raise(path, f"unreconstructable state ({e})")
