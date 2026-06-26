@@ -700,6 +700,16 @@ def _shell_pass(speech: str = "跑個指令") -> str:
     )
 
 
+def _note_memory_pass(text: str = "記下來", speech: str = "好") -> str:
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: NoteMemory\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        f'{{"name":"NoteMemory","arguments":{{"text":"{text}"}}}}\n'
+        "</tool_call>"
+    )
+
+
 def _make_scripted_loop(tmp_path, scripts, sink=None, before_pass=None):
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
@@ -756,6 +766,34 @@ async def test_fire_and_forget_tool_runs_single_pass(tmp_path):
     loop, llm = _make_scripted_loop(tmp_path, scripts=[_shell_pass()])
     await loop.iterate()
     assert llm.pass_count == 1
+
+
+@pytest.mark.asyncio
+async def test_note_memory_only_turn_single_pass(tmp_path):
+    """A turn whose only tool is a SUCCESSFUL NoteMemory does NOT trigger a 2nd
+    decode pass (spec §7 P1, finding 2).
+
+    NoteMemory returns a "memory noted: …" confirmation Doll does not need to
+    read to decide — re-feeding it would cost an extra full streaming decode on
+    the project's #1-concern latency path. Only `Recall` (whose RESULT she must
+    read) re-feeds on success."""
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_note_memory_pass()])
+    await loop.iterate()
+    assert llm.pass_count == 1
+
+
+@pytest.mark.asyncio
+async def test_failing_tool_turn_still_cascades(tmp_path):
+    """A tool FAILURE still re-feeds as a <tool_response> for a 2nd pass even
+    though a NoteMemory SUCCESS no longer does — the allowlist gates SUCCESS
+    only, so Doll is always told of (and can fix) her mistakes (spec §7 P1,
+    finding 2)."""
+    loop, llm = _make_scripted_loop(
+        tmp_path,
+        scripts=[_failing_tool_pass("Frobnicate"), _speech_pass("修好了")],
+    )
+    await loop.iterate()
+    assert llm.pass_count == 2
 
 
 @pytest.mark.asyncio

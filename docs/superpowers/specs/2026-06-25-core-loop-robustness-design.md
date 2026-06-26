@@ -469,10 +469,18 @@ The inner pass remains byte-for-byte the current streaming voice path, so:
 - async fire-and-forget tools are untouched (they return `None`, do not produce a
   `tool_response`, do not extend the turn — they re-enter across turns as today).
 
-The only new behaviour: when Doll calls a SYNC tool that returns a string
-(`Recall`, `NoteMemory`), its output is appended as a `<tool_response>` user
-message and a further streaming pass is run, so she can read-then-decide in one
-turn. A turn with no sync-tool result is exactly today's single pass.
+The only new behaviour: when Doll calls a SYNC tool that returns a string, its
+output is appended as a `<tool_response>` user message and a further streaming
+pass is run, so she can read-then-decide in one turn. A turn with no sync-tool
+result is exactly today's single pass.
+
+**Scoping note (finding 2, post-review):** in-turn re-feed on SUCCESS is scoped
+to `Recall` only (allowlist `IN_TURN_REFEED_TOOLS = {"Recall"}`). `NoteMemory`
+success is deliberately EXCLUDED: it returns a `"memory noted: …"` confirmation
+Doll does not need to read, so re-feeding it cost an extra full decode pass on
+the project's #1-concern latency path. Tool FAILURES of ANY tool still re-feed
+(external grounding so Doll can fix her mistake) — the allowlist gates SUCCESS
+only.
 
 ### 7.2 What changes in code
 
