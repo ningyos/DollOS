@@ -42,6 +42,19 @@ MAX_SYNC_REFEED_PASSES = 8
 # cascade-worthiness decision; `tools.py` is untouched by P1.
 FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnSubagent", "SpawnMonitor"})
 
+# Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
+# within a single live turn — OR the same-tool 3-strike stuck flag — Doll
+# narrows to a read-only tool set and announces it. K=3 catches the
+# rotating-invalid-call storm the same-tool 3-strike misses. Bounded-severity,
+# announced boundary — NOT a fallback.
+SAFE_MODE_FAIL_THRESHOLD = 3
+
+# The only tools available while safe_mode is set: read-only / reversible reads
+# plus naked-text speech (always available, not a tool). Everything that writes
+# memory/diary/schedule/scratchpad or spawns an external action is excluded so a
+# failure storm cannot do irreversible damage while the loop is wedged.
+SAFE_MODE_TOOLS = frozenset({"Recall", "ReadToolOutput", "GrepToolOutput"})
+
 
 class MindLoop:
     """The single coroutine that runs Doll's consciousness.
@@ -83,6 +96,8 @@ class MindLoop:
         self._wal = wal
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
+        # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
+        self._safe_grammar: str | None = None
 
         # Build GBNF grammar from tool registry to constrain LLM output.
         # Voice-first grammar emits </think> itself; no prefill needed.
@@ -115,6 +130,14 @@ class MindLoop:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
                 self._state.last_user_at = p.t
+
+        # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
+        # The user is re-engaging, so full capability is restored for this turn;
+        # if the turn fails again, safe mode re-triggers and re-announces.
+        if self._state.safe_mode and any(p.kind == "UserSpoke" for p in perceptions):
+            logger.info("user turn — clearing read-only safe mode")
+            self._state.safe_mode = False
+            self._state.safe_mode_reason = ""
 
         # Auto-sync external state into MindState
         # TODO Task 8.5: ProcessRegistry → state.active_tasks
@@ -204,6 +227,63 @@ class MindLoop:
             logger.exception("memsearch query failed; continuing with empty hits")
             return []
 
+    def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
+        """The tool registry in force for this pass.
+
+        Full registry normally; the read-only subset (`SAFE_MODE_TOOLS`) while
+        ``state.safe_mode`` is set (spec §8.3). Both the per-pass grammar and the
+        post-decode dispatch guard read through this, so a write tool cannot be
+        emitted or executed while safe mode is active.
+        """
+        if self._state.safe_mode:
+            return {
+                n: c for n, c in self._tool_registry.items()
+                if n in SAFE_MODE_TOOLS
+            }
+        return self._tool_registry
+
+    def _active_grammar(self) -> str | None:
+        """Grammar for this pass, built from the active tool registry.
+
+        Outside safe mode this is the once-built full grammar (no per-pass cost).
+        In safe mode it is a lazily-built grammar over the reduced read-only set,
+        cached so repeated safe-mode passes don't rebuild it.
+        """
+        if not self._state.safe_mode:
+            return self._grammar
+        if self._safe_grammar is None:
+            reg = self._active_tool_registry()
+            if reg:
+                try:
+                    self._safe_grammar = build_voice_first_grammar(
+                        list(reg.values())
+                    )
+                except Exception:
+                    logger.exception(
+                        "failed to build safe-mode grammar; running unconstrained"
+                    )
+                    self._safe_grammar = None
+        return self._safe_grammar
+
+    def _enter_safe_mode(self, reason: str) -> None:
+        """Enter read-only safe mode (idempotent within a turn).
+
+        Sets the flag + reason, and enqueues a `SafeModeEntered` perception so
+        Doll perceives the narrowing next turn and can ask the user for help.
+        Announced + visible (banner) + grounded (perception) — not a silent
+        degradation.
+        """
+        if self._state.safe_mode:
+            return
+        self._state.safe_mode = True
+        self._state.safe_mode_reason = reason
+        logger.warning("entering read-only safe mode: %s", reason)
+        self._queue.put(Perception(
+            kind="SafeModeEntered",
+            t=time.time(),
+            data={"reason": reason},
+        ))
+
     @property
     def is_cascade_active(self) -> bool:
         """True iff _llm_iterate is currently running (a cascade is in flight)."""
@@ -244,6 +324,10 @@ class MindLoop:
         # convergence rule.
         consecutive_fails: dict[str, int] = {}
         last_failed_tool: str | None = None
+        # Generic consecutive-failure run across passes (any tool). Catches the
+        # rotating-invalid-call storm the same-tool 3-strike above misses; trips
+        # read-only safe mode at SAFE_MODE_FAIL_THRESHOLD (spec §8.3).
+        consecutive_fail_count = 0
 
         self._cascade_ctx = CascadeCtx()
         try:
@@ -285,26 +369,37 @@ class MindLoop:
                 if not refeed:
                     break  # nothing new to observe → today's single pass
 
-                # Same-tool 3-strike abort (ported from tool_loop.py:189-219).
+                # Same-tool 3-strike abort (ported from tool_loop.py:189-219)
+                # plus the generic consecutive-failure run across passes.
                 for r in refeed:
                     if r.success:
                         consecutive_fails.clear()
                         last_failed_tool = None
-                    elif r.tool_name == last_failed_tool:
-                        consecutive_fails[r.tool_name] = (
-                            consecutive_fails.get(r.tool_name, 1) + 1
-                        )
+                        consecutive_fail_count = 0
                     else:
-                        last_failed_tool = r.tool_name
-                        consecutive_fails = {r.tool_name: 1}
+                        consecutive_fail_count += 1
+                        if r.tool_name == last_failed_tool:
+                            consecutive_fails[r.tool_name] = (
+                                consecutive_fails.get(r.tool_name, 1) + 1
+                            )
+                        else:
+                            last_failed_tool = r.tool_name
+                            consecutive_fails = {r.tool_name: 1}
                 stuck = next(
                     (n for n, c in consecutive_fails.items() if c >= 3),
                     None,
                 )
-                if stuck is not None:
-                    logger.info(
-                        "live cascade stuck on %s (3x); aborting re-feed", stuck
+                if stuck is not None or consecutive_fail_count >= SAFE_MODE_FAIL_THRESHOLD:
+                    reason = (
+                        f"same tool {stuck} failed 3x in a row"
+                        if stuck is not None
+                        else f"{consecutive_fail_count} consecutive tool failures"
                     )
+                    logger.info(
+                        "live cascade entering read-only safe mode (%s); "
+                        "aborting re-feed", reason
+                    )
+                    self._enter_safe_mode(reason)
                     break
 
                 if self._cascade_ctx.cancelled:
@@ -354,7 +449,7 @@ class MindLoop:
                 user=prompt,
                 prefill="",  # voice_first grammar emits </think> itself
                 max_tokens=2048,
-                grammar=self._grammar,
+                grammar=self._active_grammar(),
                 purpose="cascade",
             )
         else:
@@ -362,7 +457,7 @@ class MindLoop:
                 system="",
                 messages=messages,
                 max_tokens=2048,
-                grammar=self._grammar,
+                grammar=self._active_grammar(),
                 purpose="cascade",
             )
 
@@ -469,7 +564,7 @@ class MindLoop:
         grammar-valid call to a stale/renamed tool, or with bad args, re-enters
         as a grounded error instead of a silent no-op.
         """
-        tool_cls = self._tool_registry.get(name)
+        tool_cls = self._active_tool_registry().get(name)
         if tool_cls is None:
             logger.warning("unknown tool: %s", name)
             return ToolResult(tool_name=name, success=False, detail="unknown tool")

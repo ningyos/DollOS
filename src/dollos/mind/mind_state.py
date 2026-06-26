@@ -74,7 +74,7 @@ class Perception:
     kind: Literal[
         "UserSpoke", "ToolResultArrived", "MonitorFired",
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
-        "Interrupted",
+        "Interrupted", "SafeModeEntered",
     ]
     t: float
     data: dict
@@ -109,6 +109,13 @@ class MindState:
     last_iter_at: float = 0.0
     iter_count: int = 0
     session_started_at: float = field(default_factory=time.time)
+
+    # Read-only safe mode (spec §8.3): an explicit, announced, bounded-severity
+    # boundary entered after repeated tool failures. NOT a fallback — the state
+    # is surfaced loudly (persistent banner + help perception) and the tool set
+    # is narrowed to read-only until a user turn clears it.
+    safe_mode: bool = False
+    safe_mode_reason: str = ""
 
 
 def save_state(state: MindState, path: Path) -> bool:
@@ -225,6 +232,8 @@ def load_state(path: Path) -> MindState:
             last_iter_at=data.get("last_iter_at", 0.0),
             iter_count=data.get("iter_count", 0),
             session_started_at=time.time(),  # REFRESH: new session
+            safe_mode=data.get("safe_mode", False),
+            safe_mode_reason=data.get("safe_mode_reason", ""),
         )
         return state
     except Exception as e:

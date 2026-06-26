@@ -806,3 +806,100 @@ async def test_sync_tool_budget_cap_terminates(tmp_path):
     await loop.iterate()
     assert llm.pass_count <= MAX_SYNC_REFEED_PASSES
     assert llm.pass_count == MAX_SYNC_REFEED_PASSES
+
+
+# --- P6.3 (Task 8): bounded-severity read-only safe-mode ---
+
+
+def _failing_tool_pass(tool: str = "Frobnicate") -> str:
+    """A pass that emits a tool_call to an unknown tool → a failed ToolResult.
+
+    Unknown tools are not fire-and-forget, so each one re-feeds and counts as a
+    consecutive failure.
+    """
+    return (
+        f"SEEN: x\nINTENT: y\nTOOL: {tool}\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        "嗯"
+        "<tool_call>\n"
+        f'{{"name":"{tool}","arguments":{{}}}}\n'
+        "</tool_call>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_k_consecutive_failures_enter_safe_mode(tmp_path):
+    """K=3 consecutive tool failures within a turn flip state.safe_mode."""
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_failing_tool_pass()])
+    await loop.iterate()
+    assert loop._state.safe_mode is True
+    assert loop._state.safe_mode_reason  # a non-empty reason is recorded
+
+
+@pytest.mark.asyncio
+async def test_rotating_invalid_calls_enter_safe_mode(tmp_path):
+    """Distinct invalid tool names each pass (which the same-tool 3-strike
+    misses) still trip the generic consecutive-failure threshold."""
+    scripts = [
+        _failing_tool_pass("Alpha"),
+        _failing_tool_pass("Beta"),
+        _failing_tool_pass("Gamma"),
+        _failing_tool_pass("Delta"),
+    ]
+    loop, llm = _make_scripted_loop(tmp_path, scripts=scripts)
+    await loop.iterate()
+    assert loop._state.safe_mode is True
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_excludes_write_tools(tmp_path):
+    """_active_tool_registry() drops write/external tools while safe_mode is set."""
+    loop = _make_mind_loop(tmp_path)
+    loop._state.safe_mode = True
+    tools = loop._active_tool_registry()
+    names = set(tools)
+    assert "Recall" in names
+    assert "Shell" not in names
+    assert "NoteMemory" not in names
+    assert "SpawnSubagent" not in names
+    assert "WriteDiary" not in names
+    assert "WriteSchedule" not in names
+
+
+@pytest.mark.asyncio
+async def test_active_registry_is_full_when_not_safe(tmp_path):
+    """Outside safe mode the active registry is the full registry (no narrowing)."""
+    loop = _make_mind_loop(tmp_path)
+    assert loop._active_tool_registry() == loop._tool_registry
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_entry_enqueues_help_perception(tmp_path):
+    """Entering safe mode enqueues a SafeModeEntered perception (asks for help)."""
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_failing_tool_pass()])
+    await loop.iterate()
+    assert loop._state.safe_mode is True
+    percs = await loop._queue.drain()
+    assert any(p.kind == "SafeModeEntered" for p in percs)
+
+
+@pytest.mark.asyncio
+async def test_user_turn_clears_safe_mode(tmp_path):
+    """A successful user turn (pure speech) clears safe_mode at turn start."""
+    loop = _make_mind_loop(tmp_path)
+    loop._state.safe_mode = True
+    loop._state.safe_mode_reason = "stuck"
+    loop._queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    await loop.iterate()
+    assert loop._state.safe_mode is False
+    assert loop._state.safe_mode_reason == ""
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_uses_reduced_grammar(tmp_path):
+    """In safe mode the per-pass grammar is built from the reduced registry."""
+    loop = _make_mind_loop(tmp_path)
+    full_grammar = loop._active_grammar()
+    loop._state.safe_mode = True
+    safe_grammar = loop._active_grammar()
+    assert safe_grammar is not None
+    assert safe_grammar != full_grammar

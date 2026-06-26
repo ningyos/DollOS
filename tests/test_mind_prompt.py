@@ -207,3 +207,25 @@ def test_recent_self_review_renders_oldest_to_newest():
     s.recent_reviews.append("second lesson")
     out = render_mind(s, [], "SYS")
     assert out.index("first lesson") < out.index("second lesson")
+
+
+# --- P6.3 (Task 8): [Safe mode] banner ---
+
+
+def test_safe_mode_banner_rendered():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    s.safe_mode = True
+    s.safe_mode_reason = "3 consecutive tool failures"
+    out = render_mind(s, [], "SYS")
+    assert "[Safe mode]" in out
+    assert "3 consecutive tool failures" in out
+
+
+def test_safe_mode_banner_omitted_when_off():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    out = render_mind(s, [], "SYS")
+    assert "[Safe mode]" not in out
