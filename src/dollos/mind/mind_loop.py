@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
+from dollos.cascade.tool_loop import ToolResult
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -285,10 +286,20 @@ class MindLoop:
                     summary=f"spoke: {sentence[:60]}",
                 ))
 
-    async def _handle_stream_event(self, event, sink, chunker) -> None:
+    async def _handle_stream_event(
+        self, event, sink, chunker
+    ) -> ToolResult | None:
+        """Handle one parser event.
+
+        SpeakChunk → stream to sink (returns None). ToolCallReady → dispatch the
+        named tool and return its ``ToolResult | None`` so the caller (the §P1
+        re-feed loop, Task 7) can collect cascade-worthy results. A ``None``
+        return means "nothing to observe this event" (speech, or a
+        fire-and-forget tool that spawned a background worker).
+        """
         if isinstance(event, SpeakChunk):
             if not event.text:
-                return
+                return None
             for sentence in chunker.feed(event.text):
                 sink.put_nowait(TextChunk(text=sentence))
                 self._state.recent_outputs.append(OutputRecord(
@@ -296,23 +307,50 @@ class MindLoop:
                     t=time.time(),
                     summary=f"spoke: {sentence[:60]}",
                 ))
+            return None
         elif isinstance(event, ToolCallReady):
-            await self._dispatch_tool(event.name, event.arguments)
+            return await self._dispatch_tool(event.name, event.arguments)
+        return None
 
-    async def _dispatch_tool(self, name: str, arguments: dict) -> None:
+    async def _dispatch_tool(
+        self, name: str, arguments: dict
+    ) -> ToolResult | None:
+        """Dispatch a tool call, returning a typed result.
+
+        Mirrors ``cascade.tool_loop.dispatch_tool_call`` semantics so the live
+        turn and the subagent cascade share one definition of "cascade-worthy":
+
+          - unknown name → ``ToolResult(success=False, detail="unknown tool")``
+          - args fail pydantic validation → ``ToolResult(success=False, …)``
+          - ``run()`` raises → ``ToolResult(success=False, detail="runtime …")``
+          - ``run()`` returns ``None`` → ``None`` (fire-and-forget side-effect)
+          - ``run()`` returns ``str`` → ``ToolResult(success=True, detail=str)``
+
+        Post-decode this is the tool-existence / args guard (spec §8.1): a
+        grammar-valid call to a stale/renamed tool, or with bad args, re-enters
+        as a grounded error instead of a silent no-op.
+        """
         tool_cls = self._tool_registry.get(name)
         if tool_cls is None:
             logger.warning("unknown tool: %s", name)
-            return
+            return ToolResult(tool_name=name, success=False, detail="unknown tool")
         try:
             tool = tool_cls(**arguments)
         except ValidationError as e:
             logger.warning("tool validation failed for %s: %s", name, e)
-            return
+            return ToolResult(
+                tool_name=name, success=False, detail=f"args validation: {e}"
+            )
         try:
-            await tool.run(self._ctx)
-        except Exception:
+            returned = await tool.run(self._ctx)
+        except Exception as e:
             logger.exception("tool %s failed", name)
+            return ToolResult(
+                tool_name=name, success=False, detail=f"runtime error: {e}"
+            )
+        if returned is None:
+            return None
+        return ToolResult(tool_name=name, success=True, detail=returned)
 
     def shutdown(self) -> None:
         """Signal the loop to stop. Unblocks any pending drain()."""

@@ -523,3 +523,80 @@ async def test_recent_reviews_bounded_by_maxlen(tmp_path):
         loop._state.recent_reviews.append(f"lesson {i}")
     assert len(loop._state.recent_reviews) <= 5
     assert "lesson 9" in list(loop._state.recent_reviews)
+
+
+# --- P6.1 (Task 6): _dispatch_tool returns ToolResult incl. existence/args guard ---
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unknown_tool_returns_failed_result(tmp_path):
+    """An unknown tool name produces a typed failed ToolResult, not a silent no-op."""
+    from dollos.cascade.tool_loop import ToolResult
+
+    loop = _make_mind_loop(tmp_path)
+    r = await loop._dispatch_tool("NoSuchTool", {})
+    assert isinstance(r, ToolResult) and r.success is False
+    assert "unknown" in r.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_bad_args_returns_failed_result(tmp_path):
+    """Args that fail pydantic validation produce a typed failed ToolResult."""
+    from dollos.cascade.tool_loop import ToolResult
+
+    loop = _make_mind_loop(tmp_path)
+    r = await loop._dispatch_tool("Recall", {})  # missing required 'query'
+    assert isinstance(r, ToolResult) and r.success is False
+    assert "validation" in r.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_sync_tool_returns_success_result(tmp_path):
+    """A sync tool that returns a str (NoteMemory) yields success=True with detail."""
+    from dollos.cascade.tool_loop import ToolResult
+
+    loop = _make_mind_loop(tmp_path)
+    r = await loop._dispatch_tool("NoteMemory", {"text": "remember this"})
+    assert isinstance(r, ToolResult) and r.success is True
+    assert r.tool_name == "NoteMemory"
+    assert r.detail  # non-empty confirmation string
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_returning_none_yields_none(tmp_path):
+    """A tool whose run() returns None (side-effect only) yields no ToolResult."""
+    loop = _make_mind_loop(tmp_path)
+
+    async def _none_run(self, ctx):
+        return None
+
+    recall_cls = loop._tool_registry["Recall"]
+    orig_run = recall_cls.run
+    recall_cls.run = _none_run
+    try:
+        r = await loop._dispatch_tool("Recall", {"query": "x"})
+    finally:
+        recall_cls.run = orig_run
+    assert r is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_runtime_error_returns_failed_result(tmp_path):
+    """A tool whose run() raises is turned into a failed ToolResult, not propagated."""
+    from dollos.cascade.tool_loop import ToolResult
+
+    loop = _make_mind_loop(tmp_path)
+
+    async def _boom(self, ctx):
+        raise RuntimeError("kaboom")
+
+    # Monkeypatch the registered Recall tool's run to raise at call time.
+    recall_cls = loop._tool_registry["Recall"]
+    orig_run = recall_cls.run
+    recall_cls.run = _boom
+    try:
+        r = await loop._dispatch_tool("Recall", {"query": "x"})
+    finally:
+        recall_cls.run = orig_run
+    assert isinstance(r, ToolResult) and r.success is False
+    assert "runtime" in r.detail.lower()
