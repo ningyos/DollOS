@@ -150,12 +150,17 @@ def build_voice_engines(
 
 
 class _MindLLMAdapter:
-    """Thin adapter: wraps LLMAdapter.stream_completion for MindLoop._llm_call.
+    """Thin adapter wrapping LLMAdapter for the MindLoop streaming cascade.
 
-    MindLoop expects an object with stream_completion(system, user, prefill)
-    that yields chunks with .text and .done attributes.
-    The underlying LLMAdapter.stream_completion is an async generator with
-    matching interface, so this is a transparent pass-through.
+    MindLoop expects an object exposing both:
+      - `stream_completion(system, user, prefill, …)` — pass 1 (single prompt);
+      - `stream_messages(system, messages, …)` — pass ≥ 2 (the in-turn sync-tool
+        re-feed cascade, spec §7.1), preserving the
+        user → assistant(think+tool_call) → user(<tool_response>) → assistant
+        alternation via the template's `render_messages`.
+
+    Both yield chunks with `.text` and `.done`; this is a transparent
+    pass-through to the underlying `LLMAdapter`.
     """
 
     def __init__(self, adapter: LLMAdapter) -> None:
@@ -174,6 +179,23 @@ class _MindLLMAdapter:
             system=system,
             user=user,
             prefill=prefill,
+            max_tokens=max_tokens,
+            grammar=grammar,
+            purpose=purpose,
+        ):
+            yield chunk
+
+    async def stream_messages(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 1024,
+        grammar: str | None = None,
+        purpose: str = "cascade",
+    ):
+        async for chunk in self._adapter.stream_messages(
+            system=system,
+            messages=messages,
             max_tokens=max_tokens,
             grammar=grammar,
             purpose=purpose,

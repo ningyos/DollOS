@@ -29,6 +29,19 @@ from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
 
+# Budget cap on the in-turn sync-tool re-feed cascade (spec §8.2). Generous
+# enough for legitimate multi-step plans, but a rotating-invalid-call storm or a
+# sync-tool loop terminates deterministically. This is a convergence criterion,
+# NOT a fallback.
+MAX_SYNC_REFEED_PASSES = 8
+
+# Fire-and-forget tools spawn a background worker and re-enter as perceptions
+# across turns BY DESIGN (spec §Gap A) — their dispatch ack string must NOT
+# trigger an in-turn re-feed pass. Only sync inline tools (Recall / NoteMemory)
+# cascade within the turn. Classified by name here because the live loop owns the
+# cascade-worthiness decision; `tools.py` is untouched by P1.
+FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnSubagent", "SpawnMonitor"})
+
 
 class MindLoop:
     """The single coroutine that runs Doll's consciousness.
@@ -202,64 +215,190 @@ class MindLoop:
             self._cascade_ctx.cancel()
 
     async def _llm_iterate(self, prompt: str) -> None:
-        """Stream LLM output through voice_first parser.
+        """Stream Doll's turn as an in-turn cascade (spec §7.1).
 
-        SpeakChunks → resolved sink + recent_outputs("Speech");
-        ToolCallReady → dispatch the named tool inline (sequential).
+        Pass 1 streams the single rendered prompt; each subsequent pass re-feeds
+        the SYNC inline tool results (Recall / NoteMemory) from the prior pass as
+        ``<tool_response>`` user messages, so Doll can read-then-decide within the
+        same turn. Async fire-and-forget tools (Shell / SpawnSubagent /
+        SpawnMonitor) do NOT extend the turn — they re-enter as perceptions across
+        turns. A turn with no sync-tool result is exactly today's single pass.
 
-        Honours cancel from `self._cascade_ctx` at every chunk / event /
-        flush boundary so an external `cancel_current_cascade()` returns
-        cleanly within ~one chunk window.
+        Each pass keeps the EXISTING voice machinery byte-for-byte
+        (`ToolStreamParser(voice_mode=True)` + `SentenceChunker` + live sink), so
+        speech still streams sentence-by-sentence to TTS with no TTFT regression.
+
+        Cancellation spans the whole multi-pass turn: `self._cascade_ctx` is set
+        once here and cleared in `finally`, and is honoured at every chunk /
+        event / flush boundary AND at every pass boundary, so an external
+        `cancel_current_cascade()` returns cleanly within ~one chunk window.
+
+        Termination is deterministic (spec §8.2): a pass with no sync-tool result
+        breaks; a same-tool 3-strike failure run aborts; and the pass count is
+        hard-capped at `MAX_SYNC_REFEED_PASSES`.
         """
         sink = self._ctx.sink_resolver()
-        parser = ToolStreamParser(voice_mode=True)
-        chunker = SentenceChunker()
-        # Accumulate the raw assistant emit so the discarded think block (in
-        # particular the REVIEW line, stripped by the voice parser before it
-        # reaches any consumer) can be parsed at end-of-stream — P2-capture §6.2.
-        raw_buf: list[str] = []
+        messages: list[dict] = [{"role": "user", "content": prompt}]
+        # Same-tool consecutive-failure tracker, spanning passes — ported from
+        # `tool_loop.py` so the live loop and the subagent cascade share one
+        # convergence rule.
+        consecutive_fails: dict[str, int] = {}
+        last_failed_tool: str | None = None
+
         self._cascade_ctx = CascadeCtx()
         try:
-            async for chunk in self._llm.stream_completion(
+            for pass_idx in range(MAX_SYNC_REFEED_PASSES):
+                if self._cascade_ctx.cancelled:
+                    logger.info("cascade cancelled at pass boundary; exiting cleanly")
+                    return
+
+                raw_buf, results = await self._stream_one_pass(
+                    prompt=prompt,
+                    messages=messages,
+                    first_pass=(pass_idx == 0),
+                    sink=sink,
+                )
+
+                if self._cascade_ctx.cancelled:
+                    return
+
+                # Per-pass metacognition capture: extract the REVIEW think-line
+                # and append it to the rolling self-review buffer. MOOD is parsed
+                # too but deliberately NOT written to state.mood (spec §6.2 /
+                # §WRONG.4) — only MoodTool may author mood.
+                self._capture_review(raw_buf)
+
+                # Record the assistant emit so the next pass sees the full
+                # user → assistant(think+tool_call) → user(<tool_response>)
+                # alternation.
+                messages.append(
+                    {"role": "assistant", "content": "".join(raw_buf)}
+                )
+
+                # Only SYNC inline tools are cascade-worthy. Fire-and-forget
+                # tools produced a result (a dispatch ack) but must not extend
+                # the turn.
+                refeed = [
+                    r for r in results
+                    if r.tool_name not in FIRE_AND_FORGET_TOOLS
+                ]
+                if not refeed:
+                    break  # nothing new to observe → today's single pass
+
+                # Same-tool 3-strike abort (ported from tool_loop.py:189-219).
+                for r in refeed:
+                    if r.success:
+                        consecutive_fails.clear()
+                        last_failed_tool = None
+                    elif r.tool_name == last_failed_tool:
+                        consecutive_fails[r.tool_name] = (
+                            consecutive_fails.get(r.tool_name, 1) + 1
+                        )
+                    else:
+                        last_failed_tool = r.tool_name
+                        consecutive_fails = {r.tool_name: 1}
+                stuck = next(
+                    (n for n, c in consecutive_fails.items() if c >= 3),
+                    None,
+                )
+                if stuck is not None:
+                    logger.info(
+                        "live cascade stuck on %s (3x); aborting re-feed", stuck
+                    )
+                    break
+
+                if self._cascade_ctx.cancelled:
+                    return
+
+                # Re-feed each sync result as a <tool_response> user message
+                # (external grounding — errors re-enter too, spec §7.3).
+                for r in refeed:
+                    detail = r.detail if r.detail else "(no output)"
+                    messages.append({
+                        "role": "user",
+                        "content": f"<tool_response>\n{detail}\n</tool_response>",
+                    })
+            else:
+                logger.info(
+                    "live cascade hit MAX_SYNC_REFEED_PASSES (%d); stopping",
+                    MAX_SYNC_REFEED_PASSES,
+                )
+        finally:
+            self._cascade_ctx = None
+
+    async def _stream_one_pass(
+        self, *, prompt: str, messages: list[dict], first_pass: bool, sink
+    ) -> tuple[list[str], list[ToolResult]]:
+        """Stream ONE assistant pass through the voice_first parser.
+
+        SpeakChunks → resolved sink + recent_outputs("Speech");
+        ToolCallReady → dispatch the named tool inline (sequential), collecting
+        each non-``None`` ``ToolResult`` so the outer cascade can decide whether
+        to re-feed. Returns ``(raw_buf, results)``.
+
+        Pass 1 uses `stream_completion(user=prompt)` (first-word latency
+        identical to today); pass ≥ 2 uses `stream_messages(messages=…)` so the
+        running conversation (incl. <tool_response>) is sent.
+
+        Honours cancel from `self._cascade_ctx` at every chunk / event / flush
+        boundary — on cancel it returns the partial buffers immediately.
+        """
+        parser = ToolStreamParser(voice_mode=True)
+        chunker = SentenceChunker()
+        raw_buf: list[str] = []
+        results: list[ToolResult] = []
+
+        if first_pass:
+            stream = self._llm.stream_completion(
                 system="",
                 user=prompt,
                 prefill="",  # voice_first grammar emits </think> itself
                 max_tokens=2048,
                 grammar=self._grammar,
                 purpose="cascade",
-            ):
-                if self._cascade_ctx.cancelled:
-                    logger.info("cascade cancelled mid-stream; exiting cleanly")
-                    return
-                if chunk.text:
-                    raw_buf.append(chunk.text)
-                    for event in parser.feed(chunk.text):
-                        if self._cascade_ctx.cancelled:
-                            logger.info("cascade cancelled before event dispatch; exiting")
-                            return
-                        await self._handle_stream_event(event, sink, chunker)
-                if chunk.done:
-                    break
+            )
+        else:
+            stream = self._llm.stream_messages(
+                system="",
+                messages=messages,
+                max_tokens=2048,
+                grammar=self._grammar,
+                purpose="cascade",
+            )
 
+        async for chunk in stream:
             if self._cascade_ctx.cancelled:
-                return
+                logger.info("cascade cancelled mid-stream; exiting cleanly")
+                return raw_buf, results
+            if chunk.text:
+                raw_buf.append(chunk.text)
+                for event in parser.feed(chunk.text):
+                    if self._cascade_ctx.cancelled:
+                        logger.info(
+                            "cascade cancelled before event dispatch; exiting"
+                        )
+                        return raw_buf, results
+                    r = await self._handle_stream_event(event, sink, chunker)
+                    if r is not None:
+                        results.append(r)
+            if chunk.done:
+                break
 
-            for event in parser.flush():
-                if self._cascade_ctx.cancelled:
-                    return
-                await self._handle_stream_event(event, sink, chunker)
+        if self._cascade_ctx.cancelled:
+            return raw_buf, results
 
-            if not self._cascade_ctx.cancelled:
-                # Flush the chunker tail — emit any remaining buffered text.
-                self._flush_chunker(chunker, sink)
-        finally:
-            self._cascade_ctx = None
+        for event in parser.flush():
+            if self._cascade_ctx.cancelled:
+                return raw_buf, results
+            r = await self._handle_stream_event(event, sink, chunker)
+            if r is not None:
+                results.append(r)
 
-        # End-of-stream metacognition capture: extract the REVIEW think-line and
-        # append it to the rolling self-review buffer. MOOD is parsed too but is
-        # deliberately NOT written to state.mood (spec §6.2 / §WRONG.4) — only
-        # MoodTool may author mood.
-        self._capture_review(raw_buf)
+        if not self._cascade_ctx.cancelled:
+            # Flush the chunker tail — emit any remaining buffered text.
+            self._flush_chunker(chunker, sink)
+
+        return raw_buf, results
 
     def _capture_review(self, raw_buf: list[str]) -> None:
         """Parse the accumulated raw emit and record any REVIEW line.
