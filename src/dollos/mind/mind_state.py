@@ -101,6 +101,10 @@ class MindState:
     recent_perceptions: deque[Perception] = field(default_factory=lambda: deque(maxlen=20))
     recent_outputs: deque[OutputRecord] = field(default_factory=lambda: deque(maxlen=15))
 
+    # Last N post-hoc REVIEW think-lines (metacognition surfaced back into the
+    # prompt). Append-only ring buffer; see P2-capture spec §6.2.
+    recent_reviews: deque[str] = field(default_factory=lambda: deque(maxlen=5))
+
     last_user_at: float = 0.0
     last_iter_at: float = 0.0
     iter_count: int = 0
@@ -135,6 +139,7 @@ def save_state(state: MindState, path: Path) -> bool:
         state_dict["open_loops"] = [asdict(l) for l in state.open_loops]
         state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
         state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
+        state_dict["recent_reviews"] = list(state.recent_reviews)
 
         # Atomic write: write to temp, then rename
         with open(tmp_path, "w") as f:
@@ -204,6 +209,7 @@ def load_state(path: Path) -> MindState:
             [_coerce(OutputRecord, o) for o in data.get("recent_outputs", [])],
             maxlen=15
         )
+        recent_reviews = deque(data.get("recent_reviews", []), maxlen=5)
 
         state = MindState(
             mood=mood,
@@ -214,6 +220,7 @@ def load_state(path: Path) -> MindState:
             open_loops=open_loops,
             recent_perceptions=recent_perceptions,
             recent_outputs=recent_outputs,
+            recent_reviews=recent_reviews,
             last_user_at=data.get("last_user_at", 0.0),
             last_iter_at=data.get("last_iter_at", 0.0),
             iter_count=data.get("iter_count", 0),

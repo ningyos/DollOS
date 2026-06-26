@@ -470,3 +470,56 @@ async def test_iterate_does_not_truncate_wal_when_save_fails(tmp_path):
         ml.save_state = orig_save
 
     assert list(wal.iter_pending()) != []  # perceptions survive a failed save
+
+
+# --- P2-capture (Task 5): REVIEW parsed into MindState.recent_reviews ---
+
+
+@pytest.mark.asyncio
+async def test_review_captured_into_state(tmp_path):
+    """A turn whose think block carries a REVIEW line lands it in recent_reviews."""
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+
+    stream = (
+        "SEEN: x\n"
+        "INTENT: y\n"
+        "TOOL: none\n"
+        "REVIEW: I should not have repeated myself\n"
+        "MOOD: 平靜\n"
+        "</think>\n\n"
+        "好的"
+    )
+    loop = _make_mind_loop(tmp_path, llm=_FakeLLM(stream), queue=queue)
+    await loop.iterate()
+
+    reviews = list(loop._state.recent_reviews)
+    assert reviews and "repeated myself" in reviews[-1]
+
+
+@pytest.mark.asyncio
+async def test_mood_think_line_not_written_to_state_mood(tmp_path):
+    """The MOOD think line is parsed but MUST NOT overwrite state.mood (spec §6.2)."""
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+
+    stream = (
+        "SEEN: x\nINTENT: y\nTOOL: none\n"
+        "REVIEW: noted\nMOOD: 暴怒\n</think>\n\nok"
+    )
+    loop = _make_mind_loop(tmp_path, llm=_FakeLLM(stream), queue=queue)
+    default_emotion = loop._state.mood.emotion
+    await loop.iterate()
+    assert loop._state.mood.emotion == default_emotion  # unchanged by MOOD line
+
+
+@pytest.mark.asyncio
+async def test_recent_reviews_bounded_by_maxlen(tmp_path):
+    """recent_reviews keeps at most maxlen entries (newest wins)."""
+    loop = _make_mind_loop(tmp_path)
+    for i in range(10):
+        loop._state.recent_reviews.append(f"lesson {i}")
+    assert len(loop._state.recent_reviews) <= 5
+    assert "lesson 9" in list(loop._state.recent_reviews)

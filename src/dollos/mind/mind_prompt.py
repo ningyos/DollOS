@@ -59,6 +59,14 @@ def render_mind(
         "[Scratchpad]",
         state.scratchpad or "(empty)",
         "",
+    ])
+    if state.recent_reviews:
+        blocks.extend([
+            "[Recent self-review] (your own post-hoc critiques, oldest first)",
+            _render_recent_reviews(state.recent_reviews),
+            "",
+        ])
+    blocks.extend([
         "[Recent perceptions] (newest last)",
         _render_perceptions(state.recent_perceptions, now),
         "",
@@ -172,6 +180,21 @@ def _percep_body(p) -> str:
         by = d.get("by", "user")
         return f"your previous turn was cut short by {by}"
     return str(d)[:120]
+
+
+def _render_recent_reviews(reviews) -> str:
+    """Render the rolling self-review buffer, oldest→newest, one terse line each.
+
+    Each line is truncated (these sit on the prompt-token budget that drives
+    latency). The deque already enforces the count cap (maxlen).
+    """
+    lines = []
+    for r in reviews:
+        line = str(r).strip().replace("\n", " ")
+        if len(line) > 160:
+            line = line[:157] + "..."
+        lines.append(f"- {line}")
+    return "\n".join(lines)
 
 
 def _render_outputs_header(outs, now: float) -> str:

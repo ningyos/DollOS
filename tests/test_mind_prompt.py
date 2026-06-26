@@ -179,3 +179,31 @@ def test_awoke_cold_start_unchanged():
     p = Perception(kind="Awoke", t=time.time(), data={"reason": "cold_start"})
     body = _percep_body(p)
     assert "cold_start" in body
+
+
+def test_recent_self_review_block_rendered():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    s.recent_reviews.append("did not check the file first")
+    out = render_mind(s, [], "SYS")
+    assert "[Recent self-review]" in out
+    assert "did not check the file first" in out
+
+
+def test_recent_self_review_block_omitted_when_empty():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    out = render_mind(s, [], "SYS")
+    assert "[Recent self-review]" not in out
+
+
+def test_recent_self_review_renders_oldest_to_newest():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    s.recent_reviews.append("first lesson")
+    s.recent_reviews.append("second lesson")
+    out = render_mind(s, [], "SYS")
+    assert out.index("first lesson") < out.index("second lesson")
