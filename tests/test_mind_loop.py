@@ -12,7 +12,13 @@ from dollos.mind.perception_queue import PerceptionQueue
 
 
 class _FakeLLM:
-    """Yields the given text as a single streaming chunk."""
+    """Yields the given text as a single streaming chunk on pass 1.
+
+    Any re-feed pass (`stream_messages`, pass >= 2 of the sync-tool cascade)
+    yields a terminal think-only stream with no speech and no tool call, so the
+    cascade converges after exactly one re-feed. Single-pass behaviour for
+    speech-only / fire-and-forget turns is unaffected.
+    """
 
     def __init__(self, returns: str):
         self._returns = returns
@@ -26,6 +32,18 @@ class _FakeLLM:
                 self.done = done
 
         yield _Chunk(text=self._returns, done=True)
+
+    async def stream_messages(
+        self, system, messages, max_tokens=1024, grammar=None,
+        purpose="cascade", stop=None, tools=None,
+    ):
+        class _Chunk:
+            def __init__(self, text, done):
+                self.text = text
+                self.done = done
+
+        # Terminal pass: close think, emit nothing, no tool → cascade breaks.
+        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
 
 
 def _drain_queue(q: asyncio.Queue) -> list:
@@ -600,3 +618,191 @@ async def test_dispatch_runtime_error_returns_failed_result(tmp_path):
         recall_cls.run = orig_run
     assert isinstance(r, ToolResult) and r.success is False
     assert "runtime" in r.detail.lower()
+
+
+# --- P1 (Task 7): in-turn sync-tool re-feed on the streaming path + budget cap ---
+
+
+class _ScriptedLLM:
+    """Yields one scripted stream per LLM pass.
+
+    Pass 1 is driven through ``stream_completion`` (the existing single-prompt
+    path), passes >= 2 through ``stream_messages`` (the multi-message cascade
+    path). Records the ``messages`` list seen by each ``stream_messages`` call
+    and counts total passes so tests can assert single-pass vs multi-pass.
+    """
+
+    def __init__(self, scripts: list[str], before_pass=None):
+        self._scripts = scripts
+        self.pass_count = 0
+        self.captured_messages: list[list[dict]] = []
+        self.before_pass = before_pass
+
+    def _script_for(self, idx: int) -> str:
+        return self._scripts[idx] if idx < len(self._scripts) else self._scripts[-1]
+
+    async def _emit(self, text):
+        class _Chunk:
+            def __init__(self, text, done):
+                self.text = text
+                self.done = done
+
+        yield _Chunk(text=text, done=True)
+
+    async def stream_completion(
+        self, system, user, prefill="", max_tokens=1024, grammar=None,
+        purpose="cascade",
+    ):
+        idx = self.pass_count
+        self.pass_count += 1
+        if self.before_pass is not None:
+            self.before_pass(idx)
+        async for c in self._emit(self._script_for(idx)):
+            yield c
+
+    async def stream_messages(
+        self, system, messages, max_tokens=1024, grammar=None,
+        purpose="cascade", stop=None, tools=None,
+    ):
+        idx = self.pass_count
+        self.pass_count += 1
+        self.captured_messages.append(list(messages))
+        if self.before_pass is not None:
+            self.before_pass(idx)
+        async for c in self._emit(self._script_for(idx)):
+            yield c
+
+
+def _recall_pass(query: str = "coffee", speech: str = "查一下") -> str:
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        f'{{"name":"Recall","arguments":{{"query":"{query}"}}}}\n'
+        "</tool_call>"
+    )
+
+
+def _speech_pass(speech: str) -> str:
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: none\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+    )
+
+
+def _shell_pass(speech: str = "跑個指令") -> str:
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: Shell\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        '{"name":"Shell","arguments":{"command":"echo hi"}}\n'
+        "</tool_call>"
+    )
+
+
+def _make_scripted_loop(tmp_path, scripts, sink=None, before_pass=None):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+    llm = _ScriptedLLM(scripts, before_pass=before_pass)
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=llm,
+        system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+    return loop, llm
+
+
+@pytest.mark.asyncio
+async def test_recall_result_refed_in_same_turn(tmp_path):
+    """Pass 1 emits a Recall call → a 2nd pass runs whose input carries the
+    Recall result as <tool_response>; both passes' speech reach the sink in order."""
+    sink: asyncio.Queue = asyncio.Queue()
+    loop, llm = _make_scripted_loop(
+        tmp_path,
+        scripts=[_recall_pass(speech="查一下"), _speech_pass("找到了")],
+        sink=sink,
+    )
+    await loop.iterate()
+
+    # A second pass ran via stream_messages, and its message list carried the
+    # Recall result as a <tool_response> user message.
+    assert llm.pass_count == 2
+    assert llm.captured_messages, "stream_messages was never called"
+    joined = "\n".join(
+        m["content"] for m in llm.captured_messages[-1] if m["role"] == "user"
+    )
+    assert "<tool_response>" in joined
+
+    # Both passes' speech reached the sink, in order.
+    chunks = _drain_queue(sink)
+    spoken = "".join(c.text for c in chunks if isinstance(c, TextChunk))
+    assert "查一下" in spoken and "找到了" in spoken
+    assert spoken.index("查一下") < spoken.index("找到了")
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_tool_runs_single_pass(tmp_path):
+    """A turn whose only tool is async Shell does NOT trigger a 2nd decode."""
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_shell_pass()])
+    await loop.iterate()
+    assert llm.pass_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pure_speech_turn_single_pass(tmp_path):
+    """A pure-speech turn (no tools) is a single pass identical to today."""
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("你好")])
+    await loop.iterate()
+    assert llm.pass_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_second_pass_exits_clean(tmp_path):
+    """Cancel between pass 1 and pass 2 → no exception, no pass-2 speech."""
+    sink: asyncio.Queue = asyncio.Queue()
+
+    holder: dict = {}
+
+    def before_pass(idx):
+        # When pass 2 (stream_messages) is about to stream, cancel the cascade
+        # so the per-chunk cancel-check drops pass-2 speech cleanly.
+        if idx >= 1 and "loop" in holder:
+            holder["loop"].cancel_current_cascade()
+
+    loop, llm = _make_scripted_loop(
+        tmp_path,
+        scripts=[_recall_pass(speech="查一下"), _speech_pass("SECOND")],
+        sink=sink,
+        before_pass=before_pass,
+    )
+    holder["loop"] = loop
+
+    await loop.iterate()  # must not raise
+
+    chunks = _drain_queue(sink)
+    spoken = "".join(c.text for c in chunks if isinstance(c, TextChunk))
+    assert "SECOND" not in spoken
+    assert loop.is_cascade_active is False
+
+
+@pytest.mark.asyncio
+async def test_sync_tool_budget_cap_terminates(tmp_path):
+    """A model that keeps emitting sync tools terminates at the budget cap."""
+    from dollos.mind.mind_loop import MAX_SYNC_REFEED_PASSES
+
+    # Every pass emits a Recall call; only the budget cap can stop the loop
+    # (Recall always succeeds, so the 3-strike failure abort never fires).
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_recall_pass()])
+    await loop.iterate()
+    assert llm.pass_count <= MAX_SYNC_REFEED_PASSES
+    assert llm.pass_count == MAX_SYNC_REFEED_PASSES
