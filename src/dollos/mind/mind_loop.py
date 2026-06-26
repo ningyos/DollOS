@@ -213,6 +213,10 @@ class MindLoop:
         sink = self._ctx.sink_resolver()
         parser = ToolStreamParser(voice_mode=True)
         chunker = SentenceChunker()
+        # Accumulate the raw assistant emit so the discarded think block (in
+        # particular the REVIEW line, stripped by the voice parser before it
+        # reaches any consumer) can be parsed at end-of-stream — P2-capture §6.2.
+        raw_buf: list[str] = []
         self._cascade_ctx = CascadeCtx()
         try:
             async for chunk in self._llm.stream_completion(
@@ -227,6 +231,7 @@ class MindLoop:
                     logger.info("cascade cancelled mid-stream; exiting cleanly")
                     return
                 if chunk.text:
+                    raw_buf.append(chunk.text)
                     for event in parser.feed(chunk.text):
                         if self._cascade_ctx.cancelled:
                             logger.info("cascade cancelled before event dispatch; exiting")
@@ -248,6 +253,27 @@ class MindLoop:
                 self._flush_chunker(chunker, sink)
         finally:
             self._cascade_ctx = None
+
+        # End-of-stream metacognition capture: extract the REVIEW think-line and
+        # append it to the rolling self-review buffer. MOOD is parsed too but is
+        # deliberately NOT written to state.mood (spec §6.2 / §WRONG.4) — only
+        # MoodTool may author mood.
+        self._capture_review(raw_buf)
+
+    def _capture_review(self, raw_buf: list[str]) -> None:
+        """Parse the accumulated raw emit and record any REVIEW line.
+
+        Tolerant by construction: ``_parse_think`` returns a partial/empty dict
+        when fields are missing, so a turn with no REVIEW appends nothing.
+        """
+        if not raw_buf:
+            return
+        from dollos.cascade_log import _parse_think
+
+        fields = _parse_think("".join(raw_buf))
+        review = fields.get("review")
+        if review:
+            self._state.recent_reviews.append(review)
 
     def _flush_chunker(self, chunker: SentenceChunker, sink) -> None:
         for sentence in chunker.flush():

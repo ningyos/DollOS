@@ -74,3 +74,12 @@ def test_save_state_returns_false_on_failure(tmp_path):
     bad = tmp_path / "afile"
     bad.write_text("x")
     assert save_state(MindState(), bad / "s.json") is False
+
+
+def test_recent_reviews_round_trips(tmp_path):
+    from dollos.mind.mind_state import MindState, load_state, save_state
+    s = MindState()
+    s.recent_reviews.append("lesson A")
+    p = tmp_path / "s.json"
+    save_state(s, p)
+    assert "lesson A" in list(load_state(p).recent_reviews)
