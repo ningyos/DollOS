@@ -446,3 +446,27 @@ async def test_iterate_with_no_wal_unchanged(tmp_path):
     # Put a perception so iterate() does real work
     loop._queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
     await loop.iterate()
+
+
+@pytest.mark.asyncio
+async def test_iterate_does_not_truncate_wal_when_save_fails(tmp_path):
+    """A failed save must NOT truncate the WAL — perceptions survive for replay."""
+    import time
+    from dollos.wal.perception_log import PerceptionWAL
+    from dollos.mind.perception_queue import PerceptionQueue
+    from dollos.mind.mind_state import Perception
+    import dollos.mind.mind_loop as ml
+
+    wal = PerceptionWAL(tmp_path / "wal.jsonl")
+    queue = PerceptionQueue(wal=wal)
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"}))
+
+    orig_save = ml.save_state
+    ml.save_state = lambda *a, **k: False  # force failed save
+    try:
+        loop = _make_mind_loop(tmp_path, queue=queue, wal=wal)
+        await loop.iterate()
+    finally:
+        ml.save_state = orig_save
+
+    assert list(wal.iter_pending()) != []  # perceptions survive a failed save
