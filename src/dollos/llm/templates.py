@@ -338,8 +338,8 @@ def build_voice_first_grammar(tools: list[type[BaseModel]]) -> str:
     tool_call_alts = " | ".join(rule_ids)
     head = (
         "root ::= think segments\n"
-        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line '
-        '"MOOD: " line "TOOL: " line "</think>\\n\\n"\n'
+        'think ::= "SEEN: " line "INTENT: " line "TOOL: " line '
+        '"REVIEW: " line "MOOD: " line "</think>\\n\\n"\n'
         'line ::= [^\\n]+ "\\n"\n'
         "segments ::= segment*\n"
         "segment ::= speak | tool-call\n"

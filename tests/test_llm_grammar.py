@@ -217,3 +217,22 @@ def test_voice_first_grammar_accepts_silent_finish():
     g = build_voice_first_grammar([NoteMemory])
     # segments ::= segment* means zero allowed
     assert "segment*" in g
+
+
+def test_voice_first_grammar_tool_precedes_review():
+    from dollos.llm.templates import build_voice_first_grammar
+    from dollos.tools import MAIN_TOOLS
+    g = build_voice_first_grammar(MAIN_TOOLS)
+    # New order: INTENT -> TOOL -> REVIEW -> MOOD
+    assert '"INTENT: " line "TOOL: " line "REVIEW: "' in g
+    # Old order must be gone:
+    assert '"REVIEW: " line "MOOD: " line "TOOL: "' not in g
+
+
+def test_voice_first_grammar_tail_unchanged():
+    from dollos.llm.templates import build_voice_first_grammar
+    from dollos.tools import MAIN_TOOLS
+    g = build_voice_first_grammar(MAIN_TOOLS)
+    assert "segments ::= segment*" in g
+    assert "segment ::= speak | tool-call" in g
+    assert "speak ::= [^<]+" in g
