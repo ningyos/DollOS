@@ -112,6 +112,51 @@ async def test_iterate_streams_speech_to_sink_and_dispatches_tool(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_iterate_puts_turn_end_none_separator_on_sink(tmp_path):
+    """A completed turn must end with a None turn-separator on the sink so the
+    connection pump emits TurnEnd. Regression: turn_end never reached text/IPC
+    clients because nothing produced the None the pump converts."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    # Speak-only turn (no tool_call) so the turn ends after one pass.
+    stream = (
+        "SEEN: user said hi\n"
+        "INTENT: greet\n"
+        "TOOL: none\n"
+        "REVIEW: ok\n"
+        "MOOD: warm\n"
+        "</think>\n\n"
+        "Hello there"
+    )
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=_FakeLLM(stream),
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    await loop.iterate()
+
+    items = _drain_queue(sink)
+    assert items, "sink received nothing"
+    assert any(isinstance(c, TextChunk) for c in items)
+    # The turn ended with exactly one trailing None separator.
+    assert items[-1] is None, f"turn must end with a None separator; tail={items[-1]!r}"
+    assert items.count(None) == 1, f"expected exactly one turn separator, got {items.count(None)}"
+
+
+@pytest.mark.asyncio
 async def test_iterate_sentence_chunks_speech_to_sink(tmp_path):
     """Multi-sentence LLM output should arrive as multiple TextChunks, one per sentence."""
     from tests._dispatcher_helpers import _make_mind_ctx
