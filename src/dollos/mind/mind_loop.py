@@ -37,10 +37,19 @@ MAX_SYNC_REFEED_PASSES = 8
 
 # Fire-and-forget tools spawn a background worker and re-enter as perceptions
 # across turns BY DESIGN (spec §Gap A) — their dispatch ack string must NOT
-# trigger an in-turn re-feed pass. Only sync inline tools (Recall / NoteMemory)
-# cascade within the turn. Classified by name here because the live loop owns the
-# cascade-worthiness decision; `tools.py` is untouched by P1.
+# trigger an in-turn re-feed pass. Classified by name here because the live loop
+# owns the cascade-worthiness decision; `tools.py` is untouched by P1.
 FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnSubagent", "SpawnMonitor"})
+
+# In-turn re-feed allowlist (spec §7 P1). On SUCCESS, only a tool whose RESULT
+# Doll genuinely must read to decide what to do next warrants another full
+# streaming decode pass. `Recall` returns memory hits that change her next
+# decision; `NoteMemory` returns a "memory noted: …" confirmation she does NOT
+# need to observe — re-feeding it would cost an extra decode pass on the
+# project's #1-concern latency path. Tool FAILURES of ANY tool still re-feed
+# (external grounding so Doll is told and can fix her mistake) — this allowlist
+# gates SUCCESS only.
+IN_TURN_REFEED_TOOLS = frozenset({"Recall"})
 
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
 # within a single live turn — OR the same-tool 3-strike stuck flag — Doll
@@ -357,12 +366,18 @@ class MindLoop:
                     {"role": "assistant", "content": "".join(raw_buf)}
                 )
 
-                # Only SYNC inline tools are cascade-worthy. Fire-and-forget
-                # tools produced a result (a dispatch ack) but must not extend
-                # the turn.
+                # Decide which results warrant another in-turn observe pass.
+                # Fire-and-forget tools (dispatch ack only) never extend the
+                # turn. Of the remaining SYNC results, a SUCCESS re-feeds only
+                # if its tool is on the in-turn allowlist (Recall) — a
+                # NoteMemory success returns a confirmation Doll need not read,
+                # so re-feeding it would be a wasted decode on the latency path.
+                # A FAILURE of any tool always re-feeds (external grounding so
+                # Doll can correct), so failures cascade exactly as before.
                 refeed = [
                     r for r in results
                     if r.tool_name not in FIRE_AND_FORGET_TOOLS
+                    and (not r.success or r.tool_name in IN_TURN_REFEED_TOOLS)
                 ]
                 if not refeed:
                     break  # nothing new to observe → today's single pass
