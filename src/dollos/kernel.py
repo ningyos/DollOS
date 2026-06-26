@@ -8,9 +8,8 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from memsearch import MemSearch
-
 from dollos.character import DollPack
+from dollos.memory import FtsMemory
 from dollos.config import Settings
 from dollos.logging_config import configure_cascade_logging
 from dollos.cascade_log import CascadeLogger
@@ -87,8 +86,11 @@ def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
     raise ValueError(f"unknown template: {settings.llm.template}")
 
 
-def build_memsearch(settings: Settings) -> MemSearch:
-    """Construct memsearch rooted at data.root / memory / shared, transcripts, and skills.
+def build_memsearch(settings: Settings) -> FtsMemory:
+    """Construct the embedder-free FtsMemory rooted at data.root / memory.
+
+    Indexes shared/, transcripts/, and skills/ markdown into an FTS5 + jieba
+    index at data.root/memory/fts.db (derived, disposable).
 
     skills/ holds skill entry files (frontmatter + short description); they ARE indexed
     so RECALL surfaces them. skill_bodies/ holds full skill instructions and is NOT
@@ -96,19 +98,20 @@ def build_memsearch(settings: Settings) -> MemSearch:
     NOT auto-created at startup; Doll creates it lazily via Shell when she writes
     a new skill body.
     """
-    shared_path = settings.data.root / "memory" / "shared"
-    transcripts_path = settings.data.root / "memory" / "transcripts"
-    skills_path = settings.data.root / "memory" / "skills"
+    memory_root = settings.data.root / "memory"
+    shared_path = memory_root / "shared"
+    transcripts_path = memory_root / "transcripts"
+    skills_path = memory_root / "skills"
     shared_path.mkdir(parents=True, exist_ok=True)
     transcripts_path.mkdir(parents=True, exist_ok=True)
     skills_path.mkdir(parents=True, exist_ok=True)
-    return MemSearch(
+    return FtsMemory(
         paths=[
             str(shared_path),
             str(transcripts_path),
             str(skills_path),
         ],
-        embedding_provider="onnx",
+        db_path=memory_root / "fts.db",
     )
 
 
@@ -671,5 +674,6 @@ class DollOS:
                     self._mind_loop.shutdown()
                     await asyncio.gather(self._mind_task, return_exceptions=True)
                 self._tool_output_store.cleanup()
+                self.memsearch.close()
         finally:
-            self._pidfile.release()   # memsearch has no close(); Milvus Lite is file-based
+            self._pidfile.release()

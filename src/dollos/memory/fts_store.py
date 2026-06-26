@@ -181,13 +181,8 @@ class FtsMemory:
         expr = _query_expr(query)
         if expr is None:
             return []
-        prefix = (
-            str(Path(source_prefix).expanduser().resolve())
-            if source_prefix is not None
-            else None
-        )
         async with self._lock:
-            return await asyncio.to_thread(self._search_sync, expr, top_k, prefix)
+            return await asyncio.to_thread(self._search_sync, expr, top_k, source_prefix)
 
     async def index_file(self, path: str | Path) -> None:
         p = Path(path)
@@ -205,14 +200,17 @@ class FtsMemory:
     # synchronous internals (run inside asyncio.to_thread, lock held)      #
     # ------------------------------------------------------------------ #
 
-    def _search_sync(self, expr: str, top_k: int, prefix: str | None) -> list[dict]:
+    def _search_sync(
+        self, expr: str, top_k: int, source_prefix: str | Path | None
+    ) -> list[dict]:
         sql = (
             "SELECT content, source, heading, chunk_hash, heading_level, "
             "start_line, end_line, bm25(chunks) AS _bm25 "
             "FROM chunks WHERE chunks MATCH ?"
         )
         params: list = [expr]
-        if prefix is not None:
+        if source_prefix is not None:
+            prefix = str(Path(source_prefix).expanduser().resolve())
             sql += " AND source LIKE ? ESCAPE '\\'"
             params.append(_like_prefix(prefix) + "%")
         sql += " ORDER BY bm25(chunks) LIMIT ?"

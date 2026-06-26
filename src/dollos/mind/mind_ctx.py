@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from memsearch import MemSearch
+    from dollos.memory import FtsMemory
 
     from dollos.mind.mind_state import MindState
     from dollos.mind.sink_resolver import SinkResolver
@@ -33,7 +33,7 @@ class MindCtx:
         live user sink, so this is always None here.
     """
     mind_state: "MindState"
-    memsearch: "MemSearch"
+    memsearch: "FtsMemory"
     memory_root: Path
     transcripts_root: Path
     sink_resolver: "SinkResolver"

@@ -16,13 +16,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from memsearch import MemSearch
+    from dollos.memory import FtsMemory
 
 
 async def append_transcript(
     *,
     transcripts_root: Path,
-    memsearch: MemSearch,
+    memsearch: FtsMemory,
     role: str,
     text: str,
 ) -> None:
