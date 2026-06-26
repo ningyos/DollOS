@@ -150,18 +150,26 @@ class MindLoop:
         # Update counters + persist
         self._state.iter_count += 1
         self._state.last_iter_at = time.time()
-        save_state(self._state, self._persist_path)
+        saved = save_state(self._state, self._persist_path)
 
-        # Truncate WAL through the highest seq among consumed perceptions.
-        # After save_state succeeds, the state durably reflects these perceptions,
-        # so they no longer need to be replayed on next startup.
-        if self._wal is not None and perceptions:
+        # Truncate WAL through the highest seq among consumed perceptions —
+        # ONLY when the save durably succeeded. After a successful save_state the
+        # state durably reflects these perceptions, so they no longer need to be
+        # replayed on next startup. If the save FAILED we must NOT truncate, so
+        # the perceptions remain in the WAL and are replayed (and re-attempted)
+        # on next boot.
+        if self._wal is not None and perceptions and saved:
             last_seq = max(
                 (p.seq for p in perceptions if p.seq is not None),
                 default=None,
             )
             if last_seq is not None:
                 self._wal.truncate_through(last_seq)
+        elif self._wal is not None and perceptions and not saved:
+            logger.warning(
+                "save failed; skipping WAL truncation to preserve "
+                "perceptions for replay"
+            )
 
     async def _derive_memory_hits(self) -> list[dict]:
         """Query memsearch from the most recent UserSpoke or last 3 perceptions."""

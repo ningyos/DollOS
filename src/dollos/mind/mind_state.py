@@ -106,37 +106,48 @@ class MindState:
     session_started_at: float = field(default_factory=time.time)
 
 
-def save_state(state: MindState, path: Path) -> None:
+def save_state(state: MindState, path: Path) -> bool:
     """Save MindState to JSON file atomically.
 
     Uses atomic write via temporary file + rename to avoid partial writes on crash.
+
+    Returns ``True`` iff the temp file was written and atomically renamed into
+    place. On any failure the temp file is cleaned up, the error is logged, and
+    ``False`` is returned (no raise) — the caller decides what to do (e.g. skip
+    WAL truncation so perceptions survive for replay). The daemon must not crash
+    mid-turn on a failed save.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Convert deques to lists for JSON serialization
-    state_dict = asdict(state)
-    state_dict["recent_perceptions"] = list(state.recent_perceptions)
-    state_dict["recent_outputs"] = list(state.recent_outputs)
-
-    # Convert dataclass instances to dicts for nested structures
-    state_dict["mood"] = asdict(state.mood)
-    state_dict["active_tasks"] = [asdict(t) for t in state.active_tasks]
-    state_dict["pending_events"] = [asdict(e) for e in state.pending_events]
-    state_dict["open_loops"] = [asdict(l) for l in state.open_loops]
-    state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
-    state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
-
-    # Atomic write: write to temp, then rename
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Convert deques to lists for JSON serialization
+        state_dict = asdict(state)
+        state_dict["recent_perceptions"] = list(state.recent_perceptions)
+        state_dict["recent_outputs"] = list(state.recent_outputs)
+
+        # Convert dataclass instances to dicts for nested structures
+        state_dict["mood"] = asdict(state.mood)
+        state_dict["active_tasks"] = [asdict(t) for t in state.active_tasks]
+        state_dict["pending_events"] = [asdict(e) for e in state.pending_events]
+        state_dict["open_loops"] = [asdict(l) for l in state.open_loops]
+        state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
+        state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
+
+        # Atomic write: write to temp, then rename
         with open(tmp_path, "w") as f:
             json.dump(state_dict, f, indent=2)
         tmp_path.replace(path)
+        return True
     except Exception as e:
         logger.error(f"Failed to save MindState to {path}: {e}")
-        if tmp_path.exists():
-            tmp_path.unlink()
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        return False
 
 
 def _quarantine_and_raise(path: Path, reason: str) -> None:

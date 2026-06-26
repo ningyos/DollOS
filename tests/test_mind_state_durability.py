@@ -61,3 +61,16 @@ def test_corrupt_json_raises_and_quarantines(tmp_path):
         load_state(p)
     quarantined = list(tmp_path.glob("mind_state.json.corrupt-*"))
     assert quarantined, "corrupt file must be quarantined, not left in place"
+
+
+def test_save_state_returns_true_on_success(tmp_path):
+    from dollos.mind.mind_state import MindState, save_state
+    assert save_state(MindState(), tmp_path / "s.json") is True
+
+
+def test_save_state_returns_false_on_failure(tmp_path):
+    from dollos.mind.mind_state import MindState, save_state
+    # Parent is a file, so mkdir/open fails -> save returns False, does not raise.
+    bad = tmp_path / "afile"
+    bad.write_text("x")
+    assert save_state(MindState(), bad / "s.json") is False
