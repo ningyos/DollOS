@@ -74,6 +74,7 @@ class Perception:
     kind: Literal[
         "UserSpoke", "ToolResultArrived", "MonitorFired",
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
+        "Interrupted",
     ]
     t: float
     data: dict
