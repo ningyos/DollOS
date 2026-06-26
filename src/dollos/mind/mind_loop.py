@@ -191,7 +191,15 @@ class MindLoop:
         )
 
         # Call LLM (streams text → sink; dispatches tool calls inline)
-        await self._llm_iterate(prompt)
+        try:
+            await self._llm_iterate(prompt)
+        finally:
+            # Signal end-of-turn to the connection pump: a None turn-separator
+            # is converted to TurnEnd by the IPC pump. Always fires once per
+            # real turn (even on error) so a text/IPC client never hangs
+            # waiting for turn_end. Voice path: TTSObservingSink passes None
+            # through unchanged (not a TextChunk, so no TTS side effect).
+            self._ctx.sink_resolver().put_nowait(None)
 
         # Update counters + persist
         self._state.iter_count += 1
