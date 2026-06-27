@@ -716,6 +716,28 @@ class MoodTool(BaseModel):
         return result
 
 
+class NoteToolLesson(BaseModel):
+    """Record a compact, reusable lesson about HOW to use your tools —
+    distilled from what worked or what failed. Append-only: write a NEW
+    lesson rather than rewriting an old one. (Surfaced back as [Tool habits].)"""
+
+    situation: str = Field(description="When this applies, one short phrase.")
+    lesson: str = Field(description="The reusable takeaway, one or two sentences.")
+
+    def _summary(self) -> str:
+        return f"tool lesson: {self.situation[:60]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        path = ctx.memory_root / "shared" / "tool_playbook.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        heading = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
+        with path.open("a") as f:
+            f.write(f"\n## {heading}\n\n[situation] {self.situation}\n{self.lesson}\n")
+        await ctx.memsearch.index_file(path)
+        _record(ctx, "NoteToolLesson", self._summary())
+        return f"lesson noted: {self.situation[:60]}"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
@@ -724,6 +746,8 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     SetFocus, OpenLoop, CloseLoop,
     MoodTool,
 ]
+
+REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
