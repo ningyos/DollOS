@@ -236,3 +236,12 @@ def test_voice_first_grammar_tail_unchanged():
     assert "segments ::= segment*" in g
     assert "segment ::= speak | tool-call" in g
     assert "speak ::= [^<]+" in g
+
+
+def test_integer_rule_allows_negative():
+    """ReadToolOutput.offset 描述支援負數（從尾端數）；grammar 的 integer
+    規則須容許前導負號。語意邊界(ge/le)仍由 pydantic 守門。"""
+    from dollos.tools import NoteMemory
+    from dollos.llm.templates import build_voice_first_grammar
+    g = build_voice_first_grammar([NoteMemory])
+    assert 'integer ::= "-"? ( "0" | [1-9] [0-9]* )' in g
