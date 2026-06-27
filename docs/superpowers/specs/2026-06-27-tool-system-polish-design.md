@@ -73,7 +73,8 @@ SetFocus + OpenLoop/CloseLoop = 7 件，其中 `EditScratchpad` 的 exact-unique
 
 ### § 3.1　Grammar：optional 參數可達
 
-`llm/templates.py::_build_tool_call_rule` 擴充，分兩段組 arguments body：
+`llm/templates.py::_build_tool_call_rule` 加一個 keyword 參數
+`include_optional: bool = False`。為 `True` 時，arguments body 分兩段組：
 
 1. **required 段**：照舊，依 `schema["required"]` 順序全部 emit（`str` / `integer` /
    string-enum / `$ref`-array）。
@@ -84,8 +85,14 @@ SetFocus + OpenLoop/CloseLoop = 7 件，其中 `EditScratchpad` 的 exact-unique
    ( "," "\"<name>\": " <type> )?
    ```
 
-   因為每個 optional 片段都自帶前導逗號，且 required 段已先 emit 至少一個欄位，
+   每個 optional 片段都自帶前導逗號，故只要 required 段已先 emit ≥1 個欄位，
    產出的 JSON 永遠合法。
+
+**只在「≥1 required 欄位」時 emit optional 後綴**。當 `required` 為空（optional-only
+工具）時，維持現行行為——arguments body 為空 `{}`（optional 不可達）。理由：0-required
+情形下「第一個出現的欄位不能有前導逗號」無法用 GBNF 乾淨表達；而目前**所有**需要解鎖的
+工具都有 ≥1 required 欄位，故此限制不影響任何實際需求，且保留既有
+`test_optional_only_tool_has_empty_args_body` 的行為。
 
 **型別支援（optional）**：`string`、`integer`。對 `X | None`（如 `match_regex: str | None`、
 `since/until: datetime | None`）：json schema 會以 `anyOf: [{type:...}, {type:"null"}]`
@@ -94,14 +101,13 @@ SetFocus + OpenLoop/CloseLoop = 7 件，其中 `EditScratchpad` 的 exact-unique
 `datetime` 在 schema 是 `string`（format date-time），對 grammar 而言就是 `str`，
 pydantic 之後負責解析 ISO。
 
-**邊界**：目前每個工具都有 ≥1 required 欄位，故「0 required + 有 optional」的前導逗號
-邊界不會發生。若未來出現此情形，`_build_tool_call_rule` 須**明確 raise
-`NotImplementedError`**（附清楚訊息），不得靜默產生非法 JSON。
+**只有 voice grammar 開啟 optional**：`build_voice_first_grammar`（Doll 的 live loop）
+呼叫 `_build_tool_call_rule(..., include_optional=True)`；`build_qwen3_think_tool_grammar`
+（B4，subagent 用）維持 `include_optional=False`（required-only），保留「proven B4 probe：
+extras add noise」的設計意圖與既有 B4 grammar 測試。「用得襯手」是針對 Doll 本體，
+subagent 是即時工人，required-only 已足夠。
 
-`build_qwen3_think_tool_grammar`（B4，subagent 用）與 `build_voice_first_grammar`
-（voice，live 用）都呼叫同一個 `_build_tool_call_rule`，故兩者一併受惠。
-
-→ **解鎖能力**：`Shell.timeout_s`、`SpawnSubagent.timeout_s`、
+→ **解鎖能力（voice / Doll）**：`Shell.timeout_s`、`SpawnSubagent.timeout_s`、
 `SpawnMonitor.match_regex` / `rate_limit_s`、`Recall.since` / `until`、
 `MoodTool.reason`。
 
@@ -177,25 +183,33 @@ unconstrained decode。
 
 ### § 3.6　架構債：dispatch 合一
 
-把「單一工具 dispatch」抽成**一份共用函式**，吃 `MindCtx`：
+**事實更新（planning 階段查證）**：`subagent.py::_run_cascade` **已經**建 `MindCtx`
+（見 `subagent.py:239`），不是 `ToolCtx`。`ToolCtx` 現在**只**剩 `cascade/tool_loop.py`
+裡一個 `TYPE_CHECKING` 的型別註解——執行期 `dispatch_tool_call` / `run_tool_cascade`
+收到的其實是 `MindCtx`（靠 `MindCtx.sink = None` 的 compat 欄位 duck-type 相容）。
+所以「subagent 遷 MindCtx」**已完成**，本桶風險大降。
 
-```
-validate args → run(ctx) → 分類成 ToolResult / None（含 § 3.4 友善錯誤）
-```
-
-- `mind_loop._dispatch_tool` 改為呼叫此共用函式（薄包裝，套用 `_active_tool_registry()`）。
-- `cascade/tool_loop.run_tool_cascade` 內的 `dispatch_tool_call` 也改呼叫同一份。
-- **subagent 遷到 `MindCtx`**：subagent cascade 目前建 `ToolCtx`，改為建 `MindCtx`
-  （subagent 沒有對外 sink → 用 null/no-op sink resolver；mind_state 用 subagent 自己的
-  輕量 state 或一個拋棄式 `MindState()`）。遷移完成後**刪除 `ToolCtx`**。
+做法：
+- 在 `cascade/tool_loop.py` 新增**一份共用核心** `dispatch_one(name, arguments, ctx,
+  registry, *, error_sink=None) -> ToolResult | None`：
+  ```
+  unknown tool（含 § 3.4 有效名單）→ model_validate（失敗走 § 3.4 友善錯誤）
+  → run(ctx)（runtime error → 若 error_sink 非 None 推 ErrorMsg，回 ToolResult fail）
+  → None（side-effect）/ ToolResult（success）
+  ```
+- `tool_loop.dispatch_tool_call(call, ctx, tools_by_name)` 改為薄包裝：抽出 `call["name"]`
+  / `call["arguments"]`（保留 name 非 str 的既有守門），呼叫 `dispatch_one(...,
+  error_sink=ctx.sink)`。
+- `mind_loop._dispatch_tool(name, arguments)` 改為薄包裝：呼叫
+  `dispatch_one(name, arguments, self._ctx, self._active_tool_registry())`（safe-mode
+  registry 維持）。
+- 驗證統一用 `model_validate(arguments)`（取代 mind_loop 現行的 `tool_cls(**arguments)`，
+  pydantic 對巢狀更正確）。
+- 把 `tool_loop.py` 的 `ctx: "ToolCtx"` 型別註解全部改成 `MindCtx`，**刪除 `tools.py`
+  的 `ToolCtx` 死碼**。
 - cascade **編排**不動：subagent 仍用 B4 grammar + `run_tool_cascade` + Report
   early-exit；live loop 仍用 voice-first + 多-pass re-feed。只統一「單一工具 dispatch +
   錯誤格式」這一層。
-
-> **若 subagent→MindCtx 遷移在實作時證實過於侵入**（MindCtx 依賴的欄位 subagent 難以
-> 提供）：退而求其次，保留 `ToolCtx`，但讓兩條路徑都 route 過同一個 dispatch helper
-> （helper 以一個窄介面 protocol 吃 ctx），仍消除手動 mirror。此 fallback 僅限架構債這
-> 一桶，且須在 plan 階段明確記錄選擇了哪條。
 
 ---
 
@@ -207,12 +221,12 @@ validate args → run(ctx) → 分類成 ToolResult / None（含 § 3.4 友善�
   `_dispatch_tool`（改呼叫共用 dispatch）。
 - `src/dollos/tools.py` — 新增 `Scratchpad`、移除 `WriteScratchpad`/`AppendScratchpad`/
   `EditScratchpad`/`ClearScratchpad`，更新 `MAIN_TOOLS`/`SUB_TOOLS`、清過時描述。
-- `src/dollos/cascade/tool_loop.py` — `dispatch_tool_call` 改呼叫共用 dispatch；
-  友善錯誤格式。
-- `src/dollos/subagent.py` — 遷 `ToolCtx` → `MindCtx`（或 § 3.6 fallback）。
-- 共用 dispatch 的落點：新增 `src/dollos/cascade/dispatch.py`（或併入 `tool_loop.py`），
-  在 plan 階段決定。
+- `src/dollos/cascade/tool_loop.py` — 新增共用核心 `dispatch_one`、友善錯誤 helper
+  （`format_validation_error` / `format_unknown_tool`）；`dispatch_tool_call` 改薄包裝；
+  `ctx: "ToolCtx"` 型別註解改 `MindCtx`。
+- `src/dollos/subagent.py` — **無須改動**（已用 `MindCtx`）。
 - 移除 `ToolCtx`（`tools.py`）。
+- 友善錯誤 helper 落點：`cascade/tool_loop.py`（與 `dispatch_one` 同檔，純函式）。
 
 ---
 
@@ -251,10 +265,14 @@ validate args → run(ctx) → 分類成 ToolResult / None（含 § 3.4 友善�
 
 ## 7. 風險
 
-- **subagent→MindCtx 遷移**是 § 3.6 最大改動面；plan 階段需先評估 MindCtx 對 subagent 的
-  依賴，必要時走 § 3.6 fallback。
 - **optional 後綴的 grammar 正確性**：GBNF 逗號處理易錯，需以多組 present/absent 組合的
-  解析測試把關。
+  解析測試把關（最大技術風險）。
+- **既有 grammar 測試需同步更新**：B4 的 `test_grammar_has_per_tool_call_rule_for_each_tool`
+  寫死 19 工具 rule-id dict（§ 3.5 改了工具集要更新）；voice grammar 新增 optional 後綴
+  需新增測試。B4 的 `test_grammar_per_tool_field_names_match_required_strings` 與
+  `test_optional_only_tool_has_empty_args_body` 因 B4 維持 required-only 而**不受影響**。
+- **`model_validate` 取代 `tool_cls(**arguments)`**：行為應等價或更嚴謹；以既有
+  `test_tools.py` 把關。
 - **Scratchpad 行為改變**：Doll 既有「用 Edit 改 scratchpad」的習慣會失效；以 append/set
   覆蓋。屬可接受的行為遷移（且 Spec B 的工具記憶會幫她適應）。
 
