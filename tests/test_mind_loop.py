@@ -1092,3 +1092,32 @@ def test_mind_loop_init_raises_on_unbuildable_grammar(tmp_path):
             state_persist_path=tmp_path / "s.json",
             tool_registry={"_BadTool": _BadTool},
         )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_records_outcome(tmp_path):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    state = MindState()
+    ctx = _make_mind_ctx(tmp_path, state=state)
+    loop = MindLoop(state=state, queue=PerceptionQueue(), ctx=ctx, llm=_FakeLLM(""),
+                    system_prompt="", state_persist_path=tmp_path / "s.json",
+                    tool_registry={cls.__name__: cls for cls in __import__(
+                        "dollos.tools", fromlist=["MAIN_TOOLS"]).MAIN_TOOLS})
+    await loop._dispatch_tool("SetFocus", {"text": "x"})        # success
+    await loop._dispatch_tool("NoSuchTool", {})                 # unknown → fail
+    assert state.tool_stats["SetFocus"]["ok"] == 1
+    assert state.tool_stats["NoSuchTool"]["fail"] == 1
+    assert any(f.tool == "NoSuchTool" for f in state.recent_tool_failures)
+
+
+@pytest.mark.asyncio
+async def test_subagent_dispatch_does_not_record_to_doll(tmp_path):
+    """Isolation: the subagent path (dispatch_tool_call) must NOT touch Doll's
+    tool memory — recording lives only in the live wrapper."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.cascade.tool_loop import dispatch_tool_call
+    ctx = _make_mind_ctx(tmp_path)
+    await dispatch_tool_call({"name": "SetFocus", "arguments": {"text": "x"}}, ctx,
+                             {"SetFocus": __import__("dollos.tools", fromlist=["SetFocus"]).SetFocus})
+    assert ctx.mind_state.tool_stats == {}
+    assert len(ctx.mind_state.recent_tool_failures) == 0

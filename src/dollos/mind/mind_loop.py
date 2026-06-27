@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
+from dollos.mind.tool_memory import record_tool_outcome
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -570,14 +571,11 @@ class MindLoop:
     async def _dispatch_tool(
         self, name: str, arguments: dict
     ) -> ToolResult | None:
-        """Dispatch via the shared cascade.tool_loop.dispatch_one (spec §3.6).
-
-        Applies the safe-mode-narrowed registry; MindCtx.sink is always None so
-        no user-facing ErrorMsg is pushed here.
-        """
-        return await dispatch_one(
-            name, arguments, self._ctx, self._active_tool_registry()
-        )
+        """Dispatch via shared dispatch_one (spec §3.6), then record the outcome
+        into Doll's tool memory (Spec B Layer 1 — live-only)."""
+        r = await dispatch_one(name, arguments, self._ctx, self._active_tool_registry())
+        record_tool_outcome(self._ctx.mind_state, name, r)
+        return r
 
     def shutdown(self) -> None:
         """Signal the loop to stop. Unblocks any pending drain()."""

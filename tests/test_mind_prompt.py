@@ -260,3 +260,23 @@ def test_memory_guideline_says_understand_then_write_own_words():
     lowered = guideline.lower()
     assert "own words" in lowered
     assert "verbatim" in lowered
+
+
+def test_render_mind_includes_tool_notes_when_recent_failures():
+    import time
+    from collections import deque
+    from dollos.mind.mind_state import MindState, ToolFailure
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    s.recent_tool_failures = deque(
+        [ToolFailure(t=time.time(), tool="Shell", detail="timeout after 60s")], maxlen=10
+    )
+    out = render_mind(s, [], "sys")
+    assert "[Tool notes]" in out and "Shell" in out and "timeout" in out
+
+
+def test_render_mind_omits_tool_notes_when_no_failures():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    out = render_mind(MindState(), [], "sys")
+    assert "[Tool notes]" not in out

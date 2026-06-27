@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 
 from dollos.mind.mind_state import MindState
+from dollos.mind.tool_memory import render_tool_notes
 
 
 def render_mind(
@@ -87,6 +88,9 @@ def render_mind(
             _render_recent_reviews(state.recent_reviews),
             "",
         ])
+    tool_notes = render_tool_notes(state.recent_tool_failures, now)
+    if tool_notes:
+        blocks.extend([tool_notes, ""])
     blocks.extend([
         "[Recent perceptions] (newest last)",
         _render_perceptions(state.recent_perceptions, now),
