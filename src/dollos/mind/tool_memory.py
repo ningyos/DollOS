@@ -33,6 +33,25 @@ def record_tool_outcome(state: MindState, name: str, result) -> None:
         logger.exception("record_tool_outcome failed for %s; continuing", name)
 
 
+_MAX_OUTCOME_FAILS = 3
+_OUTCOME_DETAIL_CAP = 100
+
+
+def render_tool_outcomes(tool_stats: dict, recent_tool_failures: deque) -> str:
+    """[Tool outcomes since last reflection] — per-tool ok/fail + recent fail samples.
+    Reflection-only; caller gates on is_reflection."""
+    lines = ["[Tool outcomes since last reflection]"]
+    last_fail: dict[str, str] = {}
+    for f in list(recent_tool_failures)[-_MAX_OUTCOME_FAILS:]:
+        last_fail[f.tool] = f.detail[:_OUTCOME_DETAIL_CAP]
+    for tool, st in tool_stats.items():
+        line = f"- {tool}: {st.get('ok', 0)} ok, {st.get('fail', 0)} fail"
+        if tool in last_fail:
+            line += f" — last fail: {last_fail[tool]}"
+        lines.append(line)
+    return "\n".join(lines[:20])
+
+
 def render_tool_notes(recent_tool_failures: deque, now: float) -> str | None:
     """[Tool notes] block from recent failures, or None when none are recent.
 

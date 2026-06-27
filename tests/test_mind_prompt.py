@@ -280,3 +280,12 @@ def test_render_mind_omits_tool_notes_when_no_failures():
     from dollos.mind.mind_prompt import render_mind
     out = render_mind(MindState(), [], "sys")
     assert "[Tool notes]" not in out
+
+
+def test_tool_outcomes_block_only_when_passed():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    s = MindState()
+    assert "[Tool outcomes" not in render_mind(s, [], "sys")
+    out = render_mind(s, [], "sys", tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 3 ok, 1 fail")
+    assert "[Tool outcomes" in out and "Shell" in out

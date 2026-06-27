@@ -19,6 +19,7 @@ def render_mind(
     cognition_block: str | None = None,
     associative_hits: list[dict] | None = None,
     primary_language: str = "繁體中文",
+    tool_outcomes_block: str | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -88,6 +89,8 @@ def render_mind(
             _render_recent_reviews(state.recent_reviews),
             "",
         ])
+    if tool_outcomes_block:
+        blocks.extend([tool_outcomes_block, ""])
     tool_notes = render_tool_notes(state.recent_tool_failures, now)
     if tool_notes:
         blocks.extend([tool_notes, ""])
@@ -218,7 +221,11 @@ def _percep_body(p) -> str:
             return "the daemon just recovered from a crash — your previous in-flight thoughts may be partial or lost"
         return f"reason={reason}"
     if p.kind == "ReflectionMoment":
-        return f"(time to reflect — review recent activity and NoteMemory anything worth keeping; {d.get('iters_since_last', '?')} iters since last)"
+        return (
+            f"(time to reflect — review recent activity and NoteMemory anything worth keeping; "
+            f"{d.get('iters_since_last', '?')} iters since last; "
+            f"若有可重用的工具用法或陷阱，用 NoteToolLesson 記下來)"
+        )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
         return f"your previous turn was cut short by {by}"
