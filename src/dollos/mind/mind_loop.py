@@ -96,6 +96,7 @@ class MindLoop:
         cognition: Any = None,
         wal: PerceptionWAL | None = None,
         primary_language: str = "繁體中文",
+        cascade_logger=None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -108,6 +109,7 @@ class MindLoop:
         self._system_pulse = system_pulse
         self._cognition = cognition
         self._wal = wal
+        self._cascade_logger = cascade_logger
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
         # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
@@ -379,14 +381,16 @@ class MindLoop:
         # read-only safe mode at SAFE_MODE_FAIL_THRESHOLD (spec §8.3).
         consecutive_fail_count = 0
 
-        self._cascade_ctx = CascadeCtx()
         try:
+            self._cascade_ctx = CascadeCtx()
+            turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
             for pass_idx in range(MAX_SYNC_REFEED_PASSES):
                 if self._cascade_ctx.cancelled:
                     logger.info("cascade cancelled at pass boundary; exiting cleanly")
                     return
 
-                raw_buf, results = await self._stream_one_pass(
+                pass_start = time.monotonic()
+                raw_buf, results, tool_calls = await self._stream_one_pass(
                     prompt=prompt,
                     messages=messages,
                     first_pass=(pass_idx == 0),
@@ -401,6 +405,19 @@ class MindLoop:
                 # too but deliberately NOT written to state.mood (spec §6.2 /
                 # §WRONG.4) — only MoodTool may author mood.
                 self._capture_review(raw_buf)
+
+                if self._cascade_logger is not None:
+                    try:
+                        self._cascade_logger.log_iter(
+                            turn_id=turn_id,
+                            iter=pass_idx,
+                            assistant_text="".join(raw_buf),
+                            tool_calls=tool_calls,
+                            results=results,
+                            duration_ms=int((time.monotonic() - pass_start) * 1000),
+                        )
+                    except Exception:
+                        logger.exception("cascade_logger.log_iter failed; continuing")
 
                 # Record the assistant emit so the next pass sees the full
                 # user → assistant(think+tool_call) → user(<tool_response>)
@@ -479,13 +496,13 @@ class MindLoop:
 
     async def _stream_one_pass(
         self, *, prompt: str, messages: list[dict], first_pass: bool, sink
-    ) -> tuple[list[str], list[ToolResult]]:
+    ) -> tuple[list[str], list[ToolResult], list[dict]]:
         """Stream ONE assistant pass through the voice_first parser.
 
         SpeakChunks → resolved sink + recent_outputs("Speech");
         ToolCallReady → dispatch the named tool inline (sequential), collecting
         each non-``None`` ``ToolResult`` so the outer cascade can decide whether
-        to re-feed. Returns ``(raw_buf, results)``.
+        to re-feed. Returns ``(raw_buf, results, tool_calls)``.
 
         Pass 1 uses `stream_completion(user=prompt)` (first-word latency
         identical to today); pass ≥ 2 uses `stream_messages(messages=…)` so the
@@ -498,6 +515,7 @@ class MindLoop:
         chunker = SentenceChunker()
         raw_buf: list[str] = []
         results: list[ToolResult] = []
+        tool_calls: list[dict] = []
 
         if first_pass:
             stream = self._llm.stream_completion(
@@ -523,7 +541,7 @@ class MindLoop:
             async for chunk in astream:
                 if self._cascade_ctx.cancelled:
                     logger.info("cascade cancelled mid-stream; exiting cleanly")
-                    return raw_buf, results
+                    return raw_buf, results, tool_calls
                 if chunk.text:
                     raw_buf.append(chunk.text)
                     for event in parser.feed(chunk.text):
@@ -531,7 +549,9 @@ class MindLoop:
                             logger.info(
                                 "cascade cancelled before event dispatch; exiting"
                             )
-                            return raw_buf, results
+                            return raw_buf, results, tool_calls
+                        if isinstance(event, ToolCallReady):
+                            tool_calls.append({"name": event.name, "arguments": event.arguments})
                         r = await self._handle_stream_event(event, sink, chunker)
                         if r is not None:
                             results.append(r)
@@ -539,11 +559,13 @@ class MindLoop:
                     break
 
         if self._cascade_ctx.cancelled:
-            return raw_buf, results
+            return raw_buf, results, tool_calls
 
         for event in parser.flush():
             if self._cascade_ctx.cancelled:
-                return raw_buf, results
+                return raw_buf, results, tool_calls
+            if isinstance(event, ToolCallReady):
+                tool_calls.append({"name": event.name, "arguments": event.arguments})
             r = await self._handle_stream_event(event, sink, chunker)
             if r is not None:
                 results.append(r)
@@ -552,7 +574,7 @@ class MindLoop:
             # Flush the chunker tail — emit any remaining buffered text.
             self._flush_chunker(chunker, sink)
 
-        return raw_buf, results
+        return raw_buf, results, tool_calls
 
     def _capture_review(self, raw_buf: list[str]) -> None:
         """Parse the accumulated raw emit and record any REVIEW line.

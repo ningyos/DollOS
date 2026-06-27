@@ -312,6 +312,7 @@ class DollOS:
             cognition=self.cognition,
             wal=self._wal,
             primary_language=settings.memory.primary_language,
+            cascade_logger=self._cascade_logger,
         )
 
         self._reflection_observer = ReflectionObserver(
