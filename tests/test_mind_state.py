@@ -51,3 +51,20 @@ def test_active_task_elapsed_s() -> None:
     t = ActiveTask(task_id="shell-1", kind="shell", summary="ls /tmp", started_at=started)
     elapsed = t.elapsed_s
     assert 4.5 <= elapsed <= 5.5
+
+
+def test_tool_memory_fields_roundtrip(tmp_path):
+    from dollos.mind.mind_state import ToolFailure, save_state, load_state
+    s = MindState()
+    s.tool_stats = {"Shell": {"ok": 3, "fail": 1}}
+    s.recent_tool_failures = deque(
+        [ToolFailure(t=123.0, tool="Shell", detail="timeout")], maxlen=10
+    )
+    p = tmp_path / "s.json"
+    assert save_state(s, p)
+    loaded = load_state(p)
+    assert loaded.tool_stats == {"Shell": {"ok": 3, "fail": 1}}
+    assert len(loaded.recent_tool_failures) == 1
+    assert loaded.recent_tool_failures[0].tool == "Shell"
+    assert loaded.recent_tool_failures[0].detail == "timeout"
+    assert loaded.recent_tool_failures.maxlen == 10
