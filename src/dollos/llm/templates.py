@@ -113,21 +113,118 @@ _JSON_STR_RULES = (
 )
 
 
+def _field_value_token(
+    name: str,
+    fname: str,
+    finfo: dict,
+    schema: dict,
+    used_aux_rule_ids: set[str],
+    extra_rules: list[str],
+    check_ident,
+    resolve_ref,
+    aux_rule_id,
+) -> str:
+    """GBNF value token for one field: 'str' / 'integer' / '(<enum-alts>)' /
+    '<array-rule-id>'. Appends any array aux rules to extra_rules.
+
+    Handles `anyOf: [<T>, {"type":"null"}]` (optional X | None) by extracting
+    the single non-null branch. Raises NotImplementedError on unsupported types.
+    """
+    ftype = finfo.get("type")
+    enum_vals = finfo.get("enum")
+    if ftype is None and "anyOf" in finfo:
+        non_null = [s for s in finfo["anyOf"] if s.get("type") != "null"]
+        if len(non_null) != 1:
+            raise NotImplementedError(
+                f"tool {name} field {fname!r} anyOf {finfo['anyOf']!r} is not a "
+                f"simple `X | None`; grammar build unsupported"
+            )
+        finfo = non_null[0]
+        ftype = finfo.get("type")
+        enum_vals = finfo.get("enum")
+    if ftype == "string" and enum_vals:
+        for v in enum_vals:
+            if not isinstance(v, str):
+                raise NotImplementedError(
+                    f"tool {name} field {fname!r} enum value {v!r} is not a string"
+                )
+            check_ident(v, "enum value")
+        alt = " | ".join(f'"\\"{v}\\""' for v in enum_vals)
+        return f"({alt})"
+    if ftype == "string":
+        return "str"
+    if ftype == "integer":
+        return "integer"
+    if ftype == "array":
+        items = finfo.get("items", {})
+        ref = items.get("$ref")
+        if not ref:
+            raise NotImplementedError(
+                f"tool {name} required field {fname!r} array items have no $ref; "
+                f"only $ref-typed array items supported"
+            )
+        item_schema = resolve_ref(schema, ref)
+        if item_schema.get("type") != "object":
+            raise NotImplementedError(
+                f"tool {name} required field {fname!r} item is not an object; "
+                f"grammar build unsupported"
+            )
+        item_props = item_schema.get("properties", {})
+        item_required = item_schema.get("required", [])
+        inner_parts: list[str] = []
+        for ifname in item_required:
+            check_ident(ifname, "field name")
+            iinfo = item_props.get(ifname, {})
+            ityp = iinfo.get("type")
+            if ityp == "string":
+                inner_parts.append(f'\\"{ifname}\\": " str "')
+            elif ityp == "integer":
+                inner_parts.append(f'\\"{ifname}\\": " integer "')
+            else:
+                raise NotImplementedError(
+                    f"tool {name} field {fname!r} item field {ifname!r} has "
+                    f"unsupported type {ityp!r}; grammar build unsupported"
+                )
+        inner_joined = (
+            ', '.join(inner_parts) if len(inner_parts) > 1
+            else (inner_parts[0] if inner_parts else "")
+        )
+        item_rule_id = aux_rule_id(name, f"{fname}-item")
+        array_rule_id = aux_rule_id(name, f"{fname}-array")
+        if item_rule_id not in used_aux_rule_ids:
+            extra_rules.append(f'{item_rule_id} ::= "{{{inner_joined}}}"')
+            used_aux_rule_ids.add(item_rule_id)
+        if array_rule_id not in used_aux_rule_ids:
+            extra_rules.append(
+                f'{array_rule_id} ::= "[" {item_rule_id} ("," {item_rule_id})* "]"'
+            )
+            used_aux_rule_ids.add(array_rule_id)
+        return array_rule_id
+    raise NotImplementedError(
+        f"tool {name} required field {fname!r} has unsupported type {ftype!r}; "
+        f"grammar build unsupported"
+    )
+
+
 def _build_tool_call_rule(
     tool: type[BaseModel],
     used_aux_rule_ids: set[str] | None = None,
+    *,
+    include_optional: bool = False,
 ) -> tuple[str, str]:
     """Build the GBNF rule for a single <tool_call>...</tool_call>.
 
-    Returns ``(rule_id, rule_text)`` where ``rule_text`` is the call rule
-    plus any auxiliary item/array rules required by the tool's $ref-typed
-    array fields, joined by newlines.
+    Returns ``(rule_id, rule_text)``. With ``include_optional=True`` AND ≥1
+    required field, optional (default-valued) fields are appended as
+    fixed-order ``( ", \\"<name>\\": " <type> )?`` suffixes so they can be
+    emitted-or-omitted; each carries its own leading comma so the JSON stays
+    valid. Zero-required tools keep an empty ``{}`` body regardless (spec §3.1).
 
-    If ``used_aux_rule_ids`` is provided, auxiliary rule ids already in
-    the set are skipped (cross-tool dedup); the set is mutated.
+    Required-only output (include_optional=False) is byte-compatible with the
+    pre-refactor builder.
 
-    Raises NotImplementedError if any required field has an unsupported
-    type, or if any name contains characters needing escaping.
+    Raises NotImplementedError if any field has an unsupported type, or if any
+    name contains characters needing escaping.
     """
     if used_aux_rule_ids is None:
         used_aux_rule_ids = set()
@@ -138,7 +235,6 @@ def _build_tool_call_rule(
                 f"{what} {s!r} contains backslash/quote; grammar escape unsupported"
             )
 
-    # alias suffix for per-tool call rules: ToolName -> tool-name-call
     def _rule_id(name: str) -> str:
         out: list[str] = []
         for i, ch in enumerate(name):
@@ -153,8 +249,7 @@ def _build_tool_call_rule(
             raise NotImplementedError(
                 f"unsupported $ref {ref!r}; only #/$defs/<Name> supported"
             )
-        defname = ref[len(prefix):]
-        return schema["$defs"][defname]
+        return schema["$defs"][ref[len(prefix):]]
 
     def _aux_rule_id(base: str, suffix: str) -> str:
         out: list[str] = []
@@ -169,99 +264,45 @@ def _build_tool_call_rule(
     schema = tool.model_json_schema()
     props = schema.get("properties", {})
     required = schema.get("required", [])
-    body_parts: list[str] = []
+    rule_id = _rule_id(name)
     extra_rules: list[str] = []
+
+    if not required:
+        # Zero required fields → empty arguments body. Optional fields (if any)
+        # are unreachable; see spec §3.1. Preserves prior behavior + tests.
+        call_rule = (
+            f'{rule_id} ::= "<tool_call>\\n'
+            f'{{\\"name\\": \\"{name}\\", \\"arguments\\": {{}}}}\\n</tool_call>"'
+        )
+        return rule_id, call_rule
 
     for fname in required:
         _check_ident(fname, "field name")
-        finfo = props.get(fname, {})
-        ftype = finfo.get("type")
-        enum_vals = finfo.get("enum")
-        if ftype == "string" and enum_vals:
-            for v in enum_vals:
-                if not isinstance(v, str):
-                    raise NotImplementedError(
-                        f"tool {name} field {fname!r} enum value {v!r} "
-                        f"is not a string; grammar build unsupported"
-                    )
-                _check_ident(v, "enum value")
-            alt = " | ".join(f'"\\"{v}\\""' for v in enum_vals)
-            body_parts.append(f'\\"{fname}\\": " ({alt}) "')
-        elif ftype == "string":
-            body_parts.append(f'\\"{fname}\\": " str "')
-        elif ftype == "integer":
-            body_parts.append(f'\\"{fname}\\": " integer "')
-        elif ftype == "array":
-            items = finfo.get("items", {})
-            ref = items.get("$ref")
-            if not ref:
-                raise NotImplementedError(
-                    f"tool {name} required field {fname!r} array items "
-                    f"have no $ref; only $ref-typed array items supported"
-                )
-            item_schema = _resolve_ref(schema, ref)
-            if item_schema.get("type") != "object":
-                raise NotImplementedError(
-                    f"tool {name} required field {fname!r} item is not "
-                    f"an object; grammar build unsupported"
-                )
-            item_props = item_schema.get("properties", {})
-            item_required = item_schema.get("required", [])
-            inner_parts: list[str] = []
-            for ifname in item_required:
-                _check_ident(ifname, "field name")
-                iinfo = item_props.get(ifname, {})
-                ityp = iinfo.get("type")
-                if ityp == "string":
-                    inner_parts.append(f'\\"{ifname}\\": " str "')
-                elif ityp == "integer":
-                    inner_parts.append(f'\\"{ifname}\\": " integer "')
-                else:
-                    raise NotImplementedError(
-                        f"tool {name} field {fname!r} item field "
-                        f"{ifname!r} has unsupported type {ityp!r}; "
-                        f"grammar build unsupported"
-                    )
-            inner_joined = (
-                ', '.join(inner_parts)
-                if len(inner_parts) > 1
-                else (inner_parts[0] if inner_parts else "")
-            )
-            item_rule_id = _aux_rule_id(name, f"{fname}-item")
-            array_rule_id = _aux_rule_id(name, f"{fname}-array")
-            if item_rule_id not in used_aux_rule_ids:
-                extra_rules.append(
-                    f'{item_rule_id} ::= "{{{inner_joined}}}"'
-                )
-                used_aux_rule_ids.add(item_rule_id)
-            if array_rule_id not in used_aux_rule_ids:
-                extra_rules.append(
-                    f'{array_rule_id} ::= "[" {item_rule_id} '
-                    f'("," {item_rule_id})* "]"'
-                )
-                used_aux_rule_ids.add(array_rule_id)
-            body_parts.append(f'\\"{fname}\\": " {array_rule_id} "')
-        else:
-            raise NotImplementedError(
-                f"tool {name} required field {fname!r} has unsupported "
-                f"type {ftype!r}; grammar build unsupported"
-            )
 
-    joined = (
-        ', '.join(body_parts)
-        if len(body_parts) > 1
-        else (body_parts[0] if body_parts else "")
-    )
-    rule_id = _rule_id(name)
-    call_rule = (
-        f'{rule_id} ::= "<tool_call>\\n'
-        f'{{\\"name\\": \\"{name}\\", \\"arguments\\": {{'
-        f'{joined}}}}}\\n</tool_call>"'
-    )
-    if extra_rules:
-        rule_text = call_rule + "\n" + "\n".join(extra_rules)
-    else:
-        rule_text = call_rule
+    def _val(fname: str) -> str:
+        return _field_value_token(
+            name, fname, props.get(fname, {}), schema, used_aux_rule_ids,
+            extra_rules, _check_ident, _resolve_ref, _aux_rule_id,
+        )
+
+    first = required[0]
+    terms: list[str] = [
+        f'"<tool_call>\\n{{\\"name\\": \\"{name}\\", \\"arguments\\": '
+        f'{{\\"{first}\\": "',
+        _val(first),
+    ]
+    for fname in required[1:]:
+        terms.append(f'", \\"{fname}\\": "')
+        terms.append(_val(fname))
+
+    if include_optional:
+        for fname in [f for f in props if f not in required]:
+            _check_ident(fname, "field name")
+            terms.append(f'( ", \\"{fname}\\": " {_val(fname)} )?')
+
+    terms.append('"}}\\n</tool_call>"')
+    call_rule = f"{rule_id} ::= " + " ".join(terms)
+    rule_text = call_rule + ("\n" + "\n".join(extra_rules) if extra_rules else "")
     return rule_id, rule_text
 
 
@@ -331,7 +372,9 @@ def build_voice_first_grammar(tools: list[type[BaseModel]]) -> str:
     rule_ids: list[str] = []
     rules: list[str] = []
     for tool in tools:
-        rid, rtext = _build_tool_call_rule(tool, used_aux_rule_ids)
+        rid, rtext = _build_tool_call_rule(
+            tool, used_aux_rule_ids, include_optional=True
+        )
         rule_ids.append(rid)
         rules.append(rtext)
 

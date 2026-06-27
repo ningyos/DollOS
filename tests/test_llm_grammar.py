@@ -245,3 +245,46 @@ def test_integer_rule_allows_negative():
     from dollos.llm.templates import build_voice_first_grammar
     g = build_voice_first_grammar([NoteMemory])
     assert 'integer ::= "-"? ( "0" | [1-9] [0-9]* )' in g
+
+
+def test_voice_grammar_emits_optional_integer_suffix():
+    """Shell.timeout_s 有 default(60) → optional；voice grammar 須以
+    『( ", \\"timeout_s\\": " integer )?』後綴讓 Doll 能設定它。"""
+    from dollos.tools import Shell
+    from dollos.llm.templates import build_voice_first_grammar
+    g = build_voice_first_grammar([Shell])
+    shell_rule = next(l for l in g.splitlines() if l.startswith("shell-call ::="))
+    assert r'( ", \"timeout_s\": " integer )?' in shell_rule
+    # required field still present, before the optional suffix
+    assert r'\"command\": " str' in shell_rule
+
+
+def test_voice_grammar_extracts_anyof_optional_string():
+    """SpawnMonitor.match_regex 是 str|None（schema anyOf）→ optional string。"""
+    from dollos.tools import SpawnMonitor
+    from dollos.llm.templates import build_voice_first_grammar
+    g = build_voice_first_grammar([SpawnMonitor])
+    rule = next(l for l in g.splitlines() if l.startswith("spawn-monitor-call ::="))
+    assert r'( ", \"match_regex\": " str )?' in rule
+    assert r'( ", \"rate_limit_s\": " integer )?' in rule
+
+
+def test_b4_grammar_stays_required_only():
+    """B4 (subagent) grammar 不開 optional — Shell 仍只有 command。"""
+    from dollos.tools import Shell
+    from dollos.llm.templates import build_qwen3_think_tool_grammar
+    g = build_qwen3_think_tool_grammar([Shell])
+    shell_rule = next(l for l in g.splitlines() if l.startswith("shell-call ::="))
+    assert "timeout_s" not in shell_rule
+
+
+def test_voice_grammar_zero_required_optional_only_stays_empty():
+    """Zero-required 工具即使 include_optional 也維持空 {}（前導逗號邊界，spec §3.1）。"""
+    from pydantic import BaseModel, Field
+    from dollos.llm.templates import build_voice_first_grammar
+
+    class _OptOnly(BaseModel):
+        x: str = Field(default="hi", description="opt")
+
+    g = build_voice_first_grammar([_OptOnly])
+    assert r'\"arguments\": {}}\n</tool_call>"' in g
