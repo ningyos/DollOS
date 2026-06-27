@@ -185,3 +185,115 @@ async def test_qwen3_aclose(fake_qwen_tts, tmp_path):
         ref_audio=ref, ref_text="hi", language="English",
     )
     await eng.aclose()
+
+
+# ---------------------------------------------------------------------------
+# I8 regression: voice_clone_prompt_path + instruction must honour instruction
+# ---------------------------------------------------------------------------
+
+async def test_qwen3_voice_clone_prompt_honours_instruction(fake_qwen_tts, tmp_path):
+    """I8: voice_clone_prompt path must pass prefixed_text (with instruction),
+    not raw text."""
+    import torch
+    from dollos.voice.tts_qwen3 import Qwen3TTSEngine
+
+    item = {
+        "ref_code": torch.zeros((10, 1), dtype=torch.long),
+        "ref_spk_embedding": torch.zeros(192, dtype=torch.float32),
+        "x_vector_only_mode": False,
+        "icl_mode": True,
+        "ref_text": "hi",
+    }
+    pt = tmp_path / "voice_clone_prompt.pt"
+    torch.save({"items": [item]}, pt)
+
+    eng = Qwen3TTSEngine(
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        device="cuda:0",
+        voice_clone_prompt_path=pt,
+        language="English",
+        instruction="excited and energetic",
+    )
+    async for _ in eng.synthesize("hello"):
+        pass
+    _, fake_model = fake_qwen_tts
+    call = fake_model.generate_voice_clone.call_args
+    text_arg = call.kwargs.get("text") or (call.args[0] if call.args else "")
+    assert "excited and energetic" in text_arg, (
+        f"I8: instruction not in text for voice_clone_prompt path; text={text_arg!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# I9 regression: signature probe instead of try/except TypeError
+# ---------------------------------------------------------------------------
+
+async def test_qwen3_uses_instruction_kwarg_when_signature_has_it(fake_qwen_tts, tmp_path):
+    """I9: when model signature includes 'instruction', it is passed as kwarg,
+    not only prefixed into text."""
+    import inspect
+    from dollos.voice.tts_qwen3 import Qwen3TTSEngine
+
+    _, fake_model = fake_qwen_tts
+    # Give generate_voice_clone a real signature that includes 'instruction'.
+    fake_model.generate_voice_clone.__signature__ = inspect.Signature([
+        inspect.Parameter("text", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("language", inspect.Parameter.KEYWORD_ONLY, default="English"),
+        inspect.Parameter("ref_audio", inspect.Parameter.KEYWORD_ONLY, default=None),
+        inspect.Parameter("ref_text", inspect.Parameter.KEYWORD_ONLY, default=None),
+        inspect.Parameter("instruction", inspect.Parameter.KEYWORD_ONLY, default=None),
+    ])
+
+    ref = tmp_path / "ref.wav"; ref.write_bytes(b"WAVE_FAKE")
+    eng = Qwen3TTSEngine(
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        device="cuda:0",
+        ref_audio=ref,
+        ref_text="hi",
+        language="English",
+        instruction="softly",
+    )
+    assert eng._has_instruction_kwarg is True
+    async for _ in eng.synthesize("hello"):
+        pass
+    call = fake_model.generate_voice_clone.call_args
+    # Instruction should be passed as an explicit kwarg.
+    assert call.kwargs.get("instruction") == "softly", (
+        f"I9: instruction kwarg not passed when signature has it; kwargs={call.kwargs}"
+    )
+
+
+async def test_qwen3_prefixes_text_when_signature_lacks_instruction(fake_qwen_tts, tmp_path):
+    """I9: when model signature lacks 'instruction', text is prefixed instead,
+    and no TypeError is ever caught."""
+    import inspect
+    from dollos.voice.tts_qwen3 import Qwen3TTSEngine
+
+    _, fake_model = fake_qwen_tts
+    # Give generate_voice_clone a signature WITHOUT 'instruction'.
+    fake_model.generate_voice_clone.__signature__ = inspect.Signature([
+        inspect.Parameter("text", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("language", inspect.Parameter.KEYWORD_ONLY, default="English"),
+        inspect.Parameter("ref_audio", inspect.Parameter.KEYWORD_ONLY, default=None),
+        inspect.Parameter("ref_text", inspect.Parameter.KEYWORD_ONLY, default=None),
+    ])
+
+    ref = tmp_path / "ref.wav"; ref.write_bytes(b"WAVE_FAKE")
+    eng = Qwen3TTSEngine(
+        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        device="cuda:0",
+        ref_audio=ref,
+        ref_text="hi",
+        language="English",
+        instruction="softly",
+    )
+    assert eng._has_instruction_kwarg is False
+    async for _ in eng.synthesize("hello"):
+        pass
+    call = fake_model.generate_voice_clone.call_args
+    text_arg = call.kwargs.get("text") or (call.args[0] if call.args else "")
+    assert "softly" in text_arg, (
+        f"I9: instruction not prefixed into text when signature lacks it; text={text_arg!r}"
+    )
+    # No 'instruction' kwarg should be passed.
+    assert "instruction" not in call.kwargs

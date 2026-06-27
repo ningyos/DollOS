@@ -10,6 +10,7 @@ class _MockSession:
     def __init__(self) -> None:
         self.enqueued: list[str] = []
         self.speak_called = False
+        self.is_open = True
 
     async def enqueue_speak(self, text: str) -> None:
         self.enqueued.append(text)

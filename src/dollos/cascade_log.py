@@ -38,8 +38,7 @@ def _parse_think(assistant_text: str) -> dict[str, str]:
 class CascadeLogger:
     """Wraps a structlog logger to write per-iter records to JSONL."""
 
-    def __init__(self, log_root: Path):
-        self._log_root = log_root
+    def __init__(self, log_root: Path | None = None):
         self._log = structlog.get_logger("cascade")
 
     def start_turn(self) -> str:

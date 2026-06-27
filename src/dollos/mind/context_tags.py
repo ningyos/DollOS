@@ -81,9 +81,11 @@ def build_context_filter(mind_state: "MindState", now: datetime | None = None) -
     tags: dict[str, str] = {}
 
     mood = getattr(mind_state.mood, "emotion", None) if mind_state.mood else None
-    mood_slug = slugify_focus(mood)
-    if mood_slug:
-        tags["mood"] = mood_slug
+    # Mood is free-form Chinese — do NOT slugify (that strips all CJK).
+    # Sanitize only for tag-boundary safety: spaces → '_', drop ']'.
+    mood_tag = mood.strip().replace(" ", "_").replace("]", "") if mood else None
+    if mood_tag:
+        tags["mood"] = mood_tag
 
     focus_slug = slugify_focus(mind_state.focus) if mind_state.focus and mind_state.focus != "idle" else None
     if focus_slug:

@@ -88,7 +88,9 @@ class WebSocketServer:
         sink: asyncio.Queue[ServerMessage | None] = (
             self._sink_factory() if self._sink_factory is not None else asyncio.Queue()
         )
-        pump_task = asyncio.create_task(self._pump(ws, sink), name="ipc-pump")
+        addr = ws.remote_address
+        task_name = f"ipc-pump-{addr[0]}:{addr[1]}" if addr else "ipc-pump"
+        pump_task = asyncio.create_task(self._pump(ws, sink), name=task_name)
         if self._on_connect_hook is not None:
             try:
                 await self._on_connect_hook(sink)

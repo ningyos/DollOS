@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -95,6 +95,24 @@ class ToolFailure:
     detail: str
 
 
+_TOOL_STATS_CAP = 50
+
+
+class _ToolStatsDict(OrderedDict):
+    """OrderedDict for tool_stats with a hard cap of _TOOL_STATS_CAP entries.
+
+    When a new key would exceed the cap the oldest entry is evicted (FIFO).
+    Existing keys are updated in-place without triggering eviction — the cap
+    only fires on genuinely new tool names, making it grow at most O(distinct
+    tool names) rather than O(total calls).
+    """
+
+    def __setitem__(self, key, value):
+        if key not in self and len(self) >= _TOOL_STATS_CAP:
+            self.popitem(last=False)  # evict oldest entry
+        super().__setitem__(key, value)
+
+
 @dataclass
 class MindState:
     mood: Mood = field(default_factory=Mood)
@@ -112,7 +130,7 @@ class MindState:
     # prompt). Append-only ring buffer; see P2-capture spec §6.2.
     recent_reviews: deque[str] = field(default_factory=lambda: deque(maxlen=5))
 
-    tool_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+    tool_stats: dict[str, dict[str, int]] = field(default_factory=_ToolStatsDict)
     recent_tool_failures: deque[ToolFailure] = field(
         default_factory=lambda: deque(maxlen=10)
     )
@@ -146,23 +164,31 @@ def save_state(state: MindState, path: Path) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert deques to lists for JSON serialization
-        state_dict = asdict(state)
-        state_dict["recent_perceptions"] = list(state.recent_perceptions)
-        state_dict["recent_outputs"] = list(state.recent_outputs)
-
-        # Convert dataclass instances to dicts for nested structures
-        state_dict["mood"] = asdict(state.mood)
-        state_dict["active_tasks"] = [asdict(t) for t in state.active_tasks]
-        state_dict["pending_events"] = [asdict(e) for e in state.pending_events]
-        state_dict["open_loops"] = [asdict(l) for l in state.open_loops]
-        state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
-        state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
-        state_dict["recent_reviews"] = list(state.recent_reviews)
-        state_dict["recent_tool_failures"] = [
-            asdict(f) for f in state.recent_tool_failures
-        ]
-        state_dict["tool_stats"] = dict(state.tool_stats)
+        # Build state_dict field-by-field rather than using asdict(state) then
+        # overriding fields.  asdict() deep-copies deques as opaque objects;
+        # any future deque field not explicitly overridden would cause
+        # json.dump to raise inside the except block, growing the WAL unboundedly
+        # and silently.  Explicit field enumeration makes the serialization
+        # contract visible and raises loudly on a missing field.
+        state_dict = {
+            "mood": asdict(state.mood),
+            "focus": state.focus,
+            "scratchpad": state.scratchpad,
+            "active_tasks": [asdict(t) for t in state.active_tasks],
+            "pending_events": [asdict(e) for e in state.pending_events],
+            "open_loops": [asdict(l) for l in state.open_loops],
+            "recent_perceptions": [asdict(p) for p in state.recent_perceptions],
+            "recent_outputs": [asdict(o) for o in state.recent_outputs],
+            "recent_reviews": list(state.recent_reviews),
+            "tool_stats": dict(state.tool_stats),
+            "recent_tool_failures": [asdict(f) for f in state.recent_tool_failures],
+            "last_user_at": state.last_user_at,
+            "last_iter_at": state.last_iter_at,
+            "iter_count": state.iter_count,
+            "session_started_at": state.session_started_at,
+            "safe_mode": state.safe_mode,
+            "safe_mode_reason": state.safe_mode_reason,
+        }
 
         # Atomic write: write to temp, then rename
         with open(tmp_path, "w") as f:
@@ -237,7 +263,9 @@ def load_state(path: Path) -> MindState:
             [_coerce(ToolFailure, f) for f in data.get("recent_tool_failures", [])],
             maxlen=10,
         )
-        tool_stats = data.get("tool_stats", {})
+        raw_tool_stats = data.get("tool_stats", {})
+        tool_stats = _ToolStatsDict()
+        tool_stats.update(raw_tool_stats)
 
         state = MindState(
             mood=mood,

@@ -8,6 +8,7 @@ Two cloning paths:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -133,6 +134,17 @@ class Qwen3TTSEngine(TTSEngine):
         self._ref_audio: str | None = None
         self._ref_text: str | None = None
 
+        # I9: probe generate_voice_clone signature once at init so synthesize
+        # can branch without a runtime try/except that swallows real TypeErrors.
+        try:
+            sig = inspect.signature(self._model.generate_voice_clone)
+            self._has_instruction_kwarg = "instruction" in sig.parameters
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(
+                "Qwen3TTSEngine: cannot inspect generate_voice_clone signature; "
+                "unknown API shape"
+            ) from exc
+
         if has_prompt:
             p = Path(voice_clone_prompt_path)
             if not p.exists():
@@ -173,12 +185,16 @@ class Qwen3TTSEngine(TTSEngine):
 
         def _generate():
             if self._voice_clone_prompt is not None:
+                # I8: pass prefixed_text (includes instruction prefix) instead
+                # of raw text so the instruction is honoured on this path too.
                 return self._model.generate_voice_clone(
-                    text=text,
+                    text=prefixed_text,
                     language=self._language,
                     voice_clone_prompt=self._voice_clone_prompt,
                 )
-            try:
+            # I9: branch on the probed signature flag instead of a runtime
+            # try/except TypeError that would catch unrelated model errors.
+            if self._has_instruction_kwarg:
                 return self._model.generate_voice_clone(
                     text=text,
                     language=self._language,
@@ -186,8 +202,7 @@ class Qwen3TTSEngine(TTSEngine):
                     ref_text=self._ref_text,
                     instruction=self._instruction or None,
                 )
-            except TypeError:
-                # qwen-tts older signature without `instruction` kwarg.
+            else:
                 return self._model.generate_voice_clone(
                     text=prefixed_text,
                     language=self._language,

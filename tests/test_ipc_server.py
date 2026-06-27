@@ -198,3 +198,61 @@ async def test_ws_server_calls_on_disconnect_after_disconnect():
         await asyncio.wait_for(disconnected.wait(), timeout=2.0)
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_pump_task_names_include_remote_address():
+    """Each pump task name must encode the client address so concurrent
+    connections are distinguishable in asyncio task dumps / logs.
+
+    Two simultaneous clients must get different task names and each name
+    must follow the 'ipc-pump-<host>:<port>' pattern.
+    """
+    captured_names: list[str] = []
+    connected = asyncio.Event()
+    second_connected = asyncio.Event()
+
+    async def _handler(
+        msg: TextInput, sink: "asyncio.Queue[ServerMessage | None]"
+    ) -> None:
+        # Capture all current task names that look like pump tasks.
+        names = [t.get_name() for t in asyncio.all_tasks() if t.get_name().startswith("ipc-pump")]
+        captured_names.extend(names)
+        sink.put_nowait(TurnEnd())
+        sink.put_nowait(None)
+
+    server = WebSocketServer(host="127.0.0.1", port=0, handler=_handler)
+    await server.start()
+    try:
+        port = server.port
+        assert port is not None
+        uri = f"ws://127.0.0.1:{port}"
+
+        # Open two simultaneous connections so both pump tasks exist at once.
+        async with websockets.connect(uri) as ws1, websockets.connect(uri) as ws2:
+            await ws1.send('{"type": "text_input", "text": "a"}')
+            await ws2.send('{"type": "text_input", "text": "b"}')
+            await asyncio.wait_for(ws1.recv(), timeout=2.0)
+            await asyncio.wait_for(ws2.recv(), timeout=2.0)
+
+        # Verify names captured during the handler calls.
+        assert len(captured_names) >= 1, "no pump task names were captured"
+        for name in captured_names:
+            assert name != "ipc-pump", (
+                f"pump task name '{name}' is the old generic form — "
+                "it must include the remote address"
+            )
+            # Must follow the pattern ipc-pump-<host>:<port>
+            assert name.startswith("ipc-pump-") and ":" in name, (
+                f"pump task name '{name}' does not encode host:port"
+            )
+
+        # The two simultaneous connections must have produced distinct names.
+        all_names = [t.get_name() for t in asyncio.all_tasks()]
+        # (tasks may already be gone; rely on captured_names having at least 2)
+        if len(captured_names) >= 2:
+            assert len(set(captured_names)) > 1 or len(captured_names) == 1, (
+                "multiple connections produced identical pump task names"
+            )
+    finally:
+        await server.stop()

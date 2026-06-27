@@ -53,7 +53,7 @@ class ToolOutputStore:
     def line_count(self, output_id: str) -> int:
         path = self._path(output_id)
         text = path.read_text(encoding="utf-8")
-        return _split_lines(text).__len__()
+        return len(_split_lines(text))
 
     def read(self, output_id: str, *, offset: int, limit: int) -> ToolOutputSlice:
         path = self._path(output_id)

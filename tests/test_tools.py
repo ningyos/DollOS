@@ -793,14 +793,19 @@ async def test_grep_no_match(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
+async def test_grep_invalid_regex_returns_actionable_message(tmp_path: Path) -> None:
+    """GrepToolOutput catches re.error and returns an actionable message to
+    the LLM instead of propagating the raw exception (no-fallback-compliant:
+    the error is surfaced loudly in the tool result, not swallowed)."""
     store = ToolOutputStore(tmp_path)
     output_id = store.write("hello\n")
     ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
-    # Trailing unbalanced paren — re.error at run time
+    # Trailing unbalanced paren — re.error at compile time inside grep
     tool = GrepToolOutput(id=output_id, pattern=r"(", max_matches=10)
-    with pytest.raises(re.error):
-        await tool.run(ctx)
+    result = await tool.run(ctx)
+    # Must surface the error, not raise; message must be actionable
+    assert "regex error" in result
+    assert "(" in result  # pattern echoed back
 
 
 @pytest.mark.asyncio

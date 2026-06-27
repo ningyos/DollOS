@@ -55,27 +55,47 @@ class PiperVITSEngine(TTSEngine):
         # piper is sync; run on a worker thread and feed an asyncio.Queue.
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[bytes | None | BaseException] = asyncio.Queue(maxsize=64)
+        # MINOR: stop flag so the producer thread does not keep calling
+        # call_soon_threadsafe(queue.put_nowait, ...) after the async generator
+        # is cancelled, which would raise QueueFull in the event loop.
+        stop_flag = threading.Event()
+
+        def _safe_put(item) -> None:
+            """Schedule queue.put_nowait only while the consumer is alive."""
+            if stop_flag.is_set():
+                return
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass  # consumer gone; discard
 
         def producer() -> None:
             try:
                 for raw in self._voice.synthesize_stream_raw(text):
+                    if stop_flag.is_set():
+                        break
                     for chunk in _chunk_pcm_bytes(raw, self.sample_rate):
-                        loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                        if stop_flag.is_set():
+                            break
+                        loop.call_soon_threadsafe(_safe_put, chunk)
             except BaseException as e:
                 logger.exception("piper synthesize error")
-                loop.call_soon_threadsafe(queue.put_nowait, e)
+                loop.call_soon_threadsafe(_safe_put, e)
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                loop.call_soon_threadsafe(_safe_put, None)
 
         threading.Thread(target=producer, daemon=True).start()
 
-        while True:
-            item = await queue.get()
-            if item is None:
-                return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            stop_flag.set()
 
     async def aclose(self) -> None:
         self._voice = None

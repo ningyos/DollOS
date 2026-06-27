@@ -395,3 +395,55 @@ async def test_text_input_preempts_active_cascade():
 async def test_kernel_replays_pending_wal_on_startup():
     """WAL replay flow — covered by Task 7 E2E smoke."""
     pytest.skip("integration covered in Task 7 smoke (scripts/smoke_crash_recovery.py)")
+
+
+# ----- Regression: I5 — bad schedule file must NOT kill _schedule_runner -----
+
+
+@pytest.mark.asyncio
+async def test_schedule_runner_survives_malformed_schedule_file(tmp_path, monkeypatch, caplog):
+    """A TOML-decode error (or any exception) from load_schedule must NOT kill
+    _schedule_runner. The task should log a WARNING and continue its loop.
+
+    Regression test for I5: ``load_schedule(path)`` previously ran outside the
+    try/except, so any parse error permanently killed the task silently.
+    """
+    import logging
+    import dollos.kernel as kernel_mod
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    today_str = f"{_date.today():%Y-%m-%d}"
+    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
+    sched_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write deliberately malformed TOML (will raise TOMLDecodeError).
+    sched_path.write_bytes(b"[[entry]\ntime = not valid toml!!!!\n")
+
+    real_wait_for = asyncio.wait_for
+    tick_count = {"n": 0}
+
+    async def _fast_wait_for(awaitable, timeout):
+        tick_count["n"] += 1
+        if tick_count["n"] <= 2:
+            # Simulate the 30s timeout expiring so the loop body runs.
+            awaitable.close()
+            raise TimeoutError
+        # On tick 3+, let shutdown through.
+        dollos._shutdown.set()
+        return await real_wait_for(awaitable, timeout=0.5)
+
+    monkeypatch.setattr(kernel_mod.asyncio, "wait_for", _fast_wait_for)
+
+    with caplog.at_level(logging.WARNING, logger="dollos.kernel"):
+        # Must complete without raising — if I5 bug is present, _schedule_runner
+        # would propagate the TOMLDecodeError and this await would re-raise it.
+        await real_wait_for(dollos._schedule_runner(), timeout=2.0)
+
+    # The task survived at least 2 ticks.
+    assert tick_count["n"] >= 2, "schedule_runner did not iterate as expected"
+    # A WARNING was logged mentioning the schedule error.
+    warning_msgs = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("_schedule_runner" in m for m in warning_msgs), (
+        f"expected a _schedule_runner WARNING in logs; got: {warning_msgs}"
+    )

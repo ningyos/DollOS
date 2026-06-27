@@ -213,7 +213,7 @@ class FtsMemory:
             prefix = str(Path(source_prefix).expanduser().resolve())
             sql += " AND source LIKE ? ESCAPE '\\'"
             params.append(_like_prefix(prefix) + "%")
-        sql += " ORDER BY bm25(chunks) LIMIT ?"
+        sql += " ORDER BY _bm25 LIMIT ?"
         params.append(top_k)
         rows = self._conn.execute(sql, params).fetchall()
         return [

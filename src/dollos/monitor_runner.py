@@ -195,6 +195,10 @@ class MonitorRunner:
                     os.killpg(os.getpgid(mon.proc.pid), signal.SIGKILL)
                 except Exception:
                     pass
+                try:
+                    await mon.proc.wait()
+                except Exception:
+                    pass
             raise
         except Exception as e:
             logger.exception("MonitorRunner._watch unexpected error")

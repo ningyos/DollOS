@@ -56,6 +56,10 @@ class PerceptionQueue:
         )
         for t in pending:
             t.cancel()
+        # Await cancelled tasks so they can clean up; suppresses per-task
+        # "Task was destroyed but it is pending!" warnings (minor lifecycle fix).
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         if shutdown_task in done or (timeout_task is not None and timeout_task in done and get_task not in done):
             # Shutdown signaled or timeout elapsed before any perception
             get_task.cancel()

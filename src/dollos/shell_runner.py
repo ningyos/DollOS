@@ -133,7 +133,7 @@ class ShellRunner:
                 t=time.time(),
                 data={
                     "tool": "Shell",
-                    "task_id": f"shell-{command[:20]}",
+                    "task_id": task_id,
                     "status": status,
                     "summary": (
                         f"exit {proc.returncode}: {preview[:80]}"
@@ -160,7 +160,7 @@ class ShellRunner:
                 t=time.time(),
                 data={
                     "tool": "Shell",
-                    "task_id": f"shell-{command[:20]}",
+                    "task_id": task_id,
                     "status": "error",
                     "summary": f"runner error: {e}",
                     "output_id": None,

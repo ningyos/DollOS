@@ -4,9 +4,6 @@ Both EventDispatcher._respond and SubagentRunner._run_cascade implement
 the same parser-feed + tool-dispatch + tool_response + stuck-tool 3-strike
 loop. This module lifts that shared logic into run_tool_cascade and
 dispatch_tool_call.
-
-ErrorMsg push on runtime exception only fires when ctx.sink is not None
-(subagents have no live sink).
 """
 
 from __future__ import annotations
@@ -75,8 +72,6 @@ async def dispatch_one(
     arguments: dict,
     ctx: "MindCtx",
     registry: dict[str, type],
-    *,
-    error_sink=None,
 ) -> ToolResult | None:
     """Validate + run one tool call. Single source of truth for both the live
     MindLoop and the subagent cascade (spec §3.6).
@@ -101,8 +96,6 @@ async def dispatch_one(
         returned = await tool.run(ctx)
     except Exception as e:
         logger.exception("tool %s raised", name)
-        if error_sink is not None:
-            error_sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
         return ToolResult(
             tool_name=name, success=False, detail=f"runtime error: {e}"
         )
@@ -126,7 +119,6 @@ async def dispatch_tool_call(
         )
     return await dispatch_one(
         name, call.get("arguments", {}) or {}, ctx, tools_by_name,
-        error_sink=ctx.sink,
     )
 
 
@@ -160,7 +152,6 @@ async def run_tool_cascade(
     for ergonomics).
     """
     consecutive_fails: dict[str, int] = {}
-    last_failed_tool: str | None = None
     iter_num = 0
 
     while True:
@@ -222,19 +213,16 @@ async def run_tool_cascade(
                 "content": f"<tool_response>\n{detail}\n</tool_response>",
             })
 
-        # Update same-tool consecutive-failure tracker.
+        # Update per-tool failure counts; clear all on any success.
+        # Per-tool counts accumulate across tool changes so that alternating
+        # failing tools cannot run the cascade unbounded (I3 fix).
         for r in results:
             if r.success:
                 consecutive_fails.clear()
-                last_failed_tool = None
             else:
-                if r.tool_name == last_failed_tool:
-                    consecutive_fails[r.tool_name] = (
-                        consecutive_fails.get(r.tool_name, 1) + 1
-                    )
-                else:
-                    last_failed_tool = r.tool_name
-                    consecutive_fails = {r.tool_name: 1}
+                consecutive_fails[r.tool_name] = (
+                    consecutive_fails.get(r.tool_name, 0) + 1
+                )
 
         stuck_tool = next(
             (n for n, c in consecutive_fails.items() if c >= 3),

@@ -46,16 +46,26 @@ def _format_tools_block(tools: list[type[BaseModel]]) -> str:
         props: dict = {}
         for fname, finfo in props_raw.items():
             entry: dict = {}
-            if "type" in finfo:
-                entry["type"] = finfo["type"]
+            # Unwrap Optional[X] — Pydantic emits anyOf: [<T>, {"type":"null"}].
+            # Without this, Optional fields lose their type entirely.
+            finfo_effective = finfo
+            if "type" not in finfo and "anyOf" in finfo:
+                non_null = [s for s in finfo["anyOf"] if s.get("type") != "null"]
+                if len(non_null) == 1:
+                    finfo_effective = non_null[0]
+            if "type" in finfo_effective:
+                entry["type"] = finfo_effective["type"]
+            # Preserve enum for Literal fields (e.g. Literal["ok", "fail"]).
+            if "enum" in finfo_effective:
+                entry["enum"] = finfo_effective["enum"]
             if "description" in finfo:
                 entry["description"] = finfo["description"]
             if "default" in finfo:
                 entry["default"] = finfo["default"]
-            if "minimum" in finfo:
-                entry["minimum"] = finfo["minimum"]
-            if "maximum" in finfo:
-                entry["maximum"] = finfo["maximum"]
+            if "minimum" in finfo_effective:
+                entry["minimum"] = finfo_effective["minimum"]
+            if "maximum" in finfo_effective:
+                entry["maximum"] = finfo_effective["maximum"]
             props[fname] = entry
         return {
             "type": "function",
@@ -249,7 +259,17 @@ def _build_tool_call_rule(
             raise NotImplementedError(
                 f"unsupported $ref {ref!r}; only #/$defs/<Name> supported"
             )
-        return schema["$defs"][ref[len(prefix):]]
+        defs = schema.get("$defs")
+        if defs is None:
+            raise NotImplementedError(
+                f"$ref {ref!r} found but schema has no $defs section"
+            )
+        key = ref[len(prefix):]
+        if key not in defs:
+            raise NotImplementedError(
+                f"$ref {ref!r} key {key!r} not found in $defs"
+            )
+        return defs[key]
 
     def _aux_rule_id(base: str, suffix: str) -> str:
         out: list[str] = []
