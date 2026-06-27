@@ -1068,3 +1068,25 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
     assert llm.captured_user is not None
     assert "[Memory guideline]" in llm.captured_user
     assert "English" in llm.captured_user
+
+
+def test_mind_loop_init_raises_on_unbuildable_grammar(tmp_path):
+    """No-fallback: 一個帶未支援型別欄位的工具讓 grammar build 失敗時，
+    MindLoop 必須在啟動時 raise，而不是靜默以 grammar=None 跑無約束 decode。"""
+    from pydantic import BaseModel, Field
+    from tests._dispatcher_helpers import _make_mind_ctx
+
+    class _BadTool(BaseModel):
+        flag: bool = Field(description="unsupported type")
+
+    ctx = _make_mind_ctx(tmp_path)
+    with pytest.raises(NotImplementedError):
+        MindLoop(
+            state=MindState(),
+            queue=PerceptionQueue(),
+            ctx=ctx,
+            llm=_FakeLLM(""),
+            system_prompt="",
+            state_persist_path=tmp_path / "s.json",
+            tool_registry={"_BadTool": _BadTool},
+        )

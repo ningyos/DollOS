@@ -110,16 +110,13 @@ class MindLoop:
         # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
         self._safe_grammar: str | None = None
 
-        # Build GBNF grammar from tool registry to constrain LLM output.
-        # Voice-first grammar emits </think> itself; no prefill needed.
+        # No-fallback (spec §3.3): a grammar build failure is a tool-set config
+        # error. Let it raise at startup — the daemon must refuse to run with a
+        # half-built / unconstrained tool set rather than silently degrade.
         if self._tool_registry:
-            try:
-                self._grammar = build_voice_first_grammar(
-                    list(self._tool_registry.values())
-                )
-            except Exception:
-                logger.exception("failed to build voice_first grammar; running unconstrained")
-                self._grammar = None
+            self._grammar = build_voice_first_grammar(
+                list(self._tool_registry.values())
+            )
         else:
             self._grammar = None
 
