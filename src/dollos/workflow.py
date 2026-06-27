@@ -264,10 +264,9 @@ class WorkflowRunner:
             return synth
 
         # No synthesis.
-        if len(reports) == 1:
-            # Degenerate single-worker case → that worker's Report raw.
-            return reports[0]
-        return self._rollup(reports)
+        if len(reports) == 1 and mode != "verify":
+            return reports[0]           # map_reduce N=1 → raw worker Report
+        return self._rollup(reports)    # verify (or N>1) → fold verify[] into details + status
 
     async def _run_one_task(
         self,

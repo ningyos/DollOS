@@ -385,7 +385,7 @@ async def test_worker_uses_subagent_scaffolding(tmp_path: Path):
 
     assert len(adapter.calls) == 1
     system = adapter.calls[0]["system"]
-    assert "subagent" in system
+    assert "worker agent" in system   # subagent_scaffolding template (renamed from "subagent")
     assert "Report" in system
     assert "# Identity" not in system
     assert "[Memory context]" not in system
@@ -476,6 +476,42 @@ async def test_verify_mode_invocation_count(tmp_path: Path):
     # 2 task agents + 2 verify skeptics + 1 synthesis agent.
     assert len(adapter.calls) == 2 + 2 + 1
     assert any("adversarial skeptic" in c["content"] for c in adapter.calls)
+
+
+@pytest.mark.asyncio
+async def test_n1_verify_skeptic_verdict_surfaces(tmp_path: Path):
+    """M1 regression: N=1, mode=verify, synthesis=None → skeptic verdict folds into perception.
+
+    Without the fix, the raw early-return discards the verify key; the perception
+    is identical to a bare map_reduce N=1 result (no [verify] block in details).
+    With the fix, _rollup is called so the skeptic's verdict is always visible.
+    """
+    worker_report = _report_call("ok", "task done", "task output")
+    skeptic_report = _report_call("incomplete", "refutation found", "evidence against claim")
+    adapter = _ScriptedAdapter(
+        scripts=[
+            [StreamChunk(text=worker_report, done=False), StreamChunk(text="", done=True)],
+            [StreamChunk(text=skeptic_report, done=False), StreamChunk(text="", done=True)],
+        ]
+    )
+    runner, queue, _ = _make_runner(adapter, tmp_path)
+    runner.spawn(
+        workflow_id="wf-verify-n1",
+        tasks=["check something"],
+        synthesis=None,
+        mode="verify",
+        timeout_s=30,
+    )
+
+    p = await _wait_for_tool_result(queue)
+    assert p.data["tool"] == "Workflow"
+    details = p.data["details"]
+    # The rollup MUST include the skeptic verdict — it must not be the raw worker details
+    assert "[verify]" in details, "skeptic verdict missing from details"
+    assert "incomplete" in details, "skeptic status (incomplete) missing from details"
+    assert "refutation found" in details, "skeptic summary missing from details"
+    # Confirm the worker content is also present (rollup, not replacement)
+    assert "task done" in details or "task output" in details
 
 
 @pytest.mark.asyncio
