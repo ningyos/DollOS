@@ -25,7 +25,7 @@ from dollos.tool_parser import ToolStreamParser
 
 if TYPE_CHECKING:
     from dollos.llm.adapter import LLMAdapter
-    from dollos.tools import ToolCtx
+    from dollos.mind.mind_ctx import MindCtx
 
 logger = logging.getLogger(__name__)
 
@@ -70,21 +70,53 @@ def format_validation_error(exc: ValidationError, tool_name: str) -> str:
     return f"工具 {tool_name} 參數錯誤：{body}"
 
 
+async def dispatch_one(
+    name: str,
+    arguments: dict,
+    ctx: "MindCtx",
+    registry: dict[str, type],
+    *,
+    error_sink=None,
+) -> ToolResult | None:
+    """Validate + run one tool call. Single source of truth for both the live
+    MindLoop and the subagent cascade (spec §3.6).
+
+    Returns None for side-effect tools (run() -> None); ToolResult otherwise.
+    Friendly messages via format_unknown_tool / format_validation_error.
+    """
+    tool_cls = registry.get(name)
+    if tool_cls is None:
+        logger.warning("unknown tool: %r", name)
+        return ToolResult(
+            tool_name=name, success=False, detail=format_unknown_tool(name, registry)
+        )
+    try:
+        tool = tool_cls.model_validate(arguments)
+    except ValidationError as e:
+        logger.warning("tool args validation failed for %s: %s", name, e)
+        return ToolResult(
+            tool_name=name, success=False, detail=format_validation_error(e, name)
+        )
+    try:
+        returned = await tool.run(ctx)
+    except Exception as e:
+        logger.exception("tool %s raised", name)
+        if error_sink is not None:
+            error_sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
+        return ToolResult(
+            tool_name=name, success=False, detail=f"runtime error: {e}"
+        )
+    if returned is None:
+        return None
+    return ToolResult(tool_name=name, success=True, detail=returned)
+
+
 async def dispatch_tool_call(
     call: dict,
-    ctx: "ToolCtx",
+    ctx: "MindCtx",
     tools_by_name: dict[str, type],
 ) -> ToolResult | None:
-    """Execute a single tool call. Returns ToolResult if cascade-worthy, None otherwise.
-
-    Returns None when:
-      - tool.run() returned None (side-effect tool, no cascade)
-    Returns ToolResult when:
-      - validation/unknown error (success=False, error in detail)
-      - runtime exception (success=False, error in detail) — also pushes
-        ErrorMsg to sink when ctx.sink is not None
-      - tool.run() returned str (success=True, str in detail; may be empty)
-    """
+    """Thin wrapper over dispatch_one for the run_tool_cascade call path."""
     name = call.get("name")
     if not isinstance(name, str):
         return ToolResult(
@@ -92,29 +124,10 @@ async def dispatch_tool_call(
             success=False,
             detail="missing or non-string 'name' field in tool_call",
         )
-    tool_cls = tools_by_name.get(name)
-    if tool_cls is None:
-        logger.warning("unknown tool: %r", name)
-        return ToolResult(tool_name=name, success=False, detail="unknown tool")
-    try:
-        tool = tool_cls.model_validate(call.get("arguments", {}))
-    except ValidationError as e:
-        logger.warning("tool args validation failed for %s: %s", name, e)
-        return ToolResult(
-            tool_name=name, success=False, detail=f"args validation: {e}"
-        )
-    try:
-        returned = await tool.run(ctx)
-    except Exception as e:
-        logger.exception("tool %s raised", name)
-        if ctx.sink is not None:
-            ctx.sink.put_nowait(ErrorMsg(message=f"tool {name} error: {e}"))
-        return ToolResult(
-            tool_name=name, success=False, detail=f"runtime error: {e}"
-        )
-    if returned is None:
-        return None
-    return ToolResult(tool_name=name, success=True, detail=returned)
+    return await dispatch_one(
+        name, call.get("arguments", {}) or {}, ctx, tools_by_name,
+        error_sink=ctx.sink,
+    )
 
 
 async def run_tool_cascade(
@@ -124,13 +137,13 @@ async def run_tool_cascade(
     messages: list[dict],
     tools: list[type],
     tools_by_name: dict[str, type],
-    ctx: "ToolCtx",
+    ctx: "MindCtx",
     grammar: str,
     sink: "asyncio.Queue[ServerMessage | None] | None",
     max_tokens: int,
     on_iter_start: Callable[[int, list[dict]], None] | None = None,
     on_iter_end: Callable[[int, str, list[dict], list[ToolResult], int], None] | None = None,
-    check_early_exit: Callable[[int, "ToolCtx"], bool] | None = None,
+    check_early_exit: Callable[[int, "MindCtx"], bool] | None = None,
 ) -> list[dict]:
     """Run an LLM tool cascade. Mutates `messages` in place; also returns it.
 

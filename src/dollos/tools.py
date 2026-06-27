@@ -84,29 +84,6 @@ def _format_hit(hit: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# DEPRECATED: ToolCtx — kept for dispatcher.py compatibility until Task 8
-# deletes dispatcher. Do NOT use in new code; use MindCtx instead.
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ToolCtx:
-    """Narrow execution context passed to Tool.run().
-
-    DEPRECATED — kept for cascade.py / dispatcher.py type-hint compat only.
-    New code uses MindCtx. Will be removed when dispatcher.py is deleted.
-    """
-
-    sink: asyncio.Queue[ServerMessage | None] | None
-    memory_root: Path
-    memsearch: "FtsMemory"
-    transcripts_root: Path
-    tool_output_store: "ToolOutputStore"
-    subagent_runner: "SubagentRunner | None" = None
-    shell_runner: "ShellRunner | None" = None
-    monitor_runner: "MonitorRunner | None" = None
-
-
-# ---------------------------------------------------------------------------
 # Tools — all run(ctx: MindCtx)
 # ---------------------------------------------------------------------------
 
