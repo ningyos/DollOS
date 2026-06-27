@@ -15,6 +15,8 @@ class LLMConfig(BaseModel):
     base_url: str
     model_alias: str
     timeout_s: float = 60.0
+    # concurrent LLM generations; set to your llama-server --parallel (cloud APIs can raise)
+    max_concurrency: int = 2
 
 
 class IPCConfig(BaseModel):

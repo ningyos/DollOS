@@ -76,6 +76,7 @@ def _build_provider(
             recorder=recorder,
             model_alias=settings.llm.model_alias,
             max_context_tokens=settings.cognition.max_context_tokens,
+            max_concurrency=settings.llm.max_concurrency,
         )
     raise ValueError(f"unknown provider: {settings.llm.provider}")
 
