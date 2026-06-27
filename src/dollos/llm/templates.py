@@ -160,13 +160,13 @@ def _field_value_token(
         ref = items.get("$ref")
         if not ref:
             raise NotImplementedError(
-                f"tool {name} required field {fname!r} array items have no $ref; "
+                f"tool {name} field {fname!r} array items have no $ref; "
                 f"only $ref-typed array items supported"
             )
         item_schema = resolve_ref(schema, ref)
         if item_schema.get("type") != "object":
             raise NotImplementedError(
-                f"tool {name} required field {fname!r} item is not an object; "
+                f"tool {name} field {fname!r} item is not an object; "
                 f"grammar build unsupported"
             )
         item_props = item_schema.get("properties", {})
@@ -201,7 +201,7 @@ def _field_value_token(
             used_aux_rule_ids.add(array_rule_id)
         return array_rule_id
     raise NotImplementedError(
-        f"tool {name} required field {fname!r} has unsupported type {ftype!r}; "
+        f"tool {name} field {fname!r} has unsupported type {ftype!r}; "
         f"grammar build unsupported"
     )
 
