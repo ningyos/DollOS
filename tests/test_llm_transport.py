@@ -1,5 +1,6 @@
 """Tests for Provider ABC + LlamaCppProvider."""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -254,3 +255,78 @@ async def test_llamacpp_provider_records_telemetry_on_http_error(tmp_path: Path)
     assert len(records) == 1
     assert records[0].error == "http_429"
     assert records[0].prompt_tokens is None     # no fake data
+
+
+@pytest.mark.asyncio
+async def test_semaphore_limits_concurrent_generations(monkeypatch):
+    """Semaphore: at most max_concurrency HTTP connections are in-flight at once.
+
+    Injects a fake httpx.AsyncClient whose stream() context manager increments
+    an inflight counter on entry and decrements it on exit.  A gate (asyncio.Event)
+    holds all in-flight connections open until all 5 consumers have started, so we
+    can measure the peak before any slot is released.  With max_concurrency=2 the
+    semaphore must prevent the peak from exceeding 2, even when 5 consumers race.
+    """
+    peak = 0
+    inflight = 0
+    gate = asyncio.Event()
+
+    class FakeStreamResponse:
+        async def __aenter__(self):
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            # Yield to event loop so other tasks can reach the semaphore boundary
+            await asyncio.sleep(0)
+            # Hold the connection open until the gate opens
+            await gate.wait()
+            return self
+
+        async def __aexit__(self, *args):
+            nonlocal inflight
+            inflight -= 1
+
+        def raise_for_status(self):
+            pass
+
+        def aiter_lines(self):
+            async def _lines():
+                yield 'data: {"content": "", "stop": true}'
+            return _lines()
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def stream(self, method, url, **kwargs):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr("dollos.llm.transport.httpx.AsyncClient", FakeAsyncClient)
+
+    provider = LlamaCppProvider(base_url="http://test.local:8001", max_concurrency=2)
+
+    completed = 0
+
+    async def consume(i: int) -> None:
+        nonlocal completed
+        async for _ in provider.stream(prompt=f"p{i}", stop=None, max_tokens=1):
+            pass
+        completed += 1
+
+    tasks = [asyncio.create_task(consume(i)) for i in range(5)]
+
+    # Give all 5 tasks time to queue up against the semaphore and gate
+    await asyncio.sleep(0.01)
+
+    # Open the gate: let the (at most 2) in-flight connections complete
+    gate.set()
+    await asyncio.gather(*tasks)
+
+    assert peak <= 2, f"peak concurrent HTTP connections was {peak}, expected ≤ 2"
+    assert completed == 5, "all 5 consumers should have completed successfully"

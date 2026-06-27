@@ -7,6 +7,7 @@ template = "qwen3-thinking"
 base_url = "http://127.0.0.1:8001"
 model_alias = "unsloth/Qwen3.6"
 timeout_s = 60.0
+max_concurrency = 2   # concurrent LLM generations; set to your llama-server --parallel (cloud APIs can raise)
 
 [ipc]
 host = "127.0.0.1"
