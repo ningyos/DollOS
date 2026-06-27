@@ -887,3 +887,34 @@ async def test_recall_appends_output_record(tmp_path):
     assert state.recent_outputs[0].kind == "Recall"
 
 
+# ---------- NoteToolLesson ----------
+
+
+@pytest.mark.asyncio
+async def test_note_tool_lesson_appends_and_indexes(tmp_path):
+    from dollos.tools import NoteToolLesson
+    ctx, ms, _sink = _make_ctx(tmp_path)
+    out = await NoteToolLesson(situation="grepping large output",
+                               lesson="use GrepToolOutput, not Shell grep").run(ctx)
+    assert out.startswith("lesson noted:")
+    path = tmp_path / "shared" / "tool_playbook.md"
+    text = path.read_text()
+    assert "[situation] grepping large output" in text
+    assert "use GrepToolOutput" in text
+    # timestamp-only heading (no [k:v] axis tags that would leak into associative)
+    import re
+    heading = next(l for l in text.splitlines() if l.startswith("## "))
+    assert re.match(r"## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$", heading)
+    # append-only: a second lesson adds, never overwrites
+    await NoteToolLesson(situation="s2", lesson="l2").run(ctx)
+    assert "[situation] grepping large output" in path.read_text()
+    assert "[situation] s2" in path.read_text()
+
+
+def test_note_tool_lesson_not_in_main_tools_but_in_reflection_tools():
+    from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, NoteToolLesson
+    assert NoteToolLesson not in MAIN_TOOLS
+    assert NoteToolLesson in REFLECTION_TOOLS
+    assert all(t in REFLECTION_TOOLS for t in MAIN_TOOLS)
+
+
