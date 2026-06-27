@@ -212,7 +212,10 @@ def _percep_body(p) -> str:
     if p.kind == "UserSpoke":
         return f"'{d.get('text', '')[:200]}'"
     if p.kind == "ToolResultArrived":
-        return f"{d.get('tool', '?')} {d.get('task_id', '?')}: {d.get('summary', '')[:120]}"
+        return (
+            f"{d.get('tool', '?')} {d.get('task_id', '?')} "
+            f"[{d.get('status', '?')}]: {d.get('summary', '')[:120]}"
+        )
     if p.kind == "MonitorFired":
         return f"{d.get('monitor_id', '?')}: {d.get('line', '')[:120]}"
     if p.kind == "MonitorEnded":

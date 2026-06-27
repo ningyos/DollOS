@@ -42,7 +42,7 @@ MAX_SYNC_REFEED_PASSES = 8
 # across turns BY DESIGN (spec §Gap A) — their dispatch ack string must NOT
 # trigger an in-turn re-feed pass. Classified by name here because the live loop
 # owns the cascade-worthiness decision; `tools.py` is untouched by P1.
-FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnSubagent", "SpawnMonitor"})
+FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 
 # In-turn re-feed allowlist (spec §7 P1). On SUCCESS, only a tool whose RESULT
 # Doll genuinely must read to decide what to do next warrants another full
@@ -352,7 +352,7 @@ class MindLoop:
         Pass 1 streams the single rendered prompt; each subsequent pass re-feeds
         the SYNC inline tool results (Recall / NoteMemory) from the prior pass as
         ``<tool_response>`` user messages, so Doll can read-then-decide within the
-        same turn. Async fire-and-forget tools (Shell / SpawnSubagent /
+        same turn. Async fire-and-forget tools (Shell / SpawnWorkflow /
         SpawnMonitor) do NOT extend the turn — they re-enter as perceptions across
         turns. A turn with no sync-tool result is exactly today's single pass.
 

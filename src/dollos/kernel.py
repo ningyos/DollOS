@@ -41,7 +41,7 @@ from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
 from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.shell_runner import ShellRunner
-from dollos.subagent import SubagentRunner
+from dollos.workflow import WorkflowRunner
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
 from dollos.mind.mind_ctx import MindCtx
@@ -246,7 +246,7 @@ class DollOS:
             cwd=settings.data.root,
             perception_queue=self._perception_queue,
         )
-        self.subagent_runner = SubagentRunner(
+        self.workflow_runner = WorkflowRunner(
             adapter=self.adapter,
             renderer=self.renderer,
             memory_root=settings.data.root / "memory",
@@ -256,6 +256,7 @@ class DollOS:
             shell_runner=self.shell_runner,
             monitor_runner=self.monitor_runner,
             tool_output_store=self._tool_output_store,
+            cascade_logger=self._cascade_logger,
         )
 
         self._mind_ctx = MindCtx(
@@ -266,7 +267,7 @@ class DollOS:
             sink_resolver=self._sink_resolver,
             tool_output_store=self._tool_output_store,
             shell_runner=self.shell_runner,
-            subagent_runner=self.subagent_runner,
+            workflow_runner=self.workflow_runner,
             monitor_runner=self.monitor_runner,
         )
 
@@ -681,7 +682,7 @@ class DollOS:
                     )
                 # Stop runners before MindLoop so result perceptions
                 # don't arrive after loop shuts down
-                await self.subagent_runner.stop()
+                await self.workflow_runner.stop()
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
                 await self.system_pulse.stop()
