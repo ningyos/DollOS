@@ -44,7 +44,7 @@ class MindCtx:
     sink_resolver: "SinkResolver"
     tool_output_store: "ToolOutputStore"
     shell_runner: "ShellRunner"
-    workflow_runner: "WorkflowRunner"
+    workflow_runner: "WorkflowRunner | None"
     monitor_runner: "MonitorRunner"
 
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.

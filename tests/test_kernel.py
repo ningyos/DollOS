@@ -447,3 +447,52 @@ async def test_schedule_runner_survives_malformed_schedule_file(tmp_path, monkey
     assert any("_schedule_runner" in m for m in warning_msgs), (
         f"expected a _schedule_runner WARNING in logs; got: {warning_msgs}"
     )
+
+
+# ----- Shutdown sequence -----
+
+
+@pytest.mark.asyncio
+async def test_kernel_shutdown_awaits_workflow_runner_stop(tmp_path, monkeypatch):
+    """DollOS.run() teardown awaits workflow_runner.stop() before the mind-loop exits.
+
+    Guards against accidental removal of the stop() call from the finally block.
+    """
+    from dollos.wal.pidfile import RestartKind
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    stop_called = asyncio.Event()
+
+    async def _spy_stop() -> None:
+        stop_called.set()
+
+    async def _noop() -> None:
+        pass
+
+    monkeypatch.setattr(dollos.workflow_runner, "stop", _spy_stop)
+    monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
+    monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
+    monkeypatch.setattr(dollos.memsearch, "close", lambda: None)
+    monkeypatch.setattr(dollos.server, "start", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
+    monkeypatch.setattr(dollos._reflection_observer, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._tool_output_store, "cleanup", lambda: None)
+    monkeypatch.setattr(dollos._pidfile, "acquire", lambda: RestartKind.COLD)
+    monkeypatch.setattr(dollos._pidfile, "release", lambda: None)
+    # Suppress signal-handler registration (only valid on main thread in production).
+    monkeypatch.setattr(asyncio.get_event_loop(), "add_signal_handler", lambda *a, **kw: None)
+
+    dollos._shutdown.set()  # trigger immediate teardown
+    await asyncio.wait_for(dollos.run(), timeout=3.0)
+
+    assert stop_called.is_set(), (
+        "workflow_runner.stop() was not awaited during kernel teardown"
+    )

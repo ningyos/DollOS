@@ -778,3 +778,34 @@ def test_rollup_status_all_ok_synthesis_degraded_gives_incomplete():
     # Sanity: all ok + synthesis incomplete → incomplete
     synth_incomplete = {"status": "incomplete", "summary": "partial", "details": ""}
     assert WorkflowRunner._rollup_status(task_reports, synth_incomplete) == "incomplete"
+
+
+# ---------- Timing / dispatch ----------
+
+
+@pytest.mark.asyncio
+async def test_eager_dispatch_queue_empty_after_spawn(tmp_path: Path):
+    """spawn() returns immediately (fire-and-forget); the queue is still empty
+    right after the call — the workflow runs entirely in the background."""
+
+    class _HangAdapter(LLMAdapter):
+        async def stream_completion(self, **_):  # pragma: no cover
+            yield StreamChunk(text="", done=True)
+
+        async def stream_messages(self, **_):
+            await asyncio.Event().wait()  # hang until cancelled
+            yield StreamChunk(text="", done=True)  # pragma: no cover
+
+    runner, queue, _ = _make_runner(_HangAdapter(), tmp_path)
+    runner.spawn(
+        workflow_id="wf-eager", tasks=["slow-task"], synthesis=None,
+        mode="map_reduce", timeout_s=60,
+    )
+    # No await — check synchronously that nothing arrived yet.
+    # drain(timeout_s=0.0) fires after one event-loop tick; the workflow
+    # is still blocked on the hanging adapter at that point.
+    drained = await queue.drain(timeout_s=0.0)
+    assert [p for p in drained if p.kind == "ToolResultArrived"] == [], (
+        "spawn() must be fire-and-forget; result must not appear before workflow completes"
+    )
+    await runner.stop()
