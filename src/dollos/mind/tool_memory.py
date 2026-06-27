@@ -20,10 +20,13 @@ def record_tool_outcome(state: MindState, name: str, result) -> None:
     """Record one tool dispatch outcome. Observability only — never raises.
 
     result: None (side-effect tool ran cleanly) or a ToolResult.
+    setdefault is intentionally placed AFTER result.success is accessed so a
+    malformed result that raises AttributeError leaves no zombie entry in tool_stats.
     """
     try:
+        ok = result is None or result.success
         stat = state.tool_stats.setdefault(name, {"ok": 0, "fail": 0})
-        if result is None or result.success:
+        if ok:
             stat["ok"] += 1
         else:
             stat["fail"] += 1
@@ -38,15 +41,22 @@ _MAX_OUTCOME_FAILS = 3
 _OUTCOME_DETAIL_CAP = 100
 
 
-def render_tool_outcomes(tool_stats: dict, recent_tool_failures: deque) -> str:
+def render_tool_outcomes(tool_stats: dict, recent_tool_failures: deque) -> str | None:
     """[Tool outcomes since last reflection] — per-tool ok/fail + recent fail samples.
-    Reflection-only; caller gates on is_reflection."""
+    Reflection-only; caller gates on is_reflection.
+    Returns None when tool_stats is empty (consistent with render_tool_notes/render_tool_habits)."""
+    if not tool_stats:
+        return None
     lines = ["[Tool outcomes since last reflection]"]
     last_fail: dict[str, str] = {}
     for f in list(recent_tool_failures)[-_MAX_OUTCOME_FAILS:]:
         last_fail[f.tool] = f.detail[:_OUTCOME_DETAIL_CAP]
     for tool, st in tool_stats.items():
-        line = f"- {tool}: {st.get('ok', 0)} ok, {st.get('fail', 0)} fail"
+        ok = st.get("ok", 0)
+        fail = st.get("fail", 0)
+        line = f"- {tool}: {ok} ok"
+        if fail > 0:
+            line += f", {fail} fail"
         if tool in last_fail:
             line += f" — last fail: {last_fail[tool]}"
         lines.append(line)

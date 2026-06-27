@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
-from dollos.mind.tool_memory import record_tool_outcome, tool_habits_search
+from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -200,7 +200,6 @@ class MindLoop:
         # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
         tool_outcomes_block = None
         if self._is_reflection:
-            from dollos.mind.tool_memory import render_tool_outcomes
             tool_outcomes_block = render_tool_outcomes(
                 self._state.tool_stats, self._state.recent_tool_failures
             )
