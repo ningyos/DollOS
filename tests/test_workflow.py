@@ -707,3 +707,38 @@ async def test_worker_ctx_has_monitor_runner(tmp_path: Path):
     finally:
         SUB_TOOLS.clear()
         SUB_TOOLS.extend(orig)
+
+
+# ---------- _rollup_status regression ----------
+
+
+def test_rollup_status_all_ok_synthesis_degraded_gives_incomplete():
+    """Regression: if all task reports are ok but the synthesis agent itself
+    timed out or crashed (status not in {ok, incomplete}), the whole workflow
+    status must be 'incomplete', not the raw degraded string from the runner."""
+    from dollos.workflow import WorkflowRunner
+
+    task_reports = [
+        {"status": "ok", "summary": "task 0 done", "details": ""},
+        {"status": "ok", "summary": "task 1 done", "details": ""},
+    ]
+
+    # Synthesis agent timed out
+    synth_timeout = {"status": "timeout", "summary": "synthesis timed out", "details": ""}
+    assert WorkflowRunner._rollup_status(task_reports, synth_timeout) == "incomplete"
+
+    # Synthesis agent crashed
+    synth_error = {"status": "error", "summary": "synthesis crashed", "details": ""}
+    assert WorkflowRunner._rollup_status(task_reports, synth_error) == "incomplete"
+
+    # Synthesis agent produced no report
+    synth_noreport = {"status": "no_report", "summary": "no report", "details": ""}
+    assert WorkflowRunner._rollup_status(task_reports, synth_noreport) == "incomplete"
+
+    # Sanity: all ok + synthesis ok → ok
+    synth_ok = {"status": "ok", "summary": "combined", "details": ""}
+    assert WorkflowRunner._rollup_status(task_reports, synth_ok) == "ok"
+
+    # Sanity: all ok + synthesis incomplete → incomplete
+    synth_incomplete = {"status": "incomplete", "summary": "partial", "details": ""}
+    assert WorkflowRunner._rollup_status(task_reports, synth_incomplete) == "incomplete"

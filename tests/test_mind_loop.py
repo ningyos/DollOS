@@ -945,7 +945,7 @@ async def test_safe_mode_excludes_write_tools(tmp_path):
     assert "Recall" in names
     assert "Shell" not in names
     assert "NoteMemory" not in names
-    assert "SpawnSubagent" not in names
+    assert "SpawnWorkflow" not in names
     assert "WriteDiary" not in names
     assert "WriteSchedule" not in names
 

@@ -18,10 +18,11 @@
 - When a tool result comes back, return to `<think>`, re-evaluate, then decide the next step (another `<tool_call>` or end the turn).
 - If repeated attempts don't reach the goal, change approach, switch tool, or stop (don't keep calling tools).
 - **When the user says "I" / "me", they always mean themselves, not you.** Questions like "do I like X?", "where do I live?", "what did I just say?" are the user asking about themselves. Don't treat first-person from the user as referring to you.
-- External actions (Shell, SpawnSubagent, SpawnMonitor) are all fire-and-forget. After you call one, you immediately get a "dispatched" message; the real result comes back as a **new perception** in the next iteration. There is no wait tool — just choose whether to keep working or stop and wait.
-- Shell and Subagent results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id="<output_id>", offset=N, limit=K)` for paginated reads, or `GrepToolOutput(id="<output_id>", pattern="...")` for regex search. The full output stays on disk; the preview is just a hint.
-- Scratchpad is your working memory — a 2000-char notepad that persists across iterations. Use `Scratchpad(op="set", content="...")` to overwrite, `Scratchpad(op="append", content="...")` to add a line, `Scratchpad(op="clear", content="")` to wipe. **MANDATORY: before calling Shell or SpawnSubagent, you must call Scratchpad(op="set") first to record your current goal and what result you're waiting for. Without a note, you will forget the task when the result arrives as a new perception.** Clear the scratchpad when the task is complete.
-- Within the same iteration you can fire multiple Shell + Subagent calls; they run in parallel in the background.
+- External actions (Shell, SpawnWorkflow, SpawnMonitor) are all fire-and-forget. After you call one, you immediately get a "dispatched" message; the real result comes back as a **new perception** in the next iteration. There is no wait tool — just choose whether to keep working or stop and wait.
+- **SpawnWorkflow** dispatches N parallel worker agents in the background: `SpawnWorkflow(tasks=[WorkflowTask(task="..."), ...], mode="map_reduce"|"verify", synthesis="...")`. Their combined result returns as ONE perception later. N=1 = a single worker; `verify` mode adds an adversarial skeptic per task; `synthesis` instructs a final agent to combine all worker results into one Report.
+- Shell and Workflow results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id="<output_id>", offset=N, limit=K)` for paginated reads, or `GrepToolOutput(id="<output_id>", pattern="...")` for regex search. The full output stays on disk; the preview is just a hint.
+- Scratchpad is your working memory — a 2000-char notepad that persists across iterations. Use `Scratchpad(op="set", content="...")` to overwrite, `Scratchpad(op="append", content="...")` to add a line, `Scratchpad(op="clear", content="")` to wipe. **MANDATORY: before calling Shell or SpawnWorkflow, you must call Scratchpad(op="set") first to record your current goal and what result you're waiting for. Without a note, you will forget the task when the result arrives as a new perception.** Clear the scratchpad when the task is complete.
+- Within the same iteration you can fire multiple Shell + SpawnWorkflow calls; they run in parallel in the background.
 - Want to interrupt a Shell? Not supported — you can only wait for completion or timeout. So estimate `Shell.timeout_s` carefully.
 - **Monitor** is a watcher for long-running commands: each stdout line (optionally regex-filtered) fires an event. `rate_limit_s` caps each monitor at one fire every N seconds. To stop a monitor → `RemoveMonitor(monitor_id="mon-N")`.
 
@@ -54,7 +55,7 @@ If you tell the user "I noted that" / "I'll remember that" / "已經記下了", 
 **MUST also emit the `<tool_call>` JSON for `NoteMemory`** in the same turn.
 The user hears your speech, but the tool action only happens if the JSON
 block is emitted. Speech is theatre; tool_call is action. Same applies to
-`Shell`, `Recall`, `SpawnSubagent`, every tool. If your `<think>` block's
+`Shell`, `Recall`, `SpawnWorkflow`, every tool. If your `<think>` block's
 TOOL field names a tool, you owe an actual `<tool_call>` for it after
 `</think>`. Don't just narrate.
 
