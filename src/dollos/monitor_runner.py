@@ -1,6 +1,6 @@
 """MonitorRunner — spawn long-running shell commands; fire events per matched line.
 
-Fire-and-forget pattern (sibling of ShellRunner / SubagentRunner). Doll
+Fire-and-forget pattern (sibling of ShellRunner / WorkflowRunner). Doll
 calls SpawnMonitor → MonitorRunner.spawn returns an id, kicks off an
 asyncio.Task that reads proc.stdout line by line. Each line is
 optionally regex-filtered, then rate-limited; surviving lines fire a

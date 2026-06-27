@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from dollos.mind.mind_state import MindState
     from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
-    from dollos.subagent import SubagentRunner
     from dollos.tool_outputs import ToolOutputStore
 
 
@@ -279,51 +278,71 @@ class Recall(BaseModel):
         return result
 
 
-class SpawnSubagent(BaseModel):
-    """Dispatch an ephemeral sub-worker to handle a task in the background.
-
-    Returns immediately with a dispatch confirmation. The subagent runs in
-    parallel with its own minimal toolset (Shell / NoteMemory / Recall /
-    InvokeSkill / Report) and MUST end by calling Report. When it finishes
-    (or times out / errors), the structured outcome comes back as a NEW
-    turn's perception — you'll see it as a fresh user message starting with
-    「你派出的 subagent 回來了」 and can react to it then.
-    """
+class WorkflowTask(BaseModel):
+    """One worker task in a workflow — see ``SpawnWorkflow``."""
 
     task: str = Field(
         description=(
-            "What the subagent should do. Be concrete: it has no character, "
-            "no memory context, and no Doll persona — just the SUB_TOOLS toolkit "
-            "and this single instruction string."
+            "Concrete instruction for one worker agent (no character/memory "
+            "context — just the SUB_TOOLS toolkit + this string)."
         )
     )
-    timeout_s: int = Field(
-        300,
-        ge=1,
-        le=600,
+
+
+class SpawnWorkflow(BaseModel):
+    """Dispatch a background workflow: N parallel worker agents → optional synthesis.
+
+    Fire-and-forget; the combined result returns as ONE new perception
+    starting with the Workflow tag — react to it then. Each worker runs
+    independently with the SUB_TOOLS toolkit (Shell / NoteMemory / Recall /
+    InvokeSkill / Report …) and MUST end by calling Report; it has no
+    character, no memory context, and cannot spawn further workflows.
+
+    mode="map_reduce" fans the tasks out in parallel; mode="verify" adds an
+    independent adversarial skeptic pass over each worker's result before the
+    results are combined. Set `synthesis` to have a final agent merge all worker
+    results into one Report; leave it empty to get the results as-is (with one
+    task that returns that worker's report raw).
+    """
+
+    tasks: list[WorkflowTask] = Field(min_length=1, max_length=16)
+    mode: Literal["map_reduce", "verify"] = "map_reduce"
+    synthesis: str = Field(
+        default="",
         description=(
-            "Wall-clock seconds before the subagent is killed. Estimate from "
-            "task complexity (30 short, 300 long; max 600). Default 300s."
+            "Instruction for a final agent that combines all worker results. "
+            "Empty = return results as-is (N=1 returns that worker's report raw)."
+        ),
+    )
+    timeout_s: int = Field(
+        600,
+        ge=1,
+        le=1800,
+        description=(
+            "Whole-workflow wall-clock seconds before it is killed "
+            "(default 600, max 1800)."
         ),
     )
 
     def _summary(self) -> str:
-        return f"subagent: {self.task[:68]}"
+        return f"workflow: {len(self.tasks)} tasks, mode={self.mode}"
 
     async def run(self, ctx: "MindCtx") -> str:
-        sub_id = str(uuid.uuid4())[:8]
-        ctx.subagent_runner.spawn(
-            sub_id=sub_id,
-            task=self.task,
+        workflow_id = "wf-" + str(uuid.uuid4())[:8]
+        ctx.workflow_runner.spawn(
+            workflow_id=workflow_id,
+            tasks=[t.task for t in self.tasks],
+            synthesis=self.synthesis or None,
+            mode=self.mode,
             timeout_s=self.timeout_s,
             response_sink=None,  # Task 8 wires perception_queue here
         )
         result = (
-            f"subagent {sub_id} dispatched "
-            f"(task={self.task!r}, timeout={self.timeout_s}s). "
-            f"結果會以新事件回來。"
+            f"workflow {workflow_id} dispatched "
+            f"({len(self.tasks)} tasks, mode={self.mode}, "
+            f"timeout={self.timeout_s}s). 結果會以新事件回來。"
         )
-        _record(ctx, "SpawnSubagent", self._summary())
+        _record(ctx, "SpawnWorkflow", self._summary())
         return result
 
 
@@ -422,11 +441,12 @@ class RemoveMonitor(BaseModel):
 
 
 class Report(BaseModel):
-    """Terminate this subagent and report the structured outcome to Doll.
+    """Terminate this worker agent and report the structured outcome.
 
-    Subagent-only tool. MUST be called exactly once before the subagent ends
-    — the cascade ends naturally after the call (Report.run returns None).
-    The args become the SubagentResultEvent fields Doll sees on her next turn.
+    Worker-agent-only tool. MUST be called exactly once before the agent ends
+    — the cascade ends naturally after the call (Report.run returns None). The
+    args become the workflow result Doll sees on her next turn (or feed the
+    workflow's synthesis stage).
     """
 
     status: Literal["ok", "incomplete"] = Field(
@@ -446,9 +466,9 @@ class Report(BaseModel):
     )
 
     async def run(self, ctx: "MindCtx") -> None:
-        # Side-effect: stash args into ctx for SubagentRunner to pick up.
+        # Side-effect: stash args into ctx for run_agent to pick up.
         # Returning None ends the cascade naturally (no tool_response cycle).
-        ctx.subagent_report = {
+        ctx.agent_report = {
             "status": self.status,
             "summary": self.summary,
             "details": self.details,
@@ -743,7 +763,7 @@ class NoteToolLesson(BaseModel):
 
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
-    InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
+    InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
     Scratchpad,
     SetFocus, OpenLoop, CloseLoop,
