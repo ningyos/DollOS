@@ -289,3 +289,15 @@ def test_tool_outcomes_block_only_when_passed():
     assert "[Tool outcomes" not in render_mind(s, [], "sys")
     out = render_mind(s, [], "sys", tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 3 ok, 1 fail")
     assert "[Tool outcomes" in out and "Shell" in out
+
+
+# --- Task 7: [Tool habits] block gating ---
+
+
+def test_tool_habits_block_gated():
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.mind_prompt import render_mind
+    assert "[Tool habits]" not in render_mind(MindState(), [], "sys")
+    out = render_mind(MindState(), [], "sys",
+                      tool_habits_hits=[{"content": "## h\n\n[situation] grep\nuse Grep\n"}])
+    assert "[Tool habits]" in out and "use Grep" in out
