@@ -58,7 +58,7 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "Shell": "shell-call",
         "InvokeSkill": "invoke-skill-call",
         "Recall": "recall-call",
-        "SpawnSubagent": "spawn-subagent-call",
+        "SpawnWorkflow": "spawn-workflow-call",
         "SpawnMonitor": "spawn-monitor-call",
         "RemoveMonitor": "remove-monitor-call",
         "ReadToolOutput": "read-tool-output-call",
@@ -155,7 +155,7 @@ def test_unsupported_required_field_type_raises():
 
 
 class _IntField(BaseModel):
-    """Tool with a required integer field — supported (used by SpawnSubagent)."""
+    """Tool with a required integer field — supported (used by SpawnWorkflow.timeout_s)."""
 
     n: int = Field(description="a number")
 
@@ -216,6 +216,35 @@ def test_voice_first_grammar_accepts_silent_finish():
     g = build_voice_first_grammar([NoteMemory])
     # segments ::= segment* means zero allowed
     assert "segment*" in g
+
+
+def test_voice_first_grammar_spawn_workflow_builds():
+    """build_voice_first_grammar(MAIN_TOOLS) succeeds — SpawnWorkflow is
+    grammar-expressible via the same array-of-$ref mechanism as
+    WriteSchedule.entries (WorkflowTask has only required string field 'task')."""
+    from dollos.llm.templates import build_voice_first_grammar
+    from dollos.tools import MAIN_TOOLS
+    # Must not raise NotImplementedError
+    g = build_voice_first_grammar(MAIN_TOOLS)
+    # Array aux rules present
+    assert "spawn-workflow-tasks-array" in g
+    assert "spawn-workflow-tasks-item" in g
+    # task field inside item
+    assert r'\"task\":' in g
+    # Optional mode/synthesis suffixes in the call rule
+    rule = next(l for l in g.splitlines() if l.startswith("spawn-workflow-call ::="))
+    assert r'\"mode\"' in rule
+    assert r'\"synthesis\"' in rule
+
+
+def test_b4_sub_grammar_excludes_spawn_workflow():
+    """B4 (subagent) grammar uses SUB_TOOLS — SpawnWorkflow must not appear
+    (workers cannot spawn further workflows — no-nesting guard)."""
+    from dollos.llm.templates import build_qwen3_think_tool_grammar
+    from dollos.tools import SUB_TOOLS
+    g = build_qwen3_think_tool_grammar(SUB_TOOLS)
+    assert "SpawnWorkflow" not in g
+    assert "spawn-workflow" not in g
 
 
 def test_voice_first_grammar_tool_precedes_review():

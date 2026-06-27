@@ -141,7 +141,7 @@ def _make_mind_ctx(
     sink=None,
     state=None,
     shell_runner=None,
-    subagent_runner=None,
+    workflow_runner=None,
     monitor_runner=None,
     tool_output_store=None,
 ):
@@ -160,11 +160,11 @@ def _make_mind_ctx(
         def spawn(self, **kwargs):
             self.calls.append(kwargs)
 
-    class _FakeSubagentRunner:
+    class _FakeWorkflowRunner:
         def __init__(self):
             self.calls = []
-        def spawn(self, **kwargs):
-            self.calls.append(kwargs)
+        def spawn(self, *, workflow_id, tasks, synthesis=None, mode="map_reduce", timeout_s=600, response_sink=None):
+            self.calls.append(dict(workflow_id=workflow_id, tasks=tasks, synthesis=synthesis, mode=mode, timeout_s=timeout_s))
 
     class _FakeMonitorRunner:
         def __init__(self):
@@ -184,7 +184,7 @@ def _make_mind_ctx(
         sink_resolver=resolver,
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=shell_runner or _FakeShellRunner(),
-        subagent_runner=subagent_runner or _FakeSubagentRunner(),
+        workflow_runner=workflow_runner or _FakeWorkflowRunner(),
         monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
 

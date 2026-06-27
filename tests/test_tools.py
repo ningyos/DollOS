@@ -46,12 +46,12 @@ class _FakeShellRunner:
         self.calls.append(kwargs)
 
 
-class _FakeSubagentRunner:
+class _FakeWorkflowRunner:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def spawn(self, **kwargs):
-        self.calls.append(kwargs)
+    def spawn(self, *, workflow_id, tasks, synthesis=None, mode="map_reduce", timeout_s=600, response_sink=None):
+        self.calls.append(dict(workflow_id=workflow_id, tasks=tasks, synthesis=synthesis, mode=mode, timeout_s=timeout_s))
 
 
 class _FakeMonitorRunner:
@@ -82,7 +82,7 @@ def _make_ctx(
     state: MindState | None = None,
     sink: asyncio.Queue | None = None,
     shell_runner=None,
-    subagent_runner=None,
+    workflow_runner=None,
     monitor_runner=None,
 ) -> tuple[MindCtx, _FakeMemSearch, asyncio.Queue]:
     if sink is None:
@@ -97,7 +97,7 @@ def _make_ctx(
         sink_resolver=_fake_sink_resolver(sink),
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=shell_runner or _FakeShellRunner(),
-        subagent_runner=subagent_runner or _FakeSubagentRunner(),
+        workflow_runner=workflow_runner or _FakeWorkflowRunner(),
         monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
     return ctx, ms, sink
@@ -249,7 +249,7 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
         sink_resolver=_fake_sink_resolver(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=_FakeShellRunner(),
-        subagent_runner=_FakeSubagentRunner(),
+        workflow_runner=_FakeWorkflowRunner(),
         monitor_runner=_FakeMonitorRunner(),
     )
 
@@ -345,7 +345,7 @@ def _ctx_with_search(tmp_path, hits):
         sink_resolver=_fake_sink_resolver(),
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=_FakeShellRunner(),
-        subagent_runner=_FakeSubagentRunner(),
+        workflow_runner=_FakeWorkflowRunner(),
         monitor_runner=_FakeMonitorRunner(),
     )
     return ctx
@@ -505,35 +505,62 @@ async def test_write_diary_uses_seconds_in_timestamp(tmp_path):
     assert _re.search(r"## \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.*日記", content)
 
 
-# ---------- SpawnSubagent / Report ----------
+# ---------- SpawnWorkflow / Report ----------
 
 
-def test_main_tools_includes_spawn_subagent_not_report():
-    from dollos.tools import MAIN_TOOLS, Report, SpawnSubagent
+def test_main_tools_includes_spawn_workflow_not_report():
+    from dollos.tools import MAIN_TOOLS, Report, SpawnWorkflow
 
-    assert SpawnSubagent in MAIN_TOOLS
+    assert SpawnWorkflow in MAIN_TOOLS
     assert Report not in MAIN_TOOLS
 
 
-def test_sub_tools_includes_report_not_spawn():
-    from dollos.tools import SUB_TOOLS, Report, SpawnSubagent
+def test_spawn_subagent_not_importable():
+    """SpawnSubagent has been removed and must not be importable."""
+    import dollos.tools as _tools_mod
+    assert not hasattr(_tools_mod, "SpawnSubagent"), "SpawnSubagent must be gone from tools"
+
+
+def test_sub_tools_includes_report_not_spawn_workflow():
+    from dollos.tools import SUB_TOOLS, Report, SpawnWorkflow
 
     assert Report in SUB_TOOLS
-    assert SpawnSubagent not in SUB_TOOLS
+    assert SpawnWorkflow not in SUB_TOOLS
 
 
-def test_spawn_subagent_schema_has_task_and_timeout_s():
-    from dollos.tools import SpawnSubagent
+def test_spawn_workflow_schema_has_tasks_mode_synthesis_timeout():
+    from dollos.tools import SpawnWorkflow
 
-    schema = SpawnSubagent.model_json_schema()
-    assert "task" in schema["properties"]
-    assert "timeout_s" in schema["properties"]
-    assert "task" in schema["required"]
-    # timeout_s now has a default (300); it is no longer in required
+    schema = SpawnWorkflow.model_json_schema()
+    props = schema["properties"]
+    # tasks: required array
+    assert "tasks" in props
+    assert "tasks" in schema["required"]
+    # mode: optional Literal with default
+    assert "mode" in props
+    assert "mode" not in schema.get("required", [])
+    # synthesis: optional string with default ""
+    assert "synthesis" in props
+    assert "synthesis" not in schema.get("required", [])
+    # timeout_s: optional int with default 600
+    assert "timeout_s" in props
     assert "timeout_s" not in schema.get("required", [])
-    assert schema["properties"]["timeout_s"]["minimum"] == 1
-    assert schema["properties"]["timeout_s"]["maximum"] == 600
-    assert schema["properties"]["timeout_s"]["default"] == 300
+    assert props["timeout_s"].get("default") == 600
+
+
+def test_spawn_workflow_tasks_max_length():
+    from dollos.tools import SpawnWorkflow, WorkflowTask
+    from pydantic import ValidationError
+
+    # min_length=1: empty list rejected
+    with pytest.raises(ValidationError):
+        SpawnWorkflow(tasks=[])
+    # max_length=16: list of 17 rejected
+    with pytest.raises(ValidationError):
+        SpawnWorkflow(tasks=[WorkflowTask(task=f"t{i}") for i in range(17)])
+    # exactly 16 is ok
+    sw = SpawnWorkflow(tasks=[WorkflowTask(task=f"t{i}") for i in range(16)])
+    assert len(sw.tasks) == 16
 
 
 def test_report_schema_has_status_summary_details():
@@ -547,43 +574,48 @@ def test_report_schema_has_status_summary_details():
 
 
 @pytest.mark.asyncio
-async def test_spawn_subagent_invokes_runner_and_returns_dispatch_msg(tmp_path):
-    """SpawnSubagent.run delegates to ctx.subagent_runner.spawn and returns a
-    confirmation string mentioning dispatch + the task + the timeout."""
-    from dollos.tools import SpawnSubagent
+async def test_spawn_workflow_invokes_runner_and_returns_dispatch_msg(tmp_path):
+    """SpawnWorkflow.run delegates to ctx.workflow_runner.spawn and returns a
+    confirmation string mentioning dispatch."""
+    from dollos.tools import SpawnWorkflow, WorkflowTask
 
-    runner = _FakeSubagentRunner()
-    ctx, _ms, _sink = _make_ctx(tmp_path, subagent_runner=runner)
+    runner = _FakeWorkflowRunner()
+    ctx, _ms, _sink = _make_ctx(tmp_path, workflow_runner=runner)
 
-    out = await SpawnSubagent(
-        task="search transcripts for coffee", timeout_s=30
+    out = await SpawnWorkflow(
+        tasks=[WorkflowTask(task="search transcripts for coffee"),
+               WorkflowTask(task="check memory for tea")],
+        mode="map_reduce",
+        synthesis="combine findings",
+        timeout_s=120,
     ).run(ctx)
 
     assert len(runner.calls) == 1
     kw = runner.calls[0]
-    assert kw["task"] == "search transcripts for coffee"
-    assert kw["timeout_s"] == 30
-    assert kw["response_sink"] is None  # Task 8 wires perception_queue here
-    assert "sub_id" in kw and len(kw["sub_id"]) >= 4
-    assert "dispatched" in out
-    assert "30" in out
+    assert kw["tasks"] == ["search transcripts for coffee", "check memory for tea"]
+    assert kw["mode"] == "map_reduce"
+    assert kw["synthesis"] == "combine findings"
+    assert kw["timeout_s"] == 120
+    assert "workflow_id" in kw and len(kw["workflow_id"]) >= 4
+    # dispatch ack string mentions something about workflow/dispatch
+    assert "結果" in out or "workflow" in out.lower() or "dispatched" in out.lower()
 
 
 @pytest.mark.asyncio
 async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
-    """Report.run side-effects ctx.subagent_report and returns None
+    """Report.run side-effects ctx.agent_report and returns None
     (cascade-ending semantics)."""
     from dollos.tools import Report
 
     ctx, _, _ = _make_ctx(tmp_path)
-    assert ctx.subagent_report is None
+    assert ctx.agent_report is None
 
     out = await Report(
         status="ok", summary="done", details="data here"
     ).run(ctx)
 
     assert out is None
-    assert ctx.subagent_report == {
+    assert ctx.agent_report == {
         "status": "ok",
         "summary": "done",
         "details": "data here",

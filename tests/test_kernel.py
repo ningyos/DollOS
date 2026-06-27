@@ -155,15 +155,15 @@ async def test_kernel_creates_monitor_runner(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_kernel_subagent_runner_wired(tmp_path: Path):
-    """SubagentRunner is wired to PerceptionQueue and MindCtx."""
-    from dollos.subagent import SubagentRunner
+async def test_kernel_workflow_runner_wired(tmp_path: Path):
+    """WorkflowRunner is wired to PerceptionQueue and MindCtx."""
+    from dollos.workflow import WorkflowRunner
 
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
-    assert isinstance(dollos.subagent_runner, SubagentRunner)
-    assert dollos.subagent_runner._perception_queue is dollos._perception_queue
-    assert dollos._mind_ctx.subagent_runner is dollos.subagent_runner
+    assert isinstance(dollos.workflow_runner, WorkflowRunner)
+    assert dollos.workflow_runner._perception_queue is dollos._perception_queue
+    assert dollos._mind_ctx.workflow_runner is dollos.workflow_runner
 
 
 # ----- IPC wiring tests -----

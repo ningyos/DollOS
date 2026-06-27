@@ -457,9 +457,15 @@ class WorkflowRunner:
 
         ok iff synthesis (or, with no synthesis, all tasks) returned ok; any
         task timeout/error/no_report degrades the whole workflow to incomplete.
+        Synthesis agent itself crashing/timing out (status not in {ok,incomplete})
+        also degrades the workflow to incomplete.
         """
         if any(r["status"] in _DEGRADED for r in reports):
             return "incomplete"
         if synthesis_report is not None:
-            return synthesis_report["status"]
+            synth_status = synthesis_report["status"]
+            # If synthesis agent itself degraded, the whole workflow is incomplete.
+            if synth_status not in {"ok", "incomplete"}:
+                return "incomplete"
+            return synth_status
         return "ok" if all(r["status"] == "ok" for r in reports) else "incomplete"
