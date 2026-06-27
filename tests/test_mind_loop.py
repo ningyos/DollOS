@@ -1291,3 +1291,111 @@ def test_active_registry_reflection_includes_note_tool_lesson(tmp_path):
     # safe_mode wins over reflection
     state.safe_mode = True
     assert "NoteToolLesson" not in loop._active_tool_registry()
+
+
+# --- Observability: CascadeLogger wired into live MindLoop ---
+
+
+class _RecordingCascadeLogger:
+    """Stub logger that records start_turn calls and log_iter kwargs."""
+
+    FIXED_TURN_ID = "deadbeef"
+
+    def __init__(self):
+        self.log_iter_calls: list[dict] = []
+
+    def start_turn(self) -> str:
+        return self.FIXED_TURN_ID
+
+    def log_iter(self, **kwargs) -> None:
+        self.log_iter_calls.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_cascade_logger_receives_tool_call_with_args(tmp_path):
+    """CascadeLogger is called after each cascade pass with tool_calls containing
+    the tool name and arguments — proving args are captured before dispatch.
+
+    Also verifies:
+    - assistant_text is non-empty (think block was captured)
+    - duration_ms is an int
+    - constructing MindLoop without cascade_logger still works (param is optional)
+    """
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    # --- Positive: with cascade_logger wired ---
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    # Voice-first stream with a NoteMemory tool_call whose arg we can assert on.
+    stream = (
+        "SEEN: user said hi\n"
+        "INTENT: greet\n"
+        "REVIEW: ok\n"
+        "MOOD: warm\n"
+        "TOOL: NoteMemory\n"
+        "</think>\n\n"
+        "Hello"
+        "<tool_call>\n"
+        '{"name":"NoteMemory","arguments":{"text":"cascade-log-test-sentinel"}}\n'
+        "</tool_call>"
+    )
+
+    recording_logger = _RecordingCascadeLogger()
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=_FakeLLM(stream),
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+        cascade_logger=recording_logger,
+    )
+
+    await loop.iterate()
+
+    # log_iter must have been called at least once
+    assert recording_logger.log_iter_calls, "log_iter was never called"
+
+    first_call = recording_logger.log_iter_calls[0]
+
+    # turn_id matches what start_turn() returned
+    assert first_call["turn_id"] == _RecordingCascadeLogger.FIXED_TURN_ID
+
+    # tool_calls contains the NoteMemory entry with the correct argument
+    assert first_call["tool_calls"], "tool_calls must be non-empty for a tool-call pass"
+    tc = first_call["tool_calls"][0]
+    assert tc["name"] == "NoteMemory"
+    assert tc["arguments"].get("text") == "cascade-log-test-sentinel", (
+        f"expected sentinel arg, got: {tc['arguments']!r}"
+    )
+
+    # assistant_text captured the think block
+    assert first_call["assistant_text"], "assistant_text must be non-empty"
+
+    # duration_ms is a non-negative int
+    assert isinstance(first_call["duration_ms"], int)
+    assert first_call["duration_ms"] >= 0
+
+    # --- Negative: constructing without cascade_logger still works ---
+    state2 = MindState()
+    queue2 = PerceptionQueue()
+    queue2.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    ctx2 = _make_mind_ctx(tmp_path, state=state2)
+    loop2 = MindLoop(
+        state=state2,
+        queue=queue2,
+        ctx=ctx2,
+        llm=_FakeLLM("TOOL: none\n</think>\n\nok"),
+        system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state2.json",
+        tool_registry=tool_registry,
+    )
+    await loop2.iterate()  # must not raise
+    assert loop2._state.iter_count == 1
