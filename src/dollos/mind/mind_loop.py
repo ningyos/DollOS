@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
-from dollos.mind.tool_memory import record_tool_outcome
+from dollos.mind.tool_memory import record_tool_outcome, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -171,6 +171,16 @@ class MindLoop:
             logger.exception("associative_search failed; continuing without")
             associative_hits = []
 
+        # Tool-habits retrieval (additive side-channel)
+        try:
+            tool_habits_hits = await tool_habits_search(
+                self._ctx.memsearch, self._state,
+                self._ctx.memory_root / "shared" / "tool_playbook.md",
+            )
+        except Exception:
+            logger.exception("tool_habits_search failed; continuing without")
+            tool_habits_hits = []
+
         # Pull self-pulse snapshot (None when no bucket shift since last emit)
         pulse_block: str | None = None
         if self._system_pulse is not None:
@@ -205,6 +215,7 @@ class MindLoop:
             associative_hits=associative_hits,
             primary_language=self._primary_language,
             tool_outcomes_block=tool_outcomes_block,
+            tool_habits_hits=tool_habits_hits,
         )
 
         # Call LLM (streams text → sink; dispatches tool calls inline)

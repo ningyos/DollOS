@@ -20,6 +20,7 @@ def render_mind(
     associative_hits: list[dict] | None = None,
     primary_language: str = "繁體中文",
     tool_outcomes_block: str | None = None,
+    tool_habits_hits: list[dict] | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -94,6 +95,10 @@ def render_mind(
     tool_notes = render_tool_notes(state.recent_tool_failures, now)
     if tool_notes:
         blocks.extend([tool_notes, ""])
+    from dollos.mind.tool_memory import render_tool_habits
+    habits = render_tool_habits(tool_habits_hits or [])
+    if habits:
+        blocks.extend([habits, ""])
     blocks.extend([
         "[Recent perceptions] (newest last)",
         _render_perceptions(state.recent_perceptions, now),

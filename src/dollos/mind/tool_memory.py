@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
+from pathlib import Path
 
 from dollos.mind.mind_state import MindState, ToolFailure
 
@@ -50,6 +51,50 @@ def render_tool_outcomes(tool_stats: dict, recent_tool_failures: deque) -> str:
             line += f" — last fail: {last_fail[tool]}"
         lines.append(line)
     return "\n".join(lines[:20])
+
+
+def _parse_playbook_chunk(content: str) -> tuple[str, str] | None:
+    """Parse a playbook entry chunk into (situation, lesson). None if unparseable."""
+    situation = None
+    lesson_lines: list[str] = []
+    for line in content.splitlines():
+        s = line.strip()
+        if s.startswith("## ") or not s:
+            continue
+        if s.startswith("[situation]"):
+            situation = s[len("[situation]"):].strip()
+        elif situation is not None:
+            lesson_lines.append(s)
+    if situation is None or not lesson_lines:
+        return None
+    return situation, " ".join(lesson_lines)
+
+
+async def tool_habits_search(
+    memsearch, state: MindState, playbook_path: Path, top_k: int = 2
+) -> list[dict]:
+    """Retrieve top-k tool lessons relevant to recent tool use + focus.
+    Gated: returns [] when there are no tool stats or no playbook file."""
+    if not state.tool_stats or not playbook_path.exists():
+        return []
+    query = " ".join(list(state.tool_stats.keys())[:3])
+    if state.focus and state.focus != "idle":
+        query += " " + state.focus
+    return await memsearch.search(query, top_k=top_k, source_prefix=str(playbook_path.resolve()))
+
+
+def render_tool_habits(hits: list[dict]) -> str | None:
+    """[Tool habits] block from playbook hits, or None when empty/unparseable."""
+    if not hits:
+        return None
+    lines: list[str] = []
+    for h in hits:
+        parsed = _parse_playbook_chunk(h.get("content", ""))
+        if parsed:
+            lines.append(f"- [{parsed[0]}] {parsed[1]}")
+    if not lines:
+        return None
+    return "[Tool habits]（過去學到的工具用法）：\n" + "\n".join(lines)
 
 
 def render_tool_notes(recent_tool_failures: deque, now: float) -> str | None:

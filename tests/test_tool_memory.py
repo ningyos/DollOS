@@ -1,6 +1,9 @@
 """Tests for tool_memory (Spec B)."""
 from __future__ import annotations
 from collections import deque
+
+import pytest
+
 from dollos.cascade.tool_loop import ToolResult
 from dollos.mind.mind_state import MindState, ToolFailure
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_notes, render_tool_outcomes
@@ -48,3 +51,51 @@ def test_render_tool_outcomes_has_counts_and_failure_snippet():
     assert "Shell" in out and "3 ok" in out and "1 fail" in out
     assert "timeout after 60s" in out
     assert "Recall" in out and "5 ok" in out
+
+
+# --- Task 7: tool_habits_search + render_tool_habits ---
+
+
+def test_parse_playbook_chunk():
+    from dollos.mind.tool_memory import _parse_playbook_chunk
+    chunk = "## 2026-06-27 10:00:00\n\n[situation] grepping output\nuse GrepToolOutput\n"
+    assert _parse_playbook_chunk(chunk) == ("grepping output", "use GrepToolOutput")
+    assert _parse_playbook_chunk("garbage with no situation") is None
+
+
+@pytest.mark.asyncio
+async def test_tool_habits_search_gated_and_source_restricted(tmp_path):
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.tool_memory import tool_habits_search
+
+    class _FakeMem:
+        def __init__(self): self.calls = []
+        async def search(self, q, top_k=5, source_prefix=None):
+            self.calls.append({"q": q, "top_k": top_k, "source_prefix": source_prefix})
+            return [{"content": "[situation] s\nl", "source": str(source_prefix)}]
+
+    pb = tmp_path / "tool_playbook.md"
+    s = MindState()
+    mem = _FakeMem()
+    # gate: no tool_stats → no search
+    assert await tool_habits_search(mem, s, pb) == []
+    assert mem.calls == []
+    # gate: tool_stats present but playbook missing → no search
+    s.tool_stats = {"Shell": {"ok": 1, "fail": 0}}
+    assert await tool_habits_search(mem, s, pb) == []
+    assert mem.calls == []
+    # both present → search with source_prefix=playbook
+    pb.write_text("## h\n\n[situation] s\nl\n")
+    s.focus = "doing things"
+    hits = await tool_habits_search(mem, s, pb)
+    assert len(mem.calls) == 1
+    assert mem.calls[0]["source_prefix"] == str(pb.resolve())
+    assert "Shell" in mem.calls[0]["q"] and "doing things" in mem.calls[0]["q"]
+    assert hits
+
+
+def test_render_tool_habits_gated():
+    from dollos.mind.tool_memory import render_tool_habits
+    assert render_tool_habits([]) is None
+    out = render_tool_habits([{"content": "## h\n\n[situation] grep\nuse Grep\n"}])
+    assert "[Tool habits]" in out and "grep" in out and "use Grep" in out
