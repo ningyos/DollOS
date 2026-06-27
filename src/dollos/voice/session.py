@@ -97,6 +97,17 @@ class VoiceSession:
 
     async def handle_offer(self, sdp: str) -> str:
         """Process a webrtc_offer; return the SDP answer."""
+        # MINOR: cancel any stale inbound consumer from a prior offer so the
+        # old track doesn't keep appending to _utterance_buffer.
+        if self._inbound_consumer_task is not None and not self._inbound_consumer_task.done():
+            self._inbound_consumer_task.cancel()
+            try:
+                await self._inbound_consumer_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._inbound_consumer_task = None
+        self._utterance_buffer.clear()
+
         self._peer = RTCPeerConnection()
         self._outbound_track = _OutboundAudioTrack()
         self._peer.addTrack(self._outbound_track)

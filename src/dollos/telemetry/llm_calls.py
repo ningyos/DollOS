@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -105,10 +106,7 @@ class TelemetryRecorder:
         recs = self.read_today()
         if not recs:
             return []
-        cutoff = recs[-1].ts - seconds  # use newest record as anchor
-        # Actually we want absolute clock cutoff:
-        import time as _time
-        cutoff = _time.time() - seconds
+        cutoff = time.time() - seconds
         return [r for r in recs if r.ts >= cutoff]
 
     def _load_day(self, day: date) -> list[LLMCallRecord]:

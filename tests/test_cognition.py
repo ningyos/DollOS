@@ -230,6 +230,19 @@ async def test_snapshot_disabled_returns_none(tmp_path: Path):
     assert w.snapshot() is None
 
 
+def test_daily_token_quota_zero_raises(tmp_path: Path):
+    """daily_token_quota=0 is a misconfiguration and must raise, not silently disable."""
+    rec = TelemetryRecorder(tmp_path / "tel")
+    with pytest.raises(ValueError, match="daily_token_quota"):
+        CognitionWorker(recorder=rec, daily_token_quota=0)
+
+
+def test_daily_token_quota_negative_raises(tmp_path: Path):
+    rec = TelemetryRecorder(tmp_path / "tel")
+    with pytest.raises(ValueError, match="daily_token_quota"):
+        CognitionWorker(recorder=rec, daily_token_quota=-1)
+
+
 # ----------------------------------- render with missing fields
 
 def test_render_omits_missing_fields():

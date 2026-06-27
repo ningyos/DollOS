@@ -222,10 +222,9 @@ class SubagentRunner:
         """Run the sub-cascade. Returns Report args dict, or None if Report
         never called (cascade ended naturally / stuck-tool abort)."""
         grammar = build_qwen3_think_tool_grammar(SUB_TOOLS)
-        sub_tool_registry = {cls.__name__: cls for cls in SUB_TOOLS}
         system = self._renderer.render(
             "subagent_scaffolding",
-            tool_registry=sub_tool_registry,
+            tool_registry=self._tools_by_name,
         )
         messages: list[dict] = [{"role": "user", "content": task}]
 

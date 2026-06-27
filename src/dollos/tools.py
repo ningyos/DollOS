@@ -572,9 +572,12 @@ class GrepToolOutput(BaseModel):
         return f"grep tool output {self.id} pattern={self.pattern[:40]!r}"
 
     async def run(self, ctx: "MindCtx") -> str:
-        matches = ctx.tool_output_store.grep(
-            self.id, pattern=self.pattern, max_matches=self.max_matches
-        )
+        try:
+            matches = ctx.tool_output_store.grep(
+                self.id, pattern=self.pattern, max_matches=self.max_matches
+            )
+        except re.error as exc:
+            return f"regex error: {exc} (pattern={self.pattern!r})"
         if not matches:
             result = f"no matches for {self.pattern!r}"
         else:

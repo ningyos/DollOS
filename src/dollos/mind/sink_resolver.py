@@ -19,25 +19,32 @@ class DummySink:
 
 
 class SinkResolver:
-    """LIFO stack of registered sinks; resolves to most-recently-registered.
-    Unregister removes from the stack."""
+    """Dict-based sink registry keyed by monotonic handle; resolves to
+    most-recently-registered sink.
+
+    Handles are monotonically increasing integers — they remain stable
+    regardless of removal order, so unregister(A) before unregister(B) never
+    corrupts B's handle.
+    """
 
     def __init__(self) -> None:
-        self._stack: list[_SinkLike] = []
+        self._sinks: dict[int, _SinkLike] = {}
+        self._counter: int = 0
         self._dummy = DummySink()
 
     def register(self, sink: _SinkLike) -> int:
-        """Push a sink onto the stack. Returns a handle (current index)."""
-        self._stack.append(sink)
-        return len(self._stack) - 1  # handle
+        """Register a sink. Returns a stable handle (monotonic counter)."""
+        handle = self._counter
+        self._counter += 1
+        self._sinks[handle] = sink
+        return handle
 
     def unregister(self, handle: int) -> None:
-        """Remove the sink at this handle index, if still valid."""
-        if 0 <= handle < len(self._stack):
-            self._stack.pop(handle)
+        """Remove the sink with this handle. No-op if already removed."""
+        self._sinks.pop(handle, None)
 
     def __call__(self) -> _SinkLike:
         """Resolve to the most-recently-registered sink, or DummySink."""
-        if not self._stack:
+        if not self._sinks:
             return self._dummy
-        return self._stack[-1]
+        return self._sinks[max(self._sinks)]

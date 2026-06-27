@@ -105,6 +105,54 @@ def test_format_tag_block_empty():
 
 
 # ---------------------------------------------------------------------------
+# I2 regression — Chinese mood must NOT be stripped
+# ---------------------------------------------------------------------------
+
+
+def test_build_context_filter_chinese_mood_non_empty():
+    """I2: Chinese emotion string must produce a non-empty mood tag."""
+    state = MindState(mood=Mood(emotion="平靜"))
+    tags = build_context_filter(state, datetime(2026, 5, 18, 19, 30))
+    assert "mood" in tags, "mood axis must be present for Chinese emotion"
+    assert tags["mood"] == "平靜"
+
+
+def test_build_heading_chinese_mood_present_in_heading():
+    """I2: build_heading must include mood:平靜 tag for Chinese emotion."""
+    state = MindState(mood=Mood(emotion="平靜"))
+    now = datetime(2026, 5, 18, 22, 34, 12)
+    heading = build_heading(state, now)
+    assert "mood:平靜" in heading, f"Expected mood:平靜 in heading, got: {heading!r}"
+
+
+def test_build_context_filter_chinese_mood_with_spaces():
+    """I2: spaces in Chinese emotion are replaced with '_', not stripped."""
+    state = MindState(mood=Mood(emotion="有點 焦慮"))
+    tags = build_context_filter(state, datetime(2026, 5, 18, 8, 0))
+    assert "mood" in tags
+    assert tags["mood"] == "有點_焦慮"
+
+
+def test_build_context_filter_mood_bracket_sanitized():
+    """I2: ']' in mood value is removed to avoid breaking the heading format."""
+    state = MindState(mood=Mood(emotion="ok]done"))
+    tags = build_context_filter(state, datetime(2026, 5, 18, 8, 0))
+    assert "mood" in tags
+    assert tags["mood"] == "okdone"
+
+
+def test_build_heading_chinese_mood_round_trips():
+    """I2: parse_heading recovers the Chinese mood tag written by build_heading."""
+    state = MindState(mood=Mood(emotion="焦慮"))
+    now = datetime(2026, 5, 18, 22, 34, 12)
+    heading = build_heading(state, now)
+    parsed = parse_heading(heading)
+    assert parsed["tags"].get("mood") == "焦慮", (
+        f"Expected tags['mood']=='焦慮', got {parsed['tags']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # associative_search — stubbed memsearch
 # ---------------------------------------------------------------------------
 

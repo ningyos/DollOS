@@ -100,3 +100,47 @@ async def test_shell_runner_stop_cancels_running(tmp_path: Path) -> None:
     # No ToolResultArrived should arrive (cancelled mid-run)
     result_perceptions = await _wait_for_tool_result(queue, timeout=0.3)
     assert result_perceptions == []
+
+
+# ----- Regression: I4 — task_id preserved in all Perception paths -----
+
+
+@pytest.mark.asyncio
+async def test_shell_runner_task_id_preserved_in_success_perception(tmp_path: Path) -> None:
+    """Success path must emit the uuid-form task_id, not f"shell-{command[:20]}"."""
+    runner, queue = _make_runner(tmp_path)
+    command = "printf hello"
+    runner.spawn(command=command, timeout_s=10)
+    perceptions = await _wait_for_tool_result(queue)
+    assert len(perceptions) == 1
+    task_id = perceptions[0].data["task_id"]
+    # Must be the uuid form (shell-<8 hex chars>), not the command-prefix form.
+    assert task_id.startswith("shell-"), f"unexpected task_id prefix: {task_id!r}"
+    # The uuid form has exactly 8 hex chars after "shell-"; the old bug produced
+    # "shell-printf hello" (17 chars after "shell-").
+    suffix = task_id[len("shell-"):]
+    assert len(suffix) == 8, f"expected 8-char hex suffix, got {suffix!r}"
+    assert all(c in "0123456789abcdef" for c in suffix), (
+        f"suffix is not hex: {suffix!r}"
+    )
+    # Double-check: not the legacy command-prefix form.
+    assert task_id != f"shell-{command[:20]}", (
+        "task_id must not be the old f\"shell-{command[:20]}\" form"
+    )
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_shell_runner_task_id_preserved_in_nonzero_perception(tmp_path: Path) -> None:
+    """Nonzero exit (also success path) must emit the uuid-form task_id."""
+    runner, queue = _make_runner(tmp_path)
+    command = "exit 1"
+    runner.spawn(command=command, timeout_s=10)
+    perceptions = await _wait_for_tool_result(queue)
+    assert len(perceptions) == 1
+    task_id = perceptions[0].data["task_id"]
+    suffix = task_id[len("shell-"):]
+    assert len(suffix) == 8 and all(c in "0123456789abcdef" for c in suffix), (
+        f"task_id not in uuid form: {task_id!r}"
+    )
+    await runner.stop()

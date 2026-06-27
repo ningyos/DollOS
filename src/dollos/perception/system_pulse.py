@@ -140,6 +140,7 @@ async def _run_cmd(argv: list[str], timeout_s: float) -> str | None:
     """Run a subprocess via execve (no shell). Returns stdout or None."""
     if shutil.which(argv[0]) is None:
         return None
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -157,6 +158,11 @@ async def _run_cmd(argv: list[str], timeout_s: float) -> str | None:
         return out.decode("utf-8", errors="replace")
     except Exception:
         return None
+    finally:
+        # CancelledError (BaseException) bypasses except Exception; ensure the
+        # process is killed so it doesn't linger after task cancellation.
+        if proc is not None and proc.returncode is None:
+            proc.kill()
 
 
 async def read_nvidia_smi(timeout_s: float = 2.0) -> list[tuple[float, float]]:

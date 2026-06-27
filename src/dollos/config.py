@@ -39,7 +39,7 @@ class DataConfig(BaseModel):
     @field_validator("root", mode="before")
     @classmethod
     def _expand_user(cls, v: object) -> object:
-        if isinstance(v, str):
+        if isinstance(v, (str, Path)):
             return Path(v).expanduser()
         return v
 
@@ -85,7 +85,7 @@ class CharacterConfig(BaseModel):
     @field_validator("pack", mode="before")
     @classmethod
     def _expand_user(cls, v: object) -> object:
-        if isinstance(v, str):
+        if isinstance(v, (str, Path)):
             return Path(v).expanduser()
         return v
 

@@ -190,7 +190,7 @@ class ToolStreamParser:
         return list(self._flush_legacy())
 
     def _flush_legacy(self):
-        if self._state is _State.INSIDE or self._inside_buf:
+        if self._state is _State.INSIDE:
             logger.warning(
                 "unclosed <tool_call> at stream end; dropped %r",
                 self._inside_buf + self._buf,

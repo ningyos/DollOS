@@ -97,7 +97,7 @@ class CognitionSnapshot:
             if self.last_latency_ms is not None
             else None
         )
-        if self.daily_token_quota and self.tokens_used_today is not None:
+        if self.daily_token_quota is not None and self.tokens_used_today is not None:
             quota_b = bucket_quota(self.tokens_used_today / self.daily_token_quota * 100.0)
         else:
             quota_b = None
@@ -137,7 +137,7 @@ def render_block(snap: CognitionSnapshot) -> str:
             lines.append(f"- thought weight: {b} (last {last_s:.1f}s)")
 
     # quota
-    if snap.daily_token_quota and snap.tokens_used_today is not None:
+    if snap.daily_token_quota is not None and snap.tokens_used_today is not None:
         pct = snap.tokens_used_today / snap.daily_token_quota * 100.0
         b = bucket_quota(pct)
         used = _fmt_tokens(snap.tokens_used_today)
@@ -173,6 +173,10 @@ class CognitionWorker:
         max_context_tokens: int = 131_072,
         trailing_window: int = 20,
     ) -> None:
+        if daily_token_quota is not None and daily_token_quota <= 0:
+            raise ValueError(
+                f"daily_token_quota must be > 0 or None, got {daily_token_quota!r}"
+            )
         self._recorder = recorder
         self._enabled = enabled
         self._daily_quota = daily_token_quota
@@ -181,10 +185,10 @@ class CognitionWorker:
         self._last_emitted_sig: tuple | None = None
         self._last_seen_error_ts: float = 0.0
 
-    def _compute(self) -> CognitionSnapshot | None:
+    def _compute(self) -> tuple[CognitionSnapshot | None, list[LLMCallRecord]]:
         records = self._recorder.read_today()
         if not records:
-            return None
+            return None, records
 
         last = records[-1]
 
@@ -219,7 +223,7 @@ class CognitionWorker:
             # don't update _last_seen_error_ts here — done in snapshot() so
             # signature() can use the value too.
 
-        return CognitionSnapshot(
+        snap = CognitionSnapshot(
             taken_at=datetime.fromtimestamp(last.ts),
             context_pct=last.context_pct,
             last_prompt_tokens=last.prompt_tokens,
@@ -231,18 +235,19 @@ class CognitionWorker:
             recent_error_count=recent_error_count,
             last_error=last_error_str,
         )
+        return snap, records
 
     def snapshot(self) -> str | None:
         """Return a rendered `[Cognition]` block if a bucket has shifted; else None."""
         if not self._enabled:
             return None
-        snap = self._compute()
+        snap, records = self._compute()
         if snap is None:
             return None
 
         # Detect new-error signal: any error record newer than what we've
-        # acknowledged should force an emit.
-        records = self._recorder.read_today()
+        # acknowledged should force an emit. Reuse records already fetched by
+        # _compute() to avoid a second read_today() call.
         newest_err_ts = 0.0
         for r in records[-10:]:
             if r.error and r.ts > newest_err_ts:

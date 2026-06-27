@@ -1184,6 +1184,96 @@ async def test_subagent_dispatch_does_not_record_to_doll(tmp_path):
     assert len(ctx.mind_state.recent_tool_failures) == 0
 
 
+# --- I1 regression: turn-end None sentinel must fire even when render raises ---
+
+
+@pytest.mark.asyncio
+async def test_turn_end_none_emitted_when_render_mind_raises(tmp_path, monkeypatch):
+    """I1 regression: if render_mind() raises, the turn-end None sentinel must
+    still reach the sink so IPC clients don't block forever waiting for TurnEnd.
+
+    Before the fix: the try/finally only wrapped _llm_iterate(); render_mind()
+    was called outside it, so an exception there skipped the finally entirely.
+    After the fix: the try/finally also wraps the render calls.
+    """
+    import dollos.mind.mind_loop as ml
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    def _boom_render(*a, **k):
+        raise RuntimeError("render_mind exploded")
+
+    monkeypatch.setattr(ml, "render_mind", _boom_render)
+
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=_FakeLLM(""),
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    # iterate() re-raises the render error — catch it so the test continues.
+    with pytest.raises(RuntimeError, match="render_mind exploded"):
+        await loop.iterate()
+
+    items = _drain_queue(sink)
+    assert None in items, (
+        "turn-end None must be emitted even when render_mind() raises; "
+        f"got sink items: {items!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_end_none_emitted_when_render_tool_outcomes_raises(tmp_path, monkeypatch):
+    """I1 regression: render_tool_outcomes() raising must also emit the turn-end
+    None sentinel so the IPC client's turn boundary is preserved."""
+    import dollos.mind.mind_loop as ml
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    state = MindState()
+    # Trigger the reflection path so render_tool_outcomes is called.
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="ReflectionMoment", t=1.0, data={}))
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    def _boom_outcomes(*a, **k):
+        raise RuntimeError("render_tool_outcomes exploded")
+
+    monkeypatch.setattr(ml, "render_tool_outcomes", _boom_outcomes)
+
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=_FakeLLM(""),
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    with pytest.raises(RuntimeError, match="render_tool_outcomes exploded"):
+        await loop.iterate()
+
+    items = _drain_queue(sink)
+    assert None in items, (
+        "turn-end None must be emitted even when render_tool_outcomes() raises; "
+        f"got sink items: {items!r}"
+    )
+
+
 def test_active_registry_reflection_includes_note_tool_lesson(tmp_path):
     """Reflection turns add NoteToolLesson; non-reflection excludes it; safe_mode wins."""
     from tests._dispatcher_helpers import _make_mind_ctx

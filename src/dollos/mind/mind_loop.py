@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
@@ -197,28 +198,32 @@ class MindLoop:
             except Exception:
                 logger.exception("cognition.snapshot raised; omitting block")
 
-        # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
-        tool_outcomes_block = None
-        if self._is_reflection:
-            tool_outcomes_block = render_tool_outcomes(
-                self._state.tool_stats, self._state.recent_tool_failures
+        # The try/finally here wraps the render calls too so the turn-end None
+        # sentinel is always emitted — even when render_tool_outcomes() or
+        # render_mind() raises (I1: previously those could leave IPC clients
+        # blocked waiting for a TurnEnd that never arrived).
+        try:
+            # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
+            tool_outcomes_block = None
+            if self._is_reflection:
+                tool_outcomes_block = render_tool_outcomes(
+                    self._state.tool_stats, self._state.recent_tool_failures
+                )
+
+            # Render prompt
+            prompt = render_mind(
+                self._state,
+                memsearch_hits,
+                self._system_prompt,
+                pulse_block=pulse_block,
+                cognition_block=cognition_block,
+                associative_hits=associative_hits,
+                primary_language=self._primary_language,
+                tool_outcomes_block=tool_outcomes_block,
+                tool_habits_hits=tool_habits_hits,
             )
 
-        # Render prompt
-        prompt = render_mind(
-            self._state,
-            memsearch_hits,
-            self._system_prompt,
-            pulse_block=pulse_block,
-            cognition_block=cognition_block,
-            associative_hits=associative_hits,
-            primary_language=self._primary_language,
-            tool_outcomes_block=tool_outcomes_block,
-            tool_habits_hits=tool_habits_hits,
-        )
-
-        # Call LLM (streams text → sink; dispatches tool calls inline)
-        try:
+            # Call LLM (streams text → sink; dispatches tool calls inline)
             await self._llm_iterate(prompt)
         finally:
             # Signal end-of-turn to the connection pump: a None turn-separator
@@ -512,23 +517,26 @@ class MindLoop:
                 purpose="cascade",
             )
 
-        async for chunk in stream:
-            if self._cascade_ctx.cancelled:
-                logger.info("cascade cancelled mid-stream; exiting cleanly")
-                return raw_buf, results
-            if chunk.text:
-                raw_buf.append(chunk.text)
-                for event in parser.feed(chunk.text):
-                    if self._cascade_ctx.cancelled:
-                        logger.info(
-                            "cascade cancelled before event dispatch; exiting"
-                        )
-                        return raw_buf, results
-                    r = await self._handle_stream_event(event, sink, chunker)
-                    if r is not None:
-                        results.append(r)
-            if chunk.done:
-                break
+        # aclosing() ensures the SSE/HTTP connection is torn down on any early
+        # exit (cascade cancel, exception) — not just on normal exhaustion.
+        async with aclosing(stream) as astream:
+            async for chunk in astream:
+                if self._cascade_ctx.cancelled:
+                    logger.info("cascade cancelled mid-stream; exiting cleanly")
+                    return raw_buf, results
+                if chunk.text:
+                    raw_buf.append(chunk.text)
+                    for event in parser.feed(chunk.text):
+                        if self._cascade_ctx.cancelled:
+                            logger.info(
+                                "cascade cancelled before event dispatch; exiting"
+                            )
+                            return raw_buf, results
+                        r = await self._handle_stream_event(event, sink, chunker)
+                        if r is not None:
+                            results.append(r)
+                if chunk.done:
+                    break
 
         if self._cascade_ctx.cancelled:
             return raw_buf, results

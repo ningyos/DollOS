@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Literal, Optional
 
 import pytest
 from pydantic import BaseModel, Field
 
-from dollos.llm.templates import build_qwen3_think_tool_grammar
+from dollos.llm.templates import _format_tools_block, build_qwen3_think_tool_grammar
 from dollos.tools import MAIN_TOOLS as TOOLS
 
 
@@ -285,3 +287,66 @@ def test_voice_grammar_zero_required_optional_only_stays_empty():
 
     g = build_voice_first_grammar([_OptOnly])
     assert r'\"arguments\": {}}\n</tool_call>"' in g
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for _compact_schema fixes (MINOR findings)
+# ---------------------------------------------------------------------------
+
+class _OptionalFieldTool(BaseModel):
+    """Tool with a required string and an Optional[str] field."""
+
+    req: str = Field(description="required field")
+    opt: Optional[str] = Field(default=None, description="optional field")
+
+
+class _LiteralFieldTool(BaseModel):
+    """Tool with a Literal-typed field."""
+
+    status: Literal["ok", "fail"] = Field(description="outcome status")
+
+
+def _parse_tool_schema(block: str, tool_name: str) -> dict:
+    """Parse the JSON schema line for a given tool name from a tools block."""
+    for line in block.splitlines():
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(data, dict)
+            and data.get("function", {}).get("name") == tool_name
+        ):
+            return data
+    raise AssertionError(f"tool {tool_name!r} not found in tools block")
+
+
+def test_compact_schema_optional_preserves_type():
+    """_compact_schema must carry the inner type through Optional[X] anyOf patterns.
+
+    Before the fix, Optional[str] fields had no 'type' key in the compact
+    schema because the anyOf wrapper was not unwrapped.
+    """
+    block = _format_tools_block([_OptionalFieldTool])
+    data = _parse_tool_schema(block, "_OptionalFieldTool")
+    props = data["function"]["parameters"]["properties"]
+    assert props["req"].get("type") == "string"
+    assert props["opt"].get("type") == "string", (
+        "Optional[str] field must have type='string' in compact schema"
+    )
+    assert props["opt"].get("description") == "optional field"
+
+
+def test_compact_schema_literal_preserves_enum():
+    """_compact_schema must include the 'enum' list for Literal fields.
+
+    Before the fix, Literal["ok", "fail"] fields had no 'enum' key in the
+    compact schema, so the LLM could not see the allowed values.
+    """
+    block = _format_tools_block([_LiteralFieldTool])
+    data = _parse_tool_schema(block, "_LiteralFieldTool")
+    props = data["function"]["parameters"]["properties"]
+    assert props["status"].get("type") == "string"
+    assert props["status"].get("enum") == ["ok", "fail"], (
+        "Literal field must have enum=[...] in compact schema"
+    )

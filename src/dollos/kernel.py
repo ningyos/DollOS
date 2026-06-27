@@ -556,29 +556,43 @@ class DollOS:
                 pass
 
             today = date.today()
+            # Prune stale date keys to prevent unbounded growth over months.
+            stale_fired = [d for d in self._fired_today if d < today]
+            for d in stale_fired:
+                del self._fired_today[d]
+            self._bootstrapped_dates = {d for d in self._bootstrapped_dates if d >= today}
+
             path = (
                 self.settings.data.root
                 / "memory"
                 / "schedule"
                 / f"{today:%Y-%m-%d}.toml"
             )
-            schedule = load_schedule(path)
-            if schedule is None:
-                continue
-            now = datetime.now()
-            fired = self._fired_today.setdefault(today, set())
-            for entry in due_entries(schedule, now, fired):
-                fired.add(entry.time)
-                self._perception_queue.put(
-                    Perception(
-                        kind="ScheduledMoment",
-                        t=time.time(),
-                        data={
-                            "entry_time": entry.time.isoformat(),
-                            "intent": entry.intent,
-                        },
+            try:
+                schedule = load_schedule(path)
+                if schedule is None:
+                    continue
+                now = datetime.now()
+                fired = self._fired_today.setdefault(today, set())
+                for entry in due_entries(schedule, now, fired):
+                    fired.add(entry.time)
+                    self._perception_queue.put(
+                        Perception(
+                            kind="ScheduledMoment",
+                            t=time.time(),
+                            data={
+                                "entry_time": entry.time.isoformat(),
+                                "intent": entry.intent,
+                            },
+                        )
                     )
+            except Exception:
+                logger.warning(
+                    "_schedule_runner: error loading/processing schedule for %s",
+                    today,
+                    exc_info=True,
                 )
+                continue
 
     async def _replay_wal(self) -> None:
         """Push any pending WAL perceptions back into the queue before mind_loop starts.

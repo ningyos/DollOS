@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class TTSObservingSink(asyncio.Queue):
-    """asyncio.Queue subclass that fires `voice_session.speak(text)` whenever
+    """asyncio.Queue subclass that fires `voice_session.enqueue_speak(text)` whenever
     a `TextChunk` is put into the queue. Other items pass through unchanged.
     """
 
@@ -43,7 +43,9 @@ class TTSObservingSink(asyncio.Queue):
         super().put_nowait(item)
         if isinstance(item, TextChunk):
             session = self._voice_session_provider()
-            if session is not None:
+            # I6: gate on is_open so a task racing session.close() cannot
+            # spawn a new speak-worker after the engine has been torn down.
+            if session is not None and session.is_open:
                 try:
                     asyncio.get_running_loop()
                     # Use enqueue_speak so the per-session worker serializes synth.

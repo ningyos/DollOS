@@ -13,13 +13,16 @@ from dollos.voice.sink import TTSObservingSink
 @pytest.mark.asyncio
 async def test_sink_fires_tts_on_text_chunk():
     session = MagicMock()
-    session.speak = AsyncMock()
+    # I7: code calls enqueue_speak, not speak — must mock the right method.
+    session.enqueue_speak = AsyncMock()
+    # I6: is_open must be truthy for the gate to pass.
+    session.is_open = True
     sink = TTSObservingSink(voice_session_provider=lambda: session)
     sink.put_nowait(TextChunk(text="hello"))
     # Yield to let the scheduled task run.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    session.speak.assert_awaited_once_with("hello")
+    session.enqueue_speak.assert_awaited_once_with("hello")
 
 
 @pytest.mark.asyncio
@@ -33,9 +36,23 @@ async def test_sink_skips_tts_when_no_session():
 
 
 @pytest.mark.asyncio
+async def test_sink_skips_tts_when_session_not_open():
+    """I6 regression: no task spawned when session.is_open is False."""
+    session = MagicMock()
+    session.enqueue_speak = AsyncMock()
+    session.is_open = False  # session closed / closing
+    sink = TTSObservingSink(voice_session_provider=lambda: session)
+    sink.put_nowait(TextChunk(text="hello"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    session.enqueue_speak.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_sink_passes_non_text_chunks_through():
     session = MagicMock()
-    session.speak = AsyncMock()
+    session.enqueue_speak = AsyncMock()
+    session.is_open = True
     sink = TTSObservingSink(voice_session_provider=lambda: session)
     sink.put_nowait(TurnEnd())
     sink.put_nowait(ErrorMsg(message="x"))
@@ -45,7 +62,7 @@ async def test_sink_passes_non_text_chunks_through():
     assert isinstance(items[1], ErrorMsg)
     assert items[2] is None
     await asyncio.sleep(0)
-    session.speak.assert_not_called()
+    session.enqueue_speak.assert_not_called()
 
 
 @pytest.mark.asyncio
