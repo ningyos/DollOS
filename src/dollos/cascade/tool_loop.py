@@ -1,6 +1,6 @@
 """Shared LLM tool cascade loop.
 
-Both EventDispatcher._respond and SubagentRunner._run_cascade implement
+Both EventDispatcher._respond and agent_engine.run_agent implement
 the same parser-feed + tool-dispatch + tool_response + stuck-tool 3-strike
 loop. This module lifts that shared logic into run_tool_cascade and
 dispatch_tool_call.

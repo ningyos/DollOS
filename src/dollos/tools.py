@@ -182,7 +182,7 @@ class Shell(BaseModel):
         ctx.shell_runner.spawn(
             command=self.command,
             timeout_s=self.timeout_s,
-            response_sink=None,  # Task 8 wires perception_queue here
+            response_sink=None,
         )
         result = (
             f"shell dispatched (command={self.command!r}, "
@@ -335,7 +335,7 @@ class SpawnWorkflow(BaseModel):
             synthesis=self.synthesis or None,
             mode=self.mode,
             timeout_s=self.timeout_s,
-            response_sink=None,  # Task 8 wires perception_queue here
+            response_sink=None,
         )
         result = (
             f"workflow {workflow_id} dispatched "
@@ -398,7 +398,7 @@ class SpawnMonitor(BaseModel):
                 command=self.command,
                 match_regex=self.match_regex,
                 rate_limit_s=self.rate_limit_s,
-                response_sink=None,  # Task 8 wires perception_queue here
+                response_sink=None,
             )
         except re.error as e:
             return f"[SpawnMonitor regex error: {e}]"

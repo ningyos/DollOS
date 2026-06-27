@@ -177,20 +177,13 @@ class WorkflowRunner:
             )
             return
 
-        if report is None:
-            self._emit(
-                workflow_id, n, mode,
-                status="no_report",
-                summary="workflow ended without a result",
-                details_full="",
-            )
-        else:
-            self._emit(
-                workflow_id, n, mode,
-                status=report["status"],
-                summary=report["summary"],
-                details_full=report["details"],
-            )
+        assert report is not None  # _run_workflow always returns a dict
+        self._emit(
+            workflow_id, n, mode,
+            status=report["status"],
+            summary=report["summary"],
+            details_full=report["details"],
+        )
 
     def _emit(
         self,
@@ -250,7 +243,7 @@ class WorkflowRunner:
         tasks: list[str],
         synthesis: str | None,
         mode: str,
-    ) -> dict | None:
+    ) -> dict:
         sem = asyncio.Semaphore(MAX_WORKFLOW_CONCURRENCY)
         reports = await asyncio.gather(
             *[self._run_one_task(i, t, mode, sem) for i, t in enumerate(tasks)]
@@ -258,9 +251,9 @@ class WorkflowRunner:
 
         if synthesis is not None:
             synth = await self._run_synthesis(synthesis, reports)
-            if synth is not None:
-                synth = dict(synth)
-                synth["status"] = self._rollup_status(reports, synth)
+            assert synth is not None  # _run_synthesis always returns a dict via _run_capped
+            synth = dict(synth)
+            synth["status"] = self._rollup_status(reports, synth)
             return synth
 
         # No synthesis.
@@ -395,7 +388,7 @@ class WorkflowRunner:
         self,
         synthesis: str,
         reports: list[dict],
-    ) -> dict | None:
+    ) -> dict:
         """Run the synthesis agent over the collected reports.
 
         Each report is rendered as a bounded block (status | summary |
