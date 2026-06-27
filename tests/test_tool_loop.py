@@ -60,3 +60,18 @@ async def test_dispatch_one_success_returns_detail(tmp_path):
     assert r is not None and r.success is True
     assert "writing the plan" in r.detail
     assert ctx.mind_state.focus == "writing the plan"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_runtime_error_returns_failed_result(tmp_path):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from pydantic import BaseModel
+
+    class _Boom(BaseModel):
+        async def run(self, ctx):
+            raise RuntimeError("kaboom")
+
+    ctx = _make_mind_ctx(tmp_path)
+    r = await dispatch_one("Boom", {}, ctx, {"Boom": _Boom})
+    assert r is not None and r.success is False
+    assert "runtime error" in r.detail and "kaboom" in r.detail
