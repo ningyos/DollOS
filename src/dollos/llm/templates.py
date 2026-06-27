@@ -106,10 +106,10 @@ _JSON_STR_RULES = (
     "\"\\\\\" [\"\\\\/bfnrt] | "
     "\"\\\\u\" hex hex hex hex\n"
     "hex ::= [0-9a-fA-F]\n"
-    # Non-negative JSON integer (no leading zeros except for the literal 0).
-    # Sufficient for current tools (timeout_s: 1..600 — pydantic still
-    # validates bounds after grammar accepts the digits).
-    "integer ::= \"0\" | [1-9] [0-9]*\n"
+    # JSON integer with optional leading minus (for ReadToolOutput.offset's
+    # negative counts from end). No leading zeros except for the literal 0.
+    # Pydantic still validates bounds (ge/le) after grammar accepts the digits.
+    "integer ::= \"-\"? ( \"0\" | [1-9] [0-9]* )\n"
 )
 
 
