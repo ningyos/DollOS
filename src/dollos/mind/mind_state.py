@@ -89,6 +89,13 @@ class OutputRecord:
 
 
 @dataclass
+class ToolFailure:
+    t: float
+    tool: str
+    detail: str
+
+
+@dataclass
 class MindState:
     mood: Mood = field(default_factory=Mood)
     focus: str = "idle"
@@ -104,6 +111,11 @@ class MindState:
     # Last N post-hoc REVIEW think-lines (metacognition surfaced back into the
     # prompt). Append-only ring buffer; see P2-capture spec §6.2.
     recent_reviews: deque[str] = field(default_factory=lambda: deque(maxlen=5))
+
+    tool_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+    recent_tool_failures: deque[ToolFailure] = field(
+        default_factory=lambda: deque(maxlen=10)
+    )
 
     last_user_at: float = 0.0
     last_iter_at: float = 0.0
@@ -147,6 +159,10 @@ def save_state(state: MindState, path: Path) -> bool:
         state_dict["recent_perceptions"] = [asdict(p) for p in state_dict["recent_perceptions"]]
         state_dict["recent_outputs"] = [asdict(o) for o in state_dict["recent_outputs"]]
         state_dict["recent_reviews"] = list(state.recent_reviews)
+        state_dict["recent_tool_failures"] = [
+            asdict(f) for f in state.recent_tool_failures
+        ]
+        state_dict["tool_stats"] = dict(state.tool_stats)
 
         # Atomic write: write to temp, then rename
         with open(tmp_path, "w") as f:
@@ -217,6 +233,11 @@ def load_state(path: Path) -> MindState:
             maxlen=15
         )
         recent_reviews = deque(data.get("recent_reviews", []), maxlen=5)
+        recent_tool_failures = deque(
+            [_coerce(ToolFailure, f) for f in data.get("recent_tool_failures", [])],
+            maxlen=10,
+        )
+        tool_stats = data.get("tool_stats", {})
 
         state = MindState(
             mood=mood,
@@ -228,6 +249,8 @@ def load_state(path: Path) -> MindState:
             recent_perceptions=recent_perceptions,
             recent_outputs=recent_outputs,
             recent_reviews=recent_reviews,
+            recent_tool_failures=recent_tool_failures,
+            tool_stats=tool_stats,
             last_user_at=data.get("last_user_at", 0.0),
             last_iter_at=data.get("last_iter_at", 0.0),
             iter_count=data.get("iter_count", 0),
