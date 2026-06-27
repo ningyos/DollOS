@@ -6,11 +6,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
-from dollos.cascade.tool_loop import ToolResult
+from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
@@ -570,42 +570,14 @@ class MindLoop:
     async def _dispatch_tool(
         self, name: str, arguments: dict
     ) -> ToolResult | None:
-        """Dispatch a tool call, returning a typed result.
+        """Dispatch via the shared cascade.tool_loop.dispatch_one (spec §3.6).
 
-        Mirrors ``cascade.tool_loop.dispatch_tool_call`` semantics so the live
-        turn and the subagent cascade share one definition of "cascade-worthy":
-
-          - unknown name → ``ToolResult(success=False, detail="unknown tool")``
-          - args fail pydantic validation → ``ToolResult(success=False, …)``
-          - ``run()`` raises → ``ToolResult(success=False, detail="runtime …")``
-          - ``run()`` returns ``None`` → ``None`` (fire-and-forget side-effect)
-          - ``run()`` returns ``str`` → ``ToolResult(success=True, detail=str)``
-
-        Post-decode this is the tool-existence / args guard (spec §8.1): a
-        grammar-valid call to a stale/renamed tool, or with bad args, re-enters
-        as a grounded error instead of a silent no-op.
+        Applies the safe-mode-narrowed registry; MindCtx.sink is always None so
+        no user-facing ErrorMsg is pushed here.
         """
-        tool_cls = self._active_tool_registry().get(name)
-        if tool_cls is None:
-            logger.warning("unknown tool: %s", name)
-            return ToolResult(tool_name=name, success=False, detail="unknown tool")
-        try:
-            tool = tool_cls(**arguments)
-        except ValidationError as e:
-            logger.warning("tool validation failed for %s: %s", name, e)
-            return ToolResult(
-                tool_name=name, success=False, detail=f"args validation: {e}"
-            )
-        try:
-            returned = await tool.run(self._ctx)
-        except Exception as e:
-            logger.exception("tool %s failed", name)
-            return ToolResult(
-                tool_name=name, success=False, detail=f"runtime error: {e}"
-            )
-        if returned is None:
-            return None
-        return ToolResult(tool_name=name, success=True, detail=returned)
+        return await dispatch_one(
+            name, arguments, self._ctx, self._active_tool_registry()
+        )
 
     def shutdown(self) -> None:
         """Signal the loop to stop. Unblocks any pending drain()."""

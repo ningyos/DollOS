@@ -599,7 +599,8 @@ async def test_dispatch_unknown_tool_returns_failed_result(tmp_path):
     loop = _make_mind_loop(tmp_path)
     r = await loop._dispatch_tool("NoSuchTool", {})
     assert isinstance(r, ToolResult) and r.success is False
-    assert "unknown" in r.detail.lower()
+    # friendly message names the unknown tool
+    assert "NoSuchTool" in r.detail
 
 
 @pytest.mark.asyncio
@@ -610,7 +611,8 @@ async def test_dispatch_bad_args_returns_failed_result(tmp_path):
     loop = _make_mind_loop(tmp_path)
     r = await loop._dispatch_tool("Recall", {})  # missing required 'query'
     assert isinstance(r, ToolResult) and r.success is False
-    assert "validation" in r.detail.lower()
+    # friendly message names the bad field
+    assert "query" in r.detail
 
 
 @pytest.mark.asyncio

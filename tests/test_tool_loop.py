@@ -1,10 +1,11 @@
 """Tests for cascade.tool_loop shared dispatch + friendly error formatting."""
 from __future__ import annotations
 
+import pytest
 from pydantic import ValidationError
 
-from dollos.cascade.tool_loop import format_unknown_tool, format_validation_error
-from dollos.tools import ReadToolOutput, Recall, Shell
+from dollos.cascade.tool_loop import dispatch_one, format_unknown_tool, format_validation_error
+from dollos.tools import ReadToolOutput, Recall, SetFocus, Shell
 
 
 def test_format_unknown_tool_lists_available():
@@ -25,3 +26,37 @@ def test_format_validation_error_names_field_not_raw_wall():
     # 不是 pydantic 原始錯誤牆（不含 URL / 'validation error(s) for'）
     assert "https://" not in msg
     assert "validation error" not in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_unknown_tool_friendly(tmp_path):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    ctx = _make_mind_ctx(tmp_path)
+    r = await dispatch_one("Nope", {}, ctx, {"Shell": Shell})
+    assert r is not None and r.success is False
+    assert "Nope" in r.detail and "Shell" in r.detail
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_validation_friendly(tmp_path):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    ctx = _make_mind_ctx(tmp_path)
+    registry = {"ReadToolOutput": ReadToolOutput}
+    r = await dispatch_one(
+        "ReadToolOutput", {"id": "x", "offset": 0, "limit": 0}, ctx, registry
+    )
+    assert r is not None and r.success is False
+    assert "limit" in r.detail
+    assert "validation error" not in r.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_success_returns_detail(tmp_path):
+    from tests._dispatcher_helpers import _make_mind_ctx
+    ctx = _make_mind_ctx(tmp_path)
+    r = await dispatch_one(
+        "SetFocus", {"text": "writing the plan"}, ctx, {"SetFocus": SetFocus}
+    )
+    assert r is not None and r.success is True
+    assert "writing the plan" in r.detail
+    assert ctx.mind_state.focus == "writing the plan"
