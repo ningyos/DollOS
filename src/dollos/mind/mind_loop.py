@@ -187,6 +187,14 @@ class MindLoop:
             except Exception:
                 logger.exception("cognition.snapshot raised; omitting block")
 
+        # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
+        tool_outcomes_block = None
+        if self._is_reflection:
+            from dollos.mind.tool_memory import render_tool_outcomes
+            tool_outcomes_block = render_tool_outcomes(
+                self._state.tool_stats, self._state.recent_tool_failures
+            )
+
         # Render prompt
         prompt = render_mind(
             self._state,
@@ -196,6 +204,7 @@ class MindLoop:
             cognition_block=cognition_block,
             associative_hits=associative_hits,
             primary_language=self._primary_language,
+            tool_outcomes_block=tool_outcomes_block,
         )
 
         # Call LLM (streams text → sink; dispatches tool calls inline)

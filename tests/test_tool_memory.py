@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dollos.cascade.tool_loop import ToolResult
 from dollos.mind.mind_state import MindState, ToolFailure
-from dollos.mind.tool_memory import record_tool_outcome, render_tool_notes
+from dollos.mind.tool_memory import record_tool_outcome, render_tool_notes, render_tool_outcomes
 
 
 def test_record_success_none_and_fail():
@@ -36,3 +36,15 @@ def test_render_tool_notes_gated_aged_deduped():
     assert "timeout B" in out and "timeout A" not in out  # dedup keeps latest
     assert "OldTool" not in out  # aged out (>1h)
     assert render_tool_notes(deque(maxlen=10), now) is None  # no failures → no block
+
+
+def test_render_tool_outcomes_has_counts_and_failure_snippet():
+    from collections import deque
+    from dollos.mind.mind_state import ToolFailure
+    from dollos.mind.tool_memory import render_tool_outcomes
+    stats = {"Shell": {"ok": 3, "fail": 1}, "Recall": {"ok": 5, "fail": 0}}
+    fails = deque([ToolFailure(t=1.0, tool="Shell", detail="timeout after 60s")], maxlen=10)
+    out = render_tool_outcomes(stats, fails)
+    assert "Shell" in out and "3 ok" in out and "1 fail" in out
+    assert "timeout after 60s" in out
+    assert "Recall" in out and "5 ok" in out
