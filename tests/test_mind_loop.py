@@ -1121,3 +1121,22 @@ async def test_subagent_dispatch_does_not_record_to_doll(tmp_path):
                              {"SetFocus": __import__("dollos.tools", fromlist=["SetFocus"]).SetFocus})
     assert ctx.mind_state.tool_stats == {}
     assert len(ctx.mind_state.recent_tool_failures) == 0
+
+
+def test_active_registry_reflection_includes_note_tool_lesson(tmp_path):
+    """Reflection turns add NoteToolLesson; non-reflection excludes it; safe_mode wins."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.mind.mind_state import MindState
+    from dollos.mind.perception_queue import PerceptionQueue
+    from dollos.tools import MAIN_TOOLS
+    state = MindState()
+    loop = MindLoop(state=state, queue=PerceptionQueue(), ctx=_make_mind_ctx(tmp_path, state=state),
+                    llm=_FakeLLM(""), system_prompt="", state_persist_path=tmp_path / "s.json",
+                    tool_registry={c.__name__: c for c in MAIN_TOOLS})
+    loop._is_reflection = False
+    assert "NoteToolLesson" not in loop._active_tool_registry()
+    loop._is_reflection = True
+    assert "NoteToolLesson" in loop._active_tool_registry()
+    # safe_mode wins over reflection
+    state.safe_mode = True
+    assert "NoteToolLesson" not in loop._active_tool_registry()

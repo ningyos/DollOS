@@ -15,6 +15,7 @@ from dollos.mind.tool_memory import record_tool_outcome
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.mind.associative_search import associative_search
+from dollos.tools import NoteToolLesson
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import (
@@ -110,6 +111,9 @@ class MindLoop:
         self._cascade_ctx: CascadeCtx | None = None
         # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
         self._safe_grammar: str | None = None
+        # Reflection-turn flag and lazily-built grammar for the expanded set.
+        self._is_reflection: bool = False
+        self._reflection_grammar: str | None = None
 
         # No-fallback (spec §3.3): a grammar build failure is a tool-set config
         # error. Let it raise at startup — the daemon must refuse to run with a
@@ -139,6 +143,9 @@ class MindLoop:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
                 self._state.last_user_at = p.t
+
+        # Gate NoteToolLesson to reflection turns only (Spec B §5).
+        self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
 
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;
@@ -248,38 +255,41 @@ class MindLoop:
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass.
 
-        Full registry normally; the read-only subset (`SAFE_MODE_TOOLS`) while
-        ``state.safe_mode`` is set (spec §8.3). Both the per-pass grammar and the
-        post-decode dispatch guard read through this, so a write tool cannot be
-        emitted or executed while safe mode is active.
+        safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has priority.
+        reflection turn → full registry + NoteToolLesson.
+        otherwise → base registry.
         """
         if self._state.safe_mode:
             return {
                 n: c for n, c in self._tool_registry.items()
                 if n in SAFE_MODE_TOOLS
             }
+        if self._is_reflection:
+            return {**self._tool_registry, "NoteToolLesson": NoteToolLesson}
         return self._tool_registry
 
     def _active_grammar(self) -> str | None:
         """Grammar for this pass, built from the active tool registry.
 
-        Outside safe mode this is the once-built full grammar (no per-pass cost).
-        In safe mode it is a lazily-built grammar over the reduced read-only set,
-        cached so repeated safe-mode passes don't rebuild it.
-
-        Safe mode must ALWAYS decode under a constrained grammar (spec §8.3,
-        no-fallback rule). The reduced-tool grammar build is deterministic and
-        must succeed; a genuine build failure is surfaced (raises) rather than
-        swallowed into ``grammar=None`` — silently degrading to a fully
-        unconstrained decode would be a no-fallback violation.
+        safe_mode → lazily-built+cached reduced grammar (no-fallback: raises on
+        build failure, never degrades to grammar=None; spec §8.3).
+        reflection turn → lazily-built+cached expanded grammar (MAIN_TOOLS +
+        NoteToolLesson).
+        otherwise → the once-built full grammar (no per-pass cost).
         """
-        if not self._state.safe_mode:
-            return self._grammar
-        if self._safe_grammar is None:
-            self._safe_grammar = build_voice_first_grammar(
-                list(self._active_tool_registry().values())
-            )
-        return self._safe_grammar
+        if self._state.safe_mode:
+            if self._safe_grammar is None:
+                self._safe_grammar = build_voice_first_grammar(
+                    list(self._active_tool_registry().values())
+                )
+            return self._safe_grammar
+        if self._is_reflection:
+            if self._reflection_grammar is None:
+                self._reflection_grammar = build_voice_first_grammar(
+                    list(self._active_tool_registry().values())
+                )
+            return self._reflection_grammar
+        return self._grammar
 
     def _enter_safe_mode(self, reason: str) -> None:
         """Enter read-only safe mode (idempotent within a turn).
