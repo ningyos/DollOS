@@ -24,7 +24,9 @@ def test_record_success_none_and_fail():
 def test_record_never_raises_on_bad_result():
     s = MindState()
     record_tool_outcome(s, "X", object())  # no .success attr → swallowed
-    # no exception; nothing recorded for the bad path is fine
+    # setdefault runs AFTER result.success access, so a malformed result
+    # leaves no zombie {ok:0,fail:0} entry in tool_stats.
+    assert "X" not in s.tool_stats
 
 
 def test_render_tool_notes_gated_aged_deduped():
@@ -39,6 +41,12 @@ def test_render_tool_notes_gated_aged_deduped():
     assert "timeout B" in out and "timeout A" not in out  # dedup keeps latest
     assert "OldTool" not in out  # aged out (>1h)
     assert render_tool_notes(deque(maxlen=10), now) is None  # no failures → no block
+
+
+def test_render_tool_outcomes_empty_stats_returns_none():
+    """MF-1: render_tool_outcomes must return None when tool_stats is empty,
+    not a bare header string that would inject a content-free block."""
+    assert render_tool_outcomes({}, deque()) is None
 
 
 def test_render_tool_outcomes_has_counts_and_failure_snippet():

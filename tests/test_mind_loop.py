@@ -1072,6 +1072,67 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
     assert "English" in llm.captured_user
 
 
+@pytest.mark.asyncio
+async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_path):
+    """MF-2: A batch drained through iterate() that contains a ReflectionMoment
+    sets _is_reflection=True and injects [Tool outcomes] into the rendered prompt
+    when tool_stats is non-empty.  A mixed [ReflectionMoment, UserSpoke] batch
+    must also yield True (spec §6 requirement).
+
+    Contrasting assertion: a plain UserSpoke-only batch leaves _is_reflection
+    False and emits no [Tool outcomes] block.
+    """
+    from tests._dispatcher_helpers import _make_mind_ctx
+    from dollos.tools import MAIN_TOOLS
+
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+
+    # --- Positive: mixed [ReflectionMoment, UserSpoke] batch ---
+    state = MindState()
+    state.tool_stats = {"Recall": {"ok": 5, "fail": 0}}  # non-empty so block renders
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="ReflectionMoment", t=1.0, data={"iters_since_last": 10}))
+    queue.put(Perception(kind="UserSpoke", t=1.1, data={"text": "reflect"}))
+    ctx = _make_mind_ctx(tmp_path, state=state)
+    llm = _CaptureLLM()
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=llm,
+        system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+    await loop.iterate()
+
+    assert loop._is_reflection is True, "_is_reflection must be True for batch containing ReflectionMoment"
+    assert llm.captured_user is not None, "_CaptureLLM must have captured the user prompt"
+    assert "[Tool outcomes" in llm.captured_user, "[Tool outcomes] block must appear in reflection prompt"
+
+    # --- Negative: plain UserSpoke batch leaves _is_reflection False + no block ---
+    state2 = MindState()
+    state2.tool_stats = {"Recall": {"ok": 5, "fail": 0}}
+    queue2 = PerceptionQueue()
+    queue2.put(Perception(kind="UserSpoke", t=2.0, data={"text": "hello"}))
+    ctx2 = _make_mind_ctx(tmp_path, state=state2)
+    llm2 = _CaptureLLM()
+    loop2 = MindLoop(
+        state=state2,
+        queue=queue2,
+        ctx=ctx2,
+        llm=llm2,
+        system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state2.json",
+        tool_registry=tool_registry,
+    )
+    await loop2.iterate()
+
+    assert loop2._is_reflection is False, "_is_reflection must remain False for UserSpoke-only batch"
+    assert llm2.captured_user is not None
+    assert "[Tool outcomes" not in llm2.captured_user, "[Tool outcomes] must not appear in non-reflection prompt"
+
+
 def test_mind_loop_init_raises_on_unbuildable_grammar(tmp_path):
     """No-fallback: 一個帶未支援型別欄位的工具讓 grammar build 失敗時，
     MindLoop 必須在啟動時 raise，而不是靜默以 grammar=None 跑無約束 decode。"""

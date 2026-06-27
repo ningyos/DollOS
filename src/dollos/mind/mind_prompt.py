@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 
 from dollos.mind.mind_state import MindState
-from dollos.mind.tool_memory import render_tool_notes
+from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
 
 
 def render_mind(
@@ -95,7 +95,6 @@ def render_mind(
     tool_notes = render_tool_notes(state.recent_tool_failures, now)
     if tool_notes:
         blocks.extend([tool_notes, ""])
-    from dollos.mind.tool_memory import render_tool_habits
     habits = render_tool_habits(tool_habits_hits or [])
     if habits:
         blocks.extend([habits, ""])
