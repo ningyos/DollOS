@@ -246,7 +246,7 @@ unconstrained decode。
     `ToolStreamParser` 解析、被 pydantic 還原。
   - `X | None` 的 anyOf 型別抽取正確（match_regex / since / until）。
   - signed integer：負數、0、正數都接受；`-` 後不接合法數字則拒絕。
-  - 「0 required + 有 optional」→ `_build_tool_call_rule` raise（不得產非法 JSON）。
+  - 「0 required + 有 optional」→ `_build_tool_call_rule` 回傳空 `{}` body（optional 不可達；`{}` 是合法 JSON，與 §3.1 一致）；`test_voice_grammar_zero_required_optional_only_stays_empty` 驗證此行為。
   - 一個帶未支援型別的假工具讓 `build_voice_first_grammar` raise → `MindLoop.__init__`
     **不**吞、往上拋（不再產生 `grammar=None`）。
 - **友善錯誤**

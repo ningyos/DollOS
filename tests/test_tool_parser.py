@@ -118,3 +118,48 @@ def test_non_dict_json_payload_logs_warning_and_skips(caplog):
     assert out == [{"name": "Say", "arguments": {"text": "after"}}]
     assert any("not a JSON object" in r.message or "object" in r.message.lower()
                for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Optional-field round-trip tests (Spec §6 / MF-1)
+# ---------------------------------------------------------------------------
+
+
+def test_optional_field_present_roundtrips_to_pydantic():
+    from dollos.tools import Shell
+    p = ToolStreamParser()
+    out = p.feed(
+        '<tool_call>\n{"name":"Shell","arguments":{"command":"ls","timeout_s":120}}\n</tool_call>'
+    )
+    assert out == [{"name": "Shell", "arguments": {"command": "ls", "timeout_s": 120}}]
+    tool = Shell.model_validate(out[0]["arguments"])
+    assert tool.command == "ls"
+    assert tool.timeout_s == 120
+
+
+def test_optional_field_absent_roundtrips_to_default():
+    from dollos.tools import Shell
+    p = ToolStreamParser()
+    out = p.feed('<tool_call>\n{"name":"Shell","arguments":{"command":"ls"}}\n</tool_call>')
+    tool = Shell.model_validate(out[0]["arguments"])
+    assert tool.command == "ls"
+    assert tool.timeout_s == 60  # pydantic default when grammar omits the optional
+
+
+def test_optional_anyof_present_roundtrips():
+    from dollos.tools import SpawnMonitor
+    p = ToolStreamParser()
+    out = p.feed(
+        '<tool_call>\n{"name":"SpawnMonitor","arguments":{"command":"tail -F x","match_regex":"ERROR"}}\n</tool_call>'
+    )
+    tool = SpawnMonitor.model_validate(out[0]["arguments"])
+    assert tool.command == "tail -F x"
+    assert tool.match_regex == "ERROR"
+
+
+def test_optional_anyof_absent_roundtrips_to_none():
+    from dollos.tools import SpawnMonitor
+    p = ToolStreamParser()
+    out = p.feed('<tool_call>\n{"name":"SpawnMonitor","arguments":{"command":"tail -F x"}}\n</tool_call>')
+    tool = SpawnMonitor.model_validate(out[0]["arguments"])
+    assert tool.match_regex is None

@@ -816,6 +816,16 @@ async def test_scratchpad_set_then_append_then_clear(tmp_path):
     assert ctx.mind_state.scratchpad == ""
 
 
+@pytest.mark.asyncio
+async def test_scratchpad_append_over_cap_raises(tmp_path):
+    import pytest as _pytest
+    from dollos.tools import Scratchpad
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await Scratchpad(op="set", content="x" * 1999).run(ctx)
+    with _pytest.raises(ValueError):
+        await Scratchpad(op="append", content="y" * 100).run(ctx)
+
+
 def test_main_tools_has_scratchpad_not_old_four():
     from dollos.tools import MAIN_TOOLS
     names = {c.__name__ for c in MAIN_TOOLS}
