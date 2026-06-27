@@ -15,9 +15,6 @@ from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     MAIN_TOOLS,
     SUB_TOOLS,
-    AppendScratchpad,
-    ClearScratchpad,
-    EditScratchpad,
     GrepToolOutput,
     InvokeSkill,
     NoteMemory,
@@ -25,7 +22,6 @@ from dollos.tools import (
     Recall,
     Shell,
     WriteDiary,
-    WriteScratchpad,
     SetFocus,
     OpenLoop,
     CloseLoop,
@@ -807,69 +803,25 @@ async def test_grep_invalid_regex_raises(tmp_path: Path) -> None:
         await tool.run(ctx)
 
 
-# ---------- WriteScratchpad / AppendScratchpad / EditScratchpad / ClearScratchpad ----------
-
-
 @pytest.mark.asyncio
-async def test_write_scratchpad_tool(tmp_path):
-    state = MindState()
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = WriteScratchpad(content="hello world")
-    result = await tool.run(ctx)
-    assert "11 chars" in result
-    assert state.scratchpad == "hello world"
+async def test_scratchpad_set_then_append_then_clear(tmp_path):
+    from dollos.tools import Scratchpad
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await Scratchpad(op="set", content="line A").run(ctx)
+    assert ctx.mind_state.scratchpad == "line A"
+    await Scratchpad(op="append", content="line B").run(ctx)
+    assert "line A" in ctx.mind_state.scratchpad
+    assert "line B" in ctx.mind_state.scratchpad
+    await Scratchpad(op="clear", content="").run(ctx)
+    assert ctx.mind_state.scratchpad == ""
 
 
-@pytest.mark.asyncio
-async def test_write_scratchpad_overflow_raises(tmp_path):
-    state = MindState()
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = WriteScratchpad(content="x" * 2001)
-    with pytest.raises(ValueError, match="exceeds 2000"):
-        await tool.run(ctx)
-
-
-@pytest.mark.asyncio
-async def test_append_scratchpad_tool(tmp_path):
-    state = MindState()
-    state.scratchpad = "first"
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = AppendScratchpad(text="second")
-    result = await tool.run(ctx)
-    assert "12 chars" in result   # "first\nsecond"
-    assert state.scratchpad == "first\nsecond"
-
-
-@pytest.mark.asyncio
-async def test_edit_scratchpad_tool(tmp_path):
-    state = MindState()
-    state.scratchpad = "hello world"
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = EditScratchpad(old_string="world", new_string="there")
-    result = await tool.run(ctx)
-    assert "edited" in result
-    assert state.scratchpad == "hello there"
-
-
-@pytest.mark.asyncio
-async def test_edit_scratchpad_no_match_raises(tmp_path):
-    state = MindState()
-    state.scratchpad = "hello"
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = EditScratchpad(old_string="missing", new_string="x")
-    with pytest.raises(ValueError, match="not found"):
-        await tool.run(ctx)
-
-
-@pytest.mark.asyncio
-async def test_clear_scratchpad_tool(tmp_path):
-    state = MindState()
-    state.scratchpad = "something"
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    tool = ClearScratchpad()
-    result = await tool.run(ctx)
-    assert "cleared" in result
-    assert state.scratchpad == ""
+def test_main_tools_has_scratchpad_not_old_four():
+    from dollos.tools import MAIN_TOOLS
+    names = {c.__name__ for c in MAIN_TOOLS}
+    assert "Scratchpad" in names
+    for gone in ("WriteScratchpad", "AppendScratchpad", "EditScratchpad", "ClearScratchpad"):
+        assert gone not in names
 
 
 # ---------- MoodTool ----------
@@ -925,18 +877,3 @@ async def test_recall_appends_output_record(tmp_path):
     assert state.recent_outputs[0].kind == "Recall"
 
 
-@pytest.mark.asyncio
-async def test_write_scratchpad_appends_output_record(tmp_path):
-    state = MindState()
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    await WriteScratchpad(content="notes").run(ctx)
-    assert len(state.recent_outputs) == 1
-    assert state.recent_outputs[0].kind == "WriteScratchpad"
-
-
-@pytest.mark.asyncio
-async def test_clear_scratchpad_appends_output_record(tmp_path):
-    state = MindState()
-    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    await ClearScratchpad().run(ctx)
-    assert state.recent_outputs[0].kind == "ClearScratchpad"

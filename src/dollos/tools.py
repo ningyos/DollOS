@@ -536,13 +536,13 @@ class ReadToolOutput(BaseModel):
     )
     offset: int = Field(
         ...,
-        description="zero-indexed line to start at; 0 = beginning; negative counts from end. REQUIRED — do not omit.",
+        description="zero-indexed start line; 0 = beginning; negative counts from end.",
     )
     limit: int = Field(
         ...,
         ge=1,
         le=500,
-        description="max lines to return (1-500). REQUIRED — do not omit.",
+        description="max lines to return (1-500).",
     )
 
     def _summary(self) -> str:
@@ -586,78 +586,43 @@ class GrepToolOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Scratchpad tools — mutate ctx.mind_state.scratchpad via helpers
+# Scratchpad tool — mutate ctx.mind_state.scratchpad via helpers
 # ---------------------------------------------------------------------------
 
 
-class WriteScratchpad(BaseModel):
-    """Overwrite the scratchpad with new content.
+class Scratchpad(BaseModel):
+    """Manage your working-memory scratchpad (hard cap 2000 chars).
 
-    Hard cap 2000 chars. Use this when starting fresh or when existing
-    content is irrelevant to current work.
+    op="set": overwrite with `content`.
+    op="append": add `content` as a new line (newline auto-prepended if non-empty).
+    op="clear": wipe to empty (`content` is ignored).
+
+    Use "set" to start fresh, "append" to jot a running note. To replace a
+    specific substring, just "set" the full new contents.
     """
 
-    content: str = Field(..., description="full new scratchpad contents (≤2000 chars)")
+    op: Literal["set", "append", "clear"] = Field(
+        description='"set" overwrite | "append" add a line | "clear" wipe'
+    )
+    content: str = Field(
+        description="New content for set/append (≤2000 chars). Ignored for clear.",
+    )
 
     def _summary(self) -> str:
-        return f"write scratchpad ({len(self.content)} chars)"
+        return f"scratchpad {self.op} ({len(self.content)} chars)"
 
     async def run(self, ctx: "MindCtx") -> str:
-        scratchpad_helpers.write(ctx.mind_state, self.content)
-        result = f"scratchpad set ({len(self.content)} chars)"
-        _record(ctx, "WriteScratchpad", self._summary())
+        if self.op == "set":
+            scratchpad_helpers.write(ctx.mind_state, self.content)
+            result = f"scratchpad set ({len(self.content)} chars)"
+        elif self.op == "append":
+            new_total = scratchpad_helpers.append(ctx.mind_state, self.content)
+            result = f"scratchpad now {new_total} chars"
+        else:  # clear
+            scratchpad_helpers.clear(ctx.mind_state)
+            result = "scratchpad cleared"
+        _record(ctx, "Scratchpad", self._summary())
         return result
-
-
-class AppendScratchpad(BaseModel):
-    """Append a line to the end of the scratchpad.
-
-    A newline separator is auto-prepended if the scratchpad is non-empty.
-    Raises ValueError if appending would exceed 2000 chars.
-    """
-
-    text: str = Field(..., description="text to append as a new line")
-
-    def _summary(self) -> str:
-        return f"append scratchpad: {self.text[:60]}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        new_total = scratchpad_helpers.append(ctx.mind_state, self.text)
-        result = f"scratchpad now {new_total} chars"
-        _record(ctx, "AppendScratchpad", self._summary())
-        return result
-
-
-class EditScratchpad(BaseModel):
-    """Replace a unique substring in the scratchpad.
-
-    Same semantics as Claude Code's Edit tool: old_string must appear
-    exactly once in the current contents. Use longer old_string with
-    surrounding context if a short substring is ambiguous.
-    """
-
-    old_string: str = Field(..., description="exact substring to replace; must appear exactly once")
-    new_string: str = Field(..., description="replacement text")
-
-    def _summary(self) -> str:
-        return f"edit scratchpad: {self.old_string[:30]!r} → {self.new_string[:30]!r}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        scratchpad_helpers.edit(ctx.mind_state, self.old_string, self.new_string)
-        _record(ctx, "EditScratchpad", self._summary())
-        return "scratchpad edited"
-
-
-class ClearScratchpad(BaseModel):
-    """Wipe the scratchpad to empty."""
-
-    def _summary(self) -> str:
-        return "clear scratchpad"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        scratchpad_helpers.clear(ctx.mind_state)
-        _record(ctx, "ClearScratchpad", self._summary())
-        return "scratchpad cleared"
 
 
 # ---------------------------------------------------------------------------
@@ -755,7 +720,7 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnSubagent, SpawnMonitor, RemoveMonitor,
     ReadToolOutput, GrepToolOutput,
-    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    Scratchpad,
     SetFocus, OpenLoop, CloseLoop,
     MoodTool,
 ]
@@ -763,6 +728,6 @@ MAIN_TOOLS: list[type[BaseModel]] = [
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
-    WriteScratchpad, AppendScratchpad, EditScratchpad, ClearScratchpad,
+    Scratchpad,
     SetFocus, OpenLoop, CloseLoop,
 ]
