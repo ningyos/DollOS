@@ -47,6 +47,29 @@ class ToolResult:
     detail: str
 
 
+def format_unknown_tool(name: str, registry: dict[str, type]) -> str:
+    """LLM-friendly unknown-tool message listing the valid tool names."""
+    available = ", ".join(sorted(registry)) if registry else "(none)"
+    return f"未知工具 {name!r}。可用工具：{available}"
+
+
+def format_validation_error(exc: ValidationError, tool_name: str) -> str:
+    """Flatten a pydantic ValidationError into a terse, actionable message.
+
+    One line per bad field: ``<field>: <msg> (你給了 <value>)``. Avoids the raw
+    pydantic error wall (URLs / 'N validation errors for ...') which costs
+    tokens and reads as noise to the model.
+    """
+    lines: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ())) or "(root)"
+        msg = err.get("msg", "invalid")
+        given = err.get("input", None)
+        lines.append(f"{loc}: {msg}（你給了 {given!r}）")
+    body = "; ".join(lines)
+    return f"工具 {tool_name} 參數錯誤：{body}"
+
+
 async def dispatch_tool_call(
     call: dict,
     ctx: "ToolCtx",
