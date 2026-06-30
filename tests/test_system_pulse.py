@@ -262,3 +262,9 @@ def _async_return(value):
     async def _coro():
         return value
     return _coro()
+
+
+def test_latest_idle_s_none_when_no_sample():
+    from dollos.perception.system_pulse import SystemPulse
+    sp = SystemPulse(poll_interval_s=60.0, enabled=False)
+    assert sp.latest_idle_s() is None

@@ -398,6 +398,20 @@ class SystemPulse:
         self._last_emitted_sig = sig
         return render_block(sample, include_active_window=self._include_active_window)
 
+    def latest_idle_s(self) -> float | None:
+        """Idle seconds from the last fresh pulse sample, else None.
+
+        None when: disabled / no sample yet / idle source unavailable /
+        sample is stale (older than 2x poll interval).
+        """
+        s = self._last_sample
+        if s is None or s.idle_s is None:
+            return None
+        age = (datetime.now() - s.taken_at).total_seconds()
+        if age > 2 * self._poll_interval_s:
+            return None
+        return s.idle_s
+
     async def poll_now(self) -> None:
         """Force one immediate poll (for tests / smoke)."""
         self._last_sample = await self._poll_once()
