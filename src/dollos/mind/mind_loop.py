@@ -98,6 +98,8 @@ class MindLoop:
         wal: PerceptionWAL | None = None,
         primary_language: str = "繁體中文",
         cascade_logger=None,
+        energy_enabled: bool = False,
+        cost_per_turn: float = 0.05,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -121,6 +123,10 @@ class MindLoop:
         # Reflection-turn flag and lazily-built grammar for the expanded set.
         self._is_reflection: bool = False
         self._reflection_grammar: str | None = None
+        # B3 energy system
+        self._energy_enabled = energy_enabled
+        self._cost_per_turn = cost_per_turn
+        self._turn_had_tool: bool = False
 
         # No-fallback (spec §3.3): a grammar build failure is a tool-set config
         # error. Let it raise at startup — the daemon must refuse to run with a
@@ -223,6 +229,7 @@ class MindLoop:
         # render_mind() raises (I1: previously those could leave IPC clients
         # blocked waiting for a TurnEnd that never arrived).
         self._turn_speech.clear()
+        self._turn_had_tool = False
         try:
             # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
             tool_outcomes_block = None
@@ -253,6 +260,11 @@ class MindLoop:
             # waiting for turn_end. Voice path: TTSObservingSink passes None
             # through unchanged (not a TextChunk, so no TTS side effect).
             self._ctx.sink_resolver().put_nowait(None)
+
+        # B3 energy consumption — only when Doll produced cognitive output this turn.
+        produced = bool(self._turn_speech) or self._turn_had_tool
+        if self._energy_enabled and produced:
+            self._state.energy = max(0.0, self._state.energy - self._cost_per_turn)
 
         # Doll-side transcript: one line per turn, full text (B1).
         doll_text = "".join(self._turn_speech).strip().replace("\n", " ")
@@ -663,6 +675,7 @@ class MindLoop:
                 self._turn_speech.append(sentence)
             return None
         elif isinstance(event, ToolCallReady):
+            self._turn_had_tool = True
             return await self._dispatch_tool(event.name, event.arguments)
         return None
 
