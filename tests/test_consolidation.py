@@ -139,3 +139,60 @@ async def test_associative_search_excludes_consolidated(tmp_path):
     assert "normal fact" in contents, (
         "non-consolidated hit with matching tags must still be returned"
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared stub for Task 4 + 5
+# ---------------------------------------------------------------------------
+
+class _FakeRenderer:
+    """Minimal PromptRenderer stub for consolidation tests."""
+    def render(self, template_name: str, **ctx) -> str:
+        return f"[stub system: {template_name}]"
+
+
+# ---------------------------------------------------------------------------
+# Task 4: KEEPER_TOOLS allowlist + run_consolidation driver
+# ---------------------------------------------------------------------------
+
+
+def test_keeper_tools_allowlist():
+    from dollos.tools import KEEPER_TOOLS, Report, Scratchpad, Shell, NoteMemory, SpawnMonitor, RemoveMonitor
+    names = {c.__name__ for c in KEEPER_TOOLS}
+    assert names <= {"Report", "Scratchpad", "Recall"}
+    assert names & {"Shell", "NoteMemory", "SpawnMonitor", "RemoveMonitor"} == set()
+    assert Report in KEEPER_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
+    from dollos.mind import consolidation as C
+    # 準備目標日 transcript
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-06-29.md").write_text("- 12:00 主人說：我喜歡冰美式\n- 12:01 我說：記住了\n")
+    ms = _FakeMemSearch()
+
+    captured = {}
+    async def fake_run_agent(**kw):
+        captured.update(kw)
+        return {"status": "ok", "details": "- 主人偏好冰美式"}
+    monkeypatch.setattr(C, "run_agent", fake_run_agent)
+
+    ok = await C.run_consolidation(
+        target_date="2026-06-29",
+        adapter=object(), renderer=_FakeRenderer(), memsearch=ms,
+        memory_root=tmp_path, transcripts_root=tdir,
+        tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
+        max_tokens=2048, agent_timeout_s=120, transcript_tail_chars=8000,
+    )
+    assert ok is True
+    out = (tmp_path / "consolidated" / "2026-06-29.md").read_text()
+    assert "主人偏好冰美式" in out
+    # transcript 內容有 inline 進 task（driver-fed）
+    assert "冰美式" in captured["task"]
+    # keeper 用 allowlist + 無 shell_runner
+    from dollos.tools import KEEPER_TOOLS
+    assert captured["tools"] is KEEPER_TOOLS
+    assert captured.get("shell_runner") is None
+    # 寫的檔被索引
+    assert (tmp_path / "consolidated" / "2026-06-29.md") in ms.indexed

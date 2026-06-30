@@ -782,3 +782,6 @@ SUB_TOOLS: list[type[BaseModel]] = [
     Scratchpad,
     SetFocus, OpenLoop, CloseLoop,
 ]
+
+# B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
+KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
