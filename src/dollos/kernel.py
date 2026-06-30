@@ -316,6 +316,8 @@ class DollOS:
             wal=self._wal,
             primary_language=settings.memory.primary_language,
             cascade_logger=self._cascade_logger,
+            energy_enabled=settings.energy.enabled,
+            cost_per_turn=settings.energy.cost_per_turn,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -340,6 +342,10 @@ class DollOS:
             max_tokens=settings.consolidation.max_tokens,
             agent_timeout_s=settings.consolidation.agent_timeout_s,
             transcript_tail_chars=settings.consolidation.transcript_tail_chars,
+            energy_enabled=settings.energy.enabled,
+            restore_per_tick=settings.energy.restore_per_tick,
+            energy_idle_threshold_s=settings.energy.idle_threshold_s,
+            energy_restore_debounce_s=settings.energy.restore_debounce_s,
         )
 
         # ------------------------------------------------------------------ #
