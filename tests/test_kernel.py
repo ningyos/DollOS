@@ -614,3 +614,126 @@ async def test_shutdown_consolidation_before_memsearch_close(tmp_path, monkeypat
     assert trigger_idx < memsearch_idx, (
         f"trigger.shutdown() must precede memsearch.close(); got order={order}"
     )
+
+
+# ----- B2 Batch 3: voice cancel + in-flight keeper gather regression tests -----
+
+
+@pytest.mark.asyncio
+async def test_voice_ingress_calls_cancel_consolidation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Voice ingress (_on_user_text closure in _handle_offer) calls _cancel_consolidation().
+
+    M1 regression: if _cancel_consolidation() is dropped from the voice path,
+    voice speech will no longer preempt an in-flight keeper agent.
+    """
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    cancelled: list[int] = []
+
+    class _StubTrigger:
+        def cancel_current(self) -> None:
+            cancelled.append(1)
+
+    dollos._consolidation_trigger = _StubTrigger()
+
+    # Capture the on_user_text callback by intercepting VoiceSession construction.
+    captured_callbacks: list = []
+
+    class _FakeSession:
+        def __init__(self, asr, tts, on_user_text) -> None:
+            captured_callbacks.append(on_user_text)
+
+        async def handle_offer(self, sdp: str) -> str:
+            return "fake_answer_sdp"
+
+    # Stub build_voice_engines so _handle_offer doesn't try to load real ASR/TTS.
+    monkeypatch.setattr(
+        "dollos.kernel.build_voice_engines",
+        lambda *a, **kw: (object(), object()),
+    )
+    monkeypatch.setattr("dollos.kernel.VoiceSession", _FakeSession)
+
+    # Drive _handle_offer to wire the closure, then invoke it as ASR would.
+    await dollos._handle_offer("fake_offer_sdp", asyncio.Queue())
+
+    assert captured_callbacks, "VoiceSession was not constructed; on_user_text not captured"
+    on_user_text = captured_callbacks[0]
+
+    # Simulate ASR firing the callback (user spoke via voice).
+    await on_user_text("hello from voice")
+
+    assert len(cancelled) == 1, (
+        "_cancel_consolidation was not called on voice ingress; "
+        "voice path does not cancel in-flight keeper"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_gathers_inflight_keeper(tmp_path, monkeypatch) -> None:
+    """shutdown must await the in-flight keeper task before calling memsearch.close().
+
+    M2 regression: if the asyncio.gather(*_consolidation_tasks, ...) line is removed,
+    memsearch.close() races against a still-running keeper agent that uses memsearch,
+    which would crash on sqlite access.  This test creates a real in-flight asyncio.Task
+    and asserts it is done by the time memsearch.close() is called.
+    """
+    from dollos.wal.pidfile import RestartKind
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    # Create a real in-flight keeper task (long sleep so it's still running at shutdown).
+    keeper_task: asyncio.Task = asyncio.create_task(asyncio.sleep(100))
+    # Inject it as if the consolidation trigger is mid-keeper.
+    dollos._consolidation_trigger.current_task = keeper_task
+
+    # Spy: record keeper_task.done() at the moment memsearch.close() is called.
+    # If gather is skipped, done() will be False (cancellation pending but not processed).
+    keeper_done_at_close: list[bool] = []
+
+    def _spy_memsearch_close() -> None:
+        keeper_done_at_close.append(keeper_task.done())
+
+    monkeypatch.setattr(dollos.memsearch, "close", _spy_memsearch_close)
+
+    async def _noop() -> None:
+        pass
+
+    monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
+    monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "start", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
+    monkeypatch.setattr(dollos._reflection_observer, "run", lambda: _noop())
+    # Patch consolidation trigger poll loop to a noop so _consolidation_trigger_task
+    # completes immediately; our fake current_task is the one being tested.
+    monkeypatch.setattr(dollos._consolidation_trigger, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._tool_output_store, "cleanup", lambda: None)
+    monkeypatch.setattr(dollos._pidfile, "acquire", lambda: RestartKind.COLD)
+    monkeypatch.setattr(dollos._pidfile, "release", lambda: None)
+    monkeypatch.setattr(asyncio.get_event_loop(), "add_signal_handler", lambda *a, **kw: None)
+
+    dollos._shutdown.set()
+    await asyncio.wait_for(dollos.run(), timeout=3.0)
+
+    # (a) Keeper task must be done (cancelled) after shutdown completes.
+    assert keeper_task.done(), (
+        "in-flight keeper task was not awaited during shutdown; "
+        "removing asyncio.gather(*_consolidation_tasks) would trigger this"
+    )
+
+    # (b) memsearch.close() must have been called after keeper task was done.
+    assert keeper_done_at_close == [True], (
+        f"memsearch.close() called before keeper task was done; "
+        f"keeper.done() at close time = {keeper_done_at_close}. "
+        "This means the gather is missing or bypassed."
+    )
