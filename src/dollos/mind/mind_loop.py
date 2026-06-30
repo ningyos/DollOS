@@ -221,6 +221,7 @@ class MindLoop:
         # sentinel is always emitted — even when render_tool_outcomes() or
         # render_mind() raises (I1: previously those could leave IPC clients
         # blocked waiting for a TurnEnd that never arrived).
+        self._turn_speech.clear()
         try:
             # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
             tool_outcomes_block = None
@@ -242,7 +243,6 @@ class MindLoop:
                 tool_habits_hits=tool_habits_hits,
             )
 
-            self._turn_speech.clear()
             # Call LLM (streams text → sink; dispatches tool calls inline)
             await self._llm_iterate(prompt)
         finally:
