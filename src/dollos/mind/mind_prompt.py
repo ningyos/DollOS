@@ -10,6 +10,22 @@ from dollos.mind.mind_state import MindState
 from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
 
 
+def energy_bucket_line(energy: float) -> str:
+    """Return objective energy line for [Mind state] block (B3 spec §3.4).
+
+    Bucket boundaries: ≥0.7 → 飽滿; 0.4–0.7 → 普通; <0.4 → 偏低.
+    No feeling words (no 「累」); only objective zone label + numeric value.
+    """
+    value_str = f"{energy:.1f}"
+    if energy >= 0.7:
+        bucket = "飽滿"
+    elif energy >= 0.4:
+        bucket = "普通"
+    else:
+        bucket = "偏低"
+    return f"精力: {bucket} ({value_str})"
+
+
 def render_mind(
     state: MindState,
     memsearch_hits: list[dict],
@@ -21,6 +37,7 @@ def render_mind(
     primary_language: str = "繁體中文",
     tool_outcomes_block: str | None = None,
     tool_habits_hits: list[dict] | None = None,
+    energy_line: str | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -63,7 +80,7 @@ def render_mind(
         _render_associative(associative_hits or []),
         "",
         "[Mind state]",
-        _render_mindstate(state, now),
+        _render_mindstate(state, now, energy_line=energy_line),
         "",
         "[Active tasks] (currently running, you cannot cancel)",
         _render_active_tasks(state.active_tasks, now),
@@ -156,17 +173,22 @@ def _render_associative(hits: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _render_mindstate(state: MindState, now: float) -> str:
+def _render_mindstate(state: MindState, now: float, *, energy_line: str | None = None) -> str:
     mood_str = state.mood.emotion
     if state.mood.reason:
         mood_str = f"{state.mood.emotion} ({state.mood.reason})"
     last_user = _human_secs(now - state.last_user_at) + " ago" if state.last_user_at else "never"
-    return (
-        f"focus: {state.focus}\n"
-        f"mood: {mood_str}\n"
-        f"last_user: {last_user}\n"
-        f"iter: {state.iter_count}"
-    )
+    lines = [
+        f"focus: {state.focus}",
+        f"mood: {mood_str}",
+    ]
+    if energy_line is not None:
+        lines.append(energy_line)
+    lines.extend([
+        f"last_user: {last_user}",
+        f"iter: {state.iter_count}",
+    ])
+    return "\n".join(lines)
 
 
 def _render_active_tasks(tasks: list, now: float) -> str:

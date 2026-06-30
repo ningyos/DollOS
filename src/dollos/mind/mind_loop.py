@@ -19,7 +19,7 @@ from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
 from dollos.tools import NoteToolLesson
 from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_prompt import render_mind
+from dollos.mind.mind_prompt import energy_bucket_line, render_mind
 from dollos.mind.mind_state import (
     MindState,
     OutputRecord,
@@ -239,6 +239,11 @@ class MindLoop:
                 )
 
             # Render prompt
+            energy_line = (
+                energy_bucket_line(self._state.energy)
+                if self._energy_enabled
+                else None
+            )
             prompt = render_mind(
                 self._state,
                 memsearch_hits,
@@ -249,6 +254,7 @@ class MindLoop:
                 primary_language=self._primary_language,
                 tool_outcomes_block=tool_outcomes_block,
                 tool_habits_hits=tool_habits_hits,
+                energy_line=energy_line,
             )
 
             # Call LLM (streams text → sink; dispatches tool calls inline)
