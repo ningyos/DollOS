@@ -210,3 +210,12 @@ primary_language = "English"
     )
     settings = load_settings(config_path)
     assert settings.memory.primary_language == "English"
+
+
+def test_consolidation_config_defaults(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    s = load_settings(config_path)
+    assert s.consolidation.idle_threshold_s == 300
+    assert s.consolidation.min_interval_s == 3600
+    assert s.consolidation.enabled is True

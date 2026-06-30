@@ -152,6 +152,18 @@ class CognitionConfig(BaseModel):
     max_context_tokens: int = 131_072            # Qwen3.6 default
 
 
+class ConsolidationConfig(BaseModel):
+    """B2 sleep-time consolidation — idle-triggered transcript-to-candidate driver."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    idle_threshold_s: int = 300
+    min_interval_s: int = 3600
+    max_tokens: int = 2048
+    agent_timeout_s: int = 120
+    transcript_tail_chars: int = 8000
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -168,6 +180,7 @@ class Settings(BaseModel):
     voice: VoiceSettings = Field(default_factory=lambda: VoiceSettings())
     system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
     cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
+    consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
 
 
 def load_settings(path: Path) -> Settings:
