@@ -77,9 +77,13 @@ def _hit_in_range(
 
 def _format_hit(hit: dict) -> str:
     d = _hit_date(hit)
+    content = hit.get("content", "")
+    # B2 candidate pull-only: consolidated/ hits surface via Recall with a
+    # provenance prefix so Doll knows they are unconfirmed candidates.
+    prefix = "[系統整併·待確認] " if "consolidated/" in (hit.get("source") or "") else ""
     if d is not None:
-        return f"- {d.isoformat()} {hit.get('content', '')}"
-    return f"- {hit.get('content', '')}"
+        return f"- {d.isoformat()} {prefix}{content}"
+    return f"- {prefix}{content}"
 
 
 # ---------------------------------------------------------------------------
