@@ -84,3 +84,17 @@ def test_consolidation_fields_round_trip(tmp_path):
     assert loaded.last_consolidation_at == 123.5
     assert loaded.last_consolidated_date == "2026-06-29"
     assert loaded.recent_tool_failures.maxlen == 10
+
+
+def test_energy_round_trip_and_clamp(tmp_path):
+    from dollos.mind.mind_state import MindState, save_state, load_state
+    import json
+    s = MindState(); s.energy = 0.4; s.last_energy_restore_at = 12.0
+    p = tmp_path / "s.json"; assert save_state(s, p)
+    assert load_state(p).energy == 0.4
+    assert load_state(p).last_energy_restore_at == 12.0
+    # out-of-range clamps on load
+    data = json.loads(p.read_text()); data["energy"] = 1.7; p.write_text(json.dumps(data))
+    assert load_state(p).energy == 1.0
+    data["energy"] = -0.5; p.write_text(json.dumps(data))
+    assert load_state(p).energy == 0.0
