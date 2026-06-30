@@ -140,6 +140,30 @@ async def test_transcript_write_failure_does_not_crash_loop(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_user_multiline_text_written_as_single_physical_line(tmp_path):
+    """UserSpoke text 含裸換行 → transcript 寫出單一物理行,無孤兒行。"""
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "第一行\n第二行"}))
+    ms = _FakeMemSearch()
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, memsearch=ms, sink=sink, state=state)
+    loop = _make_loop(tmp_path, state=state, ctx=ctx, queue=queue, stream=_speak_only_stream("好的"))
+
+    await loop.iterate()
+
+    content = _today_transcript(ctx).read_text()
+    user_lines = [ln for ln in content.split("\n") if "主人說：" in ln]
+    # exactly ONE physical line for the user bullet
+    assert len(user_lines) == 1
+    # both parts of the original text are present, joined by a space
+    assert "第一行" in user_lines[0]
+    assert "第二行" in user_lines[0]
+    # no bare newline inside the bullet itself
+    assert "\n" not in user_lines[0]
+
+
+@pytest.mark.asyncio
 async def test_no_transcript_when_system_turn_and_doll_silent(tmp_path):
     """純系統 turn + Doll 也沒說話 → 不寫任何 transcript 行 (spec §7)。"""
     state = MindState()

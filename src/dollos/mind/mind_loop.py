@@ -15,6 +15,7 @@ from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
+from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
 from dollos.tools import NoteToolLesson
 from dollos.mind.mind_ctx import MindCtx
@@ -28,7 +29,6 @@ from dollos.mind.mind_state import (
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
-from dollos.memory_writer import append_transcript
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ class MindLoop:
                             transcripts_root=self._ctx.transcripts_root,
                             memsearch=self._ctx.memsearch,
                             role="user",
-                            text=user_text,
+                            text=user_text.replace("\n", " "),
                         )
                     except Exception:
                         logger.exception(
