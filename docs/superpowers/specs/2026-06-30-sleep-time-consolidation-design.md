@@ -1,116 +1,141 @@
 # Spec — B2: Sleep-Time Consolidation（睡眠期記憶整併）
 
 - **Date**: 2026-06-30
-- **Status**: DRAFT — R1(trigger 角度)adversarial review 已套用；keeper/autonomy/integration/scope 四角度待補(session reset 後),收斂後才進 writing-plans。見 §9。
+- **Status**: PLAN-READY — R1(trigger)+ R2(keeper/autonomy/integration/scope)兩輪對抗 review 已收斂套用。見 §9。
 - **Depends on**: B1 episodic transcript recapture（已 merged）。
-- **Scope**: 本 spec 只做 B2。A1 self-profile（吃 B2 產物）、B3 energy（吃 B2 的 idle/活躍訊號）各自後續獨立 spec。
-- **藍圖來源**: core-loop-robustness spec §P4(sleep-time consolidation:quiet-pulse → memory-keeper subagent → playbook + compact + 非破壞性衝突解決)；本 spec 是 P4 的首次落地（聚焦版）。
+- **Scope**: 只做 B2。A1 self-profile（吃 B2 產物）、B3 energy（吃 idle 訊號）各自後續獨立 spec。
+- **藍圖來源**: core-loop-robustness spec §P4(quiet-pulse → memory-keeper subagent → 非破壞性)；本 spec 是 P4 首次落地(聚焦版)。
 
 ## 1. 背景與問題
 
-B1 之後,對話逐字稿會進入可搜尋語料,但**沒有任何東西整理它**。原始 transcript + 每日零散 NoteMemory facts 只會單調增長:重複的事實、過時的細節、稀釋召回。Doll 自己在 probe 中明講「記憶不是筆記本,塞滿只會讓重要的變模糊」「準不要多」。
+B1 之後對話逐字稿會進可搜尋語料,但**沒有東西整理它**:原始 transcript + 每日零散 NoteMemory 只單調增長,重複、過時、稀釋召回。Doll 自己 probe 明講「記憶不是筆記本,塞滿讓重要的模糊」「準不要多」。三個背景迴圈(diary/schedule/ReflectionObserver)都只丟提示 perception,沒有一個會 summarize/dedup/提取結構化事實。**缺一個 sleep-time 整併 pass。**
 
-DollOS 目前三個背景迴圈(diary scheduler / schedule runner / ReflectionObserver)都只「丟提示 perception」,沒有任何一個會 summarize / dedup / 提取結構化事實。**缺一個 sleep-time 整併 pass。**
+## 2. 設計原則（research + Doll probe + 兩輪 review 收斂）
 
-## 2. 設計原則（從 research + Doll probe 收斂）
-
-- **sleep-time / idle 觸發**:整併在 host 閒置時跑,不佔對話算力(research:sleep-time compute;P4:quiet-pulse)。
-- **Doll 主導自我的界線(關鍵)**:Doll probe 強烈反對「系統替我定義我是誰」。因此 B2 **只產出中性的 candidate 結構化事實**(關於用戶的穩定偏好/習慣、關係進展、值得記住的模式),寫進可召回層;**B2 絕不改寫 self-profile / 自我宣告**。self-profile 的寫入由 Doll 主導(A1 的 reflection-gated tool 從 candidates 中挑)。這調和「自動整併」與「Doll 主導自我」。
-- **非破壞性**:不刪 / 不改原始 transcript 與 NoteMemory;整併只新增 consolidated candidate 層(P4:非破壞性衝突解決)。
+- **idle 觸發,用 conversation-idle**:整併在對話閒置時跑,不佔對話算力。**不綁** `SystemPulse.idle_s`(來自 xprintidle,Wayland/headless 永 None → 會 no-op);用即時、DISPLAY 無關的 `MindState.last_user_at`/`last_iter_at`。
+- **Doll 主導自我 — candidate 是 pull-only(R2 最關鍵)**:B2 只產**中性 candidate 結構化事實**,且 candidate **不自動注入** `[Memory context]`——只進可搜尋索引,Doll(Recall)與未來 A1 **主動 pull** 才看得到,浮現時帶 `[系統整併·待確認]` provenance 前綴。這對上 probe 的「系統 nudge、我保留主導權」:candidate 是她伸手才見的提示,不是每 turn 被塞、她又刪不掉的既定事實。**召回層 gating 由 B2 自管,不下放 A1**(A1 只管 self-profile pin;它結構上 gate 不到召回池)。
+- **非破壞性**:不刪/不改原始 transcript 與 NoteMemory;只新增 consolidated 層。
 - **No-fallback**:任何階段失敗 → log + 跳過該次整併,不降級、不 silent。
 
-## 3. 架構:三個元件
+## 3. 架構
 
 ### 3.1 ConsolidationTrigger（新背景 observer）
 
-模板沿用 `ReflectionObserver`(`src/dollos/mind/reflection_observer.py`)的 poll + 重啟初始化結構;把共用的「poll 迴圈 + restart-init」抽成小 helper,但**維持兩個獨立 observer**(並行模型不同:ReflectionObserver 推 perception 走 mind_loop 串行;ConsolidationTrigger out-of-loop 直接跑 agent)。kernel 用 `asyncio.create_task(trigger.run())` wire(同 `kernel.py:655`)。
+與 `ReflectionObserver` **只共用** `while not shutdown: await sleep(POLL)` 骨架;**restart-init 各自實作**(ReflectionObserver 丟棄 gap 不重跑;ConsolidationTrigger 相反——讀持久化狀態、重啟補跑)。kernel `asyncio.create_task(trigger.run(), name="consolidation-trigger")`,持有 task 參照供 shutdown(§10)。
 
-**idle 訊號用 conversation idle 為主（R1 致命修正）**:**不**綁 `SystemPulse.idle_s`——它來自 `xprintidle`(`system_pulse.py:226-235`),在 Wayland(主流桌面預設)/headless/未裝 xprintidle 時永為 `None`,會讓 B2 整個功能**靜默 no-op**。改用即時、DISPLAY 無關、已持久化的 `MindState.last_user_at` / `last_iter_at`(`mind_loop.py:152,271`):
-`conversation_idle = now - max(last_user_at, last_iter_at)`。這同時語意更貼近 §2 的「不搶對話算力」。
+**DI(ctor 依賴,§3.1 列舉)**:`state`、`persist_path`、`adapter`、`renderer`、`memsearch`、`memory_root`、`transcripts_root`、`tool_output_store`、`consolidated_dir`、`system_pulse`(optional)、config 閾值。config 放新 `[consolidation]` Settings 區段(對齊既有 `SystemPulseConfig`)。
 
-觸發條件(全部滿足才跑一次):
-1. **對話閒置**:`conversation_idle ≥ idle_threshold_s`(config,預設 300)。
-2. **有新對話素材**:自上次整併後有新的 **user turn**——用只在 `UserSpoke` 遞增的計數器 `user_turn_count`(§4)判斷 `user_turn_count > last_consolidation_turn`。**不用 `iter_count`**(它含 monitor / Awoke / ReflectionMoment 等非對話 perception,會在無新對話時空跑、重讀同一份 transcript 再覆蓋)。
-3. **cooldown**:`now - last_consolidation_at ≥ min_interval_s`(config,預設 3600)。
+**conversation_idle = now - max(last_user_at, last_iter_at)**。觸發條件(全滿足才跑):
+1. **對話閒置**:`conversation_idle ≥ idle_threshold_s`(預設 300)。
+2. **有新對話素材**:`user_turn_count > last_consolidation_turn`(§4;只在 `UserSpoke` 遞增,不用含非對話 perception 的 `iter_count`)。
+3. **cooldown**:`now - last_consolidation_at ≥ min_interval_s`(預設 3600)。
 
-**SystemPulse.idle_s 降為 optional 加分 gate**:若 `SystemPulse` enabled 且 `latest_idle_s()` 非 `None`,額外要求 host 也閒置(AND 收緊);若為 `None`(Wayland/headless/disabled)則**忽略此 gate,不否決**——避免 idle_s 缺失導致整個 feature no-op。為此 `SystemPulse` 新增公開 `latest_idle_s() -> float | None`(取代伸手私有 `_last_sample`),並做新鮮度檢查(sample 的 `taken_at` 超過其 `poll_interval_s` 即視為過期、不參與,避免 stale 樣本在使用者剛返場時誤判閒置)。
+**SystemPulse.idle_s = optional 加分 gate**:若 enabled 且 `latest_idle_s()` 非 None,額外要求 host 也閒置(AND);None(Wayland/headless/disabled)則**忽略,不否決**。為此 SystemPulse 加公開 `latest_idle_s() -> float | None`(含新鮮度檢查:sample 超過 ~2× `poll_interval_s` 視為過期不參與)。
 
-poll 間隔沿用 5s 量級。觸發 → 交 §3.2;成敗後狀態更新見 §3.2 / §4。
+poll 5s 量級。觸發 → §3.2。
 
-### 3.2 memory-keeper agent（整併執行,可取消）
+### 3.2 memory-keeper agent（driver-fed、Report-driven、cancellable）
 
-用 `agent_engine.run_agent`(`src/dollos/agent_engine.py:37`)跑 isolated sub-cascade(與 Subagent/Workflow worker 同引擎)。kernel 持有 `_consolidation_task`(`asyncio.create_task`)。
+**契約(R2 M1:candidate-only 界線靠工具集是假的——SUB_TOOLS 含 Shell/NoteMemory/SpawnMonitor)**:改成 driver 餵料 + keeper 純整併 + driver 寫回:
 
-- **可取消（R1 修正:返場延遲）**:**收到 `UserSpoke` perception 時 cancel `_consolidation_task`**(整併走 asyncio,可被 `CancelledError` 中止)。使用者一返場立即讓出 LLM provider semaphore slot(對齊 llama `--parallel`),不被整併卡住——直接對應「不搶對話算力」與專案的延遲壓縮焦點。`max_tokens` / 迭代上限設保守,縮短單次佔用。
-- **task prompt**:「讀『最近一個有新內容且未整併的日期』的 transcript + 近期 NoteMemory facts,提取去重成簡潔的**中性** candidate 事實——主人的穩定偏好/習慣、你們關係的進展、值得長期記住的模式。陳述為觀察(『主人偏好X』),**不要**寫成自我宣告(『我是X』)。重複合併、過時捨棄。準不要多。」
-- **tools**:`SUB_TOOLS`(含 `Recall` + `ReadToolOutput`);整併產出走 agent 的結構化 `Report`。**工具集不含任何寫 self-profile 的 tool**——「不改自我」的界線由靜態工具集保證(可測),非靠 prompt 自律。
-- **輸入界定**:目標日期的 transcript 檔(見 §4 跨日追蹤,可能是昨天)+ 近期 shared NoteMemory。不吃整個歷史(成本 + research:大歷史 full-context 不可行)。
-- **失敗 / 取消語意（R1 修正:防 5s 重試風暴）**:
-  - `last_consolidation_at` 在**嘗試後一律更新**(成功 / 失敗 / 取消皆更新)→ cooldown 一定前進,杜絕「失敗 → 每 5s poll 仍滿足 → 立刻重跑完整 LLM cascade」的無限重試。
-  - `last_consolidation_turn` / `last_consolidated_date` **只成功才更新** → 下次 cooldown 過後重試同一批未整併素材,不漏資料。
+1. **driver 餵料**:ConsolidationTrigger 用 `Path.read_text` 讀目標日期 transcript(§3.4),截最後 N 行/M 字元上限,**inline 進 task 字串**。keeper 不需任何讀檔 tool。
+2. **keeper 工具集**:`KEEPER_TOOLS = [Report, Scratchpad]`(明確 allowlist,**不含** Shell/NoteMemory/SpawnMonitor/RemoveMonitor)。`run_agent(..., tools=KEEPER_TOOLS, shell_runner=None, monitor_runner=None)`——連 Shell 都無法運作。system 用既有 `subagent_scaffolding` 模板。
+3. **keeper 產出**:整併 bullets 放 `Report.details`(中性事實)。`run_agent` 回傳該 dict。
+4. **driver 寫回**:run_agent 返回後,driver 寫 `consolidated/{date}.md` + `index_file`。被 cancel 時 `CancelledError` raise 在 `await run_agent` 處 → 直接跳過寫檔,不留半截檔(天然守 §2 非破壞性)。
 
-### 3.3 產物:consolidated candidate facts
+**task prompt**:「讀以下逐字稿,提取去重成簡潔的**中性** candidate 事實——主人的穩定偏好/習慣、你們關係的進展、值得長期記住的模式。陳述為觀察(『主人偏好X』),**不要**自我宣告(『我是X』)。重複合併、過時捨棄。**不確定就不寫,寧缺勿濫。準不要多。**」
 
-memory-keeper 的整併結果**覆蓋重建**目標日期檔 `memory_root/shared/consolidated/{YYYY-MM-DD}.md`(**覆蓋,不 append**——避免重複條目累積;每次整併把該日整份重來),交給 `FtsMemory.index_file` 索引 → 立即可被 `[Memory context]` / `Recall` 召回(`index_file` 是 replace-by-path,重寫同檔不會 FTS 重複)。
+**輸入只吃 transcript**(S5:讓整併成為 transcript→fact 唯一路徑,NoteMemory 維持即時記,避免雙重蒸餾)。
 
-- 格式:markdown bullet,中性事實,每條一行。
-- 非破壞性:原始 transcript / NoteMemory 不動(只新增 consolidated 層)。
-- 這層同時是 **A1 self-profile 的 candidate 來源**(A1 之後讓 Doll 從這裡 pin;見 §8 接口)。
-- 不做 `compact`(FtsMemory 無此 API;其 `index()` 全量重建已達等效,YAGNI)。
+**可取消(R2 M3:cancel 接縫)**:kernel 持有 `_consolidation_task`;在**兩個 UserSpoke 產生點**同步 cancel——text 路徑 `_handle_message` 的 TextInput 分支(`kernel.py:~366`)+ voice 路徑 `_on_user_text`(`kernel.py:~454`)各呼叫 `self._cancel_consolidation()`(`if t and not t.done(): t.cancel()`)。**不走** `_maybe_preempt`(idle 時 early-return,`kernel.py:404`)、**不走** mind_loop drain(延遲到下次 drain 才釋放 slot)。
+
+**界線(R2 S3)**:driver 用 `asyncio.wait_for(run_agent(...), timeout=120)` 包(比 workflow 300s 短,返場快速讓出 semaphore slot)+ `max_tokens≈2048`。
+
+**失敗/取消語意 + 落盤(R2 S1)**:
+- `last_consolidation_at` **嘗試後一律更新**(成功/失敗/取消)→ cooldown 必前進,杜絕 5s 重試風暴。
+- `last_consolidation_turn`/`last_consolidated_date` **只成功才更新** → 下次重試同批,不漏。
+- trigger 不在 mind_loop 內(`save_state` 只在 mind_loop.iterate 末尾呼叫)→ **trigger 嘗試後須自己 `save_state(state, persist_path)`**,否則崩潰丟 cooldown、重啟立刻重跑。
+
+### 3.3 產物 + 召回 gating（R2 M5）
+
+整併結果**覆蓋重建**目標日期檔 `memory_root/shared/consolidated/{YYYY-MM-DD}.md`(覆蓋不 append;`index_file` 是 replace-by-path,`fts_store.py:236`,冪等),交 `FtsMemory.index_file` 索引。
+
+**召回 gating(pull-only)**:
+- `_derive_memory_hits` 的 auto-inject 池**排除 `consolidated/`**(用 hit 的 `source` 欄位過濾,`fts_store.py:222`:`'consolidated/' not in source`)。candidate **不**進每 turn 的 `[Memory context]`。
+- candidate 仍被索引、**可搜尋**:`Recall`、未來 A1 主動 pull 時拿得到。
+- candidate 浮現處(Recall 結果渲染、未來 A1)加 **provenance 前綴** `- [系統整併·待確認] {fact}`,讓 Doll/A1 能辨識「機器觀察、非我的認知」,可降權/採用/否決。
+- 非破壞性:原始 transcript/NoteMemory 不動。不做 compact(FtsMemory 無)。
+
+### 3.4 日期選擇（R2 M2）
+
+- **同日 `>=`**:同日新 turn 來 → 覆蓋重併 `consolidated/{today}.md`(strict `>` 會讓首次整併後同日下午段永不再併、condition-2 卻一直 TRUE 空轉)。
+- **只整併已封日 `date < today`**:today 留到隔天當「昨天」併,避開 today 邊聊邊整併 race(代價:延一天;可接受)。
+- **多日空窗 = oldest-first drain**:取「`last_consolidated_date` 之後、有內容、且 `< today` 的**最舊**日期」,每 cooldown 推進一天,離開多天回來逐日追上、**不漏**(對齊 §4「不漏資料」與 B1 投資)。
 
 ## 4. 狀態（MindState 擴充）
 
-新增(納入 `save_state`/`load_state`,沿用既有 dataclass + asdict 模式):
-- `user_turn_count: int = 0` — 只在 `UserSpoke` 遞增(`mind_loop.py:152` 旁);condition 2 的「新對話素材」判準,取代易誤觸的 `iter_count`。
+新增四欄;**`save_state` 是顯式列舉非 `asdict`(`mind_state.py:173`,缺欄位 loudly raise)→ 新增要同步改三處:dataclass 定義 + save_state dict + load_state 建構子**(R2 S1):
+- `user_turn_count: int = 0` — 只在 `UserSpoke` 遞增(`mind_loop.py:152` 旁)。
 - `last_consolidation_turn: int = 0` — 上次**成功**整併時的 `user_turn_count`。
-- `last_consolidation_at: float = 0.0` — 上次**嘗試**整併時間(成敗皆更新;cooldown 用)。
-- `last_consolidated_date: str = ""` — 上次成功整併的日期(跨日追蹤)。
+- `last_consolidation_at: float = 0.0` — 上次**嘗試**時間(成敗皆更新)。
+- `last_consolidated_date: str = ""` — 上次成功整併日期(跨日 watermark)。
 
-**restart 語意（R1 修正:消除前後矛盾）**:ConsolidationTrigger **不**像 ReflectionObserver 在 `run()` 開頭丟棄 gap——它讀**持久化**狀態,**重啟後一旦 idle 會補做未整併的批次**(這才符合「consolidation 不因重啟漏資料」的初衷)。
-
-**跨日追蹤（R1 修正:隔天空檔漏整併)**:觸發時整併「最近一個有新內容且 `日期 > last_consolidated_date` 的 transcript 日期檔」,**可能是昨天**——避免「隔天開機 → today 檔為空 → 整併空檔、昨晚尾段對話永遠漏整併且被標記成已整併」。整併成功後 `last_consolidated_date` 設為該日期。
+**restart**:trigger 讀持久化狀態,重啟後一旦 idle 補做未整併批次(oldest-first,§3.4)。
 
 ## 5. 非目標
 
-- **不改 self-profile / 自我**(A1 的事;B2 只產 candidate)。
-- **不做 selective verifier**(core-loop-robustness §6.3;P4 說它是 design intent + seam,留 future)。
-- **不做 memsearch.compact()**(FtsMemory 無此 API)。
-- **不吃全歷史**(只今日 transcript + 近期 facts)。
-- **不做跨日 / 長期 consolidation 的二階整併**(把 consolidated 再整併;future)。
+- **不改 self-profile / 自我**(A1;B2 只產 pull-only candidate)。
+- **candidate 不 auto-inject `[Memory context]`**(R2:pull-only)。
+- **不做 selective verifier**(core-loop-robustness §6.3;future)。
+- **不做 compact**(FtsMemory 無)。
+- **不吃 NoteMemory facts / 不吃全歷史**(只目標日 transcript)。
+- **不做二階整併 / 不拆「去重層 vs candidate 觀察層」**(§8 長期形狀,future)。
 
 ## 6. 測試（TDD）
 
-觸發條件:
-- 三條件 AND:`conversation_idle` 不足不觸發 / 無新 user turn(`user_turn_count == last_consolidation_turn`)不觸發 / cooldown 內不觸發 / 三者皆滿足才觸發。
-- **`idle_s is None`(Wayland/headless)→ 忽略 optional gate,仍可觸發**(R1 核心:不 no-op)。
-- `idle_s` 可得且 host 忙(idle_s < 門檻)→ optional gate 否決,不觸發。
-- `idle_s` sample 過期(超過 poll_interval)→ 視為不可信、不參與 gate。
-- `user_turn_count` 只在 `UserSpoke` 遞增;monitor / Awoke / ReflectionMoment perception **不**使其前進(故不誤觸發)。
+觸發:
+- 三條件 AND:`conversation_idle` 不足/無新 user turn/cooldown 內 各不觸發;三者滿足才觸發。
+- **`idle_s is None` → 忽略 optional gate,仍可觸發**(R1 核心,防 no-op);`idle_s` 可得且 host 忙 → 否決;sample 過期 → 不參與。
+- `user_turn_count` 只 `UserSpoke` 增;monitor/Awoke/ReflectionMoment 不增(不誤觸發)。
 
-失敗 / 取消 / 跨日:
-- agent 失敗或取消後:`last_consolidation_at` **有**前進(cooldown,防 5s 重試風暴)、`last_consolidation_turn` / `last_consolidated_date` **未**前進(下次重試同批)。
-- `UserSpoke` 進來 → 進行中的 `_consolidation_task` 被 cancel。
-- 跨日:`last_consolidated_date` 之後、today 為空但昨天有內容 → 整併**昨天**的檔(不空跑、不漏昨晚尾段)。
+keeper 契約(R2):
+- `KEEPER_TOOLS` **正面 allowlist 斷言**:`⊆ {Report, Scratchpad, Recall}` 且 `∩ {Shell, NoteMemory, SpawnMonitor, RemoveMonitor} == ∅`(不 by-reference SUB_TOOLS)。
+- driver 餵料(transcript inline 進 task)+ keeper Report.details + driver 寫檔三段;run_agent 以 `shell_runner=None` 呼叫。
+- `asyncio.wait_for` timeout 觸發 → 當失敗處理。
 
-產物 / 狀態:
-- 產物**覆蓋重建**正確日期檔 + 被 `index_file` 索引;原始 transcript 未被改動(非破壞性)。
-- MindState 四個新欄位 save/load round-trip。
-- memory-keeper 工具集**不含** self-profile 寫入 tool(靜態斷言界線)。
-- 用 fake agent/LLM(沿用 `tests/_dispatcher_helpers` 模式)隔離 LLM。
+失敗/取消/跨日:
+- 失敗/取消後 `last_consolidation_at` 前進、`last_consolidation_turn`/`date` 不前進;trigger 自己 `save_state`。
+- `UserSpoke`(text 與 **voice 兩路徑**)→ 進行中 `_consolidation_task` 被 cancel;cancel 時不寫半截檔。
+- 同日二次整併 → 覆蓋重併(不重複)。
+- 多日空窗 oldest-first:watermark 06-20、06-25/26 有料 → 先併 06-25(不跳過)。
+- 隔天 today 空、昨天有料 → 併昨天。
 
-## 7. 風險 / 剩餘問題
+產物/狀態/shutdown:
+- 產物覆蓋重建正確日檔 + index;**`_derive_memory_hits` auto-inject 不含 consolidated/**;Recall 可 pull 到且帶 provenance 前綴。
+- 原始 transcript 未改(非破壞性)。
+- MindState 四欄位 save/load round-trip(顯式三處)。
+- shutdown:in-flight keeper 在 `memsearch.close()` 前被 cancel(§10)。
+- fake agent/LLM 隔離(沿用 `tests/_dispatcher_helpers`)。
 
-- **candidate 品質**:LLM 提取的事實可能幻覺 / 過度概括。緩解:只是 candidate(A1 由 Doll 人工 gate 過濾)。**但召回層([Memory context]/Recall)會先看到未過濾 candidate**——此點需 autonomy 角度確認是否已在替 Doll 塑形自我(R1 未審,待補,見 §9)。
-- **閾值**(idle 300s / cooldown 3600s):trigger-review 認為數量級合理;保留為 config 預設,待 `last_user_at` 落地後依實測微調。
-- **per-character 路徑**:目前只有 `shared/`,B2 產物放 `shared/consolidated/`;未來 per-character 隔離時遷移。
-- **ReflectionObserver double-distillation**:Doll 在 ReflectionMoment 已可能 NoteMemory,B2 又抽一次;B2 以 transcript 為主、職責切分(即時自記 vs idle 重量 dedup)緩解,但需 keeper 角度確認(待補)。
+## 7. 風險 / 剩餘
 
-## 8. 對 A1 / B3 的接口（seam）
+- **candidate 品質**:LLM 幻覺/過度概括。緩解:pull-only(不 auto-push)+ provenance 前綴 + prompt「寧缺勿濫」+ A1 由 Doll 人工 gate;一條幻覺 candidate 不會每 turn 自動冒出。
+- **conversation_idle 被密集 monitor/schedule 餓死**:若主機有高頻背景 perception,`last_iter_at` 一直更新 → consolidation 長期不觸發。意圖即「不與 Doll 任何 LLM 活動爭算力」,可接受;記為已知後果。
+- **閾值**(300/3600):數量級合理,config 化,實測微調。
+- **per-character 路徑**:目前只 `shared/consolidated/`;未來 per-character 隔離時遷移。
 
-- **A1 self-profile**:B2 產出的 `shared/consolidated/{date}.md` candidate facts 即 A1 的 pin 來源。A1 的 reflection-gated tool 讓 Doll 從這些 candidate 中挑進 self-profile(主導權留 Doll)。B2 **不**碰 self-profile。
-- **B3 energy**:本 spec 用的 `conversation_idle = now - max(last_user_at, last_iter_at)` 正是 B3 energy 衰減要的「閒置 vs 活躍」訊號;B3 可復用同一計算(考慮抽成共用 helper)。
+## 8. 對 A1 / B3 的接口（seam）+ 長期形狀
+
+- **A1 self-profile**:B2 的 `shared/consolidated/{date}.md` candidate 是 A1 的 pull 來源(帶 `[系統整併·待確認]`)。A1 的 reflection-gated tool 讓 Doll 從 candidate 挑進 self-profile(**pin 時複製文字進 self-profile,不依賴 consolidated 檔穩定**——覆蓋重建語意下檔會變)。
+- **B3 energy**:本 spec 的 `conversation_idle = now - max(last_user_at, last_iter_at)` 正是 B3 衰減要的「閒置 vs 活躍」訊號;抽成共用 helper 供 B3 復用。
+- **長期形狀(future,不在 B2)**:把產物拆成兩種 artifact——(a) 安全可 auto-inject 的「去重層」(壓縮 Doll **自己**的 NoteMemory/diary,她是作者)+ (b) pull-only 的「機器 candidate 觀察層」。B2 v1 只做 (b) 的 pull-only,不交付「candidate auto-inject 改善召回」那個好處(那好處應來自 (a),更乾淨)。
 
 ## 9. Review 狀態
 
-- **R1(trigger 角度)**:已套用——idle 來源(致命)、失敗 cooldown、可取消、restart、condition-2、跨日、覆蓋語意全部修入上文。
-- **待補(session limit,6:40pm UTC reset 後)**:keeper(memory-keeper/candidate)、autonomy(Doll 自主一致性)、integration(kernel/依賴注入)、scope(YAGNI/完整性)四個角度的對抗 review,收斂後再進 writing-plans。
+- **R1(trigger)**:idle 來源(致命 no-op)、失敗 cooldown、可取消、restart、condition-2、跨日、覆蓋語意 → 已套用。
+- **R2(keeper/autonomy/integration/scope,5 lens 全 code-verified)**:M1 keeper driver-fed 契約(收掉 Shell/NoteMemory 逃生口)、M2 日期 `>=` + oldest-first + 只併已封日、M3 cancel 接縫(kernel 兩 ingress,涵蓋 voice)、M4 shutdown 拆除、M5 召回 pull-only + provenance;S1-S5(落盤責任/DI+模板/wait_for+max_tokens/poll-helper 各自 restart-init/只吃 transcript)→ 全部套用。
+- **狀態:plan-ready。** 進 writing-plans。
+
+## 10. Shutdown 時序（R2 M4）
+
+kernel `finally`(`kernel.py:664+`)在 `await self.workflow_runner.stop()` 同段、**`memsearch.close()` 之前**,對 `_consolidation_trigger_task`(poll task)與 `_consolidation_task`(in-flight keeper)各 `cancel()` + `await asyncio.gather(..., return_exceptions=True)`。否則 in-flight keeper 會用到已關的 sqlite 連線而 crash。沿用 `WorkflowRunner.stop()` 現成範式。
