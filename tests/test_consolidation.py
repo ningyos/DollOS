@@ -196,3 +196,86 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
     assert captured.get("shell_runner") is None
     # 寫的檔被索引
     assert (tmp_path / "consolidated" / "2026-06-29.md") in ms.indexed
+
+
+# ---------------------------------------------------------------------------
+# Task 5: ConsolidationTrigger conditions + date selection
+# ---------------------------------------------------------------------------
+
+
+def _mk_trigger(tmp_path, state, **over):
+    from dollos.mind.consolidation import ConsolidationTrigger
+    defaults = dict(
+        state=state, persist_path=tmp_path / "s.json",
+        adapter=object(), renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        memory_root=tmp_path, transcripts_root=tmp_path / "transcripts",
+        tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
+        system_pulse=None,
+        idle_threshold_s=300, min_interval_s=3600,
+        max_tokens=2048, agent_timeout_s=120, transcript_tail_chars=8000,
+    )
+    defaults.update(over)
+    return ConsolidationTrigger(**defaults)
+
+
+def test_no_trigger_when_not_idle(tmp_path):
+    from dollos.mind.mind_state import MindState
+    s = MindState(); s.user_turn_count = 5; s.last_user_at = 1000.0
+    t = _mk_trigger(tmp_path, s)
+    # now barely after last_user_at → not idle
+    assert t._should_consolidate(now=1010.0) is False
+
+
+def test_no_trigger_when_no_new_turns(tmp_path):
+    from dollos.mind.mind_state import MindState
+    s = MindState(); s.user_turn_count = 3; s.last_consolidation_turn = 3
+    s.last_user_at = 0.0; s.last_iter_at = 0.0
+    t = _mk_trigger(tmp_path, s)
+    assert t._should_consolidate(now=10_000.0) is False  # idle ok, but no new turns
+
+
+def test_no_trigger_within_cooldown(tmp_path):
+    from dollos.mind.mind_state import MindState
+    s = MindState(); s.user_turn_count = 5; s.last_consolidation_turn = 1
+    s.last_user_at = 0.0; s.last_iter_at = 0.0; s.last_consolidation_at = 9_900.0
+    t = _mk_trigger(tmp_path, s)
+    assert t._should_consolidate(now=10_000.0) is False  # within 3600 cooldown
+
+
+def test_triggers_when_all_conditions_met(tmp_path):
+    from dollos.mind.mind_state import MindState
+    s = MindState(); s.user_turn_count = 5; s.last_consolidation_turn = 1
+    s.last_user_at = 0.0; s.last_iter_at = 0.0; s.last_consolidation_at = 0.0
+    t = _mk_trigger(tmp_path, s)
+    assert t._should_consolidate(now=10_000.0) is True
+
+
+def test_idle_s_none_does_not_veto(tmp_path):
+    # SystemPulse present but latest_idle_s() None → optional gate ignored, still triggers
+    from dollos.mind.mind_state import MindState
+    class _SP:  # pulse with no idle source
+        def latest_idle_s(self): return None
+    s = MindState(); s.user_turn_count = 5; s.last_consolidation_turn = 1
+    s.last_user_at = 0.0; s.last_iter_at = 0.0; s.last_consolidation_at = 0.0
+    t = _mk_trigger(tmp_path, s, system_pulse=_SP())
+    assert t._should_consolidate(now=10_000.0) is True
+
+
+def test_pick_target_date_oldest_first_skips_nothing(tmp_path):
+    from dollos.mind.mind_state import MindState
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-06-25.md").write_text("- x\n")
+    (tdir / "2026-06-26.md").write_text("- y\n")
+    s = MindState(); s.last_consolidated_date = "2026-06-20"
+    t = _mk_trigger(tmp_path, s, transcripts_root=tdir)
+    # today is 2026-06-30 → both are sealed; oldest unconsolidated = 06-25
+    assert t._pick_target_date(today="2026-06-30") == "2026-06-25"
+
+
+def test_pick_target_date_excludes_today(tmp_path):
+    from dollos.mind.mind_state import MindState
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-06-30.md").write_text("- only today\n")
+    s = MindState(); s.last_consolidated_date = "2026-06-20"
+    t = _mk_trigger(tmp_path, s, transcripts_root=tdir)
+    assert t._pick_target_date(today="2026-06-30") is None  # today not sealed yet

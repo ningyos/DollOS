@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import date as _date
 from pathlib import Path
 
 from dollos.agent_engine import run_agent
+from dollos.mind.mind_state import save_state
 from dollos.tools import KEEPER_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -75,3 +78,163 @@ async def run_consolidation(
     await memsearch.index_file(out)
     logger.info("consolidation: wrote %s", out)
     return True
+
+
+class ConsolidationTrigger:
+    """Background observer: fires run_consolidation when conversation is idle.
+
+    Trigger conditions (all must hold):
+    1. conversation_idle = now - max(last_user_at, last_iter_at) >= idle_threshold_s
+    2. user_turn_count > last_consolidation_turn (new conversation material)
+    3. now - last_consolidation_at >= min_interval_s (cooldown)
+
+    SystemPulse.idle_s is an optional gate: only vetoes when a fresh idle_s is
+    available AND it is below the threshold. None (Wayland/headless/disabled)
+    is ignored — does not veto.
+
+    State update semantics (spec §3.2):
+    - last_consolidation_at: updated on every attempt (success OR failure), to
+      prevent 5-second retry storms on persistent failures.
+    - last_consolidation_turn / last_consolidated_date: updated only on success.
+
+    Trigger saves state itself (it runs outside mind_loop.iterate).
+    """
+
+    POLL_INTERVAL_S = 5.0
+
+    def __init__(
+        self,
+        *,
+        state,
+        persist_path,
+        adapter,
+        renderer,
+        memsearch,
+        memory_root: Path,
+        transcripts_root: Path,
+        tool_output_store,
+        consolidated_dir: Path,
+        system_pulse=None,
+        idle_threshold_s: int = 300,
+        min_interval_s: int = 3600,
+        max_tokens: int = 2048,
+        agent_timeout_s: int = 120,
+        transcript_tail_chars: int = 8000,
+    ) -> None:
+        self._state = state
+        self._persist_path = persist_path
+        self._adapter = adapter
+        self._renderer = renderer
+        self._memsearch = memsearch
+        self._memory_root = memory_root
+        self._transcripts_root = transcripts_root
+        self._tool_output_store = tool_output_store
+        self._consolidated_dir = consolidated_dir
+        self._system_pulse = system_pulse
+        self._idle_threshold_s = idle_threshold_s
+        self._min_interval_s = min_interval_s
+        self._max_tokens = max_tokens
+        self._agent_timeout_s = agent_timeout_s
+        self._transcript_tail_chars = transcript_tail_chars
+        self._shutdown = False
+        self.current_task: asyncio.Task | None = None
+
+    def _conversation_idle(self, now: float) -> float:
+        return now - max(self._state.last_user_at, self._state.last_iter_at)
+
+    def _should_consolidate(self, now: float) -> bool:
+        """Return True iff all three trigger conditions are satisfied."""
+        if self._conversation_idle(now) < self._idle_threshold_s:
+            return False
+        if self._state.user_turn_count <= self._state.last_consolidation_turn:
+            return False
+        if now - self._state.last_consolidation_at < self._min_interval_s:
+            return False
+        # optional SystemPulse gate: only vetoes when a fresh idle_s is available
+        if self._system_pulse is not None:
+            idle = self._system_pulse.latest_idle_s()
+            if idle is not None and idle < self._idle_threshold_s:
+                return False
+        return True
+
+    def _pick_target_date(self, today: str) -> str | None:
+        """Oldest sealed (date < today) transcript date after last_consolidated_date."""
+        watermark = self._state.last_consolidated_date
+        candidates: list[str] = []
+        if self._transcripts_root.exists():
+            for f in self._transcripts_root.glob("*.md"):
+                d = f.stem  # YYYY-MM-DD
+                if d < today and d > watermark and f.read_text(encoding="utf-8").strip():
+                    candidates.append(d)
+        return min(candidates) if candidates else None
+
+    async def run(self) -> None:
+        """Poll loop. Cancelled by kernel at shutdown or via cancel_current() on UserSpoke."""
+        while not self._shutdown:
+            await asyncio.sleep(self.POLL_INTERVAL_S)
+            try:
+                now = time.time()
+                if not self._should_consolidate(now):
+                    continue
+                today = _date.today().isoformat()
+                target = self._pick_target_date(today)
+                # Attempt timestamp advances regardless of success/failure (cooldown).
+                self._state.last_consolidation_at = now
+                if target is None:
+                    # Idle + new turns but nothing sealed to do yet; persist cooldown.
+                    save_state(self._state, self._persist_path)
+                    continue
+                ok = await self._run_once(target)
+                if ok:
+                    self._state.last_consolidation_turn = self._state.user_turn_count
+                    self._state.last_consolidated_date = target
+                save_state(self._state, self._persist_path)
+            except asyncio.CancelledError:
+                # Cancelled by a returning user (or shutdown); persist cooldown.
+                save_state(self._state, self._persist_path)
+                if self._shutdown:
+                    raise
+                # Not shutdown → user spoke, consolidation interrupted; continue loop.
+            except Exception:
+                logger.exception("consolidation trigger iteration failed; continuing")
+
+    async def _run_once(self, target: str) -> bool:
+        """Run consolidation for target date, wrapped in wait_for + create_task."""
+        self.current_task = asyncio.create_task(
+            asyncio.wait_for(
+                run_consolidation(
+                    target_date=target,
+                    adapter=self._adapter,
+                    renderer=self._renderer,
+                    memsearch=self._memsearch,
+                    memory_root=self._memory_root,
+                    transcripts_root=self._transcripts_root,
+                    tool_output_store=self._tool_output_store,
+                    consolidated_dir=self._consolidated_dir,
+                    max_tokens=self._max_tokens,
+                    agent_timeout_s=self._agent_timeout_s,
+                    transcript_tail_chars=self._transcript_tail_chars,
+                ),
+                timeout=self._agent_timeout_s,
+            )
+        )
+        try:
+            return await self.current_task
+        except (asyncio.TimeoutError, Exception):
+            # TimeoutError is a subclass of Exception; CancelledError (BaseException)
+            # is NOT caught here and propagates to run() → except asyncio.CancelledError.
+            logger.exception("consolidation run failed/timed out for %s", target)
+            return False
+        finally:
+            self.current_task = None
+
+    def cancel_current(self) -> None:
+        """Cancel any in-flight consolidation task (called on UserSpoke)."""
+        t = self.current_task
+        if t is not None and not t.done():
+            t.cancel()
+
+    def shutdown(self) -> None:
+        """Signal shutdown and cancel current task."""
+        self._shutdown = True
+        self.cancel_current()
