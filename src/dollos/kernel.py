@@ -48,6 +48,7 @@ from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception, load_state
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.consolidation import ConsolidationTrigger
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.wal.perception_log import PerceptionWAL
@@ -322,6 +323,25 @@ class DollOS:
             queue=self._perception_queue,
         )
 
+        # ConsolidationTrigger — sleep-time memory consolidation (B2)
+        self._consolidation_trigger = ConsolidationTrigger(
+            state=self._mind_state,
+            persist_path=settings.data.root / "mind_state.json",
+            adapter=self.adapter,
+            renderer=self.renderer,
+            memsearch=self.memsearch,
+            memory_root=settings.data.root / "memory",
+            transcripts_root=settings.data.root / "memory" / "transcripts",
+            tool_output_store=self._tool_output_store,
+            consolidated_dir=settings.data.root / "memory" / "shared" / "consolidated",
+            system_pulse=self.system_pulse,
+            idle_threshold_s=settings.consolidation.idle_threshold_s,
+            min_interval_s=settings.consolidation.min_interval_s,
+            max_tokens=settings.consolidation.max_tokens,
+            agent_timeout_s=settings.consolidation.agent_timeout_s,
+            transcript_tail_chars=settings.consolidation.transcript_tail_chars,
+        )
+
         # ------------------------------------------------------------------ #
         # IPC server                                                           #
         # ------------------------------------------------------------------ #
@@ -343,6 +363,7 @@ class DollOS:
         self._schedule_task: asyncio.Task[None] | None = None
         self._mind_task: asyncio.Task[None] | None = None
         self._reflection_task: asyncio.Task[None] | None = None
+        self._consolidation_trigger_task: asyncio.Task[None] | None = None
         # Per-day fired set — scheduler dedupe across its 30s polling.
         self._fired_today: dict[date, set] = {}
         # Track per-day bootstrap so reconnects within a day don't refire.
@@ -364,6 +385,9 @@ class DollOS:
             # If a cascade is currently active, preempt it before pushing
             # the new input so Doll responds to the latest message.
             await self._maybe_preempt_for_new_input(sink)
+            # Cancel any in-flight consolidation keeper so it yields the
+            # LLM semaphore slot before Doll's response cascade starts.
+            self._cancel_consolidation()
             # Push as Perception into the queue; MindLoop drains it.
             self._perception_queue.put(
                 Perception(
@@ -396,6 +420,17 @@ class DollOS:
                 await session.handle_utterance_end()
         else:
             logger.warning("unhandled message type: %r", type(msg).__name__)
+
+    def _cancel_consolidation(self) -> None:
+        """Cancel any in-flight consolidation keeper task when the user speaks.
+
+        Called at both UserSpoke ingress points (text + voice) so an active
+        memory-keeper agent yields its semaphore slot immediately rather than
+        competing with Doll's response cascade.
+        """
+        trig = getattr(self, "_consolidation_trigger", None)
+        if trig is not None:
+            trig.cancel_current()
 
     async def _maybe_preempt_for_new_input(
         self, sink: "asyncio.Queue[ServerMessage | None]"
@@ -452,6 +487,8 @@ class DollOS:
         asr, tts = engines
 
         async def _on_user_text(text: str) -> None:
+            # Cancel any in-flight consolidation keeper (M3: voice ingress).
+            self._cancel_consolidation()
             self._perception_queue.put(
                 Perception(
                     kind="UserSpoke",
@@ -655,6 +692,10 @@ class DollOS:
             self._reflection_task = asyncio.create_task(
                 self._reflection_observer.run(), name="reflection-observer"
             )
+            if self.settings.consolidation.enabled:
+                self._consolidation_trigger_task = asyncio.create_task(
+                    self._consolidation_trigger.run(), name="consolidation-trigger"
+                )
 
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -687,6 +728,25 @@ class DollOS:
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
                 await self.system_pulse.stop()
+                # Stop consolidation trigger + in-flight keeper BEFORE memsearch.close()
+                # (spec §10, R2 M4): an in-flight keeper agent uses memsearch; closing
+                # sqlite while it runs causes a crash.  We must await BOTH the poll
+                # task (_consolidation_trigger_task) AND the keeper task
+                # (trigger.current_task) — gathering only the poll task is not enough.
+                _ct = getattr(self, "_consolidation_trigger", None)
+                if _ct is not None:
+                    _ct.shutdown()  # sets _shutdown + cancels current_task
+                    _current_keeper = _ct.current_task  # grab before event loop clears it
+                else:
+                    _current_keeper = None
+                if self._consolidation_trigger_task is not None:
+                    self._consolidation_trigger_task.cancel()
+                _consolidation_tasks = [
+                    t for t in [self._consolidation_trigger_task, _current_keeper]
+                    if t is not None
+                ]
+                if _consolidation_tasks:
+                    await asyncio.gather(*_consolidation_tasks, return_exceptions=True)
                 # Shutdown MindLoop
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
