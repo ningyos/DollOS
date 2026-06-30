@@ -68,8 +68,8 @@ poll 5s 量級。觸發 → §3.2。
 
 ### 3.4 日期選擇（R2 M2）
 
-- **同日 `>=`**:同日新 turn 來 → 覆蓋重併 `consolidated/{today}.md`(strict `>` 會讓首次整併後同日下午段永不再併、condition-2 卻一直 TRUE 空轉)。
-- **只整併已封日 `date < today`**:today 留到隔天當「昨天」併,避開 today 邊聊邊整併 race(代價:延一天;可接受)。
+- **只整併已封日 `date < today`**:today 留到隔天當「昨天」併,避開 today 邊聊邊整併 race(代價:延一天;可接受)。因 today 永不入選,「同日重併」情境不存在。
+- **watermark 用 strict `>`**:`_pick_target_date` 取 `date > last_consolidated_date` 的已封日(`>=` 會在 watermark 當天無限重併、永不前進)。覆蓋重建本身冪等(`index_file` 是 replace-by-path),不靠日期語意去重。
 - **多日空窗 = oldest-first drain**:取「`last_consolidated_date` 之後、有內容、且 `< today` 的**最舊**日期」,每 cooldown 推進一天,離開多天回來逐日追上、**不漏**(對齊 §4「不漏資料」與 B1 投資)。
 
 ## 4. 狀態（MindState 擴充）
@@ -106,7 +106,7 @@ keeper 契約(R2):
 失敗/取消/跨日:
 - 失敗/取消後 `last_consolidation_at` 前進、`last_consolidation_turn`/`date` 不前進;trigger 自己 `save_state`。
 - `UserSpoke`(text 與 **voice 兩路徑**)→ 進行中 `_consolidation_task` 被 cancel;cancel 時不寫半截檔。
-- 同日二次整併 → 覆蓋重併(不重複)。
+- 同一已封日二次整併(watermark 未前進前重跑)→ 覆蓋重建(replace-by-path 冪等,不重複);today 不入選。
 - 多日空窗 oldest-first:watermark 06-20、06-25/26 有料 → 先併 06-25(不跳過)。
 - 隔天 today 空、昨天有料 → 併昨天。
 
@@ -133,7 +133,7 @@ keeper 契約(R2):
 ## 9. Review 狀態
 
 - **R1(trigger)**:idle 來源(致命 no-op)、失敗 cooldown、可取消、restart、condition-2、跨日、覆蓋語意 → 已套用。
-- **R2(keeper/autonomy/integration/scope,5 lens 全 code-verified)**:M1 keeper driver-fed 契約(收掉 Shell/NoteMemory 逃生口)、M2 日期 `>=` + oldest-first + 只併已封日、M3 cancel 接縫(kernel 兩 ingress,涵蓋 voice)、M4 shutdown 拆除、M5 召回 pull-only + provenance;S1-S5(落盤責任/DI+模板/wait_for+max_tokens/poll-helper 各自 restart-init/只吃 transcript)→ 全部套用。
+- **R2(keeper/autonomy/integration/scope,5 lens 全 code-verified)**:M1 keeper driver-fed 契約(收掉 Shell/NoteMemory 逃生口)、M2 日期 strict `>` watermark + oldest-first + 只併已封日(today 不併)、M3 cancel 接縫(kernel 兩 ingress,涵蓋 voice)、M4 shutdown 拆除、M5 召回 pull-only + provenance;S1-S5(落盤責任/DI+模板/wait_for+max_tokens/poll-helper 各自 restart-init/只吃 transcript)→ 全部套用。
 - **狀態:plan-ready。** 進 writing-plans。
 
 ## 10. Shutdown 時序（R2 M4）
