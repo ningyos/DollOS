@@ -232,3 +232,143 @@ def test_render_mind_includes_energy_line(tmp_path):
     state = MindState()
     prompt = render_mind(state, [], "You are Doll.", energy_line="精力: 偏低 (0.3)")
     assert "精力: 偏低 (0.3)" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: enabled=False end-to-end — prompt must not contain 精力 line
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path, monkeypatch):
+    """energy_enabled=False: iterate() passes energy_line=None to render_mind
+    → the rendered prompt sent to the LLM contains no '精力:' block."""
+    import dollos.mind.mind_loop as _ml
+
+    _orig_render = _ml.render_mind
+    captured_energy_lines: list = []
+
+    def capturing_render(state, hits, sys_prompt, **kw):
+        captured_energy_lines.append(kw.get("energy_line"))
+        return _orig_render(state, hits, sys_prompt, **kw)
+
+    monkeypatch.setattr(_ml, "render_mind", capturing_render)
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    sink = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    loop = _make_loop(
+        tmp_path, state, queue, ctx,
+        llm_text="SEEN: x\nTOOL: none\n</think>\n\nHello",
+        energy_enabled=False,
+    )
+    await loop.iterate()
+
+    assert captured_energy_lines, "render_mind was never called — iterate() did not reach render"
+    assert captured_energy_lines[0] is None, (
+        f"energy_enabled=False must pass energy_line=None; got {captured_energy_lines[0]!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path, monkeypatch):
+    """energy_enabled=True: iterate() passes a non-None energy_line to render_mind
+    → the rendered prompt contains '精力:' (contrast to disabled case above)."""
+    import dollos.mind.mind_loop as _ml
+
+    _orig_render = _ml.render_mind
+    captured_energy_lines: list = []
+
+    def capturing_render(state, hits, sys_prompt, **kw):
+        captured_energy_lines.append(kw.get("energy_line"))
+        return _orig_render(state, hits, sys_prompt, **kw)
+
+    monkeypatch.setattr(_ml, "render_mind", capturing_render)
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    sink = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+
+    loop = _make_loop(
+        tmp_path, state, queue, ctx,
+        llm_text="SEEN: x\nTOOL: none\n</think>\n\nHello",
+        energy_enabled=True,
+    )
+    await loop.iterate()
+
+    assert captured_energy_lines, "render_mind was never called — iterate() did not reach render"
+    assert captured_energy_lines[0] is not None, (
+        "energy_enabled=True must pass a non-None energy_line"
+    )
+    assert "精力" in captured_energy_lines[0], (
+        f"energy_line should contain '精力'; got {captured_energy_lines[0]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue 2: restore decoupling — run() poll loop invariant (M1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_restore_before_consolidate_in_run_loop(tmp_path, monkeypatch):
+    """M1 invariant: _maybe_restore_energy is called BEFORE _should_consolidate
+    in run()'s poll loop, so energy is restored even when consolidation does not
+    trigger (no new turns / cooldown active)."""
+    import asyncio as _asyncio
+
+    # User idle very long (last_user_at=0 → now-0 >> threshold) so restore fires.
+    s = MindState()
+    s.energy = 0.2
+    s.last_user_at = 0.0
+    s.last_energy_restore_at = 0.0
+    # user_turn_count == last_consolidation_turn == 0 → _should_consolidate returns
+    # False on the "no new turns" guard (second condition).
+
+    call_order: list[str] = []
+
+    trigger = _mk_trigger(
+        tmp_path, s,
+        energy_enabled=True, restore_per_tick=0.1,
+        energy_idle_threshold_s=600, energy_restore_debounce_s=300,
+    )
+
+    # Speed up poll loop: eliminate the 5-second asyncio.sleep.
+    async def fast_sleep(*a, **kw):
+        pass
+
+    monkeypatch.setattr(_asyncio, "sleep", fast_sleep)
+
+    # Capture bound methods before shadowing them on the instance.
+    _orig_restore = trigger._maybe_restore_energy
+    _orig_should = trigger._should_consolidate
+
+    def patched_restore(now: float) -> None:
+        call_order.append("restore")
+        _orig_restore(now)
+
+    def patched_should(now: float) -> bool:
+        call_order.append("consolidate")
+        # Stop the run() loop after this one tick so the test terminates.
+        trigger._shutdown = True
+        return False  # consolidation does NOT run
+
+    # Shadow with instance attributes so self._maybe_restore_energy / _should_consolidate
+    # pick up the patched versions inside run().
+    trigger._maybe_restore_energy = patched_restore
+    trigger._should_consolidate = patched_should
+
+    await trigger.run()
+
+    assert "restore" in call_order, "_maybe_restore_energy was never called in run()"
+    assert "consolidate" in call_order, "_should_consolidate was never called in run()"
+    assert call_order.index("restore") < call_order.index("consolidate"), (
+        "M1 violated: _should_consolidate ran before _maybe_restore_energy in run() loop"
+    )
+    # Verify energy was actually restored despite consolidation not firing.
+    assert s.energy == pytest.approx(0.3), (
+        "energy should be restored to 0.3 via the run() loop even without consolidation"
+    )
