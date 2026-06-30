@@ -268,3 +268,27 @@ def test_latest_idle_s_none_when_no_sample():
     from dollos.perception.system_pulse import SystemPulse
     sp = SystemPulse(poll_interval_s=60.0, enabled=False)
     assert sp.latest_idle_s() is None
+
+
+def test_latest_idle_s_none_when_disabled_even_with_sample():
+    """enabled=False must return None even if a sample with idle_s is present."""
+    sp = SystemPulse(poll_interval_s=60.0, enabled=False)
+    # Inject a sample directly — enabled=False means the poller never ran,
+    # but the guard must still fire regardless of how _last_sample got set.
+    sp._last_sample = PulseSample(
+        taken_at=datetime.now(),
+        idle_s=30.0,
+    )
+    assert sp.latest_idle_s() is None
+
+
+def test_latest_idle_s_none_when_stale(monkeypatch):
+    """Sample whose taken_at is older than 2 * poll_interval_s → None."""
+    sp = SystemPulse(poll_interval_s=60.0, enabled=True)
+    # Set taken_at well in the past (beyond 2 * 60 = 120 s).
+    stale_time = datetime(2020, 1, 1, 0, 0, 0)
+    sp._last_sample = PulseSample(
+        taken_at=stale_time,
+        idle_s=45.0,
+    )
+    assert sp.latest_idle_s() is None

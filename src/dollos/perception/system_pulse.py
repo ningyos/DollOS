@@ -404,6 +404,8 @@ class SystemPulse:
         None when: disabled / no sample yet / idle source unavailable /
         sample is stale (older than 2x poll interval).
         """
+        if not self._enabled:
+            return None
         s = self._last_sample
         if s is None or s.idle_s is None:
             return None
