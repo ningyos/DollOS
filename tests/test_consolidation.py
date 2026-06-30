@@ -162,6 +162,7 @@ def test_keeper_tools_allowlist():
     assert names <= {"Report", "Scratchpad", "Recall"}
     assert names & {"Shell", "NoteMemory", "SpawnMonitor", "RemoveMonitor"} == set()
     assert Report in KEEPER_TOOLS
+    assert Scratchpad in KEEPER_TOOLS
 
 
 @pytest.mark.asyncio
@@ -183,7 +184,7 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
         adapter=object(), renderer=_FakeRenderer(), memsearch=ms,
         memory_root=tmp_path, transcripts_root=tdir,
         tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
-        max_tokens=2048, agent_timeout_s=120, transcript_tail_chars=8000,
+        max_tokens=2048, transcript_tail_chars=8000,
     )
     assert ok is True
     out = (tmp_path / "consolidated" / "2026-06-29.md").read_text()

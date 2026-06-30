@@ -36,7 +36,6 @@ async def run_consolidation(
     tool_output_store,
     consolidated_dir: Path,
     max_tokens: int = 2048,
-    agent_timeout_s: int = 120,
     transcript_tail_chars: int = 8000,
 ) -> bool:
     """Consolidate one day's transcript into consolidated/{date}.md.
@@ -164,7 +163,11 @@ class ConsolidationTrigger:
         if self._transcripts_root.exists():
             for f in self._transcripts_root.glob("*.md"):
                 d = f.stem  # YYYY-MM-DD
-                if d < today and d > watermark and f.read_text(encoding="utf-8").strip():
+                try:
+                    _date.fromisoformat(d)
+                except ValueError:
+                    continue
+                if d < today and d > watermark and f.stat().st_size > 0:
                     candidates.append(d)
         return min(candidates) if candidates else None
 
@@ -197,6 +200,10 @@ class ConsolidationTrigger:
                 # Not shutdown → user spoke, consolidation interrupted; continue loop.
             except Exception:
                 logger.exception("consolidation trigger iteration failed; continuing")
+                try:
+                    save_state(self._state, self._persist_path)
+                except Exception:
+                    pass
 
     async def _run_once(self, target: str) -> bool:
         """Run consolidation for target date, wrapped in wait_for + create_task."""
@@ -212,7 +219,6 @@ class ConsolidationTrigger:
                     tool_output_store=self._tool_output_store,
                     consolidated_dir=self._consolidated_dir,
                     max_tokens=self._max_tokens,
-                    agent_timeout_s=self._agent_timeout_s,
                     transcript_tail_chars=self._transcript_tail_chars,
                 ),
                 timeout=self._agent_timeout_s,
@@ -220,10 +226,14 @@ class ConsolidationTrigger:
         )
         try:
             return await self.current_task
-        except (asyncio.TimeoutError, Exception):
-            # TimeoutError is a subclass of Exception; CancelledError (BaseException)
-            # is NOT caught here and propagates to run() → except asyncio.CancelledError.
-            logger.exception("consolidation run failed/timed out for %s", target)
+        except asyncio.TimeoutError:
+            # Expected path: keeper agent did not finish within agent_timeout_s.
+            logger.warning("consolidation timed out for %s", target)
+            return False
+        except Exception:
+            # CancelledError (BaseException) is NOT caught here and propagates to
+            # run() → except asyncio.CancelledError.
+            logger.exception("consolidation run failed for %s", target)
             return False
         finally:
             self.current_task = None
