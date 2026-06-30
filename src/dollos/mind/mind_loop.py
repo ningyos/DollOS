@@ -305,7 +305,12 @@ class MindLoop:
         if not query:
             return []
         try:
-            return await self._ctx.memsearch.search(query, top_k=10)
+            hits = await self._ctx.memsearch.search(query, top_k=10)
+            # B2 candidate pull-only: consolidated/ sources are never auto-injected
+            # into [Memory context] — they are only surfaced via Recall (with
+            # provenance prefix). Gating is self-contained here, not delegated.
+            hits = [h for h in hits if "consolidated/" not in (h.get("source") or "")]
+            return hits
         except Exception:
             logger.exception("memsearch query failed; continuing with empty hits")
             return []
