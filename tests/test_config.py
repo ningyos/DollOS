@@ -219,3 +219,21 @@ def test_consolidation_config_defaults(tmp_path: Path):
     assert s.consolidation.idle_threshold_s == 300
     assert s.consolidation.min_interval_s == 3600
     assert s.consolidation.enabled is True
+
+
+def test_energy_config_defaults():
+    from dollos.config import EnergyConfig
+    c = EnergyConfig()
+    assert c.enabled is True and c.cost_per_turn == 0.05
+    assert c.restore_per_tick == 0.05 and c.idle_threshold_s == 600 and c.restore_debounce_s == 300
+
+
+def test_energy_config_on_settings(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    s = load_settings(config_path)
+    assert s.energy.enabled is True
+    assert s.energy.cost_per_turn == 0.05
+    assert s.energy.restore_per_tick == 0.05
+    assert s.energy.idle_threshold_s == 600
+    assert s.energy.restore_debounce_s == 300
