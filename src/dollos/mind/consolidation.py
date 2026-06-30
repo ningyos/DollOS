@@ -119,6 +119,10 @@ class ConsolidationTrigger:
         max_tokens: int = 2048,
         agent_timeout_s: int = 120,
         transcript_tail_chars: int = 8000,
+        energy_enabled: bool = False,
+        restore_per_tick: float = 0.05,
+        energy_idle_threshold_s: int = 600,
+        energy_restore_debounce_s: int = 300,
     ) -> None:
         self._state = state
         self._persist_path = persist_path
@@ -137,6 +141,28 @@ class ConsolidationTrigger:
         self._transcript_tail_chars = transcript_tail_chars
         self._shutdown = False
         self.current_task: asyncio.Task | None = None
+        # B3 energy restore params
+        self._energy_enabled = energy_enabled
+        self._restore_per_tick = restore_per_tick
+        self._energy_idle_threshold_s = energy_idle_threshold_s
+        self._energy_restore_debounce_s = energy_restore_debounce_s
+
+    def _maybe_restore_energy(self, now: float) -> None:
+        """Restore energy if user has been idle long enough (B3 spec §3.3).
+
+        Decoupled from consolidation target — runs regardless of whether there
+        is a sealed transcript to process. Uses last_user_at (not last_iter_at)
+        as the idle baseline so monitor/schedule ticks don't suppress recovery.
+        """
+        if not self._energy_enabled:
+            return
+        if now - self._state.last_user_at < self._energy_idle_threshold_s:
+            return
+        if now - self._state.last_energy_restore_at < self._energy_restore_debounce_s:
+            return
+        self._state.energy = min(1.0, self._state.energy + self._restore_per_tick)
+        self._state.last_energy_restore_at = now
+        save_state(self._state, self._persist_path)
 
     def _conversation_idle(self, now: float) -> float:
         return now - max(self._state.last_user_at, self._state.last_iter_at)
@@ -177,6 +203,8 @@ class ConsolidationTrigger:
             await asyncio.sleep(self.POLL_INTERVAL_S)
             try:
                 now = time.time()
+                # B3: energy restore is independent of consolidation target.
+                self._maybe_restore_energy(now)
                 if not self._should_consolidate(now):
                     continue
                 today = _date.today().isoformat()
