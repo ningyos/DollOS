@@ -116,3 +116,4 @@ UserSpoke perception ─┐
 - **reindex 成本**：一個對話 turn 至多 2 次 `index_file`（user + doll）對同一日檔。`FtsMemory.index_file` 為單檔增量，成本低；若日後測得偏高，再批次成 turn 結束一次 reindex（YAGNI，本 spec 不做）。
 - **`recent_outputs` maxlen 不影響**：doll 完整內容走獨立 `_turn_speech` buffer，不受 `recent_outputs` deque(maxlen=15) 截斷影響。
 - **長 turn**：單 turn 超長 Doll 發言會寫成一條長 bullet；可接受（逐字稿本就忠實），consolidation（B2）負責後續壓縮。
+- **at-least-once（WAL barrier 之外）**：user 寫入發生在 `save_state` / `truncate_through`（`mind_loop.py:238-260`）之前。若 turn 在 user 寫入後、save 前 crash，重啟時 WAL replay 會讓該 `UserSpoke` 重跑 → user 行重複 append（doll 內容重新生成）。transcript 為寬容 append-only 日誌，at-least-once 可接受，重複由 B2 consolidation 吸收；**不做冪等工程（YAGNI）**。此為刻意取捨，非 bug。
