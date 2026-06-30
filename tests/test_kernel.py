@@ -496,3 +496,121 @@ async def test_kernel_shutdown_awaits_workflow_runner_stop(tmp_path, monkeypatch
     assert stop_called.is_set(), (
         "workflow_runner.stop() was not awaited during kernel teardown"
     )
+
+
+# ----- B2 Task 6: ConsolidationTrigger kernel wiring -----
+
+
+def test_consolidation_trigger_wired_in_kernel(tmp_path: Path) -> None:
+    """DollOS constructs and wires a ConsolidationTrigger sharing the same MindState."""
+    from dollos.mind.consolidation import ConsolidationTrigger
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert isinstance(dollos._consolidation_trigger, ConsolidationTrigger)
+    assert dollos._consolidation_trigger._state is dollos._mind_state
+
+
+def test_cancel_consolidation_calls_trigger_cancel_current(tmp_path: Path) -> None:
+    """_cancel_consolidation() delegates to trigger.cancel_current()."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    class _StubTrigger:
+        def __init__(self) -> None:
+            self.cancel_count = 0
+
+        def cancel_current(self) -> None:
+            self.cancel_count += 1
+
+    stub = _StubTrigger()
+    dollos._consolidation_trigger = stub
+    dollos._cancel_consolidation()
+    assert stub.cancel_count == 1
+
+
+def test_cancel_consolidation_noop_when_no_attribute(tmp_path: Path) -> None:
+    """_cancel_consolidation() does not raise when _consolidation_trigger is absent."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    # Simulate the attribute being absent (e.g. before full __init__)
+    del dollos._consolidation_trigger
+    dollos._cancel_consolidation()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_text_input_calls_cancel_consolidation(tmp_path: Path) -> None:
+    """TextInput path calls _cancel_consolidation() when a UserSpoke is enqueued."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    cancelled: list[int] = []
+
+    class _StubTrigger:
+        def cancel_current(self) -> None:
+            cancelled.append(1)
+
+    dollos._consolidation_trigger = _StubTrigger()
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_message(TextInput(text="hello"), sink)
+
+    assert len(cancelled) == 1, "_cancel_consolidation was not called on TextInput"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_consolidation_before_memsearch_close(tmp_path, monkeypatch):
+    """trigger.shutdown() must be called before memsearch.close() on teardown."""
+    from dollos.wal.pidfile import RestartKind
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    order: list[str] = []
+
+    # Spy on trigger.shutdown
+    real_trigger_shutdown = dollos._consolidation_trigger.shutdown
+
+    def _spy_trigger_shutdown() -> None:
+        order.append("trigger_shutdown")
+        real_trigger_shutdown()
+
+    monkeypatch.setattr(dollos._consolidation_trigger, "shutdown", _spy_trigger_shutdown)
+
+    # Spy on memsearch.close
+    def _spy_memsearch_close() -> None:
+        order.append("memsearch_close")
+
+    monkeypatch.setattr(dollos.memsearch, "close", _spy_memsearch_close)
+
+    async def _noop() -> None:
+        pass
+
+    monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
+    monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "start", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
+    monkeypatch.setattr(dollos._reflection_observer, "run", lambda: _noop())
+    # Patch consolidation trigger run to a noop so it completes immediately
+    monkeypatch.setattr(dollos._consolidation_trigger, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._tool_output_store, "cleanup", lambda: None)
+    monkeypatch.setattr(dollos._pidfile, "acquire", lambda: RestartKind.COLD)
+    monkeypatch.setattr(dollos._pidfile, "release", lambda: None)
+    monkeypatch.setattr(asyncio.get_event_loop(), "add_signal_handler", lambda *a, **kw: None)
+
+    dollos._shutdown.set()
+    await asyncio.wait_for(dollos.run(), timeout=3.0)
+
+    assert "trigger_shutdown" in order, "trigger.shutdown() was not called during teardown"
+    assert "memsearch_close" in order, "memsearch.close() was not called during teardown"
+    trigger_idx = order.index("trigger_shutdown")
+    memsearch_idx = order.index("memsearch_close")
+    assert trigger_idx < memsearch_idx, (
+        f"trigger.shutdown() must precede memsearch.close(); got order={order}"
+    )
