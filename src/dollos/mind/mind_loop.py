@@ -28,6 +28,7 @@ from dollos.mind.mind_state import (
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
+from dollos.memory_writer import append_transcript
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,19 @@ class MindLoop:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
                 self._state.last_user_at = p.t
+                user_text = p.data.get("text", "")
+                if user_text:
+                    try:
+                        await append_transcript(
+                            transcripts_root=self._ctx.transcripts_root,
+                            memsearch=self._ctx.memsearch,
+                            role="user",
+                            text=user_text,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "transcript write (user) failed; continuing"
+                        )
 
         # Gate NoteToolLesson to reflection turns only (Spec B §5).
         self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
