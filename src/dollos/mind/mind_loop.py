@@ -113,6 +113,9 @@ class MindLoop:
         self._cascade_logger = cascade_logger
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
+        # Turn-local buffer of FULL spoken sentences (recent_outputs only keeps
+        # a truncated summary, so transcript capture needs the complete text).
+        self._turn_speech: list[str] = []
         # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
         self._safe_grammar: str | None = None
         # Reflection-turn flag and lazily-built grammar for the expanded set.
@@ -239,6 +242,7 @@ class MindLoop:
                 tool_habits_hits=tool_habits_hits,
             )
 
+            self._turn_speech.clear()
             # Call LLM (streams text → sink; dispatches tool calls inline)
             await self._llm_iterate(prompt)
         finally:
@@ -248,6 +252,19 @@ class MindLoop:
             # waiting for turn_end. Voice path: TTSObservingSink passes None
             # through unchanged (not a TextChunk, so no TTS side effect).
             self._ctx.sink_resolver().put_nowait(None)
+
+        # Doll-side transcript: one line per turn, full text (B1).
+        doll_text = "".join(self._turn_speech).strip().replace("\n", " ")
+        if doll_text:
+            try:
+                await append_transcript(
+                    transcripts_root=self._ctx.transcripts_root,
+                    memsearch=self._ctx.memsearch,
+                    role="doll",
+                    text=doll_text,
+                )
+            except Exception:
+                logger.exception("transcript write (doll) failed; continuing")
 
         # Update counters + persist
         self._state.iter_count += 1
@@ -614,6 +631,7 @@ class MindLoop:
                     t=time.time(),
                     summary=f"spoke: {sentence[:60]}",
                 ))
+                self._turn_speech.append(sentence)
 
     async def _handle_stream_event(
         self, event, sink, chunker
@@ -636,6 +654,7 @@ class MindLoop:
                     t=time.time(),
                     summary=f"spoke: {sentence[:60]}",
                 ))
+                self._turn_speech.append(sentence)
             return None
         elif isinstance(event, ToolCallReady):
             return await self._dispatch_tool(event.name, event.arguments)

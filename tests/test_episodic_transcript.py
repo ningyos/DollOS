@@ -59,3 +59,28 @@ async def test_user_turn_written_to_transcript(tmp_path):
     assert "主人說：你好嗎" in content
     # transcript file was indexed
     assert _today_transcript(ctx) in [__import__("pathlib").Path(p) for p in ms.indexed]
+
+
+@pytest.mark.asyncio
+async def test_doll_turn_written_as_single_joined_line(tmp_path):
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"}))
+    ms = _FakeMemSearch()
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, memsearch=ms, sink=sink, state=state)
+    _QUEUE_HOLDER.append(queue)
+    # Two full sentences in the spoken segment.
+    loop = _make_loop(
+        tmp_path, state=state, ctx=ctx,
+        stream=_speak_only_stream("第一句話。第二句話。"),
+    )
+
+    await loop.iterate()
+
+    content = _today_transcript(ctx).read_text()
+    doll_lines = [ln for ln in content.split("\n") if "我說：" in ln]
+    # exactly ONE doll line (turn-level, not per-sentence)
+    assert len(doll_lines) == 1
+    assert "第一句話。" in doll_lines[0]
+    assert "第二句話。" in doll_lines[0]
