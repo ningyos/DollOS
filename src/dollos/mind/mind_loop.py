@@ -150,6 +150,7 @@ class MindLoop:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
                 self._state.last_user_at = p.t
+                self._state.user_turn_count += 1
                 user_text = p.data.get("text", "")
                 if user_text:
                     try:

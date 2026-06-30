@@ -67,4 +67,20 @@ def test_tool_memory_fields_roundtrip(tmp_path):
     assert len(loaded.recent_tool_failures) == 1
     assert loaded.recent_tool_failures[0].tool == "Shell"
     assert loaded.recent_tool_failures[0].detail == "timeout"
+
+
+def test_consolidation_fields_round_trip(tmp_path):
+    from dollos.mind.mind_state import MindState, save_state, load_state
+    s = MindState()
+    s.user_turn_count = 7
+    s.last_consolidation_turn = 3
+    s.last_consolidation_at = 123.5
+    s.last_consolidated_date = "2026-06-29"
+    p = tmp_path / "state.json"
+    assert save_state(s, p)
+    loaded = load_state(p)
+    assert loaded.user_turn_count == 7
+    assert loaded.last_consolidation_turn == 3
+    assert loaded.last_consolidation_at == 123.5
+    assert loaded.last_consolidated_date == "2026-06-29"
     assert loaded.recent_tool_failures.maxlen == 10
