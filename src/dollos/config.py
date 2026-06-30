@@ -164,6 +164,17 @@ class ConsolidationConfig(BaseModel):
     transcript_tail_chars: int = 8000
 
 
+class EnergyConfig(BaseModel):
+    """B3 energy system — active-consumes, idle-restores, prompt-injects."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    cost_per_turn: float = 0.05
+    restore_per_tick: float = 0.05
+    idle_threshold_s: int = 600
+    restore_debounce_s: int = 300
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -181,6 +192,7 @@ class Settings(BaseModel):
     system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
     cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
     consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
+    energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
 
 
 def load_settings(path: Path) -> Settings:
