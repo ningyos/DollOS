@@ -113,6 +113,11 @@ async def associative_search(
         logger.exception("associative_search: memsearch query failed")
         return []
 
+    # consolidated/ hits are pull-only (surfaced via Recall, not auto-inject).
+    # Filter them from the associative [Associative memories] channel so they
+    # cannot bypass the pull-only gating through this side-channel.
+    pool = [h for h in pool if "consolidated/" not in (h.get("source") or "")]
+
     seen_hashes: set[str] = set()
     results: list[dict] = []
 

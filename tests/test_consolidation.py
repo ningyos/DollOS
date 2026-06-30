@@ -68,9 +68,74 @@ async def test_consolidated_excluded_from_auto_inject(tmp_path):
 
 
 def test_recall_provenance_prefix_for_consolidated_hits():
-    """Recall format_hit adds [系統整併·待確認] prefix for consolidated/ sources."""
+    """Recall format_hit places [系統整併·待確認] prefix BEFORE the date (spec §3.3)."""
     from dollos.tools import _format_hit
     h_cons = {"content": "主人偏好冰美式", "source": "shared/consolidated/2026-06-29.md"}
     h_norm = {"content": "今天天氣好", "source": "shared/2026-06-30.md"}
-    assert "[系統整併·待確認]" in _format_hit(h_cons)
-    assert "[系統整併·待確認]" not in _format_hit(h_norm)
+    cons_result = _format_hit(h_cons)
+    norm_result = _format_hit(h_norm)
+    # Prefix present in consolidated hit
+    assert "[系統整併·待確認]" in cons_result
+    # Prefix is before the date — bullet content starts with prefix, not date
+    assert cons_result.startswith("- [系統整併·待確認]"), (
+        f"Expected prefix before date, got: {cons_result!r}"
+    )
+    # The date still appears, but after the prefix
+    prefix_pos = cons_result.index("[系統整併·待確認]")
+    date_pos = cons_result.index("2026-06-29")
+    assert prefix_pos < date_pos, (
+        f"Prefix should appear before date in: {cons_result!r}"
+    )
+    # Normal hits have no prefix
+    assert "[系統整併·待確認]" not in norm_result
+
+
+@pytest.mark.asyncio
+async def test_associative_search_excludes_consolidated(tmp_path):
+    """associative_search must not surface consolidated/ hits (pull-only gating)."""
+    from datetime import datetime
+    from dollos.mind.associative_search import associative_search
+    from dollos.mind.mind_state import MindState, Perception
+
+    state = MindState()
+    state.recent_perceptions.append(
+        Perception(kind="UserSpoke", t=1.0, data={"text": "mood test"})
+    )
+
+    # At 14:00 on 2026-06-29 (Sunday), tod=afternoon, dow=Sun.
+    # Heading format: "YYYY-MM-DD HH:MM:SS [key:value ...]" — colon separator.
+    matching_heading = "2026-06-29 14:00:00 [tod:afternoon]"
+
+    class _MixedMemSearch:
+        async def search(self, query, top_k=5):
+            return [
+                # consolidated hit — tagged with tod:afternoon so it would
+                # match the tod axis if not filtered out first.
+                {
+                    "content": "consolidated fact",
+                    "source": "shared/consolidated/2026-06-29.md",
+                    "heading": matching_heading,
+                    "chunk_hash": "hash-consolidated",
+                },
+                # normal hit — same heading tags, should pass through.
+                {
+                    "content": "normal fact",
+                    "source": "shared/2026-06-29.md",
+                    "heading": matching_heading,
+                    "chunk_hash": "hash-normal",
+                },
+            ]
+
+    results = await associative_search(
+        _MixedMemSearch(),
+        state,
+        top_k=5,
+        now=datetime(2026, 6, 29, 14, 0, 0),
+    )
+    contents = [r["content"] for r in results]
+    assert "consolidated fact" not in contents, (
+        "consolidated/ hit must not appear in associative_search results"
+    )
+    assert "normal fact" in contents, (
+        "non-consolidated hit with matching tags must still be returned"
+    )

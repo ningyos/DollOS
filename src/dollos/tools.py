@@ -82,7 +82,7 @@ def _format_hit(hit: dict) -> str:
     # provenance prefix so Doll knows they are unconfirmed candidates.
     prefix = "[系統整併·待確認] " if "consolidated/" in (hit.get("source") or "") else ""
     if d is not None:
-        return f"- {d.isoformat()} {prefix}{content}"
+        return f"- {prefix}{d.isoformat()} {content}"
     return f"- {prefix}{content}"
 
 
