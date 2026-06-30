@@ -153,6 +153,10 @@ class MindState:
     last_consolidation_at: float = 0.0
     last_consolidated_date: str = ""
 
+    # B3 energy system (spec §B3 §3.1).
+    energy: float = 1.0
+    last_energy_restore_at: float = 0.0
+
 
 def save_state(state: MindState, path: Path) -> bool:
     """Save MindState to JSON file atomically.
@@ -198,6 +202,8 @@ def save_state(state: MindState, path: Path) -> bool:
             "last_consolidation_turn": state.last_consolidation_turn,
             "last_consolidation_at": state.last_consolidation_at,
             "last_consolidated_date": state.last_consolidated_date,
+            "energy": state.energy,
+            "last_energy_restore_at": state.last_energy_restore_at,
         }
 
         # Atomic write: write to temp, then rename
@@ -299,6 +305,8 @@ def load_state(path: Path) -> MindState:
             last_consolidation_turn=data.get("last_consolidation_turn", 0),
             last_consolidation_at=data.get("last_consolidation_at", 0.0),
             last_consolidated_date=data.get("last_consolidated_date", ""),
+            energy=min(1.0, max(0.0, float(data.get("energy", 1.0)))),
+            last_energy_restore_at=data.get("last_energy_restore_at", 0.0),
         )
         return state
     except Exception as e:
