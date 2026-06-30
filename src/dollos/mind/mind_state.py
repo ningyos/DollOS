@@ -147,6 +147,12 @@ class MindState:
     safe_mode: bool = False
     safe_mode_reason: str = ""
 
+    # B2 sleep-time consolidation tracking (spec §B2 §4).
+    user_turn_count: int = 0
+    last_consolidation_turn: int = 0
+    last_consolidation_at: float = 0.0
+    last_consolidated_date: str = ""
+
 
 def save_state(state: MindState, path: Path) -> bool:
     """Save MindState to JSON file atomically.
@@ -188,6 +194,10 @@ def save_state(state: MindState, path: Path) -> bool:
             "session_started_at": state.session_started_at,
             "safe_mode": state.safe_mode,
             "safe_mode_reason": state.safe_mode_reason,
+            "user_turn_count": state.user_turn_count,
+            "last_consolidation_turn": state.last_consolidation_turn,
+            "last_consolidation_at": state.last_consolidation_at,
+            "last_consolidated_date": state.last_consolidated_date,
         }
 
         # Atomic write: write to temp, then rename
@@ -285,6 +295,10 @@ def load_state(path: Path) -> MindState:
             session_started_at=time.time(),  # REFRESH: new session
             safe_mode=data.get("safe_mode", False),
             safe_mode_reason=data.get("safe_mode_reason", ""),
+            user_turn_count=data.get("user_turn_count", 0),
+            last_consolidation_turn=data.get("last_consolidation_turn", 0),
+            last_consolidation_at=data.get("last_consolidation_at", 0.0),
+            last_consolidated_date=data.get("last_consolidated_date", ""),
         )
         return state
     except Exception as e:
