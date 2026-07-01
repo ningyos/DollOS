@@ -47,6 +47,9 @@ class MindCtx:
     workflow_runner: "WorkflowRunner | None"
     monitor_runner: "MonitorRunner"
 
+    # A1 self-profile — total-char cap for self_profile.md (from Settings).
+    self_profile_max_chars: int = 1200
+
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.
     agent_report: dict | None = field(default=None)
 
