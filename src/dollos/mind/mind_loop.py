@@ -246,6 +246,12 @@ class MindLoop:
                 if self._energy_enabled
                 else None
             )
+            self_profile_text = None
+            if self._self_profile_enabled:
+                from dollos.mind import self_profile as _sp
+                self_profile_text = _sp.render_block(
+                    self._ctx.memory_root / "self_profile.md"
+                )
             prompt = render_mind(
                 self._state,
                 memsearch_hits,
@@ -257,6 +263,7 @@ class MindLoop:
                 tool_outcomes_block=tool_outcomes_block,
                 tool_habits_hits=tool_habits_hits,
                 energy_line=energy_line,
+                self_profile_text=self_profile_text,
             )
 
             # Call LLM (streams text → sink; dispatches tool calls inline)
