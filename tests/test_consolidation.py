@@ -142,6 +142,88 @@ async def test_associative_search_excludes_consolidated(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# P7 cheap slice (spec §13.2): stale open-loop desc resurfacing in the
+# _derive_memory_hits fallback query.
+# ---------------------------------------------------------------------------
+
+
+class _QueryCapturingMemSearch(_FakeMemSearch):
+    """Records the exact query string passed to search() for assertions."""
+
+    def __init__(self, hits: list | None = None) -> None:
+        super().__init__(hits)
+        self.queries: list[str] = []
+
+    async def search(self, query, top_k=5):
+        self.queries.append(query)
+        return self._hits
+
+
+@pytest.mark.asyncio
+async def test_userspoke_branch_ignores_stale_open_loops(tmp_path):
+    """A real UserSpoke perception stays the sole query source — a stale
+    open loop must NOT leak its desc text into the query when UserSpoke is
+    present (the UserSpoke-found branch is untouched by P7)."""
+    import time
+    from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S
+    from dollos.mind.mind_state import OpenLoop
+
+    state = MindState()
+    state.recent_perceptions.append(Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"}))
+    state.open_loops.append(
+        OpenLoop(id="t1", desc="STALE_LOOP_MARKER_TEXT", opened_at=time.time() - OPEN_LOOP_STALE_S - 100)
+    )
+    ms = _QueryCapturingMemSearch()
+    ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
+    loop = _bare_loop(tmp_path, state=state, ctx=ctx)
+    await loop._derive_memory_hits()
+    assert ms.queries == ["嗨"]
+    assert "STALE_LOOP_MARKER_TEXT" not in ms.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_fallback_includes_stale_open_loop_desc(tmp_path):
+    """No UserSpoke → fallback path. A stale open loop's desc must be
+    appended to the memsearch query so idle/reflection turns actively
+    retrieve memory about unresolved commitments."""
+    import time
+    from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S
+    from dollos.mind.mind_state import OpenLoop
+
+    state = MindState()
+    state.recent_perceptions.append(Perception(kind="ScheduledMoment", t=1.0, data={"text": "alarm"}))
+    state.open_loops.append(
+        OpenLoop(id="t1", desc="STALE_LOOP_MARKER_TEXT", opened_at=time.time() - OPEN_LOOP_STALE_S - 100)
+    )
+    ms = _QueryCapturingMemSearch()
+    ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
+    loop = _bare_loop(tmp_path, state=state, ctx=ctx)
+    await loop._derive_memory_hits()
+    assert len(ms.queries) == 1
+    assert "STALE_LOOP_MARKER_TEXT" in ms.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_fallback_excludes_fresh_open_loop_desc(tmp_path):
+    """No UserSpoke → fallback path. A FRESH open loop (well under the
+    staleness threshold) must NOT have its desc appended to the query."""
+    import time
+    from dollos.mind.mind_state import OpenLoop
+
+    state = MindState()
+    state.recent_perceptions.append(Perception(kind="ScheduledMoment", t=1.0, data={"text": "alarm"}))
+    state.open_loops.append(
+        OpenLoop(id="t1", desc="FRESH_LOOP_MARKER_TEXT", opened_at=time.time() - 10)
+    )
+    ms = _QueryCapturingMemSearch()
+    ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
+    loop = _bare_loop(tmp_path, state=state, ctx=ctx)
+    await loop._derive_memory_hits()
+    assert len(ms.queries) == 1
+    assert "FRESH_LOOP_MARKER_TEXT" not in ms.queries[0]
+
+
+# ---------------------------------------------------------------------------
 # Shared stub for Task 4 + 5
 # ---------------------------------------------------------------------------
 

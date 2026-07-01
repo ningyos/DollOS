@@ -19,7 +19,7 @@ from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
 from dollos.tools import NoteToolLesson, PinSelf
 from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_prompt import energy_bucket_line, render_mind
+from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
 from dollos.mind.mind_state import (
     MindState,
     OutputRecord,
@@ -351,7 +351,19 @@ class MindLoop:
         if not query and len(self._state.recent_perceptions) > 0:
             # fallback: concat last 3 perception bodies
             last3 = list(self._state.recent_perceptions)[-3:]
-            query = " ".join(str(p.data) for p in last3)[:500]
+            parts = [str(p.data) for p in last3]
+            # P7 cheap slice (spec §13.2): also pull stale open-loop desc
+            # text into the fallback query so idle/reflection/scheduled
+            # turns actively retrieve memory related to unresolved
+            # commitments, not just ambient recent-perception noise. Fresh
+            # loops (age <= OPEN_LOOP_STALE_S) are excluded. Uses the exact
+            # same strict `>` comparison as _render_open_loops.
+            now = time.time()
+            parts.extend(
+                lp.desc for lp in self._state.open_loops
+                if now - lp.opened_at > OPEN_LOOP_STALE_S
+            )
+            query = " ".join(parts)[:500]
         if not query:
             return []
         try:
