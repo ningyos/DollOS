@@ -319,6 +319,7 @@ class DollOS:
             cascade_logger=self._cascade_logger,
             energy_enabled=settings.energy.enabled,
             cost_per_turn=settings.energy.cost_per_turn,
+            self_profile_enabled=settings.self_profile.enabled,
         )
 
         self._reflection_observer = ReflectionObserver(
