@@ -267,7 +267,9 @@ def _percep_body(p) -> str:
         return (
             f"(time to reflect — review recent activity and NoteMemory anything worth keeping; "
             f"{d.get('iters_since_last', '?')} iters since last; "
-            f"若有可重用的工具用法或陷阱，用 NoteToolLesson 記下來)"
+            f"若有可重用的工具用法或陷阱，用 NoteToolLesson 記下來；"
+            f"回看你的 self-profile,有沒有哪條已經不是現在的你?可用 PinSelf replace/remove;"
+            f"若對自己、與主人的關係、或主人的模式有可留存的核心體悟,用 PinSelf 記下)"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
