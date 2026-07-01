@@ -88,7 +88,19 @@ async def test_pinself_add_writes_file_and_not_indexed(make_mind_ctx):
 
 @pytest.mark.asyncio
 async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
-    ctx = make_mind_ctx(self_profile_max_chars=80)
-    await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
-    msg = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
-    assert "上限" in msg
+    """Verify that self-profile cap is enforced only AFTER accumulation.
+
+    With max_chars=120:
+    - First add of 40 chars serializes to ~96 chars → succeeds (no error)
+    - Second add of 40 chars would serialize to ~147 chars → fails (has '上限')
+    This ensures we test the accumulate-then-cap path, not immediate cap-on-first."""
+    ctx = make_mind_ctx(self_profile_max_chars=120)
+
+    # First add should succeed
+    msg1 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
+    assert "上限" not in msg1, f"First add should not hit cap, but got: {msg1}"
+    assert "s1" in msg1, f"First add should return success with id s1, but got: {msg1}"
+
+    # Second add should fail due to accumulated total
+    msg2 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
+    assert "上限" in msg2, f"Second add should hit cap, but got: {msg2}"
