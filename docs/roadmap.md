@@ -294,6 +294,28 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
 
+### 29. Workflow — replace ephemeral Subagent with a single Workflow concept  ✅ Merged
+
+**動機**：使用者觀察 Claude Code 的 Workflow 工具反覆展現價值——deterministic fan-out 多個 sub-agent + synthesis，只有結論回到 controller，中間噪音不進 context。DollOS 當時只有「building block」（`SubagentRunner` 是好的 `agent()` primitive）沒有編排層：Doll 要一次做多件事時，得自己手動 spawn N 個 subagent、自己在主 context 裡消化 N 個 noisy `ToolResultArrived` perception（model-driven、非 deterministic、污染 Doll 主意識的 context）。
+
+**決定（使用者拍板）**：給 Doll 一個 Workflow 能力，並整併成唯一的背景編排概念——**拿掉獨立的 `SpawnSubagent` tool**，單一 worker 變成 workflow 的 N=1 退化情況。原本的 per-agent engine 沿用不重寫。
+
+範圍：
+- **`SpawnWorkflow(tasks, mode, synthesis, timeout_s)`** 取代 `SpawnSubagent`——`tasks: list[WorkflowTask]`（1–16 個）、`mode: "map_reduce"|"verify"`、可選 `synthesis` 指令、`timeout_s`（預設 600，上限 1800）
+- **`WorkflowRunner`**（新 `src/dollos/workflow.py`，取代 `subagent.py`）——fire-and-forget spawn；`asyncio.Semaphore(8)` 限制同時 fan-out；`mode="map_reduce"` 平行跑完直接收斂；`mode="verify"` 每個 worker 結果多一輪獨立 adversarial skeptic pass；有 `synthesis` 就再跑一個 agent 把所有結果合成一份 Report，沒有就用 deterministic roll-up（N=1 無 synthesis = 退化成舊版單一 subagent 行為）
+- **`agent_engine.run_agent`**（新 `src/dollos/agent_engine.py`）——把 per-agent cascade engine 從 `subagent.py` 抽出來，worker / skeptic / synthesis agent 共用同一份
+- 不可巢狀：worker 只有 `SUB_TOOLS`（沒有 `SpawnWorkflow`），且 `run_agent` 強制 `ctx.workflow_runner=None`
+- 結果統一為**一則** `ToolResultArrived(tool="Workflow")` perception，不管 N 是多少
+- `ctx.subagent_runner`/`ctx.subagent_report` 改名 `ctx.workflow_runner`/`ctx.agent_report`；`scaffolding.jinja` / `subagent_scaffolding.jinja` 同步改用 Workflow 語彙
+
+Tests：`tests/test_workflow.py`（23 tests，含平行 fan-out、semaphore 上限、synthesis、verify 模式、部分失敗 degrade、no-nesting guard、per-agent timeout、單一 perception 保證）。全套件回歸綠燈。
+
+**後續（同日跟進 commit）**：`f3084d2` 修 verify-mode N=1 skeptic verdict 折疊 bug；`e2ec563` 掃尾（拿掉 rename 殘留的 dead guard / 過時 docstring）。
+
+**命名連動**：這次把「Subagent」空出來的名字，後續用在 A0-A4（`agent-service` branch）把「Drone」正式改名為「Subagent」（persistent, containerized）——見該 branch 的 `2026-06-25-A2-agent-execution-model-design.md`。k3s 化本身暫緩，先只在文件層面同步這個命名決定（CLAUDE.md 已同步）。
+
+下個 step 候選：Subagent（persistent，撿起 agent-service branch A0-A4 時）/ Zero-shot wake word + Speaker ID / 回應延遲壓縮。
+
 ### 28. Voice pipeline Phase C — local-audio-bridge + 真實 E2E  ✅ Merged
 
 **範圍**：
@@ -599,7 +621,7 @@ T1-T8 smoke 8/8 無 regression。Tests: 250 passed。
 - UI Cubism 渲染 + lip sync
 - Voice pipeline（TTS / ASR / audio WS）
 - Phone App + system assistant + KWS + VAD + speaker ID + PTT + 鎖定畫面
-- Drone（持久 definition + cron + UI）
+- Subagent（持久 definition + cron + UI；取代舊名 Drone，權威設計在 `agent-service` branch A2，containerized k8s Job/CronJob，k3s 化暫緩）
 - Reflex 真規則庫（自然語言編譯 + UI）
 - Phone Tier B/C/D（A11y / Shizuku / Root）
 - 構想 / 長期：Twin Mode、Robot vision、AI 視覺、Galgame 介面、Latency calibration、Snapshot S、Multi-thread、Interrupt、Tick/idle、...

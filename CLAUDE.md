@@ -15,8 +15,8 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 - **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Memory's self-history + character description), not from prompt commands. See main spec §8.
 
 **Two-layer intelligence:**
-1. **Doll** — user's chosen large model, deliberative. Handles all events (conversation, schedule, monitors, subagent results).
-2. **Subagent / 分身** (ephemeral) and **Drone** (persistent) — task-specific agents Doll dispatches.
+1. **Doll** — user's chosen large model, deliberative. Handles all events (conversation, schedule, monitors, workflow results).
+2. **Workflow** (ephemeral — replaces the old "Subagent" name, 2026-06-27) and **Subagent** (persistent — replaces the old "Drone" name; decision recorded in `agent-service` branch `docs/superpowers/specs/2026-06-25-A2-agent-execution-model-design.md`, "Drop the name Drone entirely") — task-specific agents Doll dispatches.
 
 ## Repo Map
 
@@ -47,18 +47,18 @@ DollOS/
 
 ## Key Architecture Decisions
 
-- **External actions are fire-and-forget**: Shell, SpawnSubagent, and SpawnMonitor all spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent` (or `MonitorTriggeredEvent` / `MonitorExitedEvent`). There is no Doll-callable wait tool. "Wait" is implicit — Doll's cascade either keeps going or ends; results come back as new perceptions. Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
-- **Monitor vs Shell vs Subagent vs Drone**: All four are external actions.
+- **External actions are fire-and-forget**: Shell, SpawnWorkflow, and SpawnMonitor all spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent` (or `MonitorTriggeredEvent` / `MonitorExitedEvent`). There is no Doll-callable wait tool. "Wait" is implicit — Doll's cascade either keeps going or ends; results come back as new perceptions. Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
+- **Monitor vs Shell vs Workflow vs Subagent**: All four are external actions.
   - **Shell** — one-shot command, single result event.
-  - **Subagent** — ephemeral sub-LLM cascade, one Report-driven result event.
+  - **Workflow** (2026-06-27, replaces the old ephemeral "Subagent") — fire-and-forget dispatch of N parallel worker agents (each an isolated sub-LLM cascade) with an optional adversarial verify pass and an optional synthesis agent; exactly one `ToolResultArrived(tool="Workflow")` result event returns to Doll regardless of N. `mode="map_reduce"` (parallel fan-out) or `mode="verify"` (+ skeptic pass per worker). N=1 with no synthesis degrades to the old single-subagent behavior. See `docs/superpowers/plans/2026-06-27-doll-workflow.md`.
   - **Monitor** — long-running command, per-line trigger events (regex + rate-limit) + exit event. Stateless watcher; no LLM in the loop. Active state surfaces via `[Active monitors]` perception block.
-  - **Drone** (future) — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back.
+  - **Subagent** (future, replaces the old "Drone") — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back. Authoritative design is `agent-service` branch A2 (containerized k8s Job/CronJob); the k3s side of that is deferred until this track is picked up.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
 - **BYO big LLM**: DollOS has a single LLM dependency (port 8001). No small model (Inner Voice removed 2026-05-16). Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
 - **Memory wire format**: `memsearch.search(query, top_k)` → bullet list → `[Memory context]` block prepended to the user message. Explicit `Recall` pydantic tool for on-demand deeper search. No prefill into `<think>`. Backend-portable.
-- **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, drone results, self-initiated).
-- **Subagent (ephemeral) vs Drone (persistent)**: Subagent is a one-shot tool call, definition inline, dies after run. Drone has persistent definition, scheduled trigger, runs in background, results re-enter the event queue.
+- **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, subagent results, self-initiated).
+- **Workflow (ephemeral) vs Subagent (persistent)**: Workflow is a one-shot tool call, definition inline, dies after run (this is the renamed old "Subagent"). Subagent has persistent definition, scheduled trigger, runs in background, results re-enter the event queue (this is the renamed old "Drone").
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from character description + Doll's own memory entries (self-history, preferences, mood) surfacing through the `[Memory context]` block + `Recall` tool. The 2026-05-08 smoke confirmed Self-First behavior emerges this way (T2 「我自己愛冰美式，你呢？」).
 - **Memory SoT**: memsearch (Milvus Lite + ONNX bge-m3 + markdown daily summary files). `data/memory/shared/` for shared facts, `data/memory/{character_id}/` for per-character private (step 10). Hybrid retrieval (dense + BM25 + RRF) provided by memsearch.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
@@ -101,6 +101,7 @@ DollOS/
 | Roadmap step 26 — Voice engines + pack config (Voice Phase A) | Merged |
 | Roadmap step 27 — Voice pipeline Phase B (WebRTC + VoiceSession + IPC) | Merged |
 | Roadmap step 28 — Voice pipeline Phase C (local-audio-bridge + E2E) | Merged |
+| Roadmap step 29 — Workflow (取代 ephemeral Subagent；map_reduce/verify fan-out + synthesis) | Merged |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -111,10 +112,10 @@ DollOS/
 
 ### 下一個
 
-- **Drone**（persistent agents — 跟 Subagent 對偶；Monitor 是無大腦版，Drone 是有大腦版）
+- **Subagent**（persistent agents，取代舊名 Drone — 跟 Workflow 對偶；Monitor 是無大腦版，Subagent 是有大腦版。權威設計在 `agent-service` branch A2〔containerized k8s Job/CronJob〕，k3s 化本身暫緩，撿起這條線時才處理）
 - **Zero-shot wake word + Speaker ID**（取代 train-per-character KWS；研究 CLAP-like embedding）
 - **回應延遲壓縮**（LLM-side 工程，見 memory）
-- **Wake gating** — 等 voice / drone events 進來才有 ROI
+- **Wake gating** — 等 voice / subagent events 進來才有 ROI
 
 **已收的設計準則**：
 - 偏好學習 / 習慣學習不是新 subsystem，是 prompt engineering — Doll 用 NoteMemory 自記
@@ -193,7 +194,7 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
 電腦端（DollOS）
   Event Loop ── Doll Turn（大模型 + [Memory context] block + Recall tool）
                   ↓ tool calls
-              Subagent（即時）/ Drone（持久）
+              Workflow（即時）/ Subagent（持久，取代舊名 Drone）
               Memory SoT（memsearch: Milvus Lite + ONNX bge-m3）
               Character Pack Manager（.doll v3）
               Voice Pipeline Server（ASR/TTS）

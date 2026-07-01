@@ -340,9 +340,11 @@ Prototype showed Qwen3.6 occasionally omitted outer `[]` brackets. Production mu
 
 Subagent runs one task → Report → die. No multi-turn concept. Keeps current `SubagentRunner` design; result fires `ToolResultArrived` perception in parent Mind.
 
-### Drone (future): own MindLoop per drone
+### Subagent (future, renamed from "Drone"): own MindLoop per subagent — conflicts with A2's containerized model, unreconciled
 
-Persistent agents (Drones) each get their own `MindLoop` + `MindState`. Multiple minds in one daemon. They communicate via perceptions (drone → Doll's queue, or drone → drone via daemon routing). Not in v1; Doll-only first.
+> **2026-06-25 naming update**: "Drone" is dropped entirely; the persistent-agent concept is renamed **Subagent** (`agent-service` branch, `2026-06-25-A2-agent-execution-model-design.md`). That spec proposes a **containerized** (k8s Job/CronJob) execution model, which conflicts with this section's in-process-MindLoop-per-agent proposal below. Neither has been reconciled with the other yet — whoever picks up persistent Subagent next needs to decide between them (or a hybrid) before implementing. Kept below as the original (superseded-pending-reconciliation) proposal.
+
+Persistent agents (renamed Subagents, née Drones) each get their own `MindLoop` + `MindState`. Multiple minds in one daemon. They communicate via perceptions (subagent → Doll's queue, or subagent → subagent via daemon routing). Not in v1; Doll-only first.
 
 ### Memsearch query: derived per iteration
 
@@ -381,7 +383,7 @@ Replaces cascade_log. Smaller granularity (per-iter not per-cascade). Same disk 
 ## Out of Scope
 
 - Sub-second preempt interrupt (queue-and-iterate is v1)
-- Multi-mind (Drone) — Doll-only first
+- Multi-mind (Subagent, renamed from Drone) — Doll-only first
 - Streaming-LLM (Pattern A from survey) — llama.cpp can't
 - Layer 2 rolling summary — recent_perceptions deque + memsearch covers it
 - Migration from current state files to mind_state.json — fresh start acceptable for personal-use daemon

@@ -22,8 +22,8 @@
 | **Doll** | 住在電腦上的 AI 同伴本體（「她」）。意識層 / 慎思層 |
 | **Instinct（直覺）** | 反應式子系統，small model + rule engine + action handlers。對 event 自然而然完成 digest / classify / extract / triage / decide-to-wake / reflex |
 | **VoM（Voice of Mind）** | Instinct 的特定輸出 — prefill 進 Doll thinking 區塊的 RECALL block。Techreport 原意保留 |
-| **Subagent / 分身** | 一次性、Doll tool call 即時派出、任務完即死的隔離 session agent |
-| **Drone** | 長駐、有持久 definition、由 schedule / external / Doll 觸發的 agent。**注意：與 4/20 spec 的 Drone（信任機器）含義不同，4/20 那意義已退役** |
+| **Subagent / 分身**（本節原名，2026-06-27 改稱 **Workflow**，見 §5.7/§6） | 一次性、Doll tool call 即時派出、任務完即死的隔離 session agent |
+| **Drone**（本節原名，2026-06-25 起這個名字整個拿掉、改稱 **Subagent**，見 §5.7/§6） | 長駐、有持久 definition、由 schedule / external / Doll 觸發的 agent。**注意：與 4/20 spec 的 Drone（信任機器）含義不同，4/20 那意義已退役** |
 | **DollOS** | 電腦端 Python 主程序，event loop 與所有 brain logic 所在 |
 | **DollOS UI** | 電腦端 Tauri + Cubism Web SDK 前端 |
 | **DollOS App** | Android app（手機端） |
@@ -440,28 +440,32 @@ while running:
 | OpenAI strict | system / user message | 退化 |
 | Gemini / Bedrock | 各家不同 | 逐一適配 |
 
-### 5.7 Subagent / Drone 是 tool
+### 5.7 Workflow / Subagent 是 tool
+
+> **2026-06-27 / 2026-06-25 命名更新**：本節原文用 Subagent（ephemeral）/ Drone（persistent）。實作階段 Subagent 這個名字被讓給 persistent 概念，ephemeral 概念改名 **Workflow**（見 `docs/superpowers/plans/2026-06-27-doll-workflow.md`，已合併），Drone 正式改名 **Subagent**（"Drop the name Drone entirely" — `agent-service` branch `2026-06-25-A2-agent-execution-model-design.md`，containerized 設計，k3s 化暫緩未合併）。下方文字保留原始設計意圖，僅替換名詞；§6.3 的 containerized 細節以 A2 spec 為準。
 
 Doll 用大模型 tool call 派出 — 跟 `say`、`note_memory` 一樣，不是特殊機制：
-- `spawn_subagent(prompt, model, tools, budget)` — 即時派出隔離 session，定義不存檔
-- `create_drone(definition)` — 持久化 definition。**新建 drone 需使用者一次確認**
+- `spawn_workflow(tasks, mode, synthesis, timeout_s)` — 即時派出隔離 session（N 個 worker，可平行/可 verify），定義不存檔。實作為 `SpawnWorkflow`（`src/dollos/tools.py`）。
+- `create_subagent(definition)` — 持久化 definition。**新建 subagent 需使用者一次確認**。（尚未實作；containerized 版本見 A2 spec）
 
 詳見 §6。
 
 ---
 
-## §6 Subagent 與 Drone
+## §6 Workflow 與 Subagent
 
 ### 6.1 切割
 
-| | **Subagent / 分身** | **Drone** |
+| | **Workflow**（原稱 Subagent / 分身） | **Subagent**（原稱 Drone） |
 |---|---|---|
 | 持久性 | 一次性，任務完即死 | 長駐，definition 存檔 |
 | 觸發 | Doll tool call 即時派出 | Schedule / external trigger / Doll 主動 |
 | Definition | inline，不存 | 持久化，UI 可編輯/撤銷/審計 |
-| 結果處理 | 直接回 Doll（同 turn 或 async event）| 進 event queue，Instinct 處理 |
-| 巢狀 | **不可** spawn 子 subagent | 不可 |
+| 結果處理 | 直接回 Doll（同 turn 或 async event）| 進 event queue，變成一則 perception |
+| 巢狀 | **不可** spawn 子 worker | 不可 |
 | 用途 | 「現在分一塊任務出去做」 | 「每天的早報」「監看 mailbox」 |
+
+> 「結果處理」欄原文寫「Instinct 處理」——Instinct/Inner Voice 小模型過濾層已於 2026-05-16 因 A/B 淨負效果被拆除（見 `2026-05-16-persistent-mind-design.md`）。現行架構下兩者的結果都是直接進 Doll（或該 Subagent 自己）的 MindLoop event queue，沒有中間 digest 層。
 
 ### 6.2 隔離保證
 
@@ -472,7 +476,7 @@ Doll 用大模型 tool call 派出 — 跟 `say`、`note_memory` 一樣，不是
   - `Memory.Write`：極少數場景，使用者一次性指紋確認
 - 預算限制：max_tokens、max_wall_clock_s
 
-### 6.3 Drone Definition 範例
+### 6.3 Subagent Definition 範例（原稱 Drone；containerized 細節以 A2 spec 為準）
 
 ```yaml
 name: morning_news_digest
@@ -492,16 +496,16 @@ budget:
   max_wall_clock_s: 60
 output:
   channel: event_queue
-  event_type: drone_result
+  event_type: subagent_result
 ```
 
-Drone 結果是 event，由 Instinct 一視同仁處理（可被 triage 為 low、被 wake 條件過濾、被 digest 後再進 Doll prefill）。
+Subagent 結果是 event，直接進觸發它的 Mind（Doll 或該 Subagent 自己）的 event queue，變成一則 perception（無 Instinct digest 層，見上方 6.1 註）。
 
-### 6.4 Subagent 結果不過 Instinct digest
+### 6.4 Workflow 結果直接回 Doll
 
-Subagent 是 Doll **這個 turn 內**用 tool call 派出，Doll 已經知道她要什麼結果。**結果直接回 Doll**，不繞 Instinct。
+Workflow 是 Doll **這個 turn 內**用 tool call 派出，Doll 已經知道她要什麼結果。**結果直接回 Doll**，以一則 `ToolResultArrived(tool="Workflow")` perception 呈現。
 
-Drone 結果**過 Instinct**（drone 不是當下對話 turn 的延伸，是事件來源）。
+Subagent（persistent）結果**進 event queue**（subagent 不是當下對話 turn 的延伸，是事件來源）。
 
 ---
 
