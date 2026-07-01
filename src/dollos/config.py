@@ -175,6 +175,14 @@ class EnergyConfig(BaseModel):
     restore_debounce_s: int = 300
 
 
+class SelfProfileConfig(BaseModel):
+    """A1 self-profile — Doll-pinned always-inject evolving self."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_chars: int = 1200
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -193,6 +201,7 @@ class Settings(BaseModel):
     cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
     consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
     energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
+    self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
 
 
 def load_settings(path: Path) -> Settings:

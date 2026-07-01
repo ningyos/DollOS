@@ -237,3 +237,13 @@ def test_energy_config_on_settings(tmp_path: Path):
     assert s.energy.restore_per_tick == 0.05
     assert s.energy.idle_threshold_s == 600
     assert s.energy.restore_debounce_s == 300
+
+
+def test_self_profile_config_defaults():
+    from dollos.config import Settings, LLMConfig, CharacterConfig
+    s = Settings(
+        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        character=CharacterConfig(pack="gura"),
+    )
+    assert s.self_profile.enabled is True
+    assert s.self_profile.max_chars == 1200
