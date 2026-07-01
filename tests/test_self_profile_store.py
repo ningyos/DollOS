@@ -123,6 +123,95 @@ def test_unknown_section_add_friendly_error(tmp_path):
     assert not p.exists()  # 未寫入
 
 
+def test_replace_by_bare_id_still_works(tmp_path):
+    """Regression guard: bare id target (existing behavior) must keep working."""
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人早睡早起、作息規律",
+              max_chars=1200, today="2026-07-01")
+    msg = sp.apply(p, section="user", op="replace", target="u1", text="主人偶爾熬夜",
+                   max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    assert "- [u1·2026-07-01] 主人偶爾熬夜" in body
+    assert "早睡早起" not in body
+    assert "u1" in msg
+
+
+def test_replace_by_full_rendered_bullet_string(tmp_path):
+    """Real model calls pass the full rendered bullet, not the bare id."""
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人早睡早起、作息規律",
+              max_chars=1200, today="2026-07-01")
+    target = "[u1·2026-07-01] 主人早睡早起、作息規律"
+    msg = sp.apply(p, section="user", op="replace", target=target, text="主人作息不太規律",
+                   max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    assert "- [u1·2026-07-01] 主人作息不太規律" in body
+    assert "早睡早起、作息規律" not in body
+    assert "u1" in msg
+
+
+def test_replace_by_exact_bullet_text(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="self", op="add", target="", text="我比表面更在意休息",
+              max_chars=1200, today="2026-07-01")
+    msg = sp.apply(p, section="self", op="replace", target="我比表面更在意休息",
+                   text="我其實很喜歡陪伴主人", max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    assert "- [s1·2026-07-01] 我其實很喜歡陪伴主人" in body
+    assert "我比表面更在意休息" not in body
+    assert "s1" in msg
+
+
+def test_replace_by_unique_substring(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="self", op="add", target="", text="我很重視誠實",
+              max_chars=1200, today="2026-07-01")
+    sp.apply(p, section="user", op="add", target="", text="主人早睡早起、作息規律",
+              max_chars=1200, today="2026-07-01")
+    msg = sp.apply(p, section="user", op="replace", target="早睡早起",
+                   text="主人作息改成晚睡晚起", max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    assert "- [u1·2026-07-01] 主人作息改成晚睡晚起" in body
+    assert "主人早睡早起、作息規律" not in body
+    assert "u1" in msg
+
+
+def test_remove_by_full_rendered_bullet_string(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人早睡早起、作息規律",
+              max_chars=1200, today="2026-07-01")
+    target = "- [u1·2026-07-01] 主人早睡早起、作息規律"
+    msg = sp.apply(p, section="user", op="remove", target=target, text="",
+                   max_chars=1200, today="2026-07-01")
+    assert "u1" not in p.read_text()
+    assert "u1" in msg
+
+
+def test_locate_no_match_at_all_returns_friendly_error_with_entries(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="self", op="add", target="", text="舊內容",
+              max_chars=1200, today="2026-07-01")
+    before = p.read_text()
+    msg = sp.apply(p, section="self", op="replace", target="完全不相關的文字",
+                   text="新", max_chars=1200, today="2026-07-01")
+    assert "找不到" in msg or "沒有" in msg
+    assert "s1" in msg and "舊內容" in msg  # 條目清單含 id 與文字
+    assert p.read_text() == before  # 未寫入
+
+
+def test_ambiguous_substring_returns_friendly_error_no_write(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人愛喝咖啡",
+              max_chars=1200, today="2026-07-01")
+    sp.apply(p, section="user", op="add", target="", text="主人也愛喝咖啡拿鐵",
+              max_chars=1200, today="2026-07-01")
+    before = p.read_text()
+    msg = sp.apply(p, section="user", op="remove", target="愛喝咖啡", text="",
+                   max_chars=1200, today="2026-07-01")
+    assert "找不到" in msg or "沒有" in msg
+    assert p.read_text() == before  # 未寫入,歧義不動手
+
+
 def test_render_block_no_bookkeeping_artifacts(tmp_path):
     p = _p(tmp_path)
     sp.apply(p, section="self", op="add", target="", text="a", max_chars=1200, today="2026-06-30")

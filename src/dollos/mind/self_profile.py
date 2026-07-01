@@ -74,17 +74,52 @@ def _next_id(bullets: list[Bullet], section: str) -> str:
     return f"{prefix}{(max(nums) + 1) if nums else 1}"
 
 
+# The real LLM does not reliably pass the bare id back — it often echoes the
+# full rendered bullet (or a paraphrase of its text) as `target`. Resolve in
+# three steps, first match wins, searching across ALL sections:
+#   1. an id token (s1/r2/u3) embedded anywhere in target
+#   2. target's text (after stripping a leading "- [...]" tag) exactly
+#      equals some bullet's text
+#   3. target's cleaned text is a substring of — or contains — exactly one
+#      bullet's text (0 or >1 candidates is treated as no match, so a short
+#      accidental overlap never silently mutates/deletes the wrong entry)
+_ID_TOKEN_RE = re.compile(r"[sru]\d+")
+_LEADING_TAG_RE = re.compile(r"^\s*-?\s*\[[^\]]*\]\s*")
+
+
+def _clean_target_text(target: str) -> str:
+    return _LEADING_TAG_RE.sub("", target).strip()
+
+
 def _find(sections: dict[str, list[Bullet]], target: str) -> tuple[str, int] | None:
-    for key in SECTION_ORDER:
-        for i, b in enumerate(sections[key]):
-            if b.id == target:
+    all_bullets = [(key, i, b) for key in SECTION_ORDER for i, b in enumerate(sections[key])]
+
+    m = _ID_TOKEN_RE.search(target)
+    if m:
+        token = m.group(0)
+        for key, i, b in all_bullets:
+            if b.id == token:
                 return key, i
+
+    cleaned = _clean_target_text(target)
+    if cleaned:
+        for key, i, b in all_bullets:
+            if b.text == cleaned:
+                return key, i
+
+        candidates = [(key, i) for key, i, b in all_bullets
+                      if cleaned in b.text or b.text in cleaned]
+        if len(candidates) == 1:
+            return candidates[0]
+
     return None
 
 
-def _existing_ids(sections: dict[str, list[Bullet]]) -> str:
-    ids = [b.id for key in SECTION_ORDER for b in sections[key]]
-    return "、".join(ids) if ids else "(目前沒有任何條目)"
+def _entries_listing(sections: dict[str, list[Bullet]]) -> str:
+    """Richer than a bare id list — shows `id: text` so the model can retry
+    either by id or by pasting the exact line."""
+    entries = [f"{b.id}: {b.text}" for key in SECTION_ORDER for b in sections[key]]
+    return "、".join(entries) if entries else "(目前沒有任何條目)"
 
 
 def apply(path: Path, *, section: str, op: str, target: str, text: str,
@@ -103,17 +138,21 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     elif op == "replace":
         found = _find(sections, target)
         if found is None:
-            return f"找不到 id {target};現有:{_existing_ids(sections)}。請貼正確的 id。"
+            return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
+                     f"可用 id(如 s1)或貼該條目文字重試。")
         key, i = found
-        sections[key][i] = Bullet(id=target, date=today, text=text)
-        result = f"已更新 {target}"
+        old_id = sections[key][i].id
+        sections[key][i] = Bullet(id=old_id, date=today, text=text)
+        result = f"已更新 {old_id}"
     elif op == "remove":
         found = _find(sections, target)
         if found is None:
-            return f"找不到 id {target};現有:{_existing_ids(sections)}。請貼正確的 id。"
+            return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
+                     f"可用 id(如 s1)或貼該條目文字重試。")
         key, i = found
+        old_id = sections[key][i].id
         sections[key].pop(i)
-        result = f"已移除 {target}"
+        result = f"已移除 {old_id}"
     else:
         return f"未知 op:{op}"
 
