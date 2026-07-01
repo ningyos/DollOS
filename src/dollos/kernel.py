@@ -320,6 +320,7 @@ class DollOS:
             energy_enabled=settings.energy.enabled,
             cost_per_turn=settings.energy.cost_per_turn,
             self_profile_enabled=settings.self_profile.enabled,
+            enforcement=self._doll_pack.enforcement,
         )
 
         self._reflection_observer = ReflectionObserver(

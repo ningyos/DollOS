@@ -36,11 +36,28 @@ class Identity(BaseModel):
     taboos: str
 
 
+class Enforcement(BaseModel):
+    """Mechanical, code-checked persona rules (spec §2, P8 persona hardening).
+
+    Additive and opt-in: an absent ``[enforcement]`` table in a pack's
+    ``doll.toml`` produces an empty-default instance (no banned substrings,
+    no exclaim-run cap), i.e. zero behavior change for packs that don't
+    opt in. ``banned_substrings`` are literal substrings, not regex —
+    cheap, no ReDoS/injection surface.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    banned_substrings: list[str] = Field(default_factory=list)
+    max_exclaim_run: int | None = None
+
+
 class DollPack(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     meta: PackMeta
     identity: Identity
+    enforcement: Enforcement = Field(default_factory=Enforcement)
 
     @classmethod
     def load(cls, pack_dir: Path) -> "DollPack":

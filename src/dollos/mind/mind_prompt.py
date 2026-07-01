@@ -306,6 +306,13 @@ def _percep_body(p) -> str:
             f"({tool}: {summary}) with no new outcome — this isn't working, "
             "try something different or ask for help."
         )
+    if p.kind == "PersonaDriftDetected":
+        violations = "、".join(d.get("violations", []))
+        snippet = d.get("snippet", "")
+        return (
+            f"你剛才說的話違反了人設約束（{violations}）：『{snippet}』"
+            "——下次注意，這不是在演，是妳真正的樣子。"
+        )
     return str(d)[:120]
 
 

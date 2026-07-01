@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
+from dollos.character import Enforcement
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
@@ -27,6 +28,7 @@ from dollos.mind.mind_state import (
     save_state,
 )
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
@@ -102,6 +104,7 @@ class MindLoop:
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
         self_profile_enabled: bool = False,
+        enforcement: Enforcement | None = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -130,6 +133,10 @@ class MindLoop:
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
         self._self_profile_enabled = self_profile_enabled
+        # P8 mechanical persona enforcement (spec §2). Absent kwarg ⇒ empty
+        # Enforcement() defaults ⇒ check_persona_violations always returns []
+        # ⇒ zero behavior change for packs that don't opt in.
+        self._enforcement = enforcement or Enforcement()
 
         # No-fallback (spec §3.3): a grammar build failure is a tool-set config
         # error. Let it raise at startup — the daemon must refuse to run with a
@@ -294,6 +301,17 @@ class MindLoop:
                 )
             except Exception:
                 logger.exception("transcript write (doll) failed; continuing")
+
+            # P8 mechanical persona enforcement (spec §2): pure "announce",
+            # never blocking — the transcript write above and everything
+            # else proceed unchanged regardless of the outcome here.
+            violations = check_persona_violations(doll_text, self._enforcement)
+            if violations:
+                self._queue.put(Perception(
+                    kind="PersonaDriftDetected",
+                    t=time.time(),
+                    data={"violations": violations, "snippet": doll_text[:120]},
+                ))
 
         # P6 deterministic successful-repeat detector (spec §13.1): checked
         # after this turn's tool executions have populated recent_outputs.

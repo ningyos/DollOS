@@ -234,6 +234,23 @@ def test_repeat_loop_detected_perception_rendered():
     assert "focus → same thing" in body
 
 
+def test_persona_drift_detected_perception_rendered():
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(
+        kind="PersonaDriftDetected",
+        t=time.time(),
+        data={
+            "violations": ["banned substring found: 'a~'"],
+            "snippet": "哈囉a~最近好嗎",
+        },
+    )
+    body = _percep_body(p)
+    assert "banned substring found: 'a~'" in body
+    assert "哈囉a~最近好嗎" in body
+    assert "人設約束" in body
+
+
 def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
