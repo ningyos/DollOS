@@ -75,6 +75,7 @@ class Perception:
         "UserSpoke", "ToolResultArrived", "MonitorFired",
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
         "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
+        "PersonaDriftDetected",
     ]
     t: float
     data: dict

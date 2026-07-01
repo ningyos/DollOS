@@ -1102,6 +1102,59 @@ async def test_repeat_streak_no_refire_without_a_new_streak(tmp_path):
     assert loop._state.last_repeat_alert_key == stored_fingerprint
 
 
+# --- P8 (spec 2026-07-01 persona-hardening §2): mechanical persona enforcement ---
+
+
+@pytest.mark.asyncio
+async def test_persona_violation_enqueues_perception(tmp_path):
+    """A doll_text containing a banned substring enqueues exactly one
+    PersonaDriftDetected perception with the violations list."""
+    from dollos.character import Enforcement
+
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_speech_pass("哈囉a~最近好嗎")]
+    )
+    loop._enforcement = Enforcement(banned_substrings=["a~"])
+
+    await loop.iterate()
+
+    percs = await loop._queue.drain()
+    drift_percs = [p for p in percs if p.kind == "PersonaDriftDetected"]
+    assert len(drift_percs) == 1
+    assert drift_percs[0].data["snippet"] == "哈囉a~最近好嗎"
+    assert len(drift_percs[0].data["violations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_persona_clean_turn_enqueues_nothing(tmp_path):
+    """A clean turn (no violations) enqueues no PersonaDriftDetected."""
+    from dollos.character import Enforcement
+
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_speech_pass("哈囉最近好嗎")]
+    )
+    loop._enforcement = Enforcement(banned_substrings=["a~"])
+
+    await loop.iterate()
+
+    percs = await loop._queue.drain(timeout_s=0.2)
+    assert not any(p.kind == "PersonaDriftDetected" for p in percs)
+
+
+@pytest.mark.asyncio
+async def test_persona_enforcement_default_never_fires(tmp_path):
+    """MindLoop constructed with no `enforcement` kwarg never fires
+    PersonaDriftDetected regardless of content -- zero-cost opt-out."""
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_speech_pass("哈囉a~最近好嗎!!!!!!")]
+    )
+
+    await loop.iterate()
+
+    percs = await loop._queue.drain(timeout_s=0.2)
+    assert not any(p.kind == "PersonaDriftDetected" for p in percs)
+
+
 class _CaptureLLM:
     """Captures the `user` prompt of pass 1; converges immediately."""
 
