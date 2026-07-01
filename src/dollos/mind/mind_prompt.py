@@ -38,6 +38,7 @@ def render_mind(
     tool_outcomes_block: str | None = None,
     tool_habits_hits: list[dict] | None = None,
     energy_line: str | None = None,
+    self_profile_text: str | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -54,14 +55,27 @@ def render_mind(
     ``[Memory context]`` so it is present EVERY turn (covers article-ingestion
     turns, which arrive as ordinary user turns). It shapes WHAT she writes —
     not a new tool, just a behavioral guideline (prompt engineering).
+
+    ``self_profile_text`` — optional pre-rendered body from
+    ``self_profile.render_block()`` (A1 pinned self-profile). Inserted right
+    after ``system_prompt`` and before ``[Memory guideline]`` (core self goes
+    first). Omitted entirely when ``None``/empty (no bullets pinned yet).
     """
     now = time.time()
     blocks = [
         system_prompt,
         "",
+    ]
+    if self_profile_text:
+        blocks.extend([
+            "[Self profile] (your evolving self — prune stale entries with PinSelf)",
+            self_profile_text,
+            "",
+        ])
+    blocks.extend([
         _render_memory_guideline(primary_language),
         "",
-    ]
+    ])
     # Persistent [Safe mode] banner — rendered EVERY turn while safe_mode is set
     # (not edge-triggered), so the narrowed-to-read-only state stays visible
     # until a user turn clears it (spec §8.3).
