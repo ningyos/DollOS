@@ -21,25 +21,34 @@ def test_grammar_starts_with_root_rule():
 def test_grammar_has_think_skeleton():
     g = build_qwen3_think_tool_grammar(TOOLS)
     assert (
-        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "MOOD: " line "TOOL: " tool-name'
+        'think ::= "SEEN: " line "INTENT: " line "TOOL: " tool-name "\\n" "REVIEW: " line "MOOD: " line'
         in g
     )
     assert 'line ::= [^\\n]+ "\\n"' in g
 
 
 def test_grammar_think_has_review_field():
-    """REVIEW field sits between INTENT and MOOD, reusing the `line` rule.
-    Gives the model syntactic space to self-reflect on cascade progress
-    instead of looping identical SEEN/INTENT/TOOL triples."""
+    """REVIEW field sits between TOOL and MOOD, reusing the `line` rule.
+    TOOL is committed right after INTENT so REVIEW is a genuine post-hoc
+    self-critique of the tool decision instead of a pre-hoc justification
+    for it (P2, 2026-06-25 robustness review)."""
     g = build_qwen3_think_tool_grammar(TOOLS)
     assert '"REVIEW: " line ' in g
 
 
 def test_grammar_think_has_mood_field():
-    """MOOD field sits between REVIEW and TOOL. Big model writes its mood
+    """MOOD field sits between REVIEW and </think>. Big model writes its mood
     snapshot here; dispatcher parses MOOD: line from last assistant message."""
     g = build_qwen3_think_tool_grammar(TOOLS)
     assert '"MOOD: " line' in g
+
+
+def test_grammar_tool_precedes_review():
+    """TOOL must be committed before REVIEW/MOOD (P2 fix, 2026-06-25 review):
+    mirrors the already-fixed field order in build_voice_first_grammar."""
+    g = build_qwen3_think_tool_grammar(TOOLS)
+    assert '"INTENT: " line "TOOL: " tool-name "\\n" "REVIEW: "' in g
+    assert '"REVIEW: " line "MOOD: " line "TOOL: "' not in g
 
 
 def test_grammar_tool_name_enum_includes_all_tools():

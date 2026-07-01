@@ -333,8 +333,16 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
       SEEN: <line>
       INTENT: <line>
       TOOL: <tool-name>
+      REVIEW: <line>
+      MOOD: <line>
       </think>
       <tool_call>...</tool_call>
+
+    TOOL is emitted right after INTENT (before REVIEW/MOOD) so the tool
+    decision is committed to the token stream before the self-critique is
+    written, keeping REVIEW a genuine post-hoc reflection instead of a
+    pre-hoc justification for whatever tool comes next (mirrors the
+    already-fixed field order in ``build_voice_first_grammar``).
 
     Each tool gets a per-tool call rule whose JSON body lists only the
     tool's *required string* fields. Optional fields are dropped (matches
@@ -359,7 +367,7 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
 
     head = (
         "root ::= think tool-call\n"
-        'think ::= "SEEN: " line "INTENT: " line "REVIEW: " line "MOOD: " line "TOOL: " tool-name "\\n</think>\\n\\n"\n'
+        'think ::= "SEEN: " line "INTENT: " line "TOOL: " tool-name "\\n" "REVIEW: " line "MOOD: " line "</think>\\n\\n"\n'
         'line ::= [^\\n]+ "\\n"\n'
         f"tool-name ::= {tool_name_alts}\n"
         f"tool-call ::= {tool_call_alts}\n"
