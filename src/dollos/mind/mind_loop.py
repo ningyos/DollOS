@@ -27,6 +27,7 @@ from dollos.mind.mind_state import (
     save_state,
 )
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
 from dollos.wal.perception_log import PerceptionWAL
@@ -293,6 +294,28 @@ class MindLoop:
                 )
             except Exception:
                 logger.exception("transcript write (doll) failed; continuing")
+
+        # P6 deterministic successful-repeat detector (spec §13.1): checked
+        # after this turn's tool executions have populated recent_outputs.
+        # Unlike failure-triggered safe mode (§8.3) this does NOT narrow the
+        # tool registry — a successful repeat means the tools work fine, so
+        # the right intervention is a louder signal, not less capability.
+        # Idempotent via last_repeat_alert_key: only enqueues when the streak
+        # fingerprint changes (first trip, or an escalating count). If the
+        # streak breaks, the field is deliberately left as-is — the next
+        # genuine streak naturally produces a different (lower) count, so its
+        # fingerprint differs and it re-alerts with no extra bookkeeping.
+        streak = detect_repeat_streak(self._state.recent_outputs)
+        if streak is not None:
+            kind, summary, count = streak
+            fingerprint = f"{kind}:{summary}:{count}"
+            if fingerprint != self._state.last_repeat_alert_key:
+                self._queue.put(Perception(
+                    kind="RepeatLoopDetected",
+                    t=time.time(),
+                    data={"tool": kind, "summary": summary, "count": count},
+                ))
+                self._state.last_repeat_alert_key = fingerprint
 
         # Update counters + persist
         self._state.iter_count += 1
