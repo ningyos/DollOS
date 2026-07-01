@@ -39,7 +39,7 @@ research 結論:always-inject 可寫 self-profile = MemGPT/Letta **core memory b
 ## 我注意到的主人
 - [u1·2026-06-28] 主人常忘記吃午餐
 ```
-- **bullet 行格式固定**:`- [<id>·<YYYY-MM-DD>] <text>`。id = 段字首(self→`s` / relationship→`r` / user→`u`)+ 該段單調遞增序號(`s1`, `s2`…,移除不重用)。日期 = pin/最後更新日。此格式讓讀-改-寫 parse 可靠,且讓 id 與 staleness 都直接呈現在 always-inject block(§3.3)。
+- **bullet 行格式固定**:`- [<id>·<YYYY-MM-DD>] <text>`。id = 段字首(self→`s` / relationship→`r` / user→`u`)+ 段內序號,**由現存 bullet 推導**(該段現有 id 的最大序號 +1,無則 1)。**已釋出的 id 可重用**(移除最高序號或清空某段後,下次 add 會拿回該號)——id 只是每回合重繪的顯示標籤、block 恆顯示當前狀態,故重用對 Doll 不可見、不造成指涉混淆;刻意不持久化 high-water-mark(避免隱藏 footer 吃 always-inject 的 cap 預算)。日期 = pin/最後更新日。此格式讓讀-改-寫 parse 可靠,且讓 id 與 staleness 都直接呈現在 always-inject block(§3.3)。
 - **首寫 scaffolding(R1 S5)**:檔不存在 → run() 以三段標題模板建檔;檔存在但缺某段標題 → 補該段標題;再 append/定位到對應段。
 
 ### 3.2 PinSelf — reflection-gated tool（仿 NoteToolLesson）
@@ -51,17 +51,17 @@ class PinSelf(BaseModel):
     This is YOUR evolving self — what you've learned about yourself, your
     relationship with 主人, and patterns you've noticed in them. Keep it lean;
     prune stale entries with replace/remove."""
-    section: Literal["self", "relationship", "user"]  # 哪一段;replace/remove 填 target 所屬段
+    section: Literal["self", "relationship", "user"]  # 僅 add 用來定段;replace/remove 靠 target(id)定位、忽略 section
     op: Literal["add", "replace", "remove"]           # add=新增 / replace=換掉 target / remove=刪 target
     target: str  # replace/remove 要定位的 id(例 "s1");add 時填 ""
     text: str    # add/replace 的新內容(你自己的話，別用全形引號「」『』);remove 時填 ""
 ```
 每個 op 讀哪些欄位(spec 寫死):
 - `op=add`:用 `section` 定位段 → 指派該段下一個 id + 今日日期 → append `- [{id}·{today}] {text}`(`target` 忽略)。
-- `op=replace`:用 `target`(id)定位該條 → text 換新、id 不變、日期更新為今日(`section` 僅作 sanity:須與 id 字首一致,不一致回友善錯誤)。
-- `op=remove`:用 `target`(id)定位該條 → 刪除(`text` 忽略)。
+- `op=replace`:用 `target`(id)定位該條 → text 換新、id 不變、日期更新為今日(`section` 忽略——id 全域唯一、就地定位;不做 section-字首 sanity,少一條失敗路徑、更 autonomy-friendly)。
+- `op=remove`:用 `target`(id)定位該條 → 刪除(`text`、`section` 忽略)。
 
-定位規則(R1 M3):id 唯一 → 命中恰 0 或 1。命中 0 → 回**友善錯誤字串**列出該段現有 id 讓 Doll 重試(不猜、不批量刪);命中 1 → 執行。
+定位規則(R1 M3):id 全域唯一 → 跨段就地定位、命中恰 0 或 1。命中 0 → 回**友善錯誤字串**列出**現有 id**(不限段;id 唯一)讓 Doll 重試(不猜、不批量刪);命中 1 → 執行。
 
 - **wiring(R1 M1,關鍵——`REFLECTION_TOOLS` 是 dead constant,無 runtime consumer)**:reflection turn 的真正工具注入硬編在 `mind_loop.py:349`
   ```python
@@ -122,9 +122,9 @@ ReflectionMoment 的 nudge 文字(`mind_prompt.py:252-256`)現況只提 NoteMemo
 - **wiring(最需釘住,R1 M1/M2)**:
   - reflection turn 的 `_active_tool_registry()` **實際含** PinSelf、`_active_grammar()` 涵蓋 PinSelf;非 reflection turn 不含(同 NoteToolLesson);`enabled=False` → 都不含。
   - PinSelf 在 `IN_TURN_REFEED_TOOLS`;cap 溢出 / 定位失敗 / 成功 pin 的結果都會 re-feed 給 Doll(不被丟棄)。
-- **op 行為**:`add`/`replace`/`remove` 對三段正確讀-改-寫;id 指派單調遞增、移除不重用;section→正確標題;replace 保 id、更新日期;remove 刪對條。
+- **op 行為**:`add`/`replace`/`remove` 對三段正確讀-改-寫;id 由現存 bullet 推導、可重用已釋出的 id;section→正確標題;replace 保 id、更新日期;remove 刪對條。
 - **首寫 scaffolding(R1 S5)**:檔不存在 → 建三段標題再插;缺某段標題 → 補該段。
-- **定位(R1 M3)**:target id 命中 0 → 回友善錯誤列現有 id、不寫入;命中 1 → 執行;replace 的 section 與 id 字首不符 → 友善錯誤。
+- **定位(R1 M3)**:target id 命中 0 → 回友善錯誤列現有 id、不寫入;命中 1 → 執行(replace/remove 靠 id 就地定位、忽略 section)。
 - **cap(R1 S2)**:add 與 replace 寫入後全檔字數超 `max_chars` → 回友善錯誤、不截斷、不寫入。
 - **注入**:檔有 ≥1 bullet → [Self profile] always 注入(非 reflection turn 也在)、位置在 `[Memory guideline]` 之前、含 id+日期;檔不存在 / 無 bullet(只有標題)→ 不渲染。
 - **去重(R1 S7)**:斷言 **FTS DB 內無 `self_profile.md` 這個 source**(一次涵蓋 `_derive_memory_hits` / `associative_search` / `tool_habits_search` 三條召回路徑);**結構性守衛**:斷言 self_profile.md 父目錄(memory_root 根)不在 `FtsMemory._paths` 內(防未來有人把根目錄加進索引 paths 時無聲破防)。
