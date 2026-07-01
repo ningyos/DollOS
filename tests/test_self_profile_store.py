@@ -45,12 +45,25 @@ def test_remove_drops_bullet(tmp_path):
     assert "s1" not in p.read_text()
 
 
-def test_remove_id_not_reused(tmp_path):
+def test_id_reused_after_remove(tmp_path):
     p = _p(tmp_path)
     sp.apply(p, section="self", op="add", target="", text="a", max_chars=1200, today="2026-06-30")
     sp.apply(p, section="self", op="remove", target="s1", text="", max_chars=1200, today="2026-06-30")
     sp.apply(p, section="self", op="add", target="", text="b", max_chars=1200, today="2026-06-30")
-    assert "- [s2·2026-06-30] b" in p.read_text()
+    body = p.read_text()
+    assert "- [s1·2026-06-30] b" in body
+    assert "s2" not in body
+
+
+def test_id_reused_when_top_id_freed(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="self", op="add", target="", text="a", max_chars=1200, today="2026-06-30")
+    sp.apply(p, section="self", op="add", target="", text="b", max_chars=1200, today="2026-06-30")
+    sp.apply(p, section="self", op="remove", target="s2", text="", max_chars=1200, today="2026-06-30")
+    sp.apply(p, section="self", op="add", target="", text="c", max_chars=1200, today="2026-06-30")
+    body = p.read_text()
+    assert "- [s1·2026-06-30] a" in body
+    assert "- [s2·2026-06-30] c" in body
 
 
 def test_locate_miss_returns_friendly_error_no_write(tmp_path):
@@ -65,11 +78,11 @@ def test_locate_miss_returns_friendly_error_no_write(tmp_path):
 def test_cap_rejects_add_over_limit_no_write(tmp_path):
     p = _p(tmp_path)
     long = "字" * 50
-    # 先塞到接近上限
+    # 先塞到接近上限(3 條共 236 字 <= 250)
     for _ in range(3):
-        sp.apply(p, section="self", op="add", target="", text=long, max_chars=200, today="2026-06-30")
+        sp.apply(p, section="self", op="add", target="", text=long, max_chars=250, today="2026-06-30")
     before = p.read_text()
-    msg = sp.apply(p, section="self", op="add", target="", text=long, max_chars=200, today="2026-06-30")
+    msg = sp.apply(p, section="self", op="add", target="", text=long, max_chars=250, today="2026-06-30")
     assert "上限" in msg
     assert p.read_text() == before  # 被拒、未寫入
 
@@ -100,3 +113,23 @@ def test_render_block_skips_empty_sections(tmp_path):
     assert "## 我注意到的主人" in block
     assert "- [u1·2026-06-30] 主人常忘記吃午餐" in block
     assert "## 我學到的自己" not in block  # 空段不渲染
+
+
+def test_unknown_section_add_friendly_error(tmp_path):
+    p = _p(tmp_path)
+    msg = sp.apply(p, section="bogus", op="add", target="", text="x",
+                   max_chars=1200, today="2026-06-30")
+    assert "bogus" in msg
+    assert not p.exists()  # 未寫入
+
+
+def test_render_block_no_bookkeeping_artifacts(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="self", op="add", target="", text="a", max_chars=1200, today="2026-06-30")
+    sp.apply(p, section="self", op="add", target="", text="b", max_chars=1200, today="2026-06-30")
+    block = sp.render_block(p)
+    assert block is not None
+    assert "- [s1·2026-06-30] a" in block
+    assert "- [s2·2026-06-30] b" in block
+    assert "<!--" not in block
+    assert "counters" not in block

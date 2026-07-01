@@ -23,12 +23,6 @@ _TITLE_TO_SECTION: dict[str, str] = {v: k for k, v in SECTION_TITLES.items()}
 # - [s1·2026-06-30] text
 _BULLET_RE = re.compile(r"^- \[([a-z]\d+)·(\d{4}-\d{2}-\d{2})\] (.*)$")
 
-# <!-- counters: self=2 relationship=0 user=1 -->
-# Persists the per-section high-water mark so ids are never reused after a
-# remove (a plain "max of currently-present ids" would reset to 1 once a
-# section's last bullet is removed). Invisible to _BULLET_RE / render_block.
-_COUNTER_RE = re.compile(r"^<!-- counters: (.*) -->$")
-
 
 @dataclass
 class Bullet:
@@ -56,38 +50,28 @@ def _parse(text: str) -> dict[str, list[Bullet]]:
     return sections
 
 
-def _parse_counters(text: str) -> dict[str, int]:
-    """High-water mark per section, persisted across removes. Reconciled
-    against any bullets actually present so a hand-edited/missing footer
-    can never cause id reuse."""
-    counters = {k: 0 for k in SECTION_ORDER}
-    for line in text.splitlines():
-        m = _COUNTER_RE.match(line.strip())
-        if m:
-            for part in m.group(1).split():
-                key, _, val = part.partition("=")
-                if key in counters and val.isdigit():
-                    counters[key] = int(val)
-    return counters
+def _format_bullet(b: Bullet) -> str:
+    return f"- [{b.id}·{b.date}] {b.text}"
 
 
-def _serialize(sections: dict[str, list[Bullet]], counters: dict[str, int]) -> str:
+def _serialize(sections: dict[str, list[Bullet]]) -> str:
     out: list[str] = []
     for key in SECTION_ORDER:
         out.append(f"## {SECTION_TITLES[key]}")
         for b in sections[key]:
-            out.append(f"- [{b.id}·{b.date}] {b.text}")
-    out.append("<!-- counters: " + " ".join(f"{k}={counters[k]}" for k in SECTION_ORDER) + " -->")
+            out.append(_format_bullet(b))
     return "\n".join(out) + "\n"
 
 
-def _next_id(sections: dict[str, list[Bullet]], counters: dict[str, int], section: str) -> str:
+def _next_id(bullets: list[Bullet], section: str) -> str:
+    """Derive the next id purely from bullets currently present in this
+    section (max numeric suffix + 1, or 1 if none). Ids are display-time
+    labels regenerated each turn from the current file state — a freed id
+    being reused is invisible to Doll and causes no confusion."""
     prefix = _PREFIX[section]
-    present = [int(b.id[len(prefix):]) for b in sections[section]
-               if b.id.startswith(prefix) and b.id[len(prefix):].isdigit()]
-    high_water = max(counters[section], *present) if present else counters[section]
-    counters[section] = high_water + 1
-    return f"{prefix}{counters[section]}"
+    nums = [int(b.id[len(prefix):]) for b in bullets
+            if b.id.startswith(prefix) and b.id[len(prefix):].isdigit()]
+    return f"{prefix}{(max(nums) + 1) if nums else 1}"
 
 
 def _find(sections: dict[str, list[Bullet]], target: str) -> tuple[str, int] | None:
@@ -109,10 +93,11 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     friendly-error string (never raises for cap/locate misses)."""
     raw = path.read_text() if path.exists() else ""
     sections = _parse(raw)
-    counters = _parse_counters(raw)
 
     if op == "add":
-        new_id = _next_id(sections, counters, section)
+        if section not in SECTION_ORDER:
+            return f"未知 section:{section}"
+        new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=text))
         result = f"已 pin 到「{SECTION_TITLES[section]}」:{new_id}"
     elif op == "replace":
@@ -132,7 +117,7 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     else:
         return f"未知 op:{op}"
 
-    serialized = _serialize(sections, counters)
+    serialized = _serialize(sections)
     if op in ("add", "replace") and len(serialized) > max_chars:
         return (f"self-profile 已達上限({max_chars} 字),寫入後會是 {len(serialized)} 字。"
                 f"先 remove/replace 一些再 pin。")
@@ -156,5 +141,5 @@ def render_block(path: Path) -> str | None:
             continue
         out.append(f"## {SECTION_TITLES[key]}")
         for b in sections[key]:
-            out.append(f"- [{b.id}·{b.date}] {b.text}")
+            out.append(_format_bullet(b))
     return "\n".join(out)
