@@ -73,6 +73,45 @@ def test_open_loops_rendered():
     assert "t1" in prompt and "check tmp" in prompt
 
 
+def test_open_loops_empty_renders_none():
+    from dollos.mind.mind_prompt import _render_open_loops
+
+    assert _render_open_loops([], time.time()) == "(none)"
+
+
+def test_open_loops_stale_gets_marker():
+    """P7 (spec §13.2): a loop older than OPEN_LOOP_STALE_S gets a visible
+    STALE marker nudging the model to act on it or CloseLoop it."""
+    from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, _render_open_loops
+
+    now = 1_000_000.0
+    loops = [OpenLoop(id="t1", desc="check tmp", opened_at=now - OPEN_LOOP_STALE_S - 1)]
+    out = _render_open_loops(loops, now)
+    assert "STALE" in out
+    assert "CloseLoop" in out
+
+
+def test_open_loops_fresh_no_marker():
+    """A loop well under the threshold renders exactly as before, unmarked."""
+    from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, _render_open_loops
+
+    now = 1_000_000.0
+    loops = [OpenLoop(id="t1", desc="check tmp", opened_at=now - (OPEN_LOOP_STALE_S - 60))]
+    out = _render_open_loops(loops, now)
+    assert "STALE" not in out
+    assert "t1" in out and "check tmp" in out
+
+
+def test_open_loops_exact_boundary_no_marker():
+    """Strict `>` boundary: exactly at OPEN_LOOP_STALE_S is NOT stale yet."""
+    from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, _render_open_loops
+
+    now = 1_000_000.0
+    loops = [OpenLoop(id="t1", desc="check tmp", opened_at=now - OPEN_LOOP_STALE_S)]
+    out = _render_open_loops(loops, now)
+    assert "STALE" not in out
+
+
 def test_recent_perceptions_newest_last():
     state = MindState()
     state.recent_perceptions.append(Perception(kind="UserSpoke", t=100.0, data={"text": "first"}))

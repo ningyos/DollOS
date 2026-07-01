@@ -10,6 +10,14 @@ from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
 
+# Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice).
+# Shared between the render's ⚠ STALE marker (_render_open_loops below) and
+# the fallback memory-hit query injection in mind_loop.py's
+# _derive_memory_hits — both must compare with the exact same strict `>`
+# against this same constant so a loop is consistently "stale" (or not)
+# wherever it matters.
+OPEN_LOOP_STALE_S = 1800
+
 
 def energy_bucket_line(energy: float) -> str:
     """Return objective energy line for [Mind state] block (B3 spec §3.4).
@@ -218,10 +226,16 @@ def _render_active_tasks(tasks: list, now: float) -> str:
 def _render_open_loops(loops: list, now: float) -> str:
     if not loops:
         return "(none)"
-    return "\n".join(
-        f"- {lp.id}: {lp.desc} (opened {_human_secs(now - lp.opened_at)} ago)"
-        for lp in loops
-    )
+    lines = []
+    for lp in loops:
+        line = f"- {lp.id}: {lp.desc} (opened {_human_secs(now - lp.opened_at)} ago)"
+        # Strict `>` (not `>=`): a loop exactly at the threshold is not yet
+        # stale. mind_loop.py's fallback query injection mirrors this exact
+        # comparison against the same OPEN_LOOP_STALE_S constant.
+        if now - lp.opened_at > OPEN_LOOP_STALE_S:
+            line += " ⚠ STALE — 尚未跟進，考慮處理或用 CloseLoop 結案"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _render_pending(events: list, now: float) -> str:
