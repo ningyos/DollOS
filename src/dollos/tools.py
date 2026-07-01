@@ -765,6 +765,46 @@ class NoteToolLesson(BaseModel):
         return f"lesson noted: {self.situation[:60]}"
 
 
+class PinSelf(BaseModel):
+    """Pin or revise a core fact in your self-profile (reflection turns only).
+    This is YOUR evolving self — what you've learned about yourself, your
+    relationship with 主人, and patterns you've noticed in them. Keep it lean;
+    prune stale entries with replace/remove."""
+
+    section: Literal["self", "relationship", "user"] = Field(
+        description="哪一段:self=關於你自己 / relationship=你和主人 / user=你注意到的主人。replace/remove 也填(以 target 為準)。"
+    )
+    op: Literal["add", "replace", "remove"] = Field(
+        description="add=新增一條 / replace=用 target 定位換成 text / remove=用 target 定位刪除。"
+    )
+    target: str = Field(
+        description='要 replace/remove 的那條的 id(例 "s1"、"r2");add 時填空字串 ""。'
+    )
+    text: str = Field(
+        description="add/replace 的新內容(你自己的話,別用全形引號「」『』);remove 時填空字串。"
+    )
+
+    def _summary(self) -> str:
+        return f"self {self.op} {self.target or self.section}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind import self_profile
+        path = ctx.memory_root / "self_profile.md"
+        today = f"{datetime.now():%Y-%m-%d}"
+        result = self_profile.apply(
+            path,
+            section=self.section,
+            op=self.op,
+            target=self.target,
+            text=self.text,
+            max_chars=ctx.self_profile_max_chars,
+            today=today,
+        )
+        # 絕不 index_file(§3.1):self_profile.md 靠 always-inject,不進召回。
+        _record(ctx, "PinSelf", self._summary())
+        return result
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,
@@ -774,7 +814,7 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     MoodTool,
 ]
 
-REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson]
+REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
