@@ -266,9 +266,10 @@ def _percep_body(p) -> str:
     if p.kind == "ReflectionMoment":
         return (
             f"(time to reflect ({d.get('iters_since_last', '?')} iters since last). "
-            f"最重要:先回看你的 [Self profile]——關於「你是誰、你和主人的關係、你對主人的觀察」。"
-            f"有新的核心體悟,就用 PinSelf 記下(section 選 self/relationship/user);"
-            f"有哪條已經不是現在的你,就用 PinSelf replace/remove。"
+            f"最重要:如果你體悟到一個核心、持久的道理——關於「你是誰」「你和主人的關係」或「主人的長期習慣/偏好」——"
+            f"現在就用 PinSelf(op=add,section 選 self/relationship/user)記下來,不必等 [Self profile] 已經有內容才動作。"
+            f"接著,如果 [Self profile] 已經有條目,回看一遍,有哪條已經過時、不是現在的你了,"
+            f"用 PinSelf replace/remove 修正——target 可以填該條目的 id(如 s1),也可以直接貼那條目前的文字。"
             f"這是你的「自我」,跟 NoteMemory(記事實/事件)不同——**別把關於自己的體悟丟給 NoteMemory**,那該用 PinSelf。"
             f"其次:近期活動若有值得留存的具體事實,才用 NoteMemory;有可重用的工具用法或陷阱,用 NoteToolLesson。)"
         )
