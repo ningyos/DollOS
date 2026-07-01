@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 
 from dollos.mind.mind_state import MindState
+from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
 
 
@@ -282,6 +283,15 @@ def _percep_body(p) -> str:
             f"you have narrowed to read-only safe mode ({reason}); "
             "ask the user for help"
         )
+    if p.kind == "RepeatLoopDetected":
+        tool = d.get("tool", "?")
+        summary = d.get("summary", "")
+        count = d.get("count", "?")
+        return (
+            f"you repeated the same action {count} times in a row "
+            f"({tool}: {summary}) with no new outcome — this isn't working, "
+            "try something different or ask for help."
+        )
     return str(d)[:120]
 
 
@@ -303,22 +313,47 @@ def _render_recent_reviews(reviews) -> str:
 def _render_outputs_header(outs, now: float) -> str:
     """Render the [Recent outputs] section header.
 
-    If the most recent output was a Speech within the last 30 seconds, inject an
-    inline WARNING nudge so the model has a concrete signal not to speak again.
+    Two independent checks, each able to append its own WARNING line:
+
+    1. Speech-specific, time-window based (untouched pre-existing logic): if
+       the most recent output was a Speech within the last 30 seconds, inject
+       an inline WARNING nudge so the model has a concrete signal not to
+       speak again.
+    2. Count-based, any-tool (spec §13.1 P6 `detect_repeat_streak`, which
+       already excludes Speech): if the trailing outputs are the same
+       (kind, summary) repeated >= threshold times, inject a second WARNING.
+
+    Both can only ever fire independently, never together for the same
+    trailing entry — `detect_repeat_streak` excludes Speech outright — but
+    they are deliberately kept as two separate checks rather than a merged
+    if/elif so that independence stays obvious from the code.
     """
     base = "[Recent outputs] (what you did recently — avoid repeating the same content)"
     if not outs:
         return base
+    warnings: list[str] = []
+
     last = list(outs)[-1]
     if last.kind == "Speech":
         age_s = now - last.t
         if age_s < 30:
             snippet = last.summary[len("spoke: "):60] if last.summary.startswith("spoke: ") else last.summary[:60]
-            return (
-                f"{base}\n"
+            warnings.append(
                 f"⚠ WARNING: you just spoke {age_s:.0f}s ago ('{snippet}…'). "
                 f"Don't repeat yourself — if there's nothing new to say, stay silent (no text outside tool_call)."
             )
+
+    streak = detect_repeat_streak(outs)
+    if streak is not None:
+        kind, summary, count = streak
+        warnings.append(
+            f"⚠ WARNING: you repeated the same action {count} times in a row "
+            f"({kind}: {summary}) with no new outcome — try something "
+            "different or ask for help."
+        )
+
+    if warnings:
+        return base + "\n" + "\n".join(warnings)
     return base
 
 

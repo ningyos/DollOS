@@ -74,7 +74,7 @@ class Perception:
     kind: Literal[
         "UserSpoke", "ToolResultArrived", "MonitorFired",
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
-        "Interrupted", "SafeModeEntered",
+        "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
     ]
     t: float
     data: dict
@@ -147,6 +147,12 @@ class MindState:
     safe_mode: bool = False
     safe_mode_reason: str = ""
 
+    # P6 deterministic successful-repeat detector (spec §13.1): idempotency
+    # guard holding the last-announced streak fingerprint
+    # ("{kind}:{summary}:{count}"). Additive field — pure identity/dedup
+    # state, no behavior of its own.
+    last_repeat_alert_key: str = ""
+
     # B2 sleep-time consolidation tracking (spec §B2 §4).
     user_turn_count: int = 0
     last_consolidation_turn: int = 0
@@ -198,6 +204,7 @@ def save_state(state: MindState, path: Path) -> bool:
             "session_started_at": state.session_started_at,
             "safe_mode": state.safe_mode,
             "safe_mode_reason": state.safe_mode_reason,
+            "last_repeat_alert_key": state.last_repeat_alert_key,
             "user_turn_count": state.user_turn_count,
             "last_consolidation_turn": state.last_consolidation_turn,
             "last_consolidation_at": state.last_consolidation_at,
@@ -301,6 +308,7 @@ def load_state(path: Path) -> MindState:
             session_started_at=time.time(),  # REFRESH: new session
             safe_mode=data.get("safe_mode", False),
             safe_mode_reason=data.get("safe_mode_reason", ""),
+            last_repeat_alert_key=data.get("last_repeat_alert_key", ""),
             user_turn_count=data.get("user_turn_count", 0),
             last_consolidation_turn=data.get("last_consolidation_turn", 0),
             last_consolidation_at=data.get("last_consolidation_at", 0.0),

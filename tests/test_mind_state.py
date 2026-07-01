@@ -98,3 +98,32 @@ def test_energy_round_trip_and_clamp(tmp_path):
     assert load_state(p).energy == 1.0
     data["energy"] = -0.5; p.write_text(json.dumps(data))
     assert load_state(p).energy == 0.0
+
+
+def test_last_repeat_alert_key_defaults_empty():
+    assert MindState().last_repeat_alert_key == ""
+
+
+def test_last_repeat_alert_key_round_trip(tmp_path):
+    from dollos.mind.mind_state import MindState, save_state, load_state
+    s = MindState()
+    s.last_repeat_alert_key = "SetFocus:focus → same thing:3"
+    p = tmp_path / "s.json"
+    assert save_state(s, p)
+    assert load_state(p).last_repeat_alert_key == "SetFocus:focus → same thing:3"
+
+
+def test_last_repeat_alert_key_defaults_when_absent_in_old_state(tmp_path):
+    """Old persisted state blobs saved before P6 lack this key entirely — must
+    load fine with the default, not raise or blank the rest of the state."""
+    import json
+    from dollos.mind.mind_state import MindState, save_state, load_state
+    s = MindState(scratchpad="keep me")
+    p = tmp_path / "s.json"
+    assert save_state(s, p)
+    data = json.loads(p.read_text())
+    data.pop("last_repeat_alert_key", None)  # simulate a pre-P6 persisted blob
+    p.write_text(json.dumps(data))
+    loaded = load_state(p)
+    assert loaded.last_repeat_alert_key == ""
+    assert loaded.scratchpad == "keep me"

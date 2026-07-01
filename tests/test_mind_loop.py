@@ -1014,6 +1014,94 @@ async def test_safe_mode_grammar_build_failure_propagates(tmp_path, monkeypatch)
         loop._active_grammar()
 
 
+# --- P6 (spec §13.1): deterministic successful-repeat detector wiring ---
+
+
+@pytest.mark.asyncio
+async def test_repeat_streak_enqueues_perception_at_threshold(tmp_path):
+    """3 identical SetFocus-shaped outputs -> exactly one RepeatLoopDetected
+    perception, enqueued after this turn's tool executions."""
+    import time
+
+    from dollos.mind.mind_state import OutputRecord
+
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
+    for _ in range(3):
+        loop._state.recent_outputs.append(
+            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+        )
+
+    await loop.iterate()
+
+    percs = await loop._queue.drain()
+    repeat_percs = [p for p in percs if p.kind == "RepeatLoopDetected"]
+    assert len(repeat_percs) == 1
+    assert repeat_percs[0].data == {
+        "tool": "SetFocus", "summary": "focus → same thing", "count": 3,
+    }
+    assert loop._state.last_repeat_alert_key == "SetFocus:focus → same thing:3"
+
+
+@pytest.mark.asyncio
+async def test_repeat_streak_escalation_refires_with_updated_fingerprint(tmp_path):
+    """A 4th identical output on a later turn re-fires (escalation 3 -> 4) with
+    an updated fingerprint/count -- not suppressed as a duplicate alert."""
+    import time
+
+    from dollos.mind.mind_state import OutputRecord
+
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
+    for _ in range(3):
+        loop._state.recent_outputs.append(
+            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+        )
+    await loop.iterate()
+    await loop._queue.drain()  # consume the first alert
+
+    loop._queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "again"}))
+    loop._state.recent_outputs.append(
+        OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+    )
+    await loop.iterate()
+
+    percs = await loop._queue.drain()
+    repeat_percs = [p for p in percs if p.kind == "RepeatLoopDetected"]
+    assert len(repeat_percs) == 1
+    assert repeat_percs[0].data["count"] == 4
+    assert loop._state.last_repeat_alert_key == "SetFocus:focus → same thing:4"
+
+
+@pytest.mark.asyncio
+async def test_repeat_streak_no_refire_without_a_new_streak(tmp_path):
+    """After an alert, a differing action breaks the streak -> no further
+    alert fires (the stored fingerprint is left untouched, per spec)."""
+    import time
+
+    from dollos.mind.mind_state import OutputRecord
+
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
+    for _ in range(3):
+        loop._state.recent_outputs.append(
+            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+        )
+    await loop.iterate()
+    await loop._queue.drain()  # consume the first alert
+    stored_fingerprint = loop._state.last_repeat_alert_key
+
+    loop._queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "different"}))
+    loop._state.recent_outputs.append(
+        OutputRecord(t=time.time(), kind="Recall", summary="recalled: something else")
+    )
+    await loop.iterate()
+
+    # No new perception is expected here, so drain with a short timeout
+    # instead of blocking forever waiting for one that never arrives.
+    percs = await loop._queue.drain(timeout_s=0.2)
+    assert not any(p.kind == "RepeatLoopDetected" for p in percs)
+    # Not proactively reset -- unchanged until a new genuine streak forms.
+    assert loop._state.last_repeat_alert_key == stored_fingerprint
+
+
 class _CaptureLLM:
     """Captures the `user` prompt of pass 1; converges immediately."""
 

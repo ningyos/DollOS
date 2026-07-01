@@ -132,6 +132,69 @@ def test_recent_outputs_ignores_non_speech_recent():
     assert "WARNING" not in out
 
 
+def test_recent_outputs_warns_on_repeat_streak():
+    """P6 (spec §13.1): a >= threshold same-action streak (non-Speech) warns,
+    independently of the Speech time-window check above."""
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    for _ in range(3):
+        state.recent_outputs.append(OutputRecord(
+            kind="SetFocus",
+            t=time.time(),
+            summary="focus → same thing",
+        ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" in out
+    assert "SetFocus" in out
+    assert "same thing" in out
+
+
+def test_recent_outputs_no_repeat_warn_below_threshold():
+    """Below-threshold repeats (2x) must not warn."""
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    for _ in range(2):
+        state.recent_outputs.append(OutputRecord(
+            kind="SetFocus",
+            t=time.time(),
+            summary="focus → same thing",
+        ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" not in out
+
+
+def test_recent_outputs_repeat_streak_excludes_speech():
+    """A same-content Speech streak must NOT trigger the count-based warning
+    (Speech already has its own separate time-window warning)."""
+    from dollos.mind.mind_prompt import _render_outputs_header
+
+    state = MindState()
+    for _ in range(5):
+        state.recent_outputs.append(OutputRecord(
+            kind="Speech",
+            t=time.time() - 60,  # outside the 30s Speech warning window
+            summary="spoke: 早安",
+        ))
+    out = _render_outputs_header(list(state.recent_outputs), time.time())
+    assert "WARNING" not in out
+
+
+def test_repeat_loop_detected_perception_rendered():
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(
+        kind="RepeatLoopDetected",
+        t=time.time(),
+        data={"tool": "SetFocus", "summary": "focus → same thing", "count": 3},
+    )
+    body = _percep_body(p)
+    assert "3" in body
+    assert "SetFocus" in body
+    assert "focus → same thing" in body
+
+
 def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
