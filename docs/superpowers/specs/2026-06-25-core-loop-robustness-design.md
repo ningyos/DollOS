@@ -742,3 +742,126 @@ be folded in:
   subagent-spawned side-effects.** Subagent observability + the `task_id`
   correlation fix + monitor provenance. Execution-substrate concern; separate
   track.
+
+---
+
+## 13. <a id="ADDENDUM-2026-07-01"></a>Addendum 2026-07-01 — closing P6's dropped half + P7's cheap slice
+
+Status check against HEAD `7ac61d3` (a week after this spec): P1/P3/P5/P9/P10 shipped
+as designed; P2 shipped its capture+reorder half (residual: the ephemeral-Workflow
+grammar `build_qwen3_think_tool_grammar` never got the TOOL-then-REVIEW reorder that
+§6.1 gave `build_voice_first_grammar` — tracked as a separate mechanical fix, not
+addressed here); P4 shipped at its already-decided narrower scope (transcript
+consolidation only, per the pre-existing 2026-05-18 roadmap deferral of
+merge/prune-existing-memory). What actually shipped as "P6" (§8) is scoped
+entirely to FAILURE handling (tool-existence guard, 3-strike, pass-budget,
+failure-triggered safe-mode) — §8.2's rejection of the embedding-trajectory
+detector as *primary* got read, in implementation, as rejecting general
+successful-repeat detection *entirely*. That's not what §8.2 said: it rejected
+one specific mechanism (embedding RTT per pass) as the primary bound, not the
+underlying problem (Doll can get stuck repeating a successful-but-unproductive
+action, e.g. `SetFocus` on the same text turn after turn — observed directly in
+the 2026-05-16 persistent-mind-design long-run test, "mitigated" only by Doll
+being able to passively see her own `recent_outputs" — which the 2026-07-01
+re-audit confirmed is still the only mitigation, and evidently wasn't enough
+when it was first observed).
+
+This section specifies the two smallest genuinely-missing pieces, using only
+mechanisms already proven in this file (deterministic streak-counting,
+fingerprint-gated one-shot perceptions, persistent prompt banners) — no new
+infra, no embedding calls, no LLM calls.
+
+### 13.1 P6 (the dropped half) — deterministic successful-repeat detector
+
+**Substrate already exists and needs no schema change:** every tool's `run()`
+calls `_record(ctx, kind, summary)` (`tools.py:41-45`), appending an
+`OutputRecord(t, kind, summary)` to `state.recent_outputs` (maxlen=15,
+`mind_state.py:127`) — this already covers every tool, not just the
+Speech-specific case `_render_outputs_header` special-cases today
+(`mind_prompt.py:301-321`).
+
+- **Detector** (new pure function, `mind_state.py` or a small new
+  `mind/repeat_detect.py` — implementer's call): `detect_repeat_streak(outputs,
+  threshold=REPEAT_STREAK_THRESHOLD) -> tuple[str, str, int] | None`. Walk
+  `outputs` from the end while `kind` and `summary` both equal the last entry's;
+  return `(kind, summary, count)` when `count >= threshold`, else `None`.
+  **Exclude `kind == "Speech"`** — it already has its own, differently-tuned
+  (30s-window, not count-based) warning; don't double-fire.
+- **Constant:** `REPEAT_STREAK_THRESHOLD = 3` (mirrors the existing
+  `SAFE_MODE_FAIL_THRESHOLD = 3` convention).
+- **New `MindState` field:** `last_repeat_alert_key: str = ""` — pure
+  idempotency guard (which streak-fingerprint was last announced), additive and
+  tolerant under the existing `_coerce` field-filter (§4.1), no migration
+  needed.
+- **Wiring (`mind_loop.py`, end of `iterate()`, after tool execution has
+  populated `recent_outputs` for this turn):** compute the streak; if tripped
+  and its fingerprint (`f"{kind}:{summary}:{count}"`) differs from
+  `state.last_repeat_alert_key`, enqueue `Perception(kind="RepeatLoopDetected",
+  data={"tool": kind, "summary": summary, "count": count})` and update the
+  stored fingerprint. Re-fires on escalation (3→4→5...) since the fingerprint
+  changes; naturally stops the moment Doll does something different (streak
+  breaks, detector returns `None`, next real repeat starts a fresh fingerprint).
+- **`Perception.kind` Literal** (`mind_state.py:74-78`): add
+  `"RepeatLoopDetected"` (same pattern as the existing `SafeModeEntered`/
+  `Interrupted` additions).
+- **Render, two places** (both additive, no restriction of capability — these
+  are SUCCESSFUL actions, nothing is broken, so narrowing the tool registry
+  the way failure-triggered safe-mode does would be the wrong response):
+  1. `_percep_body` (`mind_prompt.py`): a case for `"RepeatLoopDetected"`
+     rendering something like "you repeated the same action N times in a row
+     (`{tool}`: `{summary}`) with no new outcome — this isn't working, try
+     something different or ask for help."
+  2. `_render_outputs_header` (`mind_prompt.py:301-321`): generalize the
+     existing Speech-only 30s-window check into two independent checks — keep
+     Speech's time-window logic untouched, and ADD the count-based
+     `detect_repeat_streak` check (excluding Speech) as a second possible
+     WARNING line, so the nudge is visible in the header every turn the streak
+     persists, not just once via the perception.
+- **Why no tool-registry restriction:** the failure-triggered safe-mode (§8.3)
+  narrows to read-only because something is demonstrably broken and writes are
+  risky. A successful-repeat means the tools work fine — Doll is just stuck.
+  The correct intervention is louder signal, not narrower capability.
+- **Tests:** unit for `detect_repeat_streak` (below/at/above threshold, mixed
+  kinds don't false-positive, Speech excluded); unit that 3 identical
+  `SetFocus` calls enqueue exactly one `RepeatLoopDetected` (not one per turn);
+  unit that a 4th identical call re-fires (escalation) with an updated
+  fingerprint; unit that a differing call resets (no further alerts without a
+  new streak); render tests for both surfaces.
+
+### 13.2 P7 (cheap slice only) — drive memory retrieval from stale open loops
+
+Per §11's original scoping, this ships ONLY the cheap slice the critic
+identified — not the full L-effort goal-actuation rec (self-wake
+`PendingEvent` re-entry, Observe/Stay-silent grammar, success-predicate
+convergence guards all remain deferred, still needing P1-dependent design
+they now technically have via P1 shipping, but that's a separate future pass).
+
+`open_loops` is already rendered every turn (`_render_open_loops`,
+`mind_prompt.py:217-223`, wired at `mind_prompt.py:109`) — so this is not a
+visibility gap, it's a *salience* gap: a stale loop sits in a flat list
+identical in weight to a fresh one, and nothing pulls memory retrieval toward
+it the way a fresh `UserSpoke` does.
+
+- **Age-based salience in the render:** `_render_open_loops` gets a staleness
+  threshold constant (e.g. `OPEN_LOOP_STALE_S = 1800`, 30 min — implementer's
+  call on exact value, no strong prior). Loops older than this get a visible
+  marker appended, e.g. `f"- {lp.id}: {lp.desc} (opened {age} ago) ⚠ STALE —
+  尚未跟進，考慮處理或用 CloseLoop 結案"`. Pure formatting change, no new state.
+- **`_derive_memory_hits` (`mind_loop.py:321-343`):** today, when no
+  `UserSpoke` is found among `recent_perceptions`, it falls back to
+  concatenating the last 3 perception bodies as the memsearch query. Extend
+  this exact fallback branch (do NOT touch the `UserSpoke`-found branch — a
+  real user message must stay the sole query source when present) to also
+  append stale (`age > OPEN_LOOP_STALE_S`) open-loop `desc` text to the
+  fallback query, so idle/reflection/scheduled turns actively retrieve memory
+  related to unresolved commitments instead of only ambient recent-perception
+  noise.
+- **Why this is the whole slice:** it's additive (empty `open_loops` → no
+  behavior change, existing tests must still pass unmodified), touches one
+  already-identified branch, adds no new tool/perception/grammar surface, and
+  directly targets the "nothing resurfaces a stale commitment" gap without
+  building the much larger goal-stack machinery the full P7 rec asked for.
+- **Tests:** `_render_open_loops` marks a loop past the threshold and not one
+  under it; `_derive_memory_hits` fallback query includes a stale loop's `desc`
+  and excludes a fresh one; existing `_derive_memory_hits` tests (UserSpoke
+  path, empty-state path) remain green untouched.
