@@ -1,6 +1,7 @@
 """Tests for the [Self profile] always-inject block in render_mind (Task 6)."""
-from dollos.mind.mind_prompt import render_mind
-from dollos.mind.mind_state import MindState
+from dollos.mind.mind_prompt import render_mind, _percep_body
+from dollos.mind.mind_state import MindState, Perception
+import time
 
 
 def _state():
@@ -20,3 +21,10 @@ def test_self_profile_block_rendered_before_memory_guideline():
 def test_self_profile_block_absent_when_none():
     out = render_mind(_state(), [], "SYSTEM", self_profile_text=None)
     assert "[Self profile]" not in out
+
+
+def test_reflection_nudge_mentions_pinself():
+    p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
+    text = _percep_body(p)
+    assert "PinSelf" in text
+    assert "self-profile" in text or "自己" in text
