@@ -222,3 +222,40 @@ def test_render_block_no_bookkeeping_artifacts(tmp_path):
     assert "- [s2·2026-06-30] b" in block
     assert "<!--" not in block
     assert "counters" not in block
+
+
+def test_add_strips_prepended_tag_with_date_separator(tmp_path):
+    """The model sometimes prepends [id·date] to text; strip it before storing."""
+    p = _p(tmp_path)
+    msg = sp.apply(p, section="self", op="add", target="",
+                   text="[r1·2026-07-04] 我很在意主人", max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    # Stored text must be clean, no double tag
+    assert "- [s1·2026-07-01] 我很在意主人" in body
+    assert "[r1·2026-07-04]" not in body
+    assert "s1" in msg
+
+
+def test_replace_strips_prepended_tag_with_date_separator(tmp_path):
+    """Replace operation also strips the model's prepended tag."""
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人喜歡喝咖啡",
+             max_chars=1200, today="2026-07-01")
+    msg = sp.apply(p, section="user", op="replace", target="u1",
+                   text="[u1·2026-07-04] 主人最近熬夜", max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    # Stored text must be clean, no double tag
+    assert "- [u1·2026-07-01] 主人最近熬夜" in body
+    assert "[u1·2026-07-04]" not in body
+    assert "u1" in msg
+
+
+def test_add_preserves_bracket_content_without_date_separator(tmp_path):
+    """Only strips tags with '·'; content like [note] is preserved."""
+    p = _p(tmp_path)
+    msg = sp.apply(p, section="self", op="add", target="",
+                   text="[note] 這是正常內容", max_chars=1200, today="2026-07-01")
+    body = p.read_text()
+    # Text without '·' in brackets must NOT be stripped
+    assert "- [s1·2026-07-01] [note] 這是正常內容" in body
+    assert "s1" in msg

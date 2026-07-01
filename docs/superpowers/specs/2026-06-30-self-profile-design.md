@@ -58,10 +58,10 @@ class PinSelf(BaseModel):
 ```
 每個 op 讀哪些欄位(spec 寫死):
 - `op=add`:用 `section` 定位段 → 指派該段下一個 id + 今日日期 → append `- [{id}·{today}] {text}`(`target` 忽略)。
-- `op=replace`:用 `target`(id)定位該條 → text 換新、id 不變、日期更新為今日(`section` 忽略——id 全域唯一、就地定位;不做 section-字首 sanity,少一條失敗路徑、更 autonomy-friendly)。
-- `op=remove`:用 `target`(id)定位該條 → 刪除(`text`、`section` 忽略)。
+- `op=replace`:用 `target` 定位該條 → text 換新、id 不變、日期更新為今日(`section` 忽略)。
+- `op=remove`:用 `target` 定位該條 → 刪除(`text`、`section` 忽略)。
 
-定位規則(R1 M3):id 全域唯一 → 跨段就地定位、命中恰 0 或 1。命中 0 → 回**友善錯誤字串**列出**現有 id**(不限段;id 唯一)讓 Doll 重試(不猜、不批量刪);命中 1 → 執行。
+**定位規則(R2 live-smoke 修正——id-或-文字,穩健)**:實測真模型 `replace/remove` 時**不吐裸 id,而是吐整行 bullet 或改寫過的文字**(如 `target='[u1·2026-07-01] 主人早睡早起'` 甚至換句話說),原本「只比對 `b.id == target`」的 id-only 設計 → **每個真實 replace 靜默 no-op**(production-breaking)。故 `_find(target)` 改為:(1) 從 target 抽 id token `[sru]\d+`(整行 bullet 內就含 id → 命中),存在該 id 則用之;(2) 抽不到 → 文字比對:去掉 `- ` 與 `[id·date] ` 前綴後,先精確等於某 bullet text、再退唯一子字串(target⊆text 或 text⊆target);(3) 命中恰 1 → 執行;命中 0 或 >1 → 回**友善錯誤字串**列出現有條目(id + text)讓 Doll 重貼。exact-first + unique-substring + 0/>1-error 兼顧「吃模型實際輸出」與「不誤刪」。
 
 - **wiring(R1 M1,關鍵——`REFLECTION_TOOLS` 是 dead constant,無 runtime consumer)**:reflection turn 的真正工具注入硬編在 `mind_loop.py:349`
   ```python

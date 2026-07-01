@@ -91,6 +91,13 @@ def _clean_target_text(target: str) -> str:
     return _LEADING_TAG_RE.sub("", target).strip()
 
 
+def _strip_incoming_tag(text: str) -> str:
+    """Strip a leading tag the model may prepend to PinSelf text.
+    Only strips tags containing '·' (our bullet format), preserving
+    legitimate content that starts with [brackets] but lacks the date separator."""
+    return re.sub(r'^\s*(?:- )?\[[^\]]*·[^\]]*\]\s*', '', text).strip()
+
+
 def _find(sections: dict[str, list[Bullet]], target: str) -> tuple[str, int] | None:
     all_bullets = [(key, i, b) for key in SECTION_ORDER for i, b in enumerate(sections[key])]
 
@@ -133,7 +140,8 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
         if section not in SECTION_ORDER:
             return f"未知 section:{section}"
         new_id = _next_id(sections[section], section)
-        sections[section].append(Bullet(id=new_id, date=today, text=text))
+        clean_text = _strip_incoming_tag(text)
+        sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
         result = f"已 pin 到「{SECTION_TITLES[section]}」:{new_id}"
     elif op == "replace":
         found = _find(sections, target)
@@ -142,7 +150,8 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
                      f"可用 id(如 s1)或貼該條目文字重試。")
         key, i = found
         old_id = sections[key][i].id
-        sections[key][i] = Bullet(id=old_id, date=today, text=text)
+        clean_text = _strip_incoming_tag(text)
+        sections[key][i] = Bullet(id=old_id, date=today, text=clean_text)
         result = f"已更新 {old_id}"
     elif op == "remove":
         found = _find(sections, target)
