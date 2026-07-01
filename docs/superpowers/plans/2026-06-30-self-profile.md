@@ -29,7 +29,7 @@
 - `src/dollos/mind/mind_loop.py` — import `PinSelf`;`IN_TURN_REFEED_TOOLS` 加 `"PinSelf"`;`__init__` 加 `self_profile_enabled`;`_active_tool_registry` :349 gate 注入;`iterate()` 讀檔傳 `self_profile_text`。
 - `src/dollos/mind/mind_prompt.py` — `render_mind` 加 `self_profile_text` 參數 + `[Self profile]` block;`ReflectionMoment` nudge 補 PinSelf 提示。
 - `src/dollos/kernel.py` — `MindCtx(...)` 傳 `self_profile_max_chars`;`MindLoop(...)` 傳 `self_profile_enabled`。
-- 測試:`tests/mind/test_self_profile_store.py`(新)、`tests/tools/test_pin_self.py`(新)、既有 `tests/mind/test_mind_loop*.py` / `tests/mind/test_mind_prompt*.py` / `tests/test_config.py` 增測。
+- 測試:`tests/test_self_profile_store.py`(新)、`tests/test_pin_self.py`(新)、既有 `tests/test_mind_loop*.py` / `tests/test_mind_prompt*.py` / `tests/test_config.py` 增測。
 
 ---
 
@@ -96,7 +96,7 @@ git commit -m "feat(self-profile): [self_profile] config (enabled + max_chars)"
 
 **Files:**
 - Create: `src/dollos/mind/self_profile.py`
-- Test: `tests/mind/test_self_profile_store.py`
+- Test: `tests/test_self_profile_store.py`
 
 **Interfaces:**
 - Produces:
@@ -106,7 +106,7 @@ git commit -m "feat(self-profile): [self_profile] config (enabled + max_chars)"
 
 - [ ] **Step 1: 寫失敗測試**
 
-新建 `tests/mind/test_self_profile_store.py`:
+新建 `tests/test_self_profile_store.py`:
 ```python
 from pathlib import Path
 from dollos.mind import self_profile as sp
@@ -214,7 +214,7 @@ def test_render_block_skips_empty_sections(tmp_path):
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_self_profile_store.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_self_profile_store.py -v`
 Expected: FAIL(module 不存在)。
 
 - [ ] **Step 3: 實作**
@@ -359,13 +359,13 @@ def render_block(path: Path) -> str | None:
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_self_profile_store.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_self_profile_store.py -v`
 Expected: PASS(11 項)。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/mind/self_profile.py tests/mind/test_self_profile_store.py
+git add src/dollos/mind/self_profile.py tests/test_self_profile_store.py
 git commit -m "feat(self-profile): pure store module (parse/id/cap/locate/render)"
 ```
 
@@ -376,7 +376,7 @@ git commit -m "feat(self-profile): pure store module (parse/id/cap/locate/render
 **Files:**
 - Modify: `src/dollos/mind/mind_ctx.py:40-51`
 - Modify: `src/dollos/kernel.py:264-274`
-- Test: `tests/mind/test_mind_ctx.py`(無則新建;或加進既有 kernel/ctx 測試)
+- Test: `tests/test_mind_ctx.py`(無則新建;或加進既有 kernel/ctx 測試)
 
 **Interfaces:**
 - Consumes: `Settings.self_profile.max_chars`(Task 1)。
@@ -384,7 +384,7 @@ git commit -m "feat(self-profile): pure store module (parse/id/cap/locate/render
 
 - [ ] **Step 1: 寫失敗測試**
 
-在 `tests/mind/test_mind_ctx.py`(無則新建)加:
+在 `tests/test_mind_ctx.py`(無則新建)加:
 ```python
 def test_mind_ctx_has_self_profile_max_chars():
     from dollos.mind.mind_ctx import MindCtx
@@ -395,7 +395,7 @@ def test_mind_ctx_has_self_profile_max_chars():
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_ctx.py::test_mind_ctx_has_self_profile_max_chars -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_ctx.py::test_mind_ctx_has_self_profile_max_chars -v`
 Expected: FAIL。
 
 - [ ] **Step 3: 實作**
@@ -416,13 +416,13 @@ Expected: FAIL。
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_ctx.py -v && uv run pytest tests/ -k kernel -q`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_ctx.py -v && uv run pytest tests/ -k kernel -q`
 Expected: PASS(既有 kernel 測試不因新必填/選填欄位壞掉;此欄位有預設值)。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/mind/mind_ctx.py src/dollos/kernel.py tests/mind/test_mind_ctx.py
+git add src/dollos/mind/mind_ctx.py src/dollos/kernel.py tests/test_mind_ctx.py
 git commit -m "feat(self-profile): MindCtx.self_profile_max_chars + kernel wiring"
 ```
 
@@ -432,7 +432,7 @@ git commit -m "feat(self-profile): MindCtx.self_profile_max_chars + kernel wirin
 
 **Files:**
 - Modify: `src/dollos/tools.py:746-777`
-- Test: `tests/tools/test_pin_self.py`
+- Test: `tests/test_pin_self.py`
 
 **Interfaces:**
 - Consumes: `self_profile.apply`(Task 2)、`MindCtx.memory_root` + `MindCtx.self_profile_max_chars`(Task 3)。
@@ -440,7 +440,7 @@ git commit -m "feat(self-profile): MindCtx.self_profile_max_chars + kernel wirin
 
 - [ ] **Step 1: 寫失敗測試**
 
-新建 `tests/tools/test_pin_self.py`(用既有工具測試建 MindCtx 的 helper;若無則手建最小 ctx):
+新建 `tests/test_pin_self.py`(用既有工具測試建 MindCtx 的 helper;若無則手建最小 ctx):
 ```python
 import pytest
 from dollos.tools import PinSelf, REFLECTION_TOOLS, MAIN_TOOLS
@@ -476,7 +476,7 @@ async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/tools/test_pin_self.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_pin_self.py -v`
 Expected: FAIL(`PinSelf` 不存在)。
 
 - [ ] **Step 3: 實作**
@@ -530,13 +530,13 @@ REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/tools/test_pin_self.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_pin_self.py -v`
 Expected: PASS。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/tools.py tests/tools/test_pin_self.py
+git add src/dollos/tools.py tests/test_pin_self.py
 git commit -m "feat(self-profile): PinSelf reflection-gated tool"
 ```
 
@@ -547,7 +547,7 @@ git commit -m "feat(self-profile): PinSelf reflection-gated tool"
 **Files:**
 - Modify: `src/dollos/mind/mind_loop.py:20`(import)、`:56`(`IN_TURN_REFEED_TOOLS`)、`:86-129`(`__init__`)、`:348-349`(`_active_tool_registry`)
 - Modify: `src/dollos/kernel.py:306-321`(`MindLoop(...)` 傳 flag)
-- Test: `tests/mind/test_mind_loop_self_profile.py`(新)
+- Test: `tests/test_mind_loop_self_profile.py`(新)
 
 **Interfaces:**
 - Consumes: `PinSelf`(Task 4)、`Settings.self_profile.enabled`(Task 1)。
@@ -555,7 +555,7 @@ git commit -m "feat(self-profile): PinSelf reflection-gated tool"
 
 - [ ] **Step 1: 寫失敗測試**
 
-新建 `tests/mind/test_mind_loop_self_profile.py`(沿用既有建 MindLoop 的 helper/fixture;參考 `tests/mind/` 現有 reflection registry 測試的建構方式):
+新建 `tests/test_mind_loop_self_profile.py`(沿用既有建 MindLoop 的 helper/fixture;參考 `tests/` 現有 reflection registry 測試的建構方式):
 ```python
 from dollos.mind.mind_loop import IN_TURN_REFEED_TOOLS
 from dollos.tools import PinSelf
@@ -588,7 +588,7 @@ def test_non_reflection_never_has_pinself(make_mind_loop):
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_loop_self_profile.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_loop_self_profile.py -v`
 Expected: FAIL。
 
 - [ ] **Step 3: 實作**
@@ -631,13 +631,13 @@ IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_loop_self_profile.py -v && uv run pytest tests/ -k "mind_loop" -q`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_loop_self_profile.py -v && uv run pytest tests/ -k "mind_loop" -q`
 Expected: PASS(新測試 + 既有 mind_loop 測試不壞)。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/mind/mind_loop.py src/dollos/kernel.py tests/mind/test_mind_loop_self_profile.py
+git add src/dollos/mind/mind_loop.py src/dollos/kernel.py tests/test_mind_loop_self_profile.py
 git commit -m "feat(self-profile): PinSelf wiring (registry :349 + refeed + ctor flag)"
 ```
 
@@ -648,7 +648,7 @@ git commit -m "feat(self-profile): PinSelf wiring (registry :349 + refeed + ctor
 **Files:**
 - Modify: `src/dollos/mind/mind_prompt.py:29-64`(`render_mind` 參數 + block 插入)
 - Modify: `src/dollos/mind/mind_loop.py:242-258`(讀檔傳 `self_profile_text`)
-- Test: `tests/mind/test_mind_prompt_self_profile.py`(新)
+- Test: `tests/test_mind_prompt_self_profile.py`(新)
 
 **Interfaces:**
 - Consumes: `self_profile.render_block`(Task 2)、`MindLoop._self_profile_enabled`(Task 5)、`MindCtx.memory_root`。
@@ -656,7 +656,7 @@ git commit -m "feat(self-profile): PinSelf wiring (registry :349 + refeed + ctor
 
 - [ ] **Step 1: 寫失敗測試**
 
-新建 `tests/mind/test_mind_prompt_self_profile.py`:
+新建 `tests/test_mind_prompt_self_profile.py`:
 ```python
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import MindState
@@ -683,7 +683,7 @@ def test_self_profile_block_absent_when_none():
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_prompt_self_profile.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_prompt_self_profile.py -v`
 Expected: FAIL(`render_mind` 無 `self_profile_text` 參數)。
 
 - [ ] **Step 3: 實作**
@@ -738,13 +738,13 @@ Expected: FAIL(`render_mind` 無 `self_profile_text` 參數)。
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_prompt_self_profile.py -v && uv run pytest tests/ -k "mind_prompt" -q`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_prompt_self_profile.py -v && uv run pytest tests/ -k "mind_prompt" -q`
 Expected: PASS。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/mind/mind_prompt.py src/dollos/mind/mind_loop.py tests/mind/test_mind_prompt_self_profile.py
+git add src/dollos/mind/mind_prompt.py src/dollos/mind/mind_loop.py tests/test_mind_prompt_self_profile.py
 git commit -m "feat(self-profile): [Self profile] always-inject block + mind_loop read"
 ```
 
@@ -754,14 +754,14 @@ git commit -m "feat(self-profile): [Self profile] always-inject block + mind_loo
 
 **Files:**
 - Modify: `src/dollos/mind/mind_prompt.py:252-257`
-- Test: `tests/mind/test_mind_prompt_self_profile.py`(續 Task 6 檔)
+- Test: `tests/test_mind_prompt_self_profile.py`(續 Task 6 檔)
 
 **Interfaces:**
 - Produces: `ReflectionMoment` nudge 文字含 `PinSelf` + self-profile 重估邀請。
 
 - [ ] **Step 1: 寫失敗測試**
 
-在 `tests/mind/test_mind_prompt_self_profile.py` 加(nudge render 函式名以 repo 為準;下例假設 `_render_perception_gloss` / 直接測產生 ReflectionMoment gloss 的函式;實作者對齊 :252 所在函式):
+在 `tests/test_mind_prompt_self_profile.py` 加(nudge render 函式名以 repo 為準;下例假設 `_render_perception_gloss` / 直接測產生 ReflectionMoment gloss 的函式;實作者對齊 :252 所在函式):
 ```python
 def test_reflection_nudge_mentions_pinself():
     from dollos.mind import mind_prompt
@@ -776,7 +776,7 @@ def test_reflection_nudge_mentions_pinself():
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_prompt_self_profile.py::test_reflection_nudge_mentions_pinself -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_prompt_self_profile.py::test_reflection_nudge_mentions_pinself -v`
 Expected: FAIL。
 
 - [ ] **Step 3: 實作**
@@ -795,13 +795,13 @@ Expected: FAIL。
 
 - [ ] **Step 4: 跑測試確認 pass**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_mind_prompt_self_profile.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_mind_prompt_self_profile.py -v`
 Expected: PASS。
 
 - [ ] **Step 5: commit**
 
 ```bash
-git add src/dollos/mind/mind_prompt.py tests/mind/test_mind_prompt_self_profile.py
+git add src/dollos/mind/mind_prompt.py tests/test_mind_prompt_self_profile.py
 git commit -m "feat(self-profile): ReflectionMoment nudge invites PinSelf re-eval"
 ```
 
@@ -810,7 +810,7 @@ git commit -m "feat(self-profile): ReflectionMoment nudge invites PinSelf re-eva
 ### Task 8: 去重結構守衛 + 整合驗證
 
 **Files:**
-- Test: `tests/mind/test_self_profile_integration.py`(新)
+- Test: `tests/test_self_profile_integration.py`(新)
 
 **Interfaces:**
 - Consumes: 全部前置 task。
@@ -818,7 +818,7 @@ git commit -m "feat(self-profile): ReflectionMoment nudge invites PinSelf re-eva
 
 - [ ] **Step 1: 寫測試(此 task 全為驗證,先寫測試)**
 
-新建 `tests/mind/test_self_profile_integration.py`:
+新建 `tests/test_self_profile_integration.py`:
 ```python
 from pathlib import Path
 from dollos.memory import FtsMemory
@@ -856,7 +856,7 @@ def test_pinned_self_appears_in_next_prompt(tmp_path):
 
 - [ ] **Step 2: 跑測試(可能一開始就 pass,確認機制成立)**
 
-Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/mind/test_self_profile_integration.py -v`
+Run: `cd /home/progcat/Projects/DollOS && uv run pytest tests/test_self_profile_integration.py -v`
 Expected: PASS(前置 task 已備齊機制;若 fail 表示某接線缺失,回填)。
 
 - [ ] **Step 3: 全套件回歸**
@@ -867,7 +867,7 @@ Expected: 全綠(既有 754 + 新增)。若有既有測試因 `render_mind` 新�
 - [ ] **Step 4: commit**
 
 ```bash
-git add tests/mind/test_self_profile_integration.py
+git add tests/test_self_profile_integration.py
 git commit -m "test(self-profile): FTS structural guard + pin→prompt e2e"
 ```
 
