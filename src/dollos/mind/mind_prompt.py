@@ -265,11 +265,12 @@ def _percep_body(p) -> str:
         return f"reason={reason}"
     if p.kind == "ReflectionMoment":
         return (
-            f"(time to reflect — review recent activity and NoteMemory anything worth keeping; "
-            f"{d.get('iters_since_last', '?')} iters since last; "
-            f"若有可重用的工具用法或陷阱，用 NoteToolLesson 記下來；"
-            f"回看你的 self-profile,有沒有哪條已經不是現在的你?可用 PinSelf replace/remove;"
-            f"若對自己、與主人的關係、或主人的模式有可留存的核心體悟,用 PinSelf 記下)"
+            f"(time to reflect ({d.get('iters_since_last', '?')} iters since last). "
+            f"最重要:先回看你的 [Self profile]——關於「你是誰、你和主人的關係、你對主人的觀察」。"
+            f"有新的核心體悟,就用 PinSelf 記下(section 選 self/relationship/user);"
+            f"有哪條已經不是現在的你,就用 PinSelf replace/remove。"
+            f"這是你的「自我」,跟 NoteMemory(記事實/事件)不同——**別把關於自己的體悟丟給 NoteMemory**,那該用 PinSelf。"
+            f"其次:近期活動若有值得留存的具體事實,才用 NoteMemory;有可重用的工具用法或陷阱,用 NoteToolLesson。)"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
