@@ -271,6 +271,7 @@ class DollOS:
             shell_runner=self.shell_runner,
             workflow_runner=self.workflow_runner,
             monitor_runner=self.monitor_runner,
+            self_profile_max_chars=settings.self_profile.max_chars,
         )
 
         # Render the static system prompt from the character pack
