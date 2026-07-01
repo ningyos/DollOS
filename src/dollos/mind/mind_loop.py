@@ -17,7 +17,7 @@ from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
-from dollos.tools import NoteToolLesson
+from dollos.tools import NoteToolLesson, PinSelf
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import energy_bucket_line, render_mind
 from dollos.mind.mind_state import (
@@ -53,7 +53,7 @@ FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 # project's #1-concern latency path. Tool FAILURES of ANY tool still re-feed
 # (external grounding so Doll is told and can fix her mistake) — this allowlist
 # gates SUCCESS only.
-IN_TURN_REFEED_TOOLS = frozenset({"Recall"})
+IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
 
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
 # within a single live turn — OR the same-tool 3-strike stuck flag — Doll
@@ -100,6 +100,7 @@ class MindLoop:
         cascade_logger=None,
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
+        self_profile_enabled: bool = False,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -127,6 +128,7 @@ class MindLoop:
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
+        self._self_profile_enabled = self_profile_enabled
 
         # No-fallback (spec §3.3): a grammar build failure is a tool-set config
         # error. Let it raise at startup — the daemon must refuse to run with a
@@ -337,7 +339,8 @@ class MindLoop:
         """The tool registry in force for this pass.
 
         safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has priority.
-        reflection turn → full registry + NoteToolLesson.
+        reflection turn → full registry + NoteToolLesson, + PinSelf when
+        self_profile_enabled (A1 self-profile; spec Task 5).
         otherwise → base registry.
         """
         if self._state.safe_mode:
@@ -346,7 +349,10 @@ class MindLoop:
                 if n in SAFE_MODE_TOOLS
             }
         if self._is_reflection:
-            return {**self._tool_registry, "NoteToolLesson": NoteToolLesson}
+            extra = {"NoteToolLesson": NoteToolLesson}
+            if self._self_profile_enabled:
+                extra["PinSelf"] = PinSelf
+            return {**self._tool_registry, **extra}
         return self._tool_registry
 
     def _active_grammar(self) -> str | None:
@@ -355,7 +361,7 @@ class MindLoop:
         safe_mode → lazily-built+cached reduced grammar (no-fallback: raises on
         build failure, never degrades to grammar=None; spec §8.3).
         reflection turn → lazily-built+cached expanded grammar (MAIN_TOOLS +
-        NoteToolLesson).
+        NoteToolLesson, + PinSelf when self_profile_enabled).
         otherwise → the once-built full grammar (no per-pass cost).
         """
         if self._state.safe_mode:
