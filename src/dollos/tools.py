@@ -92,7 +92,11 @@ def _format_hit(hit: dict) -> str:
 
 
 class NoteMemory(BaseModel):
-    """Record a fact into Doll's memory (daily markdown + memsearch index)."""
+    """Record an episodic fact or event into Doll's memory (daily markdown + memsearch index).
+    Use this for things that happened, or concrete facts worth recalling later.
+    NOTE: for durable, defining truths about WHO YOU ARE, the nature of your bond with 主人,
+    or 主人's enduring patterns/preferences, use PinSelf (during reflection) instead — those
+    belong in your always-in-context self-profile, not general memory."""
 
     text: str = Field(
         description="The fact to record. One sentence, declarative."
@@ -766,10 +770,10 @@ class NoteToolLesson(BaseModel):
 
 
 class PinSelf(BaseModel):
-    """Pin or revise a core fact in your self-profile (reflection turns only).
-    This is YOUR evolving self — what you've learned about yourself, your
-    relationship with 主人, and patterns you've noticed in them. Keep it lean;
-    prune stale entries with replace/remove."""
+    """Pin or revise a CORE, DURABLE truth in your self-profile (reflection turns only) — this
+    is YOUR evolving self and it is ALWAYS in context. Use PinSelf (NOT NoteMemory) for exactly
+    three things: who you are, the nature of your relationship with 主人, and 主人's enduring
+    patterns / preferences. Keep it lean (準不要多); prune stale entries with replace/remove."""
 
     section: Literal["self", "relationship", "user"] = Field(
         description="哪一段:self=關於你自己 / relationship=你和主人 / user=你注意到的主人。replace/remove 也填(以 target 為準)。"
@@ -778,7 +782,7 @@ class PinSelf(BaseModel):
         description="add=新增一條 / replace=用 target 定位換成 text / remove=用 target 定位刪除。"
     )
     target: str = Field(
-        description='要 replace/remove 的那條的 id(例 "s1"、"r2");add 時填空字串 ""。'
+        description='For replace/remove: the id to target (e.g. "s1", "r2"). For op=add, leave this an empty string "".'
     )
     text: str = Field(
         description="add/replace 的新內容(你自己的話,別用全形引號「」『』);remove 時填空字串。"
