@@ -84,9 +84,11 @@ import websockets  # noqa: E402
 
 from dollos.config import DataConfig, IPCConfig, Settings, load_settings  # noqa: E402
 from dollos.kernel import DollOS  # noqa: E402
+from dollos.mind import self_history  # noqa: E402
 from dollos.mind.mind_state import Perception  # noqa: E402
 from dollos.mind.persona_guard import (  # noqa: E402
     append_baseline,
+    baselines_for_generation,
     check_persona_violations,
     load_baselines,
     response_drift_score,
@@ -181,7 +183,7 @@ async def _drain_until_turn_end(ws, deadline_s: float) -> tuple[str, bool]:
 # UNVERIFIED — no live LLM server was available to run this against during
 # implementation. Written carefully against the established in-process
 # daemon + WS-IPC smoke pattern (see module docstring), but not exercised.
-async def _run_probes(settings: Settings) -> int:
+async def _run_probes(settings: Settings, generation: int) -> int:
     dollos = DollOS(settings)
     pack_id = dollos._doll_pack.meta.id
     enforcement = dollos._doll_pack.enforcement
@@ -244,7 +246,8 @@ async def _run_probes(settings: Settings) -> int:
                 else:
                     print("[persona_smoke]   persona rules: clean")
 
-                drift = response_drift_score(response_text, baselines.get(key, []))
+                current = baselines_for_generation(baselines, generation)
+                drift = response_drift_score(response_text, current.get(key, []))
                 if drift < DRIFT_WARN_THRESHOLD:
                     print(
                         f"[persona_smoke]   WARNING — drift score {drift:.3f} < "
@@ -254,7 +257,7 @@ async def _run_probes(settings: Settings) -> int:
                 else:
                     print(f"[persona_smoke]   drift score: {drift:.3f} (ok)")
 
-                append_baseline(baseline_path, key, response_text)
+                append_baseline(baseline_path, key, response_text, generation=generation)
     finally:
         dollos._mind_loop.shutdown()
         await asyncio.gather(mind_task, return_exceptions=True)
@@ -278,10 +281,33 @@ def main() -> int:
     args = parser.parse_args()
 
     base_settings = load_settings(args.config)
+
+    # Derive generation + the sanctioned current_self text from the REAL
+    # self_history — BEFORE _isolate_settings swaps [data] to a scratch
+    # root, since the scratch root starts out with no history of its own
+    # (spec §3.5 R1 Critical: the smoke must probe at the same generation
+    # the real instance is at, not always generation 0).
+    real_hist = base_settings.data.root / "memory" / "self_history.jsonl"
+    generation = self_history.generation(real_hist)
+    sanctioned = self_history.sanctioned_text(real_hist)
+
     settings = _isolate_settings(base_settings)
     print(f"[persona_smoke] scratch data root: {settings.data.root}")
 
-    return asyncio.run(_run_probes(settings))
+    # Seed the scratch instance, pre-construction, so the probed Doll
+    # actually renders `## 現在的我` at that same generation. Composition
+    # reads the sanctioned current_self text from the self_history log
+    # (latest evo_adopt), not from current_self.md directly — so the log
+    # must be seeded, not just the file (which is written too, since other
+    # code paths read the file as a fallback/display source).
+    if sanctioned is not None:
+        scratch_hist = settings.data.root / "memory" / "self_history.jsonl"
+        self_history.log_event(scratch_hist, kind="evo_adopt", text=sanctioned,
+                               old_text=None, drift_score=None)
+        (settings.data.root / "memory" / "current_self.md").write_text(
+            sanctioned, encoding="utf-8")
+
+    return asyncio.run(_run_probes(settings, generation))
 
 
 if __name__ == "__main__":

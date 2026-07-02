@@ -170,41 +170,50 @@ def pairwise_jaccard(text_a: str, text_b: str) -> float:
     return len(wa & wb) / len(union)
 
 
-def load_baselines(path: Path) -> dict[str, list[str]]:
-    """Read a JSONL baseline file into `{prompt_key: [response_text, ...]}`.
-
-    Each line is one `{"prompt_key": ..., "response": ..., "fingerprint":
-    ..., "ts": ...}` record (see `append_baseline`). A missing file returns
-    `{}` rather than raising — this is a manually-invoked tool run by a
-    human after pack/model changes, not a hot path, so "no baseline yet"
-    (first run for a pack) must degrade gracefully.
-    """
+def load_baselines(path: Path) -> dict[str, list[dict]]:
+    """Read a JSONL baseline file into ``{prompt_key: [record, ...]}`` where
+    each record is ``{"response", "generation", "fingerprint", "ts"}`` (spec
+    §3.5 — generation-aware; return-shape change from the old list-of-strings,
+    acknowledged). A record missing ``generation`` reads as generation 0
+    (legacy). Missing file → {}."""
     if not path.exists():
         return {}
-
-    baselines: dict[str, list[str]] = {}
+    baselines: dict[str, list[dict]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         record = json.loads(line)
-        baselines.setdefault(record["prompt_key"], []).append(record["response"])
+        record.setdefault("generation", 0)
+        baselines.setdefault(record["prompt_key"], []).append(record)
     return baselines
 
 
-def append_baseline(path: Path, prompt_key: str, response_text: str) -> None:
-    """Append one run's response as a JSONL record to `path`.
+def baselines_for_generation(
+    baselines: dict[str, list[dict]], generation: int
+) -> dict[str, list[str]]:
+    """Current-generation response texts only (spec §3.5): growth re-baselines,
+    so drift compares against who she sounds like NOW, not who she used to be.
+    Old-generation records are retained on disk (the trajectory) but excluded
+    here. Empty current-generation pool → the key is omitted (existing
+    empty-baseline semantics apply downstream)."""
+    out: dict[str, list[str]] = {}
+    for key, recs in baselines.items():
+        texts = [r["response"] for r in recs if r.get("generation", 0) == generation]
+        if texts:
+            out[key] = texts
+    return out
 
-    Creates parent directories (and the file itself) as needed. Each
-    record carries the raw response, its `fingerprint_response` digest,
-    and a unix timestamp, so the file doubles as both the drift-comparison
-    corpus (`load_baselines`) and a plain audit log of what Doll actually
-    said on each smoke run.
-    """
+
+def append_baseline(path: Path, prompt_key: str, response_text: str,
+                    *, generation: int = 0) -> None:
+    """Append one run's response as a JSONL record, stamped with the persona
+    ``generation`` (spec §3.5)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "prompt_key": prompt_key,
         "response": response_text,
+        "generation": generation,
         "fingerprint": fingerprint_response(response_text),
         "ts": time.time(),
     }
