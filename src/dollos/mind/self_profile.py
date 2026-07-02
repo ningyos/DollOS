@@ -169,12 +169,21 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
             # same-turn hits are refeed echoes and must not fabricate
             # reinforcement evidence (spec §3.2).
             if history_path is not None:
-                prev = self_history.last_pin_turn(
-                    history_path, section=section, text=clean_text)
-                if prev is None or prev != turn:
-                    _log_pin(history_path, kind="pin_reconfirm", turn=turn,
-                             external_ctx=external_ctx, section=section,
-                             id=existing.id, text=clean_text)
+                try:
+                    prev = self_history.last_pin_turn(
+                        history_path, section=section, text=clean_text)
+                except OSError:
+                    # Same pins-only swallow rule as _log_pin: a history READ
+                    # failure must never break the pin contract. Skip the
+                    # reconfirm for this hit rather than risk a same-turn
+                    # duplicate event.
+                    logger.exception(
+                        "self_history read failed (skipping reconfirm)")
+                else:
+                    if prev is None or prev != turn:
+                        _log_pin(history_path, kind="pin_reconfirm", turn=turn,
+                                 external_ctx=external_ctx, section=section,
+                                 id=existing.id, text=clean_text)
             return f"已有相同條目:{existing.id}(未重複新增)"
         new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
