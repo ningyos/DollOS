@@ -140,14 +140,13 @@ def mark_awaiting_doll(slot: PendingSlot) -> PendingSlot:
     return slot
 
 
-def to_counter(slot: PendingSlot, *, new_text: str,
-               created_ts_now: float) -> PendingSlot:
+def to_counter(slot: PendingSlot, *, new_text: str) -> PendingSlot:
     """Doll's adopt-with-different-text replaces the current proposal with her
     counter (spec §3.4): ``awaiting_skeptic``, ``counter_round``+1,
     ``surfaced_count`` reset, ``fallback`` := the proposal she countered.
     Inherits ``created_ts`` + ``hwm_before`` from the originating pass (the
-    evidence window belongs to it). ``created_ts_now`` is accepted for symmetry
-    with future policies but the inherited window is authoritative."""
+    evidence window belongs to it — the counter's decision window is bounded by
+    the same age clock as the keeper candidate it replaces)."""
     return PendingSlot(
         kind="counter",
         status="awaiting_skeptic",
@@ -186,6 +185,19 @@ def revert_to_fallback(slot: PendingSlot, *, reason: str) -> PendingSlot:
     )
 
 
+def strip_surfacing_markers(text: str) -> str:
+    """Remove the ``[人格演化候選]`` marker prefixes (``surfacing_markers.ALL``)
+    from ``text``, preserving prose/punctuation/content (spec §3.4, the
+    storage-side analogue of A1's ``_strip_incoming_tag``). Used both by the
+    ``SelfRevision`` counter path — the model's ``text`` may echo back the
+    surfaced markers, and those bytes must never be stored as her self — and by
+    ``_normalize_echo`` below (single definition, the two can never drift)."""
+    from dollos.mind import surfacing_markers  # tiny module, avoids cycle
+    for mark in surfacing_markers.ALL:
+        text = text.replace(mark, "")
+    return text.strip()
+
+
 def _normalize_echo(text: str) -> str:
     """Echo-equivalence normalization (spec §3.4, Plan-2 amended form):
     strip surfacing markers → NFKC → drop ALL punctuation and whitespace.
@@ -193,9 +205,7 @@ def _normalize_echo(text: str) -> str:
     fingerprint normalization — equivalence false-positives are safe
     (they adopt the skeptic-passed candidate verbatim), so CJK echo
     jitter (stray spaces, 。vs !) must not defeat the exact branch."""
-    from dollos.mind import surfacing_markers  # tiny module, avoids cycle
-    for mark in surfacing_markers.ALL:
-        text = text.replace(mark, " ")
+    text = strip_surfacing_markers(text)
     text = unicodedata.normalize("NFKC", text)
     return "".join(
         c for c in text
@@ -239,11 +249,11 @@ def render_surfacing(*, slot: PendingSlot, sanctioned_text: str | None,
         f"{sm.NEW} {slot.candidate}",
     ]
     if slot.notice:
-        lines.insert(1, f"你上一次的改寫未通過({slot.notice})——原候選仍在,如下。")
+        lines.insert(1, f"妳上一次的改寫未通過({slot.notice})——原候選仍在,如下。")
     if slot.kind == "keeper" and slot.rationale:
         lines.append(f"依據:{slot.rationale}")
     elif slot.kind == "counter":
-        lines.append("來源:你自己的改寫,已通過送審。")
+        lines.append("來源:妳自己的改寫,已通過送審。")
     elif slot.kind == "external":
         lines.append("來源:current_self.md 檔案被直接修改,系統無法確認是誰。")
     lines.append(
@@ -264,9 +274,21 @@ def surface_or_expire(*, slot_path: Path, history_path: Path,
     ``surfaced_count ≥ max_surfacings`` AND age ≥ ``min_age_days`` (spec §3.4).
     Expiry logs ``evo_expire`` loud, clears the slot, and restores the file per
     the slot-resolution invariant. Returns the block, or None (no slot /
-    awaiting_skeptic / just expired)."""
+    awaiting_skeptic / just expired / crash-window repair)."""
     slot = load_slot(slot_path, history_path=history_path)
     if slot is None or slot.status != "awaiting_doll":
+        return None
+
+    # Crash-window slot repair (M2): the adoption wrote the log + file but
+    # crashed before clearing the slot, leaving an awaiting_doll slot whose
+    # candidate already IS the sanctioned text. Surfacing it would invite a
+    # zero-move duplicate adopt (inflating the generation), so treat it as a
+    # completed adoption: log evo_repair for audit, clear the slot, don't surface.
+    if sanctioned_text is not None and slot.candidate == sanctioned_text:
+        logger.warning("evolution: repairing slot that survived its own adoption")
+        log_or_raise(history_path, kind=EVO_REPAIR, text=sanctioned_text,
+                     reason="slot_after_adopt")
+        clear_slot(slot_path)
         return None
 
     age_days = (now - slot.created_ts) / 86400.0
@@ -276,7 +298,7 @@ def surface_or_expire(*, slot_path: Path, history_path: Path,
         log_or_raise(history_path, kind=EVO_EXPIRE, text=slot.candidate,
                      kind_origin=slot.kind, hwm_before=slot.hwm_before)
         clear_slot(slot_path)
-        _restore_file(current_self_path, sanctioned_text)
+        restore_file(current_self_path, sanctioned_text)
         return None
 
     reminder_n = slot.surfaced_count + 1
@@ -288,7 +310,7 @@ def surface_or_expire(*, slot_path: Path, history_path: Path,
     return block
 
 
-def _restore_file(current_self_path: Path, sanctioned_text: str | None) -> None:
+def restore_file(current_self_path: Path, sanctioned_text: str | None) -> None:
     """Slot-resolution invariant (spec §3.4): restore the file to sanctioned
     text if divergent, or delete it in the bootstrap (no-sanctioned) case.
     Logged loudly — a silently self-reverting file reads as the daemon fighting
@@ -377,8 +399,9 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
             reason = mechanical_checks(file_text, floor=floor, cap=cap, enforcement=enforcement)
             if reason is not None:
                 logger.warning(
-                    "evolution: stranded external edit fails mechanical checks (%s); restored", reason)
-                _restore_file(current_self_path, sanctioned)  # already logged — no duplicate line
+                    "evolution: stranded external edit fails mechanical "
+                    "checks (%s); restored", reason)
+                restore_file(current_self_path, sanctioned)  # already logged — no duplicate line
                 return
             logger.warning("evolution: completing interrupted external-slot creation")
             save_slot(slot_path, make_external_slot(candidate=file_text, created_ts=now))
@@ -389,7 +412,7 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
         # divergent → next turn re-classifies crash_repair and retries.
         log_or_raise(history_path, kind=EVO_REPAIR, text=sanctioned)
         logger.warning("evolution: crash-repaired current_self.md (log-then-write window)")
-        _restore_file(current_self_path, sanctioned)  # sanctioned is not None here
+        restore_file(current_self_path, sanctioned)  # sanctioned is not None here
         return
 
     # action == "new_edit" — transition-fired once per distinct edit.
@@ -398,7 +421,7 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
         # Log BEFORE restore (same retry-safety argument as crash_repair).
         log_or_raise(history_path, kind=EXTERNAL_EDIT, text=None, reason=reason)
         logger.warning("evolution: external edit failed mechanical checks (%s); restored", reason)
-        _restore_file(current_self_path, sanctioned)
+        restore_file(current_self_path, sanctioned)
         return
 
     # Passed. Log the edit (birth line for a slot, or logs-only if one exists).

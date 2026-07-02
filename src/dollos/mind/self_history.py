@@ -83,13 +83,30 @@ def generation(path: Path) -> int:
     return sum(1 for ev in read_events(path) if ev.get("kind") == "evo_adopt")
 
 
+# Terminal evolution events: a decision was made on the pending proposal
+# (adopt/reject/kill) or it timed out (expire). Any of these AFTER the latest
+# external_edit means that edit's proposal was already resolved (audit-SoT
+# invariant, spec §5) — re-writing the same text is then a fresh proposal.
+_TERMINAL_EVO_KINDS = frozenset({"evo_adopt", "evo_reject", "evo_kill", "evo_expire"})
+
+
 def latest_external_edit_text(path: Path) -> str | None:
-    """``text`` of the most recent ``external_edit`` event that carried one
-    (the last-observed external edit — used by the tripwire to avoid
-    per-turn re-detection of an already-logged divergence, spec §5). A
+    """``text`` of the most recent *unresolved* ``external_edit`` event (the
+    last-observed external edit — used by the tripwire to avoid per-turn
+    re-detection of an already-logged divergence, spec §5).
+
+    Returns None when a terminal evolution event (``evo_adopt``/``evo_reject``/
+    ``evo_kill``/``evo_expire``) appears AFTER the latest ``external_edit`` line:
+    that edit's proposal was resolved, so re-writing the same text must
+    re-classify as a *new* edit (fresh audited birth line + slot, spec §5
+    re-propose intent) rather than a spurious already-logged completion. A
     mechanical-fail ``external_edit(reason=...)`` line carries no ``text`` and
     is skipped."""
+    terminal_after = False
     for ev in reversed(read_events(path)):
-        if ev.get("kind") == "external_edit" and ev.get("text") is not None:
-            return ev["text"]
+        kind = ev.get("kind")
+        if kind == "external_edit" and ev.get("text") is not None:
+            return None if terminal_after else ev["text"]
+        if kind in _TERMINAL_EVO_KINDS:
+            terminal_after = True
     return None

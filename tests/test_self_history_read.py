@@ -1,4 +1,6 @@
 """self_history read helpers for 慢變演化 Plan 2 (spec §3.1/§3.5/§5)."""
+import pytest
+
 from dollos.mind import self_history
 
 
@@ -63,3 +65,26 @@ def test_latest_external_edit_text_none(tmp_path):
     p = tmp_path / "self_history.jsonl"
     _seed(p)
     assert self_history.latest_external_edit_text(p) is None
+
+
+# --- F4: resolved-edit resurrection (audit-SoT invariant, spec §5) ---
+
+@pytest.mark.parametrize("terminal", ["evo_adopt", "evo_reject", "evo_kill", "evo_expire"])
+def test_latest_external_edit_text_none_after_terminal(tmp_path, terminal):
+    """F4: a terminal evolution event AFTER the latest external_edit means that
+    edit's proposal was resolved → return None, so a re-write of the same text
+    classifies as a NEW edit (not an already-logged completion)."""
+    p = tmp_path / (terminal + ".jsonl")
+    self_history.log_event(p, kind="external_edit", text="E", reason=None)
+    self_history.log_event(p, kind=terminal, text="E")
+    assert self_history.latest_external_edit_text(p) is None
+
+
+def test_latest_external_edit_text_survives_when_unresolved(tmp_path):
+    """F4: a prior terminal event OLDER than the latest external_edit does NOT
+    suppress it — the stranded-edit completion path depends on this staying
+    truthy while no terminal follows the edit."""
+    p = tmp_path / "self_history.jsonl"
+    self_history.log_event(p, kind="evo_adopt", text="舊版", old_text=None, drift_score=None)
+    self_history.log_event(p, kind="external_edit", text="E", reason=None)
+    assert self_history.latest_external_edit_text(p) == "E"

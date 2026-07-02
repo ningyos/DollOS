@@ -10,7 +10,8 @@ def _identity():
 
 def test_split_reconstructs_today_when_no_section():
     r = PromptRenderer()
-    prefix, suffix = split_scaffolding(r, identity=_identity(), available_skills=[], tool_registry={})
+    prefix, suffix = split_scaffolding(
+        r, identity=_identity(), available_skills=[], tool_registry={})
     baseline = r.render("scaffolding", identity=_identity(), available_skills=[], tool_registry={})
     # Empty section ⇒ prefix + suffix is byte-identical to today's render.
     assert prefix + suffix == baseline
@@ -19,7 +20,8 @@ def test_split_reconstructs_today_when_no_section():
 
 def test_split_seam_between_taboos_and_behavior():
     r = PromptRenderer()
-    prefix, suffix = split_scaffolding(r, identity=_identity(), available_skills=[], tool_registry={})
+    prefix, suffix = split_scaffolding(
+        r, identity=_identity(), available_skills=[], tool_registry={})
     assert "no LARP" in prefix
     assert "# Behavior" in suffix
 

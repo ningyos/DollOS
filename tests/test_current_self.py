@@ -1,7 +1,6 @@
 """current_self pure module — artifact render + composition + tripwire (spec §3.1/§5)."""
 from dollos.mind import current_self
 
-
 # ---- render_section ----
 
 def test_render_section_empty_when_none():
@@ -78,6 +77,22 @@ def test_tripwire_crash_repair_beats_new_edit_priority():
     assert current_self.classify_tripwire(
         file_text="OLD", sanctioned_text="NEW",
         adopt_old_text="OLD", last_edit_text="SOMETHING") == "crash_repair"
+
+
+def test_tripwire_first_adoption_crash_window():
+    # M3: adopt exists (sanctioned set), it was the first (old None), and the
+    # file was never written (empty) → crash_repair, not a spurious new_edit.
+    assert current_self.classify_tripwire(
+        file_text="", sanctioned_text="新版的我",
+        adopt_old_text=None, last_edit_text=None) == "crash_repair"
+
+
+def test_tripwire_first_adoption_nonempty_file_is_new_edit():
+    # Guard the boundary: with sanctioned set and old None but a NON-empty
+    # divergent file, it's a genuine external edit — not the crash window.
+    assert current_self.classify_tripwire(
+        file_text="有人改的", sanctioned_text="新版的我",
+        adopt_old_text=None, last_edit_text=None) == "new_edit"
 
 
 def test_read_file_missing_is_empty(tmp_path):

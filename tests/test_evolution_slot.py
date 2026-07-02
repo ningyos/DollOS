@@ -1,5 +1,4 @@
 """Pending-slot schema + lifecycle state machine (spec §3.4)."""
-import json
 
 from dollos.mind import evolution as evo
 
@@ -31,7 +30,7 @@ def test_to_counter_replaces_and_bumps_round_resets_surface():
                                 hwm_before=5, created_ts=100.0)
     base.surfaced_count = 3
     base = evo.mark_awaiting_doll(base)  # keeper already awaiting_doll; idempotent
-    c = evo.to_counter(base, new_text="我的改寫", created_ts_now=200.0)
+    c = evo.to_counter(base, new_text="我的改寫")
     assert c.kind == "counter" and c.status == "awaiting_skeptic"
     assert c.candidate == "我的改寫"
     assert c.counter_round == 1
@@ -43,9 +42,9 @@ def test_to_counter_replaces_and_bumps_round_resets_surface():
 def test_to_counter_second_round_carries_fallback_forward():
     base = evo.make_keeper_slot(candidate="原候選", rationale="R",
                                 hwm_before=5, created_ts=100.0)
-    c1 = evo.to_counter(base, new_text="改寫1", created_ts_now=200.0)
+    c1 = evo.to_counter(base, new_text="改寫1")
     c1 = evo.mark_awaiting_doll(c1)
-    c2 = evo.to_counter(c1, new_text="改寫2", created_ts_now=300.0)
+    c2 = evo.to_counter(c1, new_text="改寫2")
     assert c2.counter_round == 2
     assert c2.fallback == {"candidate": "改寫1", "rationale": None, "kind": "counter"}
 
@@ -53,7 +52,7 @@ def test_to_counter_second_round_carries_fallback_forward():
 def test_revert_to_fallback_sets_notice_and_awaiting_doll():
     base = evo.make_keeper_slot(candidate="原候選", rationale="R",
                                 hwm_before=5, created_ts=100.0)
-    c = evo.to_counter(base, new_text="改寫", created_ts_now=200.0)
+    c = evo.to_counter(base, new_text="改寫")
     reverted = evo.revert_to_fallback(c, reason="牴觸 taboo")
     assert reverted.status == "awaiting_doll"
     assert reverted.kind == "keeper" and reverted.candidate == "原候選"

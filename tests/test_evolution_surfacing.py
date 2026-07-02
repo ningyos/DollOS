@@ -25,8 +25,9 @@ def test_render_surfacing_external_uses_neutral_attribution():
 
 
 def test_render_surfacing_counter_kill_notice_leads():
-    base = evo.make_keeper_slot(candidate="原候選內容。", rationale="R", hwm_before=None, created_ts=1.0)
-    c = evo.to_counter(base, new_text="我的改寫。", created_ts_now=2.0)
+    base = evo.make_keeper_slot(candidate="原候選內容。", rationale="R",
+                                hwm_before=None, created_ts=1.0)
+    c = evo.to_counter(base, new_text="我的改寫。")
     reverted = evo.revert_to_fallback(c, reason="牴觸 taboo")
     out = evo.render_surfacing(slot=reverted, sanctioned_text=None, reminder_n=1)
     assert "未通過" in out and "牴觸 taboo" in out and "原候選內容。" in out
@@ -91,3 +92,44 @@ def test_expiry_restores_divergent_file(tmp_path):
                           sanctioned_text=None, max_surfacings=5, min_age_days=0.0,
                           now=1.0)
     assert not cs.exists()  # slot-resolution invariant: bootstrap restore = delete
+
+
+def test_crash_window_slot_after_adopt_repaired(tmp_path):
+    """M2: an awaiting_doll slot whose candidate already IS the sanctioned text
+    (adoption crashed before clearing the slot) is a completed adoption —
+    log evo_repair(slot_after_adopt), clear the slot, do NOT surface (a
+    zero-move duplicate adopt would inflate the generation)."""
+    sp = tmp_path / "self_evolution" / "pending.json"
+    hist = tmp_path / "self_history.jsonl"
+    sanctioned = "我現在監控數字時會主動來勁。" + "細節" * 30
+    evo.save_slot(sp, evo.make_keeper_slot(candidate=sanctioned, rationale="R",
+                                           hwm_before=None, created_ts=0.0))
+    block = evo.surface_or_expire(
+        slot_path=sp, history_path=hist,
+        current_self_path=tmp_path / "current_self.md",
+        sanctioned_text=sanctioned, max_surfacings=5, min_age_days=2.0, now=1.0)
+    assert block is None                 # not surfaced
+    assert evo.load_slot(sp) is None     # slot cleared
+    rep = self_history.read_events(hist)[-1]
+    assert rep["kind"] == "evo_repair" and rep["reason"] == "slot_after_adopt"
+
+
+def test_kill_notice_is_one_shot_across_surfacings(tmp_path):
+    """M6: the counter kill-notice leads the FIRST surfacing after a revert,
+    then is cleared — the second surfacing no longer carries it."""
+    sp = tmp_path / "self_evolution" / "pending.json"
+    hist = tmp_path / "self_history.jsonl"
+    cs = tmp_path / "current_self.md"
+    base = evo.make_keeper_slot(candidate="原候選內容。" + "字" * 80, rationale="R",
+                                hwm_before=None, created_ts=0.0)
+    reverted = evo.revert_to_fallback(evo.to_counter(base, new_text="我的改寫。" + "字" * 80),
+                                      reason="牴觸 taboo")
+    evo.save_slot(sp, reverted)
+    first = evo.surface_or_expire(slot_path=sp, history_path=hist, current_self_path=cs,
+                                  sanctioned_text=None, max_surfacings=5,
+                                  min_age_days=2.0, now=1.0)
+    assert "未通過" in first and "牴觸 taboo" in first
+    second = evo.surface_or_expire(slot_path=sp, history_path=hist, current_self_path=cs,
+                                   sanctioned_text=None, max_surfacings=5,
+                                   min_age_days=2.0, now=2.0)
+    assert "未通過" not in second  # one-shot notice cleared after first surfacing
