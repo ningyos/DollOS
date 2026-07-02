@@ -254,18 +254,21 @@ class MindLoop:
         # still renders via _system_prompt_for_turn).
         if self._evolution_enabled:
             from dollos.mind import evolution as _evo
-            try:
-                _evo.process_tripwire(
-                    current_self_path=self._ctx.memory_root / "current_self.md",
-                    history_path=self._ctx.memory_root / "self_history.jsonl",
-                    slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
-                    enforcement=self._enforcement,
-                    floor=self._current_self_min_chars,
-                    cap=self._current_self_max_chars,
-                    now=time.time(),  # module-level `time` (line 5) — no local shadow needed
-                )
-            except Exception:
-                logger.exception("evolution tripwire failed; continuing")
+            # Deliberately UNWRAPPED (spec §3.2: the IO-swallow rule is pins-only —
+            # evolution events are never swallowed). An OSError here aborts the
+            # turn loudly via run()'s outer catch and retries next turn; every
+            # process_tripwire branch is log-before-mutate, so an aborted turn
+            # leaves the file divergent and the next turn re-classifies and
+            # retries. Matches the unwrapped surface_or_expire call below.
+            _evo.process_tripwire(
+                current_self_path=self._ctx.memory_root / "current_self.md",
+                history_path=self._ctx.memory_root / "self_history.jsonl",
+                slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
+                enforcement=self._enforcement,
+                floor=self._current_self_min_chars,
+                cap=self._current_self_max_chars,
+                now=time.time(),  # module-level `time` (line 5) — no local shadow needed
+            )
 
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;

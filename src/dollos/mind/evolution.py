@@ -336,13 +336,24 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
     region (composition always renders SANCTIONED text); this only detects
     edits, repairs the log-then-write window, and creates external slots.
 
+    Every branch is LOG-BEFORE-MUTATE (spec §3.2 write-ordering philosophy):
+    an IO failure on the audit append raises before anything changes on disk,
+    so the file stays divergent and the next turn re-classifies and retries —
+    no permanent audit gaps. Callers must NOT wrap this in a swallow.
+
     - in_sync        → nothing.
-    - crash_repair   → rewrite file to sanctioned, log ``evo_repair``; no slot.
-    - already_logged → nothing (no per-turn spam).
+    - crash_repair   → log ``evo_repair``, then rewrite file to sanctioned; no slot.
+    - already_logged → nothing (no per-turn spam) — EXCEPT the bounded
+                       completion rule: if the logged edit's slot creation was
+                       interrupted (no slot exists, file still divergent and
+                       equal to the logged text), complete it idempotently
+                       (re-run mechanical checks; pass → slot; fail → plain
+                       restore, no duplicate ``external_edit`` line).
     - new_edit       → append ONE ``external_edit``; mechanical checks; fail →
-                       restore/delete + ``external_edit(reason)``; pass → create
-                       an external ``awaiting_skeptic`` slot IFF none exists
-                       (else logs-only — external edits are not auto-promoted)."""
+                       ``external_edit(reason)`` then restore/delete; pass →
+                       create an external ``awaiting_skeptic`` slot IFF none
+                       exists (else logs-only — external edits are not
+                       auto-promoted)."""
     from dollos.mind import current_self, self_history
 
     file_text = current_self.read_file(current_self_path)
@@ -355,21 +366,39 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
         file_text=file_text, sanctioned_text=sanctioned,
         adopt_old_text=adopt_old, last_edit_text=last_edit)
 
-    if action == "in_sync" or action == "already_logged":
+    if action == "in_sync":
+        return
+
+    if action == "already_logged":
+        # Bounded completion rule (R3″): an external_edit was logged but the
+        # slot creation crashed before landing. Only fires while that exact
+        # logged text persists with no slot — cannot livelock.
+        if load_slot(slot_path, history_path=history_path) is None:
+            reason = mechanical_checks(file_text, floor=floor, cap=cap, enforcement=enforcement)
+            if reason is not None:
+                logger.warning(
+                    "evolution: stranded external edit fails mechanical checks (%s); restored", reason)
+                _restore_file(current_self_path, sanctioned)  # already logged — no duplicate line
+                return
+            logger.warning("evolution: completing interrupted external-slot creation")
+            save_slot(slot_path, make_external_slot(candidate=file_text, created_ts=now))
         return
 
     if action == "crash_repair":
-        _restore_file(current_self_path, sanctioned)  # sanctioned is not None here
-        logger.warning("evolution: crash-repaired current_self.md (log-then-write window)")
+        # Log BEFORE restore: a failed append raises with the file still
+        # divergent → next turn re-classifies crash_repair and retries.
         log_or_raise(history_path, kind=EVO_REPAIR, text=sanctioned)
+        logger.warning("evolution: crash-repaired current_self.md (log-then-write window)")
+        _restore_file(current_self_path, sanctioned)  # sanctioned is not None here
         return
 
     # action == "new_edit" — transition-fired once per distinct edit.
     reason = mechanical_checks(file_text, floor=floor, cap=cap, enforcement=enforcement)
     if reason is not None:
-        _restore_file(current_self_path, sanctioned)
-        logger.warning("evolution: external edit failed mechanical checks (%s); restored", reason)
+        # Log BEFORE restore (same retry-safety argument as crash_repair).
         log_or_raise(history_path, kind=EXTERNAL_EDIT, text=None, reason=reason)
+        logger.warning("evolution: external edit failed mechanical checks (%s); restored", reason)
+        _restore_file(current_self_path, sanctioned)
         return
 
     # Passed. Log the edit (birth line for a slot, or logs-only if one exists).
