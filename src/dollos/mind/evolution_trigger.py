@@ -20,7 +20,7 @@ from pathlib import Path
 
 from dollos.agent_engine import run_agent
 from dollos.mind import evolution as evo
-from dollos.mind import current_self, self_history
+from dollos.mind import self_history
 from dollos.tools import KEEPER_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -138,12 +138,19 @@ class EvolutionTrigger:
             return
         old_sanctioned = self_history.sanctioned_text(self._history_path)
         try:
-            verdict = await self._skeptic(old_sanctioned=old_sanctioned,
-                                          proposed=slot.candidate)
+            # Timeout lives INSIDE the error path: a persistently timing-out
+            # skeptic must consume the verdict_errors bound and set the 1h
+            # cooldown like any other skeptic failure (spec §3.3 failure table
+            # lists timeout explicitly) — not retry forever on the 5s poll.
+            verdict = await asyncio.wait_for(
+                self._skeptic(old_sanctioned=old_sanctioned,
+                              proposed=slot.candidate),
+                timeout=self._agent_timeout_s,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("evolution skeptic errored")
+            logger.exception("evolution skeptic errored (or timed out)")
             slot.verdict_errors += 1
             slot.last_error_ts = time.time()  # 1h cooldown anchor (spec §3.3)
             if slot.verdict_errors >= evo.VERDICT_ERRORS_BOUND:
@@ -180,13 +187,13 @@ class EvolutionTrigger:
             try:
                 if not self._should_reverdict(time.time()):
                     continue
-                self.current_task = asyncio.create_task(
-                    asyncio.wait_for(self._reverdict_once(), timeout=self._agent_timeout_s)
-                )
+                # No outer wait_for: the skeptic timeout is handled INSIDE
+                # _reverdict_once so it flows through the verdict_errors bound
+                # + cooldown (an outer timeout would cancel the error handling
+                # itself and retry forever — review Important).
+                self.current_task = asyncio.create_task(self._reverdict_once())
                 try:
                     await self.current_task
-                except asyncio.TimeoutError:
-                    logger.warning("evolution re-verdict timed out")
                 finally:
                     self.current_task = None
             except asyncio.CancelledError:
