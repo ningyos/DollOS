@@ -757,16 +757,6 @@ def _note_memory_pass(text: str = "記下來", speech: str = "好") -> str:
     )
 
 
-def _pinself_pass(section: str = "self", text: str = "test entry", speech: str = "好") -> str:
-    return (
-        "SEEN: x\nINTENT: y\nTOOL: PinSelf\nREVIEW: r\nMOOD: m\n</think>\n\n"
-        f"{speech}"
-        "<tool_call>\n"
-        f'{{"name":"PinSelf","arguments":{{"section":"{section}","op":"add","target":"","text":"{text}"}}}}\n'
-        "</tool_call>"
-    )
-
-
 def _make_scripted_loop(tmp_path, scripts, sink=None, before_pass=None):
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
