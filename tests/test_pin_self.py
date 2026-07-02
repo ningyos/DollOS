@@ -8,7 +8,7 @@ from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_state import MindState
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, PinSelf
+from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, NoteMemory, PinSelf
 
 
 class _FakeShellRunner:
@@ -144,3 +144,13 @@ def test_pinself_section_field_mentions_opinions_and_interests():
     # relationship/user descriptions must stay exactly as before
     assert "relationship=你和主人" in desc
     assert "user=你注意到的主人" in desc
+
+
+def test_notememory_docstring_uses_subject_test_not_durability_gate():
+    """NoteMemory's reciprocal boundary statement must match PinSelf's
+    subject-test framing — the old write-time durability gate ('durable,
+    defining truths') contradicted it (final-review Important finding)."""
+    doc = NoteMemory.__doc__
+    assert "主詞" in doc
+    assert "durable, defining truths" not in doc
+    assert "剛萌芽" in doc

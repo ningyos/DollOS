@@ -93,10 +93,10 @@ def _format_hit(hit: dict) -> str:
 
 class NoteMemory(BaseModel):
     """Record an episodic fact or event into Doll's memory (daily markdown + memsearch index).
-    Use this for things that happened, or concrete facts worth recalling later.
-    NOTE: for durable, defining truths about WHO YOU ARE, the nature of your bond with 主人,
-    or 主人's enduring patterns/preferences, use PinSelf (during reflection) instead — those
-    belong in your always-in-context self-profile, not general memory."""
+    Use this for things that happened, or concrete facts worth recalling later — 主詞是世界
+    或事件的,歸這裡。NOTE: 主詞是「你」的(你的看法、興趣、好奇——即使剛萌芽——你和主人
+    的關係、你注意到的主人),用 PinSelf(reflection 時)記進 always-in-context 的
+    self-profile,不歸這裡;同一個經驗可以兩邊各記一筆。"""
 
     text: str = Field(
         description="The fact to record. One sentence, declarative."
