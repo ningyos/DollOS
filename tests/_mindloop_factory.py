@@ -26,14 +26,25 @@ def make_mindloop(
     current_self_min_chars: int = 80,
     current_self_max_chars: int = 600,
     self_profile_enabled: bool = False,
+    pending_max_surfacings: int = 5,
+    pending_min_age_days: float = 2.0,
+    sink=None,
+    queue: PerceptionQueue | None = None,
+    state: MindState | None = None,
+    llm=None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
-    seam tests. ``ctx.memory_root`` is set to the passed ``memory_root``."""
-    state = MindState()
-    queue = PerceptionQueue(wal=None)
+    seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
+
+    Pass ``sink`` (an ``asyncio.Queue``) + a pre-seeded ``queue`` to drive a
+    real ``iterate()`` (F6 wiring tests); the returned loop shares the caller's
+    ``state`` when one is supplied so multi-iterate drives observe carried
+    state (e.g. the drain-time latch reset)."""
+    state = state if state is not None else MindState()
+    queue = queue if queue is not None else PerceptionQueue(wal=None)
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
-    ctx = _make_mind_ctx(memory_root, state=state)
-    llm = _FakeLLM(
+    ctx = _make_mind_ctx(memory_root, sink=sink, state=state)
+    llm = llm if llm is not None else _FakeLLM(
         "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\nhi"
     )
     return MindLoop(
@@ -49,4 +60,6 @@ def make_mindloop(
         current_self_min_chars=current_self_min_chars,
         current_self_max_chars=current_self_max_chars,
         self_profile_enabled=self_profile_enabled,
+        pending_max_surfacings=pending_max_surfacings,
+        pending_min_age_days=pending_min_age_days,
     )

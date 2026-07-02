@@ -8,14 +8,10 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from dollos.character import DollPack
-from dollos.memory import FtsMemory
-from dollos.config import Settings
-from dollos.logging_config import configure_cascade_logging
 from dollos.cascade_log import CascadeLogger
-from dollos.schedule import due_entries, load_schedule
+from dollos.character import DollPack
+from dollos.config import Settings
 from dollos.ipc.messages import (
-    ErrorMsg,
     ICECandidateIn,
     Interrupt,
     SayAborted,
@@ -27,33 +23,36 @@ from dollos.ipc.messages import (
     WebRTCOfferIn,
 )
 from dollos.ipc.server import WebSocketServer
-from dollos.voice.engines import ASR_REGISTRY, ASREngine, TTS_REGISTRY, TTSEngine
-from dollos.voice.pack import load_voice_config, resolve_voice_kwargs
-from dollos.voice.session import VoiceSession
-from dollos.voice.sink import TTSObservingSink
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
-from dollos.prompts import PromptRenderer
+from dollos.logging_config import configure_cascade_logging
+from dollos.memory import FtsMemory
+from dollos.mind.consolidation import ConsolidationTrigger
+from dollos.mind.evolution_trigger import EvolutionTrigger
+from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.mind_loop import MindLoop
+from dollos.mind.mind_state import Perception, load_state
+from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.reflection_observer import ReflectionObserver
+from dollos.mind.sink_resolver import SinkResolver
 from dollos.monitor_runner import MonitorRunner
 from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
-from dollos.telemetry.llm_calls import TelemetryRecorder
+from dollos.prompts import PromptRenderer
+from dollos.schedule import due_entries, load_schedule
 from dollos.shell_runner import ShellRunner
-from dollos.workflow import WorkflowRunner
+from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
-from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_loop import MindLoop
-from dollos.mind.mind_state import MindState, Perception, load_state
-from dollos.mind.perception_queue import PerceptionQueue
-from dollos.mind.consolidation import ConsolidationTrigger
-from dollos.mind.evolution_trigger import EvolutionTrigger
-from dollos.mind.reflection_observer import ReflectionObserver
-from dollos.mind.sink_resolver import SinkResolver
+from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
+from dollos.voice.pack import load_voice_config, resolve_voice_kwargs
+from dollos.voice.session import VoiceSession
+from dollos.voice.sink import TTSObservingSink
 from dollos.wal.perception_log import PerceptionWAL
 from dollos.wal.pidfile import PidFile, RestartKind
+from dollos.workflow import WorkflowRunner
 
 logger = logging.getLogger(__name__)
 
