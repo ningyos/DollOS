@@ -870,6 +870,24 @@ class SelfRevision(BaseModel):
 
         sanctioned = self_history.sanctioned_text(hist)
 
+        def _anchor_evolution_decision(outcome: str) -> None:
+            """Decision-event bookkeeping (spec §3.3, review M4): the
+            last_attempt anchor applies regardless of slot origin; the
+            interval update is gated on ``slot.kind != "external"`` (external
+            events leave the interval unchanged per spec). Called from BOTH
+            the happy-path and the adopt-write-failure branch — interval
+            semantics follow the logged decision event, not the happy path."""
+            ctx.mind_state.last_evolution_attempt_at = time.time()
+            if slot.kind == "external":
+                return
+            if outcome == "adopt":
+                ctx.mind_state.evolution_interval_days = ctx.evolution_base_interval_days
+            else:  # "reject"
+                ctx.mind_state.evolution_interval_days = evo.next_interval_days(
+                    ctx.mind_state.evolution_interval_days, outcome=evo.EVO_REJECT,
+                    base=ctx.evolution_base_interval_days,
+                    cap=ctx.evolution_max_interval_days)
+
         if self.decision == "reject":
             # Evolution events are never swallowed (spec §3.2): a failed append
             # aborts the reject — slot stays, no latch, friendly error.
@@ -883,6 +901,7 @@ class SelfRevision(BaseModel):
             # Slot-resolution invariant (spec §3.4): a non-adopt clearing
             # restores the file to sanctioned (or deletes it, bootstrap).
             evo.restore_file(cs_path, sanctioned)
+            _anchor_evolution_decision("reject")
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
             return "好,維持現狀,這個候選先擱著。"
@@ -927,10 +946,12 @@ class SelfRevision(BaseModel):
                                    "logging evo_error, slot cleared, crash-repair will heal")
                     evo.log_or_raise(hist, kind=evo.EVO_ERROR, reason="adopt_write_failed")
                     evo.clear_slot(slot_path)
+                    _anchor_evolution_decision("adopt")
                     ctx.evolution_latched = True
                     _record(ctx, "SelfRevision", self._summary())
                     return "已採納並記錄,但檔案寫入失敗——系統會自動修復。"
             evo.clear_slot(slot_path)
+            _anchor_evolution_decision("adopt")
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
             return "採納了,這就是現在的我。"

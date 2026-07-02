@@ -18,7 +18,8 @@ def _ctx(tmp_path):
         evolution_candidate_surfaced=True,  # F5: surfaced-this-turn gate
         evolution_enabled=True, current_self_min_chars=80,
         current_self_max_chars=600, enforcement=Enforcement(),
-        mind_state=types.SimpleNamespace(recent_outputs=[]))
+        mind_state=MindState(),
+        evolution_base_interval_days=7.0, evolution_max_interval_days=28.0)
 
 
 @pytest.mark.asyncio
@@ -36,11 +37,15 @@ async def test_external_edit_ratification_end_to_end(tmp_path, monkeypatch):
 
     # 2. Mode-B skeptic passes → awaiting_doll.
     trig = EvolutionTrigger(
-        state=types.SimpleNamespace(last_user_at=0.0, last_iter_at=0.0),
+        state=types.SimpleNamespace(
+            last_user_at=0.0, last_iter_at=0.0,
+            last_evolution_attempt_at=0.0, evolution_interval_days=0.0,
+            evolution_hwm=0),
         adapter=object(), renderer=object(), memsearch=object(),
         memory_root=tmp_path, transcripts_root=tmp_path, tool_output_store=object(),
         pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
-        consolidation_trigger=types.SimpleNamespace(current_task=None))
+        consolidation_trigger=types.SimpleNamespace(current_task=None),
+        persist_path=tmp_path / "mind_state.json")
     async def _pass(**kw): return "pass"
     monkeypatch.setattr(trig, "_skeptic", _pass)
     await trig._reverdict_once()
@@ -78,11 +83,15 @@ async def test_counter_round_trip_then_adopt(tmp_path, monkeypatch):
 
     # skeptic passes → awaiting_doll, surfaces "已通過".
     trig = EvolutionTrigger(
-        state=types.SimpleNamespace(last_user_at=0.0, last_iter_at=0.0),
+        state=types.SimpleNamespace(
+            last_user_at=0.0, last_iter_at=0.0,
+            last_evolution_attempt_at=0.0, evolution_interval_days=0.0,
+            evolution_hwm=0),
         adapter=object(), renderer=object(), memsearch=object(),
         memory_root=tmp_path, transcripts_root=tmp_path, tool_output_store=object(),
         pack_identity=Identity(self="s", personality="p", taboos="t"),
-        consolidation_trigger=types.SimpleNamespace(current_task=None))
+        consolidation_trigger=types.SimpleNamespace(current_task=None),
+        persist_path=tmp_path / "mind_state.json")
     async def _pass(**kw): return "pass"
     monkeypatch.setattr(trig, "_skeptic", _pass)
     await trig._reverdict_once()

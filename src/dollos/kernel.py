@@ -291,6 +291,8 @@ class DollOS:
             current_self_min_chars=settings.evolution.current_self_min_chars,
             current_self_max_chars=settings.evolution.current_self_max_chars,
             enforcement=self._doll_pack.enforcement,
+            evolution_base_interval_days=settings.evolution.base_interval_days,
+            evolution_max_interval_days=settings.evolution.max_interval_days,
         )
 
         # Render the static system prompt from the character pack
@@ -377,7 +379,8 @@ class DollOS:
             energy_restore_debounce_s=settings.energy.restore_debounce_s,
         )
 
-        # EvolutionTrigger — 慢變演化 Mode-B verdict-only re-verdict (spec §3.3)
+        # EvolutionTrigger — 慢變演化 Mode-A keeper + Mode-B verdict-only
+        # re-verdict (spec §3.3)
         self._evolution_trigger = EvolutionTrigger(
             state=self._mind_state,
             adapter=self.adapter,
@@ -388,7 +391,15 @@ class DollOS:
             tool_output_store=self._tool_output_store,
             pack_identity=self._doll_pack.identity,
             consolidation_trigger=self._consolidation_trigger,
+            persist_path=settings.data.root / "mind_state.json",
             idle_threshold_s=settings.evolution.idle_threshold_s,
+            base_interval_days=settings.evolution.base_interval_days,
+            max_interval_days=settings.evolution.max_interval_days,
+            min_history_events=settings.evolution.min_history_events,
+            min_diary_days=settings.evolution.min_diary_days,
+            enforcement=self._doll_pack.enforcement,
+            floor=settings.evolution.current_self_min_chars,
+            cap=settings.evolution.current_self_max_chars,
         )
         self._evolution_trigger_task: asyncio.Task[None] | None = None
 

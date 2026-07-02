@@ -14,6 +14,11 @@ class _StubState:
     def __init__(self):
         self.last_user_at = 0.0
         self.last_iter_at = 0.0
+        # Plan 3 Mode-A fields (plan review C1): EvolutionTrigger.__init__
+        # always bootstraps/reads these, even for Mode-B-only test constructions.
+        self.last_evolution_attempt_at = 0.0
+        self.evolution_interval_days = 0.0
+        self.evolution_hwm = 0
 
 
 class _StubRenderer:
@@ -33,6 +38,7 @@ def _trigger(tmp_path, *, verdict, consolidation_running=False, monkeypatch=None
         consolidation_trigger=types.SimpleNamespace(
             current_task=(object() if consolidation_running else None)),
         idle_threshold_s=600,
+        persist_path=tmp_path / "mind_state.json",
     )
 
     async def _fake_skeptic(**kw):

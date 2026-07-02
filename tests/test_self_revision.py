@@ -1,4 +1,5 @@
 """SelfRevision tool — adopt/reject/counter/latch/friendly-errors (spec §3.4)."""
+import time
 import types
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from dollos.character import Enforcement
 from dollos.mind import evolution as evo
 from dollos.mind import self_history
+from dollos.mind.mind_state import MindState
 from dollos.tools import SelfRevision
 
 
@@ -19,7 +21,11 @@ def _ctx(tmp_path, *, latched=False, surfaced=True):
         current_self_min_chars=80,
         current_self_max_chars=600,
         enforcement=Enforcement(),
-        mind_state=types.SimpleNamespace(recent_outputs=[]),
+        mind_state=MindState(),
+        # Plan 3 decision-event bookkeeping knobs (spec §3.3) — SelfRevision
+        # adopt/reject read these to reset/double the keeper interval.
+        evolution_base_interval_days=7.0,
+        evolution_max_interval_days=28.0,
     )
 
 
@@ -345,3 +351,45 @@ async def test_drift_score_is_one_minus_pairwise_jaccard(tmp_path):
     assert adopt["old_text"] == old
     expected = round(1.0 - pairwise_jaccard(old, new_cand), 4)
     assert adopt["drift_score"] == expected and adopt["drift_score"] is not None
+
+
+# --- Plan 3 (Task 4): decision-event bookkeeping (spec §3.3) ---
+
+@pytest.mark.asyncio
+async def test_adopt_resets_interval_and_anchors_attempt(tmp_path):
+    """Adopt (keeper-origin, not external) resets the interval to base and
+    anchors last_evolution_attempt_at to now."""
+    _seed_awaiting_doll(tmp_path)
+    ctx = _ctx(tmp_path)
+    ctx.mind_state.evolution_interval_days = 21.0
+    before = time.time()
+    await SelfRevision(decision="adopt").run(ctx)
+    assert ctx.mind_state.evolution_interval_days == ctx.evolution_base_interval_days
+    assert ctx.mind_state.last_evolution_attempt_at >= before
+
+
+@pytest.mark.asyncio
+async def test_reject_doubles_interval_capped(tmp_path):
+    """Reject doubles the interval, capped at evolution_max_interval_days."""
+    _seed_awaiting_doll(tmp_path)
+    ctx = _ctx(tmp_path)
+    ctx.mind_state.evolution_interval_days = 20.0
+    before = time.time()
+    await SelfRevision(decision="reject").run(ctx)
+    assert ctx.mind_state.evolution_interval_days == 28.0  # min(40, 28)
+    assert ctx.mind_state.last_evolution_attempt_at >= before
+
+
+@pytest.mark.asyncio
+async def test_external_adopt_leaves_interval_unchanged(tmp_path):
+    """External-origin decision events anchor last_attempt but must NOT touch
+    the interval (spec: external events leave it unchanged)."""
+    slot = evo.make_external_slot(candidate="有人手動改的內容。" + "字" * 80, created_ts=1.0)
+    slot.status = "awaiting_doll"
+    evo.save_slot(_slot_path(tmp_path), slot)
+    ctx = _ctx(tmp_path)
+    ctx.mind_state.evolution_interval_days = 9.0
+    before = time.time()
+    await SelfRevision(decision="adopt").run(ctx)
+    assert ctx.mind_state.evolution_interval_days == 9.0       # unchanged
+    assert ctx.mind_state.last_evolution_attempt_at >= before  # anchor still applies
