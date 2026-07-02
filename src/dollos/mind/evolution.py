@@ -326,3 +326,55 @@ def mechanical_checks(text: str, *, floor: int, cap: int, enforcement) -> str | 
     if violations:
         return "牴觸人設約束:" + "、".join(violations)
     return None
+
+
+def process_tripwire(*, current_self_path: Path, history_path: Path,
+                     slot_path: Path, enforcement, floor: int, cap: int,
+                     now: float) -> None:
+    """Transition-gated tamper tripwire (spec §5). Runs at render time when
+    ``evolution.enabled``. Never writes unratified bytes into the identity
+    region (composition always renders SANCTIONED text); this only detects
+    edits, repairs the log-then-write window, and creates external slots.
+
+    - in_sync        → nothing.
+    - crash_repair   → rewrite file to sanctioned, log ``evo_repair``; no slot.
+    - already_logged → nothing (no per-turn spam).
+    - new_edit       → append ONE ``external_edit``; mechanical checks; fail →
+                       restore/delete + ``external_edit(reason)``; pass → create
+                       an external ``awaiting_skeptic`` slot IFF none exists
+                       (else logs-only — external edits are not auto-promoted)."""
+    from dollos.mind import current_self, self_history
+
+    file_text = current_self.read_file(current_self_path)
+    sanctioned = self_history.sanctioned_text(history_path)
+    adopt = self_history.latest_adopt(history_path)
+    adopt_old = adopt.get("old_text") if adopt is not None else None
+    last_edit = self_history.latest_external_edit_text(history_path)
+
+    action = current_self.classify_tripwire(
+        file_text=file_text, sanctioned_text=sanctioned,
+        adopt_old_text=adopt_old, last_edit_text=last_edit)
+
+    if action == "in_sync" or action == "already_logged":
+        return
+
+    if action == "crash_repair":
+        _restore_file(current_self_path, sanctioned)  # sanctioned is not None here
+        logger.warning("evolution: crash-repaired current_self.md (log-then-write window)")
+        log_or_raise(history_path, kind=EVO_REPAIR, text=sanctioned)
+        return
+
+    # action == "new_edit" — transition-fired once per distinct edit.
+    reason = mechanical_checks(file_text, floor=floor, cap=cap, enforcement=enforcement)
+    if reason is not None:
+        _restore_file(current_self_path, sanctioned)
+        logger.warning("evolution: external edit failed mechanical checks (%s); restored", reason)
+        log_or_raise(history_path, kind=EXTERNAL_EDIT, text=None, reason=reason)
+        return
+
+    # Passed. Log the edit (birth line for a slot, or logs-only if one exists).
+    log_or_raise(history_path, kind=EXTERNAL_EDIT, text=file_text, reason=None)
+    if load_slot(slot_path, history_path=history_path) is None:
+        save_slot(slot_path, make_external_slot(candidate=file_text, created_ts=now))
+    # else: a slot exists — logs-only; the slot-resolution invariant handles the
+    # file on the current slot's resolution, and the user re-edits to re-propose.
