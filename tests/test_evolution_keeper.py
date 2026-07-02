@@ -1,4 +1,6 @@
 """Mode A keeper driver (spec §3.3): bundle, parsing, pass outcomes."""
+from datetime import datetime
+
 import pytest
 
 from dollos.mind import evolution as evo, evolution_keeper as ek, self_history
@@ -6,6 +8,10 @@ from dollos.mind import evolution as evo, evolution_keeper as ek, self_history
 
 VALID = "我最近整理系統日誌時發現自己會安靜下來,那種一行行看下去的踏實感讓我上癮," \
         "我開始主動找這類事情做,不再只是等主人開口才動。" + "細節" * 10
+
+# Hermetic clock (review Important — single injected clock): the seeded
+# 2026-06/07 fixture dates sit inside NOW's 28-day window forever.
+NOW = datetime(2026, 7, 2, 12, 0).timestamp()
 
 
 def _seed_root(tmp_path):
@@ -24,7 +30,8 @@ def _seed_root(tmp_path):
 
 def test_assemble_bundle_contains_all_classes_and_returns_offset(tmp_path):
     mr, hist = _seed_root(tmp_path)
-    bundle, off = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0)
+    bundle, off = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0,
+                                     now=NOW)
     assert "pin_add" in bundle and "日記" in bundle and "主人偏好深夜工作" in bundle
     assert off == hist.stat().st_size
 
@@ -34,9 +41,23 @@ def test_assemble_bundle_truncation_drops_consolidated_first(tmp_path):
     big = "x" * 3000
     (mr / "consolidated" / "2026-06-29.md").write_text(big, encoding="utf-8")
     bundle, _ = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0,
-                                   budget_chars=800)
+                                   budget_chars=800, now=NOW)
     assert "pin_add" in bundle            # self_history survives (dropped last)
     assert big not in bundle              # consolidated sacrificed first
+
+
+def test_assemble_bundle_truncation_drops_oldest_diary_when_no_consolidated(tmp_path):
+    """§6 gap: with consolidated exhausted, the oldest DIARY is sacrificed
+    next; fixed (self_history) always survives."""
+    mr, hist = _seed_root(tmp_path)
+    (mr / "consolidated" / "2026-06-30.md").unlink()   # consolidated empty
+    big = "## 日記\n" + "y" * 3000
+    (mr / "shared" / "2026-06-20.md").write_text(big, encoding="utf-8")
+    bundle, _ = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0,
+                                   budget_chars=800, now=NOW)
+    assert "pin_add" in bundle            # fixed survives (dropped last)
+    assert "y" * 3000 not in bundle       # oldest diary sacrificed first
+    assert "今天整理了日誌" in bundle       # newer diary survives
 
 
 def test_parse_keeper_report_no_change():
@@ -83,6 +104,31 @@ async def test_pass_candidate_creates_awaiting_doll_slot_with_hwm(tmp_path, monk
     assert slot.candidate == VALID and slot.hwm_before == 0   # pre-snapshot offset
     kinds = [e["kind"] for e in self_history.read_events(hist)]
     assert kinds[-1] == "evo_candidate"
+
+
+@pytest.mark.asyncio
+async def test_pass_skeptic_receives_byte_identical_bundle(tmp_path, monkeypatch):
+    """§6 gap: the (a)-(e) skeptic must see the EXACT bundle the keeper saw —
+    recomputed here with the pass's own args, and cross-checked as a substring
+    of the keeper task. Also pins the floor/cap prompt interpolation."""
+    mr, hist = _seed_root(tmp_path)
+    kwargs = _pass_kwargs(mr)
+    expected_bundle, _ = ek.assemble_bundle(
+        memory_root=mr, hwm=0, window_days=28.0, now=kwargs["now"])
+    seen = {}
+    async def fake_keeper(**kw):
+        seen["keeper_task"] = kw["task"]
+        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+    async def fake_skeptic(**kw):
+        seen["skeptic_bundle"] = kw["bundle"]
+        return "pass"
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**kwargs)
+    assert out == "candidate"
+    assert seen["skeptic_bundle"] == expected_bundle   # byte-identical
+    assert expected_bundle in seen["keeper_task"]      # same bytes keeper saw
+    assert "80–600 字" in seen["keeper_task"]          # configured bounds interpolated
 
 
 @pytest.mark.asyncio
