@@ -168,6 +168,41 @@ async def test_pass_keeper_error_returns_error_and_logs(tmp_path, monkeypatch):
     assert [e["kind"] for e in self_history.read_events(hist)][-1] == "evo_error"
 
 
+@pytest.mark.asyncio
+async def test_pass_yields_to_slot_created_mid_pass(tmp_path, monkeypatch):
+    """Task-4 review Minor 1: while the keeper/skeptic LLM calls are in flight,
+    a background-perception turn's tripwire can create an external
+    awaiting_skeptic slot. The pass must NOT clobber it — it yields: evo_kill
+    (superseded reason), NO evo_candidate birth line, external slot untouched."""
+    mr, hist = _seed_root(tmp_path)
+    slot_path = mr / "self_evolution" / "pending.json"
+    external_candidate = "有人在 pass 進行中改了檔案。" + "字" * 80
+
+    async def fake_keeper(**kw):
+        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+
+    async def fake_skeptic(**kw):
+        # Simulate the mid-await interleave: the tripwire lands an external
+        # slot while the skeptic LLM call is still in flight, then passes.
+        evo.save_slot(slot_path, evo.make_external_slot(
+            candidate=external_candidate, created_ts=50.0))
+        return "pass"
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**_pass_kwargs(mr))
+
+    assert out == "kill"
+    survivor = evo.load_slot(slot_path)
+    assert survivor is not None and survivor.kind == "external"      # untouched
+    assert survivor.candidate == external_candidate
+    assert survivor.status == "awaiting_skeptic"
+    events = self_history.read_events(hist)
+    assert events[-1]["kind"] == "evo_kill"
+    assert events[-1]["reason"] == "superseded:slot_created_mid_pass"
+    assert "evo_candidate" not in [e["kind"] for e in events]        # no birth line
+
+
 def _pass_kwargs(mr):
     from dollos.character import Enforcement, Identity
     ident = Identity(self="我是測試角色", personality="安靜", taboos="不編造")
