@@ -4,7 +4,8 @@ import types
 import pytest
 
 from dollos.character import Enforcement, Identity
-from dollos.mind import current_self, evolution as evo, self_history
+from dollos.mind import current_self, self_history
+from dollos.mind import evolution as evo
 from dollos.mind.evolution_trigger import EvolutionTrigger
 from dollos.mind.mind_prompt import render_mind
 from dollos.mind.mind_state import MindState
@@ -14,6 +15,7 @@ from dollos.tools import SelfRevision
 def _ctx(tmp_path):
     return types.SimpleNamespace(
         memory_root=tmp_path, current_turn=1, evolution_latched=False,
+        evolution_candidate_surfaced=True,  # F5: surfaced-this-turn gate
         evolution_enabled=True, current_self_min_chars=80,
         current_self_max_chars=600, enforcement=Enforcement(),
         mind_state=types.SimpleNamespace(recent_outputs=[]))
