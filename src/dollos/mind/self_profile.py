@@ -7,9 +7,14 @@ cap / locate logic is unit-testable in isolation.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from dollos.mind import self_history
+
+logger = logging.getLogger(__name__)
 
 SECTION_TITLES: dict[str, str] = {
     "self": "我學到的自己",
@@ -129,50 +134,75 @@ def _entries_listing(sections: dict[str, list[Bullet]]) -> str:
     return "、".join(entries) if entries else "(目前沒有任何條目)"
 
 
+def _log_pin(history_path: Path | None, **fields) -> None:
+    """Pin-event logging is best-effort: an IO error must never break the pin
+    itself (spec §3.2 — swallow rule is pins-only). Logged loudly."""
+    if history_path is None:
+        return
+    try:
+        self_history.log_event(history_path, **fields)
+    except OSError:
+        logger.exception("self_history write failed (pin already applied)")
+
+
 def apply(path: Path, *, section: str, op: str, target: str, text: str,
-          max_chars: int, today: str) -> str:
+          max_chars: int, today: str, history_path: Path | None = None,
+          turn: int = 0, external_ctx: bool = False) -> str:
     """Read-modify-write self_profile.md. Returns a human-readable result or a
-    friendly-error string (never raises for cap/locate misses)."""
+    friendly-error string (never raises for cap/locate misses). When
+    ``history_path`` is set, successful mutations append evidence events
+    (spec 2026-07-02 §3.2): tombstones on replace/remove, cross-turn-only
+    reconfirm on the idempotent-add dedup hit."""
     raw = path.read_text() if path.exists() else ""
     sections = _parse(raw)
+    pending_log: dict | None = None  # logged only AFTER a successful write
 
     if op == "add":
         if section not in SECTION_ORDER:
             return f"未知 section:{section}"
         clean_text = _strip_incoming_tag(text)
-        # Idempotent add: an identical bullet already in this section is a no-op,
-        # not a duplicate. PinSelf sits in the in-turn refeed allowlist (so a
-        # failed replace/remove can retry same-turn), which means a successful
-        # add is re-fed; the weak model sometimes re-emits the identical pin
-        # every pass up to MAX_SYNC_REFEED_PASSES. Without this guard that wrote
-        # up to 8 identical bullets into the always-injected profile (smoke-found).
         existing = next(
             (b for b in sections[section] if b.text == clean_text), None
         )
         if existing is not None:
+            # Idempotent dedup hit (comment block unchanged). Cross-turn only:
+            # same-turn hits are refeed echoes and must not fabricate
+            # reinforcement evidence (spec §3.2).
+            if history_path is not None:
+                prev = self_history.last_pin_turn(
+                    history_path, section=section, text=clean_text)
+                if prev is None or prev != turn:
+                    _log_pin(history_path, kind="pin_reconfirm", turn=turn,
+                             external_ctx=external_ctx, section=section,
+                             id=existing.id, text=clean_text)
             return f"已有相同條目:{existing.id}(未重複新增)"
         new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
         result = f"已 pin 到「{SECTION_TITLES[section]}」:{new_id}"
+        pending_log = dict(kind="pin_add", turn=turn, external_ctx=external_ctx,
+                           section=section, id=new_id, text=clean_text)
     elif op == "replace":
         found = _find(sections, target)
         if found is None:
             return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
                      f"可用 id(如 s1)或貼該條目文字重試。")
         key, i = found
-        old_id = sections[key][i].id
+        old = sections[key][i]
         clean_text = _strip_incoming_tag(text)
-        sections[key][i] = Bullet(id=old_id, date=today, text=clean_text)
-        result = f"已更新 {old_id}"
+        sections[key][i] = Bullet(id=old.id, date=today, text=clean_text)
+        result = f"已更新 {old.id}"
+        pending_log = dict(kind="pin_replace", turn=turn, external_ctx=external_ctx,
+                           section=key, id=old.id, text=clean_text, old_text=old.text)
     elif op == "remove":
         found = _find(sections, target)
         if found is None:
             return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
                      f"可用 id(如 s1)或貼該條目文字重試。")
         key, i = found
-        old_id = sections[key][i].id
-        sections[key].pop(i)
-        result = f"已移除 {old_id}"
+        old = sections[key].pop(i)
+        result = f"已移除 {old.id}"
+        pending_log = dict(kind="pin_remove", turn=turn, external_ctx=external_ctx,
+                           section=key, id=old.id, text="", old_text=old.text)
     else:
         return f"未知 op:{op}"
 
@@ -183,6 +213,8 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(serialized)
+    if pending_log is not None:
+        _log_pin(history_path, **pending_log)
     return result
 
 
