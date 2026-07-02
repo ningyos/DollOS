@@ -249,6 +249,24 @@ class MindLoop:
         # opens a fresh SelfRevision decision window.
         self._ctx.evolution_latched = False
 
+        # 慢變演化 tamper tripwire (spec §5): detect/repair external edits before
+        # rendering. Frozen when evolution disabled (already-sanctioned text
+        # still renders via _system_prompt_for_turn).
+        if self._evolution_enabled:
+            from dollos.mind import evolution as _evo
+            try:
+                _evo.process_tripwire(
+                    current_self_path=self._ctx.memory_root / "current_self.md",
+                    history_path=self._ctx.memory_root / "self_history.jsonl",
+                    slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
+                    enforcement=self._enforcement,
+                    floor=self._current_self_min_chars,
+                    cap=self._current_self_max_chars,
+                    now=time.time(),  # module-level `time` (line 5) — no local shadow needed
+                )
+            except Exception:
+                logger.exception("evolution tripwire failed; continuing")
+
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;
         # if the turn fails again, safe mode re-triggers and re-announces.
