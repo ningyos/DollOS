@@ -25,7 +25,7 @@ _KEEPER_TASK = """你在替一個虛擬生命體「整理證據」——她的�
 規則(缺一不可):
 - Cite or die:每個宣稱的變化都必須指向下方紀錄裡的具體事件(存活很久的 pin、跨日被 reconfirm 的條目、被淘汰的舊自我、日記裡重複出現的模式)。沒有證據就回 NO_CHANGE——寧缺勿濫,排程會自然放慢,那是設計內的結果。
 - 佐證權重:pin 與日記是她親手寫的,為主;標了 external_ctx=true 的 pin 是她讀外部內容時寫的,權重降低;reconfirm 看跨日多樣性,不看次數;consolidated 是系統從逐字稿整理的,只當旁證。
-- 產出是「全文替換」的人格描述(繁體中文,80–600 字),不是 diff、不是條列;是氣質速寫,不是傳記。不可改名、不可動搖她的核心身分、不可牴觸 taboos、不可只是重述出廠人格已寫明的內容。
+- 產出是「全文替換」的人格描述(繁體中文,{floor}–{cap} 字),不是 diff、不是條列;是氣質速寫,不是傳記。不可改名、不可動搖她的核心身分、不可牴觸 taboos、不可只是重述出廠人格已寫明的內容。
 
 [出廠人格(參考,不可重述)]
 {identity_self}
@@ -71,15 +71,20 @@ _FULL_SKEPTIC_TASK = """你是一個獨立審查者。以下是系統替一個�
 
 
 def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
-                    budget_chars: int = EVIDENCE_BUDGET_CHARS) -> tuple[str, int]:
+                    budget_chars: int = EVIDENCE_BUDGET_CHARS,
+                    now: float) -> tuple[str, int]:
     """Evidence bundle + new HWM offset. Truncation order (spec §3.3,
     load-bearing): drop oldest-first WITHIN class; sacrifice consolidated
-    before diary before self_history — never invert provenance weighting."""
+    before diary before self_history — never invert provenance weighting.
+
+    ``now`` is the single injected clock (review Important): the window
+    cutoff derives from it, never from wall time, so the whole pass shares
+    one clock and the tests stay hermetic."""
     hist_text, new_off = evo.history_snapshot(memory_root / "self_history.jsonl", hwm)
     profile_path = memory_root / "self_profile.md"
     profile = profile_path.read_text(encoding="utf-8") if profile_path.exists() else ""
 
-    cutoff = (_date.today() - timedelta(days=window_days)).isoformat()
+    cutoff = (_date.fromtimestamp(now) - timedelta(days=window_days)).isoformat()
 
     def _dated_files(d: Path) -> list[Path]:
         if not d.exists():
@@ -87,9 +92,11 @@ def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
         return sorted(f for f in d.glob("*.md")
                       if evo._DATE_RE.match(f.stem) and f.stem >= cutoff)
 
-    diaries = [(f.stem, f.read_text(encoding="utf-8"))
-               for f in _dated_files(memory_root / "shared")
-               if "日記" in f.read_text(encoding="utf-8")]
+    diaries: list[tuple[str, str]] = []
+    for f in _dated_files(memory_root / "shared"):
+        text = f.read_text(encoding="utf-8")
+        if "日記" in text:
+            diaries.append((f.stem, text))
     consolidated = [(f.stem, f.read_text(encoding="utf-8"))
                     for f in _dated_files(memory_root / "consolidated")]
 
@@ -175,10 +182,11 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
     slot_path = memory_root / "self_evolution" / "pending.json"
     current = sh.sanctioned_text(history_path)
     bundle, _new_off = assemble_bundle(memory_root=memory_root, hwm=hwm,
-                                       window_days=window_days)
+                                       window_days=window_days, now=now)
     task = _KEEPER_TASK.format(
         identity_self=pack_identity.self, personality=pack_identity.personality,
-        current=current or "(尚無——這會是第一版)", bundle=bundle)
+        current=current or "(尚無——這會是第一版)", bundle=bundle,
+        floor=floor, cap=cap)
     try:
         report = await _run_keeper_agent(
             task=task, adapter=adapter, renderer=renderer, memsearch=memsearch,
