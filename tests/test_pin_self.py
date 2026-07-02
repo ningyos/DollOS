@@ -104,3 +104,43 @@ async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
     # Second add should fail due to accumulated total
     msg2 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
     assert "上限" in msg2, f"Second add should hit cap, but got: {msg2}"
+
+
+def test_pinself_docstring_states_subject_test_as_criterion():
+    """Docstring's dividing line between PinSelf and NoteMemory is the
+    sentence's subject (about-you vs. about-the-world), not durability."""
+    doc = PinSelf.__doc__
+    assert "主詞" in doc
+    assert "NoteMemory" in doc
+
+
+def test_pinself_docstring_allows_write_loose_nascent_entries():
+    """Nascent/not-yet-sure-if-durable entries may be pinned — the write-time
+    durability gate from the old docstring ('CORE, DURABLE truth... exactly
+    three things') must be gone."""
+    doc = PinSelf.__doc__
+    assert "剛萌芽" in doc
+    assert "CORE, DURABLE" not in doc
+    assert "exactly three things" not in doc
+
+
+def test_pinself_docstring_frames_prune_as_selection_not_hygiene():
+    """Pruning is reframed as 'what survives is your core', not cleanup."""
+    doc = PinSelf.__doc__
+    assert "活下來的才是你的核心" in doc
+
+
+def test_pinself_docstring_allows_dual_recording_same_experience():
+    """One experience can produce a NoteMemory entry (the fact) AND a
+    PinSelf entry (what it revealed about her) — this must be explicit."""
+    doc = PinSelf.__doc__
+    assert "兩邊各記一筆" in doc
+
+
+def test_pinself_section_field_mentions_opinions_and_interests():
+    desc = PinSelf.model_fields["section"].description
+    assert "看法" in desc
+    assert "興趣" in desc
+    # relationship/user descriptions must stay exactly as before
+    assert "relationship=你和主人" in desc
+    assert "user=你注意到的主人" in desc
