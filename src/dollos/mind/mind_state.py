@@ -164,6 +164,11 @@ class MindState:
     energy: float = 1.0
     last_energy_restore_at: float = 0.0
 
+    # 慢變演化 Mode A (Plan 3, spec §3.3)
+    last_evolution_attempt_at: float = 0.0   # epoch; 0.0 = never (init at trigger start)
+    evolution_interval_days: float = 0.0     # current decaying interval; 0.0 = uninit
+    evolution_hwm: int = 0                   # committed byte offset into self_history.jsonl
+
 
 def save_state(state: MindState, path: Path) -> bool:
     """Save MindState to JSON file atomically.
@@ -212,6 +217,9 @@ def save_state(state: MindState, path: Path) -> bool:
             "last_consolidated_date": state.last_consolidated_date,
             "energy": state.energy,
             "last_energy_restore_at": state.last_energy_restore_at,
+            "last_evolution_attempt_at": state.last_evolution_attempt_at,
+            "evolution_interval_days": state.evolution_interval_days,
+            "evolution_hwm": state.evolution_hwm,
         }
 
         # Atomic write: write to temp, then rename
@@ -316,6 +324,9 @@ def load_state(path: Path) -> MindState:
             last_consolidated_date=data.get("last_consolidated_date", ""),
             energy=min(1.0, max(0.0, float(data.get("energy", 1.0)))),
             last_energy_restore_at=data.get("last_energy_restore_at", 0.0),
+            last_evolution_attempt_at=float(data.get("last_evolution_attempt_at", 0.0)),
+            evolution_interval_days=float(data.get("evolution_interval_days", 0.0)),
+            evolution_hwm=max(0, int(data.get("evolution_hwm", 0))),
         )
         return state
     except Exception as e:
