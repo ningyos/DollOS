@@ -27,7 +27,7 @@ Replace the current docstring with (final wording may be lightly adjusted for pr
 
 Design points that must survive edits: subject test stated as THE criterion; both-sides-of-one-experience allowed; write-loose invitation explicit; prune reframed as selection ("活下來的才是你的核心"), not hygiene.
 
-**Style note (R1):** this repo's tool docstrings are English-led with Chinese key phrases (current PinSelf, SpawnWorkflow, etc.). The implementer should keep that convention — English framing sentence(s) + the Chinese design-point phrases above — rather than going fully Chinese; the draft above specifies content, not final language mix.
+**Style note (R1, adjudicated at implementation):** originally this note asked for the repo's English-led docstring convention. Superseded — the user approved the Chinese-body draft verbatim at design time, and functionally the Chinese design phrases (主詞/淘汰/先記) must match the nudge's vocabulary word-for-word so the weak model can cross-reference the two surfaces; an English paraphrase would break that alignment. English opening sentence + Chinese body is the intended final form.
 
 ### 3.2 `section` field description (same class)
 
