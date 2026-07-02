@@ -18,6 +18,25 @@ def test_split_reconstructs_today_when_no_section():
     assert _CURRENT_SELF_SEAM not in (prefix + suffix)
 
 
+def test_split_omits_selfrevision_hint_when_evolution_flag_absent():
+    """Byte-neutrality holds only when evolution_enabled is absent/False —
+    old (pre-evolution) callers of split_scaffolding must see no SelfRevision
+    text leak into the suffix."""
+    r = PromptRenderer()
+    prefix, suffix = split_scaffolding(
+        r, identity=_identity(), available_skills=[], tool_registry={})
+    assert "SelfRevision" not in (prefix + suffix)
+
+
+def test_split_includes_selfrevision_hint_when_evolution_enabled():
+    r = PromptRenderer()
+    prefix, suffix = split_scaffolding(
+        r, identity=_identity(), available_skills=[], tool_registry={},
+        evolution_enabled=True)
+    assert "SelfRevision" in suffix
+    assert "PinSelf" in suffix
+
+
 def test_split_seam_between_taboos_and_behavior():
     r = PromptRenderer()
     prefix, suffix = split_scaffolding(

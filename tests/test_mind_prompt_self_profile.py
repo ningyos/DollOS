@@ -74,6 +74,21 @@ def test_reflection_nudge_states_notetoollesson_division():
     assert "NoteToolLesson" in text
 
 
+def test_reflection_nudge_states_selfrevision_division_of_labor():
+    """Live-smoke root cause (p2-live-smoke-report.md): the ReflectionMoment
+    nudge was 100% PinSelf-focused, so the model conflated [人格演化候選]
+    with PinSelf's self-profile machinery. A division-of-labor sentence
+    naming SelfRevision must appear, without disturbing the load-bearing
+    PinSelf content above it."""
+    p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
+    text = _percep_body(p)
+    assert "[人格演化候選]" in text
+    assert "SelfRevision" in text
+    assert "PinSelf 處理不了它" in text
+    # Existing load-bearing PinSelf content must come first (appended after).
+    assert text.index("NoteToolLesson") < text.index("SelfRevision")
+
+
 def test_self_profile_header_frames_prune_as_selection():
     out = render_mind(_state(), [], "SYSTEM", self_profile_text="- [s1·2026-07-02] test")
     assert "keep only what's still you" in out

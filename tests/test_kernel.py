@@ -110,6 +110,28 @@ def test_kernel_mind_loop_uses_same_queue(tmp_path: Path) -> None:
     assert dollos._mind_loop._queue is dollos._perception_queue
 
 
+def test_kernel_threads_evolution_enabled_into_scaffolding(tmp_path: Path) -> None:
+    """Kernel wires settings.evolution.enabled into split_scaffolding so the
+    always-in-context Reflection section names SelfRevision when evolution
+    is enabled (default) — the p2-live-smoke-report.md root-cause fix:
+    SelfRevision was invisible in the model-facing prompt."""
+    settings = _make_settings(tmp_path)
+    assert settings.evolution.enabled  # default True
+    dollos = DollOS(settings)
+    combined = dollos._mind_loop._system_prompt + dollos._mind_loop._system_prompt_suffix
+    assert "SelfRevision" in combined
+
+
+def test_kernel_omits_selfrevision_when_evolution_disabled(tmp_path: Path) -> None:
+    from dollos.config import EvolutionConfig
+
+    settings = _make_settings(tmp_path)
+    settings.evolution = EvolutionConfig(enabled=False)
+    dollos = DollOS(settings)
+    combined = dollos._mind_loop._system_prompt + dollos._mind_loop._system_prompt_suffix
+    assert "SelfRevision" not in combined
+
+
 def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
     from dollos.tool_outputs import ToolOutputStore
 

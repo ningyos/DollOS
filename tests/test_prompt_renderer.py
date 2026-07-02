@@ -352,3 +352,31 @@ def test_scaffolding_reflection_section_keeps_operational_details():
     reflection_section = out[start:end]
     assert "~30 iterations" in reflection_section
     assert "Do not speak to the user" in reflection_section
+
+
+def test_scaffolding_reflection_section_mentions_selfrevision_when_evolution_enabled():
+    """Live-smoke root cause (p2-live-smoke-report.md): SelfRevision was
+    invisible in the model-facing prompt (PinSelf 22x vs SelfRevision 1x),
+    so the weak model routed [人格演化候選] decisions to PinSelf. The
+    always-in-context Reflection section must name SelfRevision explicitly
+    when evolution is enabled, and distinguish it from PinSelf."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity(), evolution_enabled=True)
+    start = out.index("# Reflection")
+    end = out.index("# Output", start)
+    reflection_section = out[start:end]
+    assert "SelfRevision" in reflection_section
+    assert "[人格演化候選]" in reflection_section
+    assert "PinSelf" in reflection_section
+
+
+def test_scaffolding_reflection_section_omits_selfrevision_when_evolution_disabled():
+    """Byte-neutrality: with the flag absent/False, the render must be
+    identical to today's (no SelfRevision leakage into the always-in-context
+    prompt for runs that don't have evolution enabled)."""
+    renderer = PromptRenderer()
+    out_absent = renderer.render("scaffolding", identity=_identity())
+    out_false = renderer.render("scaffolding", identity=_identity(), evolution_enabled=False)
+    assert out_absent == out_false
+    assert "SelfRevision" not in out_absent
+    assert "[人格演化候選]" not in out_absent
