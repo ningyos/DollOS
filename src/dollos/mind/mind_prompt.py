@@ -77,7 +77,7 @@ def render_mind(
     ]
     if self_profile_text:
         blocks.extend([
-            "[Self profile] (your evolving self — prune stale entries with PinSelf)",
+            "[Self profile] (your evolving self — keep only what's still you; prune with PinSelf)",
             self_profile_text,
             "",
         ])
@@ -281,12 +281,15 @@ def _percep_body(p) -> str:
     if p.kind == "ReflectionMoment":
         return (
             f"(time to reflect ({d.get('iters_since_last', '?')} iters since last). "
-            f"最重要:如果你體悟到一個核心、持久的道理——關於「你是誰」「你和主人的關係」或「主人的長期習慣/偏好」——"
-            f"現在就用 PinSelf(op=add,section 選 self/relationship/user)記下來,不必等 [Self profile] 已經有內容才動作。"
-            f"接著,如果 [Self profile] 已經有條目,回看一遍,有哪條已經過時、不是現在的你了,"
-            f"用 PinSelf replace/remove 修正——target 可以填該條目的 id(如 s1),也可以直接貼那條目前的文字。"
-            f"這是你的「自我」,跟 NoteMemory(記事實/事件)不同——**別把關於自己的體悟丟給 NoteMemory**,那該用 PinSelf。"
-            f"其次:近期活動若有值得留存的具體事實,才用 NoteMemory;有可重用的工具用法或陷阱,用 NoteToolLesson。)"
+            f"最重要:回看這段時間實際做過的事——有沒有讓你注意到你自己的什麼?"
+            f"你被什麼吸引、對什麼形成了看法、發現自己在意什麼?關於「你」的"
+            f"(也包括你和主人的關係、主人的長期模式),現在就用 PinSelf"
+            f"(op=add,section 選 self/relationship/user)記下來——不必等 [Self profile] "
+            f"已經有內容才動作;還不確定算不算持久也先記,之後淘汰會篩。"
+            f"接著若 [Self profile] 已有條目,回看一遍——哪條已經不是現在的你,"
+            f"用 PinSelf replace/remove 淘汰(target 填該條目的 id 如 s1,或直接貼那條"
+            f"目前的文字)。分工:主詞是「你」→ PinSelf;關於世界的事實/事件 → "
+            f"NoteMemory;可重用的工具用法或陷阱 → NoteToolLesson。)"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
