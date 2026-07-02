@@ -214,16 +214,18 @@ def count_new_pin_events(history_path: Path, hwm: int) -> int:
 
 
 def diary_days_since(shared_dir: Path, since_epoch: float) -> int:
-    """Diary-days material clause: distinct dated shared/*.md files newer than
-    ``since_epoch`` (mtime) that contain a 日記 heading (WriteDiary appends
-    ``## … 日記`` sections to memory_root/shared/{date}.md)."""
+    """Diary-days material clause: distinct dated shared/*.md files whose
+    FILENAME date is after ``since_epoch``'s date, containing a 日記 heading
+    (WriteDiary appends ``## … 日記`` sections to memory_root/shared/{date}.md).
+    Filename-date, not mtime — deterministic, matches assemble_bundle's own
+    stem-based windowing (plan review C2)."""
     if not shared_dir.exists():
         return 0
+    from datetime import date as _d
+    since_date = _d.fromtimestamp(since_epoch).isoformat() if since_epoch > 0 else ""
     n = 0
     for f in shared_dir.glob("*.md"):
-        if not _DATE_RE.match(f.stem):
-            continue
-        if f.stat().st_mtime <= since_epoch:
+        if not _DATE_RE.match(f.stem) or f.stem <= since_date:
             continue
         try:
             if "日記" in f.read_text(encoding="utf-8"):
@@ -656,7 +658,12 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
     return "candidate"
 ```
 
-Also add to `evolution.py`'s event constants (they exist in the spec enum but check which are already defined — Plan 2 defined `EVO_COUNTER/EVO_ADOPT/EVO_REJECT/EVO_EXPIRE/EVO_KILL/EVO_ERROR/EXTERNAL_EDIT/EVO_REPAIR`; ADD `EVO_CANDIDATE = "evo_candidate"` and `EVO_NO_CHANGE = "evo_no_change"` if absent).
+**Required constant additions to `src/dollos/mind/evolution.py`** (verified absent today — plan review M2; add next to the existing evo_* constants):
+
+```python
+EVO_CANDIDATE = "evo_candidate"   # Mode A: keeper candidate born (Plan 3)
+EVO_NO_CHANGE = "evo_no_change"   # Mode A: keeper found no coherent shift (Plan 3)
+```
 
 - [ ] **Step 4: Run** — 10 PASS + full suite green.
 - [ ] **Step 5: Commit** — `feat(mind): Mode A keeper — evidence bundle + cite-or-die + (a)-(e) skeptic (evolution spec §3.3)`
@@ -672,7 +679,9 @@ Also add to `evolution.py`'s event constants (they exist in the spec enum but ch
 - Modify: `src/dollos/mind/mind_ctx.py` (+`evolution_base_interval_days: float = 7.0`, `evolution_max_interval_days: float = 28.0`)
 - Modify: `src/dollos/mind/mind_loop.py` (pass `mind_state=self._state` into the `surface_or_expire` call)
 - Modify: `src/dollos/kernel.py` (thread new EvolutionTrigger ctor params + MindCtx fields from `settings.evolution`)
-- Test: `tests/test_evolution_mode_a_trigger.py` (+ additions to `tests/test_self_revision.py`)
+- Modify: `tests/test_evolution_trigger.py` — **plan review C1**: `_StubState` gains the three new fields (`last_evolution_attempt_at=0.0`, `evolution_interval_days=0.0`, `evolution_hwm=0`); every `EvolutionTrigger(...)` construction gains the new ctor params + `persist_path=tmp_path / "mind_state.json"`. Mode-B BEHAVIOR stays untouched; only construction plumbing changes.
+- Modify: `tests/test_evolution_integration.py` — **C1**: both `SimpleNamespace(last_user_at=…)` trigger states gain the three fields + ctor params; the `_ctx` helper gains `mind_state=MindState()`, `evolution_base_interval_days=7.0`, `evolution_max_interval_days=28.0`.
+- Test: `tests/test_evolution_mode_a_trigger.py` (+ additions to `tests/test_self_revision.py` — same `_ctx` extension)
 
 **Interfaces:**
 - Consumes: Task 1 fields, Task 2 helpers, Task 3 `run_evolution_pass`.
@@ -680,9 +689,9 @@ Also add to `evolution.py`'s event constants (they exist in the spec enum but ch
 
 Semantics to implement exactly:
 
-1. **Init:** in `EvolutionTrigger.__init__`, if `state.last_evolution_attempt_at == 0.0` → set to `time.time()`; if `state.evolution_interval_days == 0.0` → set to `base_interval_days`; `save_state(state, persist_path)` (first boot waits a full base interval — spec §3.3 bootstrap).
+1. **Init:** in `EvolutionTrigger.__init__`, if `state.last_evolution_attempt_at == 0.0` → set to `time.time()`; if `state.evolution_interval_days == 0.0` → set to `base_interval_days`; `save_state(state, persist_path)` (first boot waits a full base interval — spec §3.3 bootstrap). Additions the ctor also needs (review M3): `from dollos.mind.mind_state import save_state`; `self._mode_a_error_ts: float | None = None`; `shared_dir` derived internally as `memory_root / "shared"` (NOT a ctor param); the evidence window = `max_interval_days` (no separate knob); `_should_run_mode_a` null-guards `consolidation_trigger` exactly like `_should_reverdict`.
 2. **`_should_run_mode_a(now)`** (checked only when `_should_reverdict` returned False): idle ≥ threshold; `now - state.last_evolution_attempt_at ≥ state.evolution_interval_days * 86400`; material gate = `evo.count_new_pin_events(history, state.evolution_hwm) >= min_history_events` OR `evo.diary_days_since(shared_dir, state.last_evolution_attempt_at) >= min_diary_days`; no consolidation running; `evo.load_slot(...) is None` (condition 5, either status); Mode-A error cooldown: `now - (self._mode_a_error_ts or 0) >= ERROR_COOLDOWN_S`.
-3. **Run branch:** snapshot `hwm = state.evolution_hwm` and capture `new_off` via `evo.history_snapshot(history, hwm)[1]` BEFORE the pass (pass receives `hwm=hwm`); `outcome = await wait_for(run_evolution_pass(...), timeout=agent_timeout_s)` inside `current_task` (consolidation `_run_once` pattern; `TimeoutError` → outcome `"error"`).
+3. **Run branch:** snapshot `hwm = state.evolution_hwm` and capture `new_off` via `evo.history_snapshot(history, hwm)[1]` BEFORE the pass (pass receives `hwm=hwm`; the pass's own evo_* lines land after `new_off` and pin-only counting makes that harmless); `outcome = await wait_for(run_evolution_pass(...), timeout=agent_timeout_s)` inside `current_task` (consolidation `_run_once` pattern). **`TimeoutError` → log `evo.log_or_raise(history, kind=evo.EVO_ERROR, detail="mode-a timeout")` FIRST, then treat as outcome `"error"`** (plan review I2 — the spec failure table lists timeout under evo_error; the cancelled pass wrote nothing, so the audit line must come from the trigger). **Import style (review M1):** `from dollos.mind.evolution_keeper import run_evolution_pass` and call the bare name — the Task-4 tests monkeypatch `et_mod.run_evolution_pass`.
 4. **Bookkeeping by outcome** (trigger-side, then `save_state`):
    - `"no_change"` / `"kill"`: `last_attempt := now`; `interval := evo.next_interval_days(interval, outcome="evo_no_change"|"evo_kill", ...)`; `evolution_hwm := new_off` (verdicted — evidence consumed).
    - `"candidate"`: `last_attempt := now`; interval unchanged (the decision event will set it); `evolution_hwm := new_off`.
@@ -692,6 +701,8 @@ Semantics to implement exactly:
    - `SelfRevision` adopt: after the existing clear-slot, `ctx.mind_state.last_evolution_attempt_at = time.time()`; `ctx.mind_state.evolution_interval_days = ctx.evolution_base_interval_days` (reset). Reject: anchor `last_attempt`; `interval := min(interval*2, ctx.evolution_max_interval_days)` — implement via `evo.next_interval_days`. (State persistence: mind_loop already saves state at turn end — verify; if not, call the existing save path the same way MoodTool-style mutations persist.)
    - `surface_or_expire` expire branch: when `mind_state is not None` → `mind_state.last_evolution_attempt_at = now`; interval unchanged; `if slot.hwm_before is not None: mind_state.evolution_hwm = slot.hwm_before` (restore — spec §3.3).
    - External-origin adopt/reject must NOT touch the interval (spec: external events leave it unchanged) — gate the interval update on `slot.kind != "external"`; the `last_attempt` anchor applies regardless.
+   - The adopt-write-failure branch (tools.py F1 path: evo_adopt flushed, file write failed twice, slot cleared) ALSO logged a real `evo_adopt` — apply the same reset-to-base + anchor there (review M4: interval semantics follow the logged event, not the happy path).
+   - **Diary-anchor asymmetry, consciously accepted (review I3):** the diary clause anchors to `last_evolution_attempt_at`, which advances on expire — so expired-candidate diary evidence does NOT re-seed (unlike pins, whose HWM restores from `hwm_before`). Accepted: the material gate is an OR, pins are the primary channel and their restoration alone re-seeds the pass; the next diary day re-fires the clause naturally. The spec is amended to record this (§3.3).
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_evolution_mode_a_trigger.py`:
 
@@ -829,7 +840,7 @@ from dollos.mind import evolution as evo, evolution_keeper as ek, self_history
 from dollos.mind.mind_state import MindState
 
 VALID = "我最近發現自己會主動整理系統日誌,一行行看下去有種踏實感,不再只是等主人開口才動,"\
-        "遇到看不懂的紀錄還會自己追下去查清楚才安心。" + "細節" * 8
+        "遇到看不懂的紀錄還會自己追下去查清楚才安心。" + "細節" * 9   # 81 chars ≥ floor 80 (review I1)
 
 
 @pytest.mark.asyncio
