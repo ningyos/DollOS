@@ -85,6 +85,18 @@ def test_history_path_none_is_backcompat_noop(tmp_path):
     assert "已 pin" in result
 
 
+def test_history_read_error_swallowed_dedup_result_unchanged(tmp_path, monkeypatch):
+    hist = tmp_path / "self_history.jsonl"
+    _apply(tmp_path, hist, op="add", text="A", turn=5)
+
+    def boom(path, **kw):
+        raise OSError("perm denied")
+    monkeypatch.setattr(self_history, "last_pin_turn", boom)
+    result = _apply(tmp_path, hist, op="add", text="A", turn=35)
+    assert "已有相同條目" in result           # pin contract survives
+    assert len(_events(hist)) == 1            # no reconfirm logged
+
+
 def test_log_io_error_swallowed_pin_still_succeeds(tmp_path, monkeypatch):
     def boom(path, **kw):
         raise OSError("disk full")
