@@ -187,11 +187,47 @@ def revert_to_fallback(slot: PendingSlot, *, reason: str) -> PendingSlot:
 
 
 def _normalize_echo(text: str) -> str:
-    """Strip surfacing markers + NFKC + whitespace collapse (spec §3.4 echo
-    normalization). Marker stripping keeps an echoed old/new block from being
-    mistaken for genuine new text."""
+    """Strip surfacing markers + NFKC + punctuation + whitespace removal
+    (spec §3.4 echo normalization). Marker stripping keeps an echoed old/new
+    block from being mistaken for genuine new text. Punctuation removal and
+    complete whitespace elimination ensure texts with identical content but
+    different formatting/punctuation/spacing normalize identically."""
     from dollos.mind import surfacing_markers  # tiny module, avoids cycle
+    from dollos.mind.persona_guard import _PUNCTUATION_TABLE, _WHITESPACE_RE
     for mark in surfacing_markers.ALL:
         text = text.replace(mark, " ")
     text = unicodedata.normalize("NFKC", text)
-    return " ".join(text.split())
+    text = text.translate(_PUNCTUATION_TABLE)
+    text = _WHITESPACE_RE.sub("", text)
+    return text
+
+
+def echo_equivalent(text: str, reference: str) -> bool:
+    """True when ``text`` is an echo/paraphrase of ``reference`` (spec §3.4):
+    normalized-exact-equal OR jieba-Jaccard ≥ ``ECHO_SIMILARITY``. The weak
+    model paraphrases; exact-match alone would misroute an intended adopt into a
+    needless 送審 round-trip."""
+    from dollos.mind.persona_guard import pairwise_jaccard
+    n_text = _normalize_echo(text)
+    n_ref = _normalize_echo(reference)
+    if n_text == n_ref:
+        return True
+    return pairwise_jaccard(n_text, n_ref) >= ECHO_SIMILARITY
+
+
+def mechanical_checks(text: str, *, floor: int, cap: int, enforcement) -> str | None:
+    """Code-level gate applied to every origin's text at its entry point (spec
+    §3.3): char floor/cap + ``check_persona_violations`` (banned substrings /
+    exclaim runs). Returns a friendly failure reason, or None if clean. The
+    echo-marker normalization is applied by ``echo_equivalent`` at the adopt
+    site; length is measured on the raw candidate text."""
+    from dollos.mind.persona_guard import check_persona_violations
+    n = len(text)
+    if n < floor:
+        return f"太短了({n} 字,至少要 {floor} 字)——現在的我需要一段完整的描述。"
+    if n > cap:
+        return f"太長了({n} 字,上限 {cap} 字)——精簡一下。"
+    violations = check_persona_violations(text, enforcement)
+    if violations:
+        return "牴觸人設約束:" + "、".join(violations)
+    return None

@@ -156,6 +156,20 @@ def response_drift_score(new_text: str, baseline_texts: list[str]) -> float:
     return len(intersection) / len(union)
 
 
+def pairwise_jaccard(text_a: str, text_b: str) -> float:
+    """Jaccard overlap of two single texts' normalized word-sets (jieba-
+    segmented, spec §3.4/§3.5). 1.0 = identical vocabulary (or both empty);
+    0.0 = disjoint. Shares the ``_word_set`` tokenizer with
+    ``response_drift_score`` (which compares against a UNION of baselines — a
+    different aggregation, deliberately kept separate). Pure, no I/O, no LLM."""
+    wa = _word_set(text_a)
+    wb = _word_set(text_b)
+    union = wa | wb
+    if not union:
+        return 1.0
+    return len(wa & wb) / len(union)
+
+
 def load_baselines(path: Path) -> dict[str, list[str]]:
     """Read a JSONL baseline file into `{prompt_key: [response_text, ...]}`.
 
