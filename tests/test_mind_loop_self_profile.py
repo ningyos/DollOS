@@ -54,11 +54,10 @@ def make_mind_loop(tmp_path):
     return _factory
 
 
-def test_pinself_not_in_refeed():
-    # PinSelf success is a confirmation string (已 pin 到「…」), like NoteMemory
-    # (both explicitly excluded). It's not decision-relevant — refeeding it caused
-    # an 8× duplicate-pin loop (smoke-found). Failures still re-feed (unchanged).
-    assert "PinSelf" not in IN_TURN_REFEED_TOOLS
+def test_pinself_in_refeed():
+    # PinSelf is in the allowlist so a soft-failure (replace/remove target not
+    # found, over-cap) — returned as a success=True string — can retry same-turn.
+    assert "PinSelf" in IN_TURN_REFEED_TOOLS
     assert "Recall" in IN_TURN_REFEED_TOOLS  # guard the intended final state
 
 

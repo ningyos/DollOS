@@ -77,12 +77,16 @@ def test_locate_miss_returns_friendly_error_no_write(tmp_path):
 
 def test_cap_rejects_add_over_limit_no_write(tmp_path):
     p = _p(tmp_path)
-    long = "字" * 50
-    # 先塞到接近上限(3 條共 236 字 <= 250)
-    for _ in range(3):
-        sp.apply(p, section="self", op="add", target="", text=long, max_chars=250, today="2026-06-30")
+    # Each bullet's text must be distinct — add() now dedups identical text
+    # within the same section as a no-op — but same length, so total length
+    # still accumulates toward the cap the same way repeated identical text
+    # used to (先塞到接近上限,3 條共 237 字 <= 250)。
+    for i in range(3):
+        sp.apply(p, section="self", op="add", target="", text=f"{'字' * 49}{i}",
+                  max_chars=250, today="2026-06-30")
     before = p.read_text()
-    msg = sp.apply(p, section="self", op="add", target="", text=long, max_chars=250, today="2026-06-30")
+    msg = sp.apply(p, section="self", op="add", target="", text=f"{'字' * 49}X",
+                   max_chars=250, today="2026-06-30")
     assert "上限" in msg
     assert p.read_text() == before  # 被拒、未寫入
 
@@ -222,6 +226,25 @@ def test_render_block_no_bookkeeping_artifacts(tmp_path):
     assert "- [s2·2026-06-30] b" in block
     assert "<!--" not in block
     assert "counters" not in block
+
+
+def test_add_identical_text_is_noop_no_duplicate(tmp_path):
+    p = tmp_path / "self_profile.md"
+    m1 = sp.apply(p, section="self", op="add", target="", text="我重視誠實", max_chars=1200, today="2026-07-02")
+    m2 = sp.apply(p, section="self", op="add", target="", text="我重視誠實", max_chars=1200, today="2026-07-02")
+    assert m1.startswith("已 pin")
+    assert "已有相同條目" in m2
+    # only ONE bullet written, no duplicate
+    assert p.read_text().count("我重視誠實") == 1
+
+
+def test_add_same_text_different_section_not_deduped(tmp_path):
+    # dedup is per-section — same text in a different section is allowed
+    p = tmp_path / "self_profile.md"
+    sp.apply(p, section="self", op="add", target="", text="直話直說", max_chars=1200, today="2026-07-02")
+    m = sp.apply(p, section="relationship", op="add", target="", text="直話直說", max_chars=1200, today="2026-07-02")
+    assert m.startswith("已 pin")
+    assert p.read_text().count("直話直說") == 2
 
 
 def test_add_strips_prepended_tag_with_date_separator(tmp_path):

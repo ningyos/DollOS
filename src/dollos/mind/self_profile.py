@@ -139,8 +139,19 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     if op == "add":
         if section not in SECTION_ORDER:
             return f"未知 section:{section}"
-        new_id = _next_id(sections[section], section)
         clean_text = _strip_incoming_tag(text)
+        # Idempotent add: an identical bullet already in this section is a no-op,
+        # not a duplicate. PinSelf sits in the in-turn refeed allowlist (so a
+        # failed replace/remove can retry same-turn), which means a successful
+        # add is re-fed; the weak model sometimes re-emits the identical pin
+        # every pass up to MAX_SYNC_REFEED_PASSES. Without this guard that wrote
+        # up to 8 identical bullets into the always-injected profile (smoke-found).
+        existing = next(
+            (b for b in sections[section] if b.text == clean_text), None
+        )
+        if existing is not None:
+            return f"已有相同條目:{existing.id}(未重複新增)"
+        new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
         result = f"已 pin 到「{SECTION_TITLES[section]}」:{new_id}"
     elif op == "replace":
