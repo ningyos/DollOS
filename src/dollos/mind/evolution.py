@@ -34,6 +34,8 @@ EVO_KILL = "evo_kill"
 EVO_ERROR = "evo_error"
 EXTERNAL_EDIT = "external_edit"
 EVO_REPAIR = "evo_repair"   # crash-repair audit line (§5); benign, not a decision
+EVO_CANDIDATE = "evo_candidate"   # Mode A: keeper candidate born (Plan 3)
+EVO_NO_CHANGE = "evo_no_change"   # Mode A: keeper found no coherent shift (Plan 3)
 
 
 @dataclass
