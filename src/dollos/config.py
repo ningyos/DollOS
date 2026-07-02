@@ -183,6 +183,29 @@ class SelfProfileConfig(BaseModel):
     max_chars: int = 1200
 
 
+class EvolutionConfig(BaseModel):
+    """慢變演化 — the slow, ratified 「現在的我」 personality prose (spec §3.6).
+
+    ``enabled = false`` freezes the machinery (no trigger, no tool, no tripwire
+    side-effects) but ALREADY-SANCTIONED text keeps rendering — disabling
+    evolution must not amputate an adopted self (R3′). The interval/material
+    knobs are consumed by Plan 3's keeper (Mode A); they are defined here once so
+    Plan 3 adds no config churn.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    current_self_max_chars: int = 600
+    current_self_min_chars: int = 80
+    base_interval_days: float = 7.0    # floats — live smoke clamps to sub-day
+    max_interval_days: float = 28.0
+    idle_threshold_s: int = 600
+    min_history_events: int = 8
+    min_diary_days: int = 14
+    pending_max_surfacings: int = 5
+    pending_min_age_days: float = 2.0
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -202,6 +225,7 @@ class Settings(BaseModel):
     consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
     energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
     self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
+    evolution: EvolutionConfig = Field(default_factory=lambda: EvolutionConfig())
 
 
 def load_settings(path: Path) -> Settings:

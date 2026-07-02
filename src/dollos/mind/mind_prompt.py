@@ -1,6 +1,6 @@
 """Render MindState into a complete LLM prompt for one MindLoop iteration.
 
-Returns: system_prompt + 10 dynamic blocks as a single string.
+Returns: system_prompt + the enabled dynamic blocks as a single string.
 """
 from __future__ import annotations
 
@@ -48,8 +48,9 @@ def render_mind(
     tool_habits_hits: list[dict] | None = None,
     energy_line: str | None = None,
     self_profile_text: str | None = None,
+    evolution_block: str | None = None,
 ) -> str:
-    """Compose: system_prompt + 10 dynamic blocks.
+    """Compose: system_prompt + the enabled dynamic blocks.
 
     ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
     ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
@@ -69,6 +70,12 @@ def render_mind(
     ``self_profile.render_block()`` (A1 pinned self-profile). Inserted right
     after ``system_prompt`` and before ``[Memory guideline]`` (core self goes
     first). Omitted entirely when ``None``/empty (no bullets pinned yet).
+
+    ``evolution_block`` — optional pre-rendered ``[人格演化候選]`` block from
+    ``evolution.surface_or_expire()`` (spec §3.4). Inserted right after
+    ``[Self profile]`` and before ``[Memory guideline]`` so it stays salient on
+    reflection turns. Omitted entirely when ``None`` (no pending slot to
+    surface, or not a reflection/safe-mode turn — gated by the caller).
     """
     now = time.time()
     blocks = [
@@ -81,6 +88,8 @@ def render_mind(
             self_profile_text,
             "",
         ])
+    if evolution_block:
+        blocks.extend([evolution_block, ""])
     blocks.extend([
         _render_memory_guideline(primary_language),
         "",
@@ -289,7 +298,9 @@ def _percep_body(p) -> str:
             f"接著若 [Self profile] 已有條目,回看一遍——哪條已經不是現在的你,"
             f"用 PinSelf replace/remove 淘汰(target 填該條目的 id 如 s1,或直接貼那條"
             f"目前的文字)。分工:主詞是「你」→ PinSelf;關於世界的事實/事件 → "
-            f"NoteMemory;可重用的工具用法或陷阱 → NoteToolLesson。)"
+            f"NoteMemory;可重用的工具用法或陷阱 → NoteToolLesson。"
+            f"若這次反思出現 [人格演化候選] 區塊:那是妳「現在的我」的修訂提案,"
+            f"用 SelfRevision(decision=\"adopt\" 或 \"reject\")決定——PinSelf 處理不了它。)"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")

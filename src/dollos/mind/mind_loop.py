@@ -13,12 +13,10 @@ from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
-from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
-from dollos.tools import NoteToolLesson, PinSelf
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
 from dollos.mind.mind_state import (
@@ -30,8 +28,10 @@ from dollos.mind.mind_state import (
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
+from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
+from dollos.tools import NoteToolLesson, PinSelf, SelfRevision
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,11 @@ FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 # self_profile.py), not by excluding PinSelf here.
 # Tool FAILURES of ANY tool still re-feed (external grounding so Doll is told
 # and can fix her mistake) — this allowlist gates SUCCESS only.
-IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
+# `SelfRevision` (spec §3.4) is included for the same reason as `PinSelf`: its
+# success message (e.g. counter「已送審」/friendly refusal) is content Doll must
+# read to know what happened; a SECOND mutation the same turn is defanged by
+# the per-turn `evolution_latched` latch, not by exclusion here.
+IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf", "SelfRevision"})
 
 # Perception kinds that mean "this turn's context contains externally-sourced
 # content" (spec 2026-07-02 §3.2). [Memory context] auto-injection deliberately
@@ -122,12 +126,28 @@ class MindLoop:
         cost_per_turn: float = 0.05,
         self_profile_enabled: bool = False,
         enforcement: Enforcement | None = None,
+        system_prompt_suffix: str = "",
+        evolution_enabled: bool = False,
+        current_self_min_chars: int = 80,
+        current_self_max_chars: int = 600,
+        pending_max_surfacings: int = 5,
+        pending_min_age_days: float = 2.0,
     ) -> None:
         self._state = state
         self._queue = queue
         self._ctx = ctx
         self._llm = llm
         self._system_prompt = system_prompt
+        self._system_prompt_suffix = system_prompt_suffix
+        self._evolution_enabled = evolution_enabled
+        self._current_self_min_chars = current_self_min_chars
+        self._current_self_max_chars = current_self_max_chars
+        self._pending_max_surfacings = pending_max_surfacings
+        self._pending_min_age_days = pending_min_age_days
+        # Content-keyed compose cache: (sanctioned_text_or_"", composed_prompt).
+        # Recompose only when sanctioned text changes (weeks) — the prompt
+        # cache stays warm (spec §3.1).
+        self._composed_cache: tuple[str, str] | None = None
         self._primary_language = primary_language
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
@@ -164,6 +184,25 @@ class MindLoop:
             )
         else:
             self._grammar = None
+
+    def _system_prompt_for_turn(self) -> str:
+        """Compose ``prefix ⊕ current_self_section ⊕ suffix`` for this turn,
+        reading the SANCTIONED text (spec §3.1/§5). Content-keyed cache: the
+        section changes only when the latest ``evo_adopt`` changes. Sanctioned
+        text renders even when ``evolution.enabled`` is false — disabling
+        evolution must not amputate an adopted self (spec §3.6)."""
+        from dollos.mind import current_self, self_history
+        sanctioned = self_history.sanctioned_text(
+            self._ctx.memory_root / "self_history.jsonl"
+        )
+        key = sanctioned or ""
+        if self._composed_cache is None or self._composed_cache[0] != key:
+            section = current_self.render_section(sanctioned)
+            composed = current_self.compose(
+                self._system_prompt, section, self._system_prompt_suffix
+            )
+            self._composed_cache = (key, composed)
+        return self._composed_cache[1]
 
     async def run(self) -> None:
         """Main loop. Runs until shutdown."""
@@ -205,6 +244,13 @@ class MindLoop:
         # cascade/refeed passes of this iteration.
         self._ctx.current_turn = self._state.iter_count
         self._ctx.external_ctx = batch_external(perceptions)
+
+        # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
+        # opens a fresh SelfRevision decision window. The surfaced-this-turn
+        # gate (F5) resets alongside — SelfRevision refuses slot-mutating ops
+        # until surface_or_expire re-arms it below.
+        self._ctx.evolution_latched = False
+        self._ctx.evolution_candidate_surfaced = False
 
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;
@@ -263,6 +309,29 @@ class MindLoop:
         self._turn_speech.clear()
         self._turn_had_tool = False
         try:
+            # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
+            # before rendering. Frozen when evolution disabled (already-sanctioned
+            # text still renders via _system_prompt_for_turn). Deliberately
+            # UNWRAPPED (spec §3.2: the IO-swallow rule is pins-only — evolution
+            # events are never swallowed). An OSError here aborts the turn via the
+            # finally below (which still emits the turn-end sentinel so IPC
+            # clients never hang — I1), then run()'s outer catch retries next turn;
+            # every process_tripwire branch is log-before-mutate, so an aborted
+            # turn leaves the file divergent and the next turn re-classifies.
+            # MUST run inside this try (F2): outside it, an OSError would skip the
+            # turn-end sentinel and hang clients.
+            if self._evolution_enabled:
+                from dollos.mind import evolution as _evo
+                _evo.process_tripwire(
+                    current_self_path=self._ctx.memory_root / "current_self.md",
+                    history_path=self._ctx.memory_root / "self_history.jsonl",
+                    slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
+                    enforcement=self._enforcement,
+                    floor=self._current_self_min_chars,
+                    cap=self._current_self_max_chars,
+                    now=time.time(),  # module-level `time` (line 5) — no local shadow
+                )
+
             # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
             tool_outcomes_block = None
             if self._is_reflection:
@@ -282,10 +351,29 @@ class MindLoop:
                 self_profile_text = _sp.render_block(
                     self._ctx.memory_root / "self_profile.md"
                 )
+            evolution_block = None
+            if (self._evolution_enabled and self._is_reflection
+                    and not self._state.safe_mode):
+                from dollos.mind import evolution as _evo
+                from dollos.mind import self_history as _sh
+                hist_path = self._ctx.memory_root / "self_history.jsonl"
+                evolution_block = _evo.surface_or_expire(
+                    slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
+                    history_path=hist_path,
+                    current_self_path=self._ctx.memory_root / "current_self.md",
+                    sanctioned_text=_sh.sanctioned_text(hist_path),
+                    max_surfacings=self._pending_max_surfacings,
+                    min_age_days=self._pending_min_age_days,
+                    now=time.time(),  # module-level `time` (line 5) — no local shadow needed
+                )
+                # Arm the surfaced-this-turn gate (F5) only when a candidate
+                # actually reached Doll's eyes this turn. Refusals to adopt
+                # unsurfaced text depend on this staying False otherwise.
+                self._ctx.evolution_candidate_surfaced = evolution_block is not None
             prompt = render_mind(
                 self._state,
                 memsearch_hits,
-                self._system_prompt,
+                self._system_prompt_for_turn(),
                 pulse_block=pulse_block,
                 cognition_block=cognition_block,
                 associative_hits=associative_hits,
@@ -294,6 +382,7 @@ class MindLoop:
                 tool_habits_hits=tool_habits_hits,
                 energy_line=energy_line,
                 self_profile_text=self_profile_text,
+                evolution_block=evolution_block,
             )
 
             # Call LLM (streams text → sink; dispatches tool calls inline)
@@ -422,7 +511,10 @@ class MindLoop:
 
         safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has priority.
         reflection turn → full registry + NoteToolLesson, + PinSelf when
-        self_profile_enabled (A1 self-profile; spec Task 5).
+        self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision when
+        evolution_enabled (慢變演化; spec §3.4). safe_mode's read-only subset is
+        checked first, so SelfRevision (and PinSelf) never appear there —
+        grammar-level suppression on safe-mode turns.
         otherwise → base registry.
         """
         if self._state.safe_mode:
@@ -434,6 +526,8 @@ class MindLoop:
             extra = {"NoteToolLesson": NoteToolLesson}
             if self._self_profile_enabled:
                 extra["PinSelf"] = PinSelf
+            if self._evolution_enabled:
+                extra["SelfRevision"] = SelfRevision
             return {**self._tool_registry, **extra}
         return self._tool_registry
 
@@ -443,7 +537,9 @@ class MindLoop:
         safe_mode → lazily-built+cached reduced grammar (no-fallback: raises on
         build failure, never degrades to grammar=None; spec §8.3).
         reflection turn → lazily-built+cached expanded grammar (MAIN_TOOLS +
-        NoteToolLesson, + PinSelf when self_profile_enabled).
+        NoteToolLesson, + PinSelf when self_profile_enabled, + SelfRevision
+        when evolution_enabled — both static per-run predicates, so the cached
+        grammar built on first reflection turn is correct for the whole run).
         otherwise → the once-built full grammar (no per-pass cost).
         """
         if self._state.safe_mode:

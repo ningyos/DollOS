@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from dollos.character import Enforcement
     from dollos.memory import FtsMemory
-
     from dollos.mind.mind_state import MindState
     from dollos.mind.sink_resolver import SinkResolver
     from dollos.monitor_runner import MonitorRunner
@@ -55,6 +55,21 @@ class MindCtx:
     # mid-cascade. Threaded into PinSelf → self_history.
     current_turn: int = 0
     external_ctx: bool = False
+
+    # 慢變演化 (spec 2026-07-02 §3.4): per-turn SelfRevision latch (reset at
+    # drain by MindLoop) + static-per-run evolution config + pack enforcement.
+    evolution_latched: bool = False
+    # Surfaced-this-turn gate (review F5): True only when surface_or_expire
+    # returned a [人格演化候選] block THIS turn (set by MindLoop, reset at drain
+    # alongside the latch). SelfRevision refuses all slot-mutating ops when
+    # False — a Mode-B skeptic PASS can flip awaiting_skeptic→awaiting_doll
+    # mid-cascade AFTER surfacing already returned None, and the model must not
+    # adopt text Doll never saw.
+    evolution_candidate_surfaced: bool = False
+    evolution_enabled: bool = False
+    current_self_min_chars: int = 80
+    current_self_max_chars: int = 600
+    enforcement: "Enforcement | None" = None
 
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.
     agent_report: dict | None = field(default=None)

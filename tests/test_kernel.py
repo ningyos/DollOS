@@ -1,9 +1,6 @@
 """Integration tests for DollOS kernel — MindLoop-based architecture."""
 
 import asyncio
-import time
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from datetime import date as _date
 from pathlib import Path
 
@@ -20,7 +17,6 @@ from dollos.config import (
 )
 from dollos.ipc.messages import TextInput
 from dollos.kernel import DollOS
-from dollos.llm.adapter import LLMAdapter, StreamChunk
 
 
 def _make_settings(tmp_path: Path) -> Settings:
@@ -114,6 +110,28 @@ def test_kernel_mind_loop_uses_same_queue(tmp_path: Path) -> None:
     assert dollos._mind_loop._queue is dollos._perception_queue
 
 
+def test_kernel_threads_evolution_enabled_into_scaffolding(tmp_path: Path) -> None:
+    """Kernel wires settings.evolution.enabled into split_scaffolding so the
+    always-in-context Reflection section names SelfRevision when evolution
+    is enabled (default) — the p2-live-smoke-report.md root-cause fix:
+    SelfRevision was invisible in the model-facing prompt."""
+    settings = _make_settings(tmp_path)
+    assert settings.evolution.enabled  # default True
+    dollos = DollOS(settings)
+    combined = dollos._mind_loop._system_prompt + dollos._mind_loop._system_prompt_suffix
+    assert "SelfRevision" in combined
+
+
+def test_kernel_omits_selfrevision_when_evolution_disabled(tmp_path: Path) -> None:
+    from dollos.config import EvolutionConfig
+
+    settings = _make_settings(tmp_path)
+    settings.evolution = EvolutionConfig(enabled=False)
+    dollos = DollOS(settings)
+    combined = dollos._mind_loop._system_prompt + dollos._mind_loop._system_prompt_suffix
+    assert "SelfRevision" not in combined
+
+
 def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
     from dollos.tool_outputs import ToolOutputStore
 
@@ -172,7 +190,6 @@ async def test_kernel_workflow_runner_wired(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_handle_message_text_input_enqueues_perception(tmp_path: Path):
     """TextInput → Perception(kind='UserSpoke') pushed to PerceptionQueue."""
-    from dollos.mind.mind_state import Perception
 
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
@@ -277,9 +294,10 @@ async def test_kernel_scheduler_pushes_perception_for_due_entry(tmp_path, monkey
     sched_path.parent.mkdir(parents=True, exist_ok=True)
     sched_path.write_text('[[entry]]\ntime = "07:30:00"\nintent = "morning"\n')
 
-    from dollos.schedule import ScheduleEntry
     from datetime import time as _time
+
     import dollos.kernel as kernel_mod
+    from dollos.schedule import ScheduleEntry
 
     poll_count = {"n": 0}
 
@@ -409,6 +427,7 @@ async def test_schedule_runner_survives_malformed_schedule_file(tmp_path, monkey
     try/except, so any parse error permanently killed the task silently.
     """
     import logging
+
     import dollos.kernel as kernel_mod
 
     settings = _make_settings(tmp_path)
@@ -736,4 +755,126 @@ async def test_shutdown_gathers_inflight_keeper(tmp_path, monkeypatch) -> None:
         f"memsearch.close() called before keeper task was done; "
         f"keeper.done() at close time = {keeper_done_at_close}. "
         "This means the gather is missing or bypassed."
+    )
+
+
+# ----- 慢變演化 (F6d): evolution cancel + in-flight skeptic gather regression -----
+
+
+@pytest.mark.asyncio
+async def test_text_input_calls_cancel_evolution(tmp_path: Path) -> None:
+    """TextInput path calls _cancel_evolution() so a UserSpoke preempts an
+    in-flight Mode-B skeptic (F6d — the text UserSpoke ingress point)."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    cancelled: list[int] = []
+
+    class _StubTrigger:
+        def cancel_current(self) -> None:
+            cancelled.append(1)
+
+    dollos._evolution_trigger = _StubTrigger()
+    sink: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_message(TextInput(text="hello"), sink)
+
+    assert len(cancelled) == 1, "_cancel_evolution was not called on TextInput"
+
+
+@pytest.mark.asyncio
+async def test_voice_ingress_calls_cancel_evolution(tmp_path: Path, monkeypatch) -> None:
+    """Voice ingress (_on_user_text closure) calls _cancel_evolution() too
+    (F6d — the voice UserSpoke ingress point). Both ingress points must cancel."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    cancelled: list[int] = []
+
+    class _StubTrigger:
+        def cancel_current(self) -> None:
+            cancelled.append(1)
+
+    dollos._evolution_trigger = _StubTrigger()
+
+    captured_callbacks: list = []
+
+    class _FakeSession:
+        def __init__(self, asr, tts, on_user_text) -> None:
+            captured_callbacks.append(on_user_text)
+
+        async def handle_offer(self, sdp: str) -> str:
+            return "fake_answer_sdp"
+
+    monkeypatch.setattr(
+        "dollos.kernel.build_voice_engines",
+        lambda *a, **kw: (object(), object()),
+    )
+    monkeypatch.setattr("dollos.kernel.VoiceSession", _FakeSession)
+
+    await dollos._handle_offer("fake_offer_sdp", asyncio.Queue())
+    assert captured_callbacks, "VoiceSession was not constructed; on_user_text not captured"
+    await captured_callbacks[0]("hello from voice")
+
+    assert len(cancelled) == 1, (
+        "_cancel_evolution was not called on voice ingress; "
+        "voice path does not cancel an in-flight skeptic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_gathers_inflight_skeptic(tmp_path, monkeypatch) -> None:
+    """shutdown must await the in-flight skeptic task (AND the poll task) before
+    memsearch.close() (F6d): an in-flight skeptic uses memsearch, so closing
+    sqlite under it would crash. Mirrors the consolidation keeper regression."""
+    from dollos.wal.pidfile import RestartKind
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    # A real in-flight skeptic task (long sleep so it's still running at shutdown).
+    skeptic_task: asyncio.Task = asyncio.create_task(asyncio.sleep(100))
+    dollos._evolution_trigger.current_task = skeptic_task
+
+    skeptic_done_at_close: list[bool] = []
+
+    def _spy_memsearch_close() -> None:
+        skeptic_done_at_close.append(skeptic_task.done())
+
+    monkeypatch.setattr(dollos.memsearch, "close", _spy_memsearch_close)
+
+    async def _noop() -> None:
+        pass
+
+    monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
+    monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "start", lambda: _noop())
+    monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
+    monkeypatch.setattr(dollos._reflection_observer, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._consolidation_trigger, "run", lambda: _noop())
+    # Patch the evolution poll loop to a noop so _evolution_trigger_task
+    # completes immediately; our injected current_task is what's under test.
+    monkeypatch.setattr(dollos._evolution_trigger, "run", lambda: _noop())
+    monkeypatch.setattr(dollos._tool_output_store, "cleanup", lambda: None)
+    monkeypatch.setattr(dollos._pidfile, "acquire", lambda: RestartKind.COLD)
+    monkeypatch.setattr(dollos._pidfile, "release", lambda: None)
+    monkeypatch.setattr(asyncio.get_event_loop(), "add_signal_handler", lambda *a, **kw: None)
+
+    dollos._shutdown.set()
+    await asyncio.wait_for(dollos.run(), timeout=3.0)
+
+    assert skeptic_task.done(), (
+        "in-flight skeptic task was not awaited during shutdown; "
+        "removing asyncio.gather(*_evolution_tasks) would trigger this"
+    )
+    assert skeptic_done_at_close == [True], (
+        f"memsearch.close() called before skeptic task was done; "
+        f"skeptic.done() at close time = {skeptic_done_at_close}. "
+        "This means the evolution gather is missing or bypassed."
     )

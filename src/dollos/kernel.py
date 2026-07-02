@@ -8,14 +8,10 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from dollos.character import DollPack
-from dollos.memory import FtsMemory
-from dollos.config import Settings
-from dollos.logging_config import configure_cascade_logging
 from dollos.cascade_log import CascadeLogger
-from dollos.schedule import due_entries, load_schedule
+from dollos.character import DollPack
+from dollos.config import Settings
 from dollos.ipc.messages import (
-    ErrorMsg,
     ICECandidateIn,
     Interrupt,
     SayAborted,
@@ -27,34 +23,53 @@ from dollos.ipc.messages import (
     WebRTCOfferIn,
 )
 from dollos.ipc.server import WebSocketServer
-from dollos.voice.engines import ASR_REGISTRY, ASREngine, TTS_REGISTRY, TTSEngine
-from dollos.voice.pack import load_voice_config, resolve_voice_kwargs
-from dollos.voice.session import VoiceSession
-from dollos.voice.sink import TTSObservingSink
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
-from dollos.prompts import PromptRenderer
+from dollos.logging_config import configure_cascade_logging
+from dollos.memory import FtsMemory
+from dollos.mind.consolidation import ConsolidationTrigger
+from dollos.mind.evolution_trigger import EvolutionTrigger
+from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.mind_loop import MindLoop
+from dollos.mind.mind_state import Perception, load_state
+from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.reflection_observer import ReflectionObserver
+from dollos.mind.sink_resolver import SinkResolver
 from dollos.monitor_runner import MonitorRunner
 from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
-from dollos.telemetry.llm_calls import TelemetryRecorder
+from dollos.prompts import PromptRenderer
+from dollos.schedule import due_entries, load_schedule
 from dollos.shell_runner import ShellRunner
-from dollos.workflow import WorkflowRunner
+from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
-from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_loop import MindLoop
-from dollos.mind.mind_state import MindState, Perception, load_state
-from dollos.mind.perception_queue import PerceptionQueue
-from dollos.mind.consolidation import ConsolidationTrigger
-from dollos.mind.reflection_observer import ReflectionObserver
-from dollos.mind.sink_resolver import SinkResolver
+from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
+from dollos.voice.pack import load_voice_config, resolve_voice_kwargs
+from dollos.voice.session import VoiceSession
+from dollos.voice.sink import TTSObservingSink
 from dollos.wal.perception_log import PerceptionWAL
 from dollos.wal.pidfile import PidFile, RestartKind
+from dollos.workflow import WorkflowRunner
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for the three-piece system-prompt seam (spec §3.1). Rendered into
+# scaffolding.jinja's seam line, then split out — chosen so it can never occur
+# in natural prose or pack content.
+_CURRENT_SELF_SEAM = "\x00\x00DOLLOS_CURRENT_SELF_SEAM\x00\x00"
+
+
+def split_scaffolding(renderer, **ctx) -> tuple[str, str]:
+    """Render scaffolding with the seam sentinel and split into (prefix,
+    suffix). ``prefix + suffix`` is byte-identical to a seam-less render, so a
+    run with no sanctioned ``current_self`` reproduces today's prompt exactly
+    (spec §3.1)."""
+    rendered = renderer.render("scaffolding", current_self_seam=_CURRENT_SELF_SEAM, **ctx)
+    prefix, _, suffix = rendered.partition(_CURRENT_SELF_SEAM)
+    return prefix, suffix
 
 
 def build_adapter(
@@ -272,6 +287,10 @@ class DollOS:
             workflow_runner=self.workflow_runner,
             monitor_runner=self.monitor_runner,
             self_profile_max_chars=settings.self_profile.max_chars,
+            evolution_enabled=settings.evolution.enabled,
+            current_self_min_chars=settings.evolution.current_self_min_chars,
+            current_self_max_chars=settings.evolution.current_self_max_chars,
+            enforcement=self._doll_pack.enforcement,
         )
 
         # Render the static system prompt from the character pack
@@ -282,11 +301,12 @@ class DollOS:
             available_skills = []
         tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
 
-        system_prompt = self.renderer.render(
-            "scaffolding",
+        system_prompt_prefix, system_prompt_suffix = split_scaffolding(
+            self.renderer,
             identity=self._doll_pack.identity,
             available_skills=available_skills,
             tool_registry=tool_registry,
+            evolution_enabled=settings.evolution.enabled,
         )
 
         # Self pulse — Doll's proprioception of her host.
@@ -309,7 +329,8 @@ class DollOS:
             queue=self._perception_queue,
             ctx=self._mind_ctx,
             llm=_MindLLMAdapter(self.adapter),
-            system_prompt=system_prompt,
+            system_prompt=system_prompt_prefix,
+            system_prompt_suffix=system_prompt_suffix,
             state_persist_path=settings.data.root / "mind_state.json",
             tool_registry=tool_registry,
             system_pulse=self.system_pulse,
@@ -321,6 +342,11 @@ class DollOS:
             cost_per_turn=settings.energy.cost_per_turn,
             self_profile_enabled=settings.self_profile.enabled,
             enforcement=self._doll_pack.enforcement,
+            evolution_enabled=settings.evolution.enabled,
+            current_self_min_chars=settings.evolution.current_self_min_chars,
+            current_self_max_chars=settings.evolution.current_self_max_chars,
+            pending_max_surfacings=settings.evolution.pending_max_surfacings,
+            pending_min_age_days=settings.evolution.pending_min_age_days,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -350,6 +376,21 @@ class DollOS:
             energy_idle_threshold_s=settings.energy.idle_threshold_s,
             energy_restore_debounce_s=settings.energy.restore_debounce_s,
         )
+
+        # EvolutionTrigger — 慢變演化 Mode-B verdict-only re-verdict (spec §3.3)
+        self._evolution_trigger = EvolutionTrigger(
+            state=self._mind_state,
+            adapter=self.adapter,
+            renderer=self.renderer,
+            memsearch=self.memsearch,
+            memory_root=settings.data.root / "memory",
+            transcripts_root=settings.data.root / "memory" / "transcripts",
+            tool_output_store=self._tool_output_store,
+            pack_identity=self._doll_pack.identity,
+            consolidation_trigger=self._consolidation_trigger,
+            idle_threshold_s=settings.evolution.idle_threshold_s,
+        )
+        self._evolution_trigger_task: asyncio.Task[None] | None = None
 
         # ------------------------------------------------------------------ #
         # IPC server                                                           #
@@ -397,6 +438,7 @@ class DollOS:
             # Cancel any in-flight consolidation keeper so it yields the
             # LLM semaphore slot before Doll's response cascade starts.
             self._cancel_consolidation()
+            self._cancel_evolution()
             # Push as Perception into the queue; MindLoop drains it.
             self._perception_queue.put(
                 Perception(
@@ -438,6 +480,18 @@ class DollOS:
         competing with Doll's response cascade.
         """
         trig = getattr(self, "_consolidation_trigger", None)
+        if trig is not None:
+            trig.cancel_current()
+
+    def _cancel_evolution(self) -> None:
+        """Cancel any in-flight evolution re-verdict task when the user speaks.
+
+        Mirrors ``_cancel_consolidation`` — called at both UserSpoke ingress
+        points (text + voice) so an active Mode-B skeptic agent yields its
+        semaphore slot immediately rather than competing with Doll's response
+        cascade.
+        """
+        trig = getattr(self, "_evolution_trigger", None)
         if trig is not None:
             trig.cancel_current()
 
@@ -498,6 +552,7 @@ class DollOS:
         async def _on_user_text(text: str) -> None:
             # Cancel any in-flight consolidation keeper (M3: voice ingress).
             self._cancel_consolidation()
+            self._cancel_evolution()
             self._perception_queue.put(
                 Perception(
                     kind="UserSpoke",
@@ -705,6 +760,10 @@ class DollOS:
                 self._consolidation_trigger_task = asyncio.create_task(
                     self._consolidation_trigger.run(), name="consolidation-trigger"
                 )
+            if self.settings.evolution.enabled:
+                self._evolution_trigger_task = asyncio.create_task(
+                    self._evolution_trigger.run(), name="evolution-trigger"
+                )
 
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -756,6 +815,25 @@ class DollOS:
                 ]
                 if _consolidation_tasks:
                     await asyncio.gather(*_consolidation_tasks, return_exceptions=True)
+                # Stop evolution trigger + in-flight skeptic BEFORE memsearch.close()
+                # (mirrors the consolidation teardown above, same reasoning: an
+                # in-flight skeptic agent uses memsearch; closing sqlite while it
+                # runs causes a crash). Await BOTH the poll task
+                # (_evolution_trigger_task) AND the skeptic task (trigger.current_task).
+                _et = getattr(self, "_evolution_trigger", None)
+                if _et is not None:
+                    _et.shutdown()  # sets _shutdown + cancels current_task
+                    _current_skeptic = _et.current_task  # grab before event loop clears it
+                else:
+                    _current_skeptic = None
+                if self._evolution_trigger_task is not None:
+                    self._evolution_trigger_task.cancel()
+                _evolution_tasks = [
+                    t for t in [self._evolution_trigger_task, _current_skeptic]
+                    if t is not None
+                ]
+                if _evolution_tasks:
+                    await asyncio.gather(*_evolution_tasks, return_exceptions=True)
                 # Shutdown MindLoop
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
