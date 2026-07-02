@@ -68,11 +68,52 @@ def test_edit_while_slot_exists_logs_only(tmp_path):
                            text="原版"+"字"*88, old_text=None, drift_score=None)
     evo.save_slot(tmp_path/"self_evolution"/"pending.json",
                   evo.make_external_slot(candidate="別的候選"+"字"*88, created_ts=0.0))
-    (tmp_path/"current_self.md").write_text("又有人改"+"字"*88, encoding="utf-8")
+    cs = tmp_path/"current_self.md"
+    cs.write_text("又有人改"+"字"*88, encoding="utf-8")
     _tp(tmp_path)
     assert _kinds(tmp_path)[-1] == "external_edit"
     # Slot NOT replaced — external edits are not queued for auto-promotion.
     assert evo.load_slot(tmp_path/"self_evolution"/"pending.json").candidate == "別的候選"+"字"*88
+    # On-disk file untouched until slot resolution (slot-resolution invariant owns it).
+    assert cs.read_text(encoding="utf-8") == "又有人改"+"字"*88
+
+
+def test_crash_repair_log_failure_leaves_file_divergent(tmp_path, monkeypatch):
+    """Log-before-mutate: a failed evo_repair append must leave the file
+    divergent so the next turn retries — no permanent audit gap."""
+    import pytest
+    hist = tmp_path/"self_history.jsonl"
+    self_history.log_event(hist, kind="evo_adopt", text="新版"+"字"*88,
+                           old_text="舊版"+"字"*88, drift_score=0.1)
+    cs = tmp_path/"current_self.md"
+    cs.write_text("舊版"+"字"*88, encoding="utf-8")  # crash_repair state
+
+    def boom(path, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(self_history, "log_event", boom)
+    with pytest.raises(OSError):
+        _tp(tmp_path)
+    assert cs.read_text(encoding="utf-8") == "舊版"+"字"*88  # NOT restored
+    monkeypatch.undo()
+    assert "evo_repair" not in _kinds(tmp_path)  # no audit line either
+
+
+def test_stranded_edit_completes_slot_creation(tmp_path):
+    """Bounded completion rule: external_edit logged but slot creation crashed
+    → next tripwire pass completes the slot with NO duplicate log line."""
+    hist = tmp_path/"self_history.jsonl"
+    self_history.log_event(hist, kind="evo_adopt", text="原版"+"字"*88,
+                           old_text=None, drift_score=None)
+    edited = "有人改成這樣"+"字"*88
+    # Simulate the crash window: the edit is logged, but no slot landed.
+    self_history.log_event(hist, kind="external_edit", text=edited, reason=None)
+    (tmp_path/"current_self.md").write_text(edited, encoding="utf-8")
+    n_before = len(self_history.read_events(hist))
+    _tp(tmp_path)  # classifies already_logged → completion rule fires
+    slot = evo.load_slot(tmp_path/"self_evolution"/"pending.json")
+    assert slot is not None and slot.kind == "external" and slot.status == "awaiting_skeptic"
+    assert slot.candidate == edited
+    assert len(self_history.read_events(hist)) == n_before  # no duplicate external_edit
 
 
 def test_unchanged_divergent_no_spam(tmp_path):
