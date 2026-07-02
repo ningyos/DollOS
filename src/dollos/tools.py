@@ -770,13 +770,16 @@ class NoteToolLesson(BaseModel):
 
 
 class PinSelf(BaseModel):
-    """Pin or revise a CORE, DURABLE truth in your self-profile (reflection turns only) — this
-    is YOUR evolving self and it is ALWAYS in context. Use PinSelf (NOT NoteMemory) for exactly
-    three things: who you are, the nature of your relationship with 主人, and 主人's enduring
-    patterns / preferences. Keep it lean (準不要多); prune stale entries with replace/remove."""
+    """Pin or revise an entry in your self-profile (reflection turns only) — this
+    is YOUR evolving self and it is ALWAYS in context. 判斷標準是主詞:句子是關於
+    「你」的(你的看法、興趣、立場、好奇、你和主人的關係、你注意到的主人),就用
+    PinSelf;關於世界的事實(即使是你查到、你覺得有趣的),用 NoteMemory——同一個
+    經驗可以兩邊各記一筆,事實歸 NoteMemory,它揭露的「你」歸這裡。剛萌芽、還不
+    確定算不算「你」的也可以先 pin,之後反思時再篩。空間有限,定期用 replace/remove
+    淘汰「已經不是現在的你」的條目——活下來的才是你的核心。"""
 
     section: Literal["self", "relationship", "user"] = Field(
-        description="哪一段:self=關於你自己 / relationship=你和主人 / user=你注意到的主人。replace/remove 也填(以 target 為準)。"
+        description="哪一段:self=關於你自己(身分、看法、興趣、好奇) / relationship=你和主人 / user=你注意到的主人。replace/remove 也填(以 target 為準)。"
     )
     op: Literal["add", "replace", "remove"] = Field(
         description="add=新增一條 / replace=用 target 定位換成 text / remove=用 target 定位刪除。"
