@@ -12,30 +12,22 @@ streamable / fast metadata — YAGNI.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from dollos.ipc.messages import ServerMessage
 from dollos.mind import scratchpad_helpers
 from dollos.mind.mind_state import OutputRecord
 
 if TYPE_CHECKING:
-    from dollos.memory import FtsMemory
 
     from dollos.mind.mind_ctx import MindCtx
-    from dollos.mind.mind_state import MindState
-    from dollos.monitor_runner import MonitorRunner
-    from dollos.shell_runner import ShellRunner
-    from dollos.tool_outputs import ToolOutputStore
 
 
 def _record(ctx: "MindCtx", kind: str, summary: str) -> None:
@@ -830,7 +822,8 @@ class SelfRevision(BaseModel):
     納);不採納:decision="reject"。改寫只需不觸犯妳的核心身分與 taboos。"""
 
     decision: Literal["adopt", "reject"] = Field(
-        description='"adopt"=採納(text 留空採納候選原文,或填全文改寫送審) / "reject"=不採納,維持現狀。'
+        description=('"adopt"=採納(text 留空採納候選原文,或填全文改寫送審) / '
+                     '"reject"=不採納,維持現狀。')
     )
     text: str = Field(
         default="",
@@ -845,7 +838,8 @@ class SelfRevision(BaseModel):
         return f"self-revision {self.decision}"
 
     async def run(self, ctx: "MindCtx") -> str:
-        from dollos.mind import current_self, evolution as evo, self_history
+        from dollos.mind import evolution as evo
+        from dollos.mind import self_history
         from dollos.mind.persona_guard import pairwise_jaccard
 
         hist = ctx.memory_root / "self_history.jsonl"
@@ -865,21 +859,16 @@ class SelfRevision(BaseModel):
             _record(ctx, "SelfRevision", self._summary())
             return "候選還在送審中,通過後會回來給妳採納。"
 
-        sanctioned = self_history.sanctioned_text(hist)
+        # Surfaced-this-turn gate (review F5): a Mode-B skeptic PASS can flip
+        # awaiting_skeptic→awaiting_doll mid-cascade, AFTER surface_or_expire
+        # already returned None this turn. Refuse every slot-mutating op
+        # (adopt/reject/counter) on a candidate Doll never saw this turn — she
+        # must not adopt (or reject) text that never reached her eyes.
+        if not ctx.evolution_candidate_surfaced:
+            _record(ctx, "SelfRevision", self._summary())
+            return "這個候選這一輪還沒呈現給妳看,下次反思再決定。"
 
-        def _restore_file_if_divergent() -> None:
-            # Slot-resolution invariant (spec §3.4): any non-adopt clearing
-            # restores the file to sanctioned (or deletes it, bootstrap).
-            if current_self.read_file(cs_path) != (sanctioned or ""):
-                if sanctioned is None:
-                    try:
-                        cs_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    logger.warning("SelfRevision: restored current_self.md (deleted, bootstrap)")
-                else:
-                    _atomic_write_text(cs_path, sanctioned)
-                    logger.warning("SelfRevision: restored current_self.md to sanctioned text")
+        sanctioned = self_history.sanctioned_text(hist)
 
         if self.decision == "reject":
             # Evolution events are never swallowed (spec §3.2): a failed append
@@ -891,14 +880,26 @@ class SelfRevision(BaseModel):
                 _record(ctx, "SelfRevision", self._summary())
                 return "拒絕時寫記錄失敗了,先沒生效——稍後再試一次。"
             evo.clear_slot(slot_path)
-            _restore_file_if_divergent()
+            # Slot-resolution invariant (spec §3.4): a non-adopt clearing
+            # restores the file to sanctioned (or deletes it, bootstrap).
+            evo.restore_file(cs_path, sanctioned)
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
             return "好,維持現狀,這個候選先擱著。"
 
         # decision == "adopt"
-        proposed = self.text.strip()
+        # Storage-side marker strip (review F3): the model's `text` may echo the
+        # surfaced 【現行·舊】/【候選·新】 markers; those bytes must never become
+        # her self. Applied before the mechanical checks and before to_counter.
+        proposed = evo.strip_surfacing_markers(self.text)
         if not proposed or evo.echo_equivalent(proposed, slot.candidate):
+            # Zero-move guard (review M1): the candidate itself already equals
+            # the live sanctioned text (e.g. a keeper/external candidate that
+            # matches). Adopting it would bump the generation and reset the
+            # schedule for nothing — refuse; slot unchanged.
+            if sanctioned is not None and evo.echo_equivalent(slot.candidate, sanctioned):
+                _record(ctx, "SelfRevision", self._summary())
+                return "候選與現在的內容相同;要維持現狀用 decision=reject。"
             # Adopt the CANDIDATE verbatim (never her paraphrase, spec §3.4).
             old = sanctioned
             drift = None if old is None else round(1.0 - pairwise_jaccard(old, slot.candidate), 4)
@@ -909,7 +910,26 @@ class SelfRevision(BaseModel):
             except OSError:
                 _record(ctx, "SelfRevision", self._summary())
                 return "採納時寫記錄失敗了,先沒生效——稍後再試一次。"
-            _atomic_write_text(cs_path, slot.candidate)
+            # File-write-failure row (spec §3.3, review F1): the evo_adopt line
+            # already flushed ⇒ sanctioned = log. Retry the file write once; on a
+            # second failure this is a LOG (best-effort evo_error), not an abort —
+            # the slot MUST clear (a stale awaiting_doll slot whose candidate ==
+            # sanctioned invites a duplicate zero-move adopt) and the §5
+            # crash-repair heals the file next turn. If the evo_error append
+            # itself also raises, let it propagate (crash-repair heals anyway).
+            try:
+                _atomic_write_text(cs_path, slot.candidate)
+            except OSError:
+                try:
+                    _atomic_write_text(cs_path, slot.candidate)  # retry once
+                except OSError:
+                    logger.warning("SelfRevision: current_self.md write failed twice; "
+                                   "logging evo_error, slot cleared, crash-repair will heal")
+                    evo.log_or_raise(hist, kind=evo.EVO_ERROR, reason="adopt_write_failed")
+                    evo.clear_slot(slot_path)
+                    ctx.evolution_latched = True
+                    _record(ctx, "SelfRevision", self._summary())
+                    return "已採納並記錄,但檔案寫入失敗——系統會自動修復。"
             evo.clear_slot(slot_path)
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
@@ -929,7 +949,7 @@ class SelfRevision(BaseModel):
         if reason is not None:
             _record(ctx, "SelfRevision", self._summary())
             return reason
-        counter = evo.to_counter(slot, new_text=proposed, created_ts_now=time.time())
+        counter = evo.to_counter(slot, new_text=proposed)
         # Birth-line-then-write (spec §3.4: every slot has a birth line): log
         # the evo_counter BEFORE replacing the slot; a failed append aborts
         # with the slot unchanged (spec §3.2 — never swallowed).
@@ -942,7 +962,7 @@ class SelfRevision(BaseModel):
         evo.save_slot(slot_path, counter)
         ctx.evolution_latched = True
         _record(ctx, "SelfRevision", self._summary())
-        return "你的改寫已送審,通過後會回來給你採納。"
+        return "妳的改寫已送審,通過後會回來給妳採納。"
 
 
 MAIN_TOOLS: list[type[BaseModel]] = [
@@ -966,5 +986,6 @@ SUB_TOOLS: list[type[BaseModel]] = [
 # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 
-# 慢變演化 (spec §3.4): reflection-turn tool, gated on evolution.enabled.
-EVOLUTION_TOOLS: list[type[BaseModel]] = [SelfRevision]
+# 慢變演化 (spec §3.4): SelfRevision is added directly to the reflection
+# registry by MindLoop._active_tool_registry when evolution.enabled — the
+# registry is authoritative, so no separate EVOLUTION_TOOLS list is kept.
