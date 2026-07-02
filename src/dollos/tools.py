@@ -44,6 +44,14 @@ def _record(ctx: "MindCtx", kind: str, summary: str) -> None:
         OutputRecord(t=time.time(), kind=kind, summary=summary)
     )
 
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomic tmp+rename write (sanctioned-writer discipline, spec §3.1)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
 logger = logging.getLogger(__name__)
 
 _FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
@@ -815,6 +823,128 @@ class PinSelf(BaseModel):
         return result
 
 
+class SelfRevision(BaseModel):
+    """採納 / 拒絕待批的「現在的我」演化候選(只在反思回合、且有待批候選時可用)。
+    這是妳自己的人格描述,系統只提議,採不採納由妳。採納:decision="adopt",text 留空
+    直接採納候選原文;想改寫後再採納:把完整新文字放進 text(會先送審,通過後回來給妳採
+    納);不採納:decision="reject"。改寫只需不觸犯妳的核心身分與 taboos。"""
+
+    decision: Literal["adopt", "reject"] = Field(
+        description='"adopt"=採納(text 留空採納候選原文,或填全文改寫送審) / "reject"=不採納,維持現狀。'
+    )
+    text: str = Field(
+        default="",
+        description="想改寫後採納才填:完整替換文字(妳自己的話,別用全形引號「」『』);直接採納或拒絕時留空。",
+    )
+    reason: str = Field(
+        default="",
+        description="拒絕時可選填一句原因(妳自己的話,別用全形引號「」『』)。",
+    )
+
+    def _summary(self) -> str:
+        return f"self-revision {self.decision}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind import current_self, evolution as evo, self_history
+        from dollos.mind.persona_guard import pairwise_jaccard
+
+        hist = ctx.memory_root / "self_history.jsonl"
+        slot_path = ctx.memory_root / "self_evolution" / "pending.json"
+        cs_path = ctx.memory_root / "current_self.md"
+
+        # Per-turn latch (spec §3.4): first slot-mutating call per turn acts.
+        if ctx.evolution_latched:
+            _record(ctx, "SelfRevision", self._summary())
+            return "這一輪已處理過人格演化候選了,下次反思再說。"
+
+        slot = evo.load_slot(slot_path, history_path=hist)
+        if slot is None:
+            _record(ctx, "SelfRevision", self._summary())
+            return "目前沒有待批的演化候選。"
+        if slot.status != "awaiting_doll":
+            _record(ctx, "SelfRevision", self._summary())
+            return "候選還在送審中,通過後會回來給妳採納。"
+
+        sanctioned = self_history.sanctioned_text(hist)
+
+        def _restore_file_if_divergent() -> None:
+            # Slot-resolution invariant (spec §3.4): any non-adopt clearing
+            # restores the file to sanctioned (or deletes it, bootstrap).
+            if current_self.read_file(cs_path) != (sanctioned or ""):
+                if sanctioned is None:
+                    try:
+                        cs_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    logger.warning("SelfRevision: restored current_self.md (deleted, bootstrap)")
+                else:
+                    _atomic_write_text(cs_path, sanctioned)
+                    logger.warning("SelfRevision: restored current_self.md to sanctioned text")
+
+        if self.decision == "reject":
+            # Evolution events are never swallowed (spec §3.2): a failed append
+            # aborts the reject — slot stays, no latch, friendly error.
+            try:
+                evo.log_or_raise(hist, kind=evo.EVO_REJECT, reason=self.reason or None,
+                                 text=slot.candidate)
+            except OSError:
+                _record(ctx, "SelfRevision", self._summary())
+                return "拒絕時寫記錄失敗了,先沒生效——稍後再試一次。"
+            evo.clear_slot(slot_path)
+            _restore_file_if_divergent()
+            ctx.evolution_latched = True
+            _record(ctx, "SelfRevision", self._summary())
+            return "好,維持現狀,這個候選先擱著。"
+
+        # decision == "adopt"
+        proposed = self.text.strip()
+        if not proposed or evo.echo_equivalent(proposed, slot.candidate):
+            # Adopt the CANDIDATE verbatim (never her paraphrase, spec §3.4).
+            old = sanctioned
+            drift = None if old is None else round(1.0 - pairwise_jaccard(old, slot.candidate), 4)
+            # Log-then-write ordering (spec §3.2): a failed append aborts.
+            try:
+                evo.log_or_raise(hist, kind=evo.EVO_ADOPT, text=slot.candidate,
+                                 old_text=old, drift_score=drift)
+            except OSError:
+                _record(ctx, "SelfRevision", self._summary())
+                return "採納時寫記錄失敗了,先沒生效——稍後再試一次。"
+            _atomic_write_text(cs_path, slot.candidate)
+            evo.clear_slot(slot_path)
+            ctx.evolution_latched = True
+            _record(ctx, "SelfRevision", self._summary())
+            return "採納了,這就是現在的我。"
+
+        if sanctioned is not None and evo.echo_equivalent(proposed, sanctioned):
+            _record(ctx, "SelfRevision", self._summary())
+            return "這和現在的內容相同;要維持現狀就用 decision=reject。"
+
+        # Genuinely different → counter-proposal.
+        if slot.counter_round >= evo.COUNTER_ROUND_CAP:
+            _record(ctx, "SelfRevision", self._summary())
+            return "這個候選已經改寫過兩次了,請直接採納或拒絕。"
+        reason = evo.mechanical_checks(
+            proposed, floor=ctx.current_self_min_chars,
+            cap=ctx.current_self_max_chars, enforcement=ctx.enforcement)
+        if reason is not None:
+            _record(ctx, "SelfRevision", self._summary())
+            return reason
+        counter = evo.to_counter(slot, new_text=proposed, created_ts_now=time.time())
+        # Birth-line-then-write (spec §3.4: every slot has a birth line): log
+        # the evo_counter BEFORE replacing the slot; a failed append aborts
+        # with the slot unchanged (spec §3.2 — never swallowed).
+        try:
+            evo.log_or_raise(hist, kind=evo.EVO_COUNTER, text=proposed,
+                             counter_round=counter.counter_round)
+        except OSError:
+            _record(ctx, "SelfRevision", self._summary())
+            return "送審時寫記錄失敗了,先沒生效——稍後再試一次。"
+        evo.save_slot(slot_path, counter)
+        ctx.evolution_latched = True
+        _record(ctx, "SelfRevision", self._summary())
+        return "你的改寫已送審,通過後會回來給你採納。"
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,
@@ -835,3 +965,6 @@ SUB_TOOLS: list[type[BaseModel]] = [
 
 # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
+
+# 慢變演化 (spec §3.4): reflection-turn tool, gated on evolution.enabled.
+EVOLUTION_TOOLS: list[type[BaseModel]] = [SelfRevision]
