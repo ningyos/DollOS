@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -431,3 +432,83 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
         save_slot(slot_path, make_external_slot(candidate=file_text, created_ts=now))
     # else: a slot exists — logs-only; the slot-resolution invariant handles the
     # file on the current slot's resolution, and the user re-edits to re-propose.
+
+
+# --- Mode A pure helpers (Plan 3, spec §3.3) ---
+
+_PIN_KINDS = frozenset({"pin_add", "pin_replace", "pin_remove", "pin_reconfirm"})
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def count_new_pin_events(history_path: Path, hwm: int) -> int:
+    """Material-gate counter: pin_* events past the byte offset ``hwm``.
+    ``evo_*`` bookkeeping lines never count (spec §3.3 condition 3)."""
+    if not history_path.exists():
+        return 0
+    raw = history_path.read_bytes()[max(0, hwm):]
+    n = 0
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        try:
+            if json.loads(line).get("kind") in _PIN_KINDS:
+                n += 1
+        except ValueError:
+            continue  # torn tail line
+    return n
+
+
+def diary_days_since(shared_dir: Path, since_epoch: float) -> int:
+    """Diary-days material clause: distinct dated shared/*.md files whose
+    FILENAME date is after ``since_epoch``'s date, containing a 日記 heading
+    (WriteDiary appends ``## … 日記`` sections to memory_root/shared/{date}.md).
+    Filename-date, not mtime — deterministic, matches assemble_bundle's own
+    stem-based windowing (plan review C2)."""
+    if not shared_dir.exists():
+        return 0
+    from datetime import date as _d
+    since_date = _d.fromtimestamp(since_epoch).isoformat() if since_epoch > 0 else ""
+    n = 0
+    for f in shared_dir.glob("*.md"):
+        if not _DATE_RE.match(f.stem) or f.stem <= since_date:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+            # Check for diary heading: lines with "## " followed by text and ending/containing "日記"
+            has_diary = any(line.startswith("##") and "日記" in line for line in text.splitlines())
+            if has_diary:
+                n += 1
+        except OSError:
+            continue
+    return n
+
+
+def next_interval_days(current: float, *, outcome: str, base: float, cap: float) -> float:
+    """§3.3 interval dynamics(年輕時常變、穩定後漸稀). ``evo_expire`` and
+    external-origin events leave the interval unchanged."""
+    if outcome == "evo_adopt":
+        return base
+    if outcome in ("evo_no_change", "evo_kill", "evo_reject"):
+        return min(current * 2.0, cap)
+    return current
+
+
+def history_snapshot(history_path: Path, hwm: int) -> tuple[str, int]:
+    """Human-readable render of the self_history tail past ``hwm`` (keeper
+    evidence; ``external_ctx`` visible per spec §3.3 provenance weighting) +
+    the new byte offset to commit on a verdicted outcome."""
+    if not history_path.exists():
+        return "", 0
+    raw = history_path.read_bytes()
+    lines: list[str] = []
+    for line in raw[max(0, hwm):].decode("utf-8", errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        parts = [ev.get("kind", "?")]
+        for key in ("section", "text", "old_text", "reason"):
+            if ev.get(key):
+                parts.append(f"{key}={ev[key]}")
+        if ev.get("external_ctx"):
+            parts.append("external_ctx=true(讀外部內容時寫下)")
+        lines.append(" ".join(parts))
+    return "\n".join(lines), len(raw)
