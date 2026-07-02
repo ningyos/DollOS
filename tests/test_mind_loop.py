@@ -840,42 +840,6 @@ async def test_note_memory_only_turn_single_pass(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pinself_only_turn_single_pass(tmp_path):
-    """A turn whose only tool is a SUCCESSFUL PinSelf does NOT trigger a 2nd
-    decode pass.
-
-    PinSelf returns a confirmation string (已 pin 到「…」), like NoteMemory
-    (explicitly excluded). It's not decision-relevant — re-feeding it would
-    cost an extra full streaming decode. Failures still re-feed (unchanged),
-    so failed replace/remove retries are unaffected. The bug was PinSelf being
-    incorrectly in IN_TURN_REFEED_TOOLS, causing a ~8× duplicate-pin loop."""
-    from tests._dispatcher_helpers import _make_mind_ctx
-    from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS
-
-    state = MindState()
-    queue = PerceptionQueue()
-    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
-    # Use REFLECTION_TOOLS so PinSelf is available
-    tool_registry = {cls.__name__: cls for cls in REFLECTION_TOOLS}
-    ctx = _make_mind_ctx(tmp_path, state=state)
-    llm = _ScriptedLLM([_pinself_pass()])
-    loop = MindLoop(
-        state=state,
-        queue=queue,
-        ctx=ctx,
-        llm=llm,
-        system_prompt="SYS",
-        state_persist_path=tmp_path / "mind_state.json",
-        tool_registry=tool_registry,
-        self_profile_enabled=True,
-    )
-    # Enable reflection mode to activate PinSelf
-    loop._is_reflection = True
-    await loop.iterate()
-    assert llm.pass_count == 1
-
-
-@pytest.mark.asyncio
 async def test_failing_tool_turn_still_cascades(tmp_path):
     """A tool FAILURE still re-feeds as a <tool_response> for a 2nd pass even
     though a NoteMemory SUCCESS no longer does — the allowlist gates SUCCESS

@@ -51,13 +51,19 @@ FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 # In-turn re-feed allowlist (spec §7 P1). On SUCCESS, only a tool whose RESULT
 # Doll genuinely must read to decide what to do next warrants another full
 # streaming decode pass. `Recall` returns memory hits that change her next
-# decision; `NoteMemory` and `PinSelf` return confirmation strings she does NOT
-# need to observe — re-feeding them would cost extra decode passes on the
-# project's #1-concern latency path. `PinSelf` success is categorically identical
-# to `NoteMemory` — excluding it prevents the observed 8× duplicate-pin loop.
+# decision. `PinSelf` is included for a different reason: `self_profile.apply`
+# reports its SOFT failures (replace/remove target-not-found, over-cap) as
+# plain strings, and `dispatch_one` marks any non-None string return as
+# success=True — so those soft-failures look like successes to the dispatcher.
+# The refeed allowlist is what lets Doll see the "找不到…" / cap message and
+# retry a failed pin in the SAME turn (A1 b9d87b7). `NoteMemory` stays excluded
+# — it's a pure confirmation that never needs a retry. Re-feeding a genuinely
+# successful `add` risks the weak model re-emitting an identical pin next pass;
+# that's defanged by idempotent add-dedup in `self_profile.apply` (see
+# self_profile.py), not by excluding PinSelf here.
 # Tool FAILURES of ANY tool still re-feed (external grounding so Doll is told
 # and can fix her mistake) — this allowlist gates SUCCESS only.
-IN_TURN_REFEED_TOOLS = frozenset({"Recall"})
+IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
 
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
 # within a single live turn — OR the same-tool 3-strike stuck flag — Doll
