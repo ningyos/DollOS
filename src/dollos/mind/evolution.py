@@ -257,6 +257,7 @@ def render_surfacing(*, slot: PendingSlot, sanctioned_text: str | None,
     elif slot.kind == "external":
         lines.append("來源:current_self.md 檔案被直接修改,系統無法確認是誰。")
     lines.append(
+        "用 SelfRevision 工具回應這個提案(這不是 PinSelf 的工作):"
         "採納:SelfRevision decision=adopt(不必填 text);"
         "不採納:decision=reject;"
         "想改寫後採納:把全文放進 text,會先送審再回來。"

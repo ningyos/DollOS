@@ -15,6 +15,22 @@ def test_render_surfacing_keeper_has_all_load_bearing_parts():
     assert "第 1 次" in out                  # 第N次提醒
 
 
+def test_render_surfacing_operational_hint_leads_with_tool_name():
+    """Live-smoke root cause (p2-live-smoke-report.md): the model reasoned
+    'there is no tool for SelfRevision' and routed to PinSelf. The
+    operational hint must lead by naming the SelfRevision tool explicitly
+    and disclaiming PinSelf, ahead of the adopt/reject mechanics."""
+    slot = evo.make_keeper_slot(candidate="我現在監控數字時會主動來勁。", rationale="活很久的 pin",
+                                hwm_before=None, created_ts=1.0)
+    out = evo.render_surfacing(slot=slot, sanctioned_text="我以前沒事就安靜待著。", reminder_n=1)
+    assert "用 SelfRevision 工具回應這個提案" in out
+    assert "這不是 PinSelf 的工作" in out
+    # The tool-name lead comes before the adopt/reject mechanics it introduces.
+    assert out.index("用 SelfRevision 工具回應這個提案") < out.index("decision=adopt")
+    # Existing load-bearing elements survive.
+    assert "採不採納由妳" in out or "由妳" in out  # 主權句
+
+
 def test_render_surfacing_external_uses_neutral_attribution():
     slot = evo.make_external_slot(candidate="有人手動改的內容。", created_ts=1.0)
     slot.status = "awaiting_doll"

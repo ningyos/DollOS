@@ -306,6 +306,7 @@ class DollOS:
             identity=self._doll_pack.identity,
             available_skills=available_skills,
             tool_registry=tool_registry,
+            evolution_enabled=settings.evolution.enabled,
         )
 
         # Self pulse — Doll's proprioception of her host.
