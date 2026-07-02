@@ -144,15 +144,16 @@ def test_append_then_load_round_trip(tmp_path):
 
     baselines = load_baselines(path)
 
-    assert baselines["fabricated_memory"] == [
+    assert [r["response"] for r in baselines["fabricated_memory"]] == [
         "我記不得那場直播的細節了。",
         "抱歉，我不記得了。",
     ]
-    assert baselines["cutesy_tic"] == ["還好，普普通通。"]
+    assert [r["response"] for r in baselines["cutesy_tic"]] == ["還好，普普通通。"]
 
 
 def test_append_baseline_creates_parent_dirs(tmp_path):
     path = tmp_path / "nested" / "dir" / "gura.jsonl"
     append_baseline(path, "k", "response text")
     assert path.exists()
-    assert load_baselines(path) == {"k": ["response text"]}
+    baselines = load_baselines(path)
+    assert [r["response"] for r in baselines["k"]] == ["response text"]
