@@ -310,3 +310,45 @@ def test_scaffolding_has_recovery_section():
     out = PromptRenderer().render("scaffolding")
     # Either explicit "Recovery" header or "recovered" body text — flexible
     assert "recover" in out.lower()
+
+
+def test_scaffolding_reflection_section_mentions_pinself():
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    assert "PinSelf" in out
+
+
+def test_scaffolding_reflection_section_splits_by_subject():
+    """The always-in-context Reflection description must describe BOTH
+    channels (PinSelf for about-you, NoteMemory for about-the-world),
+    not just NoteMemory — otherwise it silently contradicts the
+    ReflectionMoment nudge every turn (R1 finding, spec §3.5)."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    start = out.index("# Reflection")
+    end = out.index("# Output", start)
+    reflection_section = out[start:end]
+    assert "PinSelf" in reflection_section
+    assert "NoteMemory" in reflection_section
+    assert "NoteToolLesson" in reflection_section
+
+
+def test_scaffolding_reflection_section_allows_not_yet_durable():
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    start = out.index("# Reflection")
+    end = out.index("# Output", start)
+    reflection_section = out[start:end]
+    assert "pruning" in reflection_section.lower() or "淘汰" in reflection_section
+
+
+def test_scaffolding_reflection_section_keeps_operational_details():
+    """Cadence/housekeeping details from the old section must survive the
+    rewrite — this is a reframe, not a rewrite of the mechanics."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    start = out.index("# Reflection")
+    end = out.index("# Output", start)
+    reflection_section = out[start:end]
+    assert "~30 iterations" in reflection_section
+    assert "Do not speak to the user" in reflection_section
