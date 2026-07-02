@@ -58,6 +58,10 @@ def classify_tripwire(
                           sanctioned predecessor). Nothing to do.
     - ``crash_repair``  — file == ``old_text`` of the latest ``evo_adopt`` (the
                           log-then-write window): a disk hiccup, not tampering.
+                          Also the FIRST-adoption crash window (M3): an adopt
+                          exists (``sanctioned_text`` set), it was the first
+                          (``old_text`` None), and the file was never written
+                          (empty) — the log-then-write window with no predecessor.
     - ``already_logged``— file == the last observed external-edit text: the
                           divergence is already recorded; no per-turn spam.
     - ``new_edit``      — file diverged into a distinct, not-yet-logged state:
@@ -69,6 +73,11 @@ def classify_tripwire(
     if file_text == effective:
         return "in_sync"
     if adopt_old_text is not None and file_text == adopt_old_text:
+        return "crash_repair"
+    if sanctioned_text is not None and adopt_old_text is None and file_text == "":
+        # First-ever adoption crashed between the flushed evo_adopt line and the
+        # file write (M3): sanctioned exists but the file is still empty. A disk
+        # hiccup, not tampering — heal it like any other crash-repair.
         return "crash_repair"
     if last_edit_text is not None and file_text == last_edit_text:
         return "already_logged"

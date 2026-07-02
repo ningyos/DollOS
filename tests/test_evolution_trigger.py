@@ -68,7 +68,7 @@ async def test_mode_b_kill_counter_reverts_to_fallback(tmp_path, monkeypatch):
     sp = tmp_path / "self_evolution" / "pending.json"
     base = evo.make_keeper_slot(candidate="原候選"+"字"*88, rationale="R",
                                 hwm_before=3, created_ts=0.0)
-    counter = evo.to_counter(base, new_text="牴觸核心的改寫"+"字"*88, created_ts_now=1.0)
+    counter = evo.to_counter(base, new_text="牴觸核心的改寫"+"字"*88)
     evo.save_slot(sp, counter)
     trig = _trigger(tmp_path, verdict="kill:牴觸 identity", monkeypatch=monkeypatch)
     await trig._reverdict_once()
@@ -145,6 +145,31 @@ def test_recent_skeptic_error_blocks_reverdict_until_cooldown(tmp_path):
     evo.save_slot(tmp_path / "self_evolution" / "pending.json", slot)
     assert trig._should_reverdict(now=10_000.0) is False   # 1000s < 3600s cooldown
     assert trig._should_reverdict(now=13_000.0) is True    # cooldown elapsed
+
+
+def test_in_memory_error_ts_blocks_when_slot_anchor_missing(tmp_path):
+    """M4: a persistent IO failure can leave the slot WITHOUT a persisted
+    last_error_ts (save_slot / evo_error append raised). The in-memory fallback
+    must still enforce the 1h cooldown so the 5s poll can't retry-loop."""
+    trig = _trigger(tmp_path, verdict="pass")
+    # A valid awaiting_skeptic slot with NO persisted error anchor.
+    evo.save_slot(tmp_path / "self_evolution" / "pending.json",
+                  evo.make_external_slot(candidate="有人改的"+"字"*88, created_ts=0.0))
+    # Simulate the error handler having set only the in-memory anchor.
+    trig._last_error_ts = 9_000.0
+    assert trig._should_reverdict(now=10_000.0) is False   # in-memory cooldown holds
+    assert trig._should_reverdict(now=13_000.0) is True    # cooldown elapsed
+
+
+@pytest.mark.asyncio
+async def test_reverdict_error_sets_in_memory_anchor(tmp_path, monkeypatch):
+    """M4: the skeptic-error path sets the in-memory anchor too, not just the
+    slot field — so the cooldown survives even if the slot write is lost."""
+    sp = tmp_path / "self_evolution" / "pending.json"
+    evo.save_slot(sp, evo.make_external_slot(candidate="有人改的"+"字"*88, created_ts=0.0))
+    trig = _trigger(tmp_path, verdict="error", monkeypatch=monkeypatch)
+    await trig._reverdict_once()
+    assert trig._last_error_ts is not None
 
 
 # --- _skeptic verdict parsing (real _skeptic, stubbed run_agent) ---

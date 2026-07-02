@@ -1,6 +1,8 @@
 """Generation-aware baselines (spec §3.5)."""
 from dollos.mind.persona_guard import (
-    append_baseline, baselines_for_generation, load_baselines,
+    append_baseline,
+    baselines_for_generation,
+    load_baselines,
 )
 
 

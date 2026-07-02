@@ -132,3 +132,37 @@ def test_bootstrap_new_edit_restore_is_delete(tmp_path):
     cs.write_text("太短", encoding="utf-8")  # no sanctioned predecessor, fails floor
     _tp(tmp_path)
     assert not cs.exists()  # bootstrap restore = delete
+
+
+def test_first_adoption_crash_window_heals(tmp_path):
+    """M3: the first-ever adoption crashed between the flushed evo_adopt line
+    and the file write — sanctioned set, old_text None, file empty. classify →
+    crash_repair; process_tripwire writes sanctioned + logs evo_repair, no slot."""
+    hist = tmp_path/"self_history.jsonl"
+    cand = "第一版的現在的我描述。" + "細節" * 35
+    self_history.log_event(hist, kind="evo_adopt", text=cand, old_text=None, drift_score=None)
+    cs = tmp_path/"current_self.md"  # never written (absent ⇒ read as "")
+    _tp(tmp_path)
+    assert cs.read_text(encoding="utf-8") == cand
+    assert _kinds(tmp_path)[-1] == "evo_repair"
+    assert not (tmp_path/"self_evolution"/"pending.json").exists()
+
+
+def test_reproposed_edit_after_reject_is_new_edit(tmp_path):
+    """F4 re-propose intent (spec §5): re-writing the same text after its
+    external-edit proposal was rejected classifies as a NEW edit — a fresh
+    external_edit birth line + new slot — not an already-logged no-op."""
+    hist = tmp_path/"self_history.jsonl"
+    E = "我想把現在的我改寫成這個樣子的完整描述。" + "細節" * 35
+    # Prior external-edit proposal, then rejected (its file was restored away).
+    self_history.log_event(hist, kind="external_edit", text=E, reason=None)
+    self_history.log_event(hist, kind="evo_reject", text=E, reason="還不是我")
+    # User re-edits the file back to the SAME text E.
+    (tmp_path/"current_self.md").write_text(E, encoding="utf-8")
+    n_before = len(self_history.read_events(hist))
+    _tp(tmp_path)
+    assert _kinds(tmp_path)[-1] == "external_edit"                 # fresh birth line
+    assert len(self_history.read_events(hist)) == n_before + 1      # not silence
+    slot = evo.load_slot(tmp_path/"self_evolution"/"pending.json")
+    assert slot is not None and slot.kind == "external"
+    assert slot.status == "awaiting_skeptic" and slot.candidate == E

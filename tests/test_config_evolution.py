@@ -1,7 +1,7 @@
 """[evolution] config section (spec §3.6)."""
 import tomllib
 
-from dollos.config import EvolutionConfig, Settings
+from dollos.config import Settings
 
 _MIN = """
 [llm]

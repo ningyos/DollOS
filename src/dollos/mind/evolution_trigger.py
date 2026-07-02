@@ -74,6 +74,12 @@ class EvolutionTrigger:
         self._agent_timeout_s = agent_timeout_s
         self._shutdown = False
         self.current_task: asyncio.Task | None = None
+        # In-memory 1h cooldown anchor (review M4): mirrors the slot's
+        # persisted ``last_error_ts`` but survives a failure to persist it. If
+        # save_slot or the evo_error append raises after a skeptic error, the
+        # slot on disk keeps no anchor — without this field the 5s poll would
+        # retry immediately and burn the 3-error bound in ~15s of IO failures.
+        self._last_error_ts: float | None = None
 
     @property
     def _slot_path(self) -> Path:
@@ -101,9 +107,14 @@ class EvolutionTrigger:
         slot = evo.load_slot(self._slot_path, history_path=self._history_path)
         if slot is None or slot.status != "awaiting_skeptic":
             return False
-        if slot.last_error_ts is not None and \
-                now - slot.last_error_ts < self.ERROR_COOLDOWN_S:
-            return False  # spec §3.3 failure table: 1h error-cooldown
+        # 1h error-cooldown (spec §3.3 failure table): honour BOTH the persisted
+        # slot anchor AND the in-memory fallback (M4) — a persistent IO failure
+        # can leave the slot without an anchor, and only the in-memory field
+        # then prevents a 5s retry loop.
+        anchors = [t for t in (slot.last_error_ts, self._last_error_ts)
+                   if t is not None]
+        if anchors and now - max(anchors) < self.ERROR_COOLDOWN_S:
+            return False
         return True
 
     async def _skeptic(self, *, old_sanctioned: str | None, proposed: str) -> str:
@@ -152,7 +163,9 @@ class EvolutionTrigger:
         except Exception:
             logger.exception("evolution skeptic errored (or timed out)")
             slot.verdict_errors += 1
-            slot.last_error_ts = time.time()  # 1h cooldown anchor (spec §3.3)
+            now = time.time()
+            slot.last_error_ts = now  # 1h cooldown anchor (spec §3.3)
+            self._last_error_ts = now  # in-memory fallback (review M4)
             if slot.verdict_errors >= evo.VERDICT_ERRORS_BOUND:
                 # Deterministic bound (spec §3.3): a failing skeptic must not
                 # wedge condition 5 forever.
@@ -161,13 +174,17 @@ class EvolutionTrigger:
                                  text=slot.candidate, kind_origin=slot.kind,
                                  hwm_before=slot.hwm_before)
                 evo.clear_slot(self._slot_path)
-                evo._restore_file(self._current_self_path, old_sanctioned)
+                evo.restore_file(self._current_self_path, old_sanctioned)
             else:
                 evo.log_or_raise(self._history_path, kind=evo.EVO_ERROR,
                                  detail="skeptic error", kind_origin=slot.kind)
                 evo.save_slot(self._slot_path, slot)
             return
 
+        # A verdict landed — clear the in-memory cooldown anchor so a later
+        # counter's fresh awaiting_skeptic slot isn't blocked by a stale error
+        # timestamp (M4: the fallback only guards CONSECUTIVE errors).
+        self._last_error_ts = None
         if verdict == "pass":
             evo.save_slot(self._slot_path, evo.mark_awaiting_doll(slot))
             return
@@ -178,7 +195,7 @@ class EvolutionTrigger:
             evo.save_slot(self._slot_path, evo.revert_to_fallback(slot, reason=reason))
         else:  # external
             evo.clear_slot(self._slot_path)
-            evo._restore_file(self._current_self_path, old_sanctioned)
+            evo.restore_file(self._current_self_path, old_sanctioned)
 
     async def run(self) -> None:
         """Poll loop. Cancelled by kernel at shutdown or via cancel_current() on UserSpoke."""

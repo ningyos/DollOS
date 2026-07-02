@@ -41,6 +41,27 @@ def test_echo_equivalent_strips_surfacing_markers():
     assert evo.echo_equivalent(surfaced, "我現在的樣子。") is True
 
 
+def test_echo_equivalent_punctuation_and_space_jitter(tmp_path=None):
+    """M5: pin the adjudicated normalization — '我現在的樣子!' and
+    '我 現在的樣子。' collapse to the same normalized form (! vs 。, stray CJK
+    space) so echo jitter never misroutes an intended verbatim adopt into a
+    needless 送審 round-trip."""
+    assert evo.echo_equivalent("我現在的樣子!", "我 現在的樣子。") is True
+
+
+def test_strip_surfacing_markers_preserves_prose():
+    """F3: the public marker-strip helper removes ONLY the marker prefixes,
+    keeping prose + punctuation intact (unlike _normalize_echo which also
+    destroys punctuation/whitespace for the equivalence test)."""
+    from dollos.mind import surfacing_markers as sm
+    text = f"{sm.NEW} 我現在其實更喜歡安靜地整理系統。"
+    assert evo.strip_surfacing_markers(text) == "我現在其實更喜歡安靜地整理系統。"
+    # A block echoing BOTH markers strips both, prose between preserved.
+    both = f"{sm.OLD} 舊文\n{sm.NEW} 新文"
+    assert sm.OLD not in evo.strip_surfacing_markers(both)
+    assert sm.NEW not in evo.strip_surfacing_markers(both)
+
+
 def test_mechanical_checks_floor():
     reason = evo.mechanical_checks("太短", floor=80, cap=600, enforcement=Enforcement())
     assert reason is not None and "80" in reason

@@ -1,6 +1,6 @@
 """Render MindState into a complete LLM prompt for one MindLoop iteration.
 
-Returns: system_prompt + 10 dynamic blocks as a single string.
+Returns: system_prompt + the enabled dynamic blocks as a single string.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def render_mind(
     self_profile_text: str | None = None,
     evolution_block: str | None = None,
 ) -> str:
-    """Compose: system_prompt + 10 dynamic blocks.
+    """Compose: system_prompt + the enabled dynamic blocks.
 
     ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
     ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
