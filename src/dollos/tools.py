@@ -806,8 +806,11 @@ class PinSelf(BaseModel):
             text=self.text,
             max_chars=ctx.self_profile_max_chars,
             today=today,
+            history_path=ctx.memory_root / "self_history.jsonl",
+            turn=ctx.current_turn,
+            external_ctx=ctx.external_ctx,
         )
-        # 絕不 index_file(§3.1):self_profile.md 靠 always-inject,不進召回。
+        # 絕不索引(§3.1):self_profile.md 靠 always-inject,不進召回。
         _record(ctx, "PinSelf", self._summary())
         return result
 

@@ -54,3 +54,14 @@ def test_last_pin_turn_tolerates_torn_tail_line(tmp_path):
     with p.open("a", encoding="utf-8") as f:
         f.write('{"kind": "pin_add", "turn"')  # torn write, no newline-terminated JSON
     assert self_history.last_pin_turn(p, section="self", text="A") == 2
+
+
+def test_self_history_lives_outside_index_paths():
+    """self_history.jsonl sits at memory_root root — FtsMemory only indexes
+    [shared, transcripts, skills] subtrees, so it can never enter recall.
+    Structural guard mirroring self_profile.md's (spec §3.2)."""
+    from dollos.tools import PinSelf  # the only writer wires the path
+    import inspect
+    src = inspect.getsource(PinSelf.run)
+    assert 'memory_root / "self_history.jsonl"' in src
+    assert "index_file" not in src
