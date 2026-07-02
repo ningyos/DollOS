@@ -13,12 +13,10 @@ from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
-from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.ipc.messages import TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
-from dollos.tools import NoteToolLesson, PinSelf, SelfRevision
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
 from dollos.mind.mind_state import (
@@ -30,8 +28,10 @@ from dollos.mind.mind_state import (
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
+from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
+from dollos.tools import NoteToolLesson, PinSelf, SelfRevision
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -246,29 +246,11 @@ class MindLoop:
         self._ctx.external_ctx = batch_external(perceptions)
 
         # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
-        # opens a fresh SelfRevision decision window.
+        # opens a fresh SelfRevision decision window. The surfaced-this-turn
+        # gate (F5) resets alongside — SelfRevision refuses slot-mutating ops
+        # until surface_or_expire re-arms it below.
         self._ctx.evolution_latched = False
-
-        # 慢變演化 tamper tripwire (spec §5): detect/repair external edits before
-        # rendering. Frozen when evolution disabled (already-sanctioned text
-        # still renders via _system_prompt_for_turn).
-        if self._evolution_enabled:
-            from dollos.mind import evolution as _evo
-            # Deliberately UNWRAPPED (spec §3.2: the IO-swallow rule is pins-only —
-            # evolution events are never swallowed). An OSError here aborts the
-            # turn loudly via run()'s outer catch and retries next turn; every
-            # process_tripwire branch is log-before-mutate, so an aborted turn
-            # leaves the file divergent and the next turn re-classifies and
-            # retries. Matches the unwrapped surface_or_expire call below.
-            _evo.process_tripwire(
-                current_self_path=self._ctx.memory_root / "current_self.md",
-                history_path=self._ctx.memory_root / "self_history.jsonl",
-                slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
-                enforcement=self._enforcement,
-                floor=self._current_self_min_chars,
-                cap=self._current_self_max_chars,
-                now=time.time(),  # module-level `time` (line 5) — no local shadow needed
-            )
+        self._ctx.evolution_candidate_surfaced = False
 
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;
@@ -327,6 +309,29 @@ class MindLoop:
         self._turn_speech.clear()
         self._turn_had_tool = False
         try:
+            # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
+            # before rendering. Frozen when evolution disabled (already-sanctioned
+            # text still renders via _system_prompt_for_turn). Deliberately
+            # UNWRAPPED (spec §3.2: the IO-swallow rule is pins-only — evolution
+            # events are never swallowed). An OSError here aborts the turn via the
+            # finally below (which still emits the turn-end sentinel so IPC
+            # clients never hang — I1), then run()'s outer catch retries next turn;
+            # every process_tripwire branch is log-before-mutate, so an aborted
+            # turn leaves the file divergent and the next turn re-classifies.
+            # MUST run inside this try (F2): outside it, an OSError would skip the
+            # turn-end sentinel and hang clients.
+            if self._evolution_enabled:
+                from dollos.mind import evolution as _evo
+                _evo.process_tripwire(
+                    current_self_path=self._ctx.memory_root / "current_self.md",
+                    history_path=self._ctx.memory_root / "self_history.jsonl",
+                    slot_path=self._ctx.memory_root / "self_evolution" / "pending.json",
+                    enforcement=self._enforcement,
+                    floor=self._current_self_min_chars,
+                    cap=self._current_self_max_chars,
+                    now=time.time(),  # module-level `time` (line 5) — no local shadow
+                )
+
             # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
             tool_outcomes_block = None
             if self._is_reflection:
@@ -361,6 +366,10 @@ class MindLoop:
                     min_age_days=self._pending_min_age_days,
                     now=time.time(),  # module-level `time` (line 5) — no local shadow needed
                 )
+                # Arm the surfaced-this-turn gate (F5) only when a candidate
+                # actually reached Doll's eyes this turn. Refusals to adopt
+                # unsurfaced text depend on this staying False otherwise.
+                self._ctx.evolution_candidate_surfaced = evolution_block is not None
             prompt = render_mind(
                 self._state,
                 memsearch_hits,
