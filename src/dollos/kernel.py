@@ -49,6 +49,7 @@ from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception, load_state
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.consolidation import ConsolidationTrigger
+from dollos.mind.evolution_trigger import EvolutionTrigger
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.wal.perception_log import PerceptionWAL
@@ -376,6 +377,21 @@ class DollOS:
             energy_restore_debounce_s=settings.energy.restore_debounce_s,
         )
 
+        # EvolutionTrigger — 慢變演化 Mode-B verdict-only re-verdict (spec §3.3)
+        self._evolution_trigger = EvolutionTrigger(
+            state=self._mind_state,
+            adapter=self.adapter,
+            renderer=self.renderer,
+            memsearch=self.memsearch,
+            memory_root=settings.data.root / "memory",
+            transcripts_root=settings.data.root / "memory" / "transcripts",
+            tool_output_store=self._tool_output_store,
+            pack_identity=self._doll_pack.identity,
+            consolidation_trigger=self._consolidation_trigger,
+            idle_threshold_s=settings.evolution.idle_threshold_s,
+        )
+        self._evolution_trigger_task: asyncio.Task[None] | None = None
+
         # ------------------------------------------------------------------ #
         # IPC server                                                           #
         # ------------------------------------------------------------------ #
@@ -422,6 +438,7 @@ class DollOS:
             # Cancel any in-flight consolidation keeper so it yields the
             # LLM semaphore slot before Doll's response cascade starts.
             self._cancel_consolidation()
+            self._cancel_evolution()
             # Push as Perception into the queue; MindLoop drains it.
             self._perception_queue.put(
                 Perception(
@@ -463,6 +480,18 @@ class DollOS:
         competing with Doll's response cascade.
         """
         trig = getattr(self, "_consolidation_trigger", None)
+        if trig is not None:
+            trig.cancel_current()
+
+    def _cancel_evolution(self) -> None:
+        """Cancel any in-flight evolution re-verdict task when the user speaks.
+
+        Mirrors ``_cancel_consolidation`` — called at both UserSpoke ingress
+        points (text + voice) so an active Mode-B skeptic agent yields its
+        semaphore slot immediately rather than competing with Doll's response
+        cascade.
+        """
+        trig = getattr(self, "_evolution_trigger", None)
         if trig is not None:
             trig.cancel_current()
 
@@ -523,6 +552,7 @@ class DollOS:
         async def _on_user_text(text: str) -> None:
             # Cancel any in-flight consolidation keeper (M3: voice ingress).
             self._cancel_consolidation()
+            self._cancel_evolution()
             self._perception_queue.put(
                 Perception(
                     kind="UserSpoke",
@@ -730,6 +760,10 @@ class DollOS:
                 self._consolidation_trigger_task = asyncio.create_task(
                     self._consolidation_trigger.run(), name="consolidation-trigger"
                 )
+            if self.settings.evolution.enabled:
+                self._evolution_trigger_task = asyncio.create_task(
+                    self._evolution_trigger.run(), name="evolution-trigger"
+                )
 
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -781,6 +815,25 @@ class DollOS:
                 ]
                 if _consolidation_tasks:
                     await asyncio.gather(*_consolidation_tasks, return_exceptions=True)
+                # Stop evolution trigger + in-flight skeptic BEFORE memsearch.close()
+                # (mirrors the consolidation teardown above, same reasoning: an
+                # in-flight skeptic agent uses memsearch; closing sqlite while it
+                # runs causes a crash). Await BOTH the poll task
+                # (_evolution_trigger_task) AND the skeptic task (trigger.current_task).
+                _et = getattr(self, "_evolution_trigger", None)
+                if _et is not None:
+                    _et.shutdown()  # sets _shutdown + cancels current_task
+                    _current_skeptic = _et.current_task  # grab before event loop clears it
+                else:
+                    _current_skeptic = None
+                if self._evolution_trigger_task is not None:
+                    self._evolution_trigger_task.cancel()
+                _evolution_tasks = [
+                    t for t in [self._evolution_trigger_task, _current_skeptic]
+                    if t is not None
+                ]
+                if _evolution_tasks:
+                    await asyncio.gather(*_evolution_tasks, return_exceptions=True)
                 # Shutdown MindLoop
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
