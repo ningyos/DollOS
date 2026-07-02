@@ -70,6 +70,12 @@ class MindCtx:
     current_self_min_chars: int = 80
     current_self_max_chars: int = 600
     enforcement: "Enforcement | None" = None
+    # 慢變演化 Mode-A decision-event bookkeeping (spec §3.3, Plan 3): SelfRevision
+    # reads these to reset (adopt) / double-with-cap (reject) the keeper
+    # interval — mirrors EvolutionTrigger's own knobs so the tool and the
+    # trigger agree on base/cap without a second source of truth.
+    evolution_base_interval_days: float = 7.0
+    evolution_max_interval_days: float = 28.0
 
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.
     agent_report: dict | None = field(default=None)

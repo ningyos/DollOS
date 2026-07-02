@@ -365,6 +365,7 @@ class MindLoop:
                     max_surfacings=self._pending_max_surfacings,
                     min_age_days=self._pending_min_age_days,
                     now=time.time(),  # module-level `time` (line 5) — no local shadow needed
+                    mind_state=self._state,
                 )
                 # Arm the surfaced-this-turn gate (F5) only when a candidate
                 # actually reached Doll's eyes this turn. Refusals to adopt

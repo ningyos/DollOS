@@ -272,13 +272,23 @@ def render_surfacing(*, slot: PendingSlot, sanctioned_text: str | None,
 def surface_or_expire(*, slot_path: Path, history_path: Path,
                       current_self_path: Path, sanctioned_text: str | None,
                       max_surfacings: int, min_age_days: float,
-                      now: float) -> str | None:
+                      now: float, mind_state=None) -> str | None:
     """On a reflection turn: surface an ``awaiting_doll`` slot (incrementing
     ``surfaced_count``, clearing a one-shot ``notice``), OR expire it when
     ``surfaced_count ≥ max_surfacings`` AND age ≥ ``min_age_days`` (spec §3.4).
     Expiry logs ``evo_expire`` loud, clears the slot, and restores the file per
     the slot-resolution invariant. Returns the block, or None (no slot /
-    awaiting_skeptic / just expired / crash-window repair)."""
+    awaiting_skeptic / just expired / crash-window repair).
+
+    ``mind_state`` (Plan 3, spec §3.3, optional — the caller may not have Mode
+    A wired): on expiry, anchors ``last_evolution_attempt_at`` to ``now`` and,
+    when the expired slot carried evidence (``hwm_before is not None``),
+    restores ``evolution_hwm`` to it — the material this candidate consumed is
+    given back so it can seed the next Mode-A pass. Diary-anchor asymmetry
+    (review I3, consciously accepted): the diary material clause anchors to
+    ``last_evolution_attempt_at``, which advances here too, so expired-
+    candidate diary evidence does NOT re-seed the way pins do; pins are the
+    primary channel and the next diary day re-fires the clause naturally."""
     slot = load_slot(slot_path, history_path=history_path)
     if slot is None or slot.status != "awaiting_doll":
         return None
@@ -303,6 +313,10 @@ def surface_or_expire(*, slot_path: Path, history_path: Path,
                      kind_origin=slot.kind, hwm_before=slot.hwm_before)
         clear_slot(slot_path)
         restore_file(current_self_path, sanctioned_text)
+        if mind_state is not None:
+            mind_state.last_evolution_attempt_at = now
+            if slot.hwm_before is not None:
+                mind_state.evolution_hwm = slot.hwm_before
         return None
 
     reminder_n = slot.surfaced_count + 1
