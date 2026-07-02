@@ -224,6 +224,92 @@ def log_or_raise(history_path: Path, *, kind: str, **fields) -> None:
     self_history.log_event(history_path, kind=kind, **fields)
 
 
+def render_surfacing(*, slot: PendingSlot, sanctioned_text: str | None,
+                     reminder_n: int) -> str:
+    """The ``[人格演化候選]`` perception body shown on ``awaiting_doll`` reflection
+    turns (spec §3.4). Marker-prefixed old/new full text + per-origin note +
+    operational hint + 主權句 + 第N次提醒 (the reminder count breaks byte-
+    identical correlated failure across surfacings)."""
+    from dollos.mind import surfacing_markers as sm
+    old = sanctioned_text if sanctioned_text else "(還沒有現在的我——這會是第一版)"
+    lines = [
+        "[人格演化候選]",
+        f"（第 {reminder_n} 次提醒)",
+        f"{sm.OLD} {old}",
+        f"{sm.NEW} {slot.candidate}",
+    ]
+    if slot.notice:
+        lines.insert(1, f"你上一次的改寫未通過({slot.notice})——原候選仍在,如下。")
+    if slot.kind == "keeper" and slot.rationale:
+        lines.append(f"依據:{slot.rationale}")
+    elif slot.kind == "counter":
+        lines.append("來源:你自己的改寫,已通過送審。")
+    elif slot.kind == "external":
+        lines.append("來源:current_self.md 檔案被直接修改,系統無法確認是誰。")
+    lines.append(
+        "採納:SelfRevision decision=adopt(不必填 text);"
+        "不採納:decision=reject;"
+        "想改寫後採納:把全文放進 text,會先送審再回來。"
+    )
+    lines.append("這是妳的人格描述——採不採納由妳;改寫只需不觸犯妳的核心身分與 taboos。")
+    return "\n".join(lines)
+
+
+def surface_or_expire(*, slot_path: Path, history_path: Path,
+                      current_self_path: Path, sanctioned_text: str | None,
+                      max_surfacings: int, min_age_days: float,
+                      now: float) -> str | None:
+    """On a reflection turn: surface an ``awaiting_doll`` slot (incrementing
+    ``surfaced_count``, clearing a one-shot ``notice``), OR expire it when
+    ``surfaced_count ≥ max_surfacings`` AND age ≥ ``min_age_days`` (spec §3.4).
+    Expiry logs ``evo_expire`` loud, clears the slot, and restores the file per
+    the slot-resolution invariant. Returns the block, or None (no slot /
+    awaiting_skeptic / just expired)."""
+    slot = load_slot(slot_path, history_path=history_path)
+    if slot is None or slot.status != "awaiting_doll":
+        return None
+
+    age_days = (now - slot.created_ts) / 86400.0
+    if slot.surfaced_count >= max_surfacings and age_days >= min_age_days:
+        logger.warning("evolution: expiring pending slot (kind=%s, surfaced=%d)",
+                       slot.kind, slot.surfaced_count)
+        log_or_raise(history_path, kind=EVO_EXPIRE, text=slot.candidate,
+                     kind_origin=slot.kind, hwm_before=slot.hwm_before)
+        clear_slot(slot_path)
+        _restore_file(current_self_path, sanctioned_text)
+        return None
+
+    reminder_n = slot.surfaced_count + 1
+    block = render_surfacing(slot=slot, sanctioned_text=sanctioned_text,
+                             reminder_n=reminder_n)
+    slot.surfaced_count = reminder_n
+    slot.notice = None  # one-shot: cleared after its first surfacing
+    save_slot(slot_path, slot)
+    return block
+
+
+def _restore_file(current_self_path: Path, sanctioned_text: str | None) -> None:
+    """Slot-resolution invariant (spec §3.4): restore the file to sanctioned
+    text if divergent, or delete it in the bootstrap (no-sanctioned) case.
+    Logged loudly — a silently self-reverting file reads as the daemon fighting
+    its owner."""
+    from dollos.mind import current_self
+    current = current_self.read_file(current_self_path)
+    if current == (sanctioned_text or ""):
+        return
+    if sanctioned_text is None:
+        try:
+            current_self_path.unlink()
+        except FileNotFoundError:
+            pass
+        logger.warning("evolution: restored current_self.md (deleted, bootstrap)")
+    else:
+        tmp = current_self_path.with_suffix(current_self_path.suffix + ".tmp")
+        tmp.write_text(sanctioned_text, encoding="utf-8")
+        tmp.replace(current_self_path)
+        logger.warning("evolution: restored current_self.md to sanctioned text")
+
+
 def mechanical_checks(text: str, *, floor: int, cap: int, enforcement) -> str | None:
     """Code-level gate applied to every origin's text at its entry point (spec
     §3.3): char floor/cap + ``check_persona_violations`` (banned substrings /

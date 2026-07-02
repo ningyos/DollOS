@@ -344,6 +344,8 @@ class DollOS:
             evolution_enabled=settings.evolution.enabled,
             current_self_min_chars=settings.evolution.current_self_min_chars,
             current_self_max_chars=settings.evolution.current_self_max_chars,
+            pending_max_surfacings=settings.evolution.pending_max_surfacings,
+            pending_min_age_days=settings.evolution.pending_min_age_days,
         )
 
         self._reflection_observer = ReflectionObserver(

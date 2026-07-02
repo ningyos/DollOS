@@ -48,6 +48,7 @@ def render_mind(
     tool_habits_hits: list[dict] | None = None,
     energy_line: str | None = None,
     self_profile_text: str | None = None,
+    evolution_block: str | None = None,
 ) -> str:
     """Compose: system_prompt + 10 dynamic blocks.
 
@@ -69,6 +70,12 @@ def render_mind(
     ``self_profile.render_block()`` (A1 pinned self-profile). Inserted right
     after ``system_prompt`` and before ``[Memory guideline]`` (core self goes
     first). Omitted entirely when ``None``/empty (no bullets pinned yet).
+
+    ``evolution_block`` — optional pre-rendered ``[人格演化候選]`` block from
+    ``evolution.surface_or_expire()`` (spec §3.4). Inserted right after
+    ``[Self profile]`` and before ``[Memory guideline]`` so it stays salient on
+    reflection turns. Omitted entirely when ``None`` (no pending slot to
+    surface, or not a reflection/safe-mode turn — gated by the caller).
     """
     now = time.time()
     blocks = [
@@ -81,6 +88,8 @@ def render_mind(
             self_profile_text,
             "",
         ])
+    if evolution_block:
+        blocks.extend([evolution_block, ""])
     blocks.extend([
         _render_memory_guideline(primary_language),
         "",
