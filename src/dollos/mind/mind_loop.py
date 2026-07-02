@@ -65,6 +65,16 @@ FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 # and can fix her mistake) — this allowlist gates SUCCESS only.
 IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
 
+# Perception kinds that mean "this turn's context contains externally-sourced
+# content" (spec 2026-07-02 §3.2). [Memory context] auto-injection deliberately
+# does NOT count — it is present on almost every turn and would saturate the flag.
+_EXTERNAL_KINDS = frozenset({"ToolResultArrived", "MonitorFired", "MonitorEnded"})
+
+
+def batch_external(perceptions) -> bool:
+    """True when the drained batch carries external content (provenance flag)."""
+    return any(p.kind in _EXTERNAL_KINDS for p in perceptions)
+
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
 # within a single live turn — OR the same-tool 3-strike stuck flag — Doll
 # narrows to a read-only tool set and announces it. K=3 catches the
@@ -190,6 +200,11 @@ class MindLoop:
 
         # Gate NoteToolLesson to reflection turns only (Spec B §5).
         self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
+
+        # Evidence-layer provenance (spec §3.2): one turn value shared by all
+        # cascade/refeed passes of this iteration.
+        self._ctx.current_turn = self._state.iter_count
+        self._ctx.external_ctx = batch_external(perceptions)
 
         # Clear read-only safe mode at the start of a user turn (spec §8.3 exit).
         # The user is re-engaging, so full capability is restored for this turn;
@@ -562,6 +577,15 @@ class MindLoop:
                 # so re-feeding it would be a wasted decode on the latency path.
                 # A FAILURE of any tool always re-feeds (external grounding so
                 # Doll can correct), so failures cascade exactly as before.
+                # Recall output is in-context external content from here on
+                # (spec §3.2 — Recall never appears in the drained batch). Must
+                # run over every executed result BEFORE the refeed decision
+                # below, so a PinSelf emitted after a Recall in the same
+                # cascade sees external_ctx=True.
+                for r in results:
+                    if r.tool_name == "Recall" and r.success:
+                        self._ctx.external_ctx = True
+
                 refeed = [
                     r for r in results
                     if r.tool_name not in FIRE_AND_FORGET_TOOLS

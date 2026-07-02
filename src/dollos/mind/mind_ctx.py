@@ -50,6 +50,12 @@ class MindCtx:
     # A1 self-profile — total-char cap for self_profile.md (from Settings).
     self_profile_max_chars: int = 1200
 
+    # 慢變演化 evidence layer (spec 2026-07-02 §3.2): per-turn provenance,
+    # set by MindLoop at drain time; Recall execution upgrades external_ctx
+    # mid-cascade. Threaded into PinSelf → self_history.
+    current_turn: int = 0
+    external_ctx: bool = False
+
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.
     agent_report: dict | None = field(default=None)
 
