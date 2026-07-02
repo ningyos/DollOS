@@ -101,8 +101,11 @@ async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
     assert "上限" not in msg1, f"First add should not hit cap, but got: {msg1}"
     assert "s1" in msg1, f"First add should return success with id s1, but got: {msg1}"
 
-    # Second add should fail due to accumulated total
-    msg2 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
+    # Second add should fail due to accumulated total. Text must differ from
+    # the first add (same length) — add() now dedups identical text within the
+    # same section as a no-op, so an identical second add would short-circuit
+    # to "已有相同條目" before ever reaching the cap check.
+    msg2 = await PinSelf(section="self", op="add", target="", text="字" * 39 + "2").run(ctx)
     assert "上限" in msg2, f"Second add should hit cap, but got: {msg2}"
 
 
