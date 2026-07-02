@@ -56,6 +56,21 @@ from dollos.wal.pidfile import PidFile, RestartKind
 
 logger = logging.getLogger(__name__)
 
+# Sentinel for the three-piece system-prompt seam (spec §3.1). Rendered into
+# scaffolding.jinja's seam line, then split out — chosen so it can never occur
+# in natural prose or pack content.
+_CURRENT_SELF_SEAM = "\x00\x00DOLLOS_CURRENT_SELF_SEAM\x00\x00"
+
+
+def split_scaffolding(renderer, **ctx) -> tuple[str, str]:
+    """Render scaffolding with the seam sentinel and split into (prefix,
+    suffix). ``prefix + suffix`` is byte-identical to a seam-less render, so a
+    run with no sanctioned ``current_self`` reproduces today's prompt exactly
+    (spec §3.1)."""
+    rendered = renderer.render("scaffolding", current_self_seam=_CURRENT_SELF_SEAM, **ctx)
+    prefix, _, suffix = rendered.partition(_CURRENT_SELF_SEAM)
+    return prefix, suffix
+
 
 def build_adapter(
     settings: Settings,
@@ -272,6 +287,10 @@ class DollOS:
             workflow_runner=self.workflow_runner,
             monitor_runner=self.monitor_runner,
             self_profile_max_chars=settings.self_profile.max_chars,
+            evolution_enabled=settings.evolution.enabled,
+            current_self_min_chars=settings.evolution.current_self_min_chars,
+            current_self_max_chars=settings.evolution.current_self_max_chars,
+            enforcement=self._doll_pack.enforcement,
         )
 
         # Render the static system prompt from the character pack
@@ -282,8 +301,8 @@ class DollOS:
             available_skills = []
         tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
 
-        system_prompt = self.renderer.render(
-            "scaffolding",
+        system_prompt_prefix, system_prompt_suffix = split_scaffolding(
+            self.renderer,
             identity=self._doll_pack.identity,
             available_skills=available_skills,
             tool_registry=tool_registry,
@@ -309,7 +328,8 @@ class DollOS:
             queue=self._perception_queue,
             ctx=self._mind_ctx,
             llm=_MindLLMAdapter(self.adapter),
-            system_prompt=system_prompt,
+            system_prompt=system_prompt_prefix,
+            system_prompt_suffix=system_prompt_suffix,
             state_persist_path=settings.data.root / "mind_state.json",
             tool_registry=tool_registry,
             system_pulse=self.system_pulse,
@@ -321,6 +341,9 @@ class DollOS:
             cost_per_turn=settings.energy.cost_per_turn,
             self_profile_enabled=settings.self_profile.enabled,
             enforcement=self._doll_pack.enforcement,
+            evolution_enabled=settings.evolution.enabled,
+            current_self_min_chars=settings.evolution.current_self_min_chars,
+            current_self_max_chars=settings.evolution.current_self_max_chars,
         )
 
         self._reflection_observer = ReflectionObserver(

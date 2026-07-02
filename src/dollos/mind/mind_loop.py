@@ -122,12 +122,24 @@ class MindLoop:
         cost_per_turn: float = 0.05,
         self_profile_enabled: bool = False,
         enforcement: Enforcement | None = None,
+        system_prompt_suffix: str = "",
+        evolution_enabled: bool = False,
+        current_self_min_chars: int = 80,
+        current_self_max_chars: int = 600,
     ) -> None:
         self._state = state
         self._queue = queue
         self._ctx = ctx
         self._llm = llm
         self._system_prompt = system_prompt
+        self._system_prompt_suffix = system_prompt_suffix
+        self._evolution_enabled = evolution_enabled
+        self._current_self_min_chars = current_self_min_chars
+        self._current_self_max_chars = current_self_max_chars
+        # Content-keyed compose cache: (sanctioned_text_or_"", composed_prompt).
+        # Recompose only when sanctioned text changes (weeks) — the prompt
+        # cache stays warm (spec §3.1).
+        self._composed_cache: tuple[str, str] | None = None
         self._primary_language = primary_language
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
@@ -164,6 +176,25 @@ class MindLoop:
             )
         else:
             self._grammar = None
+
+    def _system_prompt_for_turn(self) -> str:
+        """Compose ``prefix ⊕ current_self_section ⊕ suffix`` for this turn,
+        reading the SANCTIONED text (spec §3.1/§5). Content-keyed cache: the
+        section changes only when the latest ``evo_adopt`` changes. Sanctioned
+        text renders even when ``evolution.enabled`` is false — disabling
+        evolution must not amputate an adopted self (spec §3.6)."""
+        from dollos.mind import current_self, self_history
+        sanctioned = self_history.sanctioned_text(
+            self._ctx.memory_root / "self_history.jsonl"
+        )
+        key = sanctioned or ""
+        if self._composed_cache is None or self._composed_cache[0] != key:
+            section = current_self.render_section(sanctioned)
+            composed = current_self.compose(
+                self._system_prompt, section, self._system_prompt_suffix
+            )
+            self._composed_cache = (key, composed)
+        return self._composed_cache[1]
 
     async def run(self) -> None:
         """Main loop. Runs until shutdown."""
@@ -285,7 +316,7 @@ class MindLoop:
             prompt = render_mind(
                 self._state,
                 memsearch_hits,
-                self._system_prompt,
+                self._system_prompt_for_turn(),
                 pulse_block=pulse_block,
                 cognition_block=cognition_block,
                 associative_hits=associative_hits,
