@@ -187,19 +187,20 @@ def revert_to_fallback(slot: PendingSlot, *, reason: str) -> PendingSlot:
 
 
 def _normalize_echo(text: str) -> str:
-    """Strip surfacing markers + NFKC + punctuation + whitespace removal
-    (spec §3.4 echo normalization). Marker stripping keeps an echoed old/new
-    block from being mistaken for genuine new text. Punctuation removal and
-    complete whitespace elimination ensure texts with identical content but
-    different formatting/punctuation/spacing normalize identically."""
+    """Echo-equivalence normalization (spec §3.4, Plan-2 amended form):
+    strip surfacing markers → NFKC → drop ALL punctuation and whitespace.
+    Deliberately self-contained and STRICTER than persona_guard's
+    fingerprint normalization — equivalence false-positives are safe
+    (they adopt the skeptic-passed candidate verbatim), so CJK echo
+    jitter (stray spaces, 。vs !) must not defeat the exact branch."""
     from dollos.mind import surfacing_markers  # tiny module, avoids cycle
-    from dollos.mind.persona_guard import _PUNCTUATION_TABLE, _WHITESPACE_RE
     for mark in surfacing_markers.ALL:
         text = text.replace(mark, " ")
     text = unicodedata.normalize("NFKC", text)
-    text = text.translate(_PUNCTUATION_TABLE)
-    text = _WHITESPACE_RE.sub("", text)
-    return text
+    return "".join(
+        c for c in text
+        if not c.isspace() and not unicodedata.category(c).startswith("P")
+    )
 
 
 def echo_equivalent(text: str, reference: str) -> bool:
