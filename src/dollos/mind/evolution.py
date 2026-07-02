@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 import unicodedata
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -61,7 +60,7 @@ class PendingSlot:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "PendingSlot":
+    def from_dict(cls, d: dict) -> PendingSlot:
         fields = cls.__dataclass_fields__
         return cls(**{k: v for k, v in d.items() if k in fields})
 
@@ -77,7 +76,10 @@ def load_slot(path: Path, history_path: Path | None = None) -> PendingSlot | Non
     if not path.exists():
         return None
     try:
-        return PendingSlot.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("pending.json is not an object")
+        return PendingSlot.from_dict(data)
     except (ValueError, TypeError) as e:
         quarantine = path.with_name(path.name + ".corrupt")
         try:

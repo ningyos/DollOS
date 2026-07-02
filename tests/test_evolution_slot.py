@@ -87,6 +87,19 @@ def test_corrupt_slot_quarantined_and_none_with_audit_line(tmp_path):
     assert self_history.read_events(hist)[-1]["kind"] == "evo_error"
 
 
+def test_non_dict_json_quarantined(tmp_path):
+    from dollos.mind import self_history
+    p = tmp_path / "pending.json"
+    hist = tmp_path / "self_history.jsonl"
+    for bad in ('null', '[]', '"hi"', '42'):
+        p.write_text(bad, encoding="utf-8")
+        assert evo.load_slot(p, history_path=hist) is None
+        assert not p.exists()
+        (tmp_path / "pending.json.corrupt").unlink()  # reset for next round
+    events = self_history.read_events(hist)
+    assert len(events) == 4 and all(e["kind"] == "evo_error" for e in events)
+
+
 def test_clear_slot_idempotent(tmp_path):
     p = tmp_path / "pending.json"
     evo.clear_slot(p)  # no-op on absent
