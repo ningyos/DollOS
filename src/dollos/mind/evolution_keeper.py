@@ -227,6 +227,22 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
                          reason=verdict.split(":", 1)[1] if ":" in verdict else verdict)
         return "kill"
 
+    # Mid-pass slot race (Task-4 review Minor 1): while the keeper/skeptic LLM
+    # calls were in flight, a background-perception turn's tripwire may have
+    # created an external awaiting_skeptic slot. The gate's condition-5 check
+    # ran BEFORE this pass launched, so re-check here and yield — never clobber
+    # a live slot. Checked BEFORE the birth line so evo_candidate is only
+    # logged when the slot will actually land (log-before-mutate stays intact:
+    # check → birth line → save_slot). The trigger's kill bookkeeping
+    # (interval ×2, HWM commit) is acceptable: the evidence was examined and
+    # produced a candidate that lost the race; the next pass re-runs on new
+    # material.
+    if evo.load_slot(slot_path, history_path=history_path) is not None:
+        logger.warning("evolution keeper: slot created mid-pass; yielding candidate")
+        evo.log_or_raise(history_path, kind=evo.EVO_KILL, text=text,
+                         reason="superseded:slot_created_mid_pass")
+        return "kill"
+
     # Log-before-mutate: birth line, then slot (Plan-2 invariant).
     evo.log_or_raise(history_path, kind=evo.EVO_CANDIDATE, text=text,
                      rationale=rationale, hwm_before=hwm)
