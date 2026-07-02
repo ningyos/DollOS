@@ -216,6 +216,14 @@ def echo_equivalent(text: str, reference: str) -> bool:
     return pairwise_jaccard(n_text, n_ref) >= ECHO_SIMILARITY
 
 
+def log_or_raise(history_path: Path, *, kind: str, **fields) -> None:
+    """Append an evolution event; RAISES OSError on IO failure (spec §3.2 —
+    evolution events are never swallowed, unlike pin events). ``None`` field
+    values are kept (e.g. first-adoption ``old_text=None``/``drift_score=None``)."""
+    from dollos.mind import self_history
+    self_history.log_event(history_path, kind=kind, **fields)
+
+
 def mechanical_checks(text: str, *, floor: int, cap: int, enforcement) -> str | None:
     """Code-level gate applied to every origin's text at its entry point (spec
     §3.3): char floor/cap + ``check_persona_violations`` (banned substrings /

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from dollos.character import Enforcement
     from dollos.memory import FtsMemory
 
     from dollos.mind.mind_state import MindState
@@ -55,6 +56,14 @@ class MindCtx:
     # mid-cascade. Threaded into PinSelf → self_history.
     current_turn: int = 0
     external_ctx: bool = False
+
+    # 慢變演化 (spec 2026-07-02 §3.4): per-turn SelfRevision latch (reset at
+    # drain by MindLoop) + static-per-run evolution config + pack enforcement.
+    evolution_latched: bool = False
+    evolution_enabled: bool = False
+    current_self_min_chars: int = 80
+    current_self_max_chars: int = 600
+    enforcement: "Enforcement | None" = None
 
     # Worker-agent-only: Report tool stashes its result here; None in main cascade.
     agent_report: dict | None = field(default=None)
