@@ -51,12 +51,13 @@ FIRE_AND_FORGET_TOOLS = frozenset({"Shell", "SpawnWorkflow", "SpawnMonitor"})
 # In-turn re-feed allowlist (spec §7 P1). On SUCCESS, only a tool whose RESULT
 # Doll genuinely must read to decide what to do next warrants another full
 # streaming decode pass. `Recall` returns memory hits that change her next
-# decision; `NoteMemory` returns a "memory noted: …" confirmation she does NOT
-# need to observe — re-feeding it would cost an extra decode pass on the
-# project's #1-concern latency path. Tool FAILURES of ANY tool still re-feed
-# (external grounding so Doll is told and can fix her mistake) — this allowlist
-# gates SUCCESS only.
-IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf"})
+# decision; `NoteMemory` and `PinSelf` return confirmation strings she does NOT
+# need to observe — re-feeding them would cost extra decode passes on the
+# project's #1-concern latency path. `PinSelf` success is categorically identical
+# to `NoteMemory` — excluding it prevents the observed 8× duplicate-pin loop.
+# Tool FAILURES of ANY tool still re-feed (external grounding so Doll is told
+# and can fix her mistake) — this allowlist gates SUCCESS only.
+IN_TURN_REFEED_TOOLS = frozenset({"Recall"})
 
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
 # within a single live turn — OR the same-tool 3-strike stuck flag — Doll
