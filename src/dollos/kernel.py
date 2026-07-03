@@ -13,6 +13,8 @@ from dollos.character import DollPack
 from dollos.config import Settings
 from dollos.ipc.channel_registry import ChannelRegistry
 from dollos.ipc.messages import (
+    ChannelEvent,
+    ChannelRegister,
     ICECandidateIn,
     Interrupt,
     SayAborted,
@@ -416,6 +418,10 @@ class DollOS:
         self._data_root = settings.data.root
         # Maps id(sink) → sink_handle (int) for unregister on disconnect.
         self._sink_handles: dict[int, int] = {}
+        # Maps id(sink) → {channel_id: sink_handle} for external ChannelRegister
+        # registrations made on this connection, so disconnect can unregister
+        # both the SinkResolver handle and the ChannelRegistry entry (carry I-1).
+        self._channel_sink_handles: dict[int, dict[str, int]] = {}
         self.server = WebSocketServer(
             host=settings.ipc.host,
             port=settings.ipc.port,
@@ -485,8 +491,46 @@ class DollOS:
             session = self._voice_sessions.get(id(sink))
             if session is not None:
                 await session.handle_utterance_end()
+        elif isinstance(msg, ChannelRegister):
+            self._channel_registry.register(
+                msg.channel_id, locus=msg.locus, kind=msg.kind
+            )
+            if msg.locus == "external":
+                # carry I-1: the connection's sink must be addressable by
+                # this channel_id, registered atomically with the registry
+                # entry (dual-register into ChannelRegistry + SinkResolver).
+                self._register_external_sink(sink, msg.channel_id)
+        elif isinstance(msg, ChannelEvent):
+            d = msg.payload
+            if d.get("author_is_owner"):
+                # Owner speaking from an external channel is TextInput-
+                # equivalent: preempt/cancel just like UserSpoke ingress.
+                # Strangers do NOT preempt/cancel (spec §3.2).
+                await self._maybe_preempt_for_new_input(sink)
+                self._cancel_consolidation()
+                self._cancel_evolution()
+            self._perception_queue.put(
+                Perception(
+                    kind="ChannelMessage",
+                    t=time.time(),
+                    data={"channel_id": msg.channel_id, **d},
+                )
+            )
         else:
             logger.warning("unhandled message type: %r", type(msg).__name__)
+
+    def _register_external_sink(
+        self, sink: "asyncio.Queue[ServerMessage | None]", channel_id: str
+    ) -> None:
+        """Carry I-1: dual-register this connection's sink into SinkResolver
+        under (locus="external", channel_id) so cascades addressed to this
+        channel resolve back to the bridge connection. Tracks the handle so
+        disconnect can unregister both this and the ChannelRegistry entry.
+        """
+        handle = self._sink_resolver.register(
+            sink, locus="external", channel_id=channel_id
+        )
+        self._channel_sink_handles.setdefault(id(sink), {})[channel_id] = handle
 
     def _cancel_consolidation(self) -> None:
         """Cancel any in-flight consolidation keeper task when the user speaks.
@@ -603,6 +647,13 @@ class DollOS:
         handle = self._sink_handles.pop(id(sink), None)
         if handle is not None:
             self._sink_resolver.unregister(handle)
+        # Carry I-1: unregister any external channel registrations this sink
+        # made, from both SinkResolver and ChannelRegistry.
+        for channel_id, channel_handle in self._channel_sink_handles.pop(
+            id(sink), {}
+        ).items():
+            self._sink_resolver.unregister(channel_handle)
+            self._channel_registry.unregister(channel_id)
 
     async def _maybe_bootstrap_plan(self) -> None:
         """Fire Awoke/bootstrap perception if today has no schedule yet.
