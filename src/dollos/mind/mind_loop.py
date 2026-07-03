@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import aclosing
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,20 @@ SAFE_MODE_FAIL_THRESHOLD = 3
 SAFE_MODE_TOOLS = frozenset({"Recall", "ReadToolOutput", "GrepToolOutput"})
 
 
+# P1f trace (spec 2026-07-03 §T-C2): serialize the dataclass sources 1:1 with
+# MindState.to_dict's asdict() usage — no invented fields, no divergence.
+def _mood_to_dict(mood) -> dict:
+    return asdict(mood)
+
+
+def _open_loop_to_dict(loop) -> dict:
+    return asdict(loop)
+
+
+def _output_to_dict(output) -> dict:
+    return asdict(output)
+
+
 class MindLoop:
     """The single coroutine that runs Doll's consciousness.
 
@@ -132,6 +147,8 @@ class MindLoop:
         current_self_max_chars: int = 600,
         pending_max_surfacings: int = 5,
         pending_min_age_days: float = 2.0,
+        trace_writer=None,
+        model_id: str | None = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -155,6 +172,8 @@ class MindLoop:
         self._cognition = cognition
         self._wal = wal
         self._cascade_logger = cascade_logger
+        self._trace_writer = trace_writer
+        self._model_id = model_id
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
         # Turn-local buffer of FULL spoken sentences (recent_outputs only keeps
@@ -433,8 +452,60 @@ class MindLoop:
                 evolution_block=evolution_block,
             )
 
+            # ── P1f trace: turn-level envelope 組裝(存實際內容非 hash;T-C2)──
+            trace_blocks = None
+            if self._trace_writer is not None:
+                import hashlib
+
+                from dollos.mind import self_history as _sh_trace
+
+                # identity 是 immutable+versioned pack(self._system_prompt,
+                # UNCOMPOSED — _system_prompt_for_turn() bakes in the mutable
+                # current_self section, which would defeat hashing a stable
+                # pack version) → hash 即可還原(比對 pack repo)。
+                # current_self 是 mutable(慢變演化 target)→ 必須存全文,否則
+                # 用舊 trace 還原會拿到錯身分(R2 current_self finding)。
+                identity_text = self._system_prompt
+                identity_hash = hashlib.sha256(
+                    (identity_text or "").encode("utf-8")
+                ).hexdigest()
+                current_self_text = _sh_trace.sanctioned_text(
+                    self._ctx.memory_root / "self_history.jsonl"
+                )
+                trace_blocks = {
+                    "origin_channel": self._ctx.current_origin or "",
+                    "situation": self._situation_tag(),
+                    "model_id": self._model_id,
+                    "perception_batch": [
+                        {"kind": p.kind, "data": dict(p.data)} for p in perceptions
+                    ],
+                    "static_prefix": {
+                        "identity_hash": identity_hash,
+                        "current_self_text": current_self_text,
+                        "situational_template_id": None,  # P1d
+                    },
+                    "dynamic_blocks": {
+                        "memsearch_hits": memsearch_hits,
+                        "associative_hits": associative_hits,
+                        "tool_habits_hits": tool_habits_hits,
+                        "situational_A_products": None,  # P1c/P1d A 充實管線
+                        "mood": _mood_to_dict(self._state.mood),
+                        "energy": self._state.energy,
+                        "open_loops": [
+                            _open_loop_to_dict(l) for l in self._state.open_loops
+                        ],
+                        "recent_perceptions": [
+                            {"kind": p.kind, "data": dict(p.data)}
+                            for p in self._state.recent_perceptions
+                        ],
+                        "recent_outputs": [
+                            _output_to_dict(o) for o in self._state.recent_outputs
+                        ],
+                    },
+                }
+
             # Call LLM (streams text → sink; dispatches tool calls inline)
-            await self._llm_iterate(prompt)
+            await self._llm_iterate(prompt, trace_blocks=trace_blocks)
         finally:
             # Signal end-of-turn to the connection pump: a None turn-separator
             # is converted to TurnEnd by the IPC pump. Always fires once per
@@ -546,6 +617,15 @@ class MindLoop:
             logger.exception("memsearch query failed; continuing with empty hits")
             return []
 
+    def _situation_tag(self) -> str:
+        """P1f 粗粒度 situation。P1d 情境渲染會細緻化(dm_owner/external_public/…),
+        屆時靠 schema_version 遷移。"""
+        if self._is_reflection:
+            return "internal_reflection"
+        if self._ctx.external_ctx:
+            return "external"
+        return "internal"
+
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass.
 
@@ -625,7 +705,7 @@ class MindLoop:
         if self._cascade_ctx is not None:
             self._cascade_ctx.cancel()
 
-    async def _llm_iterate(self, prompt: str) -> None:
+    async def _llm_iterate(self, prompt: str, *, trace_blocks: dict | None = None) -> None:
         """Stream Doll's turn as an in-turn cascade (spec §7.1).
 
         Pass 1 streams the single rendered prompt; each subsequent pass re-feeds
