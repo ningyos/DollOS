@@ -87,7 +87,7 @@ Write ordering: for **adoption** the `evo_adopt` line is appended and flushed *b
 - 產出的是「候選」,不是決定 — 你在替她整理證據,不是替她做人。
 - **Cite or die:** every claimed shift must point at concrete events in the supplied record(存活很久的 pin、跨日被 reconfirm 的條目、被淘汰的舊自我、diary 裡重複出現的模式). No evidence → Report `no_change`(寧缺勿濫 — the schedule decays; that is the designed outcome).
 - Provenance weighting: ground primarily in pins and diary (she wrote them); weight `external_ctx: true` pins lower; weight reconfirms by **cross-day diversity, not raw count**; consolidated files are secondary (transcript-derived — hints, not proof).
-- Output via Report: `no_change` (+ reason) or a candidate — **full replacement text** (floor ≤ len ≤ cap) + rationale listing citations. Full text, not a diff: LLM diff-application is the silent-no-op trap `ref_llm_edit_tools_locate_by_id_or_text` documents.
+- Output via Report: `no_change` (+ reason) or a candidate — **full replacement text** (floor ≤ len ≤ cap) + rationale listing citations. **Malformed-output policy (Plan-3 review F4):** details prefixed `NO_CHANGE`/`CANDIDATE` parse normally; an unprefixed reply containing a `依據`-anchored line still parses as a candidate (weak model dropped the prefix, structure present); anything else is MALFORMED → the `evo_error` row (evidence preserved — a formatting miss must never consume the HWM or double the interval). The skeptic verdict parses strictly: `PASS`→pass, `KILL`→kill, anything else → error row (never a silent kill). Full text, not a diff: LLM diff-application is the silent-no-op trap `ref_llm_edit_tools_locate_by_id_or_text` documents.
 
 **Mechanical checks (code):** char floor/cap; `check_persona_violations` (banned substrings + exclaim runs); echo-marker normalization (§3.4). Applied to every origin's text at its entry point.
 
@@ -149,6 +149,8 @@ min_history_events = 8
 min_diary_days = 14
 pending_max_surfacings = 5
 pending_min_age_days = 2.0
+max_tokens = 2048        # keeper/skeptic agent budget (Plan-3: 1024 truncates a CJK candidate + citations)
+agent_timeout_s = 240    # wraps the two-LLM-call Mode-A pass (Plan-3 review F3)
 ```
 
 Constants (not config, minimal-knob principle): counter_round cap = 2; verdict_errors bound = 3; echo-equivalence similarity = 0.9. Keeper + skeptic run on the single BYO LLM through existing worker machinery, subject to `llm.max_concurrency`.
