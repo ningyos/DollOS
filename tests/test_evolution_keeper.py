@@ -102,6 +102,22 @@ def test_parse_keeper_report_dep_midsentence_not_truncated():
 
 
 @pytest.mark.asyncio
+async def test_keeper_task_pins_no_restatement_rule(tmp_path, monkeypatch):
+    """Live-smoke SA adjudication: on the first-version path the keeper padded
+    its candidate with verbatim pack-identity prose (all 3 smoke runs retained
+    factory lines), producing an internally ambivalent 現在的我. Pin the
+    load-bearing rule phrase in the RENDERED keeper task."""
+    mr, _hist = _seed_root(tmp_path)
+    seen = {}
+    async def fake_keeper(**kw):
+        seen["task"] = kw["task"]
+        return {"details": "NO_CHANGE 證據不足"}
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    await ek.run_evolution_pass(**_pass_kwargs(mr))
+    assert "一個字都不需要重複" in seen["task"]
+
+
+@pytest.mark.asyncio
 async def test_pass_no_change_logs_and_returns(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
@@ -261,6 +277,17 @@ async def test_full_skeptic_task_contains_personality(monkeypatch):
     await _run_skeptic(monkeypatch, ident=_ident("出廠設定:安靜寡言,愛整理系統日誌"),
                        details="PASS", capture=cap)
     assert "出廠設定:安靜寡言,愛整理系統日誌" in cap["task"]
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_task_pins_partial_restatement_kill(monkeypatch):
+    """Live-smoke SA adjudication: check (c) must fire on PARTIAL restatement —
+    the smoke's first-version candidates kept factory lines alongside the new
+    disposition and (c) let them through. Pin the sharpened per-sentence rule
+    phrase in the RENDERED skeptic task."""
+    cap = {}
+    await _run_skeptic(monkeypatch, ident=_ident(), details="PASS", capture=cap)
+    assert "部分重述也算" in cap["task"]
 
 
 @pytest.mark.asyncio
