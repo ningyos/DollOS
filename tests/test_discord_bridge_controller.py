@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from dollos.discord_bridge.ambient_log import AmbientLog
 from dollos.discord_bridge.client import RateLimited
-from dollos.discord_bridge.controller import BridgeConfig, BridgeController
+from dollos.discord_bridge.controller import BridgeConfig, BridgeController, _event_date
 from dollos.ipc.messages import AddressedText, ChannelEvent
 
 
@@ -42,6 +43,7 @@ class FakeDiscordClient:
         self.send_attempts = 0
         self._cb: Callable[[dict], Awaitable[None]] | None = None
         self._rate_limit_once_after: float | None = None
+        self._history: dict[str, list[dict]] = {}
 
     def on_message(self, cb: Callable[[dict], Awaitable[None]]) -> None:
         self._cb = cb
@@ -67,6 +69,16 @@ class FakeDiscordClient:
         """Test helper: deliver `event` to the registered on_message callback."""
         assert self._cb is not None, "on_message callback was never registered"
         await self._cb(event)
+
+    async def fetch_history(self, channel_id: str, limit: int) -> list[dict]:
+        """Test double for `DiscordClient.fetch_history` (Task 7): returns
+        whatever `set_history()` staged for `channel_id`, ignoring `limit`
+        (tests stage exactly the events they want returned)."""
+        return list(self._history.get(channel_id, []))
+
+    def set_history(self, channel_id: str, events: list[dict]) -> None:
+        """Test helper: stage the events `fetch_history(channel_id, ...)` returns."""
+        self._history[channel_id] = events
 
 
 def _event(**kw) -> dict:
@@ -269,3 +281,58 @@ async def test_send_retries_once_after_rate_limited_then_succeeds(tmp_path):
     assert slept == [1.5]
     assert discord.send_attempts == 2
     assert discord.sent == [("c1", "hi there")]
+
+
+# ----- Task 7 (a): _event_date true-timestamp LANDMINE (review) -----
+
+
+def test_event_date_uses_true_timestamp_not_wallclock():
+    """LANDMINE (review): a backfilled event dated near a UTC boundary must
+    bucket by its TRUE post date, not today's wall-clock — else the same
+    msg_id lands in two date files across midnight and re-wakes on replay."""
+    ts = 1751500740.0  # 2025-07-02 23:59:00 UTC — deliberately not "today"
+    ev = {"msg_id": "m1", "content": "x", "ts": ts}
+
+    expected = datetime.fromtimestamp(ts, UTC).date().isoformat()
+
+    assert _event_date(ev) == expected
+    assert _event_date(ev) != datetime.now(UTC).date().isoformat()
+
+
+def test_event_date_falls_back_to_wallclock_when_no_ts():
+    """An event with no `ts` at all (no live Discord event should lack one,
+    but the fallback is kept as best-effort) still buckets by wall-clock,
+    same as before Task 7."""
+    ev = {"msg_id": "m1", "content": "x"}
+
+    assert _event_date(ev) == datetime.now(UTC).date().isoformat()
+
+
+# ----- Task 7 (b): reconnect_backfill fetches history + dedups -----
+
+
+async def test_reconnect_backfill_feeds_history_and_dedups(tmp_path):
+    """`reconnect_backfill` fetches each channel's recent history via the
+    injected `fetch` callable and replays it through the same capture+wake
+    path as `backfill()` — a msg_id already in the ambient log (pre-seeded,
+    as if logged before the reconnect gap) fires no dup ChannelEvent; only
+    the genuinely new, wake-worthy event does."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
+
+    seen_event = _event(msg_id="m1", ts=1751500000.0)
+    new_event = _event(
+        msg_id="m2", ts=1751500100.0, mentioned=True, content="hey are you there"
+    )
+
+    # Pre-seed ambient with m1, as if it was logged live before the reconnect gap.
+    ambient.append("g1", "c1", {**seen_event, "date": _event_date(seen_event)})
+
+    discord.set_history("c1", [seen_event, new_event])
+
+    await controller.reconnect_backfill(discord.fetch_history, ["c1"])
+
+    lines = _ambient_lines(tmp_path, "g1", "c1")
+    assert [line["msg_id"] for line in lines] == ["m1", "m2"]  # no dup line for m1
+
+    assert len(sent_to_daemon) == 1
+    assert sent_to_daemon[0].payload["msg_id"] == "m2"
