@@ -19,8 +19,10 @@ class DummySink:
 
 
 class SinkResolver:
-    """Dict-based sink registry keyed by monotonic handle; resolves to
-    most-recently-registered sink.
+    """Dict-based sink registry keyed by monotonic handle. Resolves by origin:
+    an external sink only when the turn's origin channel_id matches it; else
+    the most-recently-registered INTERNAL sink (a connected external bridge
+    never steals origin-less internal output — spec 2026-07-03 §3.1 I2).
 
     Handles are monotonically increasing integers — they remain stable
     regardless of removal order, so unregister(A) before unregister(B) never
