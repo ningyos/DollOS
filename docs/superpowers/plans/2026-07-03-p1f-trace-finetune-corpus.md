@@ -35,11 +35,11 @@
 ## File Structure
 
 - **Create** `src/dollos/mind/trace.py` — `TraceWriter` + `TurnTrace`。唯一新模組。
-- **Create** `tests/mind/test_trace.py` — TraceWriter/TurnTrace 單元測試。
+- **Create** `tests/test_trace.py` — TraceWriter/TurnTrace 單元測試。
 - **Modify** `src/dollos/config.py` — 新增 `TraceSettings`,掛進 `Settings`。
 - **Modify** `src/dollos/mind/mind_loop.py` — `__init__` 收 `trace_writer` + `model_id`;`_run_one_turn` 組 `trace_blocks` 並傳入 `_llm_iterate`;`_llm_iterate` 在 log_iter 同址追加 pass、turn 尾 finish。
 - **Modify** `src/dollos/kernel.py` — 依 config 建 `TraceWriter` 傳入 `MindLoop`(找既有 `MindLoop(...)` 建構處比照 `cascade_logger` 接線)。
-- **Modify** `tests/mind/test_mind_loop*.py`(既有最貼近 cascade 的測試檔)— 加 per-pass 追加、input_messages_delta、同源 tuple 的整合測試。
+- **Modify** `tests/test_mind_loop*.py`(既有最貼近 cascade 的測試檔)— 加 per-pass 追加、input_messages_delta、同源 tuple 的整合測試。
 
 ---
 
@@ -47,7 +47,7 @@
 
 **Files:**
 - Create: `src/dollos/mind/trace.py`
-- Create: `tests/mind/test_trace.py`
+- Create: `tests/test_trace.py`
 - Modify: `src/dollos/config.py`(新增 `TraceSettings`,掛進 `Settings`)
 
 **Interfaces:**
@@ -58,7 +58,7 @@
 
 - [ ] **Step 1: 寫失敗測試 — envelope 結構、date bucket、寫失敗不拋**
 
-`tests/mind/test_trace.py`:
+`tests/test_trace.py`:
 
 ```python
 import json
@@ -174,7 +174,7 @@ def test_silence_turn_flagged(tmp_path):
 
 - [ ] **Step 2: 跑測試確認 fail**
 
-Run: `cd daemon && uv run pytest tests/mind/test_trace.py -v`
+Run: `uv run pytest tests/test_trace.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'dollos.mind.trace'`
 
 - [ ] **Step 3: 實作 `src/dollos/mind/trace.py`**
@@ -293,7 +293,7 @@ class TraceWriter:
 
 - [ ] **Step 4: 跑 trace 測試確認 pass**
 
-Run: `cd daemon && uv run pytest tests/mind/test_trace.py -v`
+Run: `uv run pytest tests/test_trace.py -v`
 Expected: PASS(5 個)
 
 - [ ] **Step 5: 加 `TraceSettings` 到 config**
@@ -316,7 +316,7 @@ class TraceSettings(BaseModel):
 
 - [ ] **Step 6: 加 config 測試**
 
-在 `tests/` 既有 config 測試檔(`grep -rl "Settings(" tests/ | head -1` 找;若無專屬檔則在 `tests/mind/test_trace.py` 補一個)加:
+在 `tests/` 既有 config 測試檔(`grep -rl "Settings(" tests/ | head -1` 找;若無專屬檔則在 `tests/test_trace.py` 補一個)加:
 
 ```python
 def test_trace_settings_default_enabled():
@@ -328,14 +328,14 @@ def test_trace_settings_default_enabled():
 
 - [ ] **Step 7: 跑全 config + trace 測試**
 
-Run: `cd daemon && uv run pytest tests/mind/test_trace.py -v && uv run pytest -k "config or settings" -q`
+Run: `uv run pytest tests/test_trace.py -v && uv run pytest -k "config or settings" -q`
 Expected: PASS
 
 - [ ] **Step 8: Commit**
 
 ```bash
-cd daemon && git branch --show-current   # 確認在 p1f 分支,不是 main
-git add src/dollos/mind/trace.py tests/mind/test_trace.py src/dollos/config.py
+git branch --show-current   # 確認在 p1f 分支,不是 main
+git add src/dollos/mind/trace.py tests/test_trace.py src/dollos/config.py
 git commit -m "feat(trace): TraceWriter/TurnTrace skeleton + TraceSettings (P1f Task 1)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
@@ -348,7 +348,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 **Files:**
 - Modify: `src/dollos/mind/mind_loop.py`(`__init__` 收 `trace_writer` + `model_id`;`_run_one_turn` 組 `trace_blocks` 傳入 `_llm_iterate`)
-- Test: `tests/mind/test_mind_loop_trace.py`(新建)
+- Test: `tests/test_mind_loop_trace.py`(新建)
 
 **Interfaces:**
 - Consumes: Task 1 的 `TraceWriter`。既有 render locals:`memsearch_hits`、`associative_hits`、`tool_habits_hits`(`_run_one_turn` 內)、`self._state.mood`/`.energy`/`.open_loops`/`.recent_perceptions`/`.recent_outputs`、`self._is_reflection`、`self._ctx.external_ctx`、`self._ctx.current_origin`、current_self sanctioned text。
@@ -356,7 +356,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 - [ ] **Step 1: 寫失敗測試 — trace_blocks 帶實際內容 + current_self 全文 + 粗粒度 situation**
 
-`tests/mind/test_mind_loop_trace.py`。比照既有 mind_loop 測試的 fixture 建 `MindLoop`(參照 `tests/mind/test_mind_loop*.py` 既有 setup;把 `trace_writer` 傳入)。核心斷言(用一個能攔截 `begin_turn` 參數的 fake TraceWriter):
+`tests/test_mind_loop_trace.py`。比照既有 mind_loop 測試的 fixture 建 `MindLoop`(參照 `tests/test_mind_loop*.py` 既有 setup;把 `trace_writer` 傳入)。核心斷言(用一個能攔截 `begin_turn` 參數的 fake TraceWriter):
 
 ```python
 class _CapturingTraceWriter:
@@ -410,7 +410,7 @@ async def test_situation_tag_coarse(mind_loop_with_trace):
 
 - [ ] **Step 2: 跑確認 fail**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: FAIL(`_situation_tag` 不存在 / `trace_writer` 未接)
 
 - [ ] **Step 3: `__init__` 收 `trace_writer` + `model_id`**
@@ -494,12 +494,12 @@ Expected: FAIL(`_situation_tag` 不存在 / `trace_writer` 未接)
 
 - [ ] **Step 6: 跑 trace_blocks 測試**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: PASS
 
 - [ ] **Step 7: 跑既有 mind_loop 全測試確認未回歸**
 
-Run: `cd daemon && uv run pytest tests/mind/ -q`
+Run: `uv run pytest tests/ -q`
 Expected: PASS(既有全綠;`_llm_iterate` 新參數 `trace_blocks` 在 Task 3 前先給預設值 `None`——見下方注意)
 
 > **跨 Task 銜接**:Task 3 才會把 `_llm_iterate` 簽名改成 `(self, prompt, *, trace_blocks=None)`。本 Task Step 5 已經用 `trace_blocks=` 呼叫,故**必須在本 Task 先把 `_llm_iterate` 簽名加上 `*, trace_blocks=None` 參數(body 暫不使用)**,讓呼叫合法、既有測試綠。Task 3 再填 body。把這行簽名修改併入本 Task Step 5。
@@ -507,8 +507,8 @@ Expected: PASS(既有全綠;`_llm_iterate` 新參數 `trace_blocks` 在 Task 3 �
 - [ ] **Step 8: Commit**
 
 ```bash
-cd daemon && git branch --show-current
-git add src/dollos/mind/mind_loop.py tests/mind/test_mind_loop_trace.py
+git branch --show-current
+git add src/dollos/mind/mind_loop.py tests/test_mind_loop_trace.py
 git commit -m "feat(trace): turn-level envelope assembly in _run_one_turn (P1f Task 2)
 
 current_self stored verbatim (mutable), identity as hash (immutable pack);
@@ -524,7 +524,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 **Files:**
 - Modify: `src/dollos/mind/mind_loop.py`(`_llm_iterate`:begin_turn、log_iter 同址 add_pass、finally finish)
-- Test: `tests/mind/test_mind_loop_trace.py`(擴充)
+- Test: `tests/test_mind_loop_trace.py`(擴充)
 
 **Interfaces:**
 - Consumes: Task 2 的 `trace_blocks`;既有 `turn_id = self._cascade_logger.start_turn()`;log_iter 呼叫處的 `(raw_buf, results, tool_calls)` tuple、`pass_idx`。
@@ -532,7 +532,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 - [ ] **Step 1: 寫失敗測試 — think 全文逐字 + result 全文 + active_tools + 同源 tuple**
 
-擴充 `tests/mind/test_mind_loop_trace.py`(用真 `TraceWriter(tmp_path)`,跑一個會走 ≥1 pass 的 cascade,fake LLM 回一段含 `<think>` + 一個 Recall tool call 的輸出):
+擴充 `tests/test_mind_loop_trace.py`(用真 `TraceWriter(tmp_path)`,跑一個會走 ≥1 pass 的 cascade,fake LLM 回一段含 `<think>` + 一個 Recall tool call 的輸出):
 
 ```python
 @pytest.mark.asyncio
@@ -565,7 +565,7 @@ async def test_trace_and_cascade_log_share_source_tuple(mind_loop_real_trace, tm
 
 - [ ] **Step 2: 跑確認 fail**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: FAIL(`_llm_iterate` body 尚未接 trace)
 
 - [ ] **Step 3: `_llm_iterate` 接線**
@@ -632,19 +632,19 @@ Expected: FAIL(`_llm_iterate` body 尚未接 trace)
 
 - [ ] **Step 4: 跑測試**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: PASS
 
 - [ ] **Step 5: 跑 mind_loop 全測試**
 
-Run: `cd daemon && uv run pytest tests/mind/ -q`
+Run: `uv run pytest tests/ -q`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd daemon && git branch --show-current
-git add src/dollos/mind/mind_loop.py tests/mind/test_mind_loop_trace.py
+git branch --show-current
+git add src/dollos/mind/mind_loop.py tests/test_mind_loop_trace.py
 git commit -m "feat(trace): per-pass capture at shared cascade_log tuple site + turn-end finish (P1f Task 3)
 
 both writers serialize from identical (raw_buf, results, tool_calls) locals in one
@@ -660,7 +660,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 **Files:**
 - Modify: `src/dollos/mind/mind_loop.py`(`_llm_iterate` 追蹤每 pass 串流前 append 的 message dicts)
-- Test: `tests/mind/test_mind_loop_trace.py`(擴充)
+- Test: `tests/test_mind_loop_trace.py`(擴充)
 
 **Interfaces:**
 - Consumes: `_llm_iterate` 的 `messages: list[dict]`(pass 0 = `[{user:prompt}]`;pass i>0 尾端 append `{assistant: 前一 pass emit}` + 過濾後 `<tool_response>` user dicts)。
@@ -702,7 +702,7 @@ async def test_delta_concatenation_reconstructs_final_messages(mind_loop_real_tr
 
 - [ ] **Step 2: 跑確認 fail**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py::test_input_messages_delta_is_byte_authority -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py::test_input_messages_delta_is_byte_authority -v`
 Expected: FAIL(delta 目前是佔位 `[]`)
 
 - [ ] **Step 3: 追蹤 delta**
@@ -725,14 +725,14 @@ Expected: FAIL(delta 目前是佔位 `[]`)
 
 - [ ] **Step 4: 跑測試**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd daemon && git branch --show-current
-git add src/dollos/mind/mind_loop.py tests/mind/test_mind_loop_trace.py
+git branch --show-current
+git add src/dollos/mind/mind_loop.py tests/test_mind_loop_trace.py
 git commit -m "feat(trace): input_messages_delta as byte-verbatim authority per pass (P1f Task 4)
 
 the exact message dicts appended before each pass streamed (incl <tool_response>
@@ -748,7 +748,7 @@ Claude-Session: https://claude.ai/code/session_01RhF6kHt3Xv6JAGnDpayfAn"
 
 **Files:**
 - Modify: `src/dollos/mind/mind_loop.py`(`_stream_one_pass` 兩側量 `time.monotonic()`)
-- Test: `tests/mind/test_mind_loop_trace.py`(擴充)
+- Test: `tests/test_mind_loop_trace.py`(擴充)
 
 **Interfaces:**
 - Produces: 每 pass `latency_ms: int`。`tokens` 維持 `None`(Task 1 已定,離線 retokenize 還原)。
@@ -768,7 +768,7 @@ async def test_pass_latency_present_and_tokens_deferred(mind_loop_real_trace, tm
 
 - [ ] **Step 2: 跑確認 fail**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py::test_pass_latency_present_and_tokens_deferred -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py::test_pass_latency_present_and_tokens_deferred -v`
 Expected: FAIL(latency 目前佔位 `None`)
 
 - [ ] **Step 3: 量 latency**
@@ -789,14 +789,14 @@ Expected: FAIL(latency 目前佔位 `None`)
 
 - [ ] **Step 4: 跑測試**
 
-Run: `cd daemon && uv run pytest tests/mind/test_mind_loop_trace.py -v`
+Run: `uv run pytest tests/test_mind_loop_trace.py -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd daemon && git branch --show-current
-git add src/dollos/mind/mind_loop.py tests/mind/test_mind_loop_trace.py
+git branch --show-current
+git add src/dollos/mind/mind_loop.py tests/test_mind_loop_trace.py
 git commit -m "feat(trace): per-pass latency_ms; tokens deferred to offline retokenize (P1f Task 5)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
@@ -850,7 +850,7 @@ async def test_cancelled_pass_not_recorded_but_envelope_finalizes(mind_loop_real
 
 - [ ] **Step 2: 跑確認 fail / 現況**
 
-Run: `cd daemon && uv run pytest tests/ -k "traces or cancelled_pass" -v`
+Run: `uv run pytest tests/ -k "traces or cancelled_pass" -v`
 Expected: FAIL(kernel 未接 trace_writer,MindLoop 未收到)
 
 - [ ] **Step 3: kernel 接線**
@@ -885,18 +885,18 @@ Expected: FAIL(kernel 未接 trace_writer,MindLoop 未收到)
 
 - [ ] **Step 5: 跑目標測試**
 
-Run: `cd daemon && uv run pytest tests/ -k "traces or cancelled_pass" -v`
+Run: `uv run pytest tests/ -k "traces or cancelled_pass" -v`
 Expected: PASS
 
 - [ ] **Step 6: 全 daemon 測試 + kernel 測試確認未回歸**
 
-Run: `cd daemon && uv run pytest -q`
+Run: `uv run pytest -q`
 Expected: PASS(除 3 個既有 torch voice 環境性失敗)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd daemon && git branch --show-current
+git branch --show-current
 git add src/dollos/kernel.py tests/
 git commit -m "feat(trace): kernel wiring + never-FTS structural guard + cancelled-pass caveat (P1f Task 6)
 
