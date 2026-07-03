@@ -204,6 +204,12 @@ class EvolutionConfig(BaseModel):
     min_diary_days: int = 14
     pending_max_surfacings: int = 5
     pending_min_age_days: float = 2.0
+    # Mode-A keeper LLM budget (mirrors ConsolidationConfig). Larger than the
+    # keeper's __init__ defaults (1024/120, sized for Mode B's one-word verdict):
+    # a keeper generating an 80–600-CJK candidate + citations through a <think>
+    # block truncates at 1024. Mode B's skeptic shares these harmlessly.
+    max_tokens: int = 2048
+    agent_timeout_s: int = 240
 
 
 class Settings(BaseModel):

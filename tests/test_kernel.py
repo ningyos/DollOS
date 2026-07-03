@@ -530,6 +530,29 @@ def test_consolidation_trigger_wired_in_kernel(tmp_path: Path) -> None:
     assert dollos._consolidation_trigger._state is dollos._mind_state
 
 
+def test_evolution_trigger_receives_llm_budget_from_config(tmp_path: Path) -> None:
+    """F3: [evolution].max_tokens / agent_timeout_s thread into EvolutionTrigger.
+    The defaults (2048/240) override the keeper's own __init__ defaults (1024/120,
+    sized for Mode B's one-word verdict) which would truncate an 80–600-CJK
+    keeper candidate + citations through a <think> block."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    assert dollos._evolution_trigger._max_tokens == 2048
+    assert dollos._evolution_trigger._agent_timeout_s == 240
+
+
+def test_evolution_trigger_llm_budget_override(tmp_path: Path) -> None:
+    """F3: a config override reaches the trigger — proves the value is threaded,
+    not hardcoded."""
+    from dollos.config import EvolutionConfig
+
+    settings = _make_settings(tmp_path).model_copy(
+        update={"evolution": EvolutionConfig(max_tokens=4096, agent_timeout_s=300)})
+    dollos = DollOS(settings)
+    assert dollos._evolution_trigger._max_tokens == 4096
+    assert dollos._evolution_trigger._agent_timeout_s == 300
+
+
 def test_cancel_consolidation_calls_trigger_cancel_current(tmp_path: Path) -> None:
     """_cancel_consolidation() delegates to trigger.cancel_current()."""
     settings = _make_settings(tmp_path)

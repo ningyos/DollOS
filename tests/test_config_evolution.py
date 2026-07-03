@@ -25,6 +25,8 @@ def test_evolution_defaults():
     assert e.min_diary_days == 14
     assert e.pending_max_surfacings == 5
     assert e.pending_min_age_days == 2.0
+    assert e.max_tokens == 2048
+    assert e.agent_timeout_s == 240
 
 
 def test_evolution_override():
