@@ -52,6 +52,9 @@ _FULL_SKEPTIC_TASK = """你是一個獨立審查者。以下是系統替一個�
 [identity.self]
 {identity_self}
 
+[出廠人格(判斷 (c) 假成長時對照——候選不可只是重述這裡已寫明的內容)]
+{personality}
+
 [taboos]
 {taboos}
 
@@ -95,7 +98,7 @@ def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
     diaries: list[tuple[str, str]] = []
     for f in _dated_files(memory_root / "shared"):
         text = f.read_text(encoding="utf-8")
-        if "日記" in text:
+        if evo.has_diary_heading(text):
             diaries.append((f.stem, text))
     consolidated = [(f.stem, f.read_text(encoding="utf-8"))
                     for f in _dated_files(memory_root / "consolidated")]
@@ -122,15 +125,27 @@ def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
 
 def parse_keeper_report(details: str) -> tuple[str, str, str]:
     """→ ("no_change", reason, "") | ("candidate", text, rationale).
-    Malformed/empty → ValueError (caller maps to the evo_error row)."""
+
+    Policy (spec §3.3 failure-table 'malformed Report' row): NO_CHANGE-prefixed →
+    no_change; CANDIDATE-prefixed → candidate; NO prefix but a line starting
+    「依據」 present → candidate (a weak model dropped the prefix but the structure
+    is there); anything else → ValueError, which the caller maps to the evo_error
+    row (NO HWM commit, NO interval double — a formatting miss must not silently
+    consume weeks of evidence). The 「依據」 split is anchored on a LINE boundary
+    (``\\n依據``), so candidate prose that uses the word 依據 mid-sentence is not
+    truncated (the prompt instructs 「依據:」 on its own line)."""
     d = (details or "").strip()
     if not d:
         raise ValueError("keeper returned empty details")
     if d.upper().startswith("NO_CHANGE"):
         return "no_change", d[len("NO_CHANGE"):].strip(" ,:：") or "無足夠證據", ""
-    body = d[len("CANDIDATE"):].strip() if d.upper().startswith("CANDIDATE") else d
-    if "依據" in body:
-        text, _, rationale = body.partition("依據")
+    has_prefix = d.upper().startswith("CANDIDATE")
+    has_dep_line = any(line.startswith("依據") for line in d.splitlines())
+    if not has_prefix and not has_dep_line:
+        raise ValueError("keeper report has no CANDIDATE/NO_CHANGE prefix nor 依據 line")
+    body = d[len("CANDIDATE"):].strip() if has_prefix else d
+    text, sep, rationale = body.rpartition("\n依據")
+    if sep:
         return "candidate", text.strip(), rationale.strip(" :：\n")
     return "candidate", body.strip(), ""
 
@@ -154,8 +169,8 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
     tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
     system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
     task = _FULL_SKEPTIC_TASK.format(
-        identity_self=pack_identity.self, taboos=pack_identity.taboos,
-        current=current or "(尚無)", candidate=candidate,
+        identity_self=pack_identity.self, personality=pack_identity.personality,
+        taboos=pack_identity.taboos, current=current or "(尚無)", candidate=candidate,
         rationale=rationale or "(未附)", bundle=bundle)
     report = await run_agent(
         task=task, system=system, adapter=adapter, renderer=renderer,
@@ -168,7 +183,13 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
     details = report["details"].strip()
     if details.upper().startswith("PASS"):
         return "pass"
-    return "kill:" + (details[4:].strip(" :：") or "未通過 (a)-(e) 審查")
+    if details.upper().startswith("KILL"):
+        return "kill:" + (details[len("KILL"):].strip(" :：") or "未通過 (a)-(e) 審查")
+    # Neither PASS nor KILL — a garbled verdict is an ERROR, not a silent kill.
+    # The kill path commits the HWM + doubles the interval (consuming the
+    # evidence); a malformed verdict must instead flow to run_evolution_pass's
+    # evo_error branch, which preserves the evidence (spec §3.3 failure table).
+    raise RuntimeError(f"skeptic verdict neither PASS nor KILL: {details[:40]!r}")
 
 
 async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
@@ -177,10 +198,9 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
                              max_tokens: int, now: float, hwm: int = 0,
                              window_days: float = 28.0) -> str:
     """One Mode-A pass → "no_change" | "candidate" | "kill" | "error"."""
-    from dollos.mind import self_history as sh
     history_path = memory_root / "self_history.jsonl"
     slot_path = memory_root / "self_evolution" / "pending.json"
-    current = sh.sanctioned_text(history_path)
+    current = self_history.sanctioned_text(history_path)
     bundle, _new_off = assemble_bundle(memory_root=memory_root, hwm=hwm,
                                        window_days=window_days, now=now)
     task = _KEEPER_TASK.format(

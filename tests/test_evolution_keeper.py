@@ -71,9 +71,34 @@ def test_parse_keeper_report_candidate():
     assert kind == "candidate" and text == VALID and "存活多週" in rationale
 
 
-def test_parse_keeper_report_malformed_raises():
+def test_parse_keeper_report_empty_raises():
     with pytest.raises(ValueError):
         ek.parse_keeper_report("")
+
+
+def test_parse_keeper_report_prefixless_but_dep_line_is_candidate():
+    """F4: a weak model that dropped the CANDIDATE prefix but kept the 依據
+    structure still parses as a candidate (structure present)."""
+    details = f"{VALID}\n依據:\n- s1 存活多週"
+    kind, text, rationale = ek.parse_keeper_report(details)
+    assert kind == "candidate" and text == VALID and "存活多週" in rationale
+
+
+def test_parse_keeper_report_unprefixed_garbage_raises():
+    """F4: 「沒有足夠證據,維持現狀」-style prose with no NO_CHANGE/CANDIDATE prefix
+    and no 依據 line is malformed → ValueError (→ evo_error, evidence preserved)."""
+    with pytest.raises(ValueError):
+        ek.parse_keeper_report("沒有足夠證據,維持現狀")
+
+
+def test_parse_keeper_report_dep_midsentence_not_truncated():
+    """F4: 依據 used mid-sentence (not on its own line) must NOT truncate the
+    candidate — the split anchors on a line boundary (\\n依據)."""
+    prose = "我做決定時會依據當下的證據,而不是憑感覺亂猜。" + "細節" * 30
+    details = f"CANDIDATE\n{prose}\n依據:\n- s1 存活多週"
+    kind, text, rationale = ek.parse_keeper_report(details)
+    assert kind == "candidate" and text == prose        # 依據 mid-sentence kept
+    assert "存活多週" in rationale
 
 
 @pytest.mark.asyncio
@@ -201,6 +226,61 @@ async def test_pass_yields_to_slot_created_mid_pass(tmp_path, monkeypatch):
     assert events[-1]["kind"] == "evo_kill"
     assert events[-1]["reason"] == "superseded:slot_created_mid_pass"
     assert "evo_candidate" not in [e["kind"] for e in events]        # no birth line
+
+
+# --- _run_full_skeptic: F1 personality block + F4 verdict parse ---
+
+
+class _StubRenderer:
+    def render(self, name, **kw):
+        return "SYSTEM"
+
+
+def _ident(personality="安靜"):
+    from dollos.character import Identity
+    return Identity(self="我是測試角色", personality=personality, taboos="不編造")
+
+
+async def _run_skeptic(monkeypatch, *, ident, details, capture=None):
+    async def fake_run_agent(**kw):
+        if capture is not None:
+            capture["task"] = kw["task"]
+        return {"summary": "s", "details": details}
+    monkeypatch.setattr(ek, "run_agent", fake_run_agent)
+    return await ek._run_full_skeptic(
+        candidate="候選文字", rationale="依據 x", bundle="BUNDLE", current="舊文",
+        pack_identity=ident, adapter=None, renderer=_StubRenderer(), memsearch=None,
+        memory_root=None, transcripts_root=None, tool_output_store=None, max_tokens=2048)
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_task_contains_personality(monkeypatch):
+    """F1: the (c) 假成長 check is unenforceable unless the skeptic actually sees
+    the factory-personality prose — assert it is interpolated into the task."""
+    cap = {}
+    await _run_skeptic(monkeypatch, ident=_ident("出廠設定:安靜寡言,愛整理系統日誌"),
+                       details="PASS", capture=cap)
+    assert "出廠設定:安靜寡言,愛整理系統日誌" in cap["task"]
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_pass_parses(monkeypatch):
+    assert await _run_skeptic(monkeypatch, ident=_ident(), details="PASS 沒問題") == "pass"
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_kill_keeps_reason(monkeypatch):
+    """F4: KILL reason is taken after the KILL prefix, not a blind details[4:]."""
+    v = await _run_skeptic(monkeypatch, ident=_ident(), details="KILL (c) 只是重述出廠人格")
+    assert v == "kill:(c) 只是重述出廠人格"
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_garbled_verdict_raises(monkeypatch):
+    """F4: 「驗證通過」-style output — neither PASS nor KILL — is an ERROR (→
+    run_evolution_pass evo_error, evidence preserved), NOT a silent kill."""
+    with pytest.raises(RuntimeError):
+        await _run_skeptic(monkeypatch, ident=_ident(), details="驗證通過,沒有問題")
 
 
 def _pass_kwargs(mr):

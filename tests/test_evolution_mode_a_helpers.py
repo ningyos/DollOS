@@ -1,5 +1,4 @@
 """Mode A pure helpers (spec §3.3: material gate / interval dynamics / HWM)."""
-import json
 import time
 
 from dollos.mind import evolution as evo, self_history
@@ -43,6 +42,15 @@ def test_diary_days_since_counts_dated_files_with_diary_heading(tmp_path):
     assert evo.diary_days_since(shared, since) == 1        # only 06-25 qualifies
     assert evo.diary_days_since(shared, 0.0) == 2          # 06-20 + 06-25
     assert evo.diary_days_since(tmp_path / "none", 0.0) == 0
+
+
+def test_has_diary_heading_is_heading_anchored(tmp_path):
+    """F7: the shared predicate matches a ## … 日記 heading, NOT a bare 日記
+    substring — so a note that merely mentions 日記 in prose is not counted."""
+    assert evo.has_diary_heading("## 深夜 日記\n今天很平靜") is True
+    assert evo.has_diary_heading("## 日記") is True
+    assert evo.has_diary_heading("我今天寫了日記,但這是純筆記") is False
+    assert evo.has_diary_heading("") is False
 
 
 def test_next_interval_days_table():

@@ -456,6 +456,15 @@ _PIN_KINDS = frozenset({"pin_add", "pin_replace", "pin_remove", "pin_reconfirm"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def has_diary_heading(text: str) -> bool:
+    """True if ``text`` carries a WriteDiary-style ``## … 日記`` heading line.
+    The single diary predicate shared by ``diary_days_since`` (material gate) and
+    the keeper bundle's diary classification (``evolution_keeper.assemble_bundle``)
+    — one definition so the two can never drift (a bare ``"日記"`` substring match
+    would wrongly count a note that merely mentions the word)."""
+    return any(line.startswith("##") and "日記" in line for line in text.splitlines())
+
+
 def count_new_pin_events(history_path: Path, hwm: int) -> int:
     """Material-gate counter: pin_* events past the byte offset ``hwm``.
     ``evo_*`` bookkeeping lines never count (spec §3.3 condition 3)."""
@@ -487,10 +496,7 @@ def diary_days_since(shared_dir: Path, since_epoch: float) -> int:
         if not _DATE_RE.match(f.stem) or f.stem <= since_date:
             continue
         try:
-            text = f.read_text(encoding="utf-8")
-            # Check for diary heading: lines with "## " followed by text and ending/containing "日記"
-            has_diary = any(line.startswith("##") and "日記" in line for line in text.splitlines())
-            if has_diary:
+            if has_diary_heading(f.read_text(encoding="utf-8")):
                 n += 1
         except OSError:
             continue
