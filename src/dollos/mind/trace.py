@@ -4,6 +4,14 @@
 與 cascade_log 從同一 per-pass tuple 衍生(superset),但獨立序列化。
 存實際內容非 hash(T-C2);think 逐字;按日輪替不設上限;
 永不進 memsearch 索引;寫失敗 loud 但不斷 turn。
+
+不變式(結構性,非 deny-list):kernel.build_memsearch 只對
+data.root/memory/{shared,transcripts,skills} 三個路徑白名單掃描索引;
+data/traces 是 data.root 底下與 memory/ 平行的獨立目錄,天然不在任何掃描根
+之下,故永不被索引 —— 機制與 self_profile.md(存在 memory_root 但不在三個
+索引子目錄內)相同精神,但層級更淺(data/traces 連 memory_root 都不在裡面)。
+見 tests/test_trace.py::test_traces_root_not_in_fts_paths(結構守衛,pin 住
+此不變式)。
 """
 
 from __future__ import annotations

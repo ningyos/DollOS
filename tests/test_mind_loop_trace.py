@@ -10,6 +10,7 @@ itself (instance-level monkeypatch) rather than via ``TraceWriter.begin_turn``
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -21,7 +22,7 @@ from dollos.mind.mind_state import Perception
 from dollos.mind.trace import TraceWriter
 from tests._dispatcher_helpers import _FakeMemSearch
 from tests._mindloop_factory import make_mindloop
-from tests.test_mind_loop import _ScriptedLLM, _speech_pass
+from tests.test_mind_loop import _ScriptedLLM, _SlowFakeLLM, _speech_pass
 
 
 class _CapturingTraceWriter:
@@ -443,3 +444,43 @@ async def test_pass_latency_present_and_tokens_deferred(mind_loop_real_trace, tm
     for p in env["passes"]:
         assert isinstance(p["latency_ms"], int) and p["latency_ms"] >= 0
         assert p["tokens"] is None  # per-pass usage 不從 StreamChunk 掉出來(R2 T-token)
+
+
+# ── Task 6: cancelled-pass caveat — envelope still finalizes ──
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pass_not_recorded_but_envelope_finalizes(tmp_path):
+    """A pass cancelled mid-stream returns from ``_stream_one_pass`` BEFORE
+    ``_llm_iterate``'s add_pass call site (mind_loop.py: the
+    ``if self._cascade_ctx.cancelled: return`` check right after
+    ``_stream_one_pass`` returns, ahead of ``turn_trace.add_pass(...)``) — so
+    the cancelled pass produces neither a cascade_log entry nor a trace pass.
+    But ``_llm_iterate``'s ``finally`` block calls ``turn_trace.finish()``
+    unconditionally whenever a turn_trace was begun, so the envelope is NOT
+    lost wholesale — it still finalizes to disk with only the passes that
+    completed before the cancel (§3.6/§6.2(g) explicit tradeoff)."""
+    traces_dir = tmp_path / "traces"
+    tw = TraceWriter(traces_dir)
+    chunks = [f"chunk{i} " for i in range(10)]
+    slow_llm = _SlowFakeLLM(chunks, delay=0.1)
+    ml = make_mindloop(
+        memory_root=tmp_path, trace_writer=tw, model_id="test-model", llm=slow_llm
+    )
+
+    task = asyncio.create_task(ml._run_one_turn([_user_perception("q")]))
+    await asyncio.sleep(0.15)
+    assert ml.is_cascade_active is True
+    ml.cancel_current_cascade()
+    await asyncio.wait_for(task, timeout=0.4)
+    assert ml.is_cascade_active is False
+
+    trace_files = list(traces_dir.glob("*.jsonl"))
+    # Envelope must still finalize — exactly one JSONL file, one line — even
+    # though the cascade was cancelled mid-first-pass (not lost entirely).
+    assert len(trace_files) == 1, f"expected trace envelope to finalize, got {trace_files}"
+    env = _only_trace_envelope(traces_dir)
+    assert "passes" in env
+    # The cancelled first pass never reached add_pass — zero passes captured,
+    # not a lost/missing envelope.
+    assert env["passes"] == []
