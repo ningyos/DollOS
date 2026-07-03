@@ -430,3 +430,16 @@ async def test_fire_and_forget_ack_excluded_from_delta(tmp_path):
     )
     # Prior pass's assistant emit is also in the delta (full alternation).
     assert any(m["role"] == "assistant" for m in delta)
+
+
+# ── Task 5: per-pass latency_ms real measurement; tokens stays deferred ──
+
+
+@pytest.mark.asyncio
+async def test_pass_latency_present_and_tokens_deferred(mind_loop_real_trace, tmp_path):
+    ml, state = mind_loop_real_trace
+    await ml._run_one_turn([_user_perception("q")])
+    env = _only_trace_envelope(tmp_path / "traces")
+    for p in env["passes"]:
+        assert isinstance(p["latency_ms"], int) and p["latency_ms"] >= 0
+        assert p["tokens"] is None  # per-pass usage 不從 StreamChunk 掉出來(R2 T-token)
