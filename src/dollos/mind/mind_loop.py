@@ -221,17 +221,49 @@ class MindLoop:
         if not buckets:
             # drain_grouped() returned empty — shutdown signaled; skip this iteration
             return
-        for bucket in buckets:
-            self._ctx.current_origin = (bucket[0].data or {}).get("channel_id") or None
-            await self._run_one_turn(bucket)
-        self._ctx.current_origin = None
+        # Global max seq across ALL perceptions in ALL buckets, captured BEFORE
+        # the loop (perceptions are consumed in-place). WAL truncation is
+        # batch-final — one truncate through the whole drain's max seq AFTER
+        # every bucket completes, mirroring the pre-refactor "truncate once per
+        # drain" semantics. Per-bucket truncation would delete a later-arriving
+        # other bucket's still-unprocessed perceptions (see _run_one_turn).
+        batch_max_seq = max(
+            (p.seq for bucket in buckets for p in bucket if p.seq is not None),
+            default=None,
+        )
+        all_saved = True
+        try:
+            for bucket in buckets:
+                self._ctx.current_origin = (bucket[0].data or {}).get("channel_id") or None
+                if not await self._run_one_turn(bucket):
+                    all_saved = False
+        finally:
+            self._ctx.current_origin = None
 
-    async def _run_one_turn(self, perceptions: list[Perception]) -> None:
+        # Truncate the WAL ONCE, through the whole drain's max seq — only when
+        # EVERY bucket's state save durably succeeded. If any bucket's save
+        # failed (all_saved False) OR any bucket raised (the exception
+        # propagates past here before this runs), truncation is skipped so all
+        # perceptions replay on next boot.
+        if self._wal is not None and batch_max_seq is not None:
+            if all_saved:
+                self._wal.truncate_through(batch_max_seq)
+            else:
+                logger.warning(
+                    "save failed in at least one bucket; skipping WAL "
+                    "truncation to preserve perceptions for replay"
+                )
+
+    async def _run_one_turn(self, perceptions: list[Perception]) -> bool:
         """Process one origin bucket: sync → render → llm → execute → persist.
 
         Extracted from ``iterate`` (P1a Task 4) so a mixed drain can run this
         body once per origin bucket instead of once per drain. Behavior is
         unchanged for the single-bucket case (origin=None → internal sink).
+
+        Returns ``True`` when this bucket's ``save_state`` durably succeeded,
+        ``False`` otherwise. The caller (``iterate``) aggregates these to decide
+        whether the batch-final WAL truncation may run (all buckets must save).
         """
         for p in perceptions:
             self._state.recent_perceptions.append(p)
@@ -467,24 +499,16 @@ class MindLoop:
         self._state.last_iter_at = time.time()
         saved = save_state(self._state, self._persist_path)
 
-        # Truncate WAL through the highest seq among consumed perceptions —
-        # ONLY when the save durably succeeded. After a successful save_state the
-        # state durably reflects these perceptions, so they no longer need to be
-        # replayed on next startup. If the save FAILED we must NOT truncate, so
-        # the perceptions remain in the WAL and are replayed (and re-attempted)
-        # on next boot.
-        if self._wal is not None and perceptions and saved:
-            last_seq = max(
-                (p.seq for p in perceptions if p.seq is not None),
-                default=None,
-            )
-            if last_seq is not None:
-                self._wal.truncate_through(last_seq)
-        elif self._wal is not None and perceptions and not saved:
-            logger.warning(
-                "save failed; skipping WAL truncation to preserve "
-                "perceptions for replay"
-            )
+        # WAL truncation is NOT done here — it is hoisted to iterate() and run
+        # ONCE, batch-final, through the whole drain's global max seq (P1a Task 4
+        # review fix). `truncate_through(seq)` removes ALL WAL entries with
+        # seq <= arg GLOBALLY, and seq is assigned in global arrival order. With
+        # drain_grouped splitting an interleaved window (A₁ seq1, B₁ seq2, A₂
+        # seq3 → bucket A=[1,3], bucket B=[2]), truncating per-bucket through
+        # bucket A's max seq (3) would delete B₁ (seq2) from the WAL BEFORE
+        # bucket B runs — a crash before B completes would then lose B₁ forever.
+        # So the caller truncates once, after every bucket, gated on all saves.
+        return saved
 
     async def _derive_memory_hits(self) -> list[dict]:
         """Query memsearch from the most recent UserSpoke or last 3 perceptions."""
