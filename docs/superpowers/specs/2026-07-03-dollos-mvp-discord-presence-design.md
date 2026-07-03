@@ -121,6 +121,8 @@ Daemon 核心迴圈、記憶系統、self_profile/慢變演化、pack、no-fallb
 
 ## 7. Deferred(記錄,不默丟)
 
-- Ambient log 選擇性入憶(每日摘要入 FTS?)、記憶私密分級(公開場合檢索 scope 的根本解)
-- 手機 app / DollOS ROM(主要感官,獨立軌)、doll 社交網路、多 doll 團體、自我修補、finetune 執行(trace 為它鋪料)
-- L1 進階鹽度(興趣匹配、話題延續)=P2;語音通話=P3;情境模板擴充(voice_call 等)隨 P3
+- **遠端 Shell 的本機第二因子**(local UI / 手機 app 確認)——external 通道要能安全動手的唯一正解;P1 結構性禁止,此為未來開通路徑(§3.4 S4)。
+- **記憶私密分級的根本解**——P1 已上粗粒度 origin bit + scope 過濾(§3.4 S2/S3);細粒度分級(per-memory 敏感度、跨場合可見性規則)是根本解,deferred。
+- Ambient log 選擇性入憶(每日摘要入 FTS?);ambient log 保留策略 P1 已設 bound(§5 S10),入憶是另一問。
+- 手機 app / DollOS ROM(主要感官,獨立軌)、doll 社交網路、多 doll 團體、自我修補、finetune 執行(trace 為它鋪料)。
+- L1 進階鹽度(興趣匹配、話題延續)=P2;語音通話=P3;情境模板擴充(voice_call 等)隨 P3。
