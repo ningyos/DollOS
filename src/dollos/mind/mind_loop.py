@@ -213,11 +213,26 @@ class MindLoop:
                 logger.exception("MindLoop iteration crashed; continuing")
 
     async def iterate(self) -> None:
-        """One iteration: drain → sync → render → llm → execute → persist."""
-        perceptions = await self._queue.drain()
-        if not perceptions:
-            # drain() returned empty — shutdown signaled; skip this iteration
+        """One iteration: drain → sync → render → llm → execute → persist,
+        once per origin bucket (spec §3.1 R2-C1: drain_grouped partitions a
+        mixed batch by channel so concurrent external conversations never
+        cross-deliver into each other's sink or share one turn's context)."""
+        buckets = await self._queue.drain_grouped()
+        if not buckets:
+            # drain_grouped() returned empty — shutdown signaled; skip this iteration
             return
+        for bucket in buckets:
+            self._ctx.current_origin = (bucket[0].data or {}).get("channel_id") or None
+            await self._run_one_turn(bucket)
+        self._ctx.current_origin = None
+
+    async def _run_one_turn(self, perceptions: list[Perception]) -> None:
+        """Process one origin bucket: sync → render → llm → execute → persist.
+
+        Extracted from ``iterate`` (P1a Task 4) so a mixed drain can run this
+        body once per origin bucket instead of once per drain. Behavior is
+        unchanged for the single-bucket case (origin=None → internal sink).
+        """
         for p in perceptions:
             self._state.recent_perceptions.append(p)
             if p.kind == "UserSpoke":
@@ -394,7 +409,7 @@ class MindLoop:
             # real turn (even on error) so a text/IPC client never hangs
             # waiting for turn_end. Voice path: TTSObservingSink passes None
             # through unchanged (not a TextChunk, so no TTS side effect).
-            self._ctx.sink_resolver().put_nowait(None)
+            self._ctx.sink_resolver(self._ctx.current_origin).put_nowait(None)
 
         # B3 energy consumption — only when Doll produced cognitive output this turn.
         produced = bool(self._turn_speech) or self._turn_had_tool
@@ -609,7 +624,7 @@ class MindLoop:
         breaks; a same-tool 3-strike failure run aborts; and the pass count is
         hard-capped at `MAX_SYNC_REFEED_PASSES`.
         """
-        sink = self._ctx.sink_resolver()
+        sink = self._ctx.sink_resolver(self._ctx.current_origin)
         messages: list[dict] = [{"role": "user", "content": prompt}]
         # Same-tool consecutive-failure tracker, spanning passes — ported from
         # `tool_loop.py` so the live loop and the subagent cascade share one

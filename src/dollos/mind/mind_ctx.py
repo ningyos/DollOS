@@ -55,6 +55,12 @@ class MindCtx:
     # mid-cascade. Threaded into PinSelf → self_history.
     current_turn: int = 0
     external_ctx: bool = False
+    # Per-bucket origin channel_id (spec §3.1 R2-C1): set by MindLoop.iterate
+    # before dispatching each drain_grouped() bucket to _run_one_turn, so
+    # sink_resolver(origin) routes this turn's output to the matching
+    # external sink instead of stealing another channel's / the internal
+    # sink's stream. None for origin-less (internal) buckets.
+    current_origin: str | None = None
 
     # 慢變演化 (spec 2026-07-02 §3.4): per-turn SelfRevision latch (reset at
     # drain by MindLoop) + static-per-run evolution config + pack enforcement.
