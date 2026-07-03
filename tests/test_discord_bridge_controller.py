@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from dollos.discord_bridge.ambient_log import AmbientLog
 from dollos.discord_bridge.client import RateLimited
 from dollos.discord_bridge.controller import BridgeConfig, BridgeController, _event_date
-from dollos.ipc.messages import AddressedText, ChannelEvent
+from dollos.ipc.messages import AddressedText, ChannelEvent, ChannelRegister
 
 
 class FakeDiscordClient:
@@ -92,9 +92,15 @@ def _event(**kw) -> dict:
 
 
 def _cfg(**kw) -> BridgeConfig:
+    # channel_allowlist defaults to ["c1"] — the primary channel these tests
+    # exercise — so it counts as pre-registered (`__main__.py` registers the
+    # allowlist on connect) and a wake from it fires NO dynamic
+    # ChannelRegister. Tests exercising the dynamic register-on-first-wake
+    # path (P1b review) use a channel_id OUTSIDE this allowlist.
     base = dict(
         owner_id="owner-1", name_aliases=["gura", "古拉"],
         always_wake_channels=set(), bot_id="bot-999",
+        channel_allowlist=["c1"],
     )
     base.update(kw)
     return BridgeConfig(**base)
@@ -336,3 +342,68 @@ async def test_reconnect_backfill_feeds_history_and_dedups(tmp_path):
 
     assert len(sent_to_daemon) == 1
     assert sent_to_daemon[0].payload["msg_id"] == "m2"
+
+
+# ----- P1b review: dynamic ChannelRegister on first wake -----
+
+
+async def test_first_wake_from_unregistered_channel_registers_once(tmp_path):
+    """A wake from a channel NOT in the static allowlist must dynamically
+    register an external sink (ChannelRegister) BEFORE the ChannelEvent, so
+    the daemon can route her reply back — and exactly once per channel per
+    session (idempotent on a second wake from the same channel)."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)  # allowlist=["c1"]
+
+    # c2 is NOT allowlisted → first wake must register it.
+    await controller.on_discord_message(
+        _event(channel_id="c2", mentioned=True, content="hey are you there", msg_id="m1")
+    )
+
+    assert len(sent_to_daemon) == 2
+    reg, ev = sent_to_daemon
+    assert isinstance(reg, ChannelRegister)
+    assert (reg.channel_id, reg.locus, reg.kind) == ("c2", "external", "discord")
+    assert isinstance(ev, ChannelEvent)
+    assert ev.channel_id == "c2"
+
+    # Second wake from c2 → NO duplicate ChannelRegister (idempotent), just
+    # another ChannelEvent.
+    await controller.on_discord_message(
+        _event(channel_id="c2", mentioned=True, content="still there?", msg_id="m2")
+    )
+
+    registers = [m for m in sent_to_daemon if isinstance(m, ChannelRegister)]
+    events = [m for m in sent_to_daemon if isinstance(m, ChannelEvent)]
+    assert len(registers) == 1
+    assert len(events) == 2
+
+
+async def test_allowlisted_channel_wake_does_not_re_register(tmp_path):
+    """A wake from an allowlisted channel (already registered by __main__ on
+    connect, seeded into the controller) must NOT re-send ChannelRegister —
+    only the ChannelEvent."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)  # allowlist=["c1"]
+
+    await controller.on_discord_message(
+        _event(mentioned=True, content="hey are you there")  # channel_id="c1"
+    )
+
+    assert [type(m) for m in sent_to_daemon] == [ChannelEvent]
+
+
+async def test_dm_wake_registers_so_reply_can_route(tmp_path):
+    """A DM always wakes (l0), and its channel id is never in the static
+    allowlist, so it must dynamically register — otherwise her DM reply has
+    no external sink and mis-routes internally (P1b review: half-breaks the
+    owner-DM path)."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
+
+    await controller.on_discord_message(
+        _event(is_dm=True, guild=None, channel_id="dm-77", content="hi", msg_id="m1")
+    )
+
+    assert isinstance(sent_to_daemon[0], ChannelRegister)
+    assert (sent_to_daemon[0].channel_id, sent_to_daemon[0].locus,
+            sent_to_daemon[0].kind) == ("dm-77", "external", "discord")
+    assert isinstance(sent_to_daemon[1], ChannelEvent)
+    assert sent_to_daemon[1].channel_id == "dm-77"
