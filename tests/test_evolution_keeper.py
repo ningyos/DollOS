@@ -244,6 +244,94 @@ async def test_pass_yields_to_slot_created_mid_pass(tmp_path, monkeypatch):
     assert "evo_candidate" not in [e["kind"] for e in events]        # no birth line
 
 
+# --- restatement gate + one feedback retry (live-smoke SA adjudication #2) ---
+
+_FACTORY = "主人說話我才回,沒事就安靜待著"
+RESTATING = VALID + "。" + _FACTORY + "。"   # 98 chars — clears the 80 floor
+
+
+def _restating_kwargs(mr):
+    """_pass_kwargs but the pack personality carries a full factory sentence
+    the RESTATING candidate restates verbatim."""
+    from dollos.character import Identity
+    kw = _pass_kwargs(mr)
+    kw["pack_identity"] = Identity(self="我是測試角色",
+                                   personality=_FACTORY + "。", taboos="不編造")
+    return kw
+
+
+@pytest.mark.asyncio
+async def test_pass_restatement_retry_success_reaches_skeptic(tmp_path, monkeypatch):
+    """First keeper reply restates factory prose → ONE feedback retry with the
+    offending sentence quoted → clean retry continues to the skeptic → candidate."""
+    mr, hist = _seed_root(tmp_path)
+    calls = []
+
+    async def fake_keeper(**kw):
+        calls.append(kw["task"])
+        if len(calls) == 1:
+            return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
+        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+
+    async def fake_skeptic(**kw):
+        return "pass"
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**_restating_kwargs(mr))
+    assert out == "candidate"
+    assert len(calls) == 2
+    assert "上一版被退回" in calls[1]        # feedback phrase reached the retry
+    assert _FACTORY in calls[1]              # offending sentence quoted back
+    slot = evo.load_slot(mr / "self_evolution" / "pending.json")
+    assert slot.candidate == VALID           # the RETRY text landed, not the restating one
+
+
+@pytest.mark.asyncio
+async def test_pass_restatement_both_attempts_kill(tmp_path, monkeypatch):
+    """Both attempts restate → evo_kill(mechanical:restatement:…), no slot,
+    skeptic never runs. Verdicted outcome: the keeper examined the evidence and
+    produced a bad candidate (trigger commits HWM + doubles the interval)."""
+    mr, hist = _seed_root(tmp_path)
+
+    async def fake_keeper(**kw):
+        return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
+
+    async def fake_skeptic(**kw):
+        raise AssertionError("skeptic must not run on the restatement-kill path")
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**_restating_kwargs(mr))
+    assert out == "kill"
+    assert evo.load_slot(mr / "self_evolution" / "pending.json") is None
+    last = self_history.read_events(hist)[-1]
+    assert last["kind"] == "evo_kill"
+    assert last["reason"].startswith("mechanical:restatement")
+    assert _FACTORY in last["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pass_restatement_retry_error_kills_not_error(tmp_path, monkeypatch):
+    """Retry errors/malformed → kill (mechanical:restatement), NOT the evo_error
+    row: the first reply already restated — the pass is verdicted."""
+    mr, hist = _seed_root(tmp_path)
+    calls = []
+
+    async def fake_keeper(**kw):
+        calls.append(kw["task"])
+        if len(calls) == 1:
+            return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
+        raise RuntimeError("llm down on retry")
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    out = await ek.run_evolution_pass(**_restating_kwargs(mr))
+    assert out == "kill"
+    last = self_history.read_events(hist)[-1]
+    assert last["kind"] == "evo_kill"
+    assert last["reason"].startswith("mechanical:restatement")
+
+
 # --- _run_full_skeptic: F1 personality block + F4 verdict parse ---
 
 

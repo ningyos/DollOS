@@ -134,6 +134,26 @@ async def test_counter_mechanical_fail_keeps_slot(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_counter_with_factory_overlap_not_restatement_gated(tmp_path):
+    """Sovereignty rule (live-smoke SA adjudication #2): the restatement gate is
+    KEEPER-PATH ONLY — her counter text is judged against the frozen core alone,
+    so a counter that verbatim-restates factory prose still reaches the slot
+    (no restatement kill, evo_counter logged)."""
+    _seed_awaiting_doll(tmp_path)
+    ctx = _ctx(tmp_path)
+    counter_text = ("主人說話我才回,沒事就安靜待著。"      # verbatim factory sentence
+                    "但我想自己把這句留在描述裡。" + "細節" * 30)
+    result = await SelfRevision(decision="adopt", text=counter_text).run(ctx)
+    assert "送審" in result
+    slot = evo.load_slot(_slot_path(tmp_path))
+    assert slot.kind == "counter" and slot.status == "awaiting_skeptic"
+    assert slot.candidate == counter_text
+    kinds = [e["kind"] for e in _events(tmp_path)]
+    assert kinds[-1] == "evo_counter"
+    assert "evo_kill" not in kinds           # no restatement kill on her path
+
+
+@pytest.mark.asyncio
 async def test_reject_clears_slot_and_logs(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path)

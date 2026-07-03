@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 COUNTER_ROUND_CAP = 2       # her rewrite may be re-proposed at most twice
 VERDICT_ERRORS_BOUND = 3    # a wedged skeptic must not pin condition-5 forever
 ECHO_SIMILARITY = 0.9       # jieba-Jaccard threshold for adopt echo-equivalence
+# Restatement gate (live-smoke SA adjudication #2): per-sentence jieba-Jaccard
+# threshold against factory prose + minimum candidate-sentence length to gate.
+RESTATEMENT_THRESHOLD = 0.6
+RESTATEMENT_MIN_SENTENCE = 8
 
 # --- evo_* event kinds (log = audit source of truth, spec §5) ---
 EVO_COUNTER = "evo_counter"
@@ -454,6 +458,37 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
 
 _PIN_KINDS = frozenset({"pin_add", "pin_replace", "pin_remove", "pin_reconfirm"})
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Sentence boundaries for the restatement gate: full-width 。!?; + ASCII ?!;
+# + newline (commas do NOT split — a clause is not a sentence).
+_SENTENCE_SPLIT_RE = re.compile(r"[。!?;?!;\n]+")
+
+
+def restatement_overlap(candidate: str, pack_texts: list[str], *,
+                        threshold: float = RESTATEMENT_THRESHOLD,
+                        min_sentence_chars: int = RESTATEMENT_MIN_SENTENCE) -> str | None:
+    """Per-sentence lexical-overlap gate (live-smoke SA adjudication #2): the
+    weak keeper restates factory prose on the first-version path and the weak
+    skeptic won't enforce check (c) even when sharpened — so shape goes to code
+    (ref: constrained decoding is shape, not semantics). Split ``candidate``
+    AND pack prose into sentences (。!?;?!\\n); compare each candidate sentence
+    ≥ ``min_sentence_chars`` against each pack sentence via
+    ``persona_guard.pairwise_jaccard``; any pair ≥ ``threshold`` → return the
+    offending candidate sentence (the kill/feedback reason), else None.
+
+    Keeper-path ONLY (sovereignty rule): her counter and the user's external
+    edit are judged against the frozen core alone — this gate grades the
+    authenticity of SYSTEM-synthesized text, which is exactly the legitimacy
+    boundary spec §3.3 draws for checks (c)/(d)/(e)."""
+    from dollos.mind.persona_guard import pairwise_jaccard
+    pack_sentences = [s.strip() for t in pack_texts
+                      for s in _SENTENCE_SPLIT_RE.split(t or "") if s.strip()]
+    for sent in (s.strip() for s in _SENTENCE_SPLIT_RE.split(candidate)):
+        if len(sent) < min_sentence_chars:
+            continue
+        for pack_sent in pack_sentences:
+            if pairwise_jaccard(sent, pack_sent) >= threshold:
+                return sent
+    return None
 
 
 def has_diary_heading(text: str) -> bool:
