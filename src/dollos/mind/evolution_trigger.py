@@ -249,6 +249,16 @@ class EvolutionTrigger:
                                  hwm_before=slot.hwm_before)
                 evo.clear_slot(self._slot_path)
                 evo.restore_file(self._current_self_path, old_sanctioned)
+                # Full expire bookkeeping (spec §3.3 — expire restores HWM +
+                # anchors last_attempt on EVERY expire path, mirroring
+                # surface_or_expire's mind_state branch): a counter that
+                # inherited hwm_before from a keeper pass must give that
+                # evidence back when the bound kills it, else weeks of pins are
+                # silently consumed by a wedged skeptic.
+                if slot.hwm_before is not None:
+                    self._state.evolution_hwm = slot.hwm_before
+                self._state.last_evolution_attempt_at = time.time()
+                save_state(self._state, self._persist_path)
             else:
                 evo.log_or_raise(self._history_path, kind=evo.EVO_ERROR,
                                  detail="skeptic error", kind_origin=slot.kind)
@@ -298,20 +308,31 @@ class EvolutionTrigger:
             )
         )
         try:
-            outcome = await self.current_task
-        except asyncio.TimeoutError:
-            # Spec §3.3 failure table lists timeout explicitly: the cancelled
-            # pass wrote nothing, so the audit line must come from the trigger
-            # (plan review I2).
-            logger.warning("evolution mode-a keeper timed out")
-            evo.log_or_raise(self._history_path, kind=evo.EVO_ERROR,
-                             detail="mode-a timeout")
-            outcome = "error"
-        finally:
-            self.current_task = None
+            try:
+                outcome = await self.current_task
+            except asyncio.TimeoutError:
+                # Spec §3.3 failure table lists timeout explicitly: the cancelled
+                # pass wrote nothing, so the audit line must come from the trigger
+                # (plan review I2).
+                logger.warning("evolution mode-a keeper timed out")
+                evo.log_or_raise(self._history_path, kind=evo.EVO_ERROR,
+                                 detail="mode-a timeout")
+                outcome = "error"
+            finally:
+                self.current_task = None
 
-        self._apply_mode_a_bookkeeping(outcome, now=now, new_off=new_off)
-        save_state(self._state, self._persist_path)
+            self._apply_mode_a_bookkeeping(outcome, now=now, new_off=new_off)
+            save_state(self._state, self._persist_path)
+        except OSError:
+            # An audit-append OSError escaping run_evolution_pass's own error
+            # handlers (spec §3.2 never-swallow), or the timeout branch's own
+            # log_or_raise, propagates untouched to run()'s except Exception —
+            # no attempt is recorded (the adjudicated posture). But the 1h
+            # in-memory cooldown MUST be anchored before it escapes (mirror
+            # Mode B's M4 set-before-fallible ordering) — else the 5s poll
+            # retries immediately and hammers the failing IO/LLM.
+            self._mode_a_error_ts = time.time()
+            raise
 
     def _apply_mode_a_bookkeeping(self, outcome: str, *, now: float, new_off: int) -> None:
         """§3.3 failure-table bookkeeping by outcome, trigger-side (Task 3's
