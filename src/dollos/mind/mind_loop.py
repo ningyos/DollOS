@@ -755,10 +755,26 @@ class MindLoop:
                 turn_trace = self._trace_writer.begin_turn(
                     turn_id=tid, ts=time.time(), **trace_blocks
                 )
+            # P1f trace: byte-verbatim authority for `input_messages_delta`
+            # (Task 4) — tracks how far into `messages` the previous pass's
+            # snapshot reached, so each pass captures exactly what was newly
+            # appended since then (assistant emit + filtered refeed
+            # tool_responses), never a reconstruction from tool_calls/results.
+            prev_msg_len = 0
             for pass_idx in range(MAX_SYNC_REFEED_PASSES):
                 if self._cascade_ctx.cancelled:
                     logger.info("cascade cancelled at pass boundary; exiting cleanly")
                     return
+
+                # Snapshot BEFORE this pass streams: at this point the prior
+                # pass's tail-appends (assistant emit + refeed tool_responses)
+                # are complete and this pass hasn't added anything yet, so
+                # `messages[prev_msg_len:]` is exactly the delta this pass is
+                # about to stream against. `dict(m)` shallow-copies each
+                # message so later mutation of `messages` can't retroactively
+                # alter the captured delta.
+                input_messages_delta = [dict(m) for m in messages[prev_msg_len:]]
+                prev_msg_len = len(messages)
 
                 pass_start = time.monotonic()
                 raw_buf, results, tool_calls = await self._stream_one_pass(
@@ -800,7 +816,7 @@ class MindLoop:
                 if turn_trace is not None:
                     turn_trace.add_pass(
                         pass_idx=pass_idx,
-                        input_messages_delta=[],  # PLACEHOLDER — Task 4 fills
+                        input_messages_delta=input_messages_delta,
                         raw_assistant_emit="".join(raw_buf),
                         tool_calls=[
                             {"name": tc.get("name"), "args": tc.get("arguments")}
