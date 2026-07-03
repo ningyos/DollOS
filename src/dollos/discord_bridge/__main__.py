@@ -11,6 +11,15 @@ Connects to the daemon as a WS client, registers each allowlisted channel
 purpose — all business logic (full-capture, L0 wake, reply routing) lives in
 `BridgeController`; this module is untested wiring (see task-5-report.md).
 
+`run()` wraps one daemon+Discord connection lifecycle (`_connect_and_run`) in
+a reconnect loop (Task 7): any dropped connection — daemon WS closing,
+Discord disconnecting, or simply the first connect after a process
+restart/kill — re-enters `_connect_and_run`, which always calls
+`controller.reconnect_backfill` right after connecting to catch up on
+whatever gap preceded it. This is what makes the "reconnect after a kill →
+backfill dedups" live-smoke case (P1b gate) hold: a killed-and-relaunched
+bridge process is just loop iteration 1 of a fresh `run()` call.
+
 `[discord]` TOML config shape (spec §3.1 §5.3):
     token = "..."                    # bot token, on-device, not in git
     owner_discord_id = "123..."      # numeric Discord user id
@@ -79,7 +88,10 @@ def _load_bridge_config(path: Path) -> tuple[str, BridgeConfig]:
     return d["token"], cfg
 
 
-async def run(args: argparse.Namespace) -> int:
+async def run(args: argparse.Namespace) -> None:
+    """Never returns under normal operation — this is a long-running
+    service loop (Task 7 reconnect loop below); it only exits via an
+    unhandled `KeyboardInterrupt`/`CancelledError` propagating out."""
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
@@ -87,6 +99,40 @@ async def run(args: argparse.Namespace) -> int:
 
     token, cfg = _load_bridge_config(args.config)
     ambient = AmbientLog(args.data_root, retention_days=args.retention_days)
+
+    # Reconnect loop (Task 7): a dropped daemon WS or Discord connection —
+    # or simply the first connect after a process kill+relaunch — re-enters
+    # _connect_and_run, which always backfills the gap before serving live
+    # traffic again. No separate "shutdown" flag exists yet (this CLI has no
+    # graceful-stop signal beyond process kill / Ctrl+C, which raises
+    # KeyboardInterrupt — not an Exception subclass, so it is NOT swallowed
+    # by the `except Exception` below and propagates out of the loop).
+    reconnect_delay_s = 5.0
+    while True:
+        try:
+            await _connect_and_run(args, token, cfg, ambient)
+        except Exception:
+            logger.exception(
+                "discord bridge connection dropped — reconnecting in %.0fs",
+                reconnect_delay_s,
+            )
+        else:
+            logger.warning(
+                "daemon connection closed cleanly — reconnecting in %.0fs",
+                reconnect_delay_s,
+            )
+        await asyncio.sleep(reconnect_delay_s)
+
+
+async def _connect_and_run(
+    args: argparse.Namespace,
+    token: str,
+    cfg: BridgeConfig,
+    ambient: AmbientLog,
+) -> None:
+    """One daemon+Discord connection lifecycle: connect to both, backfill
+    the reconnect gap, then serve live traffic until the daemon WS closes or
+    an error propagates (`run()`'s reconnect loop calls this again)."""
     discord = PycordClient(token=token)
 
     logger.info("connecting to daemon: %s", args.daemon)
@@ -124,6 +170,19 @@ async def run(args: argparse.Namespace) -> int:
         )
 
         try:
+            # wait_until_ready() (PycordClient-specific, not on the
+            # DiscordClient Protocol) is the "successful reconnect" signal:
+            # only once py-cord's cache is ready can fetch_history() resolve
+            # channels, so backfill runs right after, before live-message
+            # processing below.
+            await discord.wait_until_ready()
+            if cfg.bot_id is None:
+                cfg.bot_id = discord.me_id()
+            logger.info("discord connected — backfilling reconnect gap")
+            await controller.reconnect_backfill(
+                discord.fetch_history, cfg.channel_allowlist
+            )
+
             async for raw in ws:
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8")
@@ -141,13 +200,15 @@ async def run(args: argparse.Namespace) -> int:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    return 0
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return asyncio.run(run(args))
+    try:
+        asyncio.run(run(args))
+    except KeyboardInterrupt:
+        return 0
+    return 0
 
 
 if __name__ == "__main__":

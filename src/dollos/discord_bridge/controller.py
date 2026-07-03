@@ -120,6 +120,35 @@ class BridgeController:
         for event in recent_events:
             await self._capture_and_maybe_wake(guild, channel, event)
 
+    async def reconnect_backfill(
+        self,
+        fetch: Callable[[str, int], Awaitable[list[dict]]],
+        channels: list[str],
+        *,
+        limit: int = 50,
+    ) -> None:
+        """Reconnect-gap recovery (Task 7): for each channel id in
+        `channels`, fetch its recent history via `fetch(channel_id, limit)`
+        (real deployment: `DiscordClient.fetch_history`, see client.py — the
+        translator there always stamps a true `ts`) and replay every event
+        through the SAME capture+wake path as live traffic and `backfill()`,
+        `_capture_and_maybe_wake` — a msg_id already in the ambient log is
+        skipped ENTIRELY, no re-log, no re-fired ChannelEvent (carry I-2
+        idempotency; R2 finding: without this, reconnecting after a crash or
+        a bridge restart — the "reconnect after a kill" live-smoke case —
+        could double-reply to an already-answered mention).
+
+        `guild_id` is derived per event the same way `on_discord_message`
+        does (`event.get("guild") or "dm"`) since `fetch` is scoped to a
+        channel, not a guild, and channel history can in principle span
+        guild membership changes.
+        """
+        for channel_id in channels:
+            events = await fetch(channel_id, limit)
+            for event in events:
+                guild_id = event.get("guild") or "dm"
+                await self._capture_and_maybe_wake(guild_id, channel_id, event)
+
     async def _capture_and_maybe_wake(
         self, guild_id: str, channel_id: str, event: dict
     ) -> None:
@@ -169,9 +198,20 @@ class BridgeController:
 def _event_date(event: dict) -> str:
     """ISO date for AmbientLog's per-day file split.
 
-    Uses the event's own `date` if the caller already stamped one (so a
-    backfill replay logs under the original day, not "today"); else today
-    (UTC, injected via the wall clock here since live Discord events carry
-    no test-controlled clock to thread through).
+    Prefers the event's TRUE Discord timestamp (`ts`, epoch seconds) when
+    present — `datetime.fromtimestamp(ts, UTC).date()` — so a backfilled
+    event near a UTC midnight boundary buckets by the day it was actually
+    POSTED, not the day it happened to be replayed (LANDMINE, review: without
+    this the same msg_id can land in two different date files across
+    midnight and re-wake the daemon on a later replay). `client.py`'s
+    `fetch_history` translator always stamps `ts`, so every live and
+    backfilled Discord event takes this path.
+
+    Falls back to the caller's pre-stamped `date` (if any), else today's
+    wall clock, ONLY for an event with no `ts` at all — kept as a
+    best-effort fallback; no real Discord event should ever lack a `ts`.
     """
+    ts = event.get("ts")
+    if ts is not None:
+        return datetime.fromtimestamp(ts, UTC).date().isoformat()
     return event.get("date") or datetime.now(UTC).date().isoformat()
