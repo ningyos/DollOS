@@ -231,6 +231,53 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
                          reason=f"mechanical:{reason}", text=text)
         return "kill"
 
+    # Code-level restatement gate + ONE feedback retry (live-smoke SA
+    # adjudication #2, KEEPER PATH ONLY): prompt-only enforcement of check (c)
+    # is unreliable on the weak model — post-prompt-fix candidates still
+    # restated factory prose 2/2 and the sharpened skeptic passed both, and the
+    # ambivalent text flips the §6.2 disposition probe. Sovereignty rule stays
+    # intact: her counter / the user's external edit are never gated on this
+    # (frozen core only — SelfRevision runs mechanical_checks alone).
+    pack_texts = [pack_identity.self, pack_identity.personality]
+    offending = evo.restatement_overlap(text, pack_texts)
+    if offending is not None:
+        retry_task = task + (
+            f"\n\n上一版被退回:候選裡這句只是重述出廠人格——「{offending}」。"
+            "刪掉所有重述出廠的句子,只留下紀錄顯示的變化,重寫一次。")
+        try:
+            report = await _run_keeper_agent(
+                task=retry_task, adapter=adapter, renderer=renderer,
+                memsearch=memsearch, memory_root=memory_root,
+                transcripts_root=transcripts_root,
+                tool_output_store=tool_output_store, max_tokens=max_tokens)
+            kind, text, rationale = parse_keeper_report(
+                (report or {}).get("details", ""))
+        except Exception:
+            # Retry error/malformed → verdicted KILL, not the evo_error row:
+            # the FIRST reply already restated — the keeper examined the
+            # evidence and produced a bad candidate (HWM committed, interval
+            # doubles; the next interval retries on fresh material).
+            logger.exception("evolution keeper restatement-retry errored")
+            evo.log_or_raise(history_path, kind=evo.EVO_KILL, text=text,
+                             reason=f"mechanical:restatement:{offending}")
+            return "kill"
+        if kind == "no_change":
+            # Once the restated sentences are deleted nothing evidence-backed
+            # remains — the keeper's honest verdict (寧缺勿濫).
+            evo.log_or_raise(history_path, kind=evo.EVO_NO_CHANGE, reason=text)
+            return "no_change"
+        reason = evo.mechanical_checks(text, floor=floor, cap=cap,
+                                       enforcement=enforcement)
+        if reason is not None:
+            evo.log_or_raise(history_path, kind=evo.EVO_KILL,
+                             reason=f"mechanical:{reason}", text=text)
+            return "kill"
+        still_offending = evo.restatement_overlap(text, pack_texts)
+        if still_offending is not None:
+            evo.log_or_raise(history_path, kind=evo.EVO_KILL, text=text,
+                             reason=f"mechanical:restatement:{still_offending}")
+            return "kill"
+
     try:
         verdict = await _run_full_skeptic(
             candidate=text, rationale=rationale, bundle=bundle, current=current,

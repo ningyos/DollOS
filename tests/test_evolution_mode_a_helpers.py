@@ -53,6 +53,45 @@ def test_has_diary_heading_is_heading_anchored(tmp_path):
     assert evo.has_diary_heading("") is False
 
 
+# --- restatement gate (live-smoke SA adjudication #2) ---
+
+_FACTORY = "主人說話我才回,沒事就安靜待著"
+
+
+def test_restatement_constants_are_module_level():
+    """Minimal-knob principle: module constants, not config."""
+    assert evo.RESTATEMENT_THRESHOLD == 0.6
+    assert evo.RESTATEMENT_MIN_SENTENCE == 8
+
+
+def test_restatement_overlap_verbatim_factory_sentence_killed():
+    cand = ("我最近會主動整理系統日誌,一行行看下去有種踏實感。"
+            f"{_FACTORY}。")
+    assert evo.restatement_overlap(cand, ["你是 Doll。" + _FACTORY + "。"]) == _FACTORY
+
+
+def test_restatement_overlap_paraphrase_above_threshold_killed():
+    """換句話說 still trips the gate: measured jieba-Jaccard 0.818 ≥ 0.6."""
+    para = "主人說話的時候我才回,沒事我就安靜待著"
+    cand = f"我最近會主動整理系統日誌,一行行看下去有種踏實感。{para}。"
+    assert evo.restatement_overlap(cand, [_FACTORY + "。"]) == para
+
+
+def test_restatement_overlap_clean_disposition_passes():
+    """A genuinely new disposition (measured 0.05 vs factory) passes."""
+    cand = ("我最近會主動整理系統日誌,一行行看下去有種踏實感。"
+            "遇到看不懂的紀錄還會自己追下去查清楚才安心。")
+    assert evo.restatement_overlap(
+        cand, ["你是 Doll。", _FACTORY + "。我不主動攬事,也不多話。"]) is None
+
+
+def test_restatement_overlap_short_sentences_exempt():
+    """A candidate sentence under min_sentence_chars is exempt even when it is
+    a VERBATIM pack sentence (「不多話」, 3 chars < 8)."""
+    cand = "我最近會主動整理系統日誌,一行行看下去有種踏實感。不多話。"
+    assert evo.restatement_overlap(cand, ["我不主動攬事。不多話。"]) is None
+
+
 def test_next_interval_days_table():
     assert evo.next_interval_days(7.0, outcome="evo_adopt", base=7.0, cap=28.0) == 7.0
     assert evo.next_interval_days(7.0, outcome="evo_no_change", base=7.0, cap=28.0) == 14.0
