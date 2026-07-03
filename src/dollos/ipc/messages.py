@@ -47,8 +47,37 @@ class Interrupt(BaseModel):
     type: Literal["interrupt"] = "interrupt"
 
 
+class ChannelRegister(BaseModel):
+    """A bridge registers an external channel with the daemon (spec §3.1).
+
+    Wire-schema only in P1a — kernel wiring of ChannelRegister into
+    ChannelRegistry/SinkResolver registration is P1b.
+    """
+    type: Literal["channel_register"] = "channel_register"
+    channel_id: str
+    locus: str
+    kind: str
+
+
+class ChannelEvent(BaseModel):
+    """An inbound event on a registered external channel (spec §3.1).
+
+    Wire-schema only in P1a — kernel wiring of ChannelEvent→Perception is P1b.
+    """
+    type: Literal["channel_event"] = "channel_event"
+    channel_id: str
+    payload: dict
+
+
 ClientMessage = Annotated[
-    TextInput | Interrupt | WebRTCOfferIn | ICECandidateIn | UtteranceStart | UtteranceEnd,
+    TextInput
+    | Interrupt
+    | WebRTCOfferIn
+    | ICECandidateIn
+    | UtteranceStart
+    | UtteranceEnd
+    | ChannelRegister
+    | ChannelEvent,
     Field(discriminator="type"),
 ]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(ClientMessage)
@@ -106,8 +135,17 @@ class SayAborted(BaseModel):
     reason: str = "user_interrupted"
 
 
+class AddressedText(BaseModel):
+    """Streamed sentence for an external-origin turn, addressed to its
+    channel_id (spec §3.1) — so the bridge knows where to route it. Internal
+    (origin-less) turns keep emitting plain TextChunk, unchanged."""
+    type: Literal["addressed_text"] = "addressed_text"
+    channel_id: str
+    text: str
+
+
 ServerMessage = Annotated[
-    TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut,
+    TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut | AddressedText,
     Field(discriminator="type"),
 ]
 

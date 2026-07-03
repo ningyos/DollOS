@@ -13,7 +13,7 @@ from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
-from dollos.ipc.messages import TextChunk
+from dollos.ipc.messages import AddressedText, TextChunk
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
@@ -879,10 +879,22 @@ class MindLoop:
         if review:
             self._state.recent_reviews.append(review)
 
+    def _emit_sentence(self, sink, sentence: str) -> None:
+        """Push one streamed sentence to `sink`, addressed to the current
+        origin's channel when that origin is registered external (spec
+        §3.1) — else plain TextChunk, unchanged (internal/unregistered
+        origins, including the None origin of internal turns)."""
+        origin = self._ctx.current_origin
+        registry = self._ctx.channel_registry
+        if origin and registry is not None and registry.locus_of(origin) == "external":
+            sink.put_nowait(AddressedText(channel_id=origin, text=sentence))
+        else:
+            sink.put_nowait(TextChunk(text=sentence))
+
     def _flush_chunker(self, chunker: SentenceChunker, sink) -> None:
         for sentence in chunker.flush():
             if sentence:
-                sink.put_nowait(TextChunk(text=sentence))
+                self._emit_sentence(sink, sentence)
                 self._state.recent_outputs.append(OutputRecord(
                     kind="Speech",
                     t=time.time(),
@@ -905,7 +917,7 @@ class MindLoop:
             if not event.text:
                 return None
             for sentence in chunker.feed(event.text):
-                sink.put_nowait(TextChunk(text=sentence))
+                self._emit_sentence(sink, sentence)
                 self._state.recent_outputs.append(OutputRecord(
                     kind="Speech",
                     t=time.time(),

@@ -85,3 +85,31 @@ def test_say_aborted_is_in_server_message_union():
     from dollos.ipc.messages import ServerMessage
     msg: ServerMessage = SayAborted()  # type: ignore[assignment]
     assert msg.type == "say_aborted"
+
+
+# --- AddressedText / ChannelRegister / ChannelEvent (P1a Task 5, spec §3.1) ---
+
+
+def test_addressed_text_is_in_server_message_union():
+    from dollos.ipc.messages import AddressedText, ServerMessage
+    msg: ServerMessage = AddressedText(channel_id="c1", text="hi")  # type: ignore[assignment]
+    assert msg.type == "addressed_text"
+
+
+def test_decode_channel_register():
+    from dollos.ipc.messages import ChannelRegister
+    raw = '{"type": "channel_register", "channel_id": "disc:1", "locus": "external", "kind": "discord"}'
+    msg = decode_client_message(raw)
+    assert isinstance(msg, ChannelRegister)
+    assert msg.channel_id == "disc:1"
+    assert msg.locus == "external"
+    assert msg.kind == "discord"
+
+
+def test_decode_channel_event():
+    from dollos.ipc.messages import ChannelEvent
+    raw = '{"type": "channel_event", "channel_id": "disc:1", "payload": {"text": "hi"}}'
+    msg = decode_client_message(raw)
+    assert isinstance(msg, ChannelEvent)
+    assert msg.channel_id == "disc:1"
+    assert msg.payload == {"text": "hi"}
