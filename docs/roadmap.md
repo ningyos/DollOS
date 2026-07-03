@@ -20,6 +20,8 @@
 | Roadmap step 8 — Memory auto-write + Diary | Merged |
 | Roadmap step 9 — Success-cascade + Shell | Merged |
 | Roadmap step 10 — Skills system | Merged |
+| …(step 11–29 見 CLAUDE.md 的完整表)| Merged |
+| Roadmap step 30 — 慢變演化(current_self「現在的我」:evidence layer + ratification + Mode A evolution pass)| Merged 2026-07-03, live-smoke-verified |
 
 ---
 

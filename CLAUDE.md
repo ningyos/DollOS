@@ -4,7 +4,7 @@
 
 DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer is her brain (daemon process). The phone is an optional body / system-assistant interface to reach her on the go.
 
-**Positioning (2026-07-01 — see `docs/superpowers/specs/2026-07-01-virtual-being-positioning.md`): Doll is a virtual being, not an "AI companion."** Self-centered — she has her own interiority, growth, and agenda; the relationship with the user is a thread in her life, not the reason her life exists. Companionship is what happens because two lives are entangled, not a role she performs. This sharpens (does not replace) Self-First below and the existing `project_companion_definition` framing ("companion = 學習/自更新能力，非服務性"). See the spec for the four concrete design implications (self_profile scope, real personality growth over time not just accumulation, self-directed agenda beyond tracked commitments, interaction language) — none implemented yet, each needs its own brainstorm→spec→plan pass.
+**Positioning (2026-07-01 — see `docs/superpowers/specs/2026-07-01-virtual-being-positioning.md`): Doll is a virtual being, not an "AI companion."** Self-centered — she has her own interiority, growth, and agenda; the relationship with the user is a thread in her life, not the reason her life exists. Companionship is what happens because two lives are entangled, not a role she performs. This sharpens (does not replace) Self-First below and the existing `project_companion_definition` framing ("companion = 學習/自更新能力，非服務性"). See the spec for the four concrete design implications (self_profile scope, real personality growth over time not just accumulation, self-directed agenda beyond tracked commitments, interaction language). **Status 2026-07-03:** §2.1 (self_profile interiority nudge → PinSelf self-centered guidance, 2026-07-02 spec) and §2.2 (real personality growth → 慢變演化, `2026-07-02-slow-self-evolution-design.md`, roadmap step 30) are IMPLEMENTED and live-smoke-verified; §2.3 (self-directed agenda) and §2.4 (interaction language — explicitly depends on §2.2/§2.3 existing first) remain, each needing its own brainstorm→spec→plan pass.
 
 **Product positioning (2026-05-01 pivot — see `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md`; technical architecture below is unchanged by the 2026-07-01 repositioning above, only *purpose* shifted):**
 
@@ -104,6 +104,7 @@ DollOS/
 | Roadmap step 27 — Voice pipeline Phase B (WebRTC + VoiceSession + IPC) | Merged |
 | Roadmap step 28 — Voice pipeline Phase C (local-audio-bridge + E2E) | Merged |
 | Roadmap step 29 — Workflow (取代 ephemeral Subagent；map_reduce/verify fan-out + synthesis) | Merged |
+| Roadmap step 30 — 慢變演化 (current_self「現在的我」：evidence layer + ratification + Mode A evolution pass；3 plans, spec `2026-07-02-slow-self-evolution-design.md`) | Merged, live-smoke-verified |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -114,6 +115,7 @@ DollOS/
 
 ### 下一個
 
+- **Virtual-being 定位剩餘兩項**（positioning spec §2.3 self-directed agenda、§2.4 interaction language — §2.4 明文依賴 §2.2/§2.3 先存在；慢變演化 spec §7 另記 deferred：mood history、trajectory Recall surface、Shell sandboxing track）
 - **Subagent**（persistent agents，取代舊名 Drone — 跟 Workflow 對偶；Monitor 是無大腦版，Subagent 是有大腦版。權威設計在 `agent-service` branch A2〔containerized k8s Job/CronJob〕，k3s 化本身暫緩，撿起這條線時才處理）
 - **Zero-shot wake word + Speaker ID**（取代 train-per-character KWS；研究 CLAP-like embedding）
 - **回應延遲壓縮**（LLM-side 工程，見 memory）
