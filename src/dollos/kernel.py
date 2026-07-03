@@ -513,7 +513,12 @@ class DollOS:
                 Perception(
                     kind="ChannelMessage",
                     t=time.time(),
-                    data={"channel_id": msg.channel_id, **d},
+                    # Envelope channel_id is authoritative: it is the value
+                    # that matches the ChannelRegister/SinkResolver handle and
+                    # drives downstream reply routing (bucket key → origin →
+                    # SinkResolver(origin) → AddressedText). Spread payload
+                    # FIRST so a payload channel_id can never overwrite it.
+                    data={**d, "channel_id": msg.channel_id},
                 )
             )
         else:

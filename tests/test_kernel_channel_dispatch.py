@@ -144,6 +144,35 @@ async def test_channel_event_owner_queues_perception_and_cancels(
     assert cancelled == ["consolidation", "evolution"]
 
 
+# ----- Envelope channel_id is authoritative over payload -----
+
+
+@pytest.mark.asyncio
+async def test_channel_event_envelope_channel_id_wins_over_payload(
+    tmp_path: Path,
+) -> None:
+    """The envelope msg.channel_id (which matches the ChannelRegister/
+    SinkResolver handle) must be the routing origin — a channel_id inside the
+    payload must NOT overwrite it, or replies silently mis-route (P1b review)."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    _stub_cancels(dollos)
+    sink: asyncio.Queue = asyncio.Queue()
+
+    await dollos._handle_message(
+        ChannelEvent(
+            channel_id="discord:namespaced",
+            payload={"channel_id": "999_raw_numeric", "text": "hi"},
+        ),
+        sink,
+    )
+
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
+    channel_msgs = [p for p in perceptions if p.kind == "ChannelMessage"]
+    assert len(channel_msgs) == 1
+    assert channel_msgs[0].data["channel_id"] == "discord:namespaced"
+
+
 # ----- Carry I-1 disconnect: unregister from both registries -----
 
 
