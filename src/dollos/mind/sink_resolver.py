@@ -29,22 +29,37 @@ class SinkResolver:
 
     def __init__(self) -> None:
         self._sinks: dict[int, _SinkLike] = {}
+        self._meta: dict[int, tuple[str, str | None]] = {}   # handle → (locus, channel_id)
         self._counter: int = 0
         self._dummy = DummySink()
 
-    def register(self, sink: _SinkLike) -> int:
-        """Register a sink. Returns a stable handle (monotonic counter)."""
+    def register(self, sink: _SinkLike, *, locus: str = "internal",
+                 channel_id: str | None = None) -> int:
+        """Register a sink with its locus/channel. Bare register(sink) keeps
+        the legacy internal-sink behavior (back-compat)."""
         handle = self._counter
         self._counter += 1
         self._sinks[handle] = sink
+        self._meta[handle] = (locus, channel_id)
         return handle
 
     def unregister(self, handle: int) -> None:
         """Remove the sink with this handle. No-op if already removed."""
         self._sinks.pop(handle, None)
+        self._meta.pop(handle, None)
 
-    def __call__(self) -> _SinkLike:
-        """Resolve to the most-recently-registered sink, or DummySink."""
-        if not self._sinks:
-            return self._dummy
-        return self._sinks[max(self._sinks)]
+    def __call__(self, origin: str | None = None) -> _SinkLike:
+        """Resolve the sink for this turn's origin channel. External sink only
+        when origin matches its channel_id; otherwise the most-recent INTERNAL
+        sink (R1-arch I2: a connected external bridge must not steal internal
+        output). DummySink when nothing suitable."""
+        if origin is not None:
+            for h in sorted(self._sinks, reverse=True):
+                loc, cid = self._meta[h]
+                if loc == "external" and cid == origin:
+                    return self._sinks[h]
+        # origin-less, or no external match → most-recent internal
+        internal = [h for h in self._sinks if self._meta[h][0] == "internal"]
+        if internal:
+            return self._sinks[max(internal)]
+        return self._dummy
