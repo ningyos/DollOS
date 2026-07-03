@@ -28,9 +28,8 @@ logger = logging.getLogger(__name__)
 class TurnTrace:
     """單一 turn 的可變 envelope builder。turn 尾 finish() 寫一次。"""
 
-    def __init__(self, root: Path, schema_version: str, envelope: dict[str, Any]):
+    def __init__(self, root: Path, envelope: dict[str, Any]):
         self._root = root
-        self._schema_version = schema_version
         self._envelope = envelope  # turn-level fields already populated
         self._ts: float = envelope["ts"]
         self._passes: list[dict] = []
@@ -114,4 +113,4 @@ class TraceWriter:
             "static_prefix": static_prefix,
             "dynamic_blocks": dynamic_blocks,
         }
-        return TurnTrace(self._root, self._schema_version, envelope)
+        return TurnTrace(self._root, envelope)

@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from dollos.mind.mind_state import Perception
-from dollos.mind.trace import TraceWriter
+from dollos.mind.trace import TraceWriter, TurnTrace
 from tests._dispatcher_helpers import _FakeMemSearch
 from tests._mindloop_factory import make_mindloop
 from tests.test_mind_loop import _ScriptedLLM, _SlowFakeLLM, _speech_pass
@@ -483,4 +483,63 @@ async def test_cancelled_pass_not_recorded_but_envelope_finalizes(tmp_path):
     assert "passes" in env
     # The cancelled first pass never reached add_pass — zero passes captured,
     # not a lost/missing envelope.
+    assert env["passes"] == []
+
+
+# ── Whole-branch review fix: in-memory trace capture sites must never break
+# a turn (Global Constraint: 寫入失敗 loud 但不斷 turn). Only ``finish()``
+# self-guarded originally; ``add_pass`` (and ``begin_turn``/assembly) did
+# not — a raise there would propagate out of ``_llm_iterate`` and abort
+# ``_run_one_turn`` AFTER speech already streamed to the sink, skipping the
+# turn-end ``save_state`` call entirely (turn lost from Doll's memory). ──
+
+
+@pytest.mark.asyncio
+async def test_add_pass_exception_does_not_break_turn(
+    mind_loop_real_trace, tmp_path, monkeypatch
+):
+    """A raising ``TurnTrace.add_pass`` (the wired real ``TraceWriter``'s
+    per-pass capture site) must not propagate: the turn must complete
+    normally — speech still streamed into ``_turn_speech`` across both
+    scripted passes, and ``mind_state.json`` still written by the turn-end
+    ``save_state`` call that a propagating exception would have skipped.
+
+    TEETH: without the ``try/except`` around the ``add_pass(...)`` call in
+    ``mind_loop.py``, this raises out of ``_run_one_turn`` and the test
+    errors before reaching any assertion below — proven by running this
+    test against the pre-fix code (bare ``add_pass`` call) and observing
+    the RuntimeError propagate.
+    """
+    ml, state = mind_loop_real_trace
+
+    def _boom(self, **kw):
+        raise RuntimeError("simulated add_pass failure")
+
+    monkeypatch.setattr(TurnTrace, "add_pass", _boom)
+
+    # Must NOT raise — recording failures are loud (logged) but never break
+    # the turn.
+    await ml._run_one_turn([_user_perception("dig up X")])
+
+    # Turn still completed: speech from both scripted passes ("查一下" then
+    # "done") landed in the turn-local speech buffer despite add_pass
+    # raising on every pass.
+    turn_speech = "".join(ml._turn_speech)
+    assert "查一下" in turn_speech
+    assert "done" in turn_speech
+
+    # Turn-end bookkeeping still ran: save_state is only reached if
+    # _run_one_turn's try/finally around _llm_iterate did not re-raise past
+    # it — a lost turn (the bug this guards against) would leave this file
+    # absent/stale.
+    persisted = tmp_path / "mind_state.json"
+    assert persisted.exists()
+    saved = json.loads(persisted.read_text())
+    assert saved["iter_count"] == state.iter_count
+
+    # The trace envelope itself still finalizes (finish() was already
+    # self-guarded) but carries zero passes, since add_pass raised on every
+    # attempt — proving the guard omits the failing pass rather than
+    # fabricating one.
+    env = _only_trace_envelope(tmp_path / "traces")
     assert env["passes"] == []
