@@ -8,17 +8,11 @@ from dollos.character import Identity
 from dollos.mind import evolution as evo
 from dollos.mind import self_history
 from dollos.mind.evolution_trigger import EvolutionTrigger
+from dollos.mind.mind_state import MindState
 
-
-class _StubState:
-    def __init__(self):
-        self.last_user_at = 0.0
-        self.last_iter_at = 0.0
-        # Plan 3 Mode-A fields (plan review C1): EvolutionTrigger.__init__
-        # always bootstraps/reads these, even for Mode-B-only test constructions.
-        self.last_evolution_attempt_at = 0.0
-        self.evolution_interval_days = 0.0
-        self.evolution_hwm = 0
+# A real MindState (its Mode-A fields default to 0.0/0, identical to the old
+# hand-rolled stub) so the F5 bound-expire path's save_state() call — which
+# enumerates every MindState field — works against the trigger under test.
 
 
 class _StubRenderer:
@@ -30,7 +24,7 @@ def _trigger(tmp_path, *, verdict, consolidation_running=False, monkeypatch=None
              renderer=None):
     memory_root = tmp_path
     trig = EvolutionTrigger(
-        state=_StubState(),
+        state=MindState(),
         adapter=object(), renderer=(renderer or object()), memsearch=object(),
         memory_root=memory_root, transcripts_root=tmp_path,
         tool_output_store=object(),
@@ -106,6 +100,29 @@ async def test_verdict_errors_bound_expires(tmp_path, monkeypatch):
     await trig._reverdict_once()
     assert evo.load_slot(sp) is None
     assert self_history.read_events(tmp_path/"self_history.jsonl")[-1]["kind"] == "evo_expire"
+
+
+@pytest.mark.asyncio
+async def test_bound_expire_restores_hwm_and_anchors_attempt(tmp_path, monkeypatch):
+    """F5: the verdict_errors≥bound expire path does the FULL expire bookkeeping —
+    restores hwm_before + anchors last_attempt + persists (spec §3.3: every expire
+    path gives the evidence back; a counter that inherited hwm_before from a keeper
+    pass must return it when the bound kills the slot)."""
+    sp = tmp_path / "self_evolution" / "pending.json"
+    base = evo.make_keeper_slot(candidate="原候選" + "字" * 88, rationale="R",
+                                hwm_before=123, created_ts=0.0)
+    counter = evo.to_counter(base, new_text="她的改寫" + "字" * 88)
+    counter.verdict_errors = evo.VERDICT_ERRORS_BOUND - 1   # one more error trips it
+    evo.save_slot(sp, counter)
+    trig = _trigger(tmp_path, verdict="error", monkeypatch=monkeypatch)
+    trig._state.evolution_hwm = 0                 # so the 123 restore is observable
+    trig._state.last_evolution_attempt_at = 0.0   # so the anchor is observable
+    await trig._reverdict_once()
+    assert evo.load_slot(sp) is None                     # expired
+    assert trig._state.evolution_hwm == 123              # restored from hwm_before
+    assert trig._state.last_evolution_attempt_at > 0     # last_attempt anchored
+    assert self_history.read_events(
+        tmp_path / "self_history.jsonl")[-1]["kind"] == "evo_expire"
 
 
 @pytest.mark.asyncio
