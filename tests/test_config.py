@@ -247,3 +247,13 @@ def test_self_profile_config_defaults():
     )
     assert s.self_profile.enabled is True
     assert s.self_profile.max_chars == 1200
+
+
+def test_trace_settings_default_enabled():
+    from dollos.config import Settings, LLMConfig, CharacterConfig
+    s = Settings(
+        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        character=CharacterConfig(pack="gura"),
+    )
+    assert s.trace.enabled is True
+    assert s.trace.root == "data/traces"

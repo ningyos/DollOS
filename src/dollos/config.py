@@ -212,6 +212,14 @@ class EvolutionConfig(BaseModel):
     agent_timeout_s: int = 240
 
 
+class TraceSettings(BaseModel):
+    """finetune 語料 trace(spec §3.6)。預設開:紀錄=訓練資料,越早累積越好。"""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    root: str = "data/traces"
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -232,6 +240,7 @@ class Settings(BaseModel):
     energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
     self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
     evolution: EvolutionConfig = Field(default_factory=lambda: EvolutionConfig())
+    trace: TraceSettings = Field(default_factory=lambda: TraceSettings())
 
 
 def load_settings(path: Path) -> Settings:
