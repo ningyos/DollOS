@@ -32,6 +32,8 @@ def make_mindloop(
     queue: PerceptionQueue | None = None,
     state: MindState | None = None,
     llm=None,
+    trace_writer=None,
+    model_id: str | None = None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
@@ -62,4 +64,6 @@ def make_mindloop(
         self_profile_enabled=self_profile_enabled,
         pending_max_surfacings=pending_max_surfacings,
         pending_min_age_days=pending_min_age_days,
+        trace_writer=trace_writer,
+        model_id=model_id,
     )
