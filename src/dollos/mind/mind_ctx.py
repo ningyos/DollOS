@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from dollos.character import Enforcement
+    from dollos.ipc.channel_registry import ChannelRegistry
     from dollos.memory import FtsMemory
     from dollos.mind.mind_state import MindState
     from dollos.mind.sink_resolver import SinkResolver
@@ -61,6 +62,12 @@ class MindCtx:
     # external sink instead of stealing another channel's / the internal
     # sink's stream. None for origin-less (internal) buckets.
     current_origin: str | None = None
+    # Daemon-wide channel_id → locus/kind registry (spec §3.1 Task 1/5):
+    # MindLoop consults locus_of(current_origin) to decide whether a
+    # streamed sentence goes out as AddressedText (external) or TextChunk
+    # (internal/unregistered). None in contexts that never see external
+    # origins (e.g. worker-agent ctx, most existing tests).
+    channel_registry: "ChannelRegistry | None" = None
 
     # 慢變演化 (spec 2026-07-02 §3.4): per-turn SelfRevision latch (reset at
     # drain by MindLoop) + static-per-run evolution config + pack enforcement.

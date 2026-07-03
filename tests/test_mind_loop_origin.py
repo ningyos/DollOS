@@ -13,7 +13,8 @@ import asyncio
 
 import pytest
 
-from dollos.ipc.messages import TextChunk
+from dollos.ipc.channel_registry import ChannelRegistry
+from dollos.ipc.messages import AddressedText, TextChunk
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
@@ -173,6 +174,86 @@ async def test_originless_batch_still_resolves_internal_sink(tmp_path):
     assert "hello there" in text
     assert items[-1] is None
     assert state.iter_count == 1
+
+
+# --- AddressedText on external-origin turns (Task 5, spec §3.1) --------------
+
+
+@pytest.mark.asyncio
+async def test_external_origin_turn_emits_addressed_text(tmp_path):
+    """A turn whose origin is registered 'external' in ChannelRegistry streams
+    AddressedText(channel_id=origin), not TextChunk, so the bridge knows where
+    to route it."""
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(
+        kind="ChannelMessage", t=1.0, data={"channel_id": "A", "text": "hi from A"},
+    ))
+
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+
+    ctx = _make_mind_ctx(tmp_path, state=state)
+    sink_a: asyncio.Queue = asyncio.Queue()
+    ctx.sink_resolver.register(sink_a, locus="external", channel_id="A")
+    registry = ChannelRegistry()
+    registry.register("A", locus="external", kind="discord")
+    ctx.channel_registry = registry
+
+    llm = _SeqLLM([_speech_stream("user A said hi", "reply-from-A")])
+
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=llm,
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    await loop.iterate()
+
+    items = _drain_queue(sink_a)
+    addressed = [c for c in items if isinstance(c, AddressedText)]
+    assert addressed, f"expected AddressedText on sink_a, got {items!r}"
+    assert all(c.channel_id == "A" for c in addressed)
+    text = "".join(c.text for c in addressed)
+    assert "reply-from-A" in text
+    # No plain TextChunk should have leaked onto the external sink.
+    assert not any(isinstance(c, TextChunk) for c in items)
+
+
+@pytest.mark.asyncio
+async def test_internal_origin_turn_still_emits_text_chunk_with_registry_present(tmp_path):
+    """Regression: even when a ChannelRegistry is wired, an origin-less
+    (internal) turn must still emit TextChunk, not AddressedText."""
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+
+    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
+
+    sink: asyncio.Queue = asyncio.Queue()
+    ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
+    ctx.channel_registry = ChannelRegistry()  # present, but origin is None
+
+    stream = _speech_stream("user said hi", "hello there")
+    loop = MindLoop(
+        state=state,
+        queue=queue,
+        ctx=ctx,
+        llm=_SeqLLM([stream]),
+        system_prompt="You are Doll.",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry=tool_registry,
+    )
+
+    await loop.iterate()
+
+    items = _drain_queue(sink)
+    text = "".join(c.text for c in items if isinstance(c, TextChunk))
+    assert "hello there" in text
+    assert not any(isinstance(c, AddressedText) for c in items)
 
 
 # --- WAL truncation is batch-final, not per-bucket (Task 4 review fix) ---------

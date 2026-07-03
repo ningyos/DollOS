@@ -11,6 +11,7 @@ from pathlib import Path
 from dollos.cascade_log import CascadeLogger
 from dollos.character import DollPack
 from dollos.config import Settings
+from dollos.ipc.channel_registry import ChannelRegistry
 from dollos.ipc.messages import (
     ICECandidateIn,
     Interrupt,
@@ -253,6 +254,7 @@ class DollOS:
         self._perception_queue = PerceptionQueue(wal=self._wal)
         self._mind_state = load_state(settings.data.root / "mind_state.json")
         self._sink_resolver = SinkResolver()
+        self._channel_registry = ChannelRegistry()
 
         self.shell_runner = ShellRunner(
             cwd=settings.data.root,
@@ -282,6 +284,7 @@ class DollOS:
             memory_root=settings.data.root / "memory",
             transcripts_root=settings.data.root / "memory" / "transcripts",
             sink_resolver=self._sink_resolver,
+            channel_registry=self._channel_registry,
             tool_output_store=self._tool_output_store,
             shell_runner=self.shell_runner,
             workflow_runner=self.workflow_runner,
