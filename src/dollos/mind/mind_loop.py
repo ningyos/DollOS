@@ -783,6 +783,7 @@ class MindLoop:
                     first_pass=(pass_idx == 0),
                     sink=sink,
                 )
+                pass_latency_ms = int((time.monotonic() - pass_start) * 1000)
 
                 if self._cascade_ctx.cancelled:
                     return
@@ -834,7 +835,7 @@ class MindLoop:
                         is_reflection=self._is_reflection,
                         safe_mode=self._state.safe_mode,
                         external=self._ctx.external_ctx,
-                        latency_ms=None,  # PLACEHOLDER — Task 5 fills
+                        latency_ms=pass_latency_ms,
                     )
 
                 # Record the assistant emit so the next pass sees the full
