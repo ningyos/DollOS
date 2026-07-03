@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 
 from dollos.discord_bridge.client import RateLimited
 from dollos.discord_bridge.wake import l0_wake
-from dollos.ipc.messages import AddressedText, ChannelEvent
+from dollos.ipc.messages import AddressedText, ChannelEvent, ChannelRegister
 
 if TYPE_CHECKING:
     from dollos.discord_bridge.ambient_log import AmbientLog
@@ -54,7 +54,9 @@ logger = logging.getLogger(__name__)
 # too (CLAUDE.md: external actions are fire-and-forget) — daemon_send just
 # needs to get the message onto the wire; the real implementation is an
 # `await ws.send(msg.model_dump_json())` closure built in `__main__.py`.
-DaemonSend = Callable[[ChannelEvent], Awaitable[None]]
+# Carries both ChannelRegister (dynamic register-on-first-wake, see
+# `_capture_and_maybe_wake`) and ChannelEvent.
+DaemonSend = Callable[[ChannelEvent | ChannelRegister], Awaitable[None]]
 
 # Injectable clock for the 429 retry sleep — defaults to real asyncio.sleep;
 # tests substitute a recording no-op so a retry test never actually waits.
@@ -97,6 +99,13 @@ class BridgeController:
         self._ambient = ambient
         self._cfg = cfg
         self._sleep = sleep
+        # Channels the daemon already holds an external sink for this session.
+        # Seeded with the static allowlist (`__main__.py` pre-registers those
+        # on connect), then grown by register-on-first-wake for DMs and any
+        # non-allowlisted channel a wake fires from (see
+        # `_capture_and_maybe_wake`). Per-session state — a fresh controller
+        # is built on every reconnect, so this can't go stale.
+        self._registered: set[str] = set(cfg.channel_allowlist)
 
     async def on_discord_message(self, event: dict) -> None:
         """Full-capture `event`, then wake the daemon iff L0 says so."""
@@ -168,6 +177,25 @@ class BridgeController:
             always_wake_channels=self._cfg.always_wake_channels,
         ):
             return
+
+        # Dynamic register-on-first-wake (P1b review): the daemon only holds
+        # an external sink for a channel it has a ChannelRegister for.
+        # `__main__.py` pre-registers the static allowlist on connect, but a
+        # DM (channel id unknowable ahead of time) or a mention in a
+        # non-allowlisted channel would otherwise wake the daemon with NO
+        # external sink for that origin — `locus_of` defaults "internal" and
+        # her reply emits to a local/dummy sink, never back to Discord (this
+        # half-breaks the owner-DM path, §3.2/§3.4). Register BEFORE the
+        # ChannelEvent so the sink exists by the time the reply is produced;
+        # idempotent via `self._registered` (one register per channel per
+        # session, allowlisted channels already seeded so never re-sent).
+        if channel_id not in self._registered:
+            await self._daemon_send(
+                ChannelRegister(
+                    channel_id=channel_id, locus="external", kind="discord"
+                )
+            )
+            self._registered.add(channel_id)
 
         author_is_owner = event["author_id"] == self._cfg.owner_id
         await self._daemon_send(
