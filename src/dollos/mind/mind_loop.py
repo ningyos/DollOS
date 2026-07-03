@@ -454,56 +454,66 @@ class MindLoop:
             )
 
             # ── P1f trace: turn-level envelope 組裝(存實際內容非 hash;T-C2)──
+            # 寫入失敗 loud 但不斷 turn(Global Constraint) — assembly itself can
+            # raise (e.g. self_history read failure), so guard it the same way
+            # cascade_logger.log_iter below is guarded: log + fall back to no
+            # trace for this turn rather than aborting the turn.
             trace_blocks = None
             if self._trace_writer is not None:
-                import hashlib
+                try:
+                    import hashlib
 
-                from dollos.mind import self_history as _sh_trace
+                    from dollos.mind import self_history as _sh_trace
 
-                # identity 是 immutable+versioned pack(self._system_prompt,
-                # UNCOMPOSED — _system_prompt_for_turn() bakes in the mutable
-                # current_self section, which would defeat hashing a stable
-                # pack version) → hash 即可還原(比對 pack repo)。
-                # current_self 是 mutable(慢變演化 target)→ 必須存全文,否則
-                # 用舊 trace 還原會拿到錯身分(R2 current_self finding)。
-                identity_text = self._system_prompt
-                identity_hash = hashlib.sha256(
-                    (identity_text or "").encode("utf-8")
-                ).hexdigest()
-                current_self_text = _sh_trace.sanctioned_text(
-                    self._ctx.memory_root / "self_history.jsonl"
-                )
-                trace_blocks = {
-                    "origin_channel": self._ctx.current_origin or "",
-                    "situation": self._situation_tag(),
-                    "model_id": self._model_id,
-                    "perception_batch": [
-                        {"kind": p.kind, "data": dict(p.data)} for p in perceptions
-                    ],
-                    "static_prefix": {
-                        "identity_hash": identity_hash,
-                        "current_self_text": current_self_text,
-                        "situational_template_id": None,  # P1d
-                    },
-                    "dynamic_blocks": {
-                        "memsearch_hits": memsearch_hits,
-                        "associative_hits": associative_hits,
-                        "tool_habits_hits": tool_habits_hits,
-                        "situational_A_products": None,  # P1c/P1d A 充實管線
-                        "mood": _mood_to_dict(self._state.mood),
-                        "energy": self._state.energy,
-                        "open_loops": [
-                            _open_loop_to_dict(l) for l in self._state.open_loops
+                    # identity 是 immutable+versioned pack(self._system_prompt,
+                    # UNCOMPOSED — _system_prompt_for_turn() bakes in the mutable
+                    # current_self section, which would defeat hashing a stable
+                    # pack version) → hash 即可還原(比對 pack repo)。
+                    # current_self 是 mutable(慢變演化 target)→ 必須存全文,否則
+                    # 用舊 trace 還原會拿到錯身分(R2 current_self finding)。
+                    identity_text = self._system_prompt
+                    identity_hash = hashlib.sha256(
+                        (identity_text or "").encode("utf-8")
+                    ).hexdigest()
+                    current_self_text = _sh_trace.sanctioned_text(
+                        self._ctx.memory_root / "self_history.jsonl"
+                    )
+                    trace_blocks = {
+                        "origin_channel": self._ctx.current_origin or "",
+                        "situation": self._situation_tag(),
+                        "model_id": self._model_id,
+                        "perception_batch": [
+                            {"kind": p.kind, "data": dict(p.data)} for p in perceptions
                         ],
-                        "recent_perceptions": [
-                            {"kind": p.kind, "data": dict(p.data)}
-                            for p in self._state.recent_perceptions
-                        ],
-                        "recent_outputs": [
-                            _output_to_dict(o) for o in self._state.recent_outputs
-                        ],
-                    },
-                }
+                        "static_prefix": {
+                            "identity_hash": identity_hash,
+                            "current_self_text": current_self_text,
+                            "situational_template_id": None,  # P1d
+                        },
+                        "dynamic_blocks": {
+                            "memsearch_hits": memsearch_hits,
+                            "associative_hits": associative_hits,
+                            "tool_habits_hits": tool_habits_hits,
+                            "situational_A_products": None,  # P1c/P1d A 充實管線
+                            "mood": _mood_to_dict(self._state.mood),
+                            "energy": self._state.energy,
+                            "open_loops": [
+                                _open_loop_to_dict(l) for l in self._state.open_loops
+                            ],
+                            "recent_perceptions": [
+                                {"kind": p.kind, "data": dict(p.data)}
+                                for p in self._state.recent_perceptions
+                            ],
+                            "recent_outputs": [
+                                _output_to_dict(o) for o in self._state.recent_outputs
+                            ],
+                        },
+                    }
+                except Exception:
+                    logger.exception(
+                        "trace_blocks assembly failed; continuing without trace"
+                    )
+                    trace_blocks = None
 
             # Call LLM (streams text → sink; dispatches tool calls inline)
             await self._llm_iterate(prompt, trace_blocks=trace_blocks)
@@ -751,10 +761,14 @@ class MindLoop:
             # being wired — when turn_id is None (no logger), mint a
             # standalone id so the trace still gets a stable turn_id.
             if self._trace_writer is not None and trace_blocks is not None:
-                tid = turn_id or uuid.uuid4().hex[:8]
-                turn_trace = self._trace_writer.begin_turn(
-                    turn_id=tid, ts=time.time(), **trace_blocks
-                )
+                try:
+                    tid = turn_id or uuid.uuid4().hex[:8]
+                    turn_trace = self._trace_writer.begin_turn(
+                        turn_id=tid, ts=time.time(), **trace_blocks
+                    )
+                except Exception:
+                    logger.exception("trace begin_turn failed; turn will have no trace")
+                    turn_trace = None
             # P1f trace: byte-verbatim authority for `input_messages_delta`
             # (Task 4) — tracks how far into `messages` the previous pass's
             # snapshot reached, so each pass captures exactly what was newly
@@ -817,28 +831,33 @@ class MindLoop:
                 # cancelled pass 在 _stream_one_pass 內即 return,不會到達這裡 —
                 # 故被取消的 pass 既無 cascade_log 也無 trace pass(§3.6/§6.2(g) 明文取捨)。
                 if turn_trace is not None:
-                    turn_trace.add_pass(
-                        pass_idx=pass_idx,
-                        input_messages_delta=input_messages_delta,
-                        raw_assistant_emit="".join(raw_buf),
-                        tool_calls=[
-                            {"name": tc.get("name"), "args": tc.get("arguments")}
-                            for tc in tool_calls
-                        ],
-                        results=[
-                            {
-                                "tool_name": r.tool_name,
-                                "success": r.success,
-                                "detail": r.detail or "",
-                            }
-                            for r in results
-                        ],
-                        active_tools=sorted(self._active_tool_registry().keys()),
-                        is_reflection=self._is_reflection,
-                        safe_mode=self._state.safe_mode,
-                        external=self._ctx.external_ctx,
-                        latency_ms=pass_latency_ms,
-                    )
+                    try:
+                        turn_trace.add_pass(
+                            pass_idx=pass_idx,
+                            input_messages_delta=input_messages_delta,
+                            raw_assistant_emit="".join(raw_buf),
+                            tool_calls=[
+                                {"name": tc.get("name"), "args": tc.get("arguments")}
+                                for tc in tool_calls
+                            ],
+                            results=[
+                                {
+                                    "tool_name": r.tool_name,
+                                    "success": r.success,
+                                    "detail": r.detail or "",
+                                }
+                                for r in results
+                            ],
+                            active_tools=sorted(self._active_tool_registry().keys()),
+                            is_reflection=self._is_reflection,
+                            safe_mode=self._state.safe_mode,
+                            external=self._ctx.external_ctx,
+                            latency_ms=pass_latency_ms,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "trace add_pass failed; continuing (this pass omitted from trace)"
+                        )
 
                 # Record the assistant emit so the next pass sees the full
                 # user → assistant(think+tool_call) → user(<tool_response>)

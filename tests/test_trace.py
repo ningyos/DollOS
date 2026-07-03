@@ -3,8 +3,6 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 from dollos.config import (
     CharacterConfig,
     DataConfig,
@@ -33,8 +31,16 @@ def test_envelope_written_once_with_nested_passes(tmp_path):
         situation="external",
         model_id="unsloth/Qwen3.6",
         perception_batch=[{"kind": "ChannelMessage", "data": {"text": "hi"}}],
-        static_prefix={"identity_hash": "abc", "current_self_text": "我是 Gura", "situational_template_id": None},
-        dynamic_blocks={"memsearch_hits": [{"source": "s", "text": "m"}], "mood": {"valence": 0.1}, "energy": 0.9},
+        static_prefix={
+            "identity_hash": "abc",
+            "current_self_text": "我是 Gura",
+            "situational_template_id": None,
+        },
+        dynamic_blocks={
+            "memsearch_hits": [{"source": "s", "text": "m"}],
+            "mood": {"valence": 0.1},
+            "energy": 0.9,
+        },
     )
     tt.add_pass(
         pass_idx=0,
