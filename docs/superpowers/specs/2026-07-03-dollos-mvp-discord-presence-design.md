@@ -1,6 +1,6 @@
 # DollOS MVP — Doll 活在 Discord(backbone + 情境化渲染 + 語料底盤)Design
 
-Status: draft v2(goal-driven,2026-07-03)。MVP 總 spec:Phase 1 完整設計 + P2/P3 邊界。**R1 對抗審查 3/5 lens 已套用**(security 4C、architecture 1C+5I、trace-finetune 2C+3I = 7 Critical,全數修入下方標 [R1]);attention-smolgura + scope-coherence 兩 lens 撞 session limit 待補(2:20pm UTC 重置後 resume),但 attention 核心的 code-閘判斷已先修入 §3.4[R1-att]。R2 前補齊那兩 lens。
+Status: draft v3(goal-driven,2026-07-03)。R1(3/5 lens,7C)+ R2(全 5 lens 覆核 v2,3C/13I/8M)皆已套用([R1]/[R2] 標記)。R2 三個 Critical 修入:reply-chain→對話式 session 定義 + 串內 disengage 閘(§3.4)、self-message 硬濾防自我回聲(§3.3)、**P1 拆成 ~7 個單一概念 plan 的 EPIC(§2)**。R2 verdict:security/architecture/trace 的 R1 修正 CONFIRMED/PARTIAL-sound;attention admission 半有效、session 定義本版補上。13 Important 列 §8 待 writing-plans 逐 plan 消化。**下一步:交使用者過目。**
 
 Goal(user-set): 讓 Doll 以正常人的姿態活在 Discord 上:待在多人伺服器,知道自己身在何處(backbone 內外通道型別化+情境化渲染),自己判斷該不該回(L0/L1/L2 注意力),被捲入後不用 tag 也能接著聊(engagement window),並能進語音頻道通話(含延遲壓縮前置);她的每一天全程留下 finetune 級語意層 trace,整套系統 systemd+dollosctl 一鍵起停 — 分三階段。驗收 = smolGura 三個失敗模式(亂回、跟不上、無語音)不再重演。
 
@@ -20,7 +20,16 @@ DollOS 的大腦已完整(事件迴圈、記憶、self_profile、慢變演化、
 - **全記錄、選擇性喚醒。** 她看得到的訊息全量落地(ambient 語料+她的環境感知底料),但只有過注意力閘的才成為 perception。記錄與注意力解耦——語料不因她沒理而流失。
 - **Backbone:通道型別化。** 所有 I/O 通道註冊時宣告 `locus: internal | external`。內部=身體器官(嘴 TTS、耳 ASR/mic、本機文字 CLI=主人在家對她說話、UI=她的樣子、未來手機 app=主要感官);外部=身外物(Discord 是第一個)。規則:(a) 注意力系統只綁外部通道(耳朵不決定要不要聽見);(b) 外部通道內容天生是攻擊面(接上慢變演化的 `external_ctx`,從事後標記升級為通道型別);(c) 通道歸屬與內容 provenance 是兩條獨立軸(Shell=內部的手,摸回外部內容——現狀不變)。
 - **情境化渲染:A 地板、B 湧現、成效可測。** 事件依(來源×情景)渲染 situational block 與 event 敘述。A=系統充實管線(deterministic:author 記憶查詢、頻道近況、場合描述)保底,每個外部事件喚醒前補齊;B=她自己的查證工具(bridge RPC),挖不挖她判斷,成效由 trace 在 P2 裁決(使用者原話:B 較自然但成效未知→設計成可測)。兩不變式:**Self-First**(情境描述場合,永不改身分——一個 identity,多種場合敘事,無「Discord 人格」);**prompt cache**(identity 前綴含現在的我永遠穩定;situational block 在穩定段後、有限模板集、同場合位元組穩定,cache 按場合分桶)。
-- **三階段,全做:** P1 文字存在感+語料底盤+服務化(上線 dogfood);P2 注意力調參(真實數據);P3 語音通話(含延遲壓縮前置;細節 spec 屆時補——增量開發,不預寫會過時的細節)。
+- **[R2-C2] 三階段是里程碑,不是三個 plan;P1 是 EPIC,拆成 ~7 個單一概念 plan。** R1 把 backbone/attention/rendering/trace/安全 全都從「reuse 既有」改判為「熱路徑上蓋新機制」,使原「P1 一個 plan」變成 ~10 個獨立子系統,違反 CLAUDE.md 硬規則「每個 plan 只加一個新概念」(memory `feedback_one_shot_plans`「不拆 MVP」是指單一 plan 別草率分期,不是把 10 個概念塞進一個 plan——正相反)。**P1 分解(依賴序,每個 = 一概念,各自 spec→plan→SDD→merge)**:
+  - **P1a 骨架 I/O 型別化** — ChannelRegistry + locus;per-origin turn segmentation(drain 改寫);SinkResolver locus/origin + AddressedText 串流;timed batch accumulator。概念:通道能依 origin 分源進出。是一切地基。
+  - **P1b discord-bridge + ambient log** — bridge 程序、ChannelMessage kind、全量落地(self-filter[C3] + retention bound + msg_id 去重)+ L0 硬規則(DM/mention/name)。概念:Discord 訊息進出。此時她能收發但注意力還粗。
+  - **P1f trace(語料底盤)** — per-pass finetune schema。**排前段**:紀錄=訓練資料,越早上線語料越早累積、拿不回的每天都在流失(同慢變演化 evidence layer 先行的邏輯)。
+  - **P1e 外部安全** — external_ctx(ChannelMessage/DiscordLookup)+ 保守工具集 + keyed grammar cache + NoteMemory origin bit + Recall scope 過濾 + energy origin-aware。**上真伺服器前必完成**(陌生人攻擊面)。
+  - **P1c 注意力** — L1 engagement session + disengage 閘 + 差異化 debounce + L2。概念:她判斷什麼值得回。**這片決定「不像機器人」**。
+  - **P1d 情境化渲染** — situation 分類 + 模板 cache 拆分 + A 管線 + DiscordLookup RPC。概念:她知道身在何處。
+  - **P1g 服務化** — systemd + dollosctl + CLI 升格。概念:一鍵起停。
+  - **首個 dogfood 里程碑** = P1a+P1b+P1f+P1e+P1c(能安全上真伺服器且不亂回不冷場);P1d/P1g 提升品質、可稍後。
+- **P2 注意力調參**(真實數據);**P3 語音通話**(含延遲壓縮前置;細節屆時補)。
 - **弱模型三鐵律沿用**(memory `ref-weak-model-soft-mechanism-playbook`):稀有工具三面向可見性;prompt 管不住的語意升級 code 閘;軟機制必 live smoke。
 
 ## 3. Mechanics(Phase 1)
@@ -45,7 +54,7 @@ DollOS 的大腦已完整(事件迴圈、記憶、self_profile、慢變演化、
 
 ### 3.3 全記錄(ambient log)
 
-`data/discord/{guild_id}/{channel_id}/{date}.jsonl`,原始訊息事件(含她沒理的、含她自己說的)。**不進 FTS 召回**——這是訓練語料與環境底料,不是她的記憶;她對 Discord 的「記憶」照常走她自己的 NoteMemory/PinSelf(她認為值得記才記)。選擇性把 ambient 內容入憶(如每日摘要)記 §7 deferred。
+`data/discord/{guild_id}/{channel_id}/{date}.jsonl`,原始訊息事件(含她沒理的、含她自己說的)。**[R2-C3] 她自己的訊息只落地、絕不評估 wake。** py-cord `on_message` 對 bot 自己的 send 也會 fire;若不濾,她回一句含自己名字→re-deliver→L0 name_aliases 命中→喚醒→回自己→無限自我回聲(day-1 就炸,正是失敗 1 亂回)。故 bridge/daemon 在 L0 前**硬濾 `author_id == bot.user.id`**:她自己的訊息寫進 ambient log(語料要),但**永不進 L0/L1/L2**。**不進 FTS 召回**——這是訓練語料與環境底料,不是她的記憶;她對 Discord 的「記憶」照常走她自己的 NoteMemory/PinSelf(她認為值得記才記)。選擇性把 ambient 內容入憶(如每日摘要)記 §7 deferred。
 
 ### 3.4 注意力(L0/L1/L2)與權能
 
@@ -53,7 +62,8 @@ DollOS 的大腦已完整(事件迴圈、記憶、self_profile、慢變演化、
 
 - **[R1-att] 核心修向:預設沉默,code 側 reply-worthiness 才進 L2。** 原 spec 把「該不該回」整個交給 L2 弱模型裸 cascade + 一句 scaffolding,**違反自己立的鐵律**(`ref-weak-model-soft-mechanism-playbook`:prompt 管不住的語意升 code 閘),且重演 PinSelf 0/3 / SelfRevision 0/10 的 over-act = smolGura 失敗模式 1。改為:**預設沉默**,只有 code 側 reply-worthiness 訊號才讓訊息升進 L2 判斷。L2 從「決定要不要說」降級成「已有理由回應時、決定要不要開口 / 說什麼」。
 - **L0 硬規則(reply-worthiness 最強訊號,必進 L2):** DM、mention、name_aliases 命中、reply 到她的訊息、always_wake_channels。
-- **L1 便宜閘(daemon,規則制,無小模型):** (a) **[R1-att] engagement window 綁「對話串」非「整個頻道」**——原設計對整頻道開 300s 窗 × 多人 × 弱模型傾向回應 = 亂插不干她的話。改為 window 只涵蓋 **reply-chain 內延續她的訊息 + 她主動點名/回覆的對象**;頻道級全體訊息**不因她開過口就自動進 L2**。她每在該串再發言重置;期滿退場。(b) **[R1-arch I1] 合批需新的 timed accumulator**——`drain()` 無 post-first 時間窗(perception_queue.py:63 的 timeout_s 只是首個等待上限),`wake_debounce_s`(預設 8)的同頻道合批要新做一層(bridge 端或 daemon L1 持有同頻道訊息延遲入列);這層也正是 C1 單源 batch 的來源,兩者同一機制。同頻道喚醒率上限防洪。(c) 進階鹽度(興趣關鍵字接 self_profile、話題延續)= P2,靠真實數據調——注意力由演化中的自我定義。未過閘→只落地(3.3)。
+- **L1 便宜閘(daemon,規則制,無小模型):** (a) **[R2-C1] engagement window = 對話式定義,不是 message_reference 執行緒。** R1 寫「綁 reply-chain」留白;若照字面用 Discord `message_reference`(reply 鈕)實作會 under-fire——真人延續對話多半不按 reply 鈕、直接打字,且她自己回覆裸送不建錨,window 長不出來→「跟不上」原樣重演(smoke 2c 會 fail)。**具體定義**:window 綁一組 `(channel, participant_set, last_activity_ts)` 的**對話 session**——她被 admit 回應後開 session,participant_set = {她 + 觸發她的 author + 窗內對她發言或被她點名者};session 內**該組參與者**的近時同頻道訊息過閘(不需 reply 鈕、不需 tag),**非參與者的隔壁閒聊不過**(收窄 over-fire)。這是明知的 tradeoff:對話式=可能誤收同串插話者,但比 threading-only 的 under-fire 好,且 P1 就要在 code 定死、不 defer P2。(b) **[R2-att] 串內 disengage code 閘**——window「她再發言就重置」+弱模型 reply-lean = 停不下來的自我增強迴圈。加 code 閘:`max_session_turns`(她在單一 session 連續回應上限)+ 重置只由「被再次 @/點名」觸發(單靠她自己發言不重置窗長,只延續)+ 窗長遞減。(c) **差異化 debounce**——engaged(session 內)用短 `wake_debounce_engaged_s`(≈2)即時跟聊,cold 頻道用長 `wake_debounce_cold_s`(≈8)防洪(固定 8s 在熱串內堆疊遲到回覆)。合批本身是新 timed accumulator(§3.1 I1,與 C1 單源 batch 同一層)。(d) 進階鹽度(興趣關鍵字接 self_profile、話題延續)= P2。未過閘→只落地(3.3)。
+- **[R2-att residual] L2 admit 後仍是弱模型判斷 Say/沉默**——R1「L2 降級成只決定 HOW」只有 admission 那半成立;串內「對每則都回」的 over-fire 目前只有描述性 scaffolding 守(軟機制)。故 (b) 的 code 側 session-turn 閘是真防線;L2 沉默判斷是加分不是主防線。smoke 要加「串內對每則都回」的 over-fire 測試(原 2c 只測串外)。
 - **L2 她的判斷:** 升進的 ChannelMessage 成 perception,情境化渲染(3.5)給足場合,cascade 決定 Say 或沉默結束(既有能力);沉默記 trace(`silence: true`)。scaffolding 加外部場合描述(描述性非命令):妳在公開場合聽得到很多不關妳的話,不回是正常的。
 - **[R1-sec S4/S5] 通道權能(結構性防線,不論身分):** external 通道喚醒的 turn,工具 registry 縮減至**保守集**:Recall、NoteMemory、WriteDiary、PinSelf(反思時)、DiscordLookup。**任何 external channel(含 owner DM)結構性禁止 Shell / SpawnWorkflow / SpawnMonitor / InvokeSkill / WriteSchedule**——原設計「owner-DM → 完整工具集」等於 **Discord 帳號被盜即家用電腦 RCE**,而 Discord 帳號是第三方單因子、不在使用者控制內,reviewer 直接判**不可接受**(且與 memory `project_biometric_auth`/`project_lock_screen_interaction`「危險操作需本機認證」矛盾)。owner DM 得到的是「升級但非 RCE」(保守集,「差遣」語意保留);真要遠端 Shell,gate 在綁**本機控制裝置**的 out-of-band 第二因子(local UI/手機 app 確認),非 Discord 單因子——列 §7 deferred。**Say 不是工具**(自由文字,不在 registry;真正的縮減是 registry 內工具缺席 + grammar 縮減)。**[R1-sec S5] 縮減必須贏過 reflection 展開**:現行 `_active_tool_registry`(mind_loop.py:510-533)只有 safe_mode/reflection 兩軸、無 origin 軸;external turn 撞 ReflectionMoment 會把 Shell + **SelfRevision** 全放回來(SelfRevision 是毒化鏈最終閘)。故 external-conservative 以 intersection/override **贏過** reflection 展開,明確排除 SelfRevision 於 external turn。實作要把現行 3-slot 硬編 grammar cache 一般化成 keyed cache(key = tool-name frozenset),新增 external mode 軸;gated on C1 單源 turn。
 - **[R1-sec S2/S3] 記憶毒化 + 私事外洩:P1 就上粗粒度 provenance/scope,不整條 defer。** (S2)`NoteMemory` 寫 shared/ 入 FTS **零 provenance**,陌生人誘導寫的假記憶會跨 internal/external 邊界被日後面對面 turn 撈進 `[Memory context]`(MINJA-class 跨 session 毒化)——§5 原稱「既有 provenance 體系承接」**與 code 不符**(external_ctx 不碰 NoteMemory 寫入路徑)。修:NoteMemory 寫入依 channel locus 打一個粗粒度 `origin: internal|external_public|external_dm` bit。(S3)公開頻道 `Recall` + auto-`[Memory context]` 對**整個記憶池**檢索含主人私事 = 外洩 oracle,原設計只用軟提醒守——**又違反升-code-閘鐵律**。修:external 公開 turn 的 Recall/auto-context 依上述 bit **scope 過濾**(排除 internal/private origin 記憶)並抑制 auto-`[Memory context]`。這是 §7「記憶私密分級」的最小可行半成品,進 P1。
