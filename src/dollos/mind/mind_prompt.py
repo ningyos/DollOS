@@ -327,6 +327,9 @@ def _percep_body(p) -> str:
             f"你剛才說的話違反了人設約束（{violations}）：『{snippet}』"
             "——下次注意，這不是在演，是妳真正的樣子。"
         )
+    if p.kind == "ChannelMessage":
+        where = "私訊" if d.get("is_dm") else f"#{d.get('channel','?')}"
+        return f"[{where}] {d.get('author','?')}:{d.get('content','')}"
     return str(d)[:120]
 
 
