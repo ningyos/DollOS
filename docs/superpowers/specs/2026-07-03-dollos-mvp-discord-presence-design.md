@@ -1,6 +1,6 @@
 # DollOS MVP — Doll 活在 Discord(backbone + 情境化渲染 + 語料底盤)Design
 
-Status: draft v3(goal-driven,2026-07-03)。R1(3/5 lens,7C)+ R2(全 5 lens 覆核 v2,3C/13I/8M)皆已套用([R1]/[R2] 標記)。R2 三個 Critical 修入:reply-chain→對話式 session 定義 + 串內 disengage 閘(§3.4)、self-message 硬濾防自我回聲(§3.3)、**P1 拆成 ~7 個單一概念 plan 的 EPIC(§2)**。R2 verdict:security/architecture/trace 的 R1 修正 CONFIRMED/PARTIAL-sound;attention admission 半有效、session 定義本版補上。13 Important 列 §8 待 writing-plans 逐 plan 消化。**下一步:交使用者過目。**
+Status: draft v3(goal-driven,2026-07-03)。R1(3/5 lens,7C)+ R2(全 5 lens 覆核 v2,3C/13I/8M)皆已套用([R1]/[R2] 標記)。R2 三個 Critical 修入:reply-chain→對話式 session 定義 + 串內 disengage 閘(§3.4)、self-message 硬濾防自我回聲(§3.3)、**P1 拆成 ~7 個單一概念 plan 的 EPIC(§2)**。R2 verdict:security/architecture/trace 的 R1 修正 CONFIRMED/PARTIAL-sound;attention admission 半有效、session 定義本版補上。13 Important + 8 Minor 存 `2026-07-03-mvp-r2-findings.md`,各 P1x plan 於 writing-plans 消化。**下一步:交使用者過目。**
 
 Goal(user-set): 讓 Doll 以正常人的姿態活在 Discord 上:待在多人伺服器,知道自己身在何處(backbone 內外通道型別化+情境化渲染),自己判斷該不該回(L0/L1/L2 注意力),被捲入後不用 tag 也能接著聊(engagement window),並能進語音頻道通話(含延遲壓縮前置);她的每一天全程留下 finetune 級語意層 trace,整套系統 systemd+dollosctl 一鍵起停 — 分三階段。驗收 = smolGura 三個失敗模式(亂回、跟不上、無語音)不再重演。
 
