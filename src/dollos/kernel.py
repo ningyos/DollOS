@@ -400,6 +400,8 @@ class DollOS:
             enforcement=self._doll_pack.enforcement,
             floor=settings.evolution.current_self_min_chars,
             cap=settings.evolution.current_self_max_chars,
+            max_tokens=settings.evolution.max_tokens,
+            agent_timeout_s=settings.evolution.agent_timeout_s,
         )
         self._evolution_trigger_task: asyncio.Task[None] | None = None
 
