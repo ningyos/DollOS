@@ -71,3 +71,19 @@ class PerceptionQueue:
         while not self._queue.empty():
             out.append(self._queue.get_nowait())
         return out
+
+    async def drain_grouped(self, timeout_s: float | None = None) -> list[list[Perception]]:
+        """Like drain(), but partition the batch by origin channel so a mixed
+        batch yields one bucket per channel (spec §3.1 R2-C1: drain is
+        origin-blind; per-origin turn segmentation avoids crosstalk).
+        Origin-less perceptions (no data['channel_id']) share one bucket.
+        Insertion order within each bucket is preserved; bucket order follows
+        first-seen channel."""
+        flat = await self.drain(timeout_s)
+        if not flat:
+            return []
+        buckets: dict[str, list[Perception]] = {}
+        for p in flat:
+            key = (p.data or {}).get("channel_id") or ""
+            buckets.setdefault(key, []).append(p)
+        return list(buckets.values())
