@@ -312,8 +312,56 @@ Reuse the FakeDiscordClient from Task 4's tests (or lift it into a shared confte
 
 ---
 
+### Task 7: integration wiring — fetch_history + true-timestamp date + reconnect→backfill + real 429
+
+**Files:**
+- Modify: `src/dollos/discord_bridge/client.py` (add `fetch_history` to Protocol + PycordClient lazy impl; PycordClient.send translate py-cord 429→RateLimited)
+- Modify: `src/dollos/discord_bridge/controller.py` (`_event_date` uses event's true `ts` when present; a `reconnect_backfill(fetch, channels)` orchestration method)
+- Modify: `src/dollos/discord_bridge/__main__.py` (reconnect loop → on reconnect call reconnect_backfill)
+- Test: extend `tests/test_discord_bridge_controller.py` + `tests/test_discord_wake.py`/a client test
+
+**Interfaces:**
+- Consumes: Task 4 DiscordClient Protocol, Task 6 backfill.
+- Produces: `DiscordClient.fetch_history(channel_id, limit) -> list[dict]` (each dict carries the message's true Discord timestamp as `ts` epoch + a `date` derived from it); `BridgeController.reconnect_backfill(fetch: Callable, channels) -> None` (fetch each channel's recent history, feed through backfill with the true-date events); `RateLimited` raised by PycordClient.send on a py-cord `HTTPException` with status 429.
+
+- [ ] **Step 1: Write the failing tests** (the TESTABLE core — the reviewer's landmine + reconnect orchestration; __main__ + real py-cord stay thin/untested):
+
+```python
+# extend tests/test_discord_bridge_controller.py
+
+def test_event_date_uses_true_timestamp_not_wallclock():
+    """LANDMINE (review): a backfilled event dated near a UTC boundary must
+    bucket by its TRUE post date, not today's wall-clock — else the same
+    msg_id lands in two date files across midnight and re-wakes on replay."""
+    from dollos.discord_bridge.controller import BridgeController
+    # event with an explicit ts for 2026-07-02 23:59 UTC
+    ev = {"msg_id": "m1", "content": "x", "ts": 1751500740.0}  # a fixed pre-midnight epoch
+    # assert _event_date(ev) == the ISO date of that ts (UTC), NOT date.today()
+    # (compute expected from the epoch via datetime.utcfromtimestamp)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_backfill_feeds_history_and_dedups():
+    """reconnect_backfill fetches each channel's recent history and runs it
+    through backfill; a msg_id already in the ambient log fires no dup ChannelEvent."""
+    # FakeDiscordClient.fetch_history returns [m1(seen), m2(new,mention)];
+    # pre-seed ambient with m1; call controller.reconnect_backfill(fake.fetch_history, [chan]);
+    # assert only m2 produced a ChannelEvent, m1 skipped entirely.
+```
+
+- [ ] **Step 2: Run** → FAIL.
+- [ ] **Step 3: Implement**
+  - `controller._event_date(ev)`: if `ev.get("ts")` → `datetime.utcfromtimestamp(ev["ts"]).date().isoformat()`; else the existing wall-clock fallback (kept only for events with no ts, documented as best-effort). This closes the midnight-dedup landmine when ts is present, and the fetch_history translator (below) always stamps ts.
+  - `controller.reconnect_backfill(fetch, channels)`: for each channel, `for ev in await fetch(channel, limit): await self._backfill_one(ev)` (reuse the Task-6 shared capture-and-maybe-wake path; ensure each ev has ts→date).
+  - `client.py`: add `fetch_history(channel_id, limit)` to the Protocol; PycordClient impl lazily uses `discord` to fetch + maps each message to `{msg_id, author_id, content, ts: msg.created_at.timestamp(), date: ..., ...}` (the true-timestamp stamping); PycordClient.send wraps the send in try/except on py-cord's 429 `HTTPException` → `raise RateLimited(retry_after=...)`.
+  - `__main__.py`: wrap the connect in a reconnect loop (`while not shutdown: try connect... except → sleep+retry`); after a successful reconnect, call `controller.reconnect_backfill(discord.fetch_history, allowlisted_channels)`. Thin, untested wiring (per plan).
+- [ ] **Step 4: Run** — new tests PASS; FULL suite green (1150+new, 3 torch). `uv run python -c "import dollos.discord_bridge.client"` still succeeds without py-cord installed (fetch_history/send py-cord use stays inside methods).
+- [ ] **Step 5: Commit** — `feat(discord): fetch_history true-date + reconnect backfill + real 429 (P1b Task 7)`
+
+---
+
 ## Completion
 
-After Task 6: full suite green. **Live smoke (P1b gate — first real Discord test,軟機制必 live smoke):** run discord-bridge against a real test server (bot token in local config), verify: (a) a message mentioning her → she receives it and replies to the right channel; (b) an unrelated message → ambient-logged, no perception (check trace/logs); (c) her own reply does NOT loop (self-filter); (d) reconnect after a kill → backfill dedups (no double-reply). This is the first time she's actually ON Discord — but attention is still L0-only (P1c refines), external_ctx/safety is P1e (do NOT expose her to a truly hostile server until P1e lands — use a private test server). Merge via `superpowers:finishing-a-development-branch`.
+After Task 7: full suite green. **Live smoke (P1b gate — first real Discord test,軟機制必 live smoke):** run discord-bridge against a real test server (bot token in local config), verify: (a) a message mentioning her → she receives it and replies to the right channel; (b) an unrelated message → ambient-logged, no perception (check trace/logs); (c) her own reply does NOT loop (self-filter); (d) reconnect after a kill → backfill dedups (no double-reply). This is the first time she's actually ON Discord — but attention is still L0-only (P1c refines), external_ctx/safety is P1e (do NOT expose her to a truly hostile server until P1e lands — use a private test server). Merge via `superpowers:finishing-a-development-branch`.
 
 **Deferred to later plans (carry forward):** L1/L2 attention + engagement session (P1c); external_ctx + conservative toolset + memory scope (P1e — REQUIRED before any stranger-facing server); situated rendering + DiscordLookup (P1d); trace per-origin (P1f, ideally before heavy dogfood). **Do NOT deploy to a public/stranger server until P1e.**
