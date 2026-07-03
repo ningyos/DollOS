@@ -18,6 +18,7 @@ import json
 from collections.abc import Awaitable, Callable
 
 from dollos.discord_bridge.ambient_log import AmbientLog
+from dollos.discord_bridge.client import RateLimited
 from dollos.discord_bridge.controller import BridgeConfig, BridgeController
 from dollos.ipc.messages import AddressedText, ChannelEvent
 
@@ -29,18 +30,32 @@ class FakeDiscordClient:
     push a synthetic event into the registered `on_message` callback via
     `push()` — mirroring what `PycordClient`'s real `on_message` handler
     would invoke. Never touches py-cord or the network.
+
+    `raise_rate_limited_once()` arms a one-shot `RateLimited` on the NEXT
+    `send()` call only (Task 6: 429 retry) — the call after that succeeds
+    normally, so tests can assert the controller retried exactly once.
     """
 
     def __init__(self, *, bot_id: str = "bot-999") -> None:
         self._bot_id = bot_id
         self.sent: list[tuple[str, str]] = []
+        self.send_attempts = 0
         self._cb: Callable[[dict], Awaitable[None]] | None = None
+        self._rate_limit_once_after: float | None = None
 
     def on_message(self, cb: Callable[[dict], Awaitable[None]]) -> None:
         self._cb = cb
 
     async def send(self, channel_id: str, text: str) -> None:
+        self.send_attempts += 1
+        if self._rate_limit_once_after is not None:
+            retry_after = self._rate_limit_once_after
+            self._rate_limit_once_after = None
+            raise RateLimited(retry_after)
         self.sent.append((channel_id, text))
+
+    def raise_rate_limited_once(self, retry_after: float) -> None:
+        self._rate_limit_once_after = retry_after
 
     def me_id(self) -> str:
         return self._bot_id
@@ -73,7 +88,7 @@ def _cfg(**kw) -> BridgeConfig:
     return BridgeConfig(**base)
 
 
-def _make(tmp_path, **cfg_kw):
+def _make(tmp_path, *, sleep=None, **cfg_kw):
     discord = FakeDiscordClient(bot_id=cfg_kw.pop("bot_id", "bot-999"))
     sent_to_daemon: list[object] = []
 
@@ -82,7 +97,8 @@ def _make(tmp_path, **cfg_kw):
 
     ambient = AmbientLog(tmp_path, retention_days=30)
     cfg = _cfg(bot_id=discord.me_id(), **cfg_kw)
-    controller = BridgeController(discord, daemon_send, ambient, cfg)
+    extra = {} if sleep is None else {"sleep": sleep}
+    controller = BridgeController(discord, daemon_send, ambient, cfg, **extra)
     return controller, discord, sent_to_daemon, ambient
 
 
@@ -183,3 +199,73 @@ async def test_push_through_registered_callback_drives_on_discord_message(tmp_pa
     assert lines[0]["msg_id"] == "m4"
     assert len(sent_to_daemon) == 1
     assert sent_to_daemon[0].payload["author_is_owner"] is False
+
+
+# ----- Task 6 (a): backfill dedup — carry I-2 idempotency -----
+
+
+async def test_backfill_skips_already_seen_msg_ids_entirely(tmp_path):
+    """A msg_id already logged (live, before reconnect) must NOT be re-logged
+    and must NOT re-fire a ChannelEvent when it comes back through backfill —
+    even if it's wake-worthy. Only genuinely new events append + (if
+    wake-worthy) wake."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
+
+    # Live traffic before the reconnect gap: m1 ambient-only, m2 wake-worthy.
+    await controller.on_discord_message(_event(msg_id="m1"))
+    await controller.on_discord_message(
+        _event(msg_id="m2", mentioned=True, content="hey are you there")
+    )
+    assert len(sent_to_daemon) == 1
+    assert sent_to_daemon[0].payload["msg_id"] == "m2"
+
+    # Reconnect backfill replays m1 (dup), m2 (dup, wake-worthy) and m3 (new,
+    # wake-worthy) — as Discord channel history would after a gap.
+    await controller.backfill(
+        "g1",
+        "c1",
+        [
+            _event(msg_id="m1"),
+            _event(msg_id="m2", mentioned=True, content="hey are you there"),
+            _event(msg_id="m3", mentioned=True, content="hey are you there"),
+        ],
+    )
+
+    lines = _ambient_lines(tmp_path, "g1", "c1")
+    assert [line["msg_id"] for line in lines] == ["m1", "m2", "m3"]  # no dup lines
+
+    # m1/m2 replays fired NEITHER a dup ambient line NOR a dup ChannelEvent —
+    # only the brand-new m3 wakes.
+    assert len(sent_to_daemon) == 2
+    assert [e.payload["msg_id"] for e in sent_to_daemon] == ["m2", "m3"]
+
+
+async def test_backfill_ambient_only_events_never_wake(tmp_path):
+    """A backfilled event that is new but NOT wake-worthy still logs, but
+    never fires a ChannelEvent (same L0 rule as live traffic)."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
+
+    await controller.backfill("g1", "c1", [_event(msg_id="m5")])
+
+    lines = _ambient_lines(tmp_path, "g1", "c1")
+    assert lines[0]["msg_id"] == "m5"
+    assert sent_to_daemon == []
+
+
+# ----- Task 6 (b): 429-aware send retries once -----
+
+
+async def test_send_retries_once_after_rate_limited_then_succeeds(tmp_path):
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path, sleep=fake_sleep)
+    discord.raise_rate_limited_once(retry_after=1.5)
+
+    await controller.on_daemon_message(AddressedText(channel_id="c1", text="hi there"))
+
+    assert slept == [1.5]
+    assert discord.send_attempts == 2
+    assert discord.sent == [("c1", "hi there")]

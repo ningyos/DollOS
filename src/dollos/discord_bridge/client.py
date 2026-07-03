@@ -25,6 +25,20 @@ logger = logging.getLogger(__name__)
 MessageCallback = Callable[[dict], Awaitable[None]]
 
 
+class RateLimited(Exception):
+    """Raised by `DiscordClient.send()` when Discord responds 429.
+
+    `retry_after` is the delay in seconds Discord itself reports before the
+    caller may retry (R2 finding: 429 must not be silently dropped, and must
+    not be retried in an unbounded loop — `BridgeController` catches this and
+    retries exactly once, see `controller.py`).
+    """
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(f"Discord rate limited: retry after {retry_after}s")
+        self.retry_after = retry_after
+
+
 class DiscordClient(Protocol):
     """Protocol for a Discord connection.
 
