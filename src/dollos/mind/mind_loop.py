@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from contextlib import aclosing
 from dataclasses import asdict
 from pathlib import Path
@@ -739,10 +740,21 @@ class MindLoop:
         # rotating-invalid-call storm the same-tool 3-strike above misses; trips
         # read-only safe mode at SAFE_MODE_FAIL_THRESHOLD (spec §8.3).
         consecutive_fail_count = 0
+        # P1f trace: initialized OUTSIDE the try so `finally` can always see
+        # it, even if an exception fires before begin_turn() runs.
+        turn_trace = None
 
         try:
             self._cascade_ctx = CascadeCtx()
             turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
+            # Begin the turn envelope. Trace must NOT depend on cascade_logger
+            # being wired — when turn_id is None (no logger), mint a
+            # standalone id so the trace still gets a stable turn_id.
+            if self._trace_writer is not None and trace_blocks is not None:
+                tid = turn_id or uuid.uuid4().hex[:8]
+                turn_trace = self._trace_writer.begin_turn(
+                    turn_id=tid, ts=time.time(), **trace_blocks
+                )
             for pass_idx in range(MAX_SYNC_REFEED_PASSES):
                 if self._cascade_ctx.cancelled:
                     logger.info("cascade cancelled at pass boundary; exiting cleanly")
@@ -777,6 +789,37 @@ class MindLoop:
                         )
                     except Exception:
                         logger.exception("cascade_logger.log_iter failed; continuing")
+
+                # P1f trace: same-site, same-tuple capture as cascade_logger
+                # above — both writers serialize from the identical
+                # (raw_buf, results, tool_calls) locals so the two logs can
+                # never drift apart. Trace stores raw/full content (T-C2):
+                # raw_assistant_emit is the verbatim think+speech text (NOT
+                # `_parse_think`'s 5-field extraction), and result `detail` is
+                # NOT truncated to [:500] like cascade_log's copy is.
+                if turn_trace is not None:
+                    turn_trace.add_pass(
+                        pass_idx=pass_idx,
+                        input_messages_delta=[],  # PLACEHOLDER — Task 4 fills
+                        raw_assistant_emit="".join(raw_buf),
+                        tool_calls=[
+                            {"name": tc.get("name"), "args": tc.get("arguments")}
+                            for tc in tool_calls
+                        ],
+                        results=[
+                            {
+                                "tool_name": r.tool_name,
+                                "success": r.success,
+                                "detail": r.detail or "",
+                            }
+                            for r in results
+                        ],
+                        active_tools=sorted(self._active_tool_registry().keys()),
+                        is_reflection=self._is_reflection,
+                        safe_mode=self._state.safe_mode,
+                        external=self._ctx.external_ctx,
+                        latency_ms=None,  # PLACEHOLDER — Task 5 fills
+                    )
 
                 # Record the assistant emit so the next pass sees the full
                 # user → assistant(think+tool_call) → user(<tool_response>)
@@ -860,6 +903,10 @@ class MindLoop:
                     MAX_SYNC_REFEED_PASSES,
                 )
         finally:
+            if turn_trace is not None:
+                # speech = this turn's full spoken text; silence = none spoken.
+                speech = self._collect_turn_speech()
+                turn_trace.finish(speech=speech, silence=(speech == ""))
             self._cascade_ctx = None
 
     async def _stream_one_pass(
@@ -943,6 +990,24 @@ class MindLoop:
             self._flush_chunker(chunker, sink)
 
         return raw_buf, results, tool_calls
+
+    def _collect_turn_speech(self) -> str:
+        """Full spoken text for the turn currently in flight (P1f trace).
+
+        Joins ``self._turn_speech`` — a turn-local buffer of FULL sentence
+        text, cleared once per turn in `_run_one_turn` before `_llm_iterate`
+        runs and appended to by `_handle_stream_event`/`_flush_chunker` as
+        speech streams out (see the field comment at ``__init__``). Deliberately
+        NOT derived from ``state.recent_outputs``: that deque's ``OutputRecord``
+        only stores a ``summary`` truncated to 60 chars (``f"spoke: {sentence[:60]}"``)
+        for prompt-rendering, and is additionally capped at ``maxlen=15`` — either
+        property would silently clip a verbose turn's transcript, which is exactly
+        the T-C2 "store content not hash/truncate" failure mode this trace exists
+        to avoid. ``_turn_speech`` already holds the untruncated, turn-scoped text
+        (it was added for the doll-side transcript writer for the same reason —
+        see the ``B1`` full-text comment near its use in `_run_one_turn`).
+        """
+        return "".join(self._turn_speech)
 
     def _capture_review(self, raw_buf: list[str]) -> None:
         """Parse the accumulated raw emit and record any REVIEW line.
