@@ -363,3 +363,70 @@ async def test_delta_concatenation_reconstructs_final_messages(mind_loop_real_tr
     roles = [m["role"] for m in reconstructed]
     assert roles[0] == "user"
     assert "assistant" in roles
+
+
+def _shell_and_recall_pass(query: str = "X", speech: str = "跑個指令再查一下") -> str:
+    """A single pass that emits BOTH a fire-and-forget Shell tool call AND a
+    refed sync Recall tool call. The refeed filter must KEEP the Recall
+    <tool_response> and DROP the Shell dispatch ack — proving the delta is the
+    filtered append set, NOT the full tool_calls list (brief R2: delta ≠ all
+    tool_calls)."""
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: Shell+Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        '{"name":"Shell","arguments":{"command":"echo hi"}}\n'
+        "</tool_call>"
+        "<tool_call>\n"
+        f'{{"name":"Recall","arguments":{{"query":"{query}"}}}}\n'
+        "</tool_call>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_ack_excluded_from_delta(tmp_path):
+    """A fire-and-forget Shell ack must NEVER leak into a later pass's
+    input_messages_delta, while a co-emitted refed Recall result MUST — the
+    exclusion path (brief R2: refeed is a FILTERED subset) is exercised, so
+    delta ≠ all tool_calls is proven, not merely asserted structurally."""
+    traces_dir = tmp_path / "traces"
+    tw = TraceWriter(traces_dir)
+    llm = _ScriptedLLM([
+        _shell_and_recall_pass(),
+        _speech_pass("done"),
+    ])
+    ml = make_mindloop(
+        memory_root=tmp_path, trace_writer=tw, model_id="test-model", llm=llm
+    )
+    ml._ctx.memsearch = _FakeMemSearch(
+        hits=[{"content": "x" * 600, "source": "mem/foo.md"}]
+    )
+
+    await ml._run_one_turn([_user_perception("dig up X")])
+    env = _only_trace_envelope(traces_dir)
+    passes = env["passes"]
+
+    # pass 0 issued TWO tool calls (Shell + Recall) — so if the delta were a
+    # naive echo of tool_calls, pass 1 would carry two <tool_response>s.
+    p0_tool_names = {tc["name"] for tc in passes[0]["tool_calls"]}
+    assert p0_tool_names == {"Shell", "Recall"}
+
+    # A second pass exists (Recall's success triggered the in-turn refeed).
+    assert len(passes) > 1, "Recall refeed should have produced a second pass"
+    delta = passes[1]["input_messages_delta"]
+
+    # TEETH: the Shell dispatch ack ("shell dispatched (command=...)") must NOT
+    # appear in ANY delta message — inverting this (asserting it IS present)
+    # fails, because the fire-and-forget ack is genuinely filtered out.
+    assert all("shell dispatched" not in m.get("content", "") for m in delta), (
+        "fire-and-forget Shell ack leaked into input_messages_delta"
+    )
+
+    # The refed Recall result IS present: exactly one <tool_response> survives
+    # the filter (Recall kept, Shell dropped) — delta ≠ all tool_calls.
+    tool_responses = [m for m in delta if "<tool_response>" in m.get("content", "")]
+    assert len(tool_responses) == 1, (
+        f"expected exactly the Recall <tool_response>, got {len(tool_responses)}"
+    )
+    # Prior pass's assistant emit is also in the delta (full alternation).
+    assert any(m["role"] == "assistant" for m in delta)
