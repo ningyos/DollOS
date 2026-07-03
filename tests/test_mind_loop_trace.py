@@ -298,3 +298,68 @@ async def test_no_trace_writer_no_trace_file_written(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_user_perception("hi")])
     assert not (tmp_path / "traces").exists()
+
+
+# ── Task 4: input_messages_delta = byte-verbatim authority per pass ──
+
+
+def passes_prompt(env: dict) -> str:
+    """The exact prompt string `_llm_iterate` seeded `messages[0]` with —
+    recovered from pass 0's own captured delta (env["passes"][0]
+    ["input_messages_delta"][0]["content"]). Used as the expected value when
+    reconstructing `messages` from concatenated per-pass deltas."""
+    return env["passes"][0]["input_messages_delta"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_input_messages_delta_is_byte_authority(mind_loop_real_trace, tmp_path):
+    ml, state = mind_loop_real_trace  # fake LLM: pass0 emits Recall(sync, refed); pass1 emits Say(ends)
+    await ml._run_one_turn([_user_perception("q")])
+    env = _only_trace_envelope(tmp_path / "traces")
+    passes = env["passes"]
+    # pass 0 delta = the initial user prompt, verbatim.
+    assert passes[0]["input_messages_delta"][0]["role"] == "user"
+    assert passes[0]["input_messages_delta"][0]["content"]  # == the prompt fed to pass0
+    if len(passes) > 1:
+        # pass 1 delta = prior pass's assistant emit + filtered <tool_response>
+        # (must NOT include a fire-and-forget ack, e.g. a Shell/SpawnWorkflow
+        # success that was never re-fed).
+        roles = [m["role"] for m in passes[1]["input_messages_delta"]]
+        assert "assistant" in roles
+        # At least one tool_response (Recall is a refed sync tool).
+        assert any("tool_response" in m.get("content", "") for m in passes[1]["input_messages_delta"])
+
+
+@pytest.mark.asyncio
+async def test_delta_concatenation_reconstructs_final_messages(mind_loop_real_trace, tmp_path):
+    ml, state = mind_loop_real_trace
+
+    # Independently capture the EXACT prompt string `_llm_iterate` passes to
+    # pass 0's `stream_completion(user=prompt, ...)` call, so the
+    # reconstruction assertion below checks against ground truth captured
+    # outside the trace machinery — not tautologically against the trace's
+    # own delta.
+    captured_prompt: dict[str, str] = {}
+    orig_stream_completion = ml._llm.stream_completion
+
+    def _capturing_stream_completion(*args, **kwargs):
+        captured_prompt["value"] = kwargs.get("user")
+        return orig_stream_completion(*args, **kwargs)
+
+    ml._llm.stream_completion = _capturing_stream_completion
+
+    await ml._run_one_turn([_user_perception("q")])
+    env = _only_trace_envelope(tmp_path / "traces")
+
+    # Concatenating every pass's delta reconstructs the final `messages`
+    # list `_llm_iterate` built internally, byte-for-byte.
+    reconstructed = [m for p in env["passes"] for m in p["input_messages_delta"]]
+    # Every delta dict is a legal message (role + content present).
+    assert all("role" in m and "content" in m for m in reconstructed)
+    assert reconstructed[0] == {"role": "user", "content": passes_prompt(env)}
+    assert reconstructed[0]["content"] == captured_prompt["value"]
+
+    # Structural check on the reconstructed alternation.
+    roles = [m["role"] for m in reconstructed]
+    assert roles[0] == "user"
+    assert "assistant" in roles
