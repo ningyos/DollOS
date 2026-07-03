@@ -814,6 +814,8 @@ class MindLoop:
                 # raw_assistant_emit is the verbatim think+speech text (NOT
                 # `_parse_think`'s 5-field extraction), and result `detail` is
                 # NOT truncated to [:500] like cascade_log's copy is.
+                # cancelled pass 在 _stream_one_pass 內即 return,不會到達這裡 —
+                # 故被取消的 pass 既無 cascade_log 也無 trace pass(§3.6/§6.2(g) 明文取捨)。
                 if turn_trace is not None:
                     turn_trace.add_pass(
                         pass_idx=pass_idx,

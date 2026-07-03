@@ -40,6 +40,7 @@ from dollos.mind.mind_state import Perception, load_state
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
+from dollos.mind.trace import TraceWriter
 from dollos.monitor_runner import MonitorRunner
 from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
@@ -331,6 +332,13 @@ class DollOS:
             max_context_tokens=settings.cognition.max_context_tokens,
         )
 
+        # P1f trace — finetune-corpus writer, gated on config (紀錄=訓練資料,
+        # enabled by default). No fallback: disabled just means trace_writer
+        # stays None and MindLoop behaves exactly as before this wiring.
+        trace_writer = None
+        if settings.trace.enabled:
+            trace_writer = TraceWriter(Path(settings.trace.root))
+
         self._mind_loop = MindLoop(
             state=self._mind_state,
             queue=self._perception_queue,
@@ -354,6 +362,8 @@ class DollOS:
             current_self_max_chars=settings.evolution.current_self_max_chars,
             pending_max_surfacings=settings.evolution.pending_max_surfacings,
             pending_min_age_days=settings.evolution.pending_min_age_days,
+            trace_writer=trace_writer,
+            model_id=settings.llm.model_alias,
         )
 
         self._reflection_observer = ReflectionObserver(

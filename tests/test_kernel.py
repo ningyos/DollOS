@@ -143,6 +143,31 @@ def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
     assert not dollos._tool_output_dir.exists()
 
 
+def test_kernel_wires_trace_writer_when_enabled(tmp_path: Path) -> None:
+    """settings.trace.enabled defaults True (紀錄=訓練資料) → kernel builds a
+    real TraceWriter rooted at settings.trace.root and passes it (plus
+    model_id=settings.llm.model_alias) into MindLoop (P1f Task 6)."""
+    from dollos.mind.trace import TraceWriter
+
+    settings = _make_settings(tmp_path)
+    assert settings.trace.enabled  # default True
+    dollos = DollOS(settings)
+    assert isinstance(dollos._mind_loop._trace_writer, TraceWriter)
+    assert dollos._mind_loop._trace_writer._root == Path(settings.trace.root)
+    assert dollos._mind_loop._model_id == settings.llm.model_alias == "big"
+
+
+def test_kernel_no_trace_writer_when_disabled(tmp_path: Path) -> None:
+    """settings.trace.enabled=False → trace_writer stays None; MindLoop
+    behaves exactly as before trace wiring (no fallback/degradation path)."""
+    from dollos.config import TraceSettings
+
+    settings = _make_settings(tmp_path)
+    settings.trace = TraceSettings(enabled=False)
+    dollos = DollOS(settings)
+    assert dollos._mind_loop._trace_writer is None
+
+
 # ----- Runner wiring tests -----
 
 
