@@ -13,12 +13,15 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from pathlib import Path
 
 import pytest
 
 from dollos.mind.mind_state import Perception
+from dollos.mind.trace import TraceWriter
 from tests._dispatcher_helpers import _FakeMemSearch
 from tests._mindloop_factory import make_mindloop
+from tests.test_mind_loop import _ScriptedLLM, _speech_pass
 
 
 class _CapturingTraceWriter:
@@ -150,3 +153,148 @@ async def test_situation_tag_coarse(mind_loop_with_trace):
     # plain internal
     ml._is_reflection = False
     assert ml._situation_tag() == "internal"
+
+
+# ── Task 3: per-pass capture @ same log_iter site + turn-end finish ──
+
+
+def _only_trace_envelope(traces_dir: Path) -> dict:
+    """Glob the traces dir for exactly one *.jsonl file with exactly one
+    line, parse it, and return the envelope dict."""
+    files = list(traces_dir.glob("*.jsonl"))
+    assert len(files) == 1, f"expected exactly 1 trace file, got {files}"
+    lines = files[0].read_text(encoding="utf-8").strip("\n").split("\n")
+    assert len(lines) == 1, f"expected exactly 1 trace line, got {len(lines)}"
+    return json.loads(lines[0])
+
+
+def _recall_pass_with_reasoning(query: str = "X", speech: str = "查一下") -> str:
+    """A think block with free-form reasoning text OUTSIDE any of the 5
+    SEEN/INTENT/TOOL/REVIEW/MOOD fields `_parse_think` extracts — proves
+    `raw_assistant_emit` is the verbatim text, a strict superset of what
+    cascade_log's parsed-field copy retains."""
+    return (
+        "SEEN: x\n"
+        "lots of reasoning about digging up context and cross-checking facts\n"
+        "INTENT: y\nTOOL: Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        f'{{"name":"Recall","arguments":{{"query":"{query}"}}}}\n'
+        "</tool_call>"
+    )
+
+
+@pytest.fixture
+def mind_loop_real_trace(tmp_path):
+    """MindLoop wired with a REAL TraceWriter(tmp_path/"traces") and a
+    scripted LLM: pass 1 emits a Recall tool call (+ verbose think
+    reasoning), pass 2 (the re-feed triggered by Recall's success) emits
+    plain speech and no tool, ending the cascade."""
+    traces_dir = tmp_path / "traces"
+    tw = TraceWriter(traces_dir)
+    llm = _ScriptedLLM([
+        _recall_pass_with_reasoning(),
+        _speech_pass("done"),
+    ])
+    ml = make_mindloop(
+        memory_root=tmp_path,
+        trace_writer=tw,
+        model_id="test-model",
+        llm=llm,
+    )
+    # Long hit content (> 500 chars) so the Recall tool result's `detail` is
+    # long enough to prove the trace does NOT truncate it like cascade_log's
+    # `detail[:500]` copy does.
+    ml._ctx.memsearch = _FakeMemSearch(
+        hits=[{"content": "x" * 600, "source": "mem/foo.md"}]
+    )
+    return ml, ml._state
+
+
+@pytest.mark.asyncio
+async def test_trace_pass_stores_raw_think_and_full_result(mind_loop_real_trace, tmp_path):
+    ml, state = mind_loop_real_trace
+    # fake LLM 第一 pass 吐:<think>SEEN:...\nlots of reasoning...</think> + Recall call
+    await ml._run_one_turn([_user_perception("dig up X")])
+    env = _only_trace_envelope(tmp_path / "traces")  # helper: glob *.jsonl, assert 1 line
+    p0 = env["passes"][0]
+    # think 逐字全文,非 _parse_think 的 5 行截斷
+    assert "lots of reasoning" in p0["raw_assistant_emit"]
+    # tool result 全文,非 detail[:500]
+    if p0["results"]:
+        assert len(p0["results"][0]["detail"]) > 0
+        assert len(p0["results"][0]["detail"]) > 500  # proves no [:500] truncation
+    # active_tools 該 pass 的實際工具集
+    assert isinstance(p0["active_tools"], list) and len(p0["active_tools"]) > 0
+    assert "latency_ms" in p0
+
+
+@pytest.mark.asyncio
+async def test_trace_and_cascade_log_share_source_tuple(mind_loop_real_trace, tmp_path):
+    """兩 writer 從同一組 (raw_buf, results, tool_calls) 序列化;
+    trace 的 raw_assistant_emit 應為 cascade_log parsed think 的 superset。"""
+    ml, state = mind_loop_real_trace
+    await ml._run_one_turn([_user_perception("hi")])
+    env = _only_trace_envelope(tmp_path / "traces")
+    # trace 存 raw 全文(superset);cascade_log 只存 parsed 5 欄——trace 不 drift
+    assert env["passes"][0]["raw_assistant_emit"]  # 非空,為 raw
+
+
+@pytest.mark.asyncio
+async def test_trace_stable_turn_id_without_cascade_logger(mind_loop_real_trace, tmp_path):
+    """Trace must not depend on cascade_logger being wired — turn_id falls
+    back to a minted uuid when `self._cascade_logger` is None (its default,
+    since `make_mindloop` never wires one)."""
+    ml, state = mind_loop_real_trace
+    assert ml._cascade_logger is None
+    await ml._run_one_turn([_user_perception("hi")])
+    env = _only_trace_envelope(tmp_path / "traces")
+    assert isinstance(env["turn_id"], str) and env["turn_id"] != ""
+
+
+@pytest.mark.asyncio
+async def test_trace_finish_records_full_speech_and_clears_silence_flag(
+    mind_loop_real_trace, tmp_path
+):
+    ml, state = mind_loop_real_trace
+    await ml._run_one_turn([_user_perception("dig up X")])
+    env = _only_trace_envelope(tmp_path / "traces")
+    assert env["silence"] is False
+    # Both passes' full spoken sentences land in the turn-end speech field.
+    assert "查一下" in env["speech"]
+    assert "done" in env["speech"]
+
+
+@pytest.mark.asyncio
+async def test_trace_silence_true_when_turn_speaks_nothing(tmp_path):
+    """A turn whose only pass calls a tool and speaks nothing → silence=True,
+    speech=""."""
+    traces_dir = tmp_path / "traces"
+    tw = TraceWriter(traces_dir)
+
+    def _silent_recall_pass(query: str = "x") -> str:
+        return (
+            "SEEN: x\nINTENT: y\nTOOL: Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
+            "<tool_call>\n"
+            f'{{"name":"Recall","arguments":{{"query":"{query}"}}}}\n'
+            "</tool_call>"
+        )
+
+    llm = _ScriptedLLM([_silent_recall_pass(), _speech_pass("")])
+    ml = make_mindloop(
+        memory_root=tmp_path, trace_writer=tw, model_id="test-model", llm=llm
+    )
+    ml._ctx.memsearch = _FakeMemSearch(hits=[{"content": "fact", "source": "mem/foo.md"}])
+
+    await ml._run_one_turn([_user_perception("dig up X")])
+    env = _only_trace_envelope(traces_dir)
+    assert env["speech"] == ""
+    assert env["silence"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_trace_writer_no_trace_file_written(tmp_path):
+    """No trace_writer wired → zero behavior change, no traces dir created."""
+    ml = make_mindloop(memory_root=tmp_path)
+    await ml._run_one_turn([_user_perception("hi")])
+    assert not (tmp_path / "traces").exists()
