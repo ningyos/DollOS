@@ -380,12 +380,23 @@ class MindLoop:
             logger.exception("associative_search failed; continuing without")
             associative_hits = []
 
-        # Tool-habits retrieval (additive side-channel)
+        # Tool-habits retrieval (additive side-channel). P1e Task 4 (S3,
+        # review fix): the tool playbook lives in the private tier
+        # (shared/tool_playbook.md) and holds free-text lessons Doll wrote
+        # about her tool use — potentially referencing the owner's activity.
+        # Its hits render unconditionally into the [Tool habits] prompt block,
+        # so on an external_public (stranger) turn this is a silent private
+        # leak. Skip it entirely on public turns (mirrors the associative_search
+        # gate above); the toolset is already conservative on such turns, so
+        # tool-habits about Shell/Workflow are irrelevant there anyway.
         try:
-            tool_habits_hits = await tool_habits_search(
-                self._ctx.memsearch, self._state,
-                self._ctx.memory_root / "shared" / "tool_playbook.md",
-            )
+            if self._ctx.origin_tier == "external_public":
+                tool_habits_hits = []
+            else:
+                tool_habits_hits = await tool_habits_search(
+                    self._ctx.memsearch, self._state,
+                    self._ctx.memory_root / "shared" / "tool_playbook.md",
+                )
         except Exception:
             logger.exception("tool_habits_search failed; continuing without")
             tool_habits_hits = []

@@ -103,6 +103,30 @@ async def test_exclude_prefixes_multiple_prefixes_combined(tmp_path: Path):
         ms.close()
 
 
+async def test_exclude_prefix_is_directory_boundary_not_string_prefix(tmp_path: Path):
+    """Excluding ``shared`` must not also swallow a sibling ``shared_backup``
+    — the exclude clause appends a ``/`` boundary so it's a directory prefix,
+    not a bare string prefix."""
+    ms, base = _make(tmp_path, "shared_backup")
+    try:
+        (base / "shared" / "x.md").write_text(
+            "## h\n\nprivate marker unique-eps-777.\n", encoding="utf-8"
+        )
+        (base / "shared_backup" / "y.md").write_text(
+            "## h\n\nsibling marker unique-eps-777.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        scoped = await ms.search(
+            "unique-eps-777", top_k=5, exclude_prefixes=[base / "shared"]
+        )
+        # shared/ excluded, shared_backup/ NOT excluded (distinct directory).
+        assert len(scoped) == 1
+        assert "sibling marker" in scoped[0]["content"]
+    finally:
+        ms.close()
+
+
 async def test_exclude_prefixes_none_is_unchanged_default(tmp_path: Path):
     """Regression guard: omitting exclude_prefixes (or passing None) behaves
     exactly like before this feature — full recall, no filtering."""
