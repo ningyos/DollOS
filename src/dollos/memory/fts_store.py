@@ -226,10 +226,15 @@ class FtsMemory:
         # Each excluded prefix generates its own AND NOT LIKE clause (ANDed
         # together), reusing the same LIKE-metacharacter escaping as
         # source_prefix so a path containing `%`/`_` can't break the filter.
+        # exclude_prefixes are always DIRECTORIES (private-tier dirs), so a
+        # trailing separator makes each a proper directory-prefix match:
+        # excluding ``.../shared`` must not also swallow a sibling
+        # ``.../shared_backup/…``. (source_prefix above stays boundary-free —
+        # it is also used with FILE paths, e.g. tool_playbook.md.)
         for exclude in exclude_prefixes or []:
             ex_prefix = str(Path(exclude).expanduser().resolve())
             sql += " AND source NOT LIKE ? ESCAPE '\\'"
-            params.append(_like_prefix(ex_prefix) + "%")
+            params.append(_like_prefix(ex_prefix) + "/%")
         sql += " ORDER BY _bm25 LIMIT ?"
         params.append(top_k)
         rows = self._conn.execute(sql, params).fetchall()
