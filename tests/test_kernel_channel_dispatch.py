@@ -86,7 +86,13 @@ async def test_channel_event_stranger_queues_perception_without_cancel(
 ) -> None:
     """A stranger's ChannelEvent becomes a ChannelMessage perception but must
     NOT preempt/cancel Doll's in-flight consolidation/evolution — only the
-    owner speaking does that (spec §3.2)."""
+    owner speaking does that (spec §3.2).
+
+    ``mentioned=True`` clears the P1c AttentionGate admission gate (kernel.py
+    Task 4) — this test is about the cancel/preempt gate specifically, which
+    is orthogonal to and sits AFTER admission; a plain unsignalled stranger
+    message is covered (dropped) by tests/test_kernel_attention.py instead.
+    """
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
     cancelled = _stub_cancels(dollos)
@@ -95,7 +101,12 @@ async def test_channel_event_stranger_queues_perception_without_cancel(
     await dollos._handle_message(
         ChannelEvent(
             channel_id="discord:123",
-            payload={"author_is_owner": False, "text": "hi from a stranger"},
+            payload={
+                "author_id": "stranger",
+                "author_is_owner": False,
+                "mentioned": True,
+                "text": "hi from a stranger",
+            },
         ),
         sink,
     )
@@ -119,7 +130,11 @@ async def test_channel_event_owner_queues_perception_and_cancels(
     tmp_path: Path,
 ) -> None:
     """The owner speaking from an external channel is TextInput-equivalent:
-    it preempts/cancels in-flight consolidation and evolution."""
+    it preempts/cancels in-flight consolidation and evolution.
+
+    ``is_dm=True`` clears the P1c AttentionGate admission gate — in real
+    Discord traffic the owner is always L0-admitted via DM or mention (spec
+    §3.2), so this is not a hypothetical addition for the test."""
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
     cancelled = _stub_cancels(dollos)
@@ -128,7 +143,12 @@ async def test_channel_event_owner_queues_perception_and_cancels(
     await dollos._handle_message(
         ChannelEvent(
             channel_id="discord:123",
-            payload={"author_is_owner": True, "text": "hi it's me"},
+            payload={
+                "author_id": "owner1",
+                "author_is_owner": True,
+                "is_dm": True,
+                "text": "hi it's me",
+            },
         ),
         sink,
     )
@@ -153,7 +173,11 @@ async def test_channel_event_envelope_channel_id_wins_over_payload(
 ) -> None:
     """The envelope msg.channel_id (which matches the ChannelRegister/
     SinkResolver handle) must be the routing origin — a channel_id inside the
-    payload must NOT overwrite it, or replies silently mis-route (P1b review)."""
+    payload must NOT overwrite it, or replies silently mis-route (P1b review).
+
+    ``mentioned=True`` clears the P1c AttentionGate admission gate — the
+    envelope-vs-payload precedence this test targets is orthogonal to (and
+    must survive) that gate now sitting in front of it."""
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
     _stub_cancels(dollos)
@@ -162,7 +186,12 @@ async def test_channel_event_envelope_channel_id_wins_over_payload(
     await dollos._handle_message(
         ChannelEvent(
             channel_id="discord:namespaced",
-            payload={"channel_id": "999_raw_numeric", "text": "hi"},
+            payload={
+                "channel_id": "999_raw_numeric",
+                "author_id": "u1",
+                "mentioned": True,
+                "text": "hi",
+            },
         ),
         sink,
     )

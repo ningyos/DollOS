@@ -36,6 +36,7 @@ def make_mindloop(
     model_id: str | None = None,
     energy_enabled: bool = False,
     cost_per_turn: float = 0.05,
+    on_turn_complete=None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
@@ -70,4 +71,5 @@ def make_mindloop(
         model_id=model_id,
         energy_enabled=energy_enabled,
         cost_per_turn=cost_per_turn,
+        on_turn_complete=on_turn_complete,
     )

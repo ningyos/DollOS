@@ -96,6 +96,20 @@ class AttentionGate:
         return None
 
     def admit(self, event: dict, now: float) -> AdmitDecision:
+        # Task 4 review (whole-branch): the event shape is now pinned to the
+        # bridge's forwarded ChannelEvent payload (always carries channel_id/
+        # author_id in real Discord traffic — see client.py's translator).
+        # Still use `.get(...)` rather than bracket-indexing here: this class
+        # is flow-agnostic pure logic with no guarantee a future/other caller
+        # feeds it a well-formed dict, and a malformed event must fail CLOSED
+        # (not_admitted) rather than raise KeyError and crash the whole
+        # attention path — that would be worse than under-admitting, given
+        # this gate's entire purpose is safety ("default silence").
+        channel_id = event.get("channel_id")
+        if channel_id is None:
+            # No channel to track a session against or route a reply to.
+            return AdmitDecision(False, "not_admitted")
+
         sig = self._l0_signal(event)
         if sig is not None:
             # L0 = (re)mention → reset her budget/window per the disengage
@@ -106,8 +120,7 @@ class AttentionGate:
             # continuation would stop being admitted). Spec participant model:
             # {她 + 觸發她的 author + 窗內對她發言者}. Only turn_count/window/
             # last_activity reset; participants accumulate.
-            channel_id = event["channel_id"]
-            author_id = event["author_id"]
+            author_id = event.get("author_id")
             s = self._sessions.get(channel_id)
             if s is None:
                 self._sessions[channel_id] = Session(
@@ -125,7 +138,6 @@ class AttentionGate:
             return AdmitDecision(True, sig)
 
         # L1 continuation (Task 2): session-aware re-admit without a tag.
-        channel_id = event["channel_id"]
         s = self._sessions.get(channel_id)
         if s is None:
             return AdmitDecision(False, "not_admitted")
@@ -138,7 +150,7 @@ class AttentionGate:
             del self._sessions[channel_id]
             return AdmitDecision(False, "not_admitted")
 
-        if event["author_id"] not in s.participants:
+        if event.get("author_id") not in s.participants:
             # Bystander in an active channel — narrows over-fire; don't
             # touch the existing session.
             return AdmitDecision(False, "not_admitted")

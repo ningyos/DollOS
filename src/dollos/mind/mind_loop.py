@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import aclosing
 from dataclasses import asdict
 from pathlib import Path
@@ -158,6 +159,7 @@ class MindLoop:
         pending_min_age_days: float = 2.0,
         trace_writer=None,
         model_id: str | None = None,
+        on_turn_complete: Callable[[str | None, bool], None] | None = None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -183,6 +185,13 @@ class MindLoop:
         self._cascade_logger = cascade_logger
         self._trace_writer = trace_writer
         self._model_id = model_id
+        # P1c Task 4: optional turn-complete hook, invoked with
+        # (origin, spoke) once per completed turn (see _run_one_turn's tail).
+        # Kernel wires this to AttentionGate.note_reply so the engagement
+        # session's disengage counter only advances when Doll actually
+        # speaks — kept as a plain callback (not an import) so MindLoop stays
+        # flow-agnostic w.r.t. AttentionGate.
+        self._on_turn_complete = on_turn_complete
         self._shutdown = False
         self._cascade_ctx: CascadeCtx | None = None
         # Turn-local buffer of FULL spoken sentences (recent_outputs only keeps
@@ -683,6 +692,23 @@ class MindLoop:
         self._state.iter_count += 1
         self._state.last_iter_at = time.time()
         saved = save_state(self._state, self._persist_path)
+
+        # P1c Task 4: turn-complete hook. Fires only on this non-raising
+        # path (an exception earlier in this turn skips it entirely — no
+        # note_reply for a turn that never finished). `self._turn_speech` is
+        # fully populated by now (nothing clears/appends to it again until
+        # the next turn's top) and `self._ctx.current_origin` is still this
+        # bucket's origin (iterate() only resets it to None after ALL
+        # buckets in the drain finish). Guarded like every other optional
+        # side-channel in this file (cascade_logger, trace_writer) so a
+        # broken callback never breaks the turn.
+        if self._on_turn_complete is not None:
+            try:
+                self._on_turn_complete(
+                    self._ctx.current_origin, bool(self._turn_speech)
+                )
+            except Exception:
+                logger.exception("on_turn_complete callback failed; continuing")
 
         # WAL truncation is NOT done here — it is hoisted to iterate() and run
         # ONCE, batch-final, through the whole drain's global max seq (P1a Task 4

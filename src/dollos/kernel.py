@@ -32,6 +32,7 @@ from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
 from dollos.memory import FtsMemory
+from dollos.mind.attention import AttentionGate
 from dollos.mind.consolidation import ConsolidationTrigger
 from dollos.mind.evolution_trigger import EvolutionTrigger
 from dollos.mind.mind_ctx import MindCtx
@@ -275,6 +276,22 @@ class DollOS:
         self._mind_state = load_state(settings.data.root / "mind_state.json")
         self._sink_resolver = SinkResolver()
         self._channel_registry = ChannelRegistry()
+        # AttentionGate (P1c Task 4): admits/drops ChannelEvent-originated
+        # ChannelMessage perceptions BEFORE they reach the queue — default
+        # silence for a non-admitted message (dropped, not enqueued) is the
+        # anti-亂回 gate. Flow-agnostic: kernel is the only caller, wired via
+        # note_reply through MindLoop's on_turn_complete callback below (no
+        # mind_loop -> attention import).
+        self._attention = AttentionGate(
+            name_aliases=settings.attention.name_aliases,
+            always_wake_channels=settings.attention.always_wake_channels,
+            owner_id=settings.attention.owner_id,
+            max_session_turns=settings.attention.max_session_turns,
+            window_base_s=settings.attention.window_base_s,
+            window_decay=settings.attention.window_decay,
+            debounce_engaged_s=settings.attention.debounce_engaged_s,
+            debounce_cold_s=settings.attention.debounce_cold_s,
+        )
 
         self.shell_runner = ShellRunner(
             cwd=settings.data.root,
@@ -381,6 +398,7 @@ class DollOS:
             pending_min_age_days=settings.evolution.pending_min_age_days,
             trace_writer=trace_writer,
             model_id=settings.llm.model_alias,
+            on_turn_complete=self._on_turn_complete,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -529,10 +547,28 @@ class DollOS:
                 self._register_external_sink(sink, msg.channel_id)
         elif isinstance(msg, ChannelEvent):
             d = msg.payload
-            if d.get("author_is_owner"):
+            # Envelope channel_id is authoritative: it is the value that
+            # matches the ChannelRegister/SinkResolver handle and drives
+            # downstream reply routing (bucket key → origin →
+            # SinkResolver(origin) → AddressedText). Spread payload FIRST so
+            # a payload channel_id can never overwrite it. Built BEFORE the
+            # admission gate so AttentionGate always sees a channel_id, even
+            # when the raw bridge payload happens to omit one.
+            event = {**d, "channel_id": msg.channel_id}
+            # P1c Task 4: default silence — a ChannelEvent that isn't admitted
+            # is DROPPED here, before it ever becomes a perception. The
+            # ambient log (bridge-side) already has the full corpus; the
+            # daemon keeps nothing for a dropped message.
+            decision = self._attention.admit(event, time.time())
+            if not decision.admit:
+                return
+            if event.get("author_is_owner"):
                 # Owner speaking from an external channel is TextInput-
                 # equivalent: preempt/cancel just like UserSpoke ingress.
-                # Strangers do NOT preempt/cancel (spec §3.2).
+                # Strangers do NOT preempt/cancel (spec §3.2). Owner is
+                # always L0-admitted (DM or mention), so this branch is only
+                # reachable post-admission in practice — but the admission
+                # gate above is structurally first regardless.
                 await self._maybe_preempt_for_new_input(sink)
                 self._cancel_consolidation()
                 self._cancel_evolution()
@@ -540,12 +576,7 @@ class DollOS:
                 Perception(
                     kind="ChannelMessage",
                     t=time.time(),
-                    # Envelope channel_id is authoritative: it is the value
-                    # that matches the ChannelRegister/SinkResolver handle and
-                    # drives downstream reply routing (bucket key → origin →
-                    # SinkResolver(origin) → AddressedText). Spread payload
-                    # FIRST so a payload channel_id can never overwrite it.
-                    data={**d, "channel_id": msg.channel_id},
+                    data=event,
                 )
             )
         else:
@@ -563,6 +594,20 @@ class DollOS:
             sink, locus="external", channel_id=channel_id
         )
         self._channel_sink_handles.setdefault(id(sink), {})[channel_id] = handle
+
+    def _on_turn_complete(self, origin: str | None, spoke: bool) -> None:
+        """MindLoop's turn-complete hook (P1c Task 4): advances AttentionGate's
+        per-channel engagement session AFTER Doll actually speaks.
+
+        ``origin`` is the turn's ``current_origin`` (a Discord channel_id) or
+        ``None`` for an internal turn — only a ChannelMessage perception ever
+        sets it, so ``origin is not None`` already implies an external-origin
+        turn; no separate locus check is needed. ``AttentionGate.note_reply``
+        is itself a no-op for a channel_id with no open session, so this is
+        safe to call unconditionally whenever both guards pass.
+        """
+        if spoke and origin is not None:
+            self._attention.note_reply(origin, time.time())
 
     def _cancel_consolidation(self) -> None:
         """Cancel any in-flight consolidation keeper task when the user speaks.
