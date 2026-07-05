@@ -56,6 +56,12 @@ class MindCtx:
     # mid-cascade. Threaded into PinSelf → self_history.
     current_turn: int = 0
     external_ctx: bool = False
+    # Per-turn origin tier (P1e spec §3.4 S1): computed once at drain from this
+    # bucket's perceptions + author_is_owner — "internal" (no ChannelMessage),
+    # "external_dm" (ChannelMessage from the owner), or "external_public"
+    # (ChannelMessage from anyone else). Recomputed every _run_one_turn
+    # (P1a single-origin bucket), so there is no cross-bucket bleed.
+    origin_tier: str = "internal"
     # Per-bucket origin channel_id (spec §3.1 R2-C1): set by MindLoop.iterate
     # before dispatching each drain_grouped() bucket to _run_one_turn, so
     # sink_resolver(origin) routes this turn's output to the matching
