@@ -10,6 +10,16 @@ before dogfooding DollOS as a running service.
 
 ## Prerequisites
 
+**Run `dollosctl install` from the DollOS repo root.** `WorkingDirectory` in
+the generated unit is captured from your current directory at install time
+(`units.resolve_params` → `Path.cwd()`), and the daemon resolves its `data/`
+tree (memory, traces, pid) against a *relative* `Path("data")` — never
+`.resolve()`d — so it ends up at `{WorkingDirectory}/data`. Installing from
+elsewhere (e.g. `$HOME`) does not fail; it silently starts a fresh, empty
+data store and orphans your real data. `install` now prints the resolved
+`python` / `working_dir` / `data_root` absolutes to stdout — check them
+before proceeding.
+
 1. **`uv sync`** — installs the `dollosctl` console script (declared in
    `pyproject.toml` `[project.scripts]`) into the project venv.
 2. **A ready daemon config** — copy `config.example.toml` → `config.toml`

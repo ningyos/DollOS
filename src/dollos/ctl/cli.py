@@ -64,6 +64,15 @@ def install(
         python=python,
         working_dir=working_dir,
     )
+    # Visibility for the data-dir/cwd footgun (P1g whole-branch review,
+    # Important #1): WorkingDirectory is captured from cwd at install time,
+    # and the daemon resolves its data/ tree (memory, traces, pid) relative
+    # to it — installing from the wrong directory silently starts a fresh,
+    # empty data store. Echo the resolved absolutes so the operator can
+    # catch that before it happens.
+    print(f"dollosctl install: python={params.python}")
+    print(f"dollosctl install: working_dir={params.working_dir}")
+    print(f"dollosctl install: data_root={params.data_root}")
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / DAEMON_UNIT).write_text(render_daemon_unit(params))
     (unit_dir / BRIDGE_UNIT).write_text(render_bridge_unit(params))
