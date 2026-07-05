@@ -10,7 +10,7 @@ turn_count.
 """
 import pytest
 
-from dollos.mind.attention import AttentionGate
+from dollos.mind.attention import AdmitDecision, AttentionGate
 
 
 def _gate(
@@ -143,6 +143,15 @@ def test_differentiated_debounce_window_for():
 def test_is_engaged_false_for_unknown_channel():
     g = _gate()
     assert not g.is_engaged("never-seen", now=100.0)
+
+
+def test_malformed_event_missing_channel_id_fails_closed_without_raising():
+    """Regression lock (P1c whole-branch review, Task 4 finding): a
+    malformed event with no channel_id must fail CLOSED (not_admitted)
+    rather than raise — this gate's entire purpose is safety ("default
+    silence"), so under-admitting on bad input is fine but crashing is not."""
+    g = _gate()
+    assert g.admit({}, now=100.0) == AdmitDecision(admit=False, reason="not_admitted")
 
 
 def test_l0_remention_merges_participants_and_resets_budget():

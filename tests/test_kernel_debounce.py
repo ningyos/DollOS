@@ -1,11 +1,18 @@
-"""Kernel differentiated debounce (P1c Task 5): admitted ChannelEvent
-perceptions pass through BatchAccumulator before reaching the queue —
-engaged sessions get the short ``debounce_engaged_s`` window (keep up with
-live chat), cold channels get the long ``debounce_cold_s`` window (flood
-protection). The window is chosen by ``AttentionGate.window_for`` using
-engagement state as of BEFORE this message's admit() call (see kernel.py's
-comment on that ordering) — a channel with no open session yet is "cold"
-for this very message, even though admission immediately opens a session.
+"""Kernel differentiated debounce (P1c Task 5, + whole-branch review
+Important #2): admitted ChannelEvent perceptions pass through
+BatchAccumulator before reaching the queue — engaged sessions get the short
+``debounce_engaged_s`` window (keep up with live chat), cold PUBLIC channels
+get the long ``debounce_cold_s`` window (flood protection). The window is
+chosen by ``AttentionGate.window_for`` using engagement state as of BEFORE
+this message's admit() call (see kernel.py's comment on that ordering) — a
+channel with no open session yet is "cold" for this very message, even
+though admission immediately opens a session.
+
+DM and owner messages are the exception: they are direct 1:1 conversations,
+not cold public chatter, so they always get the short engaged window even
+with no session open yet (``window_for``'s ``is_dm``/``author_is_owner``
+kwargs) — the cold long window exists only to protect cold PUBLIC channels
+from flooding, never to delay a DM/owner conversation opener.
 
 Owner preempt/cancel is unaffected: it still fires synchronously at
 admit-time, ahead of the debounce — the debounce only delays the
@@ -283,9 +290,12 @@ async def test_owner_preempt_cancel_fires_before_debounce_window_elapses(
 ) -> None:
     """The owner's preempt/cancel must not wait for the debounce window —
     it's about interrupting Doll's current cascade, not about batching the
-    reply-trigger. Uses a long cold window to prove the perception itself
-    genuinely hasn't reached the queue yet when the cancel already has."""
-    settings = _make_settings(tmp_path, debounce_engaged_s=0.05, debounce_cold_s=5.0)
+    reply-trigger. Uses a long ENGAGED window to prove the perception itself
+    genuinely hasn't reached the queue yet when the cancel already has — an
+    owner DM always resolves to the engaged window now (Important #2 fix:
+    debounce_cold_s would never apply here regardless of its value, since
+    is_dm/author_is_owner always short-circuit to debounce_engaged_s)."""
+    settings = _make_settings(tmp_path, debounce_engaged_s=5.0, debounce_cold_s=0.05)
     dollos = DollOS(settings)
     cancelled: list[str] = []
     dollos._cancel_consolidation = lambda: cancelled.append("consolidation")
@@ -307,7 +317,7 @@ async def test_owner_preempt_cancel_fires_before_debounce_window_elapses(
     # Preempt/cancel already happened — synchronously, at admit-time.
     assert cancelled == ["consolidation", "evolution"]
 
-    # But the perception itself is still inside the (long, cold) debounce
+    # But the perception itself is still inside the (long) engaged debounce
     # window — not yet in the queue.
     perceptions = await dollos._perception_queue.drain(timeout_s=0.05)
     assert perceptions == []
@@ -315,3 +325,75 @@ async def test_owner_preempt_cancel_fires_before_debounce_window_elapses(
     await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.05)
     assert any(p.kind == "ChannelMessage" for p in perceptions)
+
+
+# ----- owner/DM first message uses the SHORT window, not cold (Important #2) -----
+
+
+@pytest.mark.asyncio
+async def test_owner_dm_first_message_uses_engaged_window_not_cold(
+    tmp_path: Path,
+) -> None:
+    """An owner DM after idle has no open session yet (is_engaged=False for
+    this very message), but a 1:1 DM/owner conversation opener must not eat
+    the cold flood-protection window meant for cold PUBLIC channels — her
+    reply to "hi it's me" must not be delayed by debounce_cold_s. (P1c
+    whole-branch review Important #2: regression vs pre-P1c immediate
+    enqueue.)"""
+    settings = _make_settings(tmp_path, debounce_engaged_s=0.05, debounce_cold_s=5.0)
+    dollos = DollOS(settings)
+    windows = _spy_on_add(dollos)
+    sink: asyncio.Queue = asyncio.Queue()
+
+    await dollos._handle_message(
+        _channel_event(
+            "discord:dm1",
+            author_id="owner1",
+            author_is_owner=True,
+            is_dm=True,
+            mentioned=False,
+            content="hi it's me",
+        ),
+        sink,
+    )
+
+    assert windows == [0.05], (
+        "owner/DM first message got the cold window instead of the short "
+        "engaged window — her reply to a 1:1 conversation opener would be "
+        "delayed by debounce_cold_s"
+    )
+
+    await dollos._accumulator.flush_all()
+
+
+@pytest.mark.asyncio
+async def test_stranger_cold_public_first_message_still_uses_cold_window(
+    tmp_path: Path,
+) -> None:
+    """The fix for owner/DM must not blanket-relax debounce for everyone —
+    a stranger's cold PUBLIC-channel first message (not a DM, not the owner)
+    must still get the long cold window; that's the flood protection the
+    cold window exists for."""
+    settings = _make_settings(tmp_path, debounce_engaged_s=0.05, debounce_cold_s=5.0)
+    dollos = DollOS(settings)
+    windows = _spy_on_add(dollos)
+    sink: asyncio.Queue = asyncio.Queue()
+
+    await dollos._handle_message(
+        _channel_event(
+            "discord:general",
+            author_id="stranger1",
+            author_is_owner=False,
+            is_dm=False,
+            mentioned=True,
+            content="hey doll",
+        ),
+        sink,
+    )
+
+    assert windows == [5.0], (
+        "stranger cold-public-channel first message unexpectedly got the "
+        "short engaged window"
+    )
+
+    await dollos._accumulator.flush_all()

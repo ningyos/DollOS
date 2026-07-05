@@ -7,10 +7,11 @@ message event and a monotonic timestamp, should Doll's attention be
 admitted (surfaced as a perception) — and tracks per-channel engagement
 session state driving the L1 continuation branch.
 
-L0 hard-rule signal logic is moved here from
-``discord_bridge/wake.py::l0_wake``, MINUS the self-filter: the bridge no
-longer forwards self-authored events at all (Task 3), so AttentionGate
-never sees them and does not re-check ``bot_id``.
+L0 hard-rule signal logic was moved here from the old
+``discord_bridge/wake.py::l0_wake`` (removed, P1c whole-branch review — it
+had zero production callers once Task 3 landed), MINUS the self-filter: the
+bridge no longer forwards self-authored events at all (Task 3), so
+AttentionGate never sees them and does not re-check ``bot_id``.
 
 Task 1 of the P1c plan built L0 branch + session open. Task 2 (this)
 fills the L1 continuation branch (session-aware re-admit without a tag,
@@ -180,8 +181,26 @@ class AttentionGate:
             return False
         return now - s.last_activity < s.window_s
 
-    def window_for(self, channel_id: str, now: float) -> float:
+    def window_for(
+        self,
+        channel_id: str,
+        now: float,
+        *,
+        is_dm: bool = False,
+        author_is_owner: bool = False,
+    ) -> float:
         """Differentiated debounce: shorter while engaged, longer while
         cold — surfaced conversation should feel responsive; cold-channel
-        chatter should not."""
-        return self._debounce_engaged_s if self.is_engaged(channel_id, now) else self._debounce_cold_s
+        chatter should not.
+
+        The cold long window exists to protect COLD PUBLIC channels from
+        flooding — it must never delay a DM or an owner message, which are
+        direct 1:1 conversations regardless of session state (P1c
+        whole-branch review Important #2: an owner/DM first message after
+        idle has no session yet, so `is_engaged` alone would misclassify it
+        as cold). `is_dm` / `author_is_owner` therefore short-circuit to the
+        engaged window even when no session is open yet.
+        """
+        if is_dm or author_is_owner or self.is_engaged(channel_id, now):
+            return self._debounce_engaged_s
+        return self._debounce_cold_s
