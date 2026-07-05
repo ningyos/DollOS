@@ -1002,7 +1002,7 @@ async def test_safe_mode_grammar_build_failure_propagates(tmp_path, monkeypatch)
     succeed; if it ever fails, that must halt loudly, not degrade silently."""
     loop = _make_mind_loop(tmp_path)
     loop._state.safe_mode = True
-    loop._safe_grammar = None
+    loop._grammar_cache.clear()  # force a cache-miss so build is actually invoked
 
     def _boom(_tools):
         raise RuntimeError("grammar build broke")

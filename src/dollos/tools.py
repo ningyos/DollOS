@@ -997,6 +997,15 @@ MAIN_TOOLS: list[type[BaseModel]] = [
 
 REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
 
+# P1e S4/S5: conservative tool set for any external-origin turn (Discord
+# public channel OR owner DM — "external" includes the owner's own DM; a
+# compromised Discord account must never equal home-computer RCE). PinSelf is
+# added conditionally by the registry logic (mind_loop._active_tool_registry)
+# only on reflection turns with self_profile enabled — it is NOT baked in
+# here, since a non-reflection external turn gets none of it.
+# DiscordLookup is intentionally NOT included — deferred to P2.
+EXTERNAL_TOOLS: frozenset[str] = frozenset({"Recall", "NoteMemory", "WriteDiary"})
+
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
     SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
