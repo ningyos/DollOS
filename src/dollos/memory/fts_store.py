@@ -177,12 +177,15 @@ class FtsMemory:
         *,
         top_k: int,
         source_prefix: str | Path | None = None,
+        exclude_prefixes: list[str | Path] | None = None,
     ) -> list[dict]:
         expr = _query_expr(query)
         if expr is None:
             return []
         async with self._lock:
-            return await asyncio.to_thread(self._search_sync, expr, top_k, source_prefix)
+            return await asyncio.to_thread(
+                self._search_sync, expr, top_k, source_prefix, exclude_prefixes
+            )
 
     async def index_file(self, path: str | Path) -> None:
         p = Path(path)
@@ -201,7 +204,11 @@ class FtsMemory:
     # ------------------------------------------------------------------ #
 
     def _search_sync(
-        self, expr: str, top_k: int, source_prefix: str | Path | None
+        self,
+        expr: str,
+        top_k: int,
+        source_prefix: str | Path | None,
+        exclude_prefixes: list[str | Path] | None = None,
     ) -> list[dict]:
         sql = (
             "SELECT content, source, heading, chunk_hash, heading_level, "
@@ -213,6 +220,16 @@ class FtsMemory:
             prefix = str(Path(source_prefix).expanduser().resolve())
             sql += " AND source LIKE ? ESCAPE '\\'"
             params.append(_like_prefix(prefix) + "%")
+        # P1e Task 4 (S3): real SQL-level exclusion (NOT a post-hoc Python
+        # filter) — an external_public turn must not be able to retrieve
+        # private-tier sources no matter how the caller shapes the query.
+        # Each excluded prefix generates its own AND NOT LIKE clause (ANDed
+        # together), reusing the same LIKE-metacharacter escaping as
+        # source_prefix so a path containing `%`/`_` can't break the filter.
+        for exclude in exclude_prefixes or []:
+            ex_prefix = str(Path(exclude).expanduser().resolve())
+            sql += " AND source NOT LIKE ? ESCAPE '\\'"
+            params.append(_like_prefix(ex_prefix) + "%")
         sql += " ORDER BY _bm25 LIMIT ?"
         params.append(top_k)
         rows = self._conn.execute(sql, params).fetchall()
