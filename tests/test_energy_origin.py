@@ -24,7 +24,12 @@ from tests._mindloop_factory import make_mindloop
 
 
 def _channel_msg(
-    content: str, *, author_is_owner: bool, t: float, channel_id: str = "disc:g1:c1"
+    content: str,
+    *,
+    author_is_owner: bool,
+    t: float,
+    is_dm: bool = False,
+    channel_id: str = "disc:g1:c1",
 ) -> Perception:
     return Perception(
         kind="ChannelMessage",
@@ -33,6 +38,7 @@ def _channel_msg(
             "content": content,
             "channel_id": channel_id,
             "author_is_owner": author_is_owner,
+            "is_dm": is_dm,
         },
     )
 
@@ -77,7 +83,9 @@ async def test_external_dm_owner_turn_drains_energy_upgraded(tmp_path):
     ml = make_mindloop(memory_root=tmp_path, energy_enabled=True, cost_per_turn=0.1)
     assert ml._state.energy == pytest.approx(1.0)
 
-    await ml._run_one_turn([_channel_msg("hi", author_is_owner=True, t=1.0)])
+    await ml._run_one_turn(
+        [_channel_msg("hi", author_is_owner=True, is_dm=True, t=1.0)]
+    )
 
     assert ml._state.energy == pytest.approx(0.9)
 
@@ -96,7 +104,9 @@ async def test_external_dm_owner_turn_advances_last_user_at(tmp_path):
     assert ml._state.user_turn_count == 0
 
     t = 12345.0
-    await ml._run_one_turn([_channel_msg("hi", author_is_owner=True, t=t)])
+    await ml._run_one_turn(
+        [_channel_msg("hi", author_is_owner=True, is_dm=True, t=t)]
+    )
 
     assert ml._state.last_user_at == pytest.approx(t)
     assert ml._state.user_turn_count == 1

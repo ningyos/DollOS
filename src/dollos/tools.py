@@ -60,15 +60,6 @@ _ORIGIN_DIR = {
 }
 
 
-def _private_tier_prefixes(ctx: "MindCtx") -> list[Path]:
-    """P1e Task 4 (S3): the private tier a stranger (external_public turn)
-    must never retrieve from — owner-private (``shared/``) + owner-DM
-    (``external_dm/``). Mirrors the write-side ``_ORIGIN_DIR`` mapping
-    (P1e Task 3) so read scoping and write routing agree on directory
-    names."""
-    return [ctx.memory_root / "shared", ctx.memory_root / "external_dm"]
-
-
 def _hit_date(hit: dict) -> date | None:
     """Extract YYYY-MM-DD from a memsearch hit's source filename, if any."""
     src = hit.get("source", "")
@@ -298,13 +289,17 @@ class Recall(BaseModel):
 
     async def run(self, ctx: "MindCtx") -> str:
         search_kwargs: dict = {}
-        # P1e Task 4 (S3): a stranger's turn (external_public) must never
-        # surface the owner's private memory via explicit Recall either —
-        # scope out shared/ + external_dm/ at the store's SQL layer. internal
-        # and external_dm (owner) turns are unrestricted (owner sees own
-        # memory), so this only activates for external_public.
+        # P1e Task 4 (S3) + whole-branch review C2: a stranger's turn
+        # (external_public) must never surface the owner's private memory via
+        # explicit Recall either. Fail-closed ALLOWLIST: scope to ONLY the
+        # external_public/ tier via source_prefix, rather than denylisting
+        # known-private dirs — a denylist silently misses any tier not
+        # enumerated (e.g. transcripts/, the owner+Doll verbatim convo log,
+        # was never on the old denylist and leaked). internal and external_dm
+        # (owner) turns are unrestricted (owner sees own memory), so this only
+        # activates for external_public.
         if getattr(ctx, "origin_tier", "internal") == "external_public":
-            search_kwargs["exclude_prefixes"] = _private_tier_prefixes(ctx)
+            search_kwargs["source_prefix"] = ctx.memory_root / "external_public"
         hits = await ctx.memsearch.search(self.query, top_k=5, **search_kwargs)
         if self.since is not None or self.until is not None:
             hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]

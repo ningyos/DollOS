@@ -49,6 +49,7 @@ def render_mind(
     energy_line: str | None = None,
     self_profile_text: str | None = None,
     evolution_block: str | None = None,
+    origin_tier: str = "internal",
 ) -> str:
     """Compose: system_prompt + the enabled dynamic blocks.
 
@@ -76,6 +77,16 @@ def render_mind(
     ``[Self profile]`` and before ``[Memory guideline]`` so it stays salient on
     reflection turns. Omitted entirely when ``None`` (no pending slot to
     surface, or not a reflection/safe-mode turn — gated by the caller).
+
+    ``origin_tier`` — whole-branch review C3: on ``"external_public"``
+    (stranger) turns, ``[Recent perceptions]`` is scoped to ONLY stranger
+    ChannelMessage entries (see ``_public_safe_perceptions``) and
+    ``[Recent outputs]`` is suppressed entirely — both deques are GLOBAL
+    rolling buffers appended for every turn regardless of origin, so
+    unscoped they would render prior owner UserSpoke/owner-DM text (up to
+    200 chars, verbatim) and Doll's prior private replies straight into a
+    stranger's prompt. ``"internal"`` (the default) and ``"external_dm"``
+    render both blocks in full, unchanged.
     """
     now = time.time()
     blocks = [
@@ -147,17 +158,49 @@ def render_mind(
     habits = render_tool_habits(tool_habits_hits or [])
     if habits:
         blocks.extend([habits, ""])
+    # Whole-branch review C3: on an external_public (stranger) turn, scope
+    # the working-memory render — both deques are GLOBAL rolling buffers
+    # appended for EVERY turn regardless of origin, so left unscoped they
+    # would leak prior owner UserSpoke/owner-DM text and Doll's prior
+    # private replies straight into a stranger's prompt.
+    percs_for_render = (
+        _public_safe_perceptions(state.recent_perceptions)
+        if origin_tier == "external_public"
+        else state.recent_perceptions
+    )
     blocks.extend([
         "[Recent perceptions] (newest last)",
-        _render_perceptions(state.recent_perceptions, now),
+        _render_perceptions(percs_for_render, now),
         "",
-        _render_outputs_header(state.recent_outputs, now),
-        _render_outputs(state.recent_outputs, now),
-        "",
+    ])
+    if origin_tier != "external_public":
+        blocks.extend([
+            _render_outputs_header(state.recent_outputs, now),
+            _render_outputs(state.recent_outputs, now),
+            "",
+        ])
+    blocks.extend([
         "[Decision time]",
         "What do you do this iteration? Output a JSON array of 0..N actions.",
     ])
     return "\n".join(blocks)
+
+
+def _public_safe_perceptions(percs) -> list:
+    """Whole-branch review C3: on an external_public turn, ALLOWLIST only
+    stranger ChannelMessage entries for the ``[Recent perceptions]`` render.
+
+    Everything else — owner UserSpoke, owner ChannelMessage (DM or public),
+    and internal-event kinds (ToolResultArrived / MonitorFired / MonitorEnded
+    / ReflectionMoment / Awoke / SafeModeEntered / etc.) — is excluded. This
+    is deliberately an ALLOWLIST (not a denylist of "owner" kinds) so a
+    future perception kind that carries sensitive content is excluded by
+    default rather than leaking until someone remembers to denylist it.
+    """
+    return [
+        p for p in percs
+        if p.kind == "ChannelMessage" and not (p.data or {}).get("author_is_owner")
+    ]
 
 
 def _render_memory_guideline(primary_language: str) -> str:

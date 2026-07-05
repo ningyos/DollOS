@@ -64,12 +64,13 @@ def _make_loop(tmp_path: Path, ms: FtsMemory, *, llm=None) -> tuple[MindLoop, ob
 
 
 def _channel_msg(content: str, *, author_is_owner: bool, t: float,
+                  is_dm: bool = False,
                   channel_id: str = "disc:g1:c1") -> Perception:
     return Perception(
         kind="ChannelMessage",
         t=t,
         data={"content": content, "channel_id": channel_id,
-              "author_is_owner": author_is_owner},
+              "author_is_owner": author_is_owner, "is_dm": is_dm},
     )
 
 
@@ -147,7 +148,7 @@ async def test_external_dm_owner_turn_4way_split(tmp_path: Path):
         )
         t = 12345.0
         await loop._run_one_turn(
-            [_channel_msg("hi", author_is_owner=True, t=t)]
+            [_channel_msg("hi", author_is_owner=True, is_dm=True, t=t)]
         )
 
         # (a) conservative tool registry — no Shell (owner-DM is not RCE)
@@ -260,5 +261,62 @@ async def test_external_public_teeth_energy_inverted(tmp_path: Path):
         )
         with pytest.raises(AssertionError):
             assert state.energy == pytest.approx(0.9)
+    finally:
+        ms.close()
+
+
+# ---------------------------------------------------------------------------
+# Whole-branch review C1: owner posting in a PUBLIC channel must NOT be
+# classified external_dm (which would grant full private retrieval on a
+# reply that is actually public).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_owner_in_public_channel_is_scoped_as_external_public(tmp_path: Path):
+    """The owner (author_is_owner=True) posting in a PUBLIC channel
+    (is_dm=False) must classify as external_public, NOT external_dm — and the
+    owner's own private (shared/) note must NOT be retrievable via Recall on
+    that turn, exactly like a stranger's turn."""
+    ms, base = _make_memsearch(tmp_path)
+    try:
+        (base / "shared" / "secret.md").write_text(
+            "## h\n\nowner-private-fact-pub-c1-check.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        loop, ctx, state = _make_loop(tmp_path, ms)
+        await loop._run_one_turn(
+            [_channel_msg("hi", author_is_owner=True, is_dm=False, t=1.0)]
+        )
+
+        assert ctx.origin_tier == "external_public"
+
+        out = await Recall(query="owner-private-fact-pub-c1-check").run(ctx)
+        assert "owner-private-fact" not in out
+    finally:
+        ms.close()
+
+
+@pytest.mark.asyncio
+async def test_owner_in_public_channel_teeth_private_recall_inverted(tmp_path: Path):
+    """Teeth: invert the assertion — if C1 were reverted (author_is_owner
+    alone ⇒ external_dm), the owner's private note WOULD surface via Recall
+    on this owner-in-public turn, and this ``assert`` would NOT raise."""
+    ms, base = _make_memsearch(tmp_path)
+    try:
+        (base / "shared" / "secret.md").write_text(
+            "## h\n\nowner-private-fact-pub-c1-teeth.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        loop, ctx, state = _make_loop(tmp_path, ms)
+        await loop._run_one_turn(
+            [_channel_msg("hi", author_is_owner=True, is_dm=False, t=1.0)]
+        )
+
+        out = await Recall(query="owner-private-fact-pub-c1-teeth").run(ctx)
+        with pytest.raises(AssertionError):
+            assert "owner-private-fact" in out
     finally:
         ms.close()

@@ -38,7 +38,6 @@ from dollos.tools import (
     NoteToolLesson,
     PinSelf,
     SelfRevision,
-    _private_tier_prefixes,
 )
 from dollos.wal.perception_log import PerceptionWAL
 
@@ -291,12 +290,25 @@ class MindLoop:
     def _derive_origin_tier(perceptions: list[Perception]) -> str:
         """Per-turn origin tier (P1e spec §3.4 S1), computed once at drain from
         this bucket's perceptions: no ChannelMessage → "internal"; a
-        ChannelMessage from the owner → "external_dm"; from anyone else →
+        ChannelMessage from the owner AND in a DM (``is_dm``) → "external_dm";
+        anyone else, INCLUDING the owner posting in a PUBLIC channel →
         "external_public". P1a single-origin bucket, so a straight scan over
-        this batch is authoritative — no cross-bucket bleed."""
+        this batch is authoritative — no cross-bucket bleed.
+
+        Whole-branch review C1: ``author_is_owner`` alone used to be enough
+        for "external_dm" (full private retrieval). But the owner can also
+        post in a PUBLIC channel — the reply there is public, so it must not
+        get the owner's full private-memory retrieval. ``is_dm`` (plumbed
+        from the bridge, ``p.data["is_dm"]``) disambiguates: only
+        owner-AND-DM is "external_dm"; owner-in-public degrades to
+        "external_public" same as a stranger. A missing/falsy ``is_dm`` fails
+        CLOSED (over-scopes to the safer tier), it never fails open.
+        """
         for p in perceptions:
             if p.kind == "ChannelMessage":
-                return "external_dm" if p.data.get("author_is_owner") else "external_public"
+                if p.data.get("author_is_owner") and p.data.get("is_dm"):
+                    return "external_dm"
+                return "external_public"
         return "internal"
 
     async def _run_one_turn(self, perceptions: list[Perception]) -> bool:
@@ -318,6 +330,16 @@ class MindLoop:
             # so owner-present gating (e.g. energy restore pause) reacts to
             # owner DMs too. A stranger ChannelMessage (author_is_owner
             # falsy/absent) must NOT hit this branch.
+            # Whole-branch review I2 (deliberate, NOT a bug): this PRESENCE
+            # check stays keyed on raw ``author_is_owner`` alone — it does NOT
+            # additionally require ``is_dm`` the way ``_derive_origin_tier``'s
+            # "external_dm" classification now does (C1). The owner typing in
+            # a PUBLIC channel is still the owner being present (cancels
+            # consolidation/evolution, advances last_user_at) even though that
+            # same turn's origin_tier is "external_public" for
+            # CAPABILITY/PRIVACY purposes (tools/memory/retrieval/energy).
+            # Presence and privacy are different axes — do not "fix" this to
+            # require is_dm too.
             if p.kind == "UserSpoke" or (
                 p.kind == "ChannelMessage" and p.data.get("author_is_owner")
             ):
@@ -370,16 +392,23 @@ class MindLoop:
 
         # Context-associative recall (additive side-channel). P1e Task 4 (S3):
         # on an external_public turn this side-channel must not bypass the
-        # same private-tier scoping Recall enforces — thread the exclusion
+        # same private-tier scoping Recall enforces — thread the scoping
         # rather than skip the whole call, so public turns still get
         # external_public associative hits.
+        # Whole-branch review C2: switched from a denylist (exclude_prefixes=
+        # private tiers) to a fail-closed ALLOWLIST (source_prefix=
+        # external_public/ only). A denylist silently misses any tier not
+        # enumerated in it (e.g. transcripts/ — owner+Doll verbatim convo —
+        # was never in the private-tier list, so a stranger's associative
+        # recall could pull it). The allowlist structurally can never leak
+        # any other tier, present or future.
         try:
             associative_hits = await associative_search(
                 self._ctx.memsearch,
                 self._state,
                 top_k=3,
-                exclude_prefixes=(
-                    _private_tier_prefixes(self._ctx)
+                source_prefix=(
+                    self._ctx.memory_root / "external_public"
                     if self._ctx.origin_tier == "external_public"
                     else None
                 ),
@@ -470,6 +499,14 @@ class MindLoop:
             )
             self_profile_text = None
             if self._self_profile_enabled:
+                # Whole-branch review I1 (accepted P1e residual, NOT scoped):
+                # self_profile.md renders on EVERY turn including
+                # external_public, and MAY reference owner patterns Doll
+                # noted about herself/the relationship. Scoping it out would
+                # undermine "self always present" (Self-First design), and
+                # the risk is lower than a raw-memory dump (curated, capped
+                # content, not a search result) — accepted for P1e. Revisit
+                # if this proves to leak in practice.
                 from dollos.mind import self_profile as _sp
                 self_profile_text = _sp.render_block(
                     self._ctx.memory_root / "self_profile.md"
@@ -507,6 +544,7 @@ class MindLoop:
                 energy_line=energy_line,
                 self_profile_text=self_profile_text,
                 evolution_block=evolution_block,
+                origin_tier=self._ctx.origin_tier,
             )
 
             # ── P1f trace: turn-level envelope 組裝(存實際內容非 hash;T-C2)──
