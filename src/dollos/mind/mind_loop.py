@@ -33,7 +33,7 @@ from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
-from dollos.tools import NoteToolLesson, PinSelf, SelfRevision
+from dollos.tools import EXTERNAL_TOOLS, NoteToolLesson, PinSelf, SelfRevision
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -183,11 +183,8 @@ class MindLoop:
         # Turn-local buffer of FULL spoken sentences (recent_outputs only keeps
         # a truncated summary, so transcript capture needs the complete text).
         self._turn_speech: list[str] = []
-        # Lazily-built grammar for the reduced safe-mode tool set (spec §8.3).
-        self._safe_grammar: str | None = None
-        # Reflection-turn flag and lazily-built grammar for the expanded set.
+        # Reflection-turn flag.
         self._is_reflection: bool = False
-        self._reflection_grammar: str | None = None
         # B3 energy system
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
@@ -207,6 +204,13 @@ class MindLoop:
             )
         else:
             self._grammar = None
+        # Keyed grammar cache (P1e S4/S5): reduced tool sets (safe_mode,
+        # external, reflection, and any combination thereof) each get their
+        # own lazily-built+cached grammar, keyed by the active registry's
+        # tool-name frozenset. The full-registry key is the hot path and skips
+        # the cache entirely, returning the once-built self._grammar above.
+        self._grammar_cache: dict[frozenset, str] = {}
+        self._base_tool_key = frozenset(self._tool_registry.keys())
 
     def _system_prompt_for_turn(self) -> str:
         """Compose ``prefix ⊕ current_self_section ⊕ suffix`` for this turn,
@@ -656,12 +660,20 @@ class MindLoop:
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass.
 
-        safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has priority.
-        reflection turn → full registry + NoteToolLesson, + PinSelf when
-        self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision when
-        evolution_enabled (慢變演化; spec §3.4). safe_mode's read-only subset is
-        checked first, so SelfRevision (and PinSelf) never appear there —
-        grammar-level suppression on safe-mode turns.
+        safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has TOP
+        priority (checked first, wins over everything below).
+        external-origin turn (origin_tier != "internal" — public channel OR
+        owner DM; P1e spec §3.4 S4/S5) → conservative subset (EXTERNAL_TOOLS),
+        + PinSelf on reflection turns when self_profile_enabled. This reduction
+        WINS OVER reflection expansion: an external turn that is also a
+        ReflectionMoment never gets SelfRevision, NoteToolLesson, or any
+        MAIN_TOOLS entry outside EXTERNAL_TOOLS — a compromised Discord
+        account (including the owner's own DM) must never reach Shell /
+        SpawnWorkflow / SpawnMonitor / RemoveMonitor / InvokeSkill /
+        WriteSchedule / SelfRevision.
+        reflection turn (internal) → full registry + NoteToolLesson, + PinSelf
+        when self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision
+        when evolution_enabled (慢變演化; spec §3.4).
         otherwise → base registry.
         """
         if self._state.safe_mode:
@@ -669,6 +681,17 @@ class MindLoop:
                 n: c for n, c in self._tool_registry.items()
                 if n in SAFE_MODE_TOOLS
             }
+        if self._ctx.origin_tier != "internal":
+            # PinSelf (like NoteToolLesson/SelfRevision below) is never a
+            # member of self._tool_registry itself — it's added explicitly
+            # here, not filtered in, or it would silently never appear.
+            reg = {
+                n: c for n, c in self._tool_registry.items()
+                if n in EXTERNAL_TOOLS
+            }
+            if self._is_reflection and self._self_profile_enabled:
+                reg["PinSelf"] = PinSelf
+            return reg
         if self._is_reflection:
             extra = {"NoteToolLesson": NoteToolLesson}
             if self._self_profile_enabled:
@@ -681,27 +704,24 @@ class MindLoop:
     def _active_grammar(self) -> str | None:
         """Grammar for this pass, built from the active tool registry.
 
-        safe_mode → lazily-built+cached reduced grammar (no-fallback: raises on
-        build failure, never degrades to grammar=None; spec §8.3).
-        reflection turn → lazily-built+cached expanded grammar (MAIN_TOOLS +
-        NoteToolLesson, + PinSelf when self_profile_enabled, + SelfRevision
-        when evolution_enabled — both static per-run predicates, so the cached
-        grammar built on first reflection turn is correct for the whole run).
-        otherwise → the once-built full grammar (no per-pass cost).
+        Keyed cache (P1e S4/S5): keyed by the active registry's tool-name
+        frozenset, so safe_mode / external / reflection / any combination
+        thereof each get their own lazily-built+cached grammar without a
+        combinatorial explosion of hardcoded slots. The full-registry key is
+        the hot path and always returns the once-built ``self._grammar`` from
+        ``__init__`` (no per-pass cost, no cache lookup). No-fallback: a build
+        failure raises (spec §8.3) — it is never swallowed into grammar=None,
+        which would let a reduced-tool turn decode fully unconstrained.
         """
-        if self._state.safe_mode:
-            if self._safe_grammar is None:
-                self._safe_grammar = build_voice_first_grammar(
-                    list(self._active_tool_registry().values())
-                )
-            return self._safe_grammar
-        if self._is_reflection:
-            if self._reflection_grammar is None:
-                self._reflection_grammar = build_voice_first_grammar(
-                    list(self._active_tool_registry().values())
-                )
-            return self._reflection_grammar
-        return self._grammar
+        tools = self._active_tool_registry()
+        key = frozenset(tools.keys())
+        if key == self._base_tool_key:
+            return self._grammar
+        cached = self._grammar_cache.get(key)
+        if cached is None:
+            cached = build_voice_first_grammar(list(tools.values()))
+            self._grammar_cache[key] = cached
+        return cached
 
     def _enter_safe_mode(self, reason: str) -> None:
         """Enter read-only safe mode (idempotent within a turn).
