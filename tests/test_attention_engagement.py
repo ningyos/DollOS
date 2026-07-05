@@ -143,3 +143,33 @@ def test_differentiated_debounce_window_for():
 def test_is_engaged_false_for_unknown_channel():
     g = _gate()
     assert not g.is_engaged("never-seen", now=100.0)
+
+
+def test_l0_remention_merges_participants_and_resets_budget():
+    """Multi-person: a second author's L0 mention must BROADEN the
+    participant set (merge, not replace) and reset her budget/window —
+    never evict someone she was already engaged with. Fails against the
+    old wholesale-replace behavior (participants would become {B}, and
+    A's tagless continuation would be rejected)."""
+    g = _gate(name_aliases=["gura"], max_session_turns=6, window_base_s=90.0, window_decay=0.6)
+    # A opens the session.
+    g.admit({"channel_id": "c1", "author_id": "A", "is_dm": False, "mentioned": True, "content": "gura?"}, now=100.0)
+    # She replies a couple times → turn_count>0, window decayed.
+    g.note_reply("c1", now=101.0)
+    g.note_reply("c1", now=102.0)
+    s_before = g._sessions["c1"]
+    assert s_before.turn_count == 2 and s_before.window_s < 90.0
+    # B L0-mentions in the same channel.
+    d = g.admit({"channel_id": "c1", "author_id": "B", "is_dm": False, "mentioned": True, "content": "gura!"}, now=110.0)
+    assert d.admit and d.reason == "l0_mention"
+    s = g._sessions["c1"]
+    assert s.participants == {"A", "B"}  # merged, not replaced
+    assert s.turn_count == 0  # re-mention resets her budget
+    assert s.window_s == 90.0  # re-mention resets the window
+    assert s.last_activity == 110.0
+    # A (dropped under the old behavior) can still continue tagless.
+    dA = g.admit({"channel_id": "c1", "author_id": "A", "is_dm": False, "mentioned": False, "content": "still me"}, now=111.0)
+    assert dA.admit and dA.reason == "l1_continuation"
+    # B can also continue tagless.
+    dB = g.admit({"channel_id": "c1", "author_id": "B", "is_dm": False, "mentioned": False, "content": "and me"}, now=112.0)
+    assert dB.admit and dB.reason == "l1_continuation"

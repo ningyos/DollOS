@@ -98,15 +98,30 @@ class AttentionGate:
     def admit(self, event: dict, now: float) -> AdmitDecision:
         sig = self._l0_signal(event)
         if sig is not None:
-            # L0 = (re)mention → reset/open session per disengage rule.
+            # L0 = (re)mention → reset her budget/window per the disengage
+            # rule. For a channel that ALREADY has a session, MERGE the new
+            # author into participants (multi-person: a second person tagging
+            # Doll broadens who she's talking with — it must never evict
+            # someone she was already engaged with, or that person's tagless
+            # continuation would stop being admitted). Spec participant model:
+            # {她 + 觸發她的 author + 窗內對她發言者}. Only turn_count/window/
+            # last_activity reset; participants accumulate.
             channel_id = event["channel_id"]
-            self._sessions[channel_id] = Session(
-                channel_id=channel_id,
-                participants={event["author_id"]},
-                last_activity=now,
-                turn_count=0,
-                window_s=self._window_base_s,
-            )
+            author_id = event["author_id"]
+            s = self._sessions.get(channel_id)
+            if s is None:
+                self._sessions[channel_id] = Session(
+                    channel_id=channel_id,
+                    participants={author_id},
+                    last_activity=now,
+                    turn_count=0,
+                    window_s=self._window_base_s,
+                )
+            else:
+                s.participants.add(author_id)
+                s.last_activity = now
+                s.turn_count = 0
+                s.window_s = self._window_base_s
             return AdmitDecision(True, sig)
 
         # L1 continuation (Task 2): session-aware re-admit without a tag.
