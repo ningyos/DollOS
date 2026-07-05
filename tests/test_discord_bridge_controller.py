@@ -5,12 +5,21 @@ task authors it fresh — Task 4 shipped the `DiscordClient` Protocol but no
 Fake, see task-4-report.md's "Concerns"), a recording `daemon_send`, and a
 real `AmbientLog` writing under `tmp_path`:
 
-  (a) a stranger's unrelated message -> ambient.append called, NO ChannelEvent.
+  (a) a stranger's unrelated message -> ambient.append called AND a
+      ChannelEvent forwarded (P1c Task 3, Option A: forward-all — see below).
   (b) a message mentioning her -> ambient.append AND a ChannelEvent (payload
       carries author_is_owner correctly derived from owner_id) sent to daemon.
   (c) an AddressedText(channel_id, text) from daemon -> discord.send(channel_id, text).
   (d) her OWN message (author_id==bot_id) -> ambient.append but NO ChannelEvent
       (self-filter, spec §3.3 C3).
+
+P1c Task 3 update (Option A, spec §3.4 "全量訊息都送 daemon"): the bridge no
+longer runs a local `l0_wake` gate before forwarding — L0/L1/L2 admission
+moved daemon-side into `AttentionGate`. So (a) above changed from "no
+ChannelEvent" (P1b) to "still forwarded" (P1c): every non-self message
+forwards now, wake-worthy or not. The tests below that asserted the OLD
+ambient-only-for-unwoken-messages behavior are updated accordingly; the
+self-filter (d) is unchanged — it's the only gate left on the bridge side.
 """
 from __future__ import annotations
 
@@ -94,9 +103,10 @@ def _event(**kw) -> dict:
 def _cfg(**kw) -> BridgeConfig:
     # channel_allowlist defaults to ["c1"] — the primary channel these tests
     # exercise — so it counts as pre-registered (`__main__.py` registers the
-    # allowlist on connect) and a wake from it fires NO dynamic
-    # ChannelRegister. Tests exercising the dynamic register-on-first-wake
-    # path (P1b review) use a channel_id OUTSIDE this allowlist.
+    # allowlist on connect) and a forward from it fires NO dynamic
+    # ChannelRegister. Tests exercising the dynamic register-on-first-forward
+    # path (P1b review, updated P1c Task 3) use a channel_id OUTSIDE this
+    # allowlist.
     base = dict(
         owner_id="owner-1", name_aliases=["gura", "古拉"],
         always_wake_channels=set(), bot_id="bot-999",
@@ -129,20 +139,26 @@ def _ambient_lines(tmp_path, guild_id: str, channel_id: str) -> list[dict]:
 # ----- (a) stranger, unrelated content -----
 
 
-async def test_stranger_unrelated_message_logs_but_does_not_wake(tmp_path):
+async def test_stranger_unrelated_message_logs_and_is_forwarded(tmp_path):
+    """P1c Task 3 (Option A): this used to assert NO ChannelEvent (P1b's
+    local l0_wake gate dropped ambient-only chatter). Now the bridge
+    forwards every non-self message regardless of wake-worthiness — the
+    daemon's AttentionGate decides admission (see test_discord_forward_all.py
+    for the dedicated forward-all test suite)."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.on_discord_message(_event())
 
     lines = _ambient_lines(tmp_path, "g1", "c1")
     assert lines[0]["msg_id"] == "m1"
-    assert sent_to_daemon == []
+    assert len(sent_to_daemon) == 1
+    assert sent_to_daemon[0].payload["msg_id"] == "m1"
 
 
 # ----- (b) message mentioning her -----
 
 
-async def test_mention_logs_and_wakes_with_correct_author_is_owner(tmp_path):
+async def test_mention_logs_and_forwards_with_correct_author_is_owner(tmp_path):
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.on_discord_message(
@@ -192,7 +208,9 @@ async def test_non_addressed_text_daemon_message_is_ignored(tmp_path):
 # ----- (d) self-filter: bot's own message -----
 
 
-async def test_own_message_logs_but_never_wakes(tmp_path):
+async def test_own_message_logs_but_is_never_forwarded(tmp_path):
+    """Self-filter (spec §3.3 C3) is the ONE gate P1c Task 3 keeps on the
+    bridge side — unaffected by the forward-all change above (a)."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.on_discord_message(
@@ -224,28 +242,34 @@ async def test_push_through_registered_callback_drives_on_discord_message(tmp_pa
 
 async def test_backfill_skips_already_seen_msg_ids_entirely(tmp_path):
     """A msg_id already logged (live, before reconnect) must NOT be re-logged
-    and must NOT re-fire a ChannelEvent when it comes back through backfill —
-    even if it's wake-worthy. Only genuinely new events append + (if
-    wake-worthy) wake."""
+    and must NOT re-forwarded when it comes back through backfill.
+
+    P1c Task 3 (Option A) update: under forward-all every fresh non-self
+    event forwards now (m1 included — it used to be ambient-only under
+    P1b's l0_wake gate). What this test still guards is the I-2 idempotency
+    invariant: a msg_id already forwarded/logged once must never be
+    re-logged or re-forwarded on replay — only the brand-new m3 forwards
+    out of the backfill batch."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
-    # Live traffic before the reconnect gap: m1 ambient-only, m2 wake-worthy.
+    # Live traffic before the reconnect gap: both m1 and m2 forward now
+    # (forward-all — no local wake gate left to distinguish them).
     await controller.on_discord_message(_event(msg_id="m1"))
     await controller.on_discord_message(
         _event(msg_id="m2", mentioned=True, content="hey are you there")
     )
-    assert len(sent_to_daemon) == 1
-    assert sent_to_daemon[0].payload["msg_id"] == "m2"
+    assert len(sent_to_daemon) == 2
+    assert [e.payload["msg_id"] for e in sent_to_daemon] == ["m1", "m2"]
 
-    # Reconnect backfill replays m1 (dup), m2 (dup, wake-worthy) and m3 (new,
-    # wake-worthy) — as Discord channel history would after a gap.
+    # Reconnect backfill replays m1 (dup), m2 (dup) and m3 (new) — as
+    # Discord channel history would after a gap.
     await controller.backfill(
         "g1",
         "c1",
         [
             _event(msg_id="m1"),
             _event(msg_id="m2", mentioned=True, content="hey are you there"),
-            _event(msg_id="m3", mentioned=True, content="hey are you there"),
+            _event(msg_id="m3", content="brand new message"),
         ],
     )
 
@@ -253,21 +277,26 @@ async def test_backfill_skips_already_seen_msg_ids_entirely(tmp_path):
     assert [line["msg_id"] for line in lines] == ["m1", "m2", "m3"]  # no dup lines
 
     # m1/m2 replays fired NEITHER a dup ambient line NOR a dup ChannelEvent —
-    # only the brand-new m3 wakes.
-    assert len(sent_to_daemon) == 2
-    assert [e.payload["msg_id"] for e in sent_to_daemon] == ["m2", "m3"]
+    # only the brand-new m3 forwards.
+    assert len(sent_to_daemon) == 3
+    assert [e.payload["msg_id"] for e in sent_to_daemon] == ["m1", "m2", "m3"]
 
 
-async def test_backfill_ambient_only_events_never_wake(tmp_path):
-    """A backfilled event that is new but NOT wake-worthy still logs, but
-    never fires a ChannelEvent (same L0 rule as live traffic)."""
+async def test_backfill_new_non_self_events_are_forwarded(tmp_path):
+    """P1c Task 3 (Option A): a backfilled event that is new (not a msg_id
+    dup) and has NO L0 signal at all (no mention/dm/name/always-wake) still
+    forwards — the bridge no longer decides wake locally; only a self-
+    authored event is excluded. This replaces the old P1b
+    `test_backfill_ambient_only_events_never_wake`, which asserted the
+    opposite under the now-removed l0_wake gate."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.backfill("g1", "c1", [_event(msg_id="m5")])
 
     lines = _ambient_lines(tmp_path, "g1", "c1")
     assert lines[0]["msg_id"] == "m5"
-    assert sent_to_daemon == []
+    assert len(sent_to_daemon) == 1
+    assert sent_to_daemon[0].payload["msg_id"] == "m5"
 
 
 # ----- Task 6 (b): 429-aware send retries once -----
@@ -319,10 +348,13 @@ def test_event_date_falls_back_to_wallclock_when_no_ts():
 
 async def test_reconnect_backfill_feeds_history_and_dedups(tmp_path):
     """`reconnect_backfill` fetches each channel's recent history via the
-    injected `fetch` callable and replays it through the same capture+wake
+    injected `fetch` callable and replays it through the same capture+forward
     path as `backfill()` — a msg_id already in the ambient log (pre-seeded,
     as if logged before the reconnect gap) fires no dup ChannelEvent; only
-    the genuinely new, wake-worthy event does."""
+    the genuinely new event does. (Unaffected by P1c Task 3's forward-all
+    change — `new_event`'s `mentioned=True` is incidental here, not what
+    makes it forward; m1 is skipped purely on the I-2 dedup path, not on
+    any wake-worthiness distinction.)"""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     seen_event = _event(msg_id="m1", ts=1751500000.0)
@@ -344,17 +376,23 @@ async def test_reconnect_backfill_feeds_history_and_dedups(tmp_path):
     assert sent_to_daemon[0].payload["msg_id"] == "m2"
 
 
-# ----- P1b review: dynamic ChannelRegister on first wake -----
+# ----- P1b review, updated by P1c Task 3: dynamic ChannelRegister now keys
+# off first FORWARD instead of first WAKE (there's no local wake concept
+# left — see test_discord_forward_all.py for the no-L0-signal variant of
+# this same registration test). These three still use mention/DM events
+# because that's what P1b originally exercised, but the registration now
+# fires purely because the event is non-self and forwarded, not because it
+# happens to carry an L0 signal. -----
 
 
-async def test_first_wake_from_unregistered_channel_registers_once(tmp_path):
-    """A wake from a channel NOT in the static allowlist must dynamically
+async def test_first_forward_from_unregistered_channel_registers_once(tmp_path):
+    """A forward from a channel NOT in the static allowlist must dynamically
     register an external sink (ChannelRegister) BEFORE the ChannelEvent, so
     the daemon can route her reply back — and exactly once per channel per
-    session (idempotent on a second wake from the same channel)."""
+    session (idempotent on a second forward from the same channel)."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)  # allowlist=["c1"]
 
-    # c2 is NOT allowlisted → first wake must register it.
+    # c2 is NOT allowlisted → first forward must register it.
     await controller.on_discord_message(
         _event(channel_id="c2", mentioned=True, content="hey are you there", msg_id="m1")
     )
@@ -366,8 +404,8 @@ async def test_first_wake_from_unregistered_channel_registers_once(tmp_path):
     assert isinstance(ev, ChannelEvent)
     assert ev.channel_id == "c2"
 
-    # Second wake from c2 → NO duplicate ChannelRegister (idempotent), just
-    # another ChannelEvent.
+    # Second forward from c2 → NO duplicate ChannelRegister (idempotent),
+    # just another ChannelEvent.
     await controller.on_discord_message(
         _event(channel_id="c2", mentioned=True, content="still there?", msg_id="m2")
     )
@@ -378,10 +416,10 @@ async def test_first_wake_from_unregistered_channel_registers_once(tmp_path):
     assert len(events) == 2
 
 
-async def test_allowlisted_channel_wake_does_not_re_register(tmp_path):
-    """A wake from an allowlisted channel (already registered by __main__ on
-    connect, seeded into the controller) must NOT re-send ChannelRegister —
-    only the ChannelEvent."""
+async def test_allowlisted_channel_forward_does_not_re_register(tmp_path):
+    """A forward from an allowlisted channel (already registered by
+    __main__ on connect, seeded into the controller) must NOT re-send
+    ChannelRegister — only the ChannelEvent."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)  # allowlist=["c1"]
 
     await controller.on_discord_message(
@@ -391,11 +429,11 @@ async def test_allowlisted_channel_wake_does_not_re_register(tmp_path):
     assert [type(m) for m in sent_to_daemon] == [ChannelEvent]
 
 
-async def test_dm_wake_registers_so_reply_can_route(tmp_path):
-    """A DM always wakes (l0), and its channel id is never in the static
-    allowlist, so it must dynamically register — otherwise her DM reply has
-    no external sink and mis-routes internally (P1b review: half-breaks the
-    owner-DM path)."""
+async def test_dm_forward_registers_so_reply_can_route(tmp_path):
+    """A DM always forwards (non-self), and its channel id is never in the
+    static allowlist, so it must dynamically register — otherwise her DM
+    reply has no external sink and mis-routes internally (P1b review:
+    half-breaks the owner-DM path)."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.on_discord_message(
