@@ -221,11 +221,22 @@ class TraceSettings(BaseModel):
 
 
 class AttentionSettings(BaseModel):
-    """AttentionGate 參數(P1c spec §3.3/§3.4)— L0 硬規則 + engagement session。"""
+    """AttentionGate 參數(P1c spec §3.3/§3.4)— L0 硬規則 + engagement session。
+
+    ``owner_id`` is accepted here for interface completeness with
+    ``AttentionGate.__init__`` (required kwarg), but ``AttentionGate`` never
+    reads ``self._owner_id`` beyond storing it (confirmed by grep — the
+    daemon derives ``author_is_owner`` bridge-side, in
+    ``discord_bridge/controller.py``, and stamps the boolean into the
+    ``ChannelEvent`` payload; the daemon itself never sees the raw owner id
+    string). Defaults to ``""`` — inert until/unless a future L0 signal
+    needs the raw id daemon-side.
+    """
     model_config = ConfigDict(extra="forbid")
 
     name_aliases: list[str] = Field(default_factory=list)
     always_wake_channels: list[str] = Field(default_factory=list)
+    owner_id: str = ""
     max_session_turns: int = 6
     window_base_s: float = 90.0
     window_decay: float = 0.6
