@@ -23,7 +23,9 @@ Idempotency contract:
 
 from __future__ import annotations
 
+import argparse
 import logging
+import sys
 from pathlib import Path
 
 from dollos.ctl import systemctl
@@ -87,3 +89,85 @@ def uninstall(*, unit_dir: Path) -> None:
     (unit_dir / DAEMON_UNIT).unlink(missing_ok=True)
     (unit_dir / BRIDGE_UNIT).unlink(missing_ok=True)
     systemctl.daemon_reload()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the `dollosctl` argparse parser (pure — no dispatch logic)."""
+    parser = argparse.ArgumentParser(
+        prog="dollosctl", description="Manage DollOS systemd --user services."
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    install_parser = subparsers.add_parser(
+        "install", help="Render + write the daemon and bridge systemd --user units."
+    )
+    install_parser.add_argument("--daemon-config", type=Path, required=True)
+    install_parser.add_argument("--bridge-config", type=Path, required=True)
+    install_parser.add_argument("--data-root", type=Path, default=Path("data"))
+    install_parser.add_argument("--unit-dir", type=Path, default=None)
+
+    uninstall_parser = subparsers.add_parser(
+        "uninstall", help="Stop and remove the daemon and bridge systemd --user units."
+    )
+    uninstall_parser.add_argument("--unit-dir", type=Path, default=None)
+
+    subparsers.add_parser("start", help="Start the daemon unit, then the bridge unit.")
+    subparsers.add_parser("stop", help="Stop the bridge unit, then the daemon unit.")
+    subparsers.add_parser("restart", help="Restart the daemon unit, then the bridge unit.")
+    subparsers.add_parser("status", help="Show systemd status for both units.")
+
+    logs_parser = subparsers.add_parser("logs", help="Show or follow the journal for one unit.")
+    logs_parser.add_argument("which", choices=["daemon", "bridge"])
+    logs_parser.add_argument("-f", "--follow", action="store_true")
+    logs_parser.add_argument("-n", "--lines", type=int, default=200)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for the `dollosctl` console script.
+
+    Unknown subcommands / missing required args exit non-zero via
+    argparse's own `SystemExit` (default behavior, not caught here). A
+    `SystemctlError` raised by any wrapper is caught here and turned
+    into a clean non-zero return + stderr message rather than a
+    traceback — the one place this module deliberately does NOT let an
+    error propagate raw, because this is the CLI/process boundary.
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command is None:
+        parser.print_help()
+        return 1
+
+    try:
+        if args.command == "install":
+            install(
+                unit_dir=args.unit_dir if args.unit_dir is not None else _user_unit_dir(),
+                daemon_config=args.daemon_config,
+                bridge_config=args.bridge_config,
+                data_root=args.data_root,
+            )
+        elif args.command == "uninstall":
+            uninstall(unit_dir=args.unit_dir if args.unit_dir is not None else _user_unit_dir())
+        elif args.command == "start":
+            systemctl.start(DAEMON_UNIT)
+            systemctl.start(BRIDGE_UNIT)
+        elif args.command == "stop":
+            systemctl.stop(BRIDGE_UNIT)
+            systemctl.stop(DAEMON_UNIT)
+        elif args.command == "restart":
+            systemctl.restart(DAEMON_UNIT)
+            systemctl.restart(BRIDGE_UNIT)
+        elif args.command == "status":
+            print(systemctl.status(DAEMON_UNIT))
+            print(systemctl.status(BRIDGE_UNIT))
+        elif args.command == "logs":
+            unit = DAEMON_UNIT if args.which == "daemon" else BRIDGE_UNIT
+            systemctl.journal(unit, follow=args.follow, lines=args.lines)
+    except SystemctlError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    return 0
