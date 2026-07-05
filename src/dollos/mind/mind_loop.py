@@ -312,7 +312,15 @@ class MindLoop:
         """
         for p in perceptions:
             self._state.recent_perceptions.append(p)
-            if p.kind == "UserSpoke":
+            # P1e Task 5 (I4): an owner DM (ChannelMessage with
+            # author_is_owner) is upgraded to UserSpoke-equivalent here —
+            # it advances last_user_at/user_turn_count same as local chat,
+            # so owner-present gating (e.g. energy restore pause) reacts to
+            # owner DMs too. A stranger ChannelMessage (author_is_owner
+            # falsy/absent) must NOT hit this branch.
+            if p.kind == "UserSpoke" or (
+                p.kind == "ChannelMessage" and p.data.get("author_is_owner")
+            ):
                 self._state.last_user_at = p.t
                 self._state.user_turn_count += 1
                 user_text = p.data.get("text", "")
@@ -574,8 +582,13 @@ class MindLoop:
             self._ctx.sink_resolver(self._ctx.current_origin).put_nowait(None)
 
         # B3 energy consumption — only when Doll produced cognitive output this turn.
+        # P1e Task 5 (I4): a stranger's Discord turn (external_public) is exempt —
+        # random public chatter must not drain the energy budget that gates her
+        # sleep-consolidation cycle. internal and external_dm (owner, upgraded
+        # below) both still consume, same as before this task.
         produced = bool(self._turn_speech) or self._turn_had_tool
-        if self._energy_enabled and produced:
+        consumes = self._ctx.origin_tier != "external_public"
+        if self._energy_enabled and produced and consumes:
             self._state.energy = max(0.0, self._state.energy - self._cost_per_turn)
 
         # Doll-side transcript: one line per turn, full text (B1).
