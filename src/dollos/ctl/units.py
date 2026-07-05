@@ -55,7 +55,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={p.working_dir}
-ExecStart={p.python} -m dollos --config {p.daemon_config}
+ExecStart="{p.python}" -m dollos --config "{p.daemon_config}"
 Restart=on-failure
 RestartSec={p.restart_sec}
 
@@ -78,7 +78,7 @@ Wants=dollos-daemon.service
 [Service]
 Type=simple
 WorkingDirectory={p.working_dir}
-ExecStart={p.python} -m dollos.discord_bridge --daemon {p.daemon_ws} --config {p.bridge_config} --data-root {p.data_root} --retention-days {p.retention_days}
+ExecStart="{p.python}" -m dollos.discord_bridge --daemon {p.daemon_ws} --config "{p.bridge_config}" --data-root "{p.data_root}" --retention-days {p.retention_days}
 Restart=on-failure
 RestartSec={p.restart_sec}
 

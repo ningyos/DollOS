@@ -156,6 +156,12 @@ on crash, both surviving terminal/session close), install them as
 `systemd --user` services via the `dollosctl` console script
 (`src/dollos/ctl/`, P1g):
 
+**Run `dollosctl install` from the DollOS repo root** — `WorkingDirectory`
+is captured from your current directory, and the daemon's `data/` (memory,
+traces, pid) resolves against it. Installing from elsewhere starts a fresh
+empty data store. `install` prints the resolved `python` / `working_dir` /
+`data_root` absolutes so you can catch a wrong-cwd install before it happens.
+
 ```bash
 uv sync   # installs the dollosctl console script (pyproject [project.scripts])
 

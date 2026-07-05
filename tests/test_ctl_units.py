@@ -24,7 +24,7 @@ def _params(**overrides) -> UnitParams:
 def test_daemon_unit_contains_exec_start_and_restart_policy():
     p = _params()
     u = render_daemon_unit(p)
-    assert "ExecStart=/venv/bin/python -m dollos --config /c/d.toml" in u
+    assert 'ExecStart="/venv/bin/python" -m dollos --config "/c/d.toml"' in u
     assert "Restart=on-failure" in u
     assert "WantedBy=default.target" in u
     assert "WorkingDirectory=/wd" in u
@@ -47,17 +47,42 @@ def test_bridge_unit_soft_deps_daemon_not_hard():
     u = render_bridge_unit(p)
     assert "Wants=dollos-daemon.service" in u and "After=dollos-daemon.service" in u
     assert "Requires=" not in u  # hard-dep would drag bridge down on daemon restart
-    assert "--daemon ws://127.0.0.1:9876" in u and "--config /c/b.toml" in u
+    assert "--daemon ws://127.0.0.1:9876" in u and '--config "/c/b.toml"' in u
 
 
 def test_bridge_unit_contains_all_cli_args():
     p = _params(data_root="/wd/data", retention_days=45)
     u = render_bridge_unit(p)
     assert "--daemon ws://127.0.0.1:9876" in u
-    assert "--config /c/b.toml" in u
-    assert "--data-root /wd/data" in u
+    assert '--config "/c/b.toml"' in u
+    assert '--data-root "/wd/data"' in u
     assert "--retention-days 45" in u
     assert "Restart=on-failure" in u
+
+
+def test_exec_start_quotes_paths_containing_spaces():
+    """Minor #2 (P1g whole-branch review): systemd splits ExecStart on
+    whitespace, so an unquoted path with a space (e.g. under `My Projects/`)
+    would break the command. Double-quoting is systemd's supported escape."""
+    p = UnitParams(
+        python="/My Venv/bin/python",
+        working_dir="/My Projects/DollOS",
+        daemon_config="/My Projects/DollOS/config.toml",
+        bridge_config="/My Projects/DollOS/bridge.toml",
+        data_root="/My Projects/DollOS/data",
+    )
+    daemon_u = render_daemon_unit(p)
+    bridge_u = render_bridge_unit(p)
+
+    assert '"/My Venv/bin/python"' in daemon_u
+    assert '"/My Projects/DollOS/config.toml"' in daemon_u
+    assert '"/My Venv/bin/python"' in bridge_u
+    assert '"/My Projects/DollOS/bridge.toml"' in bridge_u
+    assert '"/My Projects/DollOS/data"' in bridge_u
+
+    # sanity: existing structural assertions still hold with quoting added
+    assert "Wants=dollos-daemon.service" in bridge_u and "After=dollos-daemon.service" in bridge_u
+    assert "Requires=" not in bridge_u
 
 
 def test_resolve_params_absolutizes(tmp_path, monkeypatch):

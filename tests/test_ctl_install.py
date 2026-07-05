@@ -8,6 +8,7 @@ secret value from the bridge config path leaks into unit content
 (units only ever reference the config *path*, never its contents).
 """
 
+import sys
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -118,12 +119,28 @@ def test_uninstall_tolerates_systemctl_error_from_stop_on_not_loaded_unit(tmp_pa
     mock_reload.assert_called_once_with()
 
 
+def test_install_prints_resolved_python_working_dir_and_data_root(tmp_path, capsys):
+    """The data-dir-cwd footgun (P1g whole-branch review, Important #1): the
+    daemon resolves its data root relative to WorkingDirectory, which is
+    itself captured from cwd at install time. `install` must echo the
+    resolved absolutes so the operator can catch a wrong-cwd install before
+    it silently starts a fresh empty data store."""
+    kwargs = _install_kwargs(tmp_path)
+    with patch("dollos.ctl.cli.systemctl.daemon_reload"):
+        install(**kwargs)
+
+    captured = capsys.readouterr()
+    assert sys.executable in captured.out
+    assert str(Path.cwd().resolve()) in captured.out  # working_dir defaults to cwd
+    assert str(kwargs["data_root"].resolve()) in captured.out
+
+
 def test_no_secret_token_leaks_into_unit_content(tmp_path):
     """Units reference the bridge config *path* only; a token value
     living inside that config file must never appear in the unit."""
     secret_token = "sk-super-secret-discord-token-abc123"
     bridge_config = tmp_path / "bridge.toml"
-    bridge_config.write_text(f'token = "{secret_token}"\nowner_id = "12345"\n')
+    bridge_config.write_text(f'token = "{secret_token}"\nowner_discord_id = "12345"\n')
 
     kwargs = _install_kwargs(tmp_path, bridge_config=bridge_config)
     with patch("dollos.ctl.cli.systemctl.daemon_reload"):
