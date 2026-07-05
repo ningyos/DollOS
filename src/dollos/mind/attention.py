@@ -5,17 +5,21 @@ This module is PURE LOGIC: no I/O, no async, no imports from kernel /
 discord_bridge / mind_loop. It answers one question — given a plain-dict
 message event and a monotonic timestamp, should Doll's attention be
 admitted (surfaced as a perception) — and tracks per-channel engagement
-session state used by the (future) L1 continuation branch.
+session state driving the L1 continuation branch.
 
 L0 hard-rule signal logic is moved here from
 ``discord_bridge/wake.py::l0_wake``, MINUS the self-filter: the bridge no
 longer forwards self-authored events at all (Task 3), so AttentionGate
 never sees them and does not re-check ``bot_id``.
 
-Scope of this task (Task 1 of the P1c plan): L0 branch + session open only.
-L1 continuation (session-aware re-admit within an active engagement window)
-is Task 2 — the placeholder below always falls through to
-``AdmitDecision(False, "not_admitted")`` when no L0 signal fires.
+Task 1 of the P1c plan built L0 branch + session open. Task 2 (this)
+fills the L1 continuation branch (session-aware re-admit without a tag,
+within an active engagement window) plus the disengage gate: ``note_reply``
+(kernel calls after Doll speaks — advances turn_count, decays window_s,
+disengages at ``max_session_turns``), ``window_for`` (differentiated
+debounce), and ``is_engaged``. Reset of turn_count/window to base happens
+ONLY on an L0 re-mention (see ``admit``'s L0 branch) — L1 continuation and
+``note_reply`` only ever extend/decay/accumulate, never reset.
 """
 from __future__ import annotations
 
@@ -105,5 +109,52 @@ class AttentionGate:
             )
             return AdmitDecision(True, sig)
 
-        # L1 continuation branch is Task 2 — placeholder.
-        return AdmitDecision(False, "not_admitted")
+        # L1 continuation (Task 2): session-aware re-admit without a tag.
+        channel_id = event["channel_id"]
+        s = self._sessions.get(channel_id)
+        if s is None:
+            return AdmitDecision(False, "not_admitted")
+
+        expired = now - s.last_activity >= s.window_s
+        disengaged = s.turn_count >= self._max_session_turns
+        if expired or disengaged:
+            # She's no longer engaged on this channel; only a fresh L0
+            # mention reopens it.
+            del self._sessions[channel_id]
+            return AdmitDecision(False, "not_admitted")
+
+        if event["author_id"] not in s.participants:
+            # Bystander in an active channel — narrows over-fire; don't
+            # touch the existing session.
+            return AdmitDecision(False, "not_admitted")
+
+        # Continuation admitted: extend activity, but do NOT reset
+        # turn_count/window — only an L0 re-mention resets those.
+        s.last_activity = now
+        return AdmitDecision(True, "l1_continuation")
+
+    def note_reply(self, channel_id: str, now: float) -> None:
+        """Record that Doll spoke on ``channel_id`` (kernel calls this AFTER
+        she replies, Task 4). Advances turn_count and decays the window;
+        disengages (deletes the session) once she hits her consecutive-reply
+        cap. Never resets — only an L0 re-mention reopens a fresh session."""
+        s = self._sessions.get(channel_id)
+        if s is None:
+            return
+        s.turn_count += 1
+        s.window_s *= self._window_decay
+        if s.turn_count >= self._max_session_turns:
+            del self._sessions[channel_id]
+
+    def is_engaged(self, channel_id: str, now: float) -> bool:
+        """True iff a non-expired session exists for ``channel_id``."""
+        s = self._sessions.get(channel_id)
+        if s is None:
+            return False
+        return now - s.last_activity < s.window_s
+
+    def window_for(self, channel_id: str, now: float) -> float:
+        """Differentiated debounce: shorter while engaged, longer while
+        cold — surfaced conversation should feel responsive; cold-channel
+        chatter should not."""
+        return self._debounce_engaged_s if self.is_engaged(channel_id, now) else self._debounce_cold_s
