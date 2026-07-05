@@ -328,8 +328,14 @@ def _percep_body(p) -> str:
             "——下次注意，這不是在演，是妳真正的樣子。"
         )
     if p.kind == "ChannelMessage":
+        # P1e Task 6: surface owner/stranger identity — otherwise Doll has no
+        # in-prompt signal for who she's talking to and can't judge whether/
+        # how to respond. Descriptive narration only (not a command); P1d's
+        # contextual rendering will refine this further.
         where = "私訊" if d.get("is_dm") else f"#{d.get('channel','?')}"
-        return f"[{where}] {d.get('author','?')}:{d.get('content','')}"
+        if d.get("author_is_owner"):
+            return f"[主人{where}] 主人:{d.get('content','')}"
+        return f"[{where}] 陌生人 {d.get('author','?')}:{d.get('content','')}"
     return str(d)[:120]
 
 
