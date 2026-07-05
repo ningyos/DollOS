@@ -1,0 +1,47 @@
+# DollOS discord-bridge config — copy to `bridge.toml` and fill in.
+#
+#   cp bridge.example.toml bridge.toml
+#   # edit the values below, then (from the repo root):
+#   uv run dollosctl install --daemon-config config.toml --bridge-config bridge.toml --data-root data
+#   uv run dollosctl start
+#
+# This file lives ON-DEVICE and holds your bot token — it is gitignored,
+# NEVER commit it. The systemd unit references this file's PATH only; the
+# token never enters the unit file. See docs/dollosctl-smoke.md for the full
+# dogfood checklist.
+
+[discord]
+
+# REQUIRED — your Discord bot token.
+# Get one at https://discord.com/developers/applications → your app → Bot →
+# Reset Token. The bot needs the "Message Content Intent" enabled (same page),
+# and must be invited to your server with permission to read + send messages
+# in the channels you list below.
+token = "PASTE_YOUR_BOT_TOKEN_HERE"
+
+# REQUIRED — your own Discord user ID (numeric, as a string is fine).
+# This is how Doll knows which messages are from you (owner): owner DMs/mentions
+# preempt her + upgrade to UserSpoke-equivalent (cancel/energy). To get it:
+# Discord → User Settings → Advanced → enable Developer Mode, then right-click
+# your name → Copy User ID.
+owner_discord_id = "000000000000000000"
+
+# REQUIRED — the channels the bridge forwards to the daemon (channel IDs).
+# Right-click a channel → Copy Channel ID (Developer Mode on). Only messages in
+# these channels reach Doll's attention; everything else is ignored.
+# START SMALL: one private test channel while you dogfood. Do NOT put a
+# stranger-facing server here until you've confirmed P1e external-safety on a
+# private server first (it's merged + tested, but verify live).
+channel_allowlist = [
+    "111111111111111111",   # #test-channel — replace with your real channel ID(s)
+]
+
+# OPTIONAL — names Doll wakes to when mentioned by name (substring match on
+# message content). Add her character's names / nicknames. Leave [] to require
+# an explicit @-mention / DM / reply to wake her in a channel.
+name_aliases = ["Gura", "gura", "古拉"]
+
+# OPTIONAL — channels where EVERY message is admitted to her attention (no
+# @-mention needed). Use sparingly (a dedicated "talk to Doll" channel); a busy
+# channel here means she considers every message. Channel IDs, like above.
+always_wake_channels = []
