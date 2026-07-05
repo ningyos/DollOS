@@ -3,9 +3,12 @@
 On an external_public (stranger) turn:
   (a) the auto-injected ``[Memory context]`` is suppressed entirely
       (``MindLoop._derive_memory_hits`` returns ``[]``).
-  (b) explicit ``Recall`` excludes the private tier (``shared/`` +
-      ``external_dm/``) at the SQL layer, so a stranger's turn can never
-      surface the owner's private memory.
+  (b) explicit ``Recall`` scopes to ONLY the ``external_public/`` tier at the
+      SQL layer (a fail-closed ALLOWLIST — whole-branch review C2), so a
+      stranger's turn can never surface owner-private memory, INCLUDING
+      tiers that are not ``shared/``/``external_dm/`` (e.g. ``transcripts/``
+      — the C2 finding: the old denylist only enumerated
+      ``{shared, external_dm}`` and silently missed ``transcripts/``).
 
 internal and external_dm (owner) turns are NOT scoped — the owner sees full
 memory. Uses a real ``FtsMemory`` over tmp dirs so the SQL filter is
@@ -29,17 +32,22 @@ from tests.test_mind_loop import _FakeLLM
 def _make_memsearch(tmp_path: Path) -> tuple[FtsMemory, Path]:
     # NB: base == tmp_path (not tmp_path/"memory") so it lines up with
     # ctx.memory_root, which _make_mind_ctx sets to tmp_path directly —
-    # Recall's _private_tier_prefixes(ctx) computes ctx.memory_root/"shared"
-    # etc., so the indexed dirs must match that exactly.
+    # Recall's source_prefix allowlist computes ctx.memory_root/"external_public".
+    # transcripts/ is included here (mirroring kernel.build_memsearch, post-I3)
+    # so the C2 teeth tests below can prove transcripts/ never leaks through
+    # Recall on an external_public turn.
     base = tmp_path
     shared = base / "shared"
     public = base / "external_public"
     dm = base / "external_dm"
+    transcripts = base / "transcripts"
     shared.mkdir(parents=True)
     public.mkdir(parents=True)
     dm.mkdir(parents=True)
+    transcripts.mkdir(parents=True)
     ms = FtsMemory(
-        paths=[str(shared), str(public), str(dm)], db_path=base / "fts.db"
+        paths=[str(shared), str(public), str(dm), str(transcripts)],
+        db_path=base / "fts.db",
     )
     return ms, base
 
@@ -188,6 +196,83 @@ async def test_recall_external_public_teeth_private_never_returned(tmp_path: Pat
         out = await Recall(query="unique-scope-444").run(ctx)
         with pytest.raises(AssertionError):
             assert "private-fact" in out
+    finally:
+        ms.close()
+
+
+# ---------------------------------------------------------------------------
+# Whole-branch review C2: the OLD denylist only enumerated
+# {shared/, external_dm/} — transcripts/ (owner+Doll verbatim conversation,
+# see memory_writer.append_transcript) was NEVER in that list, so a
+# stranger's Recall could pull it straight out of the FTS index. The fix
+# (source_prefix=external_public/ allowlist) structurally can't leak
+# transcripts/ (or shared/, external_dm/, or any future tier) regardless of
+# whether it's enumerated anywhere.
+# ---------------------------------------------------------------------------
+
+
+async def test_recall_external_public_excludes_transcripts(tmp_path: Path):
+    """A stranger's Recall must never surface transcripts/ content, even
+    though transcripts/ was never on the old private-tier denylist."""
+    ms, base = _make_memsearch(tmp_path)
+    try:
+        (base / "transcripts" / "2026-07-05.md").write_text(
+            "## h\n\n- 12:00:00 主人說：owner-verbatim-transcript-unique-666\n",
+            encoding="utf-8",
+        )
+        (base / "external_public" / "y.md").write_text(
+            "## h\n\npublic-fact unique-666.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
+        ctx.origin_tier = "external_public"
+
+        out = await Recall(query="unique-666").run(ctx)
+        assert "public-fact" in out
+        assert "owner-verbatim-transcript" not in out
+    finally:
+        ms.close()
+
+
+async def test_recall_external_public_teeth_transcripts_never_returned(tmp_path: Path):
+    """Invert the assertion to prove real teeth: if the allowlist regressed
+    back to the old denylist (which never enumerated transcripts/), the
+    transcript marker WOULD surface and this ``assert`` would NOT raise."""
+    ms, base = _make_memsearch(tmp_path)
+    try:
+        (base / "transcripts" / "2026-07-05.md").write_text(
+            "## h\n\n- 12:00:00 主人說：owner-verbatim-transcript-unique-777\n",
+            encoding="utf-8",
+        )
+        await ms.index()
+
+        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
+        ctx.origin_tier = "external_public"
+
+        out = await Recall(query="unique-777").run(ctx)
+        with pytest.raises(AssertionError):
+            assert "owner-verbatim-transcript" in out
+    finally:
+        ms.close()
+
+
+async def test_recall_internal_turn_transcripts_still_retrievable_control(tmp_path: Path):
+    """Control: internal (owner) turns are unrestricted — transcripts/ content
+    IS retrievable via Recall same as before this fix."""
+    ms, base = _make_memsearch(tmp_path)
+    try:
+        (base / "transcripts" / "2026-07-05.md").write_text(
+            "## h\n\n- 12:00:00 主人說：owner-verbatim-transcript-unique-888\n",
+            encoding="utf-8",
+        )
+        await ms.index()
+
+        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
+        assert ctx.origin_tier == "internal"
+
+        out = await Recall(query="unique-888").run(ctx)
+        assert "owner-verbatim-transcript" in out
     finally:
         ms.close()
 

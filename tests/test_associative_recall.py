@@ -312,3 +312,54 @@ async def test_associative_search_e2e_real_fts_memory(tmp_path):
     assert axes  # non-empty
     assert "Anxious evening monday" in contents or "Anniversary" in contents
     ms.close()
+
+
+@pytest.mark.asyncio
+async def test_associative_search_source_prefix_scopes_real_fts_memory(tmp_path):
+    """Whole-branch review C2: MindLoop passes ``source_prefix=external_public/``
+    into associative_search on external_public turns (the fail-closed
+    ALLOWLIST, replacing the old ``exclude_prefixes`` denylist). Prove it
+    scopes a REAL FtsMemory result set to ONLY that tier — excluding
+    transcripts/ (which the OLD denylist never enumerated, and so leaked)
+    as well as shared/.
+    """
+    from dollos.memory import FtsMemory
+
+    base = tmp_path
+    shared = base / "shared"
+    public = base / "external_public"
+    transcripts = base / "transcripts"
+    shared.mkdir(parents=True)
+    public.mkdir(parents=True)
+    transcripts.mkdir(parents=True)
+
+    (transcripts / "t.md").write_text(
+        "## 2026-05-18 19:00:00 [tod:evening]\n\n"
+        "owner verbatim transcript keyword-assoc-marker.\n",
+        encoding="utf-8",
+    )
+    (public / "p.md").write_text(
+        "## 2026-05-18 19:00:00 [tod:evening]\n\n"
+        "public note keyword-assoc-marker.\n",
+        encoding="utf-8",
+    )
+
+    ms = FtsMemory(
+        paths=[str(shared), str(public), str(transcripts)],
+        db_path=base / "fts.db",
+    )
+    try:
+        await ms.index()
+        state = MindState()
+        state.recent_perceptions.append(
+            Perception(kind="UserSpoke", t=0.0, data={"text": "keyword-assoc-marker"})
+        )
+        now = datetime(2026, 5, 18, 19, 30)  # evening
+        hits = await associative_search(
+            ms, state, top_k=4, now=now, source_prefix=public,
+        )
+        contents = " ".join(h["content"] for h in hits)
+        assert "public note" in contents
+        assert "owner verbatim transcript" not in contents
+    finally:
+        ms.close()

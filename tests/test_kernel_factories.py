@@ -84,3 +84,75 @@ def test_build_memsearch_does_not_create_skill_bodies_dir(tmp_path):
     build_memsearch(settings)
     bodies_path = tmp_path / "data" / "memory" / "skill_bodies"
     assert not bodies_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Whole-branch review I3: external_public/ + external_dm/ must be indexed
+# too, or a full reindex silently drops external-tier memory written by
+# NoteMemory/WriteDiary (which index individual files immediately, but a
+# full memsearch.index() walk previously covered only
+# [shared, transcripts, skills]).
+# ---------------------------------------------------------------------------
+
+
+def test_build_memsearch_creates_external_public_dir(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    expected = tmp_path / "data" / "memory" / "external_public"
+    assert not expected.exists()
+
+    build_memsearch(settings)
+
+    assert expected.is_dir()
+
+
+def test_build_memsearch_creates_external_dm_dir(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    expected = tmp_path / "data" / "memory" / "external_dm"
+    assert not expected.exists()
+
+    build_memsearch(settings)
+
+    assert expected.is_dir()
+
+
+async def test_build_memsearch_full_reindex_retains_external_dm_note(tmp_path: Path):
+    """The actual I3 teeth test: a NOTE written straight to external_dm/ (as
+    NoteMemory would write on an owner-DM turn) must still be retrievable
+    after a FULL reindex — not just after the per-file index_file() call
+    NoteMemory itself does. Before the fix, build_memsearch's paths list
+    ([shared, transcripts, skills]) did not include external_dm/, so a full
+    index() would silently drop this note from the FTS index."""
+    settings = _make_settings(tmp_path)
+    mem = build_memsearch(settings)
+    try:
+        dm_dir = tmp_path / "data" / "memory" / "external_dm"
+        dm_dir.mkdir(parents=True, exist_ok=True)
+        (dm_dir / "2026-07-05.md").write_text(
+            "## h\n\nowner-dm-note-unique-marker-i3-check.\n", encoding="utf-8"
+        )
+        await mem.index()  # FULL reindex, not index_file()
+        hits = await mem.search("owner-dm-note-unique-marker-i3-check", top_k=5)
+        assert any(
+            "owner-dm-note-unique-marker-i3-check" in h["content"] for h in hits
+        )
+    finally:
+        mem.close()
+
+
+async def test_build_memsearch_full_reindex_retains_external_public_note(tmp_path: Path):
+    """Same as above for external_public/ (NoteMemory on a stranger's turn)."""
+    settings = _make_settings(tmp_path)
+    mem = build_memsearch(settings)
+    try:
+        pub_dir = tmp_path / "data" / "memory" / "external_public"
+        pub_dir.mkdir(parents=True, exist_ok=True)
+        (pub_dir / "2026-07-05.md").write_text(
+            "## h\n\npublic-note-unique-marker-i3-check.\n", encoding="utf-8"
+        )
+        await mem.index()  # FULL reindex
+        hits = await mem.search("public-note-unique-marker-i3-check", top_k=5)
+        assert any(
+            "public-note-unique-marker-i3-check" in h["content"] for h in hits
+        )
+    finally:
+        mem.close()

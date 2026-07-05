@@ -110,27 +110,44 @@ def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
 def build_memsearch(settings: Settings) -> FtsMemory:
     """Construct the embedder-free FtsMemory rooted at data.root / memory.
 
-    Indexes shared/, transcripts/, and skills/ markdown into an FTS5 + jieba
-    index at data.root/memory/fts.db (derived, disposable).
+    Indexes shared/, transcripts/, skills/, external_public/, and
+    external_dm/ markdown into an FTS5 + jieba index at
+    data.root/memory/fts.db (derived, disposable).
 
     skills/ holds skill entry files (frontmatter + short description); they ARE indexed
     so RECALL surfaces them. skill_bodies/ holds full skill instructions and is NOT
     indexed — it is loaded on demand by the InvokeSkill tool. skill_bodies/ is also
     NOT auto-created at startup; Doll creates it lazily via Shell when she writes
     a new skill body.
+
+    Whole-branch review I3: external_public/ and external_dm/ (P1e Task 3)
+    are indexed here too — NoteMemory/WriteDiary index each file individually
+    on write, but a FULL reindex (this function, called from ``index()``)
+    previously walked only [shared, transcripts, skills], so external-tier
+    memory would silently vanish from the FTS index on the next full
+    reindex. Safe to add BECAUSE C2 turned external_public retrieval into a
+    fail-closed ALLOWLIST (source_prefix=external_public/ only) — indexing
+    external_dm/ here can no longer leak to a stranger's turn regardless of
+    reindex timing.
     """
     memory_root = settings.data.root / "memory"
     shared_path = memory_root / "shared"
     transcripts_path = memory_root / "transcripts"
     skills_path = memory_root / "skills"
+    external_public_path = memory_root / "external_public"
+    external_dm_path = memory_root / "external_dm"
     shared_path.mkdir(parents=True, exist_ok=True)
     transcripts_path.mkdir(parents=True, exist_ok=True)
     skills_path.mkdir(parents=True, exist_ok=True)
+    external_public_path.mkdir(parents=True, exist_ok=True)
+    external_dm_path.mkdir(parents=True, exist_ok=True)
     return FtsMemory(
         paths=[
             str(shared_path),
             str(transcripts_path),
             str(skills_path),
+            str(external_public_path),
+            str(external_dm_path),
         ],
         db_path=memory_root / "fts.db",
     )

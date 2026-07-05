@@ -420,3 +420,75 @@ def test_tool_habits_block_gated():
     out = render_mind(MindState(), [], "sys",
                       tool_habits_hits=[{"content": "## h\n\n[situation] grep\nuse Grep\n"}])
     assert "[Tool habits]" in out and "use Grep" in out
+
+
+# ---------------------------------------------------------------------------
+# Whole-branch review C3: on external_public turns, scope [Recent
+# perceptions] and suppress [Recent outputs] entirely — both are GLOBAL
+# rolling buffers appended for EVERY turn regardless of origin, so unscoped
+# they render prior owner UserSpoke/owner-DM text + Doll's prior private
+# replies straight into a stranger's prompt.
+# ---------------------------------------------------------------------------
+
+
+def _seed_mixed_state() -> MindState:
+    """One owner UserSpoke (private, must be scoped out on external_public)
+    + one stranger ChannelMessage (public-safe, must survive scoping) +
+    one prior Speech output (must be suppressed entirely on external_public)."""
+    state = MindState()
+    state.recent_perceptions.append(Perception(
+        kind="UserSpoke", t=time.time(),
+        data={"text": "owner-secret-marker-999"},
+    ))
+    state.recent_perceptions.append(Perception(
+        kind="ChannelMessage", t=time.time(),
+        data={
+            "content": "stranger-public-marker-123", "channel": "general",
+            "author": "rando", "author_is_owner": False, "is_dm": False,
+        },
+    ))
+    state.recent_outputs.append(OutputRecord(
+        t=time.time(), kind="Speech", summary="spoke: owner-private-reply-marker",
+    ))
+    return state
+
+
+def test_external_public_scopes_recent_perceptions_and_suppresses_outputs():
+    state = _seed_mixed_state()
+    out = render_mind(state, [], "SYS", origin_tier="external_public")
+    assert "owner-secret-marker-999" not in out
+    assert "stranger-public-marker-123" in out
+    assert "[Recent outputs]" not in out
+    assert "owner-private-reply-marker" not in out
+
+
+def test_internal_turn_control_shows_owner_marker_and_outputs():
+    """Control: internal (default origin_tier) renders BOTH blocks in full,
+    unchanged by this fix."""
+    state = _seed_mixed_state()
+    out = render_mind(state, [], "SYS")  # origin_tier defaults to "internal"
+    assert "owner-secret-marker-999" in out
+    assert "stranger-public-marker-123" in out
+    assert "[Recent outputs]" in out
+    assert "owner-private-reply-marker" in out
+
+
+def test_external_dm_turn_control_shows_owner_marker_and_outputs():
+    """Control: external_dm (owner's own DM) is NOT scoped — owner sees her
+    own full working memory, mirroring the retrieval-scope control tests."""
+    state = _seed_mixed_state()
+    out = render_mind(state, [], "SYS", origin_tier="external_dm")
+    assert "owner-secret-marker-999" in out
+    assert "[Recent outputs]" in out
+    assert "owner-private-reply-marker" in out
+
+
+def test_external_public_teeth_owner_marker_would_leak_unfiltered():
+    """Teeth: prove the owner marker genuinely lives in recent_perceptions
+    (i.e. this isn't a vacuous pass because the marker never renders at all)
+    — the unfiltered renderer DOES include it, so the scoped render_mind
+    excluding it is a real, non-trivial effect of the C3 filter."""
+    from dollos.mind.mind_prompt import _render_perceptions
+    state = _seed_mixed_state()
+    unfiltered = _render_perceptions(state.recent_perceptions, time.time())
+    assert "owner-secret-marker-999" in unfiltered

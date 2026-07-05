@@ -1,8 +1,10 @@
-"""Per-turn origin_tier axis (P1e Task 1, spec S1).
+"""Per-turn origin_tier axis (P1e Task 1, spec S1; C1 fix from the
+whole-branch review, 2026-07-05).
 
 `MindCtx.origin_tier` is computed once per bucket at drain time from that
-bucket's perceptions: a ChannelMessage from the owner → "external_dm", from
-anyone else → "external_public", no ChannelMessage → "internal" (P1a
+bucket's perceptions: a ChannelMessage from the owner AND in a DM
+(``is_dm``) → "external_dm"; anyone else — including the owner posting in a
+PUBLIC channel — → "external_public"; no ChannelMessage → "internal" (P1a
 single-origin bucket, so this is a straight scan, no cross-bucket bleed).
 
 Also covers the S1 side-effect: ChannelMessage now counts toward
@@ -22,7 +24,11 @@ from tests._mindloop_factory import make_mindloop
 
 
 def _channel_msg(
-    content: str, *, author_is_owner: bool, channel_id: str = "disc:g1:c1"
+    content: str,
+    *,
+    author_is_owner: bool,
+    is_dm: bool = False,
+    channel_id: str = "disc:g1:c1",
 ) -> Perception:
     return Perception(
         kind="ChannelMessage",
@@ -31,6 +37,7 @@ def _channel_msg(
             "content": content,
             "channel_id": channel_id,
             "author_is_owner": author_is_owner,
+            "is_dm": is_dm,
         },
     )
 
@@ -42,9 +49,37 @@ def _user_perception(text: str) -> Perception:
 @pytest.mark.asyncio
 async def test_origin_tier_owner_dm(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
-    await ml._run_one_turn([_channel_msg("hi", author_is_owner=True)])
+    await ml._run_one_turn(
+        [_channel_msg("hi", author_is_owner=True, is_dm=True)]
+    )
     assert ml._ctx.origin_tier == "external_dm"
     assert ml._ctx.external_ctx is True  # S1: ChannelMessage now external
+
+
+@pytest.mark.asyncio
+async def test_origin_tier_owner_in_public_channel_is_external_public(tmp_path):
+    """Whole-branch review C1: the owner posting in a PUBLIC channel
+    (author_is_owner=True, is_dm=False) must NOT get "external_dm" — the
+    reply there is public, so full private retrieval must not be granted."""
+    ml = make_mindloop(memory_root=tmp_path)
+    await ml._run_one_turn(
+        [_channel_msg("hi", author_is_owner=True, is_dm=False)]
+    )
+    assert ml._ctx.origin_tier == "external_public"
+
+
+@pytest.mark.asyncio
+async def test_origin_tier_owner_missing_is_dm_fails_closed(tmp_path):
+    """A ChannelMessage that omits ``is_dm`` entirely (falsy via .get()) must
+    fail CLOSED to external_public, not open to external_dm."""
+    ml = make_mindloop(memory_root=tmp_path)
+    p = Perception(
+        kind="ChannelMessage",
+        t=time.time(),
+        data={"content": "hi", "channel_id": "disc:g1:c1", "author_is_owner": True},
+    )
+    await ml._run_one_turn([p])
+    assert ml._ctx.origin_tier == "external_public"
 
 
 @pytest.mark.asyncio
