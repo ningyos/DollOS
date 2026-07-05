@@ -33,7 +33,13 @@ from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
-from dollos.tools import EXTERNAL_TOOLS, NoteToolLesson, PinSelf, SelfRevision
+from dollos.tools import (
+    EXTERNAL_TOOLS,
+    NoteToolLesson,
+    PinSelf,
+    SelfRevision,
+    _private_tier_prefixes,
+)
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -354,10 +360,21 @@ class MindLoop:
         # Memsearch query from recent perceptions
         memsearch_hits = await self._derive_memory_hits()
 
-        # Context-associative recall (additive side-channel)
+        # Context-associative recall (additive side-channel). P1e Task 4 (S3):
+        # on an external_public turn this side-channel must not bypass the
+        # same private-tier scoping Recall enforces — thread the exclusion
+        # rather than skip the whole call, so public turns still get
+        # external_public associative hits.
         try:
             associative_hits = await associative_search(
-                self._ctx.memsearch, self._state, top_k=3
+                self._ctx.memsearch,
+                self._state,
+                top_k=3,
+                exclude_prefixes=(
+                    _private_tier_prefixes(self._ctx)
+                    if self._ctx.origin_tier == "external_public"
+                    else None
+                ),
             )
         except Exception:
             logger.exception("associative_search failed; continuing without")
@@ -613,7 +630,16 @@ class MindLoop:
         return saved
 
     async def _derive_memory_hits(self) -> list[dict]:
-        """Query memsearch from the most recent UserSpoke or last 3 perceptions."""
+        """Query memsearch from the most recent UserSpoke or last 3 perceptions.
+
+        P1e Task 4 (S3): on an external_public (stranger) turn the auto-
+        injected ``[Memory context]`` is suppressed entirely — not just
+        scoped — so a stranger's turn never gets an unsolicited dump of
+        Doll's memory. Explicit ``Recall`` is the only retrieval path on
+        such turns, and it scopes out the private tier (tools.py).
+        """
+        if self._ctx.origin_tier == "external_public":
+            return []
         query = ""
         for p in reversed(self._state.recent_perceptions):
             if p.kind == "UserSpoke":

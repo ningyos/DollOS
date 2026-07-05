@@ -78,6 +78,7 @@ async def associative_search(
     *,
     top_k: int = 3,
     now: datetime | None = None,
+    exclude_prefixes: list | None = None,
 ) -> list[dict]:
     """Per-axis associative recall. Returns up to ``top_k`` unique hits.
 
@@ -88,6 +89,12 @@ async def associative_search(
       - same calendar MM-DD (anniversary)
 
     Dedupe by chunk_hash. Skips axes that yield 0 matches.
+
+    ``exclude_prefixes`` (P1e Task 4, S3): threaded straight into the
+    underlying ``memsearch.search`` SQL-level exclusion — pass the
+    private-tier dirs on an external_public turn so this side-channel can't
+    bypass the same scoping Recall enforces. ``None`` (the default) is fully
+    unchanged behavior.
     """
     if now is None:
         now = datetime.now()
@@ -107,8 +114,17 @@ async def associative_search(
 
     # One shared semantic pool — memsearch query is identical across axes,
     # only the post-filter differs. Saves N round-trips.
+    #
+    # exclude_prefixes is only added to the call when set (not None) so the
+    # unscoped (internal/external_dm) call shape is byte-for-byte identical
+    # to before this feature — test/production memsearch stand-ins that
+    # don't declare an `exclude_prefixes` parameter (and have no **kwargs
+    # passthrough) keep working unchanged.
+    search_kwargs: dict = {"top_k": _AXIS_POOL}
+    if exclude_prefixes is not None:
+        search_kwargs["exclude_prefixes"] = exclude_prefixes
     try:
-        pool = await memsearch.search(query, top_k=_AXIS_POOL)
+        pool = await memsearch.search(query, **search_kwargs)
     except Exception:
         logger.exception("associative_search: memsearch query failed")
         return []
