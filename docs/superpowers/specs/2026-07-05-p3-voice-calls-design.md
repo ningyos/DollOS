@@ -1,6 +1,8 @@
-# P3 — Discord 語音通話 + 延遲壓縮前置 Design Proposal(待使用者批准)
+# P3 — Discord 語音通話 + 延遲壓縮前置 Design Proposal(v2,R1-hardened,待使用者批准)
 
-> **狀態:2026-07-05 草案。** 這是 P3 的 brainstorming 設計提案。使用者不在線,我(Claude)自主探索 + 把架構決策與**明確開放叉路**寫清楚供批准。**未進實作**(尊重 design-before-code 閘)。批准/選定叉路後才 `writing-plans` → SDD。goal 三階段的 P3;驗收 = smolGura「無語音」失敗模式不重演。
+> **狀態:2026-07-05 草案 v2(經一輪 opus 對抗式審查收斂)。** P3 的 brainstorming 設計提案。使用者不在線,我(Claude)自主探索 + R1 對抗審查 + 把架構決策與**明確開放叉路**寫清楚供批准。**未進實作**(尊重 design-before-code 閘)。批准/選定叉路後才 `writing-plans` → SDD。goal 三階段的 P3;驗收 = smolGura「無語音」失敗模式不重演。
+>
+> **R1 收斂重點(v1→v2):**(1) 架構叉路加入 **選項 C**(bridge endpoint→utterance PCM over 既有 WS→daemon ASR/TTS),它在**同機部署**下完勝 A 與 B —— 原 v1 推 A 是拿稻草人 B 比出來的、且 A 的「少一跳」在 localhost 可忽略、模型搬進 bridge 有 OOM 風險。**改推 C。**(2) 撤回「voice 完全走 P1c 注意力」—— 對即時語音 debounce 有害、disengage 會通話中途靜音、真正的 **turn-taking 是 P3 要新建的子系統**。(3) latency 重新界定(endpoint + debounce + TTS-TTFT 三項,非只 reflex;+speculative-decoding 姊妹 plan)。(4) 揭露隱藏依賴 P1d + voice→external_public 記憶失憶。(5) **P3 是 EPIC(6-7 概念),要拆。**
 
 ## 1. 目標與範圍
 
@@ -37,36 +39,71 @@ Discord voice → bridge 收 Opus → 每參與者一條音訊串到 **daemon**(
 - **優**:voice 模型留 daemon 一處(GPU 一處、character-pack voice 綁定不動);重用 Phase B/C 的 `VoiceSession` 整套。
 - **劣**:需新 audio transport(現 WS 拒 binary → 要 N 個 aiortc peer per Discord 參與者,或新協定);多人語音(N 人)對 1-peer 的 `VoiceSession` 要 N 化 + speaker 歸屬;audio 過 daemon↔bridge 多一跳(latency)。
 
-### 我的建議:**叉路 A**(但把 voice 引擎打包成 bridge 可選 sidecar)
-理由:(1) **與 P1c 注意力天然契合** —— voice 話輪變帶 author 的 ChannelMessage,直接吃 L0/L1/L2 + engagement + disengage,不必為 voice 另立注意力;(2) transport 零新增(不用碰「WS 拒 binary」這個硬限制,不用 N 個 aiortc peer);(3) latency 少一跳(ASR 貼音訊)—— 對「延遲壓縮前置」有利。**代價是模型搬進 bridge**;緩解:bridge 的 voice 引擎做成**可選 sidecar / 同進程 lazy-load**(如同 py-cord lazy import),character-pack voice 綁定用同一 `voice/pack.py` 讀取。若你更看重「模型單一處/daemon 中心」,則選 B(我會改設計)。
+### 叉路 C —— bridge endpoint + utterance PCM over 既有 WS(**R1 新增,改推此案**)
+Discord voice(py-cord voice receive,per-user stream)→ **bridge 端**用**既有** `SileroVAD` + `UtteranceStateMachine`(`voice/bridge/`,已存在)做 endpointing → 一段 endpoint 完的**離散 utterance PCM**(base64-in-JSON)+ user_id → 走**既有 text WS** 到 daemon → daemon 用**既有** ASR(`transcribe()` 本就是 utterance-batch)產帶 author 的 perception → daemon TTS PCM 同法回 bridge → Discord 送出。
+- **模型留 daemon 一份**(勝 A:無 bridge GPU、無權重複製 OOM 風險、character-pack voice 綁定不動,合 parent-spec「daemon 保持純淨」)。
+- **無新 binary transport、無 N 個 aiortc peer、無 VoiceSession N 化**(勝 B:C1 指出 B 的「audio 多一跳」只在**連續串流**才痛,C 送**離散 endpointed utterance** 避開了)。
+- **同機 localhost 下,per-utterance base64 一跳(~100-200KB)幾近免費** —— A 的「少一跳 latency」在 localhost 可忽略(R1-C1)。
+- **代價**:utterance PCM base64 過 WS(需給既有 text-only WS 加一個 utterance 訊息型別;非 binary frame,故不碰 `server.py` 拒 binary 的硬限制)。bridge 需 Silero VAD(輕,已在 `voice/bridge/`,非 GPU 大模型)。
 
-**其餘設計兩案共用**(下列)。
+### 修正後的建議:**叉路 C**(非 v1 的 A)
+R1 指出 A vs B 是假二選一:A 的 localhost「少一跳」可忽略、模型搬進 bridge 有 OOM 風險(fish/qwen3-tts 拉整個 torch+CUDA,和 35B MoE 搶 VRAM);B 最重(N peer + VoiceSession 單參與者結構要 N 化)。**C 在同機部署的三個關心軸(daemon 中心、transport 便宜、latency)全勝** —— 故改推 C。**但注意**:三案的「voice 音訊怎麼進 ASR」不同,但下面 §4/§5 的**真正新工作(turn-taking、reply-routing、latency)三案共用且都比 v1 想的大**。
 
-## 4. 兩案共用的設計
+### G5 一個 favor Discord voice 的點(R1 補)
+Discord 給 per-user **數位**串流、且**不把 bot 自己的音訊迴授** —— 折磨本地 mic bridge 的**回音消除問題在此不存在**。Discord voice 比本地 voice 好做,且此點微偏 C(ASR/endpoint 放在 per-user 串流已在的地方=bridge)。
 
-- **voice 話輪 → 注意力**:一段 endpoint 完的語音 utterance = 一個 perception。走 P1c admission:situation=`voice_call`,author=Discord user_id,participant_set/engagement 照 P1c(進語音頻道被 @/叫名 → 開 session → 續聊不用再叫名);disengage 閘防她在通話裡搶話停不下來。**voice call 的「該不該回」= P1c 注意力,不另做。**
-- **[缺口] TTS 對 external origin 不發聲**:現 `TTSObservingSink` 只對 `TextChunk`(internal)觸發 TTS,對 `AddressedText`(Discord origin)不發聲(`voice/sink.py:38`)。P3 必修:voice_call turn 的 `AddressedText`(或新 voice-reply 型別)要觸發 TTS → 送回該語音頻道。
-- **N-participant turn-taking**:每 Discord 參與者一條 VAD/utterance FSM(py-cord voice receive 給 per-user stream);speaker 歸屬用 Discord user_id(先不做聲紋)。她說話時的 barge-in / 插話處理(她講到一半有人說話)—— 沿用既有 interrupt/preempt 語意(P1b owner preempt)。
-- **situation=voice_call 渲染**:P1d 情境渲染的一個 situation;prompt 標「妳在語音通話中,聽到 X 說…」。P1e origin_tier 安全閘照樣套(voice 頻道是 external_public → 保守工具集 + 記憶 scope)。
-- **finetune trace**:voice 話輪照 P1f trace(ASR text 進 perception_batch、TTS 回覆進 speech;audio 本身不入 trace,text 層足夠訓練)。
+## 4. voice 話輪的設計(R1 大改:turn-taking 是新子系統,不是 P1c)
 
-## 5. 延遲壓縮前置(goal 明列「含延遲壓縮前置」)
+**v1 的「voice 完全走 P1c 注意力、不另做」被 R1 駁回(C2)。** 為什麼不成立:
+- **L0 訊號大半失效**:語音沒 `mentioned`/`reply_to_bot`,cold-wake 只剩 `l0_name`(ASR 文字出現「Gura」)或 `l0_always`。
+- **debounce 對即時通話有害**:P1c engaged 2s / cold 8s 窗批次化,疊在 VAD 800ms endpoint 上 = 她**已知對方講完**後再等 2-8s。VAD endpoint **就是**「講完了」訊號,debounce 冗餘且致命延遲。
+- **disengage 閘會通話中途靜音**:`max_session_turns` 到了刪 session → 她在**同步通話中突然沉默**到有人再叫名 = 社交破壞。`always_wake` 逃過靜音但只剩有害的 debounce。
+- **真正的問題 turn-taking 完全沒模型**:即時多人通話「現在該不該說」(有人講到一半嗎、問題落她身上嗎、有空檔可接嗎、該讓話嗎)`AttentionGate` 無此概念;barge-in「沿用 P1b preempt」是 **owner-only**(陌生人講不停她)。
 
-通話對延遲敏感(文字可等,語音不能)。既有欠帳:`docs/superpowers/plans/2026-06-02-latency-compression-think-restructuring.md`(**未執行**,全 `- [ ]`)+ 其 design。核心構想:voice-first grammar 讓模型選 **REFLEX 分支(零 think 立刻說)** vs 完整 **DELIBERATE 分支(SEEN/INTENT/REVIEW/MOOD/TOOL)**。
-- **P3 打包**:把這條欠帳拉進 P3 —— 通話中允許 REFLEX 快路徑(簡單回應零 think 秒回),複雜才 DELIBERATE。這是 goal「延遲壓縮前置」的實體。
-- 現有 sub-turn TTS streaming(SentenceChunker)已壓 TTFT-to-first-audio,是基礎;REFLEX 分支壓的是 think 段的 TTFT。
-- **開放**:REFLEX/DELIBERATE 的 grammar 分支要不要只在 voice_call 開,還是全域?(voice 先,文字保守)。
+**修正結論:turn-taking 是 P3 要新建的子系統。** 借 P1c 的部分(name-wake、participant 概念),但要新做:VAD-endpoint-驅動的話輪邊界(取代 debounce)、通話中讓話/搶話政策(非 owner-only preempt)、通話級 disengage(禮貌沉默 ≠ 離場)。**voice 的「該不該說」是新機制,P2 用真實通話數據調。**
 
-## 6. 明確開放決策(給你)
+**其餘要件(R1 校正大小)**:
+- **[G3 真正的新工作] voice-vs-text reply routing**:現 `on_daemon_message` 無條件 text-send `AddressedText`(`controller.py:222`)。voice 回覆要走 TTS→語音頻道,需**新 reply 型別**(`SpokenText`/`VoiceReply`)或 channel-kind 查詢 —— 非 v1 說的「trivial 修 TTSObservingSink」(那缺口在 C 案下 daemon 根本不 TTS Discord 音訊,是 B 案專屬)。
+- **[G4 需 spike,非既成資產] py-cord voice receive**:Discord **官方不支援** bot 收語音,實作逆向工程、跨版本脆弱;`discord.sinks` 是**錄檔導向**,即時串流要自訂 streaming Sink。**P3 第一步是 de-risk 這個 spike**,不是假設可用。speaker 歸屬先用 Discord user_id(不做聲紋)。
+- **[G6] barge-in / full-duplex**:她 TTS 時偵測有人說話,需 bridge 對 inbound 跑 VAD while speaking;`abort_speak` 存在但只綁 owner-preempt。誰能打斷、多快 —— 未定,新工作。
+- **[G1 隱藏依賴] situation=voice_call 需要 P1d**:目前**無 P1d plan 檔、code 無 situation 分類器**。P3 把 P1d(parent-spec §2「可稍後」)拉上關鍵路徑 —— 要嘛先做 P1d 最小 situation 軸,要嘛 P3 自帶。
+- **[G2 未檢視 UX 代價] voice→external_public 記憶失憶**:無 voice_call situation 時多人語音渲染成 external_public → P1e 套保守工具 + 記憶 scope 過濾 + 抑制 auto-`[Memory context]` → **通話中預設記憶失憶**(連主人在場也撈不到共同回憶)。voice_call 可能需 owner-在場放寬記憶 scope。
+- **finetune trace**:voice 話輪照 P1f(ASR text 進 perception_batch、TTS 回覆進 speech;audio 不入 trace,text 層足夠訓練)。
 
-1. **架構叉路 A vs B**(§3):voice 模型跑 bridge(A,我建議)還是 daemon(B)?這決定整個 P3 骨架。
-2. **latency 壓縮範圍**:REFLEX 分支只 voice_call 還是全域?
-3. **speaker 歸屬**:P3 先用 Discord user_id(不做聲紋),聲紋(`project_speaker_id`)延後?(我建議是)
-4. **多人語音的她該不該說**:通話中沿用 P1c 注意力就夠,還是 voice 需要額外的「搶話/讓話」禮貌閘(P2 用真實通話數據調)?
+## 5. 延遲壓縮前置(R1 重新界定:reflex 只是三項之一,不是 the lever)
 
-## 7. 建議下一步
+**v1 只提 reflex/deliberate 被 R1 駁回(C3):語音延遲被三項主導,reflex 一項都沒碰**:
+1. **VAD endpoint 靜音等待**(固定 800ms,`voice/bridge/controller.py:33`)—— 可調短(準確度換延遲)。
+2. **debounce 批次窗**(2-8s,§4 指出對語音有害)—— voice 應設 ~0 / 只用 endpoint。
+3. **TTS TTFT**(首音)+ ASR compute + 網路 RTT。
+- reflex/deliberate(`2026-06-02-latency-compression-think-restructuring.md`,未執行)壓的是 **think 段 token 生成**,是**文字**微優化,不碰前兩大項。
+- **姊妹欠帳**:`2026-06-02-latency-compression-speculative-decoding.md`(v1 漏提)—— 投機解碼壓 LLM 原始生成速度,對通話更相關。
+- **Self-First 侵蝕風險**(R1 補):reflex = speak-only 無 tool、跳 MOOD/REVIEW;通話多數 turn 走 reflex → 她通話中不更新 mood、不自省、不能 Recall/NoteMemory → 拉平 Self-First。需明文取捨。
+- **P3 latency 的實體 = endpoint 調短 + voice debounce≈0 + TTS-TTFT + (reflex/speculative 擇一)**,非只 reflex。目標值(「通話可忍」)需真實通話體感 → P2/dogfood 定。
 
-- **先 dogfood P1(我的首選)**:P1 文字存在感一跑,P2 注意力調參 + P3 voice 都有真實地基(通話禮貌閘、latency 目標值都需真實體感)。P3 spec §細節,goal spec §3.9 自己也寫「P1 上線後以實際經驗補寫」。
-- **或**:你選定 §6 的叉路(尤其 #1 A/B),我把本提案收斂成正式 spec → `writing-plans` → SDD 開 P3。
+## 6. 明確開放決策(給你,R1 更新)
 
-**這份是提案、非既成事實。** P3 是大階段、且 §6 的叉路(尤其模型跑哪)是你當設計夥伴該拍板的。我不把架構悄悄寫進 code。
+1. **架構叉路(§3,R1 改寫):A(模型 bridge)vs B(audio→daemon)vs **C(bridge endpoint→utterance PCM over WS→daemon,R1 新增,我改推此案)**。** 決定 P3 骨架。
+2. **turn-taking(§4,R1 新識別的子系統)**:接受「voice 的該不該說是新機制、非 P1c」?VAD-endpoint 話輪邊界 + 讓話政策 + 通話級禮貌沉默(非 mid-call 靜音)。
+3. **latency 範圍(§5)**:endpoint 調短 + voice-debounce≈0 為主;reflex vs speculative-decoding 擇一;是否接受 reflex 的 Self-First 取捨?
+4. **P1d 依賴(G1)**:先補 P1d 最小 situation 軸,還是 P3 自帶 voice_call situation?
+5. **voice 記憶 scope(G2)**:owner-在場通話放寬 external_public 的記憶失憶?
+6. **speaker 歸屬**:先 Discord user_id、聲紋延後?(我建議是)
+
+## 7. 範圍:P3 是 EPIC,要拆(R1-scope)
+
+R1 判定 P3 不是單一階段(違「每 plan 一個新概念」)。至少 6-7 個單概念 plan:
+- **P3a**:py-cord voice join/leave + voice-receive **spike**(先 de-risk G4 —— 官方不支援、脆弱)。
+- **P3b**:per-user VAD/endpoint/attribution(bridge,重用 `voice/bridge/` SileroVAD)+ utterance-over-WS transport(選 C)。
+- **P3c**:voice-vs-text reply routing(新 reply 型別 + TTS→語音頻道,G3)。
+- **P3d**:**turn-taking 子系統**(VAD-endpoint 話輪 + 讓話政策 + 通話級 disengage;新,非 P1c,C2)。
+- **P3e**:barge-in / full-duplex(G6)。
+- **P3f**:latency(endpoint 調短 + debounce≈0 + reflex/speculative,C3)。
+- **(前置)P1d 最小 situation 軸**(voice_call,G1)+ voice 記憶 scope(G2)。
+
+## 8. 建議下一步
+
+- **先 dogfood P1(我的首選,R1 也強化此點)**:通話禮貌閘、latency 目標值、debounce-vs-0 —— 全需真實通話體感,現在都是猜。goal spec §3.9 自己寫「P1 上線後以實際經驗補寫」。
+- **或**:你拍板 §6 的叉路(尤其 #1 的 **A/B/C**、#2 接受 turn-taking 是新子系統),我把本提案收斂成正式 spec + P3 EPIC 拆解 → `writing-plans` → SDD。
+
+**這份是提案、非既成事實。** R1 已把 v1 的三個 mis-frame 挖出(假二選一漏了 C、誇大 P1c 重用藏了 turn-taking、latency 認錯項)。P3 的架構決策是你當設計夥伴該拍板的 —— 我不把架構悄悄寫進 code。
