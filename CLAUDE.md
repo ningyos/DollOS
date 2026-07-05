@@ -142,6 +142,48 @@ uv run python -m dollos --config config.toml
 uv run pytest                   # tests
 ```
 
+To also run the Discord bridge in dev, in a second terminal:
+
+```bash
+uv run python -m dollos.discord_bridge --daemon ws://127.0.0.1:9876 --config <bridge>.toml --data-root data
+```
+
+### `dollosctl` — run the full stack as systemd `--user` services (recommended)
+
+The manual invocations above are for iterating on the code. To dogfood
+DollOS running continuously (daemon + Discord bridge, both auto-restarting
+on crash, both surviving terminal/session close), install them as
+`systemd --user` services via the `dollosctl` console script
+(`src/dollos/ctl/`, P1g):
+
+```bash
+uv sync   # installs the dollosctl console script (pyproject [project.scripts])
+
+uv run dollosctl install \
+    --daemon-config config.toml \
+    --bridge-config <bridge>.toml \
+    --data-root data
+# writes ~/.config/systemd/user/dollos-{daemon,bridge}.service + daemon-reload
+
+uv run dollosctl start      # daemon, then bridge
+uv run dollosctl status     # both units should show active (running)
+uv run dollosctl logs daemon -f    # follow the daemon's journal
+uv run dollosctl logs bridge -f    # follow the bridge's journal
+uv run dollosctl restart    # daemon, then bridge
+uv run dollosctl stop       # bridge, then daemon
+uv run dollosctl uninstall  # stop both + remove the unit files
+```
+
+The bridge unit soft-depends on the daemon unit (`Wants=`+`After=`, never
+`Requires=`) since the bridge already auto-reconnects to the daemon's WS
+server — restarting the daemon does not take the bridge down with it. Both
+units set `Restart=on-failure`. To also auto-start on boot / without an
+active login session: `systemctl --user enable dollos-daemon.service
+dollos-bridge.service` + `loginctl enable-linger $USER`.
+
+Full human live-smoke checklist (real systemd start/stop, real Discord
+bot, private test server — can't run in CI): `docs/dollosctl-smoke.md`.
+
 ### Self-host llama.cpp big model (recommended for grammar / think structure)
 
 ```bash
