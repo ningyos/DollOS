@@ -37,7 +37,8 @@ from tests.test_mind_loop import _FakeLLM, _note_memory_pass
 def _make_memsearch(tmp_path: Path) -> tuple[FtsMemory, Path]:
     """Real FtsMemory over tmp dirs, mirroring tests/test_recall_scope.py's
     harness — base == tmp_path so it lines up with ctx.memory_root (Recall's
-    _private_tier_prefixes(ctx) computes ctx.memory_root/"shared" etc.)."""
+    external_public source_prefix allowlist computes
+    ctx.memory_root/"external_public")."""
     base = tmp_path
     dirs = [base / "shared", base / "external_public", base / "external_dm"]
     for d in dirs:

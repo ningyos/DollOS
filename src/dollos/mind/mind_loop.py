@@ -400,15 +400,19 @@ class MindLoop:
         # external_public/ only). A denylist silently misses any tier not
         # enumerated in it (e.g. transcripts/ — owner+Doll verbatim convo —
         # was never in the private-tier list, so a stranger's associative
-        # recall could pull it). The allowlist structurally can never leak
-        # any other tier, present or future.
+        # recall could pull it). The allowlist scopes to exactly the
+        # external_public/ directory and nothing else.
+        # Whole-branch verify (Important): the trailing separator makes this a
+        # DIRECTORY boundary so it can't also match a sibling like
+        # external_public_evil/ (LIKE '<prefix>%' with no boundary would) —
+        # mirrors the exclude_prefixes '/%' boundary. See Recall.run.
         try:
             associative_hits = await associative_search(
                 self._ctx.memsearch,
                 self._state,
                 top_k=3,
                 source_prefix=(
-                    self._ctx.memory_root / "external_public"
+                    str(self._ctx.memory_root / "external_public") + "/"
                     if self._ctx.origin_tier == "external_public"
                     else None
                 ),

@@ -297,6 +297,36 @@ async def test_source_prefix_filter(tmp_path: Path):
         ms.close()
 
 
+async def test_source_prefix_trailing_sep_is_directory_boundary(tmp_path: Path):
+    """Whole-branch verify: a source_prefix WITH a trailing separator is a
+    directory boundary — ``.../shared/`` matches ``shared/…`` but NOT a
+    sibling ``shared_backup/…`` that merely shares the string prefix.
+    (A file-path prefix — no trailing sep — keeps its exact-prefix match; see
+    the test above and tool_memory's tool_playbook.md usage.)"""
+    base = tmp_path / "memory"
+    shared = base / "shared"
+    backup = base / "shared_backup"
+    shared.mkdir(parents=True)
+    backup.mkdir(parents=True)
+    ms = FtsMemory(paths=[str(shared), str(backup)], db_path=base / "fts.db")
+    try:
+        (shared / "a.md").write_text("## h\n\nreal keyword-omega.\n", encoding="utf-8")
+        (backup / "b.md").write_text("## h\n\nsibling keyword-omega.\n", encoding="utf-8")
+        await ms.index()
+
+        # Bare prefix (no trailing sep) is a string prefix → matches BOTH.
+        bare = await ms.search("keyword-omega", top_k=10, source_prefix=str(shared))
+        assert len(bare) == 2
+
+        # Trailing separator → directory boundary → matches ONLY shared/.
+        scoped = await ms.search("keyword-omega", top_k=10, source_prefix=str(shared) + "/")
+        assert len(scoped) == 1
+        assert "real" in scoped[0]["content"]
+        assert "sibling" not in scoped[0]["content"]
+    finally:
+        ms.close()
+
+
 @pytest.mark.parametrize("bad", ["AND", '"', "OR test", "(unbalanced"])
 async def test_search_tolerates_fts_special_chars(tmp_path: Path, bad: str):
     """jieba tokens are quoted, so FTS5 operator-like queries don't raise."""

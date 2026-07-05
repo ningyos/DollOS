@@ -278,6 +278,78 @@ async def test_recall_internal_turn_transcripts_still_retrievable_control(tmp_pa
 
 
 # ---------------------------------------------------------------------------
+# Whole-branch verify (Important): the external_public source_prefix allowlist
+# must be a DIRECTORY boundary — a bare ``.../external_public`` prefix becomes
+# ``LIKE '<...>/external_public%'`` and would ALSO match a sibling dir like
+# ``external_public_evil/``. The call sites pass a trailing separator and
+# FtsMemory preserves it (resolve() strips it, so it's re-appended) →
+# ``LIKE '<...>/external_public/%'``, which the sibling can't satisfy.
+# ---------------------------------------------------------------------------
+
+
+def _make_memsearch_with_sibling(tmp_path: Path) -> tuple[FtsMemory, Path]:
+    """Like _make_memsearch but ALSO indexes a sibling ``external_public_evil/``
+    whose name shares the ``external_public`` string prefix — the exact shape a
+    boundary-less LIKE would wrongly match."""
+    base = tmp_path
+    shared = base / "shared"
+    public = base / "external_public"
+    evil = base / "external_public_evil"
+    for d in (shared, public, evil):
+        d.mkdir(parents=True)
+    ms = FtsMemory(
+        paths=[str(shared), str(public), str(evil)], db_path=base / "fts.db"
+    )
+    return ms, base
+
+
+async def test_recall_external_public_excludes_sibling_prefixed_dir(tmp_path: Path):
+    """A stranger's Recall must return the external_public/ note but NEVER a
+    note in a sibling external_public_evil/ that merely shares the string
+    prefix — proving the allowlist is a directory boundary, not a bare prefix."""
+    ms, base = _make_memsearch_with_sibling(tmp_path)
+    try:
+        (base / "external_public" / "good.md").write_text(
+            "## h\n\npublic-safe unique-boundary-555.\n", encoding="utf-8"
+        )
+        (base / "external_public_evil" / "bad.md").write_text(
+            "## h\n\nsibling-leak unique-boundary-555.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
+        ctx.origin_tier = "external_public"
+
+        out = await Recall(query="unique-boundary-555").run(ctx)
+        assert "public-safe" in out
+        assert "sibling-leak" not in out
+    finally:
+        ms.close()
+
+
+async def test_recall_external_public_teeth_sibling_never_returned(tmp_path: Path):
+    """Teeth: index ONLY the sibling external_public_evil/ note. With the
+    boundary fix the stranger's Recall returns nothing from it; if the
+    trailing-separator boundary were dropped (bare LIKE '<...>/external_public%')
+    the sibling WOULD leak and this ``assert`` would NOT raise."""
+    ms, base = _make_memsearch_with_sibling(tmp_path)
+    try:
+        (base / "external_public_evil" / "bad.md").write_text(
+            "## h\n\nsibling-leak unique-boundary-666.\n", encoding="utf-8"
+        )
+        await ms.index()
+
+        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
+        ctx.origin_tier = "external_public"
+
+        out = await Recall(query="unique-boundary-666").run(ctx)
+        with pytest.raises(AssertionError):
+            assert "sibling-leak" in out
+    finally:
+        ms.close()
+
+
+# ---------------------------------------------------------------------------
 # (c) tool_habits_search — the 5th retrieval channel (review fix)
 #
 # shared/tool_playbook.md lives inside the PRIVATE tier and its hits render

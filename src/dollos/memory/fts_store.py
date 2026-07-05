@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -217,7 +218,19 @@ class FtsMemory:
         )
         params: list = [expr]
         if source_prefix is not None:
+            # A caller-supplied trailing separator is a DIRECTORY-boundary
+            # request (whole-branch verify, Important): ``Path.resolve()``
+            # strips trailing separators, so we detect it on the RAW input and
+            # re-append it after resolve. This lets a directory allowlist
+            # (external_public/ — passed with a trailing '/') match only
+            # ``.../external_public/<child>`` and never a sibling like
+            # ``.../external_public_evil/``. A FILE-path prefix (no trailing
+            # separator, e.g. tool_memory's ``.../tool_playbook.md``) is
+            # untouched — its exact-prefix match is byte-identical to before.
+            raw = os.fspath(source_prefix)
             prefix = str(Path(source_prefix).expanduser().resolve())
+            if raw.endswith(("/", os.sep)) and not prefix.endswith("/"):
+                prefix += "/"
             sql += " AND source LIKE ? ESCAPE '\\'"
             params.append(_like_prefix(prefix) + "%")
         # P1e Task 4 (S3): real SQL-level exclusion (NOT a post-hoc Python
