@@ -16,8 +16,11 @@ from __future__ import annotations
 
 from tests._mindloop_factory import make_mindloop
 
+# Full set that must NEVER appear on any external-origin turn — including the
+# owner's own DM (brief: "owner 也砍"). SelfRevision (慢變演化 self-rewrite) is
+# in here too: an external reflection turn must not regain it.
 DANGEROUS = ("Shell", "SpawnWorkflow", "SpawnMonitor", "RemoveMonitor",
-             "InvokeSkill", "WriteSchedule")
+             "InvokeSkill", "WriteSchedule", "SelfRevision")
 
 
 def test_external_public_registry_is_conservative(tmp_path):
@@ -27,7 +30,6 @@ def test_external_public_registry_is_conservative(tmp_path):
     assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf"}
     for name in DANGEROUS:
         assert name not in reg
-    assert "SelfRevision" not in reg
 
 
 def test_external_dm_owner_registry_is_conservative_too(tmp_path):
@@ -39,7 +41,6 @@ def test_external_dm_owner_registry_is_conservative_too(tmp_path):
     assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf"}
     for name in DANGEROUS:
         assert name not in reg
-    assert "SelfRevision" not in reg
 
 
 def test_internal_turn_keeps_full_registry(tmp_path):
@@ -59,22 +60,22 @@ def test_external_reflection_excludes_selfrevision_and_shell(tmp_path):
     ml._is_reflection = True
     reg = ml._active_tool_registry()
     assert "PinSelf" in reg              # reflection expansion kept (safe)
-    assert "SelfRevision" not in reg     # S5: reduction wins over reflection
-    assert "Shell" not in reg
-    for name in DANGEROUS:
+    for name in DANGEROUS:                # S5: full dangerous set stays out
         assert name not in reg
 
 
 def test_external_dm_reflection_excludes_selfrevision_and_shell(tmp_path):
-    """Owner-DM reflection turn: still no SelfRevision/Shell."""
+    """Owner-DM reflection turn (brief: "owner 也砍"): same teeth as the
+    external_public sibling — the FULL dangerous set stays out, only PinSelf
+    is regained."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
     ml._ctx.origin_tier = "external_dm"
     ml._is_reflection = True
     reg = ml._active_tool_registry()
     assert "PinSelf" in reg
-    assert "SelfRevision" not in reg
-    assert "Shell" not in reg
+    for name in DANGEROUS:                # S5 parity: full dangerous set out
+        assert name not in reg
 
 
 def test_external_reflection_without_self_profile_has_no_pinself(tmp_path):
