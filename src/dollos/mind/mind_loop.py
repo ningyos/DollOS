@@ -74,7 +74,10 @@ IN_TURN_REFEED_TOOLS = frozenset({"Recall", "PinSelf", "SelfRevision"})
 # Perception kinds that mean "this turn's context contains externally-sourced
 # content" (spec 2026-07-02 §3.2). [Memory context] auto-injection deliberately
 # does NOT count — it is present on almost every turn and would saturate the flag.
-_EXTERNAL_KINDS = frozenset({"ToolResultArrived", "MonitorFired", "MonitorEnded"})
+# P1e spec §3.4 S1: ChannelMessage (Discord) added — a Discord-originated turn
+# now down-weights PinSelf writes via the existing self_history provenance path,
+# same as a tool-result/monitor turn.
+_EXTERNAL_KINDS = frozenset({"ToolResultArrived", "MonitorFired", "MonitorEnded", "ChannelMessage"})
 
 
 def batch_external(perceptions) -> bool:
@@ -274,6 +277,18 @@ class MindLoop:
                     "truncation to preserve perceptions for replay"
                 )
 
+    @staticmethod
+    def _derive_origin_tier(perceptions: list[Perception]) -> str:
+        """Per-turn origin tier (P1e spec §3.4 S1), computed once at drain from
+        this bucket's perceptions: no ChannelMessage → "internal"; a
+        ChannelMessage from the owner → "external_dm"; from anyone else →
+        "external_public". P1a single-origin bucket, so a straight scan over
+        this batch is authoritative — no cross-bucket bleed."""
+        for p in perceptions:
+            if p.kind == "ChannelMessage":
+                return "external_dm" if p.data.get("author_is_owner") else "external_public"
+        return "internal"
+
     async def _run_one_turn(self, perceptions: list[Perception]) -> bool:
         """Process one origin bucket: sync → render → llm → execute → persist.
 
@@ -311,6 +326,7 @@ class MindLoop:
         # cascade/refeed passes of this iteration.
         self._ctx.current_turn = self._state.iter_count
         self._ctx.external_ctx = batch_external(perceptions)
+        self._ctx.origin_tier = self._derive_origin_tier(perceptions)
 
         # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
         # opens a fresh SelfRevision decision window. The surfaced-this-turn
