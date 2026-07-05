@@ -92,6 +92,10 @@ async def test_admitted_channel_event_queues_perception(tmp_path: Path) -> None:
         sink,
     )
 
+    # P1c Task 5: admitted perceptions now sit in a per-channel debounce
+    # batch rather than landing in the queue immediately — flush it (as
+    # shutdown would) so this test still observes the same end state.
+    await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     assert any(
         p.kind == "ChannelMessage" and p.data["channel_id"] == "discord:123"
@@ -158,6 +162,9 @@ async def test_owner_dm_admitted_and_still_preempts_and_cancels(
         sink,
     )
 
+    # Preempt/cancel already fired synchronously above, ahead of the debounce
+    # (P1c Task 5) — flush the accumulator to observe the queued perception.
+    await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     assert any(
         p.kind == "ChannelMessage" and p.data["channel_id"] == "discord:123"

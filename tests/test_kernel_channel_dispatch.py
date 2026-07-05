@@ -111,6 +111,9 @@ async def test_channel_event_stranger_queues_perception_without_cancel(
         sink,
     )
 
+    # P1c Task 5: admitted perceptions now sit in a per-channel debounce
+    # batch — flush it (as shutdown would) to observe the queued perception.
+    await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     assert any(
         p.kind == "ChannelMessage"
@@ -153,6 +156,9 @@ async def test_channel_event_owner_queues_perception_and_cancels(
         sink,
     )
 
+    # Preempt/cancel already fired synchronously above, ahead of the debounce
+    # (P1c Task 5) — flush the accumulator to observe the queued perception.
+    await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     assert any(
         p.kind == "ChannelMessage"
@@ -196,6 +202,9 @@ async def test_channel_event_envelope_channel_id_wins_over_payload(
         sink,
     )
 
+    # P1c Task 5: admitted perceptions now sit in a per-channel debounce
+    # batch — flush it (as shutdown would) to observe the queued perception.
+    await dollos._accumulator.flush_all()
     perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
     channel_msgs = [p for p in perceptions if p.kind == "ChannelMessage"]
     assert len(channel_msgs) == 1

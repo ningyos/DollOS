@@ -11,6 +11,7 @@ from pathlib import Path
 from dollos.cascade_log import CascadeLogger
 from dollos.character import DollPack
 from dollos.config import Settings
+from dollos.ipc.batch_accumulator import BatchAccumulator
 from dollos.ipc.channel_registry import ChannelRegistry
 from dollos.ipc.messages import (
     ChannelEvent,
@@ -292,6 +293,18 @@ class DollOS:
             debounce_engaged_s=settings.attention.debounce_engaged_s,
             debounce_cold_s=settings.attention.debounce_cold_s,
         )
+        # BatchAccumulator (P1c Task 5): differentiated debounce between
+        # admission and enqueue — an admitted ChannelEvent doesn't become a
+        # perception immediately, it joins this channel's open batch (or
+        # starts one) and is enqueued when the window fires. The
+        # constructor's window_s is only a fallback for a call that omits
+        # window_s; every real call site below supplies an explicit
+        # per-call window via AttentionGate.window_for, so this fallback is
+        # never actually exercised.
+        self._accumulator = BatchAccumulator(
+            enqueue=self._enqueue_channel_batch,
+            window_s=settings.attention.debounce_cold_s,
+        )
 
         self.shell_runner = ShellRunner(
             cwd=settings.data.root,
@@ -555,11 +568,20 @@ class DollOS:
             # admission gate so AttentionGate always sees a channel_id, even
             # when the raw bridge payload happens to omit one.
             event = {**d, "channel_id": msg.channel_id}
+            now = time.time()
+            # P1c Task 5: read the differentiated-debounce window BEFORE
+            # admit() runs. admit() always stamps last_activity=now on a
+            # successful admit, so window_for()'s is_engaged() check would
+            # read "engaged" unconditionally if evaluated afterward — a
+            # channel with no session yet (cold) must still get the LONG
+            # window for this very message, even though it becomes engaged
+            # the instant admission succeeds.
+            window = self._attention.window_for(msg.channel_id, now)
             # P1c Task 4: default silence — a ChannelEvent that isn't admitted
             # is DROPPED here, before it ever becomes a perception. The
             # ambient log (bridge-side) already has the full corpus; the
             # daemon keeps nothing for a dropped message.
-            decision = self._attention.admit(event, time.time())
+            decision = self._attention.admit(event, now)
             if not decision.admit:
                 return
             if event.get("author_is_owner"):
@@ -568,19 +590,36 @@ class DollOS:
                 # Strangers do NOT preempt/cancel (spec §3.2). Owner is
                 # always L0-admitted (DM or mention), so this branch is only
                 # reachable post-admission in practice — but the admission
-                # gate above is structurally first regardless.
+                # gate above is structurally first regardless. This fires
+                # immediately, ahead of the debounce below: the debounce is
+                # about batching the reply-TRIGGER, not about delaying an
+                # interrupt of Doll's current cascade.
                 await self._maybe_preempt_for_new_input(sink)
                 self._cancel_consolidation()
                 self._cancel_evolution()
-            self._perception_queue.put(
-                Perception(
-                    kind="ChannelMessage",
-                    t=time.time(),
-                    data=event,
-                )
+            # P1c Task 5: debounce — the admitted perception is not enqueued
+            # immediately, it joins this channel's BatchAccumulator batch
+            # (engaged→short / cold→long window) and is enqueued when that
+            # window fires (see _enqueue_channel_batch below).
+            await self._accumulator.add(
+                msg.channel_id, {"t": now, "event": event}, window
             )
         else:
             logger.warning("unhandled message type: %r", type(msg).__name__)
+
+    def _enqueue_channel_batch(self, items: list[dict]) -> None:
+        """BatchAccumulator flush callback (P1c Task 5): puts one
+        ChannelMessage Perception per debounced item onto the queue,
+        preserving each item's original arrival timestamp rather than the
+        (later) flush time. A single flush is always one channel's batch —
+        the accumulator keys pending items by channel_id and never merges
+        two channels into one flush — so this stays per-channel
+        single-origin, matching PerceptionQueue.drain_grouped's expectation
+        that a batch is one contiguous conversation, not crosstalk."""
+        for item in items:
+            self._perception_queue.put(
+                Perception(kind="ChannelMessage", t=item["t"], data=item["event"])
+            )
 
     def _register_external_sink(
         self, sink: "asyncio.Queue[ServerMessage | None]", channel_id: str
@@ -978,6 +1017,12 @@ class DollOS:
                 ]
                 if _evolution_tasks:
                     await asyncio.gather(*_evolution_tasks, return_exceptions=True)
+                # Flush any ChannelEvent batches still sitting inside their
+                # debounce window (P1c Task 5) so a message admitted just
+                # before shutdown isn't silently lost — must run BEFORE
+                # mind_loop.shutdown() below so the flushed perceptions
+                # reach the queue while mind_loop is still draining it.
+                await self._accumulator.flush_all()
                 # Shutdown MindLoop
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
