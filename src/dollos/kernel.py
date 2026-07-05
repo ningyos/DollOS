@@ -576,7 +576,18 @@ class DollOS:
             # channel with no session yet (cold) must still get the LONG
             # window for this very message, even though it becomes engaged
             # the instant admission succeeds.
-            window = self._attention.window_for(msg.channel_id, now)
+            # Whole-branch review Important #2: a DM or owner message is a
+            # direct 1:1 conversation, not cold public chatter — it must get
+            # the short engaged window even with no session open yet, so
+            # window_for is told is_dm/author_is_owner explicitly rather
+            # than relying on is_engaged (which would misclassify it as
+            # cold on the very first message).
+            window = self._attention.window_for(
+                msg.channel_id,
+                now,
+                is_dm=bool(event.get("is_dm")),
+                author_is_owner=bool(event.get("author_is_owner")),
+            )
             # P1c Task 4: default silence — a ChannelEvent that isn't admitted
             # is DROPPED here, before it ever becomes a perception. The
             # ambient log (bridge-side) already has the full corpus; the

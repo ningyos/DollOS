@@ -22,8 +22,10 @@ from typing import Any, Protocol
 logger = logging.getLogger(__name__)
 
 # Callback invoked for every incoming message event (plain dict — see
-# wake.l0_wake for the expected shape: author_id, is_dm, mentioned,
-# content, channel_id, plus whatever else the adapter fills in).
+# `_to_event` below for the expected shape: author_id, is_dm, mentioned,
+# reply_to_bot, content, channel_id, plus whatever else the adapter fills
+# in. L0/L1 admission on this shape is now AttentionGate's job, daemon-side
+# — see `dollos.mind.attention`).
 MessageCallback = Callable[[dict], Awaitable[None]]
 
 
@@ -70,8 +72,8 @@ class DiscordClient(Protocol):
         reconnect-gap backfill).
 
         Each returned dict is the same plain-dict event shape `on_message`
-        delivers — `wake.l0_wake` and `BridgeController` treat backfilled
-        events identically to live ones — PLUS a true Discord `ts` (epoch
+        delivers — `BridgeController` treats backfilled events identically
+        to live ones — PLUS a true Discord `ts` (epoch
         seconds) and a `date` derived from it. Stamping `ts` is mandatory:
         `BridgeController._event_date` buckets AmbientLog's per-day file by
         `ts` when present specifically so a backfilled event near a UTC
@@ -82,8 +84,8 @@ class DiscordClient(Protocol):
 
 
 def _to_event(message: Any, bot: Any) -> dict:
-    """Translate a py-cord Message into the plain-dict event shape
-    `wake.l0_wake` and the rest of the bridge operate on.
+    """Translate a py-cord Message into the plain-dict event shape the rest
+    of the bridge (and the daemon-side `AttentionGate`) operate on.
 
     `message: discord.Message`, `bot: discord.Bot` — typed `Any` rather than
     `discord.*` because this is a MODULE-level function (shared by
@@ -99,12 +101,35 @@ def _to_event(message: Any, bot: Any) -> dict:
     `date` derived from it on every event — `BridgeController._event_date`
     needs a true post date to bucket AmbientLog by, live or backfilled (Task
     7 LANDMINE fix, review).
+
+    Also stamps `reply_to_bot` (P1c whole-branch review Important #1) — the
+    `l0_reply` L0 signal spec §3.4 requires (dm/mention/name/reply-to-her/
+    always_wake). True iff `message` is a reply (`message.reference` set)
+    AND py-cord has already resolved the referenced message's author to be
+    this bot (`message.reference.resolved.author.id == bot.user.id`).
+    py-cord populates `reference.resolved` directly from the same gateway/
+    history payload that delivers `message` itself (Discord includes
+    `referenced_message` inline) — no extra fetch needed on the live
+    `on_message` or `fetch_history` paths this function serves. LIMITATION:
+    if `resolved` is `None` (message not in py-cord's internal cache — rare,
+    but possible) or a `DeletedReferencedMessage` (no `.author`), this
+    conservatively reports `reply_to_bot=False` rather than issuing an extra
+    fetch to resolve it — a reply to an already-deleted or uncached message
+    is simply not recognized as `l0_reply` via this signal.
     """
     ts = message.created_at.timestamp()
+    resolved = getattr(message.reference, "resolved", None) if message.reference else None
+    resolved_author = getattr(resolved, "author", None)
+    reply_to_bot = (
+        bot.user is not None
+        and resolved_author is not None
+        and resolved_author.id == bot.user.id
+    )
     return {
         "author_id": str(message.author.id),
         "is_dm": message.guild is None,
         "mentioned": bot.user is not None and bot.user in message.mentions,
+        "reply_to_bot": reply_to_bot,
         "content": message.content,
         "channel_id": str(message.channel.id),
         "guild": str(message.guild.id) if message.guild else None,

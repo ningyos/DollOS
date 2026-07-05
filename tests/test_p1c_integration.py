@@ -406,3 +406,44 @@ async def test_bystander_in_active_session_not_admitted_no_reply(
     session = dollos._attention._sessions[channel_id]
     assert session.participants == {"A"}
     assert session.turn_count == 1
+
+
+# ----- 5. reply-to-her (l0_reply) admits even with NO active session -----
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_with_no_active_session_gets_reply(tmp_path: Path) -> None:
+    """A user hitting Discord's reply button on one of her messages, with
+    ping OFF (`mentioned=False`) and no active session, must still be
+    admitted — via the `l0_reply` L0 signal (spec §3.4: L0 =
+    dm/mention/name/reply-to-her/always_wake) — and get a reply. This is the
+    real 跟不上-adjacent path `tests/test_attention_engagement.py` only faked
+    by injecting `reply_to_bot` manually; this drives the real kernel +
+    AttentionGate wiring end to end. Fails if `reply_to_bot` isn't wired
+    from the bridge translator through to `AttentionGate.admit` (P1c
+    whole-branch review Important #1) — see
+    `tests/test_discord_bridge_client.py` for the translator-side half of
+    this proof."""
+    channel_id = "discord:general"
+    sink: asyncio.Queue = asyncio.Queue()
+    dollos = await _build_dollos(tmp_path, sink, channel_id)
+
+    await dollos._handle_message(
+        _event(
+            channel_id,
+            author_id="u1",
+            author_is_owner=False,
+            is_dm=False,
+            mentioned=False,
+            reply_to_bot=True,
+            content="I agree with what you said",
+        ),
+        sink,
+    )
+
+    assert await _flush(dollos) == 1, (
+        "l0_reply regression: a reply-to-bot message with mentioned=False "
+        "and no active session was not admitted"
+    )
+    await _run_one_turn(dollos)
+    assert _addressed_texts(sink, channel_id) == [REPLY_TEXT]
