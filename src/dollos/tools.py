@@ -298,8 +298,19 @@ class Recall(BaseModel):
         # was never on the old denylist and leaked). internal and external_dm
         # (owner) turns are unrestricted (owner sees own memory), so this only
         # activates for external_public.
+        #
+        # Whole-branch verify (Important): the prefix MUST carry a trailing
+        # separator so it's a DIRECTORY boundary — FtsMemory turns
+        # source_prefix into ``LIKE '<prefix>%'`` (no implicit boundary), so a
+        # bare ``.../external_public`` would ALSO match a sibling like
+        # ``.../external_public_evil/`` or a future ``.../external_public_v2/``.
+        # This codebase DOES add sibling-named dirs (skills/ + skill_bodies/,
+        # self_history + self_evolution/), so the boundary is load-bearing, not
+        # theoretical. Mirrors the ``/%`` boundary on exclude_prefixes.
         if getattr(ctx, "origin_tier", "internal") == "external_public":
-            search_kwargs["source_prefix"] = ctx.memory_root / "external_public"
+            search_kwargs["source_prefix"] = (
+                str(ctx.memory_root / "external_public") + "/"
+            )
         hits = await ctx.memsearch.search(self.query, top_k=5, **search_kwargs)
         if self.since is not None or self.until is not None:
             hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]
