@@ -82,7 +82,7 @@ def test_l0_opens_session_with_correct_participant_and_window():
     assert s.window_s == 42.0
 
 
-def test_l0_hit_resets_existing_session():
+def test_l0_hit_resets_budget_and_merges_participants():
     g = _gate(window_base_s=90.0)
     # Prime a session manually as if it had drifted (turn_count advanced, window shrunk).
     g._sessions["c1"] = Session(
@@ -91,7 +91,9 @@ def test_l0_hit_resets_existing_session():
     d = g.admit(_e(is_dm=True, author_id="u1"), now=300.0)
     assert d.admit and d.reason == "l0_dm"
     s = g._sessions["c1"]
-    assert s.participants == {"u1"}
+    # Re-mention resets her budget/window but MERGES participants (multi-person:
+    # never evict someone she was already engaged with). u1 was already present.
+    assert s.participants == {"u1", "u2"}
     assert s.turn_count == 0
     assert s.window_s == 90.0
     assert s.last_activity == 300.0
