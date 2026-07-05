@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 
 _FILE_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\.md$")
 
+# P1e Task 3 (S2): origin is encoded by DIRECTORY, not heading/content, so a
+# later task's memsearch source_prefix filter can separate tiers cleanly.
+# Unknown/missing origin_tier falls back to "shared" (the internal/default
+# tier) — a genuinely-external turn always has origin_tier set by MindLoop
+# (P1e Task 1), so this fallback only fires for internal/legacy ctx paths.
+_ORIGIN_DIR = {
+    "internal": "shared",
+    "external_public": "external_public",
+    "external_dm": "external_dm",
+}
+
 
 def _hit_date(hit: dict) -> date | None:
     """Extract YYYY-MM-DD from a memsearch hit's source filename, if any."""
@@ -108,7 +119,8 @@ class NoteMemory(BaseModel):
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind.context_tags import build_heading
 
-        path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
+        subdir = _ORIGIN_DIR.get(getattr(ctx, "origin_tier", "internal"), "shared")
+        path = ctx.memory_root / subdir / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         heading = build_heading(ctx.mind_state)
         # Sync append + index inside async — append is a single small write
@@ -143,7 +155,8 @@ class WriteDiary(BaseModel):
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind.context_tags import build_heading
 
-        path = ctx.memory_root / "shared" / f"{date.today():%Y-%m-%d}.md"
+        subdir = _ORIGIN_DIR.get(getattr(ctx, "origin_tier", "internal"), "shared")
+        path = ctx.memory_root / subdir / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         heading = build_heading(ctx.mind_state)
         with path.open("a") as f:
