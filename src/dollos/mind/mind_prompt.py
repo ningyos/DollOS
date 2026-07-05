@@ -87,6 +87,13 @@ def render_mind(
     200 chars, verbatim) and Doll's prior private replies straight into a
     stranger's prompt. ``"internal"`` (the default) and ``"external_dm"``
     render both blocks in full, unchanged.
+
+    On ``"external_public"`` turns a ``[External situation]`` block is also
+    appended (P1c Task 6, L2 secondary layer — the code-side admission gate
+    is the main defense against 亂回): descriptive scaffolding narration
+    (not a command) so staying silent reads as a normal option, since she's
+    overhearing a lot that isn't addressed to her. Omitted for ``"internal"``
+    and ``"external_dm"`` — owner-DM is a private 1:1, not a public channel.
     """
     now = time.time()
     blocks = [
@@ -177,6 +184,20 @@ def render_mind(
         blocks.extend([
             _render_outputs_header(state.recent_outputs, now),
             _render_outputs(state.recent_outputs, now),
+            "",
+        ])
+    if origin_tier == "external_public":
+        # P1c Task 6: L2 secondary layer — the code-side admission gate
+        # (Tasks 1-5) is the MAIN defense against 亂回; once admitted she can
+        # still choose Say or silence (cascade emits 0..N actions). This is a
+        # DESCRIPTIVE scaffolding nudge (narration, not a command) so silence
+        # reads as a normal option on a public turn — she's overhearing a lot
+        # that isn't addressed to her. Only external_public: owner-DM
+        # (external_dm) is a private 1:1 where "公開場合,不關妳的話" doesn't
+        # apply.
+        blocks.extend([
+            "[External situation]",
+            "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。",
             "",
         ])
     blocks.extend([
