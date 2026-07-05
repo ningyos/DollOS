@@ -220,6 +220,19 @@ class TraceSettings(BaseModel):
     root: str = "data/traces"
 
 
+class AttentionSettings(BaseModel):
+    """AttentionGate 參數(P1c spec §3.3/§3.4)— L0 硬規則 + engagement session。"""
+    model_config = ConfigDict(extra="forbid")
+
+    name_aliases: list[str] = Field(default_factory=list)
+    always_wake_channels: list[str] = Field(default_factory=list)
+    max_session_turns: int = 6
+    window_base_s: float = 90.0
+    window_decay: float = 0.6
+    debounce_engaged_s: float = 2.0
+    debounce_cold_s: float = 8.0
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -241,6 +254,7 @@ class Settings(BaseModel):
     self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
     evolution: EvolutionConfig = Field(default_factory=lambda: EvolutionConfig())
     trace: TraceSettings = Field(default_factory=lambda: TraceSettings())
+    attention: AttentionSettings = Field(default_factory=lambda: AttentionSettings())
 
 
 def load_settings(path: Path) -> Settings:

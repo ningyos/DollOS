@@ -257,3 +257,55 @@ def test_trace_settings_default_enabled():
     )
     assert s.trace.enabled is True
     assert s.trace.root == "data/traces"
+
+
+def test_attention_settings_defaults():
+    from dollos.config import AttentionSettings
+    c = AttentionSettings()
+    assert c.name_aliases == []
+    assert c.always_wake_channels == []
+    assert c.max_session_turns == 6
+    assert c.window_base_s == 90.0
+    assert c.window_decay == 0.6
+    assert c.debounce_engaged_s == 2.0
+    assert c.debounce_cold_s == 8.0
+
+
+def test_attention_settings_on_settings_default(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    s = load_settings(config_path)
+    assert s.attention.name_aliases == []
+    assert s.attention.max_session_turns == 6
+
+
+def test_attention_settings_override(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[attention]
+name_aliases = ["gura", "古拉"]
+always_wake_channels = ["vip"]
+max_session_turns = 4
+window_base_s = 60.0
+"""
+    )
+    s = load_settings(config_path)
+    assert s.attention.name_aliases == ["gura", "古拉"]
+    assert s.attention.always_wake_channels == ["vip"]
+    assert s.attention.max_session_turns == 4
+    assert s.attention.window_base_s == 60.0
+
+
+def test_attention_settings_rejects_unknown_field(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML
+        + """
+[attention]
+bogus_field = 1
+"""
+    )
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
