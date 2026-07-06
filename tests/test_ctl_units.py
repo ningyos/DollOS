@@ -1,12 +1,20 @@
-"""Tests for systemd user-unit generation (P1g Task 1).
+"""Tests for systemd user-unit generation (P1g Task 1; single-service Task D/5).
 
 Pure string-template + path-resolution tests — no systemd interaction.
+
+Single-service migration (spec §7 / `2026-07-06-bridge-internalization-design.md`):
+the daemon now internalizes the Discord bridge as a supervised subprocess
+(`ServiceSupervisor`), so `render_bridge_unit` and the bridge-only
+`UnitParams` fields (`bridge_config`, `daemon_ws`, `retention_days`) are
+gone. `render_daemon_unit` / `resolve_params` for the daemon are unchanged.
 """
 
 import sys
 from pathlib import Path
 
-from dollos.ctl.units import UnitParams, render_bridge_unit, render_daemon_unit, resolve_params
+import pytest
+
+from dollos.ctl.units import UnitParams, render_daemon_unit, resolve_params
 
 
 def _params(**overrides) -> UnitParams:
@@ -14,11 +22,26 @@ def _params(**overrides) -> UnitParams:
         python="/venv/bin/python",
         working_dir="/wd",
         daemon_config="/c/d.toml",
-        bridge_config="/c/b.toml",
         data_root="/wd/data",
     )
     defaults.update(overrides)
     return UnitParams(**defaults)
+
+
+def test_render_bridge_unit_no_longer_exists():
+    """`render_bridge_unit` was deleted wholesale — the bridge unit is gone,
+    not just unused. Import-by-name must fail."""
+    import dollos.ctl.units as units_mod
+
+    assert not hasattr(units_mod, "render_bridge_unit")
+
+
+def test_unit_params_has_no_bridge_only_fields():
+    """`UnitParams` must not carry the bridge-only fields the removed
+    `render_bridge_unit` used to consume."""
+    p = _params()
+    for bridge_field in ("bridge_config", "daemon_ws", "retention_days"):
+        assert not hasattr(p, bridge_field)
 
 
 def test_daemon_unit_contains_exec_start_and_restart_policy():
@@ -36,30 +59,6 @@ def test_daemon_unit_restart_sec_is_configurable():
     assert "RestartSec=7" in u
 
 
-def test_bridge_unit_soft_deps_daemon_not_hard():
-    p = UnitParams(
-        python="/venv/bin/python",
-        working_dir="/wd",
-        daemon_config="/c/d.toml",
-        bridge_config="/c/b.toml",
-        data_root="/wd/data",
-    )
-    u = render_bridge_unit(p)
-    assert "Wants=dollos-daemon.service" in u and "After=dollos-daemon.service" in u
-    assert "Requires=" not in u  # hard-dep would drag bridge down on daemon restart
-    assert "--daemon ws://127.0.0.1:9876" in u and '--config "/c/b.toml"' in u
-
-
-def test_bridge_unit_contains_all_cli_args():
-    p = _params(data_root="/wd/data", retention_days=45)
-    u = render_bridge_unit(p)
-    assert "--daemon ws://127.0.0.1:9876" in u
-    assert '--config "/c/b.toml"' in u
-    assert '--data-root "/wd/data"' in u
-    assert "--retention-days 45" in u
-    assert "Restart=on-failure" in u
-
-
 def test_exec_start_quotes_paths_containing_spaces():
     """Minor #2 (P1g whole-branch review): systemd splits ExecStart on
     whitespace, so an unquoted path with a space (e.g. under `My Projects/`)
@@ -68,32 +67,21 @@ def test_exec_start_quotes_paths_containing_spaces():
         python="/My Venv/bin/python",
         working_dir="/My Projects/DollOS",
         daemon_config="/My Projects/DollOS/config.toml",
-        bridge_config="/My Projects/DollOS/bridge.toml",
         data_root="/My Projects/DollOS/data",
     )
     daemon_u = render_daemon_unit(p)
-    bridge_u = render_bridge_unit(p)
 
     assert '"/My Venv/bin/python"' in daemon_u
     assert '"/My Projects/DollOS/config.toml"' in daemon_u
-    assert '"/My Venv/bin/python"' in bridge_u
-    assert '"/My Projects/DollOS/bridge.toml"' in bridge_u
-    assert '"/My Projects/DollOS/data"' in bridge_u
-
-    # sanity: existing structural assertions still hold with quoting added
-    assert "Wants=dollos-daemon.service" in bridge_u and "After=dollos-daemon.service" in bridge_u
-    assert "Requires=" not in bridge_u
 
 
 def test_resolve_params_absolutizes(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = resolve_params(
         daemon_config=Path("config.toml"),
-        bridge_config=Path("b.toml"),
         data_root=Path("data"),
     )
     assert Path(p.daemon_config).is_absolute()
-    assert Path(p.bridge_config).is_absolute()
     assert Path(p.data_root).is_absolute()
     assert Path(p.working_dir).is_absolute()
     assert p.python == sys.executable
@@ -103,10 +91,21 @@ def test_resolve_params_absolutizes(tmp_path, monkeypatch):
 def test_resolve_params_expands_user_and_accepts_explicit_python_and_working_dir(tmp_path):
     p = resolve_params(
         daemon_config=tmp_path / "d.toml",
-        bridge_config=tmp_path / "b.toml",
         data_root=tmp_path / "data",
         python="/custom/python",
         working_dir=tmp_path,
     )
     assert p.python == "/custom/python"
     assert p.working_dir == str(tmp_path.resolve())
+
+
+def test_resolve_params_rejects_stray_bridge_config_kwarg():
+    """`resolve_params` no longer accepts a `bridge_config` kwarg — the
+    bridge config path is now consumed by the daemon's `[bridge].config`,
+    not by dollosctl at all."""
+    with pytest.raises(TypeError):
+        resolve_params(
+            daemon_config=Path("/c/d.toml"),
+            bridge_config=Path("/c/b.toml"),
+            data_root=Path("/wd/data"),
+        )

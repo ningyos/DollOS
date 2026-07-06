@@ -1,55 +1,62 @@
-"""Tests for `dollosctl`'s argparse dispatch (P1g Task 4).
+"""Tests for `dollosctl`'s argparse dispatch (P1g Task 4; single-service Task D/5).
 
 `main(argv) -> int` is the console-script entry point. These tests mock
 the `systemctl` module functions plus `install`/`uninstall` themselves
 (imported into `dollos.ctl.cli`'s namespace) and assert dispatch: which
 function got called, with which unit(s), and in which order. No real
 subprocess or systemd is touched anywhere in this file.
+
+Single-service migration (spec §7): the daemon now internalizes the
+Discord bridge as a supervised subprocess, so `dollos-bridge.service` is
+no longer written by `install`. `BRIDGE_UNIT` is kept as a constant only
+because `install`/`uninstall` must actively clean up a *legacy*
+(pre-migration) bridge unit that might still be enabled — see
+`test_ctl_install.py` for that cleanup's behavioral tests. This file only
+covers argparse dispatch: single-unit start/stop/restart/status/logs.
 """
 
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 
-from dollos.ctl.cli import BRIDGE_UNIT, DAEMON_UNIT, main
+from dollos.ctl.cli import DAEMON_UNIT, main
 from dollos.ctl.systemctl import SystemctlError
 
 
-def test_start_starts_daemon_before_bridge():
+def test_start_starts_daemon():
     with patch("dollos.ctl.cli.systemctl.start") as mock_start:
         rc = main(["start"])
     assert rc == 0
-    mock_start.assert_has_calls([call(DAEMON_UNIT), call(BRIDGE_UNIT)])
+    mock_start.assert_called_once_with(DAEMON_UNIT)
 
 
-def test_stop_stops_bridge_before_daemon():
+def test_stop_stops_daemon():
     with patch("dollos.ctl.cli.systemctl.stop") as mock_stop:
         rc = main(["stop"])
     assert rc == 0
-    mock_stop.assert_has_calls([call(BRIDGE_UNIT), call(DAEMON_UNIT)])
+    mock_stop.assert_called_once_with(DAEMON_UNIT)
 
 
-def test_restart_restarts_daemon_before_bridge():
+def test_restart_restarts_daemon():
     with patch("dollos.ctl.cli.systemctl.restart") as mock_restart:
         rc = main(["restart"])
     assert rc == 0
-    mock_restart.assert_has_calls([call(DAEMON_UNIT), call(BRIDGE_UNIT)])
+    mock_restart.assert_called_once_with(DAEMON_UNIT)
 
 
-def test_status_queries_both_units():
+def test_status_queries_daemon_only():
     with patch("dollos.ctl.cli.systemctl.status", return_value="") as mock_status:
         rc = main(["status"])
     assert rc == 0
-    mock_status.assert_has_calls([call(DAEMON_UNIT), call(BRIDGE_UNIT)], any_order=True)
-    assert mock_status.call_count == 2
+    mock_status.assert_called_once_with(DAEMON_UNIT)
 
 
-def test_logs_bridge_follow():
+def test_logs_daemon_follow():
     with patch("dollos.ctl.cli.systemctl.journal", return_value="") as mock_journal:
-        rc = main(["logs", "bridge", "-f"])
+        rc = main(["logs", "daemon", "-f"])
     assert rc == 0
-    mock_journal.assert_called_once_with(BRIDGE_UNIT, follow=True, lines=200)
+    mock_journal.assert_called_once_with(DAEMON_UNIT, follow=True, lines=200)
 
 
 def test_logs_daemon_lines():
@@ -59,6 +66,25 @@ def test_logs_daemon_lines():
     mock_journal.assert_called_once_with(DAEMON_UNIT, follow=False, lines=50)
 
 
+def test_logs_bridge_choice_rejected():
+    """`logs bridge` is gone — bridge output now lives in the daemon's
+    own journal (it's a supervised subprocess, not a separate unit)."""
+    with pytest.raises(SystemExit):
+        main(["logs", "bridge"])
+
+
+def test_install_no_bridge_config_arg():
+    """`--bridge-config` is gone from the `install` parser — the bridge
+    config path is now consumed by the daemon's `[bridge].config`."""
+    from dollos.ctl import cli
+
+    parser = cli._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["install", "--daemon-config", "c.toml", "--bridge-config", "b.toml"]
+        )
+
+
 def test_install_called_with_parsed_args(tmp_path):
     with patch("dollos.ctl.cli.install") as mock_install:
         rc = main(
@@ -66,8 +92,6 @@ def test_install_called_with_parsed_args(tmp_path):
                 "install",
                 "--daemon-config",
                 "c.toml",
-                "--bridge-config",
-                "b.toml",
                 "--data-root",
                 "d",
             ]
@@ -76,7 +100,7 @@ def test_install_called_with_parsed_args(tmp_path):
     mock_install.assert_called_once()
     _, kwargs = mock_install.call_args
     assert kwargs["daemon_config"] == Path("c.toml")
-    assert kwargs["bridge_config"] == Path("b.toml")
+    assert "bridge_config" not in kwargs
     assert kwargs["data_root"] == Path("d")
     assert kwargs["unit_dir"] is not None  # defaults to _user_unit_dir()
 
@@ -88,8 +112,6 @@ def test_install_accepts_explicit_unit_dir(tmp_path):
                 "install",
                 "--daemon-config",
                 "c.toml",
-                "--bridge-config",
-                "b.toml",
                 "--data-root",
                 "d",
                 "--unit-dir",

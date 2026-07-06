@@ -1,21 +1,21 @@
 """systemd user-unit file generation for DollOS services.
 
 Pure string-template + path-resolution — no systemd interaction, no I/O.
-`dollosctl` (a later task) writes these rendered strings to
-`~/.config/systemd/user/` and shells out to `systemctl --user`.
+`dollosctl` writes the rendered string to `~/.config/systemd/user/` and
+shells out to `systemctl --user`.
 
-Two units:
+Single unit:
 - ``dollos-daemon.service`` — the DollOS event-loop daemon (WS server).
-- ``dollos-bridge.service`` — the Discord bridge, which talks to the
-  daemon over its WS server.
 
-The bridge unit uses a SOFT ordering dependency on the daemon
-(``Wants=`` + ``After=``), never ``Requires=``. A hard dependency would
-drag the bridge down whenever the daemon restarts; the bridge already
-auto-reconnects to the daemon's WS server, so a soft dependency (start
-order only, no propagated stop/restart) is strictly better here. Do not
-"fix" this to ``Requires=`` — see the assertion in
-tests/test_ctl_units.py::test_bridge_unit_soft_deps_daemon_not_hard.
+Single-service migration (spec `2026-07-06-bridge-internalization-design.md`
+§7): the Discord bridge used to be a second unit
+(``dollos-bridge.service``) started/stopped independently. The daemon now
+internalizes the bridge as a supervised subprocess (``ServiceSupervisor``,
+config'd via ``[bridge].config`` in the daemon's own config file), so
+there is no bridge-specific unit-file content left to render here —
+``render_bridge_unit`` was deleted, not deprecated. `dollos/ctl/cli.py`
+still references a `BRIDGE_UNIT` constant, but only to actively clean up
+a *legacy* pre-migration unit; see that module's docstring.
 """
 
 from __future__ import annotations
@@ -39,10 +39,7 @@ class UnitParams:
     python: str
     working_dir: str
     daemon_config: str
-    bridge_config: str
     data_root: str
-    daemon_ws: str = "ws://127.0.0.1:9876"
-    retention_days: int = 30
     restart_sec: int = 3
 
 
@@ -64,33 +61,9 @@ WantedBy=default.target
 """
 
 
-def render_bridge_unit(p: UnitParams) -> str:
-    """Render the `dollos-bridge.service` unit-file content.
-
-    Soft-depends on the daemon via `Wants=` + `After=` only — see the
-    module docstring for why this must never become `Requires=`.
-    """
-    return f"""[Unit]
-Description=DollOS Discord bridge
-After=dollos-daemon.service network.target
-Wants=dollos-daemon.service
-
-[Service]
-Type=simple
-WorkingDirectory={p.working_dir}
-ExecStart="{p.python}" -m dollos.discord_bridge --daemon {p.daemon_ws} --config "{p.bridge_config}" --data-root "{p.data_root}" --retention-days {p.retention_days}
-Restart=on-failure
-RestartSec={p.restart_sec}
-
-[Install]
-WantedBy=default.target
-"""
-
-
 def resolve_params(
     *,
     daemon_config: Path,
-    bridge_config: Path,
     data_root: Path,
     python: str | None = None,
     working_dir: Path | None = None,
@@ -103,11 +76,11 @@ def resolve_params(
     the current working directory. All paths are expanded (`~`) and
     resolved to absolute strings.
     """
-    resolved_working_dir = (working_dir if working_dir is not None else Path.cwd()).expanduser().resolve()
+    cwd = working_dir if working_dir is not None else Path.cwd()
+    resolved_working_dir = cwd.expanduser().resolve()
     return UnitParams(
         python=python if python is not None else sys.executable,
         working_dir=str(resolved_working_dir),
         daemon_config=str(daemon_config.expanduser().resolve()),
-        bridge_config=str(bridge_config.expanduser().resolve()),
         data_root=str(data_root.expanduser().resolve()),
     )
