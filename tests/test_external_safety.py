@@ -152,10 +152,13 @@ async def test_external_dm_owner_turn_4way_split(tmp_path: Path):
             [_channel_msg("hi", author_is_owner=True, is_dm=True, t=t)]
         )
 
-        # (a) conservative tool registry — no Shell (owner-DM is not RCE)
+        # (a) conservative tool registry — no Shell (owner-DM is not RCE).
+        # Part A / A2 (2026-07-06): external_dm now also intentionally
+        # grants LearnName (spec §3.3) — the one addition to this subset.
         reg = loop._active_tool_registry()
         assert "Shell" not in reg
-        assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf"}
+        assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf", "LearnName"}
+        assert "LearnName" in reg
 
         # (b) energy DRAINED (upgraded)
         assert state.energy == pytest.approx(0.9)
