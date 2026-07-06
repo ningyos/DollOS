@@ -1023,23 +1023,19 @@ class SelfRevision(BaseModel):
 
 
 # Part A / A2 (2026-07-06 self-learned-aliases spec §3.3, R1-hardened):
-# hardcoded mechanical guard applied to EVERY LearnName call, including
-# owner turns — this is the only line of defense against the owner herself
-# teaching a dangerous/too-common token (e.g. pinning "早安" as a nickname).
-# Trust-boundary enforcement against STRANGERS lives entirely in
+# mechanical guard applied to EVERY LearnName call, including owner turns —
+# this is the only line of defense against the owner herself teaching a
+# dangerous/too-common token (e.g. pinning "早安" as a nickname). Trust-
+# boundary enforcement against STRANGERS lives entirely in
 # mind_loop._active_tool_registry (registry availability, not this guard):
 # LearnName is structurally absent from the tool set on external_public and
 # pure-reflection turns, so this guard never even has to consider a
-# stranger's input. Both thresholds below are deliberately equal (2) per the
-# brief, so no ASCII/CJK branch is needed here — `len(token) < 2` covers
-# both. Full L0 match-rule hardening (word-boundary for ASCII, min-length
-# for CJK at READ/match time) is a separate concern, applied by A3 in
-# attention.py — this guard only protects the WRITE path.
-_LEARN_NAME_MIN_LEN = 2
-_LEARN_NAME_DENYLIST: frozenset[str] = frozenset({
-    "你", "妳", "他", "她", "hey", "hi", "hello", "the", "a",
-    "everyone", "all", "大家", "各位", "yo", "ok",
-})
+# stranger's input. The guard itself (name_aliases.passes_alias_guard) is
+# SHARED with kernel.py's A3 seed/floor load-time guard (spec I3) — one
+# place of truth so write-time and load-time checks can't drift apart.
+# Full L0 match-rule hardening (word-boundary for ASCII, substring+min-
+# length for CJK at READ/match time) is a separate concern, applied by A3
+# in attention.py — this guard only protects the WRITE path.
 
 
 class LearnName(BaseModel):
@@ -1059,10 +1055,10 @@ class LearnName(BaseModel):
 
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind import self_history
-        from dollos.mind.name_aliases import NameAliasStore
+        from dollos.mind.name_aliases import NameAliasStore, passes_alias_guard
 
         token = self.token.strip()
-        if len(token) < _LEARN_NAME_MIN_LEN or token.lower() in _LEARN_NAME_DENYLIST:
+        if not passes_alias_guard(token):
             _record(ctx, "LearnName", self._summary())
             return f"「{token or self.token}」太短或太常見了,沒辦法記成暱稱。"
 

@@ -26,6 +26,15 @@ class PackMeta(BaseModel):
 
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
+    # D1(b), 2026-07-06 self-learned-aliases spec §3.4/§7: optional extra
+    # permanent seed names (e.g. a CJK proper name alongside the ASCII
+    # ``name``) unioned into the L0 wake-eligible set alongside ``name`` —
+    # kernel.py's alias_provider treats {name} ∪ set(aliases) as an
+    # un-prunable seed floor. Still subject to the SAME load-time mechanical
+    # guard as any other seed/floor token (a denylisted/too-short entry here
+    # is dropped + logged, not silently trusted just because it's a pack
+    # author's declared name).
+    aliases: list[str] = Field(default_factory=list)
 
 
 class Identity(BaseModel):

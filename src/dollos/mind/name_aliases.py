@@ -19,6 +19,29 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+# Shared mechanical guard (spec §3.4/I3): the SAME min-length + denylist
+# check applies to every alias regardless of origin — owner-taught tokens
+# at WRITE time (``LearnName.run``, tools.py) AND pack-seed/config-floor
+# tokens at LOAD time (kernel's alias_provider closure, A3). One place of
+# truth so the two call sites can never drift apart. Both thresholds are
+# deliberately equal (2) so no ASCII/CJK branch is needed here — that
+# distinction only matters for the L0 *match* rule (attention.py), not
+# this guard.
+MIN_ALIAS_LEN = 2
+ALIAS_DENYLIST: frozenset[str] = frozenset({
+    "你", "妳", "他", "她", "hey", "hi", "hello", "the", "a",
+    "everyone", "all", "大家", "各位", "yo", "ok",
+})
+
+
+def passes_alias_guard(token: str) -> bool:
+    """True iff ``token`` clears the mechanical guard: not too short, not
+    on the denylist (case-insensitive). Callers apply this to both owner-
+    taught tokens (write time) and seed/floor tokens (load time) — a
+    failing token is dropped (never raises)."""
+    return len(token) >= MIN_ALIAS_LEN and token.lower() not in ALIAS_DENYLIST
+
+
 @dataclass
 class AliasEntry:
     token: str
