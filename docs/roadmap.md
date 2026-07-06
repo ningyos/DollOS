@@ -22,6 +22,7 @@
 | Roadmap step 10 — Skills system | Merged |
 | …(step 11–29 見 CLAUDE.md 的完整表)| Merged |
 | Roadmap step 30 — 慢變演化(current_self「現在的我」:evidence layer + ratification + Mode A evolution pass)| Merged 2026-07-03, live-smoke-verified |
+| Roadmap step 31 — Discord bridge internalization + generic ServiceSupervisor | Merged 2026-07-06 |
 
 ---
 
@@ -295,6 +296,24 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 **Bug 紀錄**：實作 agent 第一次跑 pytest **OOM**（51GB RAM），原因是 `test_dispatcher_passes_subagent_runner_into_tool_ctx` 的 capture tool 返回 string → cascade 繼續 → `_FakeAdapter` 重 yield 同樣 chunks → 同 tool 連續 success（counter 不抓） → infinite cascade。修法：tool 改 side-effect capture + return None。揭露 step 14 移除 MAX_CASCADE_DEPTH 後 same-tool counter 對「success-only loop」的盲點 — 但 production 場景小，靠 model 訓練自停（rolling compact 確認可行）。
 
 下個 step 候選：Wake gating / Voice pipeline / Character pack / e2e subagent smoke。
+
+### 31. Discord bridge internalization + generic ServiceSupervisor  ✅ Merged
+
+**動機**：discord-bridge 原本是獨立 systemd unit（`dollos-bridge.service`），跟 daemon 平行安裝/啟停，彼此沒有生死連動——daemon 死了 bridge 孤兒化、bridge 崩了要手動注意。使用者定調「DollOS 是 Doll Operating System，不是一個 daemon 程式」：看顧 bridge 的機制不做成 bridge 專屬 hack，而是一等的 OS 系統功能（`project_dollos_os_system_functions`）。Spec 見 `docs/superpowers/specs/2026-07-06-bridge-internalization-design.md`（兩輪對抗審查收斂：健康模型盲區、PDEATHSIG 反孤兒、SIGINT 而非 SIGTERM、`[bridge]` 只留指標不放 restart 旋鈕）。
+
+範圍（5 個 TDD task + 本文件收尾 task，共 6）：
+- **Task A**（`feat(config)`）—— `[bridge]` daemon config schema：只有 `enabled`（預設 false）+ `config`（指向獨立 `bridge.toml` 路徑）。真正的 `[discord]` token/owner 表留在 bridge.toml，daemon 只知道那個檔案的路徑。
+- **Task B**（`feat(svc)`）—— 新 `src/dollos/service_supervisor.py`：通用 `ServiceSupervisor`（v1 只註冊 discord-bridge，介面通用，未來 persistent Subagent 等其他長命服務可共用同一機制）。`PR_SET_PDEATHSIG`（daemon 死 → kernel 對 bridge 發 SIGINT，手動跑 + systemd 兩情境都不留孤兒）、SIGINT graceful stop（逾時才升級 SIGKILL）、crash-loop 指數 backoff + 連續失敗上限（`_MAX_CONSECUTIVE = 5`）。
+- **Task B2**（`fix(bridge)`）—— bridge 唯一被觸碰的內部改動：壞/撤銷/過期 token 原本會卡死在 `wait_until_ready()` 或被 reconnect loop 的 `except Exception` 吞掉、每 5s 重試到天荒地老，supervisor 看不到（rc 永不出現）。改把 `discord.LoginFailure` 從 transient 分出、非零退出，crash-loop 偵測才咬得住頭號真實故障模式。
+- **Task C**（`feat(kernel)`）—— kernel 接線：建 bridge 的 `ServiceSpec`（argv/daemon-WS-URL 推導）、`settings.bridge.enabled` 且 config 檔存在才註冊、WS server 起來後才 start supervisor、兩個 shutdown 點都 stop（idempotent）。crash-loop 放棄時發 `BridgeDown` perception，讓 Doll 感知到自己少了一條在線通道（spec §9-3；不是靜默離線）。
+- **Task D**（`refactor(ctl)`）—— `dollosctl` 單服務化：`install` 只再寫 `dollos-daemon.service`；`start`/`stop`/`restart`/`status`/`logs` 只操作這一個 unit（`logs` 的 `which` 選項收斂成只有 `["daemon"]` —— bridge 輸出就在這個 journal 裡）。`install`/`uninstall` 都主動清掉 legacy `dollos-bridge.service`（若殘留且 enabled，開機會自動起一個跟內化 bridge 撞同一 Discord token 的第二進程——是活的風險，不只是廢棄檔案）。
+- **Task F**（本 step）—— 文件收尾：`config.example.toml` 加 `[bridge]` 範例、`CLAUDE.md` Build/Run 段（拿掉 `--bridge-config`/`logs bridge`、加雙 bridge 警告、加升級遷移註記）+ 架構段一行、本檔案、`docs/dollosctl-smoke.md` 單服務化 checklist。
+
+Live-smoke（Task C Step 10，人工）：`pgrep -af dollos.discord_bridge` 見得到 bridge 子行程；私訊 owner 端到端通；`kill -SIGINT <daemon_pid>` graceful 收、journal 見 gateway 乾淨斷、pgrep 為空；`kill -9 <daemon_pid>` 後 pgrep 仍為空（PDEATHSIG 反孤兒驗證，無 zombie）；壞 token 觸發連續 crash → 5 次後 `giving up` + `BridgeDown` perception。
+
+Tests：`test_config.py`（`[bridge]` schema）、`test_service_supervisor.py`（230 行，spawn/PDEATHSIG/backoff/crash-loop/graceful stop）、`test_discord_bridge_fatal_exit.py`（fatal vs transient 分類）、`test_kernel_bridge_wiring.py`（ServiceSpec 建構 + BridgeDown perception）、`test_ctl_{units,cli,install}.py`（單服務化 + legacy 遷移）。全套件 1448 passed（whole-branch review 前基準；6 個既有 torch-gated skip）。
+
+下個 step 候選：Virtual-being 定位剩餘兩項（§2.3/§2.4）/ Subagent（persistent，agent-service branch A0-A4）/ Zero-shot wake word + Speaker ID / 回應延遲壓縮。
 
 ### 29. Workflow — replace ephemeral Subagent with a single Workflow concept  ✅ Merged
 

@@ -64,6 +64,7 @@ DollOS/
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from character description + Doll's own memory entries (self-history, preferences, mood) surfacing through the `[Memory context]` block + `Recall` tool. The 2026-05-08 smoke confirmed Self-First behavior emerges this way (T2 「我自己愛冰美式，你呢？」).
 - **Memory SoT**: memsearch (Milvus Lite + ONNX bge-m3 + markdown daily summary files). `data/memory/shared/` for shared facts, `data/memory/{character_id}/` for per-character private (step 10). Hybrid retrieval (dense + BM25 + RRF) provided by memsearch.
 - **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
+- **Discord bridge internalization (2026-07-06)**: the daemon spawns and supervises discord-bridge as a child subprocess via a generic `ServiceSupervisor` (`src/dollos/service_supervisor.py` — DollOS OS-level service manager: `PR_SET_PDEATHSIG` anti-orphan, `SIGINT` graceful stop escalating to `SIGKILL`, fatal-token errors exit non-zero so crash-loop detection actually catches them, crash-loop cap emits a `BridgeDown` perception). The bridge itself stays an independent OS process (`setsid` own process group) — a bridge crash never touches the daemon, and vice versa (crash-isolation, zero message loss on either side).
 
 ## Implementation Plans
 
@@ -105,6 +106,7 @@ DollOS/
 | Roadmap step 28 — Voice pipeline Phase C (local-audio-bridge + E2E) | Merged |
 | Roadmap step 29 — Workflow (取代 ephemeral Subagent；map_reduce/verify fan-out + synthesis) | Merged |
 | Roadmap step 30 — 慢變演化 (current_self「現在的我」：evidence layer + ratification + Mode A evolution pass；3 plans, spec `2026-07-02-slow-self-evolution-design.md`) | Merged, live-smoke-verified |
+| Roadmap step 31 — Discord bridge internalization + generic ServiceSupervisor (bridge 變 daemon 子行程；PDEATHSIG 反孤兒、SIGINT graceful、crash-loop cap + BridgeDown perception；dollosctl 單服務化；spec `2026-07-06-bridge-internalization-design.md`) | Merged |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -148,13 +150,22 @@ To also run the Discord bridge in dev, in a second terminal:
 uv run python -m dollos.discord_bridge --daemon ws://127.0.0.1:9876 --config <bridge>.toml --data-root data
 ```
 
+**Warning**: if `config.toml` has `[bridge].enabled = true`, the daemon
+already spawns and supervises its own bridge subprocess — do NOT also run
+the standalone command above. Two bridge processes sharing the same
+Discord bot token race for the same gateway session and Discord's login
+will reject the second one.
+
 ### `dollosctl` — run the full stack as systemd `--user` services (recommended)
 
 The manual invocations above are for iterating on the code. To dogfood
-DollOS running continuously (daemon + Discord bridge, both auto-restarting
-on crash, both surviving terminal/session close), install them as
-`systemd --user` services via the `dollosctl` console script
-(`src/dollos/ctl/`, P1g):
+DollOS running continuously (daemon auto-restarting on crash, surviving
+terminal/session close), install it as a `systemd --user` service via the
+`dollosctl` console script (`src/dollos/ctl/`, P1g). The Discord bridge is
+no longer a separate unit — the daemon internalizes it as a supervised
+subprocess (2026-07-06 `ServiceSupervisor`; see Key Architecture Decisions
+below), spawned/watched from within the single daemon unit when
+`config.toml`'s `[bridge].enabled = true`.
 
 **Run `dollosctl install` from the DollOS repo root** — `WorkingDirectory`
 is captured from your current directory, and the daemon's `data/` (memory,
@@ -167,25 +178,30 @@ uv sync   # installs the dollosctl console script (pyproject [project.scripts])
 
 uv run dollosctl install \
     --daemon-config config.toml \
-    --bridge-config <bridge>.toml \
     --data-root data
-# writes ~/.config/systemd/user/dollos-{daemon,bridge}.service + daemon-reload
+# writes ~/.config/systemd/user/dollos-daemon.service + daemon-reload
+# (bridge path/enable now comes from config.toml's [bridge] block, not a flag)
 
-uv run dollosctl start      # daemon, then bridge
-uv run dollosctl status     # both units should show active (running)
-uv run dollosctl logs daemon -f    # follow the daemon's journal
-uv run dollosctl logs bridge -f    # follow the bridge's journal
-uv run dollosctl restart    # daemon, then bridge
-uv run dollosctl stop       # bridge, then daemon
-uv run dollosctl uninstall  # stop both + remove the unit files
+uv run dollosctl start      # daemon (bridge comes up inside it, if enabled)
+uv run dollosctl status     # daemon unit should show active (running)
+uv run dollosctl logs daemon -f    # follow the daemon's journal (bridge output is in here too)
+uv run dollosctl restart    # daemon
+uv run dollosctl stop       # daemon
+uv run dollosctl uninstall  # stop + remove the unit file
 ```
 
-The bridge unit soft-depends on the daemon unit (`Wants=`+`After=`, never
-`Requires=`) since the bridge already auto-reconnects to the daemon's WS
-server — restarting the daemon does not take the bridge down with it. Both
-units set `Restart=on-failure`. To also auto-start on boot / without an
-active login session: `systemctl --user enable dollos-daemon.service
-dollos-bridge.service` + `loginctl enable-linger $USER`.
+The unit sets `Restart=on-failure`. To also auto-start on boot / without an
+active login session: `systemctl --user enable dollos-daemon.service` +
+`loginctl enable-linger $USER`.
+
+**Upgrading an existing install**: a pre-2026-07-06 install wrote a second
+`dollos-bridge.service` unit. A bare `dollosctl restart` does NOT clean
+that up — only `install` (or `uninstall`) runs the legacy-unit migration.
+Re-run `uv run dollosctl install --daemon-config config.toml --data-root
+data` (or `uninstall` then `install`) once after upgrading so the legacy
+bridge unit gets disabled and deleted; leaving it enabled would auto-start
+a second bridge process on boot that clashes with the daemon-internalized
+one over the same Discord token.
 
 Full human live-smoke checklist (real systemd start/stop, real Discord
 bot, private test server — can't run in CI): `docs/dollosctl-smoke.md`.

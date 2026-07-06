@@ -3,10 +3,21 @@
 **This is a HUMAN checklist, not a test suite.** It exercises real
 `systemd --user` unit start/stop, a real Discord bot token, and a private
 test server. None of that exists in CI (no user login session, no systemd,
-no bot token) — CI only covers unit-file *generation* (`tests/test_ctl_units.py`)
-and `dollosctl` argv *construction* (`tests/test_ctl_systemctl.py`,
-`tests/test_ctl_cli.py`). Run this checklist by hand, on your own machine,
+no bot token) — CI only covers unit-file *generation* (`tests/test_ctl_units.py`),
+`dollosctl` argv *construction* (`tests/test_ctl_systemctl.py`,
+`tests/test_ctl_cli.py`, `tests/test_ctl_install.py`), and the
+`ServiceSupervisor`/kernel-wiring unit tests (`tests/test_service_supervisor.py`,
+`tests/test_discord_bridge_fatal_exit.py`, `tests/test_kernel_bridge_wiring.py`)
+against fake subprocesses. Run this checklist by hand, on your own machine,
 before dogfooding DollOS as a running service.
+
+**2026-07-06 single-service update**: the Discord bridge is no longer a
+second systemd unit. The daemon now internalizes it as a supervised child
+subprocess via the generic `ServiceSupervisor`
+(`src/dollos/service_supervisor.py` — spec
+`docs/superpowers/specs/2026-07-06-bridge-internalization-design.md`).
+`dollosctl` manages exactly **one** unit, `dollos-daemon.service`; the
+bridge comes up and goes down with it.
 
 ## Prerequisites
 
@@ -24,8 +35,21 @@ before proceeding.
    `pyproject.toml` `[project.scripts]`) into the project venv.
 2. **A ready daemon config** — copy `config.example.toml` → `config.toml`
    and point `[llm].base_url` at a running `llama-server` (or other
-   configured provider). See the main `CLAUDE.md` Build/Run section.
-3. **A ready bridge config** — a TOML file with a `[discord]` table:
+   configured provider). See the main `CLAUDE.md` Build/Run section. To
+   also bring up the bridge, set:
+
+   ```toml
+   [bridge]
+   enabled = true
+   config  = "bridge.toml"   # path to the file from step 3, resolved relative to cwd
+   ```
+
+   `enabled = false` (the default) means the daemon never spawns a bridge
+   at all — skip straight to the daemon-only parts of this checklist if
+   you're not testing Discord today.
+3. **A ready bridge config** (`bridge.toml`, referenced by `[bridge].config`
+   above — copy `bridge.example.toml` → `bridge.toml`) — a TOML file with a
+   `[discord]` table:
 
    ```toml
    [discord]
@@ -51,30 +75,53 @@ before proceeding.
    not point it at a public/stranger-facing server (external-safety
    hardening is P1e; this task only proves the plumbing works).
 
+## Upgrading from the two-unit install
+
+If you installed before 2026-07-06, you have a leftover
+`dollos-bridge.service` on disk (possibly `enabled`, i.e. it auto-starts on
+boot). Left alone, it runs a second bridge process sharing the same
+Discord bot token as the daemon-internalized one — Discord's gateway
+rejects the second login, so this is an active hazard, not just dead
+weight.
+
+**A bare `dollosctl restart` does NOT clean this up** — only `install` and
+`uninstall` run the legacy-unit migration (`_cleanup_legacy_bridge_unit`).
+Re-run:
+
+```bash
+uv run dollosctl install --daemon-config config.toml --data-root data
+```
+
+Expected: in addition to (re-)writing `dollos-daemon.service`, this
+`disable --now`s and deletes `dollos-bridge.service` if present. Confirm
+with `systemctl --user list-unit-files | grep dollos` → only
+`dollos-daemon.service` remains.
+
 ## Steps
 
-1. **Install the units**
+1. **Install the unit**
 
    ```bash
-   uv run dollosctl install --daemon-config config.toml --bridge-config <bridge>.toml --data-root data
+   uv run dollosctl install --daemon-config config.toml --data-root data
    ```
 
-   Expected: writes `~/.config/systemd/user/dollos-daemon.service` and
-   `~/.config/systemd/user/dollos-bridge.service`, then runs
-   `systemctl --user daemon-reload` (this happens automatically inside
-   `install` — no separate manual daemon-reload step is needed). Re-running
-   the same command is safe (idempotent — overwrites the two files in place).
+   Expected: writes **only** `~/.config/systemd/user/dollos-daemon.service`
+   (no `--bridge-config` flag anymore — the bridge path lives in
+   `config.toml`'s `[bridge].config`), then runs `systemctl --user
+   daemon-reload` (happens automatically inside `install` — no separate
+   manual daemon-reload step needed). Re-running the same command is safe
+   (idempotent — overwrites the file in place).
 
-2. **Start both services**
+2. **Start the service**
 
    ```bash
    uv run dollosctl start
    uv run dollosctl status
    ```
 
-   Expected: `status` prints `systemctl --user status` output for both
-   `dollos-daemon.service` and `dollos-bridge.service`, each showing
-   `Active: active (running)`.
+   Expected: `status` prints `systemctl --user status` output for
+   `dollos-daemon.service` showing `Active: active (running)`. There is no
+   separate bridge unit to check.
 
 3. **Watch the logs come up**
 
@@ -83,17 +130,27 @@ before proceeding.
    ```
 
    Expected: the daemon's event-loop startup log lines (WS server binding,
-   character pack load, etc.). `Ctrl-C` to stop following (this is a real
-   `journalctl -f`, it streams forever otherwise).
+   character pack load, etc.), **and**, if `[bridge].enabled = true`, the
+   bridge's own log lines interleaved in the same stream — the bridge
+   subprocess inherits the daemon's stdout/stderr fds, so its output lands
+   in the daemon's journal, not a separate one. Look for the bridge
+   connecting to the daemon's WS server, then to Discord. `Ctrl-C` to stop
+   following (this is a real `journalctl -f`, it streams forever
+   otherwise). There is no `dollosctl logs bridge` — `logs` only takes
+   `daemon`.
+
+4. **Confirm the bridge is actually running, as a subprocess of the daemon**
 
    ```bash
-   uv run dollosctl logs bridge -f
+   pgrep -af dollos.discord_bridge
    ```
 
-   Expected: the bridge connecting to the daemon's WS server, then
-   connecting to Discord and registering the allowlisted channel(s).
+   Expected: one matching process, spawned by the daemon after `[bridge]`
+   is enabled and its config file exists (`kernel.py` registers the
+   `ServiceSpec` only under that condition, and starts the supervisor
+   after the WS server is up).
 
-4. **End-to-end conversation, in the private test server**
+5. **End-to-end conversation, in the private test server**
 
    - **@-mention her** (or say her name-alias, or DM her) → she replies in
      the same channel. This proves the full path: Discord → bridge →
@@ -104,33 +161,47 @@ before proceeding.
      (ambient-logged only, no reply) — this is the L0 attention gate, not a
      bug.
 
-5. **Restart, confirm reconnect**
+6. **Restart, confirm the bridge comes back with it**
 
    ```bash
    uv run dollosctl restart
    ```
 
-   Expected: both units restart (daemon first, then bridge). The bridge's
-   own reconnect loop (soft `Wants=`/`After=` dependency, not `Requires=`)
-   picks the daemon back up without manual intervention — @-mention her
-   again in the test server and confirm she still replies.
+   Expected: the unit stops and restarts as one; the new daemon process
+   re-spawns a fresh bridge child on startup (`service_supervisor.start()`
+   re-registers and re-spawns since the old supervisor/child died with the
+   old daemon). Re-run `pgrep -af dollos.discord_bridge` — a new PID.
+   @-mention her again in the test server and confirm she still replies.
 
-6. **Stop and uninstall**
+   Note: `systemctl --user restart` stops the unit under the default
+   `KillMode=control-group` (no override in `units.py`), which sends
+   `SIGTERM` to every process in the unit's cgroup — daemon *and* bridge
+   child — rather than sequencing through the daemon's own internal
+   `service_supervisor.stop()` → `SIGINT`-to-bridge path. The **verified**
+   clean-gateway-close path (bridge's `finally` block actually running) is
+   the next resilience check below: `kill -SIGINT` targeted at the
+   daemon's own PID directly, not a `systemctl` stop/restart.
+
+7. **Stop and uninstall**
 
    ```bash
    uv run dollosctl stop
    uv run dollosctl uninstall
    ```
 
-   Expected: `stop` stops the bridge, then the daemon. `uninstall` stops
-   both (tolerating "not loaded" if already stopped), deletes both unit
-   files from `~/.config/systemd/user/`, and daemon-reloads. Confirm with
-   `systemctl --user list-unit-files | grep dollos` → no output.
+   Expected: `stop` stops the daemon unit, which also brings the bridge
+   child down with it (cgroup-wide kill, same as the restart note above).
+   `uninstall` stops the daemon (tolerating "not loaded" if already
+   stopped), deletes the unit file from `~/.config/systemd/user/`,
+   daemon-reloads, and (as in the upgrade section above) cleans up any
+   leftover legacy `dollos-bridge.service`. Confirm with `systemctl --user
+   list-unit-files | grep dollos` → no output. Confirm `pgrep -af
+   dollos.discord_bridge` → no output either.
 
 ## Resilience checks
 
-- **Daemon crash auto-restart**: with both services running, find the
-  daemon PID and `kill` it:
+- **Daemon crash auto-restart**: with the service running (`[bridge]`
+  enabled), find the daemon PID and `kill` it:
 
   ```bash
   systemctl --user show -p MainPID dollos-daemon.service
@@ -141,35 +212,89 @@ before proceeding.
   Expected: `Restart=on-failure` (baked into the unit — see
   `src/dollos/ctl/units.py`) brings the daemon back up on its own within a
   few seconds (`RestartSec=3`); `status` shows `active (running)` again
-  without you running `start` yourself.
+  without you running `start` yourself, and a fresh bridge child comes up
+  with it.
 
-- **Bridge crash does not affect the daemon**: kill the bridge's PID the
-  same way. Expected: the daemon keeps running untouched (no shared
-  process, no hard unit dependency); the bridge unit restarts on its own
-  and reconnects (step 5's reconnect behavior).
+- **Graceful stop closes the bridge's gateway cleanly (not just process
+  death)**: with the daemon running interactively (or via `kill -SIGINT
+  <daemon_pid>` against the systemd-managed PID), confirm in the journal
+  that the bridge's Discord gateway connection closes cleanly (its
+  `_connect_and_run` `finally` block runs — this is why the supervisor
+  sends `SIGINT`, not `SIGTERM`: the bridge only traps `KeyboardInterrupt`).
+  Then confirm:
+
+  ```bash
+  pgrep -f dollos.discord_bridge   # expect: empty
+  ```
+
+- **`kill -9` the daemon → no orphaned bridge (PDEATHSIG anti-orphan)**:
+  this is the scenario the old two-unit design couldn't protect against
+  (bridge reconnecting forever to whatever daemon comes back up, risking a
+  second bridge process on the same Discord token). Find the daemon PID
+  and force-kill it (simulating an OOM-kill or a bug the graceful path
+  can't run for):
+
+  ```bash
+  systemctl --user show -p MainPID dollos-daemon.service
+  kill -9 <pid>
+  pgrep -f dollos.discord_bridge   # expect: empty, no zombie
+  ```
+
+  Expected: the kernel died before it could send anything, but
+  `PR_SET_PDEATHSIG` (set in the bridge child's `preexec_fn` before exec)
+  makes the *kernel* deliver `SIGINT` to the bridge the instant its parent
+  (the daemon) dies — including via `SIGKILL`. `systemd`'s
+  `Restart=on-failure` then brings the daemon back up, and the new daemon
+  spawns its own fresh bridge child; there is never a window where two
+  bridge processes exist.
+
+- **Bad token → crash-loop → `giving up` + `BridgeDown` perception**:
+  temporarily break `bridge.toml`'s `token` (e.g. append garbage), then
+  start the daemon:
+
+  ```bash
+  uv run dollosctl restart
+  uv run dollosctl logs daemon -f
+  ```
+
+  Expected: the bridge process now exits **non-zero** on the bad token
+  (Task B2 — `discord.LoginFailure` is classified fatal and re-raised
+  instead of hanging in `wait_until_ready()` or being silently retried by
+  the bridge's own reconnect loop) instead of hanging or retrying forever
+  — this is what makes the crash-loop detection able to see it at all.
+  The supervisor restarts it with exponential backoff; after 5 consecutive
+  failures within the healthy-uptime window (`_MAX_CONSECUTIVE = 5` in
+  `service_supervisor.py`) the journal shows a `giving up` log line and
+  the daemon stops retrying until its own next restart. Doll should
+  perceive a `BridgeDown` event in this same window (spec §9-3) — she
+  can't fix a config typo, but she should know she lost an online
+  channel. **Restore the real token afterward** and restart again.
 
 - **Auto-start on boot / without an active login session**: `dollosctl`
-  does not enable the units by default (`install` only writes + reloads).
-  To make both services survive a reboot and run even when you are not
+  does not enable the unit by default (`install` only writes + reloads).
+  To make the service survive a reboot and run even when you are not
   logged in interactively:
 
   ```bash
-  systemctl --user enable dollos-daemon.service dollos-bridge.service
+  systemctl --user enable dollos-daemon.service
   loginctl enable-linger $USER
   ```
 
-  `enable` sets `WantedBy=default.target` (already declared in both unit
-  files) to actually start them at boot; `enable-linger` is what lets
+  `enable` sets `WantedBy=default.target` (already declared in the unit
+  file) to actually start it at boot; `enable-linger` is what lets
   `--user` services run without an active login session at all (otherwise
   systemd tears down the user's service manager when the last session
   logs out).
 
 ## Scope note
 
-CI's job ends at "the unit files render correctly and `dollosctl` builds
-the right `systemctl`/`journalctl` argv." Everything above — real process
-lifecycle, real Discord token, a real human @-mentioning her — only proves
-itself on a machine with an actual user systemd session and an actual bot
-in an actual (private) server. Run this checklist once per machine setup,
-and again after any change to `src/dollos/ctl/units.py` or
-`src/dollos/discord_bridge/__main__.py`'s CLI surface.
+CI's job ends at "the unit file renders correctly, `dollosctl` builds the
+right `systemctl`/`journalctl` argv, and the `ServiceSupervisor`/kernel
+wiring behave correctly against fake subprocesses." Everything above —
+real process lifecycle, a real Discord token, a real human @-mentioning
+her, a real `kill -9` — only proves itself on a machine with an actual
+user systemd session and an actual bot in an actual (private) server. Run
+this checklist once per machine setup, and again after any change to
+`src/dollos/ctl/units.py`, `src/dollos/service_supervisor.py`,
+`src/dollos/kernel.py`'s bridge-wiring, or
+`src/dollos/discord_bridge/__main__.py`'s CLI/exit-code surface.
