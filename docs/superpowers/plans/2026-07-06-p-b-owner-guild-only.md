@@ -31,7 +31,7 @@
 
 ---
 
-## Task B1: `is_owner_in_guild` / `owner_guild_channels` Protocol method + Fake
+## Task 1: (B1) `is_owner_in_guild` / `owner_guild_channels` Protocol method + Fake
 
 **Files:** Modify `src/dollos/discord_bridge/client.py`;Test `tests/test_discord_bridge_client.py`
 
@@ -49,7 +49,7 @@
 
 ---
 
-## Task B2: `owner_guild_only` gate + caching + config-load guard
+## Task 2: (B2) `owner_guild_only` gate + caching + config-load guard
 
 **Files:** Modify `src/dollos/discord_bridge/controller.py`、`src/dollos/discord_bridge/__main__.py`;Test `tests/test_owner_guild_gate.py`
 
@@ -83,7 +83,7 @@
 
 ---
 
-## Task B3: `channel_allowlist` 移除 + backfill 改寫（D5 解耦）
+## Task 3: (B3) `channel_allowlist` 移除 + backfill 改寫（D5 解耦）
 
 **Files:** Modify `src/dollos/discord_bridge/{controller.py,__main__.py}`、`bridge.toml`/`bridge.example.toml`;Test 既有 backfill 測試更新
 
