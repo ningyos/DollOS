@@ -255,14 +255,42 @@ def test_missing_alias_file_fails_closed_to_seed_and_floor(tmp_path: Path) -> No
     assert tokens == frozenset({"Doll", "小鯊", "adminfloor"})
 
 
+def test_missing_alias_file_does_not_warn(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Part A whole-branch review, Minor fix 1: a fresh install / early
+    dogfood where the owner hasn't taught a nickname yet is the DEFAULT,
+    long-lived state — name_aliases.json simply doesn't exist. This must
+    NOT emit a WARNING (that would be log spam on the L0 hot path for
+    every qualifying public message for the life of the install). It
+    still fails closed to the seed+floor set."""
+    settings = _make_settings(
+        tmp_path,
+        pack_name="Doll",
+        pack_aliases=["小鯊"],
+        config_name_aliases=["adminfloor"],
+    )
+    pack = _load_pack(settings)
+
+    with caplog.at_level(logging.DEBUG):
+        provider = build_alias_provider(settings, pack)
+        tokens = provider()
+
+    assert tokens == frozenset({"Doll", "小鯊", "adminfloor"})
+    assert not any(rec.levelno >= logging.WARNING for rec in caplog.records)
+
+
 def test_stat_failure_after_successful_read_returns_last_good_set(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Defense in depth beyond the cold-start case: if the file was read
     successfully once (so learned tokens are in the cache) and a LATER
-    call's stat() raises (permissions/transient), the provider must return
-    the last-good frozenset (including the learned token), not regress to
-    just seed+floor, and must not raise."""
+    call's stat() raises a GENUINE (non-FileNotFound) OSError
+    (permissions/transient), the provider must return the last-good
+    frozenset (including the learned token), not regress to just
+    seed+floor, must not raise, and — unlike the missing-file case above —
+    must still emit a WARNING (this is a real anomaly, not the expected
+    cold-start state)."""
     settings = _make_settings(tmp_path, pack_name="Doll")
     pack = _load_pack(settings)
     memory_root = settings.data.root / "memory"
@@ -282,9 +310,14 @@ def test_stat_failure_after_successful_read_returns_last_good_set(
 
     monkeypatch.setattr(Path, "stat", _raising_stat)
 
-    second = provider()  # must not raise
+    with caplog.at_level(logging.WARNING):
+        second = provider()  # must not raise
     assert second == first
     assert "shork" in second
+    assert any(
+        rec.levelno == logging.WARNING and "stat failed" in rec.message
+        for rec in caplog.records
+    )
 
 
 # ----- end-to-end: the provider actually feeds a real AttentionGate -----

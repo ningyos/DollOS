@@ -184,13 +184,23 @@ def build_alias_provider(
     can never become an unprunable wake-anything landmine.
 
     Learned tokens (3) are mtime-gated: only re-read
-    ``name_aliases.json`` when its mtime changes (owner writes are rare),
-    to avoid a disk read on every single message. The whole check is
-    fail-closed (M1): if ``stat()`` raises (missing/permissions/transient),
-    the closure returns the LAST-GOOD frozenset it built (or just the
-    seed+floor set, if it never successfully read the file) — it never
-    raises into ``_l0_signal`` and never widens the wake-eligible set on
-    error.
+    ``name_aliases.json`` when its ``st_mtime_ns`` changes (nanosecond
+    resolution — a plain ``st_mtime`` has only ~1s resolution on some
+    filesystems, so two writes in the same tick could otherwise miss
+    invalidation) (owner writes are rare), to avoid a disk read on every
+    single message. The whole check is fail-closed (M1): if ``stat()``
+    raises, the closure returns the LAST-GOOD frozenset it built (or just
+    the seed+floor set, if it never successfully read the file) — it
+    never raises into ``_l0_signal`` and never widens the wake-eligible
+    set on error. Two ``OSError`` cases are distinguished (Part A
+    whole-branch review, Minor): ``FileNotFoundError`` (the file simply
+    hasn't been created yet — the DEFAULT state for a fresh install until
+    the owner first teaches a nickname via ``LearnName``) is expected and
+    silent (DEBUG at most) rather than a WARNING, since it would otherwise
+    spam a WARNING on every qualifying message on the L0 hot path for the
+    entire lifetime of an install with no learned aliases. Any OTHER
+    ``OSError`` (permissions, transient I/O) is a genuine anomaly and still
+    logs a WARNING.
     """
     memory_root = settings.data.root / "memory"
     alias_path = memory_root / "name_aliases.json"
@@ -222,13 +232,25 @@ def build_alias_provider(
 
     def _provider() -> frozenset[str]:
         try:
-            mtime = alias_path.stat().st_mtime
-            if mtime != cache["mtime"]:
+            mtime_ns = alias_path.stat().st_mtime_ns
+            if mtime_ns != cache["mtime"]:
                 learned = frozenset(
                     t for t in store.active_tokens() if passes_alias_guard(t)
                 )
-                cache["mtime"] = mtime
+                cache["mtime"] = mtime_ns
                 cache["tokens"] = seed_floor | learned
+        except FileNotFoundError:
+            # Expected, long-lived state for a fresh install/early dogfood:
+            # the owner hasn't taught a nickname yet, so name_aliases.json
+            # was never created. Silent (DEBUG) — NOT a WARNING, since this
+            # is the DEFAULT state, not an anomaly, and would otherwise spam
+            # the log on every qualifying public message on the L0 hot path.
+            # Still fail-closed: falls through to cache["tokens"] (just the
+            # seed+floor set, on the very first call).
+            logger.debug(
+                "alias_provider: name_aliases.json does not exist yet "
+                "(no nickname taught) — using seed/floor wake-eligible set",
+            )
         except OSError:
             logger.warning(
                 "alias_provider: name_aliases.json stat failed — falling "

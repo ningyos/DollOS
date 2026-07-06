@@ -74,6 +74,33 @@ def test_l0_name_ascii_word_boundary_rejects_superstring():
     assert not d.admit and d.reason == "not_admitted"
 
 
+def test_l0_name_ascii_alias_glued_to_cjk_does_not_admit_accepted_gap():
+    """Part A whole-branch review, Minor fix 2: pins the accepted
+    word-boundary trade-off. Python's ``\\w``/``\\b`` treat CJK characters
+    as word characters, so an ASCII alias glued directly to CJK text with
+    no delimiter forms no boundary on that side and does NOT match. This
+    is a known, accepted gap (not a bug) — pinned here so a future change
+    to the boundary regex is a conscious decision, not a silent
+    regression."""
+    g = _gate(alias_provider=lambda: frozenset({"gura"}))
+    assert not g.admit(_e(content="gura你好"), now=100.0).admit
+    assert not g.admit(_e(content="我說gura"), now=101.0).admit
+    # ASCII-delimited (comma+space) DOES admit — a boundary exists once a
+    # non-\w delimiter separates the alias from the rest of the message.
+    d = g.admit(_e(content="gura, 在嗎"), now=102.0)
+    assert d.admit and d.reason == "l0_name"
+
+
+def test_l0_name_cjk_alias_substring_in_cjk_sentence_admits():
+    """Counterpart to the accepted-gap test above: a pure-CJK token uses
+    substring match (no boundary concept applies — CJK has no whitespace
+    to delimit a "word"), so it DOES admit when glued into a CJK
+    sentence."""
+    g = _gate(alias_provider=lambda: frozenset({"古拉"}))
+    d = g.admit(_e(content="古拉在嗎"), now=100.0)
+    assert d.admit and d.reason == "l0_name"
+
+
 def test_l0_name_empty_provider_never_fires_other_signals_unaffected():
     """An empty alias set must never admit via l0_name, but other L0
     signals (mention/dm/reply/always) must be unaffected."""
