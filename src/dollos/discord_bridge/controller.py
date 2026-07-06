@@ -325,6 +325,22 @@ class BridgeController:
             )
             result = False
 
+        # NOTE (Part B whole-branch review M2, 2026-07-06): this caches
+        # `result` for the full TTL unconditionally, including a transient-
+        # failure `False` (network/rate-limit/`get_guild`-None-during-
+        # reconnect) — NOT just a confirmed `discord.NotFound`. That
+        # diverges from spec §4.2's failure-mode table, which wants
+        # transient failures to fall back to a cached *stale-good* value (or
+        # go uncached so the next message retries) rather than pin a `False`
+        # for the whole TTL. Deliberate safe-direction availability trade:
+        # caching the transient `False` bounds REST-call amplification
+        # against a busy guild the owner isn't in; not caching it would
+        # reopen that, and a separate retry/stale-good layer on top would be
+        # a fallback mechanism (CLAUDE.md: no fallback logic). See the spec
+        # note right after the §4.2 table for the full writeup and the
+        # tri-state-cache follow-up (`is_owner_in_guild` returning member /
+        # not-member / unknown instead of a bare bool) that would let this
+        # distinguish the two cases properly.
         self._owner_guild_cache[guild_id] = (result, now + OWNER_GUILD_CACHE_TTL_S)
         return result
 

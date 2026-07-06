@@ -4,10 +4,12 @@ Usage:
     python -m dollos.discord_bridge --daemon ws://127.0.0.1:9876 \\
         --config discord_bridge.toml
 
-Connects to the daemon as a WS client, optionally pre-registers each
-`backfill_channels` entry (`ChannelRegister`, spec §4.3, Part B / B3 — most
-deployments leave this empty and rely on register-on-first-forward
-instead), and wires `PycordClient` <-> daemon through `BridgeController`.
+Connects to the daemon as a WS client and wires `PycordClient` <-> daemon
+through `BridgeController`. There is no separate pre-register step for
+`backfill_channels` (spec §4.3, Part B / B3 — a prior pre-register loop
+here was removed as a redundant, handle-leaking duplicate of
+register-on-first-forward, which already covers it; see
+`BridgeController._capture_and_forward`).
 Mirrors `src/dollos/voice/bridge/__main__.py`'s shape
 (argparse + `websockets.connect` + background client task). Kept thin on
 purpose — all business logic (full-capture, L0 wake, reply routing) lives in
@@ -60,7 +62,7 @@ import websockets
 from dollos.discord_bridge.ambient_log import AmbientLog
 from dollos.discord_bridge.client import PycordClient
 from dollos.discord_bridge.controller import BridgeConfig, BridgeController
-from dollos.ipc.messages import AddressedText, ChannelRegister
+from dollos.ipc.messages import AddressedText
 
 logger = logging.getLogger("dollos.discord_bridge")
 
@@ -196,29 +198,25 @@ async def _connect_and_run(
 
         discord.on_message(_on_discord_message)
 
-        # Pre-register is now OPTIONAL (2026-07-06 spec §4.3, Part B / B3):
-        # under forward-all + register-on-first-forward
+        # No pre-register step here (2026-07-06 spec §4.3, Part B / B3 —
+        # a prior loop that sent a `ChannelRegister` per `backfill_channels`
+        # entry directly over `ws` was removed as a redundant, handle-leaking
+        # duplicate): under forward-all + register-on-first-forward
         # (`BridgeController._capture_and_forward`), pre-registering a
-        # channel here is never load-bearing for correctness — the first
+        # channel here was never load-bearing for correctness — the first
         # inbound (or backfilled) message from ANY channel registers it
-        # dynamically before forwarding. This loop only pre-registers
-        # `backfill_channels`, if the operator set any, so their reconnect
-        # history (below) has a sink to route through immediately rather
-        # than waiting on register-on-first-forward during the backfill
-        # replay itself. Empty `backfill_channels` (the default) means this
-        # loop registers nothing on connect at all.
-        for channel_id in cfg.backfill_channels:
-            await ws.send(
-                ChannelRegister(
-                    channel_id=channel_id, locus="external", kind="discord",
-                ).model_dump_json()
-            )
-        if cfg.backfill_channels:
-            logger.info(
-                "pre-registered %d backfill channel(s)",
-                len(cfg.backfill_channels),
-            )
-
+        # dynamically before forwarding, through the controller's own
+        # `_registered` bookkeeping. Sending a second `ChannelRegister`
+        # straight over the WS — bypassing the controller and its
+        # `_registered` set entirely — meant register-on-first-forward had
+        # no way to know a channel was already registered, so it always
+        # sent its own `ChannelRegister` too: two registrations per
+        # backfilled channel, orphaning one `SinkResolver` handle each
+        # time (bounded leak, non-functional but real). `backfill_channels`
+        # still drives the real backfill purpose below (replaying missed
+        # history via `fetch_history`); those replayed events flow through
+        # `_capture_and_forward`, which registers-on-first-forward exactly
+        # once per channel.
         discord_task = asyncio.create_task(
             discord.run(), name="discord-bridge-client"
         )
