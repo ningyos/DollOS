@@ -57,6 +57,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import discord
 import websockets
 
 from dollos.discord_bridge.ambient_log import AmbientLog
@@ -154,6 +155,18 @@ async def run(args: argparse.Namespace) -> None:
     while True:
         try:
             await _connect_and_run(args, token, cfg, ambient)
+        except discord.LoginFailure:
+            # FATAL (spec §3.4a): a bad/revoked/expired bot token. Retrying
+            # cannot fix this — it would just hammer Discord's login
+            # endpoint every reconnect_delay_s forever. Let it propagate out
+            # of the loop entirely so main() returns non-zero and the
+            # ServiceSupervisor sees the process die (its crash-loop cap
+            # then applies) — this is the seam the whole task exists for.
+            logger.error(
+                "discord login failed (bad/revoked/expired token) — "
+                "exiting for the supervisor to see"
+            )
+            raise
         except Exception:
             logger.exception(
                 "discord bridge connection dropped — reconnecting in %.0fs",
@@ -226,8 +239,35 @@ async def _connect_and_run(
             # DiscordClient Protocol) is the "successful reconnect" signal:
             # only once py-cord's cache is ready can fetch_history() resolve
             # channels, so backfill runs right after, before live-message
-            # processing below.
-            await discord.wait_until_ready()
+            # processing below. It is NOT a safe thing to bare-await, though:
+            # on a bad/revoked/expired token, py-cord's login never reaches
+            # READY, so `discord_task` (running `discord.run()`) raises
+            # `discord.LoginFailure` and dies WHILE `wait_until_ready()`
+            # would otherwise wait forever — this was the bridge's #1 real
+            # failure mode hanging invisibly (spec §3.4a). Race the two:
+            # whichever finishes first wins, so a dead discord_task is
+            # noticed instead of hung past.
+            ready = asyncio.ensure_future(discord.wait_until_ready())
+            done, _pending = await asyncio.wait(
+                {discord_task, ready}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if discord_task in done:
+                # discord.run() finished (raised or returned) before READY
+                # ever fired — fatal path. Cancel the now-moot ready future
+                # and re-raise whatever killed discord_task (LoginFailure in
+                # the token case) so run()'s reconnect loop can classify it.
+                ready.cancel()
+                try:
+                    await ready
+                except asyncio.CancelledError:
+                    pass
+                exc = discord_task.exception()
+                if exc is not None:
+                    raise exc
+                raise RuntimeError(
+                    "discord client task exited before wait_until_ready()"
+                )
+            # ready won the race — normal connected path, unchanged below.
             if cfg.bot_id is None:
                 cfg.bot_id = discord.me_id()
             logger.info("discord connected — backfilling reconnect gap")
@@ -260,6 +300,15 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(run(args))
     except KeyboardInterrupt:
         return 0
+    except discord.LoginFailure:
+        # FATAL (spec §3.4a): propagated up from run()'s reconnect loop.
+        # Explicit non-zero exit is what makes this visible to the
+        # ServiceSupervisor (or any process manager) as an abnormal death,
+        # not a clean shutdown.
+        logger.error(
+            "fatal: discord login failed — check the bot token in bridge.toml"
+        )
+        return 2
     return 0
 
 
