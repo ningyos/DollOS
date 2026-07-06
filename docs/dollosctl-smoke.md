@@ -262,9 +262,9 @@ with `systemctl --user list-unit-files | grep dollos` → only
   instead of hanging in `wait_until_ready()` or being silently retried by
   the bridge's own reconnect loop) instead of hanging or retrying forever
   — this is what makes the crash-loop detection able to see it at all.
-  The supervisor restarts it with exponential backoff; after 5 consecutive
-  failures within the healthy-uptime window (`_MAX_CONSECUTIVE = 5` in
-  `service_supervisor.py`) the journal shows a `giving up` log line and
+  The supervisor restarts it with exponential backoff; after 6 consecutive
+  crashes within the healthy-uptime window (more than `_MAX_CONSECUTIVE = 5`
+  in `service_supervisor.py`) the journal shows a `giving up` log line and
   the daemon stops retrying until its own next restart. Doll should
   perceive a `BridgeDown` event in this same window (spec §9-3) — she
   can't fix a config typo, but she should know she lost an online

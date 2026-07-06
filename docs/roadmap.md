@@ -309,7 +309,7 @@ Smoke：~23/24（3 sampling runs，sampling fluke run 1 T3 hallucinate「我是�
 - **Task D**（`refactor(ctl)`）—— `dollosctl` 單服務化：`install` 只再寫 `dollos-daemon.service`；`start`/`stop`/`restart`/`status`/`logs` 只操作這一個 unit（`logs` 的 `which` 選項收斂成只有 `["daemon"]` —— bridge 輸出就在這個 journal 裡）。`install`/`uninstall` 都主動清掉 legacy `dollos-bridge.service`（若殘留且 enabled，開機會自動起一個跟內化 bridge 撞同一 Discord token 的第二進程——是活的風險，不只是廢棄檔案）。
 - **Task F**（本 step）—— 文件收尾：`config.example.toml` 加 `[bridge]` 範例、`CLAUDE.md` Build/Run 段（拿掉 `--bridge-config`/`logs bridge`、加雙 bridge 警告、加升級遷移註記）+ 架構段一行、本檔案、`docs/dollosctl-smoke.md` 單服務化 checklist。
 
-Live-smoke（Task C Step 10，人工）：`pgrep -af dollos.discord_bridge` 見得到 bridge 子行程；私訊 owner 端到端通；`kill -SIGINT <daemon_pid>` graceful 收、journal 見 gateway 乾淨斷、pgrep 為空；`kill -9 <daemon_pid>` 後 pgrep 仍為空（PDEATHSIG 反孤兒驗證，無 zombie）；壞 token 觸發連續 crash → 5 次後 `giving up` + `BridgeDown` perception。
+Live-smoke（Task C Step 10，人工）：`pgrep -af dollos.discord_bridge` 見得到 bridge 子行程；私訊 owner 端到端通；`kill -SIGINT <daemon_pid>` graceful 收、journal 見 gateway 乾淨斷、pgrep 為空；`kill -9 <daemon_pid>` 後 pgrep 仍為空（PDEATHSIG 反孤兒驗證，無 zombie）；壞 token 觸發連續 crash → 第 6 次（超過 `_MAX_CONSECUTIVE = 5`）後 `giving up` + `BridgeDown` perception。
 
 Tests：`test_config.py`（`[bridge]` schema）、`test_service_supervisor.py`（230 行，spawn/PDEATHSIG/backoff/crash-loop/graceful stop）、`test_discord_bridge_fatal_exit.py`（fatal vs transient 分類）、`test_kernel_bridge_wiring.py`（ServiceSpec 建構 + BridgeDown perception）、`test_ctl_{units,cli,install}.py`（單服務化 + legacy 遷移）。全套件 1448 passed（whole-branch review 前基準；6 個既有 torch-gated skip）。
 
