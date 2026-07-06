@@ -31,8 +31,13 @@ before proceeding.
    [discord]
    token = "..."                    # bot token — on-device only, NEVER commit this file
    owner_discord_id = "123456789012345678"   # your numeric Discord user id
-   channel_allowlist = ["111111111111111111"]  # channel ids the bridge will join
    ```
+
+   `channel_allowlist` no longer exists (2026-07-06 owner-guild-only spec
+   §4.3, Part B / B3) — it never gated forwarding. `owner_guild_only`
+   (default `true`) is the real gate now: only guilds you've joined + your
+   own DMs reach Doll. An optional `backfill_channels = [...]` list can be
+   added for reconnect-gap history replay; see `bridge.example.toml`.
 
    Name-wake is no longer a bridge config concern (2026-07-06
    self-learned-aliases spec §3.6, Part A A5) — the bridge forwards every
