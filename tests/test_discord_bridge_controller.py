@@ -53,6 +53,15 @@ class FakeDiscordClient:
         self._cb: Callable[[dict], Awaitable[None]] | None = None
         self._rate_limit_once_after: float | None = None
         self._history: dict[str, list[dict]] = {}
+        # owner_guild_only gate (Part B / B2): configurable per test via
+        # `set_owner_guild`/`raise_on_guild`. These tests exercise forward-
+        # all behavior (unrelated to the gate) and set `owner_guild_only=
+        # False` in `_cfg`, so `is_owner_in_guild` is not called by default —
+        # it's here so the Fake still satisfies the `DiscordClient` Protocol
+        # shape `BridgeController` requires to construct.
+        self._owner_guilds: set[str] = set()
+        self._raise_for_guilds: set[str] = set()
+        self.is_owner_in_guild_calls: list[str] = []
 
     def on_message(self, cb: Callable[[dict], Awaitable[None]]) -> None:
         self._cb = cb
@@ -89,6 +98,23 @@ class FakeDiscordClient:
         """Test helper: stage the events `fetch_history(channel_id, ...)` returns."""
         self._history[channel_id] = events
 
+    def set_owner_guild(self, guild_id: str, is_member: bool) -> None:
+        """Test helper: configure whether the owner is a member of `guild_id`."""
+        if is_member:
+            self._owner_guilds.add(guild_id)
+        else:
+            self._owner_guilds.discard(guild_id)
+
+    def raise_on_guild(self, guild_id: str) -> None:
+        """Test helper: `is_owner_in_guild(guild_id, ...)` raises next call."""
+        self._raise_for_guilds.add(guild_id)
+
+    async def is_owner_in_guild(self, guild_id: str, owner_id: str) -> bool:
+        self.is_owner_in_guild_calls.append(guild_id)
+        if guild_id in self._raise_for_guilds:
+            raise RuntimeError("simulated is_owner_in_guild failure")
+        return guild_id in self._owner_guilds
+
 
 def _event(**kw) -> dict:
     base = dict(
@@ -110,9 +136,14 @@ def _cfg(**kw) -> BridgeConfig:
     # name_aliases / always_wake_channels removed from BridgeConfig (Part A
     # A5, spec §3.6): dead config, since P1c moved L0/L1 wake admission
     # daemon-side into AttentionGate — the bridge never read either field.
+    # owner_guild_only defaults to False here (Part B / B2): these tests
+    # exercise forward-all / register / backfill behavior that predates and
+    # is orthogonal to the owner_guild_only gate — see test_owner_guild_gate.py
+    # for the gate's own dedicated suite. BridgeConfig's own default is True
+    # (D7, safe-by-default); tests opt back out explicitly.
     base = dict(
         owner_id="owner-1", bot_id="bot-999",
-        channel_allowlist=["c1"],
+        channel_allowlist=["c1"], owner_guild_only=False,
     )
     base.update(kw)
     return BridgeConfig(**base)

@@ -24,6 +24,7 @@ bridge process is just loop iteration 1 of a fresh `run()` call.
     token = "..."                    # bot token, on-device, not in git
     owner_discord_id = "123..."      # numeric Discord user id
     channel_allowlist = ["111", "222"]
+    owner_guild_only = true          # optional, default true (spec §4.2, Part B / B2)
 
 `name_aliases` / `always_wake_channels` used to live here too, but were
 removed (2026-07-06 self-learned-aliases spec §3.6, Part A A5) — both were
@@ -80,13 +81,33 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_bridge_config(path: Path) -> tuple[str, BridgeConfig]:
-    """Load the `[discord]` table from `path`. Returns (token, BridgeConfig)."""
+    """Load the `[discord]` table from `path`. Returns (token, BridgeConfig).
+
+    `owner_guild_only` (2026-07-06 spec §4.2, Part B / B2, D7) defaults to
+    `True` — safe-by-default: only the owner's guilds (+ owner DMs) forward
+    to the daemon. Config-load guard (spec I1): a `True` `owner_guild_only`
+    with an empty `owner_id` has no safe semantics — a gate that only
+    trusts "the owner" but doesn't know who that is would either drop
+    everything or (if some future code path treated "unknown owner" as
+    "trust nobody restrictions" loosely) leak. Refuse to start rather than
+    guess either way.
+    """
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     d = raw["discord"]
+    owner_id = str(d["owner_discord_id"])
+    owner_guild_only = d.get("owner_guild_only", True)
+    if owner_guild_only and not owner_id:
+        raise ValueError(
+            "bridge config: owner_guild_only=true requires a non-empty "
+            "owner_discord_id — refusing to start with a gate that would "
+            "trust no one (set owner_discord_id, or set "
+            "owner_guild_only=false if you really want forward-all)."
+        )
     cfg = BridgeConfig(
-        owner_id=str(d["owner_discord_id"]),
+        owner_id=owner_id,
         channel_allowlist=list(d["channel_allowlist"]),
+        owner_guild_only=owner_guild_only,
     )
     return d["token"], cfg
 

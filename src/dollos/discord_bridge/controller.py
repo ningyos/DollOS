@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -66,6 +67,13 @@ DaemonSend = Callable[[ChannelEvent | ChannelRegister], Awaitable[None]]
 # tests substitute a recording no-op so a retry test never actually waits.
 SleepFn = Callable[[float], Awaitable[None]]
 
+# owner_guild_only gate (Part B / B2, spec §4.2): per-guild TTL for the
+# `is_owner_in_guild` result cache. Short on purpose — an owner leaving a
+# guild should stop being trusted within minutes, not hours; this is the
+# upper bound on that leak window. Kept short rather than long specifically
+# because the safety property this gate provides degrades with cache age.
+OWNER_GUILD_CACHE_TTL_S = 300.0
+
 
 @dataclass
 class BridgeConfig:
@@ -85,11 +93,20 @@ class BridgeConfig:
     `AttentionSettings.name_aliases`/`always_wake_channels` (the KEPT admin
     floor, `dollos.config.AttentionSettings`) + learned tokens — the bridge
     never read either field for anything.
+
+    `owner_guild_only` (2026-07-06 spec §4.2, Part B / B2, D7): when `True`
+    (the default), only the owner's guilds (+ owner DMs) are forwarded to
+    the daemon — everything else is dropped fail-closed by the gate in
+    `_capture_and_forward`. `_load_bridge_config` refuses to start
+    (`ValueError`) if this is `True` and `owner_id` is empty — a gate that
+    trusts only "the owner" but doesn't know who that is has no safe
+    semantics to fall back on.
     """
 
     owner_id: str
     channel_allowlist: list[str] = field(default_factory=list)
     bot_id: str | None = None
+    owner_guild_only: bool = True
 
 
 class BridgeController:
@@ -116,6 +133,12 @@ class BridgeController:
         # `_capture_and_forward`). Per-session state — a fresh controller
         # is built on every reconnect, so this can't go stale.
         self._registered: set[str] = set(cfg.channel_allowlist)
+        # owner_guild_only gate (Part B / B2): per-guild `is_owner_in_guild`
+        # result cache, guild_id -> (result, expiry epoch-seconds). Per-
+        # session like `_registered` above — a fresh controller on every
+        # reconnect starts with an empty cache, so a stale entry can never
+        # outlive a reconnect either.
+        self._owner_guild_cache: dict[str, tuple[bool, float]] = {}
 
     async def on_discord_message(self, event: dict) -> None:
         """Full-capture `event`, then forward it to the daemon unless it's
@@ -186,6 +209,13 @@ class BridgeController:
         P1b fixed). The old `discord_bridge/wake.py::l0_wake` L0 signal
         logic (DM/mention/name-alias/always-wake) is gone from this path
         entirely; it now lives in `AttentionGate._l0_signal`.
+
+        Part B / B2 (spec §4.2) adds a SECOND gate after the self-filter:
+        `owner_guild_only`. When on, only the owner's guilds (+ owner DMs)
+        reach the daemon; a stranger DM, a guild the owner isn't in, or an
+        event with no resolvable guild at all are all dropped — fail-closed,
+        same as the self-filter, `return` after the (already unconditional)
+        ambient append above.
         """
         logged_event = {**event, "date": _event_date(event)}
         if not self._ambient.append(guild_id, channel_id, logged_event):
@@ -193,6 +223,20 @@ class BridgeController:
 
         if event["author_id"] == self._cfg.bot_id:
             return  # self-filter: logged above, never forwarded.
+
+        author_is_owner = event["author_id"] == self._cfg.owner_id
+
+        if self._cfg.owner_guild_only:
+            if event["is_dm"]:
+                if not author_is_owner:
+                    return  # stranger DM dropped under owner_guild_only
+                # owner DM → always forwarded, fall through.
+            else:
+                guild = event.get("guild")
+                if guild is None:
+                    return  # no resolvable guild → fail-closed drop
+                if not await self._owner_in_guild_cached(guild):
+                    return  # not one of the owner's guilds → drop
 
         # Dynamic register-on-first-FORWARD (was first-wake under P1b; P1c
         # Option A has no local wake concept left to hang it on — see
@@ -215,13 +259,53 @@ class BridgeController:
             )
             self._registered.add(channel_id)
 
-        author_is_owner = event["author_id"] == self._cfg.owner_id
         await self._daemon_send(
             ChannelEvent(
                 channel_id=channel_id,
                 payload={**event, "author_is_owner": author_is_owner},
             )
         )
+
+    async def _owner_in_guild_cached(self, guild_id: str) -> bool:
+        """Per-guild short-TTL cache in front of
+        `DiscordClient.is_owner_in_guild` (Part B / B2, spec §4.2).
+
+        A cached, non-expired result is returned as-is. Otherwise the real
+        check is made — wrapped in try/except so ANY exception (network,
+        rate-limit, the client not yet connected, ...) resolves to `False`
+        fail-closed. This is defense-in-depth on top of B1's
+        `is_owner_in_guild`, which already never raises by contract; a
+        gate this security-sensitive must not depend solely on every
+        implementation upholding that contract — one uncaught exception
+        here must never propagate into `_capture_and_forward` and crash the
+        whole forward path.
+
+        The result (True OR False) is cached for `OWNER_GUILD_CACHE_TTL_S`
+        either way — a failure is not special-cased to retry sooner; the
+        short TTL alone bounds how long a transient failure can suppress a
+        legitimate owner message, without introducing a second, separate
+        fallback/retry mechanism (CLAUDE.md: no fallback logic).
+        """
+        now = time.time()
+        cached = self._owner_guild_cache.get(guild_id)
+        if cached is not None:
+            result, expiry = cached
+            if now < expiry:
+                return result
+
+        try:
+            result = await self._discord.is_owner_in_guild(
+                guild_id, self._cfg.owner_id
+            )
+        except Exception:
+            logger.exception(
+                "is_owner_in_guild raised for guild_id=%s — fail-closed drop",
+                guild_id,
+            )
+            result = False
+
+        self._owner_guild_cache[guild_id] = (result, now + OWNER_GUILD_CACHE_TTL_S)
+        return result
 
     async def on_daemon_message(self, msg: object) -> None:
         """Route an `AddressedText` reply back to Discord; ignore the rest."""
