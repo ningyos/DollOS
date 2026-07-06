@@ -33,7 +33,7 @@
 
 ---
 
-## Task A1: `name_aliases.py` store module
+## Task 1: (A1) `name_aliases.py` store module
 
 **Files:** Create `src/dollos/mind/name_aliases.py`、`tests/test_name_aliases.py`
 
@@ -50,7 +50,7 @@
 
 ---
 
-## Task A2: `LearnName` 工具 + owner-context registry gating + 機械 guard(承重 security)
+## Task 2: (A2) `LearnName` 工具 + owner-context registry gating + 機械 guard(承重 security)
 
 **Files:** Modify `src/dollos/tools.py`、`src/dollos/mind/mind_loop.py`;Test `tests/test_tools_learnname.py`、`tests/test_mind_loop_learnname_gate.py`
 
@@ -75,7 +75,7 @@
 
 ---
 
-## Task A3: AttentionGate alias provider + L0 match 硬化 + seed guard
+## Task 3: (A3) AttentionGate alias provider + L0 match 硬化 + seed guard
 
 **Files:** Modify `src/dollos/mind/attention.py`、`src/dollos/kernel.py`、`src/dollos/character.py`(D1b);Test `tests/test_attention*.py`、`tests/test_kernel_alias_provider.py`
 
@@ -96,7 +96,7 @@
 
 ---
 
-## Task A5: bridge alias config 清理 + 中文正名遷移
+## Task 4: (A5) bridge alias config 清理 + 中文正名遷移
 
 **Files:** Modify `src/dollos/discord_bridge/{controller.py,__main__.py}`、`bridge.toml`、`bridge.example.toml`、`character_packs/gura/doll.toml`(遷移「古拉」)、daemon config 文件註記;Test 既有 bridge 測試更新
 
