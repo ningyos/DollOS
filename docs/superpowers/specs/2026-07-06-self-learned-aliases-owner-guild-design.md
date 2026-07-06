@@ -201,6 +201,30 @@ async def is_owner_in_guild(self, guild_id: str, owner_id: str) -> bool
 
 **caching + staleness(M2)**:controller 內持 `dict[str, bool]`,per `guild_id` 惰性填 + **短 TTL**(建議 **≤ 5–15 min,不是 1h**)過期重查;reconnect 時清空(fresh controller 每次 reconnect 重建,`controller.py:106-112` 的 per-session 註解已是此模型)。**owner 中途退群的 leak 窗上界 = TTL**,故取短。cache miss + error 一律 fail-closed(見上表)。DM(`guild_id == "dm"` / `is_dm`)**短路不查 REST**:`author_id == owner_id` → forward,否則 drop。
 
+> **實作偏移記錄(Part B whole-branch review M2,2026-07-06 補記)**:目前
+> `controller.py::_owner_in_guild_cached` 與上表的 fail-direction 表不完全
+> 一致——它用單一 `try/except Exception` 把所有失敗模式(`NotFound`、
+> `get_guild` 回 `None`、transient 429/`Forbidden`/timeout)一律收斂成同一
+> 個 `False`,並**無條件寫入 cache,佔滿整個 `OWNER_GUILD_CACHE_TTL_S`**——
+> 不像上表區分「confirmed `NotFound` 才長 cache;transient 有舊值用舊值,
+> 否則 fail-closed 但不 cache 失敗」。
+>
+> 這是刻意選擇的安全側可用性取捨:對一個高流量、owner 不在的 guild,把
+> transient 失敗也 cache `False` 能界定 REST 呼叫的放大上界(不 cache 的話
+> 同一 guild 的每一則訊息都會重新打一次 REST);代價是若某個 guild 第一次
+> 查詢就撞到 transient 失敗(當下無舊值可退回),TTL 內 owner 在該 guild 的
+> 合法訊息會被誤丟(starve),即使那次失敗其實跟「owner 是否在這個 guild」
+> 無關。這跟表格「transient 失敗不 cache,下一則重查」的語意不同——真正要
+> 對齊表格需要先改變 B1 `is_owner_in_guild` 的 bool 回傳契約,留給日後的
+> 設計變動處理,而非本輪順手改掉。
+>
+> **Follow-up(留待未來設計,尚未排期)**:tri-state cache 精修——
+> `is_owner_in_guild` 改回傳三態(member / not-member / unknown),
+> controller 端 confirmed-not-member 才寫入滿 TTL 的 cache,transient/
+> unknown 短 cache 或不 cache,才能真正落實上表 leak-vs-starve 的取捨,而
+> 不是現在被單一 bool 契約壓縮成一種安全側處理(見 `controller.py`
+> `_owner_in_guild_cached` 的 `# NOTE:` 註解)。
+
 ### 4.3 `channel_allowlist` 移除 + backfill 改寫
 
 - 刪 `BridgeConfig.channel_allowlist`(`controller.py:85`);`_registered` seed 改 `set()`(`controller.py:112`)。

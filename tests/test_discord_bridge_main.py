@@ -25,9 +25,13 @@ reading a key that no longer maps to any field).
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
+from dollos.discord_bridge import __main__ as main_module
 from dollos.discord_bridge.__main__ import _load_bridge_config
+from dollos.discord_bridge.ambient_log import AmbientLog
 from dollos.discord_bridge.controller import BridgeConfig
 
 
@@ -111,3 +115,121 @@ owner_discord_id = "444"
     )
     token, cfg = _load_bridge_config(path)
     assert cfg.backfill_channels == []
+
+
+# ----- M1 (Part B whole-branch review): no redundant pre-register loop -----
+#
+# `_connect_and_run` used to pre-register every `backfill_channels` entry by
+# sending a `ChannelRegister` directly over the raw `ws`, ahead of
+# `controller.reconnect_backfill`. Because `BridgeController._registered`
+# starts empty (2026-07-06 spec §4.3, Part B / B3) and that direct send
+# never touched it, the backfilled channel's first replayed event then hit
+# register-on-first-forward in `_capture_and_forward` and sent a SECOND
+# `ChannelRegister` for the same channel — two registrations per backfilled
+# channel per reconnect, orphaning one `SinkResolver` handle each time. The
+# fix deletes the redundant loop outright (the real backfill purpose —
+# `fetch_history` replay — is untouched). These fakes drive
+# `_connect_and_run` end to end (daemon WS + Discord client) to prove the
+# fix: history is still backfilled, and exactly one `ChannelRegister` is
+# sent for a `backfill_channels` entry that then forwards.
+
+
+class _FakeDiscordClient:
+    """Minimal stand-in for `PycordClient` — only what `_connect_and_run`
+    touches: `on_message`, `run`, `wait_until_ready` (PycordClient-specific,
+    not on the `DiscordClient` Protocol), `me_id`, `fetch_history`."""
+
+    def __init__(self, *, token: str) -> None:
+        self.token = token
+        self._cb = None
+
+    def on_message(self, cb) -> None:
+        self._cb = cb
+
+    async def run(self) -> None:
+        # Never resolves on its own — `_connect_and_run`'s `finally` cancels
+        # this task once the daemon WS loop below ends.
+        await asyncio.Event().wait()
+
+    async def wait_until_ready(self) -> None:
+        return None
+
+    def me_id(self) -> str:
+        return "bot-1"
+
+    async def fetch_history(self, channel_id: str, limit: int) -> list[dict]:
+        if channel_id != "c1":
+            return []
+        return [
+            {
+                "author_id": "owner-1", "author": "owner", "is_dm": False,
+                "mentioned": False, "content": "backfilled msg",
+                "channel_id": "c1", "guild": "g1", "channel": "general",
+                "msg_id": "m1",
+            }
+        ]
+
+
+class _FakeWS:
+    """Records everything sent; the `async for raw in ws` receive loop in
+    `_connect_and_run` ends immediately (no incoming daemon messages) so the
+    function returns as soon as backfill + task-cancel finish."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, msg: str) -> None:
+        self.sent.append(msg)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+class _FakeConnect:
+    def __init__(self, ws: _FakeWS) -> None:
+        self._ws = ws
+
+    async def __aenter__(self) -> _FakeWS:
+        return self._ws
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+async def test_connect_and_run_registers_backfill_channel_exactly_once(
+    tmp_path, monkeypatch
+):
+    """End-to-end (minus real network/Discord): a `backfill_channels`
+    reconnect must still replay history (real backfill purpose, untouched)
+    AND must send exactly one `ChannelRegister` for that channel — not the
+    two the old pre-register loop produced."""
+    fake_ws = _FakeWS()
+    monkeypatch.setattr(
+        main_module.websockets, "connect", lambda url: _FakeConnect(fake_ws)
+    )
+    monkeypatch.setattr(main_module, "PycordClient", _FakeDiscordClient)
+
+    cfg = BridgeConfig(
+        owner_id="owner-1", owner_guild_only=False, backfill_channels=["c1"]
+    )
+    ambient = AmbientLog(tmp_path, retention_days=30)
+    args = main_module.build_parser().parse_args(
+        ["--config", str(tmp_path / "unused.toml")]
+    )
+
+    await main_module._connect_and_run(args, "tok", cfg, ambient)
+
+    sent = [json.loads(m) for m in fake_ws.sent]
+    events = [m for m in sent if m.get("type") == "channel_event"]
+    registers = [m for m in sent if m.get("type") == "channel_register"]
+    c1_registers = [m for m in registers if m.get("channel_id") == "c1"]
+
+    # Backfill history still replays (fetch_history's one event forwards).
+    assert len(events) == 1
+    assert events[0]["payload"]["msg_id"] == "m1"
+    # Exactly one ChannelRegister for c1 — register-on-first-forward only,
+    # no redundant pre-register duplicate.
+    assert len(c1_registers) == 1
