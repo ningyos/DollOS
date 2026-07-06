@@ -82,6 +82,30 @@ class DiscordClient(Protocol):
         """
         ...
 
+    async def is_owner_in_guild(self, guild_id: str, owner_id: str) -> bool:
+        """Return True iff `owner_id` is a member of `guild_id` (Part B
+        `owner_guild_only` detection primitive — B1; the gate itself is
+        wired in B2).
+
+        REST-only check (`fetch_member`) — requires NO Server Members
+        Intent. Fail-closed on every ambiguous or failing path: guild not
+        in the bot's cache, owner confirmed not a member, or ANY other
+        exception (forbidden / rate-limited / network / not-yet-connected)
+        all return False. This method NEVER raises — callers may rely on
+        it always resolving to a bool.
+        """
+        ...
+
+    async def owner_guild_channels(self, owner_id: str) -> list[str]:
+        """Return the text-channel ids of every guild `owner_id` is a
+        member of (Part B backfill use — B3).
+
+        Built from `is_owner_in_guild` per guild, so it inherits the same
+        fail-closed behavior: a guild this can't confirm the owner is in
+        is simply excluded, never raises.
+        """
+        ...
+
 
 def _to_event(message: Any, bot: Any) -> dict:
     """Translate a py-cord Message into the plain-dict event shape the rest
@@ -213,6 +237,61 @@ class PycordClient:
             _to_event(message, self._bot)
             async for message in channel.history(limit=limit)
         ]
+
+    async def is_owner_in_guild(self, guild_id: str, owner_id: str) -> bool:
+        """REST-only membership check — see Protocol docstring.
+
+        `discord.NotFound` from `fetch_member` means "confirmed not a
+        member" -> False. Any other exception (Forbidden, HTTPException /
+        429, network timeout, not-yet-connected, even a malformed
+        `guild_id`/`owner_id`) is treated as transient/ambiguous and also
+        folds to False (fail-closed, logged) — this method must never
+        raise out, since a leaked exception here must not be allowed to
+        crash the forward path that calls it (B2's call site additionally
+        wraps this in try/except as defense in depth).
+        """
+        import discord
+
+        if self._bot is None:
+            logger.warning(
+                "is_owner_in_guild called before run() connected "
+                "(guild_id=%s) — fail-closed False",
+                guild_id,
+            )
+            return False
+        try:
+            guild = self._bot.get_guild(int(guild_id))
+            if guild is None:
+                return False
+            await guild.fetch_member(int(owner_id))
+            return True
+        except discord.NotFound:
+            return False
+        except Exception:
+            logger.warning(
+                "is_owner_in_guild: unexpected error checking guild_id=%s "
+                "owner_id=%s — fail-closed False",
+                guild_id,
+                owner_id,
+                exc_info=True,
+            )
+            return False
+
+    async def owner_guild_channels(self, owner_id: str) -> list[str]:
+        """Enumerate text channels of every guild `owner_id` is in — see
+        Protocol docstring. `self._bot is None` (not connected) fails
+        closed to an empty list rather than raising."""
+        if self._bot is None:
+            logger.warning(
+                "owner_guild_channels called before run() connected — "
+                "fail-closed empty list"
+            )
+            return []
+        channels: list[str] = []
+        for guild in self._bot.guilds:
+            if await self.is_owner_in_guild(str(guild.id), owner_id):
+                channels.extend(str(channel.id) for channel in guild.text_channels)
+        return channels
 
     async def wait_until_ready(self) -> None:
         """Block until `run()` has connected and py-cord's internal cache is
