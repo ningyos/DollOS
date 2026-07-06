@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import discord
+
 from dollos.discord_bridge.client import RateLimited
 from dollos.ipc.messages import AddressedText, ChannelEvent, ChannelRegister
 
@@ -354,12 +356,28 @@ class BridgeController:
         rate-limit handling). `RateLimited.retry_after` is the delay Discord
         itself reports; the wait goes through `self._sleep` (injectable
         clock) so a retry test never actually waits. A second failure is not
-        caught — it propagates, rather than retrying unboundedly."""
+        caught — it propagates, rather than retrying unboundedly.
+
+        A non-retryable `discord.HTTPException` (e.g. `400 code 50006:
+        Cannot send an empty message` — the empty-speech-chunk regression,
+        see `dollos.mind.mind_loop._emit_sentence`) is caught here and
+        dropped: one bad send must not propagate out of `on_daemon_message`
+        and tear down the whole daemon-WS + Discord-gateway connection
+        (`__main__.py`'s `_connect_and_run` has no per-message try/except
+        around its `async for raw in ws:` loop — this is the one place that
+        stands between a single delivery failure and a full reconnect)."""
         try:
             await self._discord.send(channel_id, text)
         except RateLimited as exc:
             await self._sleep(exc.retry_after)
             await self._discord.send(channel_id, text)
+        except discord.HTTPException:
+            logger.warning(
+                "discord send failed (delivery error) for channel_id=%s — "
+                "dropping message rather than tearing down the connection",
+                channel_id,
+                exc_info=True,
+            )
 
 
 def _event_date(event: dict) -> str:
