@@ -251,6 +251,20 @@ def test_persona_drift_detected_perception_rendered():
     assert "人設約束" in body
 
 
+def test_bridge_down_perception_rendered():
+    from dollos.mind.mind_prompt import _percep_body
+
+    p = Perception(
+        kind="BridgeDown",
+        t=time.time(),
+        data={"service": "discord-bridge", "rc": 1},
+    )
+    body = _percep_body(p)
+    assert "discord-bridge" in body
+    assert "rc=1" in body
+    assert "{" not in body  # must be prose, not a raw dict dump (fallback str(d))
+
+
 def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")

@@ -44,7 +44,16 @@ class UnitParams:
 
 
 def render_daemon_unit(p: UnitParams) -> str:
-    """Render the `dollos-daemon.service` unit-file content."""
+    """Render the `dollos-daemon.service` unit-file content.
+
+    `KillMode=mixed` (P1g whole-branch review, minor #5): the systemd
+    default `control-group` would SIGTERM every process in the unit's
+    cgroup on `stop`/`restart`, including the supervised bridge child —
+    which has no SIGTERM handler — bypassing the daemon's own graceful
+    shutdown (`service_supervisor.stop()` → SIGINT-to-bridge). `mixed`
+    sends SIGTERM only to the main (daemon) process; the daemon's SIGTERM
+    handler then drives the orchestrated graceful close itself.
+    """
     return f"""[Unit]
 Description=DollOS daemon (event loop + memory + IPC WS server)
 After=network.target
@@ -55,6 +64,7 @@ WorkingDirectory={p.working_dir}
 ExecStart="{p.python}" -m dollos --config "{p.daemon_config}"
 Restart=on-failure
 RestartSec={p.restart_sec}
+KillMode=mixed
 
 [Install]
 WantedBy=default.target

@@ -364,6 +364,8 @@ def _derive_daemon_ws(ipc) -> str:
     host = ipc.host
     if host in ("0.0.0.0", "::", ""):
         host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):  # bare IPv6 literal (e.g. "::1")
+        host = f"[{host}]"                        # bracket it — ws://::1:PORT is unparseable
     return f"ws://{host}:{ipc.port}"
 
 

@@ -173,14 +173,14 @@ with `systemctl --user list-unit-files | grep dollos` → only
    old daemon). Re-run `pgrep -af dollos.discord_bridge` — a new PID.
    @-mention her again in the test server and confirm she still replies.
 
-   Note: `systemctl --user restart` stops the unit under the default
-   `KillMode=control-group` (no override in `units.py`), which sends
-   `SIGTERM` to every process in the unit's cgroup — daemon *and* bridge
-   child — rather than sequencing through the daemon's own internal
-   `service_supervisor.stop()` → `SIGINT`-to-bridge path. The **verified**
-   clean-gateway-close path (bridge's `finally` block actually running) is
-   the next resilience check below: `kill -SIGINT` targeted at the
-   daemon's own PID directly, not a `systemctl` stop/restart.
+   Note: the unit sets `KillMode=mixed` (`src/dollos/ctl/units.py`), so
+   `systemctl --user restart` SIGTERMs only the daemon's main process, not
+   the whole cgroup. The daemon's own SIGTERM handler (`kernel.py`) then
+   drives the same graceful shutdown sequence as a direct signal —
+   `service_supervisor.stop()` → `SIGINT`-to-bridge — before the process
+   exits, so `systemctl restart` itself gives a clean gateway close, not
+   just a directly-targeted `kill -SIGINT`. See the resilience check below
+   for how to verify that.
 
 7. **Stop and uninstall**
 
@@ -189,9 +189,11 @@ with `systemctl --user list-unit-files | grep dollos` → only
    uv run dollosctl uninstall
    ```
 
-   Expected: `stop` stops the daemon unit, which also brings the bridge
-   child down with it (cgroup-wide kill, same as the restart note above).
-   `uninstall` stops the daemon (tolerating "not loaded" if already
+   Expected: `stop` SIGTERMs the daemon's main process only (`KillMode=mixed`,
+   same as the restart note above); the daemon's SIGTERM handler drives
+   the graceful shutdown (bridge gateway closes cleanly, then the bridge
+   child exits, then the daemon itself stops) rather than a cgroup-wide
+   hard kill. `uninstall` stops the daemon (tolerating "not loaded" if already
    stopped), deletes the unit file from `~/.config/systemd/user/`,
    daemon-reloads, and (as in the upgrade section above) cleans up any
    leftover legacy `dollos-bridge.service`. Confirm with `systemctl --user
@@ -216,12 +218,16 @@ with `systemctl --user list-unit-files | grep dollos` → only
   with it.
 
 - **Graceful stop closes the bridge's gateway cleanly (not just process
-  death)**: with the daemon running interactively (or via `kill -SIGINT
-  <daemon_pid>` against the systemd-managed PID), confirm in the journal
-  that the bridge's Discord gateway connection closes cleanly (its
-  `_connect_and_run` `finally` block runs — this is why the supervisor
-  sends `SIGINT`, not `SIGTERM`: the bridge only traps `KeyboardInterrupt`).
-  Then confirm:
+  death)**: `uv run dollosctl stop` (or `restart`) now gives this directly
+  — `KillMode=mixed` means `systemctl --user stop/restart` SIGTERMs only
+  the daemon's main process, and the daemon's own SIGTERM handler drives
+  `service_supervisor.stop()` → `SIGINT`-to-bridge (the supervisor sends
+  `SIGINT`, not `SIGTERM`, because the bridge only traps
+  `KeyboardInterrupt`). A direct `kill -SIGINT <daemon_pid>` against the
+  systemd-managed PID exercises the identical handler path and works too.
+  Either way, confirm in the journal that the bridge's Discord gateway
+  connection closes cleanly (its `_connect_and_run` `finally` block runs),
+  then confirm:
 
   ```bash
   pgrep -f dollos.discord_bridge   # expect: empty
