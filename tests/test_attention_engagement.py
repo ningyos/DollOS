@@ -15,7 +15,7 @@ from dollos.mind.attention import AdmitDecision, AttentionGate
 
 def _gate(
     *,
-    name_aliases=("gura", "古拉"),
+    alias_provider=lambda: frozenset({"gura", "古拉"}),
     always_wake_channels=(),
     owner_id="owner",
     max_session_turns=6,
@@ -25,7 +25,7 @@ def _gate(
     debounce_cold_s=8.0,
 ) -> AttentionGate:
     return AttentionGate(
-        name_aliases=name_aliases,
+        alias_provider=alias_provider,
         always_wake_channels=always_wake_channels,
         owner_id=owner_id,
         max_session_turns=max_session_turns,
@@ -43,7 +43,7 @@ def _e(**kw):
 
 
 def test_continuation_admits_without_tag_then_disengages_at_max_turns():
-    g = _gate(name_aliases=["gura"], max_session_turns=2, window_base_s=90.0, window_decay=0.6)
+    g = _gate(alias_provider=lambda: frozenset({"gura"}), max_session_turns=2, window_base_s=90.0, window_decay=0.6)
     g.admit({"channel_id": "c1", "author_id": "u1", "is_dm": False, "mentioned": True, "content": "gura?"}, now=100.0)
     # she replies
     g.note_reply("c1", now=101.0)
@@ -58,7 +58,7 @@ def test_continuation_admits_without_tag_then_disengages_at_max_turns():
 
 
 def test_bystander_chatter_not_admitted():
-    g = _gate(name_aliases=["gura"])
+    g = _gate(alias_provider=lambda: frozenset({"gura"}))
     g.admit({"channel_id": "c1", "author_id": "u1", "is_dm": False, "mentioned": True, "content": "gura?"}, now=100.0)
     d = g.admit({"channel_id": "c1", "author_id": "stranger", "is_dm": False, "mentioned": False, "content": "unrelated"}, now=101.0)
     assert not d.admit  # non-participant bystander in the same channel
@@ -160,7 +160,7 @@ def test_l0_remention_merges_participants_and_resets_budget():
     never evict someone she was already engaged with. Fails against the
     old wholesale-replace behavior (participants would become {B}, and
     A's tagless continuation would be rejected)."""
-    g = _gate(name_aliases=["gura"], max_session_turns=6, window_base_s=90.0, window_decay=0.6)
+    g = _gate(alias_provider=lambda: frozenset({"gura"}), max_session_turns=6, window_base_s=90.0, window_decay=0.6)
     # A opens the session.
     g.admit({"channel_id": "c1", "author_id": "A", "is_dm": False, "mentioned": True, "content": "gura?"}, now=100.0)
     # She replies a couple times → turn_count>0, window decayed.

@@ -9,7 +9,7 @@ from dollos.mind.attention import AttentionGate, AdmitDecision, Session
 
 def _gate(
     *,
-    name_aliases=("gura", "古拉"),
+    alias_provider=lambda: frozenset({"gura", "古拉"}),
     always_wake_channels=(),
     owner_id="owner",
     max_session_turns=6,
@@ -19,7 +19,7 @@ def _gate(
     debounce_cold_s=8.0,
 ) -> AttentionGate:
     return AttentionGate(
-        name_aliases=name_aliases,
+        alias_provider=alias_provider,
         always_wake_channels=always_wake_channels,
         owner_id=owner_id,
         max_session_turns=max_session_turns,
@@ -45,7 +45,7 @@ def test_l0_dm_admits_and_opens_session():
 
 
 def test_l0_mention_admits_and_opens_session():
-    g = _gate(name_aliases=["gura"], max_session_turns=6, window_base_s=90.0)
+    g = _gate(alias_provider=lambda: frozenset({"gura"}), max_session_turns=6, window_base_s=90.0)
     d = g.admit({"channel_id": "c1", "author_id": "u1", "is_dm": False, "mentioned": True, "content": "hi"}, now=100.0)
     assert d.admit and d.reason == "l0_mention"
     s = g._sessions["c1"]
@@ -53,9 +53,53 @@ def test_l0_mention_admits_and_opens_session():
 
 
 def test_l0_name_alias_substring_admits():
-    g = _gate(name_aliases=["古拉"])
+    g = _gate(alias_provider=lambda: frozenset({"古拉"}))
     d = g.admit(_e(content="hey 古拉 look"), now=100.0)
     assert d.admit and d.reason == "l0_name"
+
+
+def test_l0_name_ascii_word_boundary_admits():
+    """'hey gura' contains 'gura' as a delimited word -> admits."""
+    g = _gate(alias_provider=lambda: frozenset({"gura"}))
+    d = g.admit(_e(content="hey gura"), now=100.0)
+    assert d.admit and d.reason == "l0_name"
+
+
+def test_l0_name_ascii_word_boundary_rejects_superstring():
+    """Word-boundary hardening (D2): a 2-char/short ASCII alias must NOT
+    match as a substring of an unrelated longer word — 'gurapp' must not
+    wake her just because it contains 'gura'."""
+    g = _gate(alias_provider=lambda: frozenset({"gura"}))
+    d = g.admit(_e(content="gurapp released a new update"), now=100.0)
+    assert not d.admit and d.reason == "not_admitted"
+
+
+def test_l0_name_empty_provider_never_fires_other_signals_unaffected():
+    """An empty alias set must never admit via l0_name, but other L0
+    signals (mention/dm/reply/always) must be unaffected."""
+    g = _gate(alias_provider=lambda: frozenset())
+    d = g.admit(_e(content="gura hello there"), now=100.0)
+    assert not d.admit and d.reason == "not_admitted"
+    d2 = g.admit(_e(is_dm=True, content="anything"), now=101.0)
+    assert d2.admit and d2.reason == "l0_dm"
+
+
+def test_l0_name_cjk_single_char_excluded_by_guard_does_not_admit():
+    """AttentionGate itself doesn't re-enforce min-length — that guard is
+    the PROVIDER's job (spec I3/D2; kernel.py applies it to seeds/floor,
+    name_aliases.passes_alias_guard applies it to learned tokens). Any real
+    provider filters through that guard before returning its set, so a
+    single-char CJK token like '古' never survives to reach the gate. This
+    test wires the shared guard into the test provider to prove the
+    end-to-end effect: it does NOT admit."""
+    from dollos.mind.name_aliases import passes_alias_guard
+
+    raw_tokens = {"古"}  # 1-char CJK — fails MIN_ALIAS_LEN=2
+    guarded = frozenset(t for t in raw_tokens if passes_alias_guard(t))
+    assert guarded == frozenset()  # sanity: guard actually dropped it
+    g = _gate(alias_provider=lambda: guarded)
+    d = g.admit(_e(content="古時候的事"), now=100.0)
+    assert not d.admit and d.reason == "not_admitted"
 
 
 def test_l0_reply_to_bot_admits():
@@ -100,7 +144,7 @@ def test_l0_hit_resets_budget_and_merges_participants():
 
 
 def test_non_signal_without_session_not_admitted():
-    g = _gate(name_aliases=["gura"])
+    g = _gate(alias_provider=lambda: frozenset({"gura"}))
     d = g.admit({"channel_id": "c1", "author_id": "u2", "is_dm": False, "mentioned": False, "content": "unrelated chatter"}, now=100.0)
     assert not d.admit and d.reason == "not_admitted"
     assert "c1" not in g._sessions

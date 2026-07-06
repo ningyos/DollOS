@@ -24,7 +24,40 @@ ONLY on an L0 re-mention (see ``admit``'s L0 branch) — L1 continuation and
 """
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
+
+
+def _name_match(content: str, tokens: frozenset[str]) -> bool:
+    """L0 name-match, hardened (spec §3.4/D2): a raw ``alias in content``
+    substring check is dangerous for a wake trigger — a short/ASCII alias
+    like "Gura" would hit "Gurapp", and any 2-char token would hit almost
+    everything. Two branches:
+
+    - ASCII or mixed token (contains at least one ASCII char): lowercased
+      **word-boundary** match (``\\bgura\\b``) — "hey gura" matches,
+      "gurapp" does not.
+    - Pure CJK / non-ASCII token: substring match (CJK has no whitespace
+      to delimit a "word", so a boundary regex doesn't apply) — but the
+      token is only ever in ``tokens`` if it already passed the caller's
+      min-length guard (>=2), so this can't degrade to a 1-char CJK
+      landmine.
+
+    Empty/falsy content or an empty token set never matches (fails
+    closed, no I/O, pure logic — this is called from ``_l0_signal``).
+    """
+    if not content:
+        return False
+    for token in tokens:
+        if not token:
+            continue
+        if any(ch.isascii() for ch in token):
+            if re.search(rf"\b{re.escape(token)}\b", content, re.IGNORECASE):
+                return True
+        elif token in content:
+            return True
+    return False
 
 
 @dataclass
@@ -62,7 +95,7 @@ class AttentionGate:
     def __init__(
         self,
         *,
-        name_aliases: list[str],
+        alias_provider: Callable[[], frozenset[str]],
         always_wake_channels: set[str] | list[str] | tuple[str, ...],
         owner_id: str,
         max_session_turns: int,
@@ -71,7 +104,13 @@ class AttentionGate:
         debounce_engaged_s: float,
         debounce_cold_s: float,
     ) -> None:
-        self._name_aliases = list(name_aliases)
+        # Provider is injected (spec §3.5, A3) — this class stays pure
+        # logic and does not know whether aliases come from a pack seed, a
+        # config floor, a learned-alias JSON file, or a test lambda. It is
+        # called at MATCH time (inside ``_l0_signal``), not cached here,
+        # so a learned alias becomes wake-eligible on the very next message
+        # after the owner teaches it.
+        self._alias_provider = alias_provider
         self._always_wake = set(always_wake_channels)
         self._owner_id = owner_id
         self._max_session_turns = max_session_turns
@@ -88,7 +127,7 @@ class AttentionGate:
             return "l0_dm"
         if event.get("mentioned"):
             return "l0_mention"
-        if any(alias in (event.get("content") or "") for alias in self._name_aliases):
+        if _name_match(event.get("content") or "", self._alias_provider()):
             return "l0_name"
         if event.get("reply_to_bot"):
             return "l0_reply"

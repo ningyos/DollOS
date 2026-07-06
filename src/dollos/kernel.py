@@ -5,6 +5,7 @@ import logging
 import signal
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from dollos.mind.evolution_trigger import EvolutionTrigger
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import Perception, load_state
+from dollos.mind.name_aliases import NameAliasStore, passes_alias_guard
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
@@ -153,6 +155,89 @@ def build_memsearch(settings: Settings) -> FtsMemory:
         ],
         db_path=memory_root / "fts.db",
     )
+
+
+def build_alias_provider(
+    settings: Settings, doll_pack: DollPack,
+) -> Callable[[], frozenset[str]]:
+    """Build the ``alias_provider`` closure ``AttentionGate`` calls at L0
+    match time (2026-07-06 self-learned-aliases spec §3.5, A3 — the task
+    that closes the loop from ``LearnName`` writes back to name-wake).
+
+    Unions three sources, each passed through the SAME mechanical guard
+    (``passes_alias_guard`` — min-length + denylist, spec I3) that A2's
+    ``LearnName`` applies at write time:
+
+    1. Pack seed — ``doll_pack.meta.name`` + ``doll_pack.meta.aliases``
+       (D1b). Permanent floor; never persisted, never prunable.
+    2. Config floor — ``settings.attention.name_aliases`` (optional admin
+       static floor; may be empty).
+    3. Learned tokens — ``NameAliasStore.active_tokens()`` from
+       ``{memory_root}/name_aliases.json``, what owner-taught ``LearnName``
+       calls write.
+
+    Seeds (1) + floor (2) are constant for the process lifetime — computed
+    once, below. A seed/floor token that fails the guard (too short or
+    denylisted, e.g. a pack whose ``meta.name`` is a single CJK character)
+    is DROPPED and a warning logged — an honest boundary (spec §3.4): that
+    pack's name-wake silently won't fire, but a dangerous "unprunable" seed
+    can never become an unprunable wake-anything landmine.
+
+    Learned tokens (3) are mtime-gated: only re-read
+    ``name_aliases.json`` when its mtime changes (owner writes are rare),
+    to avoid a disk read on every single message. The whole check is
+    fail-closed (M1): if ``stat()`` raises (missing/permissions/transient),
+    the closure returns the LAST-GOOD frozenset it built (or just the
+    seed+floor set, if it never successfully read the file) — it never
+    raises into ``_l0_signal`` and never widens the wake-eligible set on
+    error.
+    """
+    memory_root = settings.data.root / "memory"
+    alias_path = memory_root / "name_aliases.json"
+    store = NameAliasStore(alias_path)
+
+    raw_seed_floor = {
+        doll_pack.meta.name,
+        *doll_pack.meta.aliases,
+        *settings.attention.name_aliases,
+    }
+    guarded_seed_floor: set[str] = set()
+    for token in raw_seed_floor:
+        if passes_alias_guard(token):
+            guarded_seed_floor.add(token)
+        else:
+            logger.warning(
+                "alias_provider: seed/floor token %r failed the mechanical "
+                "guard (too short or denylisted) and was dropped from the "
+                "wake-eligible set — that name/alias will not wake her "
+                "(spec I3)", token,
+            )
+    seed_floor: frozenset[str] = frozenset(guarded_seed_floor)
+
+    # mtime-gated cache. ``tokens`` starts as just the seed floor so a
+    # stat() failure on the very first call (e.g. name_aliases.json doesn't
+    # exist yet, cold start) still returns a sane fail-closed set rather
+    # than an empty one.
+    cache: dict[str, object] = {"mtime": None, "tokens": seed_floor}
+
+    def _provider() -> frozenset[str]:
+        try:
+            mtime = alias_path.stat().st_mtime
+            if mtime != cache["mtime"]:
+                learned = frozenset(
+                    t for t in store.active_tokens() if passes_alias_guard(t)
+                )
+                cache["mtime"] = mtime
+                cache["tokens"] = seed_floor | learned
+        except OSError:
+            logger.warning(
+                "alias_provider: name_aliases.json stat failed — falling "
+                "back to the last-good wake-eligible set (fail-closed, "
+                "never widens)",
+            )
+        return cache["tokens"]  # type: ignore[return-value]
+
+    return _provider
 
 
 def build_voice_engines(
@@ -283,8 +368,14 @@ class DollOS:
         # anti-亂回 gate. Flow-agnostic: kernel is the only caller, wired via
         # note_reply through MindLoop's on_turn_complete callback below (no
         # mind_loop -> attention import).
+        #
+        # alias_provider (2026-07-06 self-learned-aliases spec §3.5, A3):
+        # replaces the frozen `name_aliases=` list — the closure unions pack
+        # seed + config floor + learned tokens from name_aliases.json at
+        # match time, so a nickname the owner teaches via LearnName becomes
+        # wake-eligible without a daemon restart.
         self._attention = AttentionGate(
-            name_aliases=settings.attention.name_aliases,
+            alias_provider=build_alias_provider(settings, self._doll_pack),
             always_wake_channels=settings.attention.always_wake_channels,
             owner_id=settings.attention.owner_id,
             max_session_turns=settings.attention.max_session_turns,
