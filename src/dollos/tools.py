@@ -1022,6 +1022,84 @@ class SelfRevision(BaseModel):
         return "妳的改寫已送審,通過後會回來給妳採納。"
 
 
+# Part A / A2 (2026-07-06 self-learned-aliases spec §3.3, R1-hardened):
+# hardcoded mechanical guard applied to EVERY LearnName call, including
+# owner turns — this is the only line of defense against the owner herself
+# teaching a dangerous/too-common token (e.g. pinning "早安" as a nickname).
+# Trust-boundary enforcement against STRANGERS lives entirely in
+# mind_loop._active_tool_registry (registry availability, not this guard):
+# LearnName is structurally absent from the tool set on external_public and
+# pure-reflection turns, so this guard never even has to consider a
+# stranger's input. Both thresholds below are deliberately equal (2) per the
+# brief, so no ASCII/CJK branch is needed here — `len(token) < 2` covers
+# both. Full L0 match-rule hardening (word-boundary for ASCII, min-length
+# for CJK at READ/match time) is a separate concern, applied by A3 in
+# attention.py — this guard only protects the WRITE path.
+_LEARN_NAME_MIN_LEN = 2
+_LEARN_NAME_DENYLIST: frozenset[str] = frozenset({
+    "你", "妳", "他", "她", "hey", "hi", "hello", "the", "a",
+    "everyone", "all", "大家", "各位", "yo", "ok",
+})
+
+
+class LearnName(BaseModel):
+    """記錄或撤掉一個「別人這樣叫你」的暱稱。**只在你親耳/親眼聽到的當下回合**
+    才會出現這個工具(owner 本機對話,或 owner 的 DM)——不是每次都能用,事後回想
+    絕對叫不出它。op="add" 記下新暱稱,之後這個字也能把你叫醒;op="remove" 撤掉
+    一個不再用的。太短或太常見的字(即使是主人教的)會被擋下,不會真的寫入。"""
+
+    op: Literal["add", "remove"]
+    token: str = Field(description="暱稱本身,例如「小鯊」或「shork」。")
+    note: str | None = Field(
+        default=None, description="可選:誰、什麼情境這樣叫你(稽核/自我敘事用)。"
+    )
+
+    def _summary(self) -> str:
+        return f"learn_name {self.op} {self.token[:30]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind import self_history
+        from dollos.mind.name_aliases import NameAliasStore
+
+        token = self.token.strip()
+        if len(token) < _LEARN_NAME_MIN_LEN or token.lower() in _LEARN_NAME_DENYLIST:
+            _record(ctx, "LearnName", self._summary())
+            return f"「{token or self.token}」太短或太常見了,沒辦法記成暱稱。"
+
+        store = NameAliasStore(ctx.memory_root / "name_aliases.json")
+        if self.op == "add":
+            # origin is HARDCODED "owner" — LearnName has no ``origin``
+            # field, so the model can never set it (A1 review ⚠️). The
+            # tool only ever reaches run() on an owner-present turn (see
+            # mind_loop._active_tool_registry), so this is always true.
+            store.add(token, origin="owner", note=self.note, now=time.time())
+            result = f"記住了,之後你也可以叫我「{token}」。"
+        else:
+            store.remove(token)
+            result = f"「{token}」這個暱稱撤掉了。"
+
+        # Provenance (D3), mirrors PinSelf → self_history.log_event. This is
+        # on the tool-call hot path, so a history-write failure must never
+        # take down the (already-succeeded) alias write — log loudly, don't
+        # raise.
+        try:
+            self_history.log_event(
+                ctx.memory_root / "aliases_history.jsonl",
+                kind="learn_name",
+                op=self.op,
+                token=token,
+                origin_tier=ctx.origin_tier,
+                external_ctx=ctx.external_ctx,
+            )
+        except OSError:
+            logger.exception(
+                "aliases_history.jsonl write failed for token %r; continuing", token
+            )
+
+        _record(ctx, "LearnName", self._summary())
+        return result
+
+
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,

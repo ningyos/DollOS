@@ -34,11 +34,17 @@ def test_external_public_registry_is_conservative(tmp_path):
 
 def test_external_dm_owner_registry_is_conservative_too(tmp_path):
     """Owner's own DM is still external — no home-computer RCE via a
-    compromised Discord account, even the owner's."""
+    compromised Discord account, even the owner's.
+
+    Part A / A2 (2026-07-06): external_dm now also intentionally grants
+    LearnName (owner DM is a live, first-hand, owner-present turn — spec
+    §3.3) — that is the ONE addition; everything else about the
+    conservative-subset invariant (no Shell/SpawnWorkflow/etc) is unchanged."""
     ml = make_mindloop(memory_root=tmp_path)
     ml._ctx.origin_tier = "external_dm"
     reg = ml._active_tool_registry()
-    assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf"}
+    assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf", "LearnName"}
+    assert "LearnName" in reg
     for name in DANGEROUS:
         assert name not in reg
 

@@ -36,6 +36,7 @@ from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
     EXTERNAL_TOOLS,
+    LearnName,
     NoteToolLesson,
     PinSelf,
     SelfRevision,
@@ -199,6 +200,12 @@ class MindLoop:
         self._turn_speech: list[str] = []
         # Reflection-turn flag.
         self._is_reflection: bool = False
+        # Part A / A2 (self-learned-aliases spec §3.3): per-turn "does this
+        # batch carry a live, first-hand UserSpoke perception" flag — the
+        # owner-present half of LearnName's trust boundary. Mirrors
+        # _is_reflection: computed once per _run_one_turn from THIS batch's
+        # perceptions, never re-derived later from stale/replayed state.
+        self._has_user_spoke: bool = False
         # B3 energy system
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
@@ -370,6 +377,13 @@ class MindLoop:
 
         # Gate NoteToolLesson to reflection turns only (Spec B §5).
         self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
+
+        # Gate LearnName's internal-turn branch to live owner-present turns
+        # (Part A / A2 spec §3.3): a batch can legitimately contain BOTH a
+        # ReflectionMoment and a UserSpoke (both are origin-less and land in
+        # the same internal bucket — see test_mind_loop.py's MF-2), so this
+        # is independent of _is_reflection, not mutually exclusive with it.
+        self._has_user_spoke = any(p.kind == "UserSpoke" for p in perceptions)
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -793,6 +807,26 @@ class MindLoop:
         when self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision
         when evolution_enabled (慢變演化; spec §3.4).
         otherwise → base registry.
+
+        LearnName (Part A / A2, self-learned-aliases spec §3.3 — R1-hardened
+        SECURITY BOUNDARY): added ONLY on live, owner-present turns —
+        ``origin_tier == "external_dm"`` (the ChannelMessage from the owner
+        IS the live first-hand utterance, no additional signal needed) OR
+        ``origin_tier == "internal"`` AND this batch carries a live
+        ``UserSpoke`` perception (``self._has_user_spoke``; local chat/voice
+        = owner at the keyboard). It is NEVER added on ``external_public``
+        (any stranger, including the owner posting in a public channel) or on
+        a pure-reflection turn (``ReflectionMoment`` with no ``UserSpoke`` —
+        the exact whitewash path the R1 review's C1 finding killed: reflection
+        turns are always ``origin_tier == "internal"`` regardless of who was
+        actually heard, so gating on origin_tier alone would let a stranger's
+        earlier utterance get written as an owner-taught alias after the
+        fact). Trust here is enforced by REGISTRY AVAILABILITY, not by a
+        post-hoc read of ``ctx.origin_tier`` inside the tool — a stranger's
+        turn never has LearnName in its dict, full stop. On external_dm this
+        is added to the conservative EXTERNAL_TOOLS subset (like PinSelf
+        above) — nothing else is widened; the P1e no-Shell invariant still
+        holds for external_dm turns.
         """
         if self._state.safe_mode:
             return {
@@ -809,6 +843,8 @@ class MindLoop:
             }
             if self._is_reflection and self._self_profile_enabled:
                 reg["PinSelf"] = PinSelf
+            if self._ctx.origin_tier == "external_dm":
+                reg["LearnName"] = LearnName
             return reg
         if self._is_reflection:
             extra = {"NoteToolLesson": NoteToolLesson}
@@ -816,7 +852,11 @@ class MindLoop:
                 extra["PinSelf"] = PinSelf
             if self._evolution_enabled:
                 extra["SelfRevision"] = SelfRevision
+            if self._has_user_spoke:
+                extra["LearnName"] = LearnName
             return {**self._tool_registry, **extra}
+        if self._has_user_spoke:
+            return {**self._tool_registry, "LearnName": LearnName}
         return self._tool_registry
 
     def _active_grammar(self) -> str | None:
