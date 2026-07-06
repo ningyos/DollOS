@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class LLMConfig(BaseModel):
@@ -134,6 +134,32 @@ class SystemPulseConfig(BaseModel):
     enabled: bool = True
     poll_interval_s: float = 60.0
     include_active_window: bool = True   # privacy opt-out
+
+
+class BridgeConfig(BaseModel):
+    """Discord-bridge internalization pointer (spec §4).
+
+    最小指標區塊:只有 enabled + 指向獨立 bridge.toml 的 config 路徑。
+    真正的 [discord] token/owner 表留在 bridge.toml,daemon 只知道那個檔案的路徑。
+    restart 旋鈕 / retention 都是 service_supervisor.py 的模組常數,不在此。
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False                 # opt-in;預設關 → 零開銷
+    config: Path | None = None            # 指向獨立 bridge.toml(enabled 時 required)
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _expand_user(cls, v: object) -> object:
+        if isinstance(v, (str, Path)):
+            return Path(v).expanduser()
+        return v
+
+    @model_validator(mode="after")
+    def _require_config_when_enabled(self) -> "BridgeConfig":
+        if self.enabled and self.config is None:
+            raise ValueError("[bridge].enabled=true 需要 [bridge].config 指向 bridge.toml")
+        return self
 
 
 class CognitionConfig(BaseModel):
@@ -266,6 +292,7 @@ class Settings(BaseModel):
     evolution: EvolutionConfig = Field(default_factory=lambda: EvolutionConfig())
     trace: TraceSettings = Field(default_factory=lambda: TraceSettings())
     attention: AttentionSettings = Field(default_factory=lambda: AttentionSettings())
+    bridge: BridgeConfig = Field(default_factory=lambda: BridgeConfig())
 
 
 def load_settings(path: Path) -> Settings:

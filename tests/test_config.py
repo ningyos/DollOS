@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from dollos.config import Settings, load_settings
+from dollos.config import BridgeConfig, Settings, load_settings
 
 
 _BASE_TOML = """
@@ -309,3 +309,50 @@ bogus_field = 1
     )
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def _minimal_settings_dict(tmp_path):
+    # LLMConfig + CharacterConfig 是 Settings 僅有的 required 欄位;其餘有預設。
+    # NOTE: LLMConfig's required fields are `base_url` + `model_alias` (not
+    # `model_id` — confirmed against src/dollos/config.py, adjusted from the
+    # task brief's draft helper to match the real schema).
+    return {
+        "llm": {"base_url": "http://localhost:8001", "model_alias": "x"},
+        "character": {"pack": str(tmp_path / "pack")},
+    }
+
+
+def test_bridge_defaults_disabled():
+    cfg = BridgeConfig()
+    assert cfg.enabled is False
+    assert cfg.config is None
+
+
+def test_bridge_enabled_requires_config():
+    with pytest.raises(ValidationError, match="config"):
+        BridgeConfig(enabled=True)
+
+
+def test_bridge_config_expands_user():
+    cfg = BridgeConfig(enabled=True, config="~/bridge.toml")
+    assert cfg.config == Path("~/bridge.toml").expanduser()
+    assert cfg.config.is_absolute()
+
+
+def test_bridge_forbids_extra_keys():
+    # 舊的 restart 旋鈕若被誤留在 TOML,必須被拒(防遺留)。
+    with pytest.raises(ValidationError):
+        BridgeConfig(enabled=True, config="bridge.toml", backoff_max_s=99)
+
+
+def test_settings_without_bridge_block_defaults_disabled(tmp_path):
+    s = Settings.model_validate(_minimal_settings_dict(tmp_path))
+    assert s.bridge.enabled is False
+
+
+def test_settings_with_bridge_block(tmp_path):
+    d = _minimal_settings_dict(tmp_path)
+    d["bridge"] = {"enabled": True, "config": "bridge.toml"}
+    s = Settings.model_validate(d)
+    assert s.bridge.enabled is True
+    assert s.bridge.config == Path("bridge.toml")
