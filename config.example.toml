@@ -13,6 +13,22 @@ max_concurrency = 2   # concurrent LLM generations; set to your llama-server --p
 host = "127.0.0.1"
 port = 9876
 
+# ----------------------------------------------------------------------
+# Discord bridge internalization (2026-07-06 spec). The daemon spawns and
+# supervises the bridge as a child subprocess via the generic
+# ServiceSupervisor (PDEATHSIG anti-orphan, SIGINT graceful stop,
+# crash-loop cap + BridgeDown perception on giving up) — it is no longer
+# a separate systemd unit. enabled=false (default) = bridge never starts,
+# zero overhead. Setting enabled=true requires `config` to point at a
+# separate bridge.toml holding the actual [discord] token/owner table
+# (see bridge.example.toml) — keep that file out of git, same as this
+# one once copied to config.toml.
+# ----------------------------------------------------------------------
+
+[bridge]
+enabled = false
+config  = "bridge.toml"
+
 [log]
 level = "INFO"
 

@@ -1,14 +1,19 @@
 # DollOS discord-bridge config — copy to `bridge.toml` and fill in.
 #
 #   cp bridge.example.toml bridge.toml
-#   # edit the values below, then (from the repo root):
-#   uv run dollosctl install --daemon-config config.toml --bridge-config bridge.toml --data-root data
+#   # edit the values below, then point config.toml's [bridge] block at it:
+#   #   [bridge]
+#   #   enabled = true
+#   #   config  = "bridge.toml"
+#   uv run dollosctl install --daemon-config config.toml --data-root data
 #   uv run dollosctl start
 #
 # This file lives ON-DEVICE and holds your bot token — it is gitignored,
-# NEVER commit it. The systemd unit references this file's PATH only; the
-# token never enters the unit file. See docs/dollosctl-smoke.md for the full
-# dogfood checklist.
+# NEVER commit it. The daemon (not the systemd unit) reads this file's PATH
+# from its own config's [bridge].config and spawns the bridge as a
+# supervised child subprocess (2026-07-06 ServiceSupervisor) — the token
+# never enters the unit file or dollosctl's argv. See docs/dollosctl-smoke.md
+# for the full dogfood checklist.
 
 [discord]
 
