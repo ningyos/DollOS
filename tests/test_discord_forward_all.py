@@ -65,9 +65,11 @@ def _event(**kw) -> dict:
 
 
 def _cfg(**kw) -> BridgeConfig:
+    # name_aliases / always_wake_channels removed from BridgeConfig (Part A
+    # A5, spec §3.6): dead config, since P1c moved L0/L1 wake admission
+    # daemon-side into AttentionGate — the bridge never read either field.
     base = dict(
-        owner_id="owner-1", name_aliases=["gura", "古拉"],
-        always_wake_channels=set(), bot_id="bot-999",
+        owner_id="owner-1", bot_id="bot-999",
         channel_allowlist=["c1"],
     )
     base.update(kw)

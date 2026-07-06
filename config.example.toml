@@ -46,6 +46,25 @@ max_turns = 6
 pack = "character_packs/yesman"   # directory containing doll.toml manifest
 
 # ----------------------------------------------------------------------
+# Attention (name-wake). Doll primarily learns which names/nicknames she
+# answers to HERSELF (self-learned aliases — owner-present `LearnName` calls
+# write to data/memory/name_aliases.json; see the 2026-07-06
+# self-learned-aliases spec). The two permanent, un-prunable seeds are the
+# character pack's `[meta] name` and optional `[meta] aliases` (e.g. Gura's
+# pack seeds "古拉" alongside "Gura").
+#
+# `name_aliases` / `always_wake_channels` below are an OPTIONAL admin static
+# floor on top of that — leave this section absent entirely unless you want
+# to hard-pin extra names or channels regardless of what Doll has learned.
+# All entries, seed or learned, pass the SAME mechanical guard (min length,
+# denylist) before they can wake her.
+# ----------------------------------------------------------------------
+
+# [attention]
+# name_aliases = []           # optional admin floor, e.g. ["小鯊"]
+# always_wake_channels = []   # optional admin floor, channel IDs
+
+# ----------------------------------------------------------------------
 # Voice pipeline (ASR + TTS). Character packs hold ONLY per-character
 # identity (ref audio, voice profile, transcript, instruction); engine
 # selection + infra + sampling defaults live here.

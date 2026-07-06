@@ -77,11 +77,17 @@ class BridgeConfig:
     docstring). Real deployment (`__main__.py`) fills it in lazily on the
     first Discord event delivered; tests construct `BridgeConfig` with it
     already set, since `FakeDiscordClient.me_id()` never needs a connection.
+
+    `name_aliases` / `always_wake_channels` were removed here (2026-07-06
+    self-learned-aliases spec §3.6, Part A A5): both were dead config — P1c
+    already moved L0/L1 wake admission daemon-side into `AttentionGate`, and
+    A3 confirmed the daemon builds its `alias_provider` from the pack seed +
+    `AttentionSettings.name_aliases`/`always_wake_channels` (the KEPT admin
+    floor, `dollos.config.AttentionSettings`) + learned tokens — the bridge
+    never read either field for anything.
     """
 
     owner_id: str
-    name_aliases: list[str]
-    always_wake_channels: set[str] = field(default_factory=set)
     channel_allowlist: list[str] = field(default_factory=list)
     bot_id: str | None = None
 

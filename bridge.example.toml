@@ -36,12 +36,10 @@ channel_allowlist = [
     "111111111111111111",   # #test-channel — replace with your real channel ID(s)
 ]
 
-# OPTIONAL — names Doll wakes to when mentioned by name (substring match on
-# message content). Add her character's names / nicknames. Leave [] to require
-# an explicit @-mention / DM / reply to wake her in a channel.
-name_aliases = ["Gura", "gura", "古拉"]
-
-# OPTIONAL — channels where EVERY message is admitted to her attention (no
-# @-mention needed). Use sparingly (a dedicated "talk to Doll" channel); a busy
-# channel here means she considers every message. Channel IDs, like above.
-always_wake_channels = []
+# Name-wake (who Doll answers to by name) and always-wake channels are NOT
+# configured here anymore (2026-07-06 self-learned-aliases spec §3.6, Part A
+# A5) — the bridge forwards every message and the DAEMON's AttentionGate
+# decides admission. If you want an admin-set floor of names/always-wake
+# channels, see `[attention]` in the daemon's config.example.toml; a
+# character pack's own `[meta] name` / `[meta] aliases` is the permanent
+# per-character seed, and Doll also learns nicknames herself over time.

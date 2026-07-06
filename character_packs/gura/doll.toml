@@ -1,6 +1,11 @@
 [meta]
 id = "gura"
 name = "Gura"
+# D1(b), 2026-07-06 self-learned-aliases spec §3.6/M6: permanent seed alias
+# migrated from the now-removed bridge `name_aliases` config so 古拉-wake
+# isn't silently lost. 2 CJK chars — clears A3's load-time mechanical guard
+# (passes_alias_guard, MIN_ALIAS_LEN=2).
+aliases = ["古拉"]
 
 [identity]
 self = """

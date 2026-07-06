@@ -111,3 +111,13 @@ def test_gura_pack_declares_enforcement_rules():
     pack = DollPack.load(_REPO_GURA_PACK)
     assert "a~" in pack.enforcement.banned_substrings
     assert pack.enforcement.max_exclaim_run == 1
+
+
+def test_gura_pack_declares_chinese_alias_seed():
+    """M6 migration (2026-07-06 self-learned-aliases spec §3.6/D1b, Part A
+    A5): the bridge's dead `name_aliases=["Gura", "gura", "古拉"]` config is
+    removed, so the Chinese name「古拉」must be ported into the pack's own
+    `[meta] aliases` seed or cold-start silently loses 古拉-wake. It's 2 CJK
+    chars, clearing A3's `passes_alias_guard` (MIN_ALIAS_LEN=2)."""
+    pack = DollPack.load(_REPO_GURA_PACK)
+    assert pack.meta.aliases == ["古拉"]

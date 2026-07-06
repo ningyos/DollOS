@@ -31,10 +31,15 @@ before proceeding.
    [discord]
    token = "..."                    # bot token — on-device only, NEVER commit this file
    owner_discord_id = "123456789012345678"   # your numeric Discord user id
-   name_aliases = ["gura", "古拉"]           # names that trigger wake in a channel
    channel_allowlist = ["111111111111111111"]  # channel ids the bridge will join
-   always_wake_channels = []          # optional; channels where every message wakes her
    ```
+
+   Name-wake is no longer a bridge config concern (2026-07-06
+   self-learned-aliases spec §3.6, Part A A5) — the bridge forwards every
+   message and the daemon's `AttentionGate` decides admission from the
+   character pack's `[meta] name`/`[meta] aliases` seed, an optional
+   `[attention]` admin floor in `config.toml`, and names Doll learns herself
+   via `LearnName`.
 
    Keep this file out of git (same rule as `config.toml` — secrets never
    committed). Point the bridge at a **private test server** you own — do

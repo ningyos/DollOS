@@ -23,9 +23,15 @@ bridge process is just loop iteration 1 of a fresh `run()` call.
 `[discord]` TOML config shape (spec §3.1 §5.3):
     token = "..."                    # bot token, on-device, not in git
     owner_discord_id = "123..."      # numeric Discord user id
-    name_aliases = ["gura", "古拉"]
     channel_allowlist = ["111", "222"]
-    always_wake_channels = []        # optional, defaults to []
+
+`name_aliases` / `always_wake_channels` used to live here too, but were
+removed (2026-07-06 self-learned-aliases spec §3.6, Part A A5) — both were
+dead config once P1c moved L0/L1 wake admission daemon-side into
+`AttentionGate`. A leftover `name_aliases`/`always_wake_channels` key in an
+old `bridge.toml` is harmless: `_load_bridge_config` below simply never
+reads either key anymore (no strict-key validation is added on top of
+`tomllib.load`).
 """
 from __future__ import annotations
 
@@ -59,8 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--config", type=Path, required=True,
         help="Path to the bridge's [discord] TOML config (token, "
-             "owner_discord_id, name_aliases, channel_allowlist, "
-             "always_wake_channels)",
+             "owner_discord_id, channel_allowlist)",
     )
     p.add_argument(
         "--data-root", type=Path, default=Path("data"),
@@ -81,8 +86,6 @@ def _load_bridge_config(path: Path) -> tuple[str, BridgeConfig]:
     d = raw["discord"]
     cfg = BridgeConfig(
         owner_id=str(d["owner_discord_id"]),
-        name_aliases=list(d.get("name_aliases", [])),
-        always_wake_channels=set(d.get("always_wake_channels", [])),
         channel_allowlist=list(d["channel_allowlist"]),
     )
     return d["token"], cfg
