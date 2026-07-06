@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -50,6 +51,7 @@ from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
 from dollos.prompts import PromptRenderer
 from dollos.schedule import due_entries, load_schedule
+from dollos.service_supervisor import _RETENTION_DAYS, ServiceSpec, ServiceSupervisor
 from dollos.shell_runner import ShellRunner
 from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.tool_outputs import ToolOutputStore
@@ -353,6 +355,18 @@ class _MindLLMAdapter:
             yield chunk
 
 
+def _derive_daemon_ws(ipc) -> str:
+    """Derive the bridge's `--daemon` WS URL from the daemon's own IPC bind
+    settings (svc-internalization spec §3.1). A wildcard bind address
+    (0.0.0.0 / :: / "") isn't connectable from a sibling process — rewrite
+    to loopback, since the bridge always runs on the same host as the daemon
+    (subprocess, not remote)."""
+    host = ipc.host
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    return f"ws://{host}:{ipc.port}"
+
+
 class DollOS:
     DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see spec §12.3)
     DIARY_MINUTE = 0
@@ -428,6 +442,22 @@ class DollOS:
             cwd=settings.data.root,
             perception_queue=self._perception_queue,
         )
+
+        # ServiceSupervisor (svc-internalization Task C): OS-level watchdog
+        # for long-lived supervised services. v1 registers a single service
+        # (discord-bridge) only when opted in AND its config file exists —
+        # a missing config file with enabled=true is a misconfiguration, not
+        # silently ignored (logged as an error, not registered).
+        self.service_supervisor = ServiceSupervisor()
+        if settings.bridge.enabled:
+            if settings.bridge.config is None or not settings.bridge.config.exists():
+                logger.error(
+                    "bridge enabled but config missing (%s) — not registering",
+                    settings.bridge.config,
+                )
+            else:
+                self.service_supervisor.register(self._build_bridge_spec(settings))
+
         self.workflow_runner = WorkflowRunner(
             adapter=self.adapter,
             renderer=self.renderer,
@@ -611,6 +641,39 @@ class DollOS:
         self._fired_today: dict[date, set] = {}
         # Track per-day bootstrap so reconnects within a day don't refire.
         self._bootstrapped_dates: set[date] = set()
+
+    def _build_bridge_spec(self, settings: Settings) -> ServiceSpec:
+        """Build the discord-bridge's ServiceSpec: argv (already-resolved
+        absolute paths) + WS URL derivation (svc-internalization spec §3.1).
+        Token never appears here — only the bridge.toml *path* does; the
+        bridge process itself reads the token out of that file."""
+        argv = (
+            sys.executable, "-m", "dollos.discord_bridge",
+            "--daemon", _derive_daemon_ws(settings.ipc),
+            "--config", str(settings.bridge.config.expanduser().resolve()),
+            "--data-root", str(settings.data.root.expanduser().resolve()),
+            "--retention-days", str(_RETENTION_DAYS),
+        )
+        return ServiceSpec(
+            name="discord-bridge", argv=argv,
+            on_gave_up=self._emit_bridge_down_perception,
+        )
+
+    def _emit_bridge_down_perception(self, name: str, rc: int | None) -> None:
+        """Terminal event: Discord is entirely offline (crash-loop cap hit).
+        Doll can't fix a config typo, but she should perceive that she lost
+        an online channel (spec §9-3; virtual-being positioning + weak-model
+        soft-mechanism three-facet visibility). `on_gave_up` runs
+        synchronously inside the supervise task — only enqueue here, never
+        do heavy work."""
+        try:
+            self._perception_queue.put(Perception(
+                kind="BridgeDown",
+                t=time.time(),
+                data={"service": name, "rc": rc},
+            ))
+        except Exception:
+            logger.exception("failed to emit BridgeDown perception")
 
     def _make_sink(self) -> "asyncio.Queue[ServerMessage | None]":
         """Build a TTSObservingSink that fetches the voice session at speak-time."""
@@ -1057,6 +1120,11 @@ class DollOS:
             # Self pulse poller — proprioception of the host
             self.system_pulse.start()
 
+            # ServiceSupervisor: looks after registered long-lived services
+            # (v1 = discord-bridge). Must come after server.start() — the
+            # bridge needs to connect to the daemon's WS.
+            self.service_supervisor.start()
+
             # Start diary scheduler, schedule runner, and reflection observer
             self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             self._schedule_task = asyncio.create_task(self._schedule_runner())
@@ -1102,6 +1170,11 @@ class DollOS:
                 await self.workflow_runner.stop()
                 await self.shell_runner.stop()
                 await self.monitor_runner.stop()
+                # Early stop (idempotent): while the daemon is still alive,
+                # let the bridge tear down its gateway connection cleanly
+                # instead of spending the graceful-shutdown window reconnecting
+                # to a daemon that's already going away.
+                await self.service_supervisor.stop()
                 await self.system_pulse.stop()
                 # Stop consolidation trigger + in-flight keeper BEFORE memsearch.close()
                 # (spec §10, R2 M4): an in-flight keeper agent uses memsearch; closing
@@ -1154,4 +1227,13 @@ class DollOS:
                 self._tool_output_store.cleanup()
                 self.memsearch.close()
         finally:
+            # Backstop (idempotent — safe even after the early stop() above
+            # already ran): guards against an orphaned bridge if init crashes
+            # somewhere between construction (@~450, before this outer try)
+            # and the inner finally. getattr guard mirrors the `_ct` pattern
+            # above out of caution, though construction happens before the
+            # outer try starts so `self.service_supervisor` normally exists.
+            _svc = getattr(self, "service_supervisor", None)
+            if _svc is not None:
+                await _svc.stop()
             self._pidfile.release()
