@@ -75,13 +75,18 @@ def _cfg(**kw) -> BridgeConfig:
     # name_aliases / always_wake_channels removed from BridgeConfig (Part A
     # A5, spec §3.6): dead config, since P1c moved L0/L1 wake admission
     # daemon-side into AttentionGate — the bridge never read either field.
+    # channel_allowlist ALSO removed (Part B / B3, spec §4.3): it never
+    # gated forwarding either — `_registered` now starts empty and is grown
+    # entirely by register-on-first-forward, so a channel's FIRST forward in
+    # a test (including "c1" below) always produces a ChannelRegister ahead
+    # of its ChannelEvent; tests below account for that.
     # owner_guild_only=False here (Part B / B2): this suite is specifically
     # about forward-all behavior, which owner_guild_only's default-True gate
     # would otherwise partially undo — see test_owner_guild_gate.py for the
     # gate's own suite.
     base = dict(
         owner_id="owner-1", bot_id="bot-999",
-        channel_allowlist=["c1"], owner_guild_only=False,
+        owner_guild_only=False,
     )
     base.update(kw)
     return BridgeConfig(**base)
@@ -113,14 +118,19 @@ async def test_non_self_message_with_no_l0_signal_is_still_forwarded(tmp_path):
     """A stranger's unrelated public chatter — no mention, no DM, no name
     alias, not in always_wake_channels — used to be dropped by P1b's
     l0_wake gate (ambient-only). Under P1c Option A it must still be
-    forwarded; L0/L1 admission is the daemon's AttentionGate's job now."""
+    forwarded; L0/L1 admission is the daemon's AttentionGate's job now.
+
+    channel_allowlist removal (Part B / B3): "c1" is no longer pre-
+    registered, so this first message on it also produces a ChannelRegister
+    ahead of the ChannelEvent — filter to the ChannelEvent for the
+    forward-all assertion below."""
     controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
     await controller.on_discord_message(_event())
 
-    assert len(sent_to_daemon) == 1
-    event = sent_to_daemon[0]
-    assert isinstance(event, ChannelEvent)
+    events = [m for m in sent_to_daemon if isinstance(m, ChannelEvent)]
+    assert len(events) == 1
+    event = events[0]
     assert event.channel_id == "c1"
     assert event.payload["author_is_owner"] is False
     assert event.payload["msg_id"] == "m1"
@@ -158,9 +168,17 @@ async def test_ambient_append_fires_for_all_messages_including_self(tmp_path):
     lines = _ambient_lines(tmp_path, "g1", "c1")
     assert [line["msg_id"] for line in lines] == ["m1", "m2", "m3"]
 
-    # only m1 and m3 (non-self) were forwarded — m2 (self) logged, not forwarded.
-    assert len(sent_to_daemon) == 2
-    assert [e.payload["msg_id"] for e in sent_to_daemon] == ["m1", "m3"]
+    # only m1 and m3 (non-self) were forwarded — m2 (self) logged, not
+    # forwarded. m1 (the first forward on "c1") also fires exactly one
+    # ChannelRegister (channel_allowlist removal, Part B / B3) — m2's
+    # self-filter returns before that check ever runs, and m3 finds "c1"
+    # already registered, so still exactly one register overall.
+    events = [m for m in sent_to_daemon if isinstance(m, ChannelEvent)]
+    assert len(events) == 2
+    assert [e.payload["msg_id"] for e in events] == ["m1", "m3"]
+
+    registers = [m for m in sent_to_daemon if isinstance(m, ChannelRegister)]
+    assert len(registers) == 1
 
 
 # ----- dynamic ChannelRegister now keys off first FORWARD, not first wake -----
@@ -171,10 +189,10 @@ async def test_first_forward_from_unregistered_channel_registers_once(tmp_path):
     registered the first time any of its messages is FORWARDED — no L0
     signal required anymore, since forwarding itself no longer depends on
     L0."""
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path)  # allowlist=["c1"]
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
 
-    # c2 is not allowlisted and carries NO L0 signal at all — still forwards
-    # (Option A) and still triggers first-forward registration.
+    # c2 has never forwarded a message yet and carries NO L0 signal at all —
+    # still forwards (Option A) and still triggers first-forward registration.
     await controller.on_discord_message(_event(channel_id="c2", msg_id="m1"))
 
     assert len(sent_to_daemon) == 2

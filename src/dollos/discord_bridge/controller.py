@@ -101,12 +101,32 @@ class BridgeConfig:
     (`ValueError`) if this is `True` and `owner_id` is empty — a gate that
     trusts only "the owner" but doesn't know who that is has no safe
     semantics to fall back on.
+
+    `channel_allowlist` was removed here (2026-07-06 spec §4.3, Part B /
+    B3): it never gated forwarding — P1c already made the bridge
+    forward-all, and B2's `owner_guild_only` above is the real gate. Its
+    only two remaining uses were seeding `_registered` (reply-routing
+    pre-register) and providing the channel list for reconnect-backfill,
+    both superseded: register-on-first-forward (`_capture_and_forward`
+    below) already covers reply routing on its own, and backfill scope is
+    now the separate, optional `backfill_channels` below.
+
+    `backfill_channels` (2026-07-06 spec §4.3, D5(ii)): OPTIONAL list of
+    channel ids whose recent history is replayed on reconnect
+    (`__main__.py`'s `reconnect_backfill` call) — deliberately DECOUPLED
+    from `owner_guild_only`'s wake scope. Backfill runs on EVERY reconnect
+    (the ~5s reconnect-loop retries while the bridge is down), so scoping
+    it to every owner-guild channel would multiply into N channels x
+    `fetch_history` REST calls on every single retry — a real rate-limit
+    risk (spec I2). Empty by default: no backfill at all, which is fine —
+    the reconnect gap is small and live messages resume immediately either
+    way; register-on-first-forward still handles reply routing without it.
     """
 
     owner_id: str
-    channel_allowlist: list[str] = field(default_factory=list)
     bot_id: str | None = None
     owner_guild_only: bool = True
+    backfill_channels: list[str] = field(default_factory=list)
 
 
 class BridgeController:
@@ -126,13 +146,14 @@ class BridgeController:
         self._ambient = ambient
         self._cfg = cfg
         self._sleep = sleep
-        # Channels the daemon already holds an external sink for this session.
-        # Seeded with the static allowlist (`__main__.py` pre-registers those
-        # on connect), then grown by register-on-first-forward for DMs and
-        # any non-allowlisted channel a forward comes from (see
-        # `_capture_and_forward`). Per-session state — a fresh controller
-        # is built on every reconnect, so this can't go stale.
-        self._registered: set[str] = set(cfg.channel_allowlist)
+        # Channels the daemon already holds an external sink for this
+        # session. Starts EMPTY (2026-07-06 spec §4.3, Part B / B3:
+        # `channel_allowlist`, which used to seed this, is gone) — grown
+        # entirely by register-on-first-forward for every channel, DM or
+        # guild, static or dynamic (see `_capture_and_forward`). Per-session
+        # state — a fresh controller is built on every reconnect, so this
+        # can't go stale.
+        self._registered: set[str] = set()
         # owner_guild_only gate (Part B / B2): per-guild `is_owner_in_guild`
         # result cache, guild_id -> (result, expiry epoch-seconds). Per-
         # session like `_registered` above — a fresh controller on every
@@ -241,16 +262,16 @@ class BridgeController:
         # Dynamic register-on-first-FORWARD (was first-wake under P1b; P1c
         # Option A has no local wake concept left to hang it on — see
         # module docstring). The daemon only holds an external sink for a
-        # channel it has a ChannelRegister for. `__main__.py` pre-registers
-        # the static allowlist on connect, but a DM (channel id unknowable
-        # ahead of time) or any non-allowlisted channel would otherwise
-        # forward to the daemon with NO external sink for that origin —
-        # `locus_of` defaults "internal" and her reply emits to a
-        # local/dummy sink, never back to Discord (this half-breaks the
-        # owner-DM path, §3.2/§3.4). Register BEFORE the ChannelEvent so the
-        # sink exists by the time a reply might be produced; idempotent via
-        # `self._registered` (one register per channel per session,
-        # allowlisted channels already seeded so never re-sent).
+        # channel it has a ChannelRegister for. Since `channel_allowlist`'s
+        # removal (Part B / B3) there is no static pre-register seed at all
+        # any more — EVERY channel, a DM (channel id unknowable ahead of
+        # time) included, forwards to the daemon with NO external sink for
+        # that origin until this fires — `locus_of` defaults "internal" and
+        # her reply emits to a local/dummy sink, never back to Discord (this
+        # half-breaks the owner-DM path, §3.2/§3.4). Register BEFORE the
+        # ChannelEvent so the sink exists by the time a reply might be
+        # produced; idempotent via `self._registered` (one register per
+        # channel per session).
         if channel_id not in self._registered:
             await self._daemon_send(
                 ChannelRegister(

@@ -173,10 +173,16 @@ def test_to_event_reply_to_bot_false_when_not_a_reply():
     assert event["reply_to_bot"] is False
 
 
-# ----- is_owner_in_guild / owner_guild_channels: owner_guild_only
-# detection primitive (Part B / B1). ALL failure modes fail-closed to
-# False/[] — no gate wiring yet (B2), this only tests the primitive
-# against a fake bot/guild, never real py-cord I/O. -----
+# ----- is_owner_in_guild: owner_guild_only detection primitive
+# (Part B / B1). ALL failure modes fail-closed to False — no gate wiring
+# yet (B2), this only tests the primitive against a fake bot/guild, never
+# real py-cord I/O.
+#
+# `owner_guild_channels` used to have its own suite here too (Part B / B1),
+# but was removed as dead code (2026-07-06 spec §4.3, Part B / B3, D5(ii)):
+# the final design decoupled backfill scope from owner_guild_only entirely
+# via the optional `backfill_channels` bridge-config list, so nothing ever
+# called `owner_guild_channels`. -----
 
 
 class _FakeMember:
@@ -187,7 +193,7 @@ class _FakeMember:
 class _FakeGuildForOwnerCheck:
     """Stand-in for `discord.Guild`: `fetch_member` is configured per test
     to succeed, raise `discord.NotFound`, or raise an arbitrary transient
-    exception. `text_channels` backs `owner_guild_channels`."""
+    exception."""
 
     def __init__(
         self,
@@ -195,14 +201,10 @@ class _FakeGuildForOwnerCheck:
         *,
         member_result: object = None,
         fetch_exc: Exception | None = None,
-        text_channel_ids: list[int] | None = None,
     ) -> None:
         self.id = guild_id
         self._member_result = member_result
         self._fetch_exc = fetch_exc
-        self.text_channels = [
-            _FakeChannelStub(cid) for cid in (text_channel_ids or [])
-        ]
         self.fetch_member_calls: list[int] = []
 
     async def fetch_member(self, member_id: int):
@@ -212,15 +214,9 @@ class _FakeGuildForOwnerCheck:
         return self._member_result if self._member_result is not None else _FakeMember(member_id)
 
 
-class _FakeChannelStub:
-    def __init__(self, channel_id: int) -> None:
-        self.id = channel_id
-
-
 class _FakeBotForGuilds:
     """Stand-in for `discord.Bot`: `get_guild` looks up by id (None if
-    absent from cache, mirroring an unpopulated/unknown guild); `guilds`
-    backs `owner_guild_channels`'s enumeration."""
+    absent from cache, mirroring an unpopulated/unknown guild)."""
 
     def __init__(self, guilds: list[_FakeGuildForOwnerCheck]) -> None:
         self._guilds_by_id = {g.id: g for g in guilds}
@@ -273,28 +269,6 @@ async def test_is_owner_in_guild_false_when_not_connected():
     client = PycordClient(token="fake-token")  # run() never called, _bot is None
 
     assert await client.is_owner_in_guild("1", "42") is False
-
-
-async def test_owner_guild_channels_returns_only_owner_guild_channels():
-    owner_guild = _FakeGuildForOwnerCheck(
-        guild_id=1, text_channel_ids=[101, 102]
-    )
-    stranger_guild = _FakeGuildForOwnerCheck(
-        guild_id=2,
-        fetch_exc=discord.NotFound(_FakeResponse(404), {"message": "Unknown Member"}),
-        text_channel_ids=[201],
-    )
-    client = _connected_client_for_guilds([owner_guild, stranger_guild])
-
-    channels = await client.owner_guild_channels("42")
-
-    assert channels == ["101", "102"]
-
-
-async def test_owner_guild_channels_empty_when_not_connected():
-    client = PycordClient(token="fake-token")
-
-    assert await client.owner_guild_channels("42") == []
 
 
 def test_to_event_reply_to_bot_false_when_reference_unresolved():

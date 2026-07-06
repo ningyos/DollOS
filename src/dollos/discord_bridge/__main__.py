@@ -4,9 +4,11 @@ Usage:
     python -m dollos.discord_bridge --daemon ws://127.0.0.1:9876 \\
         --config discord_bridge.toml
 
-Connects to the daemon as a WS client, registers each allowlisted channel
-(`ChannelRegister`, spec §3.1), and wires `PycordClient` <-> daemon through
-`BridgeController`. Mirrors `src/dollos/voice/bridge/__main__.py`'s shape
+Connects to the daemon as a WS client, optionally pre-registers each
+`backfill_channels` entry (`ChannelRegister`, spec §4.3, Part B / B3 — most
+deployments leave this empty and rely on register-on-first-forward
+instead), and wires `PycordClient` <-> daemon through `BridgeController`.
+Mirrors `src/dollos/voice/bridge/__main__.py`'s shape
 (argparse + `websockets.connect` + background client task). Kept thin on
 purpose — all business logic (full-capture, L0 wake, reply routing) lives in
 `BridgeController`; this module is untested wiring (see task-5-report.md).
@@ -16,22 +18,31 @@ a reconnect loop (Task 7): any dropped connection — daemon WS closing,
 Discord disconnecting, or simply the first connect after a process
 restart/kill — re-enters `_connect_and_run`, which always calls
 `controller.reconnect_backfill` right after connecting to catch up on
-whatever gap preceded it. This is what makes the "reconnect after a kill →
-backfill dedups" live-smoke case (P1b gate) hold: a killed-and-relaunched
-bridge process is just loop iteration 1 of a fresh `run()` call.
+whatever gap preceded it — scoped to `cfg.backfill_channels` (2026-07-06
+spec §4.3, Part B / B3, D5(ii)); empty (the default) means this call fetches
+no history at all, relying on live traffic to resume immediately instead.
+This is what makes the "reconnect after a kill → backfill dedups"
+live-smoke case (P1b gate) hold when `backfill_channels` IS set: a
+killed-and-relaunched bridge process is just loop iteration 1 of a fresh
+`run()` call.
 
-`[discord]` TOML config shape (spec §3.1 §5.3):
+`[discord]` TOML config shape (spec §3.1 §5.3, §4.3):
     token = "..."                    # bot token, on-device, not in git
     owner_discord_id = "123..."      # numeric Discord user id
-    channel_allowlist = ["111", "222"]
     owner_guild_only = true          # optional, default true (spec §4.2, Part B / B2)
+    backfill_channels = ["111", "222"]  # optional, default [] (spec §4.3, Part B / B3, D5(ii))
 
 `name_aliases` / `always_wake_channels` used to live here too, but were
 removed (2026-07-06 self-learned-aliases spec §3.6, Part A A5) — both were
 dead config once P1c moved L0/L1 wake admission daemon-side into
-`AttentionGate`. A leftover `name_aliases`/`always_wake_channels` key in an
-old `bridge.toml` is harmless: `_load_bridge_config` below simply never
-reads either key anymore (no strict-key validation is added on top of
+`AttentionGate`. `channel_allowlist` was also removed (2026-07-06 spec
+§4.3, Part B / B3) — it never gated forwarding either; its only uses
+(seeding reply-routing pre-register + providing the reconnect-backfill
+channel list) are now covered by register-on-first-forward and the
+optional `backfill_channels` above, respectively. A leftover
+`name_aliases`/`always_wake_channels`/`channel_allowlist` key in an old
+`bridge.toml` is harmless: `_load_bridge_config` below simply never reads
+any of them anymore (no strict-key validation is added on top of
 `tomllib.load`).
 """
 from __future__ import annotations
@@ -66,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--config", type=Path, required=True,
         help="Path to the bridge's [discord] TOML config (token, "
-             "owner_discord_id, channel_allowlist)",
+             "owner_discord_id, owner_guild_only)",
     )
     p.add_argument(
         "--data-root", type=Path, default=Path("data"),
@@ -91,6 +102,12 @@ def _load_bridge_config(path: Path) -> tuple[str, BridgeConfig]:
     everything or (if some future code path treated "unknown owner" as
     "trust nobody restrictions" loosely) leak. Refuse to start rather than
     guess either way.
+
+    `channel_allowlist` is no longer read here (2026-07-06 spec §4.3, Part
+    B / B3) — a leftover `channel_allowlist` key in an old `bridge.toml`
+    is simply ignored, not rejected. `backfill_channels` (D5(ii)) is the
+    OPTIONAL replacement for backfill scope specifically — defaults to `[]`
+    (no reconnect-gap backfill at all) when absent.
     """
     with open(path, "rb") as f:
         raw = tomllib.load(f)
@@ -106,8 +123,8 @@ def _load_bridge_config(path: Path) -> tuple[str, BridgeConfig]:
         )
     cfg = BridgeConfig(
         owner_id=owner_id,
-        channel_allowlist=list(d["channel_allowlist"]),
         owner_guild_only=owner_guild_only,
+        backfill_channels=list(d.get("backfill_channels", [])),
     )
     return d["token"], cfg
 
@@ -179,15 +196,28 @@ async def _connect_and_run(
 
         discord.on_message(_on_discord_message)
 
-        for channel_id in cfg.channel_allowlist:
+        # Pre-register is now OPTIONAL (2026-07-06 spec §4.3, Part B / B3):
+        # under forward-all + register-on-first-forward
+        # (`BridgeController._capture_and_forward`), pre-registering a
+        # channel here is never load-bearing for correctness — the first
+        # inbound (or backfilled) message from ANY channel registers it
+        # dynamically before forwarding. This loop only pre-registers
+        # `backfill_channels`, if the operator set any, so their reconnect
+        # history (below) has a sink to route through immediately rather
+        # than waiting on register-on-first-forward during the backfill
+        # replay itself. Empty `backfill_channels` (the default) means this
+        # loop registers nothing on connect at all.
+        for channel_id in cfg.backfill_channels:
             await ws.send(
                 ChannelRegister(
                     channel_id=channel_id, locus="external", kind="discord",
                 ).model_dump_json()
             )
-        logger.info(
-            "registered %d allowlisted channel(s)", len(cfg.channel_allowlist)
-        )
+        if cfg.backfill_channels:
+            logger.info(
+                "pre-registered %d backfill channel(s)",
+                len(cfg.backfill_channels),
+            )
 
         discord_task = asyncio.create_task(
             discord.run(), name="discord-bridge-client"
@@ -204,7 +234,7 @@ async def _connect_and_run(
                 cfg.bot_id = discord.me_id()
             logger.info("discord connected — backfilling reconnect gap")
             await controller.reconnect_backfill(
-                discord.fetch_history, cfg.channel_allowlist
+                discord.fetch_history, cfg.backfill_channels
             )
 
             async for raw in ws:

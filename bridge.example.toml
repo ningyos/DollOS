@@ -26,20 +26,39 @@ token = "PASTE_YOUR_BOT_TOKEN_HERE"
 # your name → Copy User ID.
 owner_discord_id = "000000000000000000"
 
-# REQUIRED — the channels the bridge forwards to the daemon (channel IDs).
-# Right-click a channel → Copy Channel ID (Developer Mode on). Only messages in
-# these channels reach Doll's attention; everything else is ignored.
-# START SMALL: one private test channel while you dogfood. Do NOT put a
-# stranger-facing server here until you've confirmed P1e external-safety on a
-# private server first (it's merged + tested, but verify live).
-channel_allowlist = [
-    "111111111111111111",   # #test-channel — replace with your real channel ID(s)
-]
+# OPTIONAL — default true (2026-07-06 spec §4.2, Part B / B2). When true,
+# the bridge only forwards messages from guilds YOU (the owner) have
+# joined, plus your own DMs — every other guild's messages and every
+# stranger DM are dropped before Doll ever sees them. Set to false to go
+# back to forward-all (every message in every guild the bot can read, plus
+# every DM from anyone) — only do this if the bot is private/invite-only
+# and you trust everyone who can reach it. START with this left at its
+# default (true) while you dogfood; you've confirmed P1e external-safety
+# is merged + tested, but verify live before loosening it.
+# owner_guild_only = true
 
-# Name-wake (who Doll answers to by name) and always-wake channels are NOT
-# configured here anymore (2026-07-06 self-learned-aliases spec §3.6, Part A
-# A5) — the bridge forwards every message and the DAEMON's AttentionGate
-# decides admission. If you want an admin-set floor of names/always-wake
-# channels, see `[attention]` in the daemon's config.example.toml; a
-# character pack's own `[meta] name` / `[meta] aliases` is the permanent
-# per-character seed, and Doll also learns nicknames herself over time.
+# OPTIONAL — default [] (2026-07-06 spec §4.3, Part B / B3, D5(ii)). Channel
+# IDs (right-click a channel → Copy Channel ID, Developer Mode on) whose
+# recent history is replayed on every reconnect, so a brief daemon/bridge
+# outage doesn't lose messages posted while disconnected. Deliberately
+# DECOUPLED from owner_guild_only above: backfill re-runs on EVERY
+# reconnect (the bridge retries every ~5s while down), so scoping it to
+# every owner-guild channel would multiply into N channels x fetch-history
+# REST calls per retry — a real rate-limit risk. Leave empty (no backfill)
+# unless you specifically want reconnect-gap history for a small,
+# deliberately curated set of channels — live messages resume immediately
+# either way, with or without this.
+# backfill_channels = [
+#     "111111111111111111",   # #test-channel
+# ]
+
+# Name-wake (who Doll answers to by name), always-wake channels, and the old
+# channel_allowlist gate are NOT configured here anymore (2026-07-06
+# self-learned-aliases + owner-guild-only spec, Part A A5 + Part B B3):
+# channel_allowlist never actually gated forwarding — the bridge forwards
+# every message (subject only to the self-filter and owner_guild_only
+# above) and the DAEMON's AttentionGate decides admission. If you want an
+# admin-set floor of names/always-wake channels, see `[attention]` in the
+# daemon's config.example.toml; a character pack's own `[meta] name` /
+# `[meta] aliases` is the permanent per-character seed, and Doll also
+# learns nicknames herself over time.

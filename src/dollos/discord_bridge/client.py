@@ -96,16 +96,6 @@ class DiscordClient(Protocol):
         """
         ...
 
-    async def owner_guild_channels(self, owner_id: str) -> list[str]:
-        """Return the text-channel ids of every guild `owner_id` is a
-        member of (Part B backfill use — B3).
-
-        Built from `is_owner_in_guild` per guild, so it inherits the same
-        fail-closed behavior: a guild this can't confirm the owner is in
-        is simply excluded, never raises.
-        """
-        ...
-
 
 def _to_event(message: Any, bot: Any) -> dict:
     """Translate a py-cord Message into the plain-dict event shape the rest
@@ -276,22 +266,6 @@ class PycordClient:
                 exc_info=True,
             )
             return False
-
-    async def owner_guild_channels(self, owner_id: str) -> list[str]:
-        """Enumerate text channels of every guild `owner_id` is in — see
-        Protocol docstring. `self._bot is None` (not connected) fails
-        closed to an empty list rather than raising."""
-        if self._bot is None:
-            logger.warning(
-                "owner_guild_channels called before run() connected — "
-                "fail-closed empty list"
-            )
-            return []
-        channels: list[str] = []
-        for guild in self._bot.guilds:
-            if await self.is_owner_in_guild(str(guild.id), owner_id):
-                channels.extend(str(channel.id) for channel in guild.text_channels)
-        return channels
 
     async def wait_until_ready(self) -> None:
         """Block until `run()` has connected and py-cord's internal cache is
