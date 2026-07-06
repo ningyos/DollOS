@@ -37,12 +37,23 @@ def _prctl_pdeathsig(sig: int) -> None:
     libc.prctl(_PR_SET_PDEATHSIG, sig, 0, 0, 0)
 
 
-def _preexec() -> None:
-    """child 內、exec 之前跑(Linux-only)。反孤兒 + 獨立 process group。"""
-    os.setsid()                                  # 獨立 group(killpg 能連孫行程一起收)
-    _prctl_pdeathsig(signal.SIGINT)              # daemon 一死 → kernel 對本行程發 SIGINT
-    if os.getppid() == 1:                        # race guard:prctl 前 daemon 已死
-        os._exit(0)                              # PDEATHSIG 已錯過 → 自盡防孤兒
+def _make_preexec(parent_pid: int) -> Callable[[], None]:
+    """Build the child's pre-exec hook, closing over the daemon's pid as
+    captured in the PARENT before spawning.
+
+    `os.getppid() == 1` alone is not a reliable orphan check: under
+    `systemd --user` the daemon runs inside a user-session scope that acts
+    as a subreaper (`PR_SET_CHILD_SUBREAPER`), so an orphaned child
+    reparents to systemd's pid, never to 1. Comparing against the actual
+    parent pid detects reparenting to init OR to any subreaper.
+    """
+    def _preexec() -> None:
+        """child 內、exec 之前跑(Linux-only)。反孤兒 + 獨立 process group。"""
+        os.setsid()                              # 獨立 group(killpg 能連孫行程一起收)
+        _prctl_pdeathsig(signal.SIGINT)          # daemon 一死 → kernel 對本行程發 SIGINT
+        if os.getppid() != parent_pid:            # race guard:prctl 前 daemon 已死(或被 subreaper 收養)
+            os._exit(0)                          # PDEATHSIG 已錯過 → 自盡防孤兒
+    return _preexec
 
 
 class _SpawnAborted(Exception):
@@ -90,10 +101,11 @@ class ServiceSupervisor:
             st.task = asyncio.create_task(self._supervise(st), name=f"svc:{st.spec.name}")
 
     async def _spawn(self, st: _ServiceState) -> None:
+        parent_pid = os.getpid()                 # 一定要在 spawn 前、parent 行程裡取
         proc = await asyncio.create_subprocess_exec(
             *st.spec.argv,
             stdout=None, stderr=None,            # 繼承 daemon fds → daemon journal
-            preexec_fn=_preexec,
+            preexec_fn=_make_preexec(parent_pid),
         )
         if st.stopping:                          # (I3) stop() 在 fork 期間立了旗
             proc.kill()

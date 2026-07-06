@@ -85,6 +85,16 @@ def test_derive_daemon_ws_keeps_explicit_host():
     assert _derive_daemon_ws(_IPC()) == "ws://127.0.0.1:9999"
 
 
+def test_derive_daemon_ws_brackets_bare_ipv6_literal():
+    """P1g whole-branch review minor #3: an explicit (non-wildcard) IPv6
+    literal like `::1` must be bracketed — `ws://::1:9876` is unparseable
+    (the colons collide with the URL's own host:port separator)."""
+    class _IPC:
+        host, port = "::1", 9876
+
+    assert _derive_daemon_ws(_IPC()) == "ws://[::1]:9876"
+
+
 # ----- _build_bridge_spec -----
 
 

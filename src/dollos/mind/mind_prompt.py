@@ -400,6 +400,10 @@ def _percep_body(p) -> str:
         if d.get("author_is_owner"):
             return f"[主人{where}] 主人:{d.get('content','')}"
         return f"[{where}] 陌生人 {d.get('author','?')}:{d.get('content','')}"
+    if p.kind == "BridgeDown":
+        svc = d.get("service", "?")
+        rc = d.get("rc", "?")
+        return f"你少了一條在線通道 —— {svc} 反覆崩潰、已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
     return str(d)[:120]
 
 

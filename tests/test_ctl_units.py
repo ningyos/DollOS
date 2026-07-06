@@ -53,6 +53,17 @@ def test_daemon_unit_contains_exec_start_and_restart_policy():
     assert "WorkingDirectory=/wd" in u
 
 
+def test_daemon_unit_kill_mode_is_mixed():
+    """P1g whole-branch review minor #5: KillMode=mixed so `systemctl
+    stop`/`restart` SIGTERMs only the daemon process (not the whole
+    cgroup), letting the daemon's own SIGTERM handler drive the
+    orchestrated SIGINT-to-bridge graceful close instead of systemd's
+    default `control-group` hard-killing the bridge child too."""
+    p = _params()
+    u = render_daemon_unit(p)
+    assert "KillMode=mixed" in u
+
+
 def test_daemon_unit_restart_sec_is_configurable():
     p = _params(restart_sec=7)
     u = render_daemon_unit(p)
