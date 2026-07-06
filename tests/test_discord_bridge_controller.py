@@ -44,6 +44,12 @@ class FakeDiscordClient:
     `raise_rate_limited_once()` arms a one-shot `RateLimited` on the NEXT
     `send()` call only (Task 6: 429 retry) — the call after that succeeds
     normally, so tests can assert the controller retried exactly once.
+
+    `raise_http_exception_once()` arms a one-shot non-retryable
+    `discord.HTTPException` (e.g. Discord's `400 code 50006: Cannot send an
+    empty message`) on the NEXT `send()` call only — the empty-speech-chunk
+    regression: `_send_with_retry` must drop this, not let it propagate and
+    tear down the whole bridge connection.
     """
 
     def __init__(self, *, bot_id: str = "bot-999") -> None:
@@ -52,6 +58,7 @@ class FakeDiscordClient:
         self.send_attempts = 0
         self._cb: Callable[[dict], Awaitable[None]] | None = None
         self._rate_limit_once_after: float | None = None
+        self._http_exc_status_once: int | None = None
         self._history: dict[str, list[dict]] = {}
         # owner_guild_only gate (Part B / B2): configurable per test via
         # `set_owner_guild`/`raise_on_guild`. These tests exercise forward-
@@ -72,10 +79,24 @@ class FakeDiscordClient:
             retry_after = self._rate_limit_once_after
             self._rate_limit_once_after = None
             raise RateLimited(retry_after)
+        if self._http_exc_status_once is not None:
+            status = self._http_exc_status_once
+            self._http_exc_status_once = None
+            import discord
+
+            class _FakeResponse:
+                reason = "Bad Request"
+
+            resp = _FakeResponse()
+            resp.status = status
+            raise discord.HTTPException(resp, {"code": 50006, "message": "Cannot send an empty message"})
         self.sent.append((channel_id, text))
 
     def raise_rate_limited_once(self, retry_after: float) -> None:
         self._rate_limit_once_after = retry_after
+
+    def raise_http_exception_once(self, status: int = 400) -> None:
+        self._http_exc_status_once = status
 
     def me_id(self) -> str:
         return self._bot_id
@@ -372,6 +393,50 @@ async def test_send_retries_once_after_rate_limited_then_succeeds(tmp_path):
     await controller.on_daemon_message(AddressedText(channel_id="c1", text="hi there"))
 
     assert slept == [1.5]
+    assert discord.send_attempts == 2
+    assert discord.sent == [("c1", "hi there")]
+
+
+# ----- empty-speech-chunk regression: one bad send must not tear down the
+# whole bridge connection -----
+
+
+async def test_send_http_exception_is_dropped_not_raised(tmp_path, caplog):
+    """Fix B (defense in depth): a non-retryable `discord.HTTPException`
+    (e.g. Discord's `400 code 50006: Cannot send an empty message`, which is
+    exactly what an owner DM hit when Fix A's bug sent a whitespace-only
+    AddressedText first) must be caught and dropped inside
+    `_send_with_retry` — NOT propagate out of `on_daemon_message`. Before the
+    fix this raised straight out of `_send_with_retry`, which (in the real
+    `__main__.py` `_connect_and_run`) tore down the whole daemon-WS +
+    Discord-gateway connection over ONE bad send."""
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
+    discord.raise_http_exception_once(status=400)
+
+    with caplog.at_level("WARNING"):
+        await controller.on_daemon_message(AddressedText(channel_id="c1", text=""))
+
+    assert discord.send_attempts == 1  # no retry loop for a non-429 failure
+    assert discord.sent == []  # the bad message was dropped, not delivered
+    assert any(
+        record.levelname == "WARNING" for record in caplog.records
+    ), "expected a warning to be logged when the send is dropped"
+
+
+async def test_rate_limited_retry_still_works_alongside_http_exception_handling(tmp_path):
+    """Regression guard for Fix B: adding the `discord.HTTPException` catch
+    must not disturb the existing 429 retry-once behavior."""
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    controller, discord, sent_to_daemon, ambient = _make(tmp_path, sleep=fake_sleep)
+    discord.raise_rate_limited_once(retry_after=2.0)
+
+    await controller.on_daemon_message(AddressedText(channel_id="c1", text="hi there"))
+
+    assert slept == [2.0]
     assert discord.send_attempts == 2
     assert discord.sent == [("c1", "hi there")]
 

@@ -26,8 +26,14 @@ class SentenceChunker:
                 end = i + 1
                 while end < len(self._buf) and self._buf[end] in (" ", "\n"):
                     end += 1
-                out.append(self._buf[:end])
+                sentence = self._buf[:end]
                 self._buf = self._buf[end:]
+                # A whitespace-only "sentence" (e.g. a lone "\n\n" preceding
+                # the real reply) has no deliverable content — drop it rather
+                # than yielding it as its own chunk (regression: this used to
+                # surface as a standalone empty/whitespace outbound message).
+                if sentence.strip():
+                    out.append(sentence)
                 i = 0
                 continue
             i += 1
@@ -40,5 +46,6 @@ class SentenceChunker:
         if self._buf:
             tail = self._buf
             self._buf = ""
-            return [tail]
+            if tail.strip():
+                return [tail]
         return []

@@ -46,3 +46,30 @@ def test_trailing_whitespace_after_punct_included():
     c = SentenceChunker()
     out = list(c.feed("Hi.  Bye")) + list(c.flush())
     assert out == ["Hi.  ", "Bye"]
+
+
+def test_leading_newlines_before_reply_never_yield_whitespace_only_chunk_all_at_once():
+    """Regression: an owner DM's raw output after `</think>` was
+    `"\\n\\n主人好。"` (grammar boilerplate `\\n\\n` + reply). `SentenceChunker`
+    treats `\\n` as a delimiter, so it used to split the leading `\\n\\n` into
+    its OWN chunk and yield it FIRST — Discord rejects an empty/whitespace
+    message with a 400, tearing down the whole bridge connection. Fed
+    all-at-once, no chunk may be whitespace-only, and the real content must
+    still come through intact."""
+    c = SentenceChunker()
+    out = list(c.feed("\n\n主人好。")) + list(c.flush())
+    assert not any(not chunk.strip() for chunk in out), f"whitespace-only chunk leaked: {out!r}"
+    assert "".join(out) == "主人好。"
+
+
+def test_leading_newlines_before_reply_never_yield_whitespace_only_chunk_token_by_token():
+    """Same regression as above, but fed one character at a time — mirrors
+    real llama.cpp token-by-token streaming, where `</think>` and its
+    trailing newlines can arrive as separate feed() calls."""
+    c = SentenceChunker()
+    out: list[str] = []
+    for ch in "\n\n主人好。":
+        out += list(c.feed(ch))
+    out += list(c.flush())
+    assert not any(not chunk.strip() for chunk in out), f"whitespace-only chunk leaked: {out!r}"
+    assert "".join(out) == "主人好。"

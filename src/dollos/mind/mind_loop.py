@@ -1260,7 +1260,18 @@ class MindLoop:
         """Push one streamed sentence to `sink`, addressed to the current
         origin's channel when that origin is registered external (spec
         §3.1) — else plain TextChunk, unchanged (internal/unregistered
-        origins, including the None origin of internal turns)."""
+        origins, including the None origin of internal turns).
+
+        Guards the single outbound chokepoint: a whitespace-only "sentence"
+        (e.g. the grammar's `</think>` boilerplate newlines leaking past
+        `SentenceChunker` — regression, see `test_mind_loop_empty_speech_chunk.py`)
+        has no deliverable content and must never reach the sink. Some
+        transports (e.g. Discord) reject an empty/whitespace message
+        outright, and a raised exception there must not be able to take down
+        the whole turn/connection over content that was never meaningful.
+        """
+        if not sentence.strip():
+            return
         origin = self._ctx.current_origin
         registry = self._ctx.channel_registry
         if origin and registry is not None and registry.locus_of(origin) == "external":
