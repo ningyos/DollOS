@@ -53,6 +53,13 @@ class FakeDiscordClient:
     async def fetch_history(self, channel_id: str, limit: int) -> list[dict]:
         return []
 
+    async def is_owner_in_guild(self, guild_id: str, owner_id: str) -> bool:
+        """Not exercised here (tests set `owner_guild_only=False`, see
+        `_cfg`) — present only to satisfy the `DiscordClient` Protocol shape
+        `BridgeController` requires to construct. See
+        test_owner_guild_gate.py for the gate's own dedicated suite."""
+        raise NotImplementedError("not exercised by forward-all tests")
+
 
 def _event(**kw) -> dict:
     base = dict(
@@ -68,9 +75,13 @@ def _cfg(**kw) -> BridgeConfig:
     # name_aliases / always_wake_channels removed from BridgeConfig (Part A
     # A5, spec §3.6): dead config, since P1c moved L0/L1 wake admission
     # daemon-side into AttentionGate — the bridge never read either field.
+    # owner_guild_only=False here (Part B / B2): this suite is specifically
+    # about forward-all behavior, which owner_guild_only's default-True gate
+    # would otherwise partially undo — see test_owner_guild_gate.py for the
+    # gate's own suite.
     base = dict(
         owner_id="owner-1", bot_id="bot-999",
-        channel_allowlist=["c1"],
+        channel_allowlist=["c1"], owner_guild_only=False,
     )
     base.update(kw)
     return BridgeConfig(**base)
