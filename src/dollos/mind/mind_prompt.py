@@ -412,6 +412,13 @@ def _percep_body(p) -> str:
         svc = d.get("service", "?")
         rc = d.get("rc", "?")
         return f"你少了一條在線通道 —— {svc} 反覆崩潰、已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
+    if p.kind == "McpDown":
+        svc = d.get("service", "?")
+        rc = d.get("rc", "?")
+        return (
+            f"你少了一條在線通道 —— {svc}(外部 AI 連接口)反覆崩潰、"
+            f"已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
+        )
     return str(d)[:120]
 
 

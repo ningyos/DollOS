@@ -27,3 +27,10 @@ def test_non_mcp_channel_message_still_stranger():
     out = _percep_body(p)
     assert "陌生人" in out
     assert "AI peer" not in out
+
+
+def test_mcp_down_renders_lost_channel():
+    p = Perception(kind="McpDown", t=1.0, data={"service": "mcp-server", "rc": 3})
+    out = _percep_body(p)
+    assert "mcp-server" in out
+    assert "3" in out

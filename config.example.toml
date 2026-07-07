@@ -29,6 +29,20 @@ port = 9876
 enabled = false
 config  = "bridge.toml"
 
+# ----------------------------------------------------------------------
+# MCP server (2026-07-07 spec, P1 peer mode). Lets an external AI (e.g.
+# Claude Code) talk to Doll as a peer over MCP. Same internalization
+# discipline as the bridge above: the daemon spawns dollos-mcp as a
+# supervised child subprocess (ServiceSupervisor's 2nd registered service)
+# only when enabled=true AND `config` points at an existing mcp.toml (see
+# mcp.example.toml) holding the actual [server] bind_host/bind_port.
+# enabled=false (default) = mcp-server never starts, zero overhead.
+# ----------------------------------------------------------------------
+
+[mcp]
+enabled = false
+config  = "mcp.toml"
+
 [log]
 level = "INFO"
 

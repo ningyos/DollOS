@@ -1,0 +1,28 @@
+# DollOS mcp-server config — copy to `mcp.toml` and fill in.
+#
+#   cp mcp.example.toml mcp.toml
+#   # then point config.toml's [mcp] block at it:
+#   #   [mcp]
+#   #   enabled = true
+#   #   config  = "mcp.toml"
+#
+# This file lives ON-DEVICE — it is gitignored, NEVER commit it. The daemon
+# (not the systemd unit) reads this file's PATH from its own config's
+# [mcp].config and spawns dollos-mcp as a supervised child subprocess
+# (2026-07-06 ServiceSupervisor, the 2nd registered service).
+
+[server]
+
+# Loopback-only (spec §E) — the connector FAIL-CLOSED validates this: any
+# non-loopback value (e.g. "0.0.0.0") makes it refuse to start. For remote
+# access use an SSH tunnel / authenticated reverse proxy, never a rebindable
+# socket. Allowed: "127.0.0.1", "::1", "localhost".
+bind_host = "127.0.0.1"
+
+# Port the FastMCP streamable-HTTP server binds. External MCP clients connect
+# to http://127.0.0.1:<bind_port>/mcp.
+bind_port = 9877
+
+# NOTE: debug mode (debug_secret + query_token) arrives in phase P2 — those
+# fields are NOT read in P1 (peer mode only). Adding them now is harmless
+# (P1 ignores unknown [server] keys), but they do nothing yet.
