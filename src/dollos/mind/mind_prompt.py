@@ -245,7 +245,23 @@ def _render_memory_guideline(primary_language: str) -> str:
 def _render_memory(hits: list[dict]) -> str:
     if not hits:
         return "(no relevant memories)"
-    return "\n".join(f"- {h.get('content', str(h))}" for h in hits)
+    lines: list[str] = []
+    for h in hits:
+        content = h.get("content", str(h))
+        # R-DECISION-5: a peer's NoteMemory (∈ EXTERNAL_TOOLS) writes under
+        # external_public/; on a later OWNER turn that hit is retrieved
+        # UNFILTERED (_derive_memory_hits only suppresses on external_public
+        # turns, mind_loop.py:747). Flag it untrusted so a fabricated "fact"
+        # can't masquerade as Doll's own trusted memory — symmetric to
+        # consolidated/'s prefix. Trailing slash = directory boundary, so a
+        # sibling like external_public_evil/ never matches.
+        prefix = (
+            "[外部AI·未驗證] "
+            if "external_public/" in (h.get("source") or "")
+            else ""
+        )
+        lines.append(f"- {prefix}{content}")
+    return "\n".join(lines)
 
 
 def _render_associative(hits: list[dict]) -> str:

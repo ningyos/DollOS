@@ -89,9 +89,19 @@ def _hit_in_range(
 def _format_hit(hit: dict) -> str:
     d = _hit_date(hit)
     content = hit.get("content", "")
-    # B2 candidate pull-only: consolidated/ hits surface via Recall with a
-    # provenance prefix so Doll knows they are unconfirmed candidates.
-    prefix = "[系統整併·待確認] " if "consolidated/" in (hit.get("source") or "") else ""
+    source = hit.get("source") or ""
+    # Provenance prefixes (both surface via Recall; consolidated/ is auto-
+    # inject-filtered upstream, external_public/ is not — R-DECISION-5):
+    #   consolidated/    → system-merged, unconfirmed candidate
+    #   external_public/ → written under an external (peer/stranger) turn; an
+    #                      unverified AI over MCP can NoteMemory here, so on an
+    #                      owner Recall it must read as untrusted, never trusted.
+    if "consolidated/" in source:
+        prefix = "[系統整併·待確認] "
+    elif "external_public/" in source:
+        prefix = "[外部AI·未驗證] "
+    else:
+        prefix = ""
     if d is not None:
         return f"- {prefix}{d.isoformat()} {content}"
     return f"- {prefix}{content}"
