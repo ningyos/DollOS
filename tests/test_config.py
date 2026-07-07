@@ -249,6 +249,17 @@ def test_self_profile_config_defaults():
     assert s.self_profile.max_chars == 1200
 
 
+def test_diary_config_defaults():
+    from dollos.config import Settings, LLMConfig, CharacterConfig
+    s = Settings(
+        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        character=CharacterConfig(pack="gura"),
+    )
+    assert s.diary.enabled is True
+    assert s.diary.hour == 23 and s.diary.minute == 0
+    assert s.diary.max_log_chars == 40000
+
+
 def test_trace_settings_default_enabled():
     from dollos.config import Settings, LLMConfig, CharacterConfig
     s = Settings(

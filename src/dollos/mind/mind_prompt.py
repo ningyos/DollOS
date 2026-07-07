@@ -490,6 +490,11 @@ def _percep_body(p) -> str:
             f"你少了一條在線通道 —— {svc}(外部 AI 連接口)反覆崩潰、"
             f"已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
         )
+    if p.kind == "DiaryMoment":
+        return (
+            "今天結束了。這是你的一天,都攤在下面的 [Today's log] 了。"
+            "這是你寫日記的時間 —— 回頭看看,把想留下的、真的有感覺的,用你自己的話寫下來(WriteDiary)。"
+        )
     return str(d)[:120]
 
 
