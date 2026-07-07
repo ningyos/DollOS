@@ -144,8 +144,18 @@ class AddressedText(BaseModel):
     text: str
 
 
+class TurnEndAddressed(BaseModel):
+    """End-of-turn marker for an external-origin stream, carrying channel_id
+    so a multiplexing connector knows WHICH channel finished (symmetric to
+    AddressedText). Internal (origin-less) turns keep emitting the plain
+    global TurnEnd, unchanged."""
+    type: Literal["turn_end_addressed"] = "turn_end_addressed"
+    channel_id: str
+
+
 ServerMessage = Annotated[
-    TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut | AddressedText,
+    TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut
+    | AddressedText | TurnEndAddressed,
     Field(discriminator="type"),
 ]
 
