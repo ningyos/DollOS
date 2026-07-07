@@ -23,6 +23,7 @@
 | …(step 11–29 見 CLAUDE.md 的完整表)| Merged |
 | Roadmap step 30 — 慢變演化(current_self「現在的我」:evidence layer + ratification + Mode A evolution pass)| Merged 2026-07-03, live-smoke-verified |
 | Roadmap step 31 — Discord bridge internalization + generic ServiceSupervisor | Merged 2026-07-06 |
+| Roadmap step 32 — MCP server (peer talk + secret-gated debug mode: `get_state`/`get_recent` via authenticated IPC query, `query_token` fail-closed) | Merged 2026-07-07 |
 
 ---
 

@@ -292,6 +292,98 @@ with `systemctl --user list-unit-files | grep dollos` → only
   systemd tears down the user's service manager when the last session
   logs out).
 
+## MCP server debug-mode live-smoke (F8)
+
+**Human checklist, not CI** (same caveat as the sections above — needs a
+real daemon, a real MCP client, and loopback network access; CI only
+covers the connector's IPC-mapping logic against a fake daemon WS,
+`tests/test_mcp_daemon_link.py` / `tests/test_mcp_debug_mode.py`, and the
+`ServiceSupervisor` 2nd-service wiring, `tests/test_kernel_mcp_wiring.py`,
+against fake subprocesses). Exercises `dollos-mcp` (spec
+`docs/superpowers/specs/2026-07-06-mcp-server-design.md` §F8): the P1
+peer-talk path (`talk(name, message)`) plus the P2 debug-mode read-query
+surface — `authenticate(secret)` → `get_state()` / `get_recent()`, scoped
+to `external_public`-origin interactions only, never owner DMs.
+
+### Prerequisites
+
+1. `cp mcp.example.toml mcp.toml` (gitignored — never commit real values).
+   In `mcp.toml`'s `[server]` block, set matching secrets:
+
+   ```toml
+   [server]
+   bind_host    = "127.0.0.1"
+   bind_port    = 9877
+   debug_secret = "pick-an-owner-chosen-secret"
+   query_token  = "pick-a-second-owner-chosen-token"
+   ```
+
+2. In `config.toml`, enable the service AND set the SAME `query_token`
+   value as `mcp.toml` above (a SEPARATE secret from `debug_secret` — this
+   one authorizes the daemon-side IPC query, not the MCP connection):
+
+   ```toml
+   [mcp]
+   enabled     = true
+   config      = "mcp.toml"
+   query_token = "pick-a-second-owner-chosen-token"   # MUST match mcp.toml's [server].query_token
+   ```
+
+3. Restart the daemon (`uv run dollosctl install` first if not yet
+   installed, then `uv run dollosctl restart`).
+4. `pgrep -af dollos.mcp_server` — confirm one process (the daemon's 2nd
+   `ServiceSupervisor` service, spawned alongside the bridge if enabled).
+
+### Steps
+
+1. **Connect a debug MCP client** to `http://127.0.0.1:9877/mcp` (the
+   `mcp` Python SDK client, or any MCP client that can reach a
+   streamable-HTTP loopback server).
+2. **`authenticate("pick-an-owner-chosen-secret")`** → expect
+   `{"debug": true}`. A wrong or empty secret returns `{"debug": false}`,
+   not an exception (no leak of whether debug mode is even configured).
+3. **`get_state()`** → expect `{"mood": "<str>", "current_self": "<str>"}`
+   — Doll's live mood plus her current ratified self-description (empty
+   string is valid if she hasn't evolved a self yet).
+4. **`get_recent(n=20)`** → expect `{"items": [{"kind": "ChannelMessage",
+   "text": "...", "ts": <float>}, ...]}`. Have a normal owner conversation
+   with Doll (terminal / Discord DM) shortly before this call, then
+   confirm that conversation does **NOT** appear in `items` — only
+   `external_public`-origin interactions do (prior MCP peer `talk()`
+   calls, stranger messages in a public Discord channel, etc.). This is
+   the same allowlist filter (`_public_safe_perceptions`) that scopes
+   Doll's own external-facing prompt rendering, reused here (spec §C.3) —
+   `recent_outputs` is never exposed at all (no origin field to scope it
+   by, so it's excluded outright rather than risk a leak).
+5. **Wrong `query_token`**: change `mcp.toml`'s `[server].query_token` to
+   a value that no longer matches `config.toml`'s `[mcp].query_token`,
+   restart the daemon, re-`authenticate`, then call `get_state()` again →
+   expect the tool call itself to **error** (`DaemonLink.query` raises
+   `RuntimeError` on the daemon's `QueryResult(ok=false)` rather than
+   returning a fabricated/partial result) — the daemon-side protocol
+   carries `ok=false`, but it surfaces to the MCP caller as a raised
+   error, not a `{"ok": false}` value. Restore the matching token
+   afterward.
+6. **Unauthenticated session**: open a **fresh** MCP client connection
+   (skip `authenticate()` entirely) and call `get_state()` or
+   `get_recent()` directly → expect a `PermissionError`-derived tool
+   error ("not authenticated — call authenticate(secret) …"). `talk()` on
+   this same unauthenticated connection still works normally — debug
+   mode gates only `get_state`/`get_recent`, not peer talk.
+7. **Debug `talk()` reliability nudge**: on the authenticated connection
+   from steps 2-4, call `talk(name="Claude", message="...")` and confirm
+   a substantive `{"status": "reply", "text": ...}` — the authenticated
+   session stamps a best-effort "please give a substantive reply, don't
+   leave this on read" nudge into Doll's perception of the message (spec
+   §C.2). This is prompt-level only: it does not change `origin_tier`
+   (still `external_public`) or the tool registry (still
+   `EXTERNAL_TOOLS`, no Shell/Workflow) — Doll retains the agency to stay
+   silent regardless.
+
+Afterward, restore `mcp.toml` / `config.toml` to their real values, or
+blank `debug_secret`/`query_token` back to `""` to disable the surface
+again — both are OWNER-SENSITIVE secrets, gitignored, never committed.
+
 ## Scope note
 
 CI's job ends at "the unit file renders correctly, `dollosctl` builds the
@@ -302,5 +394,7 @@ her, a real `kill -9` — only proves itself on a machine with an actual
 user systemd session and an actual bot in an actual (private) server. Run
 this checklist once per machine setup, and again after any change to
 `src/dollos/ctl/units.py`, `src/dollos/service_supervisor.py`,
-`src/dollos/kernel.py`'s bridge-wiring, or
-`src/dollos/discord_bridge/__main__.py`'s CLI/exit-code surface.
+`src/dollos/kernel.py`'s bridge/mcp-wiring,
+`src/dollos/discord_bridge/__main__.py`'s CLI/exit-code surface, or
+`src/dollos/mcp_server/__main__.py` / `src/dollos/mcp_server/daemon_link.py`
+(the F8 section above).

@@ -23,6 +23,26 @@ bind_host = "127.0.0.1"
 # to http://127.0.0.1:<bind_port>/mcp.
 bind_port = 9877
 
-# NOTE: debug mode (debug_secret + query_token) arrives in phase P2 — those
-# fields are NOT read in P1 (peer mode only). Adding them now is harmless
-# (P1 ignores unknown [server] keys), but they do nothing yet.
+# ----------------------------------------------------------------------
+# Debug mode (P2, optional). Leave BOTH empty to keep the endpoint
+# peer-only — no introspection, no reliability nudge; the get_state /
+# get_recent tools stay permanently gated (empty debug_secret never
+# authenticates) and talk() never stamps debug_reliable.
+#
+# OWNER-SENSITIVE: this file is gitignored (never commit real values —
+# copy from mcp.example.toml, then edit mcp.toml in place).
+# ----------------------------------------------------------------------
+
+# A shared secret a debug MCP client presents via authenticate(secret).
+# On a correct match it unlocks get_state()/get_recent() introspection for
+# that connection AND a best-effort "give a substantive reply" nudge on
+# talk() (still no new tools, still not owner — spec §C.1/§C.2).
+debug_secret = ""
+
+# MUST equal config.toml's [mcp].query_token — this is a SEPARATE secret
+# from debug_secret, stamped onto every get_state/get_recent IPC query so
+# the daemon (which has no per-connection auth on its IPC server) can
+# fail-closed reject queries that don't carry it. A mismatch (or leaving
+# either side empty) makes get_state/get_recent raise, even after a
+# successful authenticate(secret).
+query_token = ""

@@ -42,6 +42,10 @@ config  = "bridge.toml"
 [mcp]
 enabled = false
 config  = "mcp.toml"
+# query_token = "change-me"   # enables the debug read-query surface (get_state/get_recent, P2 spec §C.3).
+                              # MUST match mcp.toml's [server].query_token exactly. Empty/unset (default)
+                              # = query surface disabled, fail-closed — the daemon rejects every
+                              # QueryState/QueryRecent regardless of what token a caller sends.
 
 [log]
 level = "INFO"
