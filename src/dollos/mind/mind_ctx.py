@@ -56,6 +56,15 @@ class MindCtx:
     # mid-cascade. Threaded into PinSelf → self_history.
     current_turn: int = 0
     external_ctx: bool = False
+    # Self-directed agenda (spec 2026-07-07 §3.1/§3.3): the `source` values of
+    # this turn's REAL memsearch hits — i.e. exactly what actually rendered
+    # into [Memory context] this turn (mind_loop._derive_memory_hits, stashed
+    # at the same point it's computed, mind_loop.py:414). Read-only for tools:
+    # PursueGoal.run reads this to auto-capture `provenance`; it is never
+    # populated from tool arguments, so the model cannot write it. Reset to []
+    # every turn by MindLoop alongside current_turn/origin_tier — there is no
+    # cross-turn bleed.
+    turn_memory_sources: list[str] = field(default_factory=list)
     # Per-turn origin tier (P1e spec §3.4 S1): computed once at drain from this
     # bucket's perceptions + author_is_owner — "internal" (no ChannelMessage),
     # "external_dm" (ChannelMessage from the owner), or "external_public"
