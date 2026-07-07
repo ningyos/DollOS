@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import aclosing
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,8 @@ from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.templates import build_voice_first_grammar
-from dollos.memory_writer import append_transcript
+from dollos.memory_writer import append_transcript, append_action_log
+from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
@@ -36,6 +38,7 @@ from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
     AGENDA_TOOLS,
+    DIARY_TOOLS,
     EXTERNAL_TOOLS,
     LearnName,
     NoteToolLesson,
@@ -162,6 +165,7 @@ class MindLoop:
         trace_writer=None,
         model_id: str | None = None,
         on_turn_complete: Callable[[str | None, bool], None] | None = None,
+        diary_max_log_chars: int = 40000,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -213,10 +217,44 @@ class MindLoop:
         # `and not _has_user_spoke` rationale (a live user request co-batched
         # with an AgendaMoment must never be downgraded to AGENDA_TOOLS).
         self._is_agenda: bool = False
+        # Dedicated diary turn (spec 2026-07-07 §2.3, Task 7, LOAD-BEARING):
+        # mirrors _is_agenda exactly — "is the ENTIRE batch DiaryMoment",
+        # never merely "a DiaryMoment is present" (same co-batch rationale as
+        # _is_agenda above: a DiaryMoment riding along with a live UserSpoke
+        # must fall through to a normal, non-narrowed turn). Gates registry
+        # narrowing (_active_tool_registry), outbound speech suppression
+        # (_emit_sentence), doll-transcript suppression, and the I1
+        # no-fabrication post-turn check — all four read this SAME flag.
+        self._is_diary: bool = False
+        # Whole-branch review WB-1 (LOAD-BEARING, decoupled from the strict
+        # pure-batch flag above): "does THIS batch carry a DiaryMoment at
+        # all", regardless of what else co-batched with it. The 23:00
+        # DiaryMoment often co-batches with another origin-less internal
+        # perception (AgendaMoment fires ~every 7 min, ReflectionMoment polls
+        # ~every 5 s — both peak exactly when the system is idle at diary
+        # time), which makes the strict `_is_diary` False. Gating the I1
+        # post-turn miss-check on strict `_is_diary` alone means a co-batched
+        # diary turn that misses gets ZERO signal — no marker, no retry — the
+        # exact silent failure I1 exists to prevent. This flag is used
+        # SOLELY for that one post-turn check; every other `_is_diary`
+        # consumer (registry narrowing, speech suppression, doll-transcript
+        # suppression, [Today's log] injection) stays on the strict flag —
+        # those must stay conservative so a co-batched live UserSpoke is
+        # never silenced/whitewashed.
+        self._diary_in_batch: bool = False
+        # I1 per-day retry flag (spec §2.3): sentinel date-string, "" until
+        # the first missed diary turn. Prevents an infinite re-enqueue loop —
+        # only ONE retry per calendar day, regardless of how many more times
+        # DiaryMoment fires and misses that same day.
+        self._diary_retry_date: str = ""
+        # [Today's log] safety ceiling (settings.diary.max_log_chars) — see
+        # _read_today_log.
+        self._diary_max_log_chars = diary_max_log_chars
         # B3 energy system
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
+        self._turn_wrote_diary: bool = False
         self._self_profile_enabled = self_profile_enabled
         # P8 mechanical persona enforcement (spec §2). Absent kwarg ⇒ empty
         # Enforcement() defaults ⇒ check_persona_violations always returns []
@@ -382,6 +420,24 @@ class MindLoop:
                             "transcript write (user) failed; continuing"
                         )
 
+            # World events (things that happened to her) → action log (Task
+            # 4). Structurally owner/internal-only: strangers cannot produce
+            # Shell/Workflow/Monitor results (those tools aren't in
+            # EXTERNAL_TOOLS), so ToolResult/Monitor/service-down perceptions
+            # never carry a stranger origin — no origin gate needed here.
+            # (Also: origin_tier is only derived AFTER this loop below, so it
+            # would be stale if we tried to gate on it here.)
+            wphrase = action_phrase_for_perception(p.kind, p.data or {})
+            if wphrase:
+                try:
+                    await append_action_log(
+                        transcripts_root=self._ctx.transcripts_root,
+                        memsearch=self._ctx.memsearch,
+                        phrase=wphrase,
+                    )
+                except Exception:
+                    logger.exception("action-log write (event) failed; continuing")
+
         # Gate NoteToolLesson to reflection turns only (Spec B §5).
         self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
 
@@ -414,6 +470,18 @@ class MindLoop:
         self._is_agenda = bool(perceptions) and all(
             p.kind == "AgendaMoment" for p in perceptions
         )
+
+        # Dedicated diary turn (spec §2.3, Task 7): same "pure batch" shape
+        # as _is_agenda above, so a DiaryMoment co-batched with anything else
+        # (e.g. a live UserSpoke) falls through to a normal, non-narrowed,
+        # non-suppressed turn instead of being whitewashed into DIARY_TOOLS.
+        self._is_diary = bool(perceptions) and all(
+            p.kind == "DiaryMoment" for p in perceptions
+        )
+        # WB-1: looser co-batch signal for the I1 post-turn miss-check ONLY
+        # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
+        # every turn like `_is_diary` above — this assignment IS the reset.
+        self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -524,6 +592,7 @@ class MindLoop:
         # blocked waiting for a TurnEnd that never arrived).
         self._turn_speech.clear()
         self._turn_had_tool = False
+        self._turn_wrote_diary = False
         try:
             # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
             # before rendering. Frozen when evolution disabled (already-sanctioned
@@ -601,6 +670,7 @@ class MindLoop:
                 self._system_prompt_for_turn(),
                 pulse_block=pulse_block,
                 cognition_block=cognition_block,
+                today_log_block=self._read_today_log() if self._is_diary else None,
                 associative_hits=associative_hits,
                 primary_language=self._primary_language,
                 tool_outcomes_block=tool_outcomes_block,
@@ -703,9 +773,14 @@ class MindLoop:
         if self._energy_enabled and produced and consumes:
             self._state.energy = max(0.0, self._state.energy - self._cost_per_turn)
 
-        # Doll-side transcript: one line per turn, full text (B1).
+        # Doll-side transcript: one line per turn, full text (B1). Suppressed
+        # on a dedicated diary turn (spec §2.3, Task 7): her private
+        # journaling commentary (if any leaked past _emit_sentence's own
+        # suppression into _turn_speech — it still gets buffered there for
+        # trace/audit) must not also land in the day's action-log transcript
+        # that the NEXT diary turn reads back via _read_today_log.
         doll_text = "".join(self._turn_speech).strip().replace("\n", " ")
-        if doll_text:
+        if doll_text and not self._is_diary:
             try:
                 await append_transcript(
                     transcripts_root=self._ctx.transcripts_root,
@@ -725,6 +800,36 @@ class MindLoop:
                     kind="PersonaDriftDetected",
                     t=time.time(),
                     data={"violations": violations, "snippet": doll_text[:120]},
+                ))
+
+        # I1 no-fabrication post-turn guarantee (spec §2.3/§3, Task 7,
+        # LOAD-BEARING): a dedicated diary turn that did NOT call WriteDiary
+        # is a MISS, never silently backfilled. The only response is: warn
+        # (operator-visible), leave an observable marker (trace/metrics
+        # audit — recent_outputs, same surface every other turn event uses),
+        # and re-enqueue exactly ONE retry DiaryMoment. `_diary_retry_date`
+        # is the per-day flag that caps this at one retry — without it, a
+        # model that keeps declining to write would re-enqueue forever.
+        # Whole-branch review WB-1: gated on `_diary_in_batch` (co-batch-
+        # tolerant), NOT the strict `_is_diary` — a DiaryMoment riding along
+        # with e.g. an AgendaMoment/ReflectionMoment must still get this
+        # guarantee even though the turn itself ran non-narrowed (see the
+        # `_diary_in_batch` field comment in `__init__`).
+        if self._diary_in_batch and not self._turn_wrote_diary:
+            today = date.today().isoformat()
+            logger.warning(
+                "diary turn ended with no WriteDiary (turn=%s)",
+                self._state.iter_count,
+            )
+            self._state.recent_outputs.append(OutputRecord(
+                t=time.time(),
+                kind="DiaryMissed",
+                summary=f"no diary @ {today}",
+            ))
+            if self._diary_retry_date != today:
+                self._diary_retry_date = today
+                self._queue.put(Perception(
+                    kind="DiaryMoment", t=time.time(), data={},
                 ))
 
         # P6 deterministic successful-repeat detector (spec §13.1): checked
@@ -836,6 +941,46 @@ class MindLoop:
             return "external"
         return "internal"
 
+    def _read_today_log(self) -> str | None:
+        """Read today's FULL action-log transcript for the dedicated diary
+        turn (spec §2.2, Task 7).
+
+        ``transcripts/{today}.md`` mixes ordinary user/doll conversation
+        lines (written by ``append_transcript``) with ``▸``-marked action
+        lines (written by ``append_action_log``, Tasks 1-4) — this is
+        deliberately the WHOLE day's file, not a filtered/summarized slice,
+        so the diary is grounded in everything that actually happened (I1:
+        the only defense against fabrication is giving her the real log to
+        write from). Capped at ``self._diary_max_log_chars`` (settings.diary.
+        max_log_chars, default 40000 — usually the whole day fits) with a
+        head+tail split so an outsized day still fits the context budget
+        without losing the morning/evening bookends.
+
+        Returns ``None`` when no log file exists for today (e.g. a
+        DiaryMoment firing on a day with zero recorded activity), when the
+        file exists but is empty/whitespace-only, or when the read fails for
+        ANY reason (permissions, mid-write decode error, a directory sitting
+        where the file should be, ...) — best-effort only. The caller passes
+        that straight through to ``render_mind``'s ``today_log_block=None``,
+        which simply omits the block. This is deliberately broad
+        (``OSError``/``UnicodeError``, not just ``FileNotFoundError``): a
+        read failure must never propagate out of turn composition and abort
+        the diary turn BEFORE the I1 post-turn guarantee (warn + marker +
+        one retry) runs — that would drop the turn with no signal at all.
+        """
+        cap = self._diary_max_log_chars
+        f = self._ctx.transcripts_root / f"{date.today():%Y-%m-%d}.md"
+        try:
+            raw = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        if not raw.strip():
+            return None
+        if len(raw) > cap:
+            half = cap // 2
+            raw = raw[:half] + "\n…(中段略)…\n" + raw[-half:]
+        return "[Today's log](你今天的一天,寫日記的素材)\n" + raw
+
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass.
 
@@ -902,6 +1047,21 @@ class MindLoop:
             if self._has_user_spoke:
                 extra["LearnName"] = LearnName
             return {**self._tool_registry, **extra}
+        if self._is_diary:
+            # Dedicated diary turn (spec §2.3, Task 7, LOAD-BEARING): reached
+            # only when origin_tier == "internal" and not a reflection turn
+            # (both branches above already returned) AND self._is_diary is
+            # True, which by construction already means "no live UserSpoke
+            # this batch" (see the `all(p.kind == "DiaryMoment" ...)` guard
+            # above) — a batch that co-bundles a DiaryMoment with a real
+            # UserSpoke has _is_diary == False and falls through to the
+            # normal branches below instead, same as the agenda case.
+            # Narrowed to {WriteDiary, Recall} — she cannot Shell, spawn a
+            # workflow, or do anything else on this turn but write (or
+            # research toward) today's diary entry.
+            return {
+                n: c for n, c in self._tool_registry.items() if n in DIARY_TOOLS
+            }
         if self._is_agenda:
             # Pure agenda turn (self-directed agenda spec §5.2, R1-C1,
             # SECURITY-LOAD-BEARING): reached only when origin_tier ==
@@ -1340,10 +1500,16 @@ class MindLoop:
         it for trace/audit; only the outbound sink write is suppressed here,
         at this single chokepoint, so reflection/reactive/every other turn
         kind is unaffected.
+
+        Dedicated diary turn (spec 2026-07-07 §2.3, Task 7): same
+        chokepoint, same rationale — a pure DiaryMoment turn is private
+        journaling, not a conversation, so any naked text she streams (e.g.
+        commentary alongside the WriteDiary call) must not leak to a
+        connected sink either.
         """
         if not sentence.strip():
             return
-        if self._is_agenda:
+        if self._is_agenda or self._is_diary:
             return
         origin = self._ctx.current_origin
         registry = self._ctx.channel_registry
@@ -1395,9 +1561,26 @@ class MindLoop:
         self, name: str, arguments: dict
     ) -> ToolResult | None:
         """Dispatch via shared dispatch_one (spec §3.6), then record the outcome
-        into Doll's tool memory (Spec B Layer 1 — live-only)."""
+        into Doll's tool memory (Spec B Layer 1 — live-only). Also — for
+        owner/internal turns only (C1) — append a whitelisted action line to
+        the day's action log."""
+        prior_mood = self._ctx.mind_state.mood.emotion   # snapshot before dispatch (Mood-change)
         r = await dispatch_one(name, arguments, self._ctx, self._active_tool_registry())
         record_tool_outcome(self._ctx.mind_state, name, r)
+        if name == "WriteDiary":
+            self._turn_wrote_diary = True
+        # 🔒 C1: never log a stranger turn's action into the owner-tier transcript.
+        if self._ctx.origin_tier != "external_public":
+            phrase = action_phrase_for_tool(name, arguments, prior_mood)
+            if phrase:
+                try:
+                    await append_action_log(
+                        transcripts_root=self._ctx.transcripts_root,
+                        memsearch=self._ctx.memsearch,
+                        phrase=phrase,
+                    )
+                except Exception:
+                    logger.exception("action-log write (tool) failed; continuing")
         return r
 
     def shutdown(self) -> None:

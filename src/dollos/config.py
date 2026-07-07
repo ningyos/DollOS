@@ -265,6 +265,16 @@ class EvolutionConfig(BaseModel):
     agent_timeout_s: int = 240
 
 
+class DiaryConfig(BaseModel):
+    """Daily diary scheduler — fires a DiaryMoment perception once a day."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    hour: int = 23
+    minute: int = 0
+    max_log_chars: int = 40000   # [Today's log] safety ceiling (usually whole day)
+
+
 class TraceSettings(BaseModel):
     """finetune 語料 trace(spec §3.6)。預設開:紀錄=訓練資料,越早累積越好。"""
     model_config = ConfigDict(extra="forbid")
@@ -314,6 +324,7 @@ class Settings(BaseModel):
     system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
     cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
     consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
+    diary: DiaryConfig = Field(default_factory=lambda: DiaryConfig())
     energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
     self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
     evolution: EvolutionConfig = Field(default_factory=lambda: EvolutionConfig())
