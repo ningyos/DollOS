@@ -383,9 +383,6 @@ def _perception_text(p) -> str:
 
 
 class DollOS:
-    DIARY_HOUR = 23   # 23:00 fires (1h buffer before midnight; see spec §12.3)
-    DIARY_MINUTE = 0
-
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         # Telemetry recorder feeds both the LLM provider (recording side)
@@ -578,6 +575,7 @@ class DollOS:
             trace_writer=trace_writer,
             model_id=settings.llm.model_alias,
             on_turn_complete=self._on_turn_complete,
+            diary_max_log_chars=settings.diary.max_log_chars,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -1099,11 +1097,12 @@ class DollOS:
         )
 
     async def _diary_scheduler(self) -> None:
-        """Background task: fires DiaryEvent perception daily at DIARY_HOUR:DIARY_MINUTE."""
+        """Background task: fires a DiaryMoment perception daily at [diary].hour:[diary].minute."""
+        d = self.settings.diary
         while not self._shutdown.is_set():
             now = datetime.now()
             target = now.replace(
-                hour=self.DIARY_HOUR, minute=self.DIARY_MINUTE,
+                hour=d.hour, minute=d.minute,
                 second=0, microsecond=0,
             )
             if target <= now:
@@ -1118,9 +1117,9 @@ class DollOS:
                 pass  # time to fire
             self._perception_queue.put(
                 Perception(
-                    kind="ScheduledMoment",
+                    kind="DiaryMoment",
                     t=time.time(),
-                    data={"intent": "現在是 23:00，請寫今天的日記（呼叫 WriteDiary）。"},
+                    data={},
                 )
             )
 
@@ -1237,7 +1236,8 @@ class DollOS:
             self.service_supervisor.start()
 
             # Start diary scheduler, schedule runner, and reflection observer
-            self._scheduler_task = asyncio.create_task(self._diary_scheduler())
+            if self.settings.diary.enabled:
+                self._scheduler_task = asyncio.create_task(self._diary_scheduler())
             self._schedule_task = asyncio.create_task(self._schedule_runner())
             self._reflection_task = asyncio.create_task(
                 self._reflection_observer.run(), name="reflection-observer"

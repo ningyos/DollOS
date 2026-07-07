@@ -42,6 +42,7 @@ def render_mind(
     *,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
+    today_log_block: str | None = None,
     associative_hits: list[dict] | None = None,
     primary_language: str = "繁體中文",
     tool_outcomes_block: str | None = None,
@@ -60,6 +61,12 @@ def render_mind(
     ``cognition_block`` — optional pre-rendered ``[Cognition]`` block from
     ``perception.cognition.CognitionWorker.snapshot()``. Inserted right
     after ``[Self pulse]``.
+
+    ``today_log_block`` — optional pre-rendered ``[Today's log]`` block from
+    ``MindLoop._read_today_log()`` (spec §2.2, Task 7): the day's full
+    action-log transcript, the diary turn's source material. Inserted right
+    after ``[Cognition]``. ``None`` on every non-diary turn (the caller only
+    passes it on a dedicated DiaryMoment turn).
 
     ``primary_language`` — the language Doll records memory in (NoteMemory /
     diary). Rendered as a persistent ``[Memory guideline]`` block right before
@@ -140,6 +147,8 @@ def render_mind(
         blocks.extend([pulse_block, ""])
     if cognition_block:
         blocks.extend([cognition_block, ""])
+    if today_log_block:
+        blocks.extend([today_log_block, ""])
     blocks.extend([
         "[Your agenda] (things you're pursuing because you want to)",
         _render_your_agenda(state.open_loops, now),
@@ -489,6 +498,11 @@ def _percep_body(p) -> str:
         return (
             f"你少了一條在線通道 —— {svc}(外部 AI 連接口)反覆崩潰、"
             f"已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
+        )
+    if p.kind == "DiaryMoment":
+        return (
+            "今天結束了。這是你的一天,都攤在下面的 [Today's log] 了。"
+            "這是你寫日記的時間 —— 回頭看看,把想留下的、真的有感覺的,用你自己的話寫下來(WriteDiary)。"
         )
     return str(d)[:120]
 
