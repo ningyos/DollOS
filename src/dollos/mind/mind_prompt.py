@@ -141,8 +141,11 @@ def render_mind(
     if cognition_block:
         blocks.extend([cognition_block, ""])
     blocks.extend([
+        "[Your agenda] (things you're pursuing because you want to)",
+        _render_your_agenda(state.open_loops, now),
+        "",
         "[Open loops] (commitments you have made)",
-        _render_open_loops(state.open_loops, now),
+        _render_open_loops([lp for lp in state.open_loops if not lp.self_directed], now),
         "",
         "[Pending] (upcoming scheduled events)",
         _render_pending(state.pending_events, now),
@@ -339,6 +342,35 @@ def _render_open_loops(loops: list, now: float) -> str:
         if now - lp.opened_at > OPEN_LOOP_STALE_S:
             line += " ⚠ STALE — 尚未跟進，考慮處理或用 CloseLoop 結案"
         lines.append(line)
+    return "\n".join(lines)
+
+
+# Bound how many recent progress entries render per self-directed loop in
+# [Your agenda] — an unbounded tail would let a long-lived pursuit's history
+# crowd out everything else in the prompt.
+AGENDA_PROGRESS_TAIL = 3
+
+
+def _render_your_agenda(loops: list, now: float) -> str:
+    """Render only self_directed OpenLoops (things Doll is pursuing because
+    she wants to, not because she owes the user) — desc + her stated
+    ``trigger`` (why she started) + the recent tail of ``progress``.
+
+    Companion to ``_render_open_loops``, which the caller must filter to
+    ``self_directed=False`` so the two blocks partition ``state.open_loops``
+    without overlap.
+    """
+    agenda_loops = [lp for lp in loops if lp.self_directed]
+    if not agenda_loops:
+        return "(none)"
+    lines = []
+    for lp in agenda_loops:
+        line = f"- {lp.id}: {lp.desc} (opened {_human_secs(now - lp.opened_at)} ago)"
+        if lp.trigger:
+            line += f" — why: {lp.trigger}"
+        lines.append(line)
+        for entry in lp.progress[-AGENDA_PROGRESS_TAIL:]:
+            lines.append(f"    progress: {entry}")
     return "\n".join(lines)
 
 
