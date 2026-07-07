@@ -575,6 +575,7 @@ class DollOS:
             trace_writer=trace_writer,
             model_id=settings.llm.model_alias,
             on_turn_complete=self._on_turn_complete,
+            diary_max_log_chars=settings.diary.max_log_chars,
         )
 
         self._reflection_observer = ReflectionObserver(

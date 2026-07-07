@@ -1231,3 +1231,11 @@ KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 # agenda gate self-perpetuating). MoodTool stays in (v1 decision, spec §11.6
 # — her mood can drift on its own while she's alone).
 AGENDA_TOOLS: frozenset[str] = frozenset({"Recall", "AdvanceGoal", "CloseLoop", "MoodTool"})
+
+# Dedicated diary turn (spec 2026-07-07 §2.3, Task 7): the ONLY tools
+# available on a pure DiaryMoment turn. WriteDiary is the point of the turn;
+# Recall lets her look up earlier-in-the-day context if the injected
+# [Today's log] isn't enough. Everything else (Shell/SpawnWorkflow/NoteMemory/
+# etc.) is excluded so the turn cannot do anything BUT write (or research
+# toward) the diary entry.
+DIARY_TOOLS: frozenset[str] = frozenset({"WriteDiary", "Recall"})
