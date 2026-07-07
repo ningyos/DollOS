@@ -38,6 +38,7 @@ from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
 from dollos.memory import FtsMemory
+from dollos.mind.agenda_observer import AgendaObserver
 from dollos.mind.attention import AttentionGate
 from dollos.mind.consolidation import ConsolidationTrigger
 from dollos.mind.evolution_trigger import EvolutionTrigger
@@ -584,6 +585,14 @@ class DollOS:
             queue=self._perception_queue,
         )
 
+        # AgendaObserver — self-directed agenda self-wake (spec 2026-07-07
+        # §4.1), mirrors ReflectionObserver above.
+        self._agenda_observer = AgendaObserver(
+            state=self._mind_state,
+            queue=self._perception_queue,
+            energy_idle_threshold_s=settings.energy.idle_threshold_s,
+        )
+
         # ConsolidationTrigger — sleep-time memory consolidation (B2)
         self._consolidation_trigger = ConsolidationTrigger(
             state=self._mind_state,
@@ -658,6 +667,7 @@ class DollOS:
         self._schedule_task: asyncio.Task[None] | None = None
         self._mind_task: asyncio.Task[None] | None = None
         self._reflection_task: asyncio.Task[None] | None = None
+        self._agenda_task: asyncio.Task[None] | None = None
         self._consolidation_trigger_task: asyncio.Task[None] | None = None
         # Per-day fired set — scheduler dedupe across its 30s polling.
         self._fired_today: dict[date, set] = {}
@@ -1232,6 +1242,9 @@ class DollOS:
             self._reflection_task = asyncio.create_task(
                 self._reflection_observer.run(), name="reflection-observer"
             )
+            self._agenda_task = asyncio.create_task(
+                self._agenda_observer.run(), name="agenda-observer"
+            )
             if self.settings.consolidation.enabled:
                 self._consolidation_trigger_task = asyncio.create_task(
                     self._consolidation_trigger.run(), name="consolidation-trigger"
@@ -1265,6 +1278,12 @@ class DollOS:
                     self._reflection_task.cancel()
                     await asyncio.gather(
                         self._reflection_task, return_exceptions=True
+                    )
+                if self._agenda_task is not None:
+                    self._agenda_observer.shutdown()
+                    self._agenda_task.cancel()
+                    await asyncio.gather(
+                        self._agenda_task, return_exceptions=True
                     )
                 # Stop runners before MindLoop so result perceptions
                 # don't arrive after loop shuts down

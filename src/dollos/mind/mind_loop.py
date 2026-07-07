@@ -35,6 +35,7 @@ from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, t
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
+    AGENDA_TOOLS,
     EXTERNAL_TOOLS,
     LearnName,
     NoteToolLesson,
@@ -206,6 +207,12 @@ class MindLoop:
         # _is_reflection: computed once per _run_one_turn from THIS batch's
         # perceptions, never re-derived later from stale/replayed state.
         self._has_user_spoke: bool = False
+        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1, SECURITY-LOAD-
+        # BEARING): "is this a PURE agenda turn" flag. Set alongside
+        # _has_user_spoke in _run_one_turn — see that assignment for the
+        # `and not _has_user_spoke` rationale (a live user request co-batched
+        # with an AgendaMoment must never be downgraded to AGENDA_TOOLS).
+        self._is_agenda: bool = False
         # B3 energy system
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
@@ -384,6 +391,21 @@ class MindLoop:
         # the same internal bucket — see test_mind_loop.py's MF-2), so this
         # is independent of _is_reflection, not mutually exclusive with it.
         self._has_user_spoke = any(p.kind == "UserSpoke" for p in perceptions)
+
+        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1): "is this a PURE
+        # agenda turn" — mirrors _is_reflection above, but ALSO requires
+        # `not self._has_user_spoke`. This is the C1 safety, not incidental:
+        # a batch can contain BOTH an origin-less AgendaMoment and an
+        # origin-less UserSpoke (the same MF-2 shape as the ReflectionMoment+
+        # UserSpoke co-batch above) — if a live user is present this turn, it
+        # is NOT a pure-agenda turn, full stop, regardless of AgendaMoment
+        # also being in the batch. Getting this wrong would silently
+        # restrict a REAL user request to AGENDA_TOOLS (no Shell/Workflow) —
+        # the exact whitewash shape the LearnName-C1 finding killed.
+        self._is_agenda = (
+            any(p.kind == "AgendaMoment" for p in perceptions)
+            and not self._has_user_spoke
+        )
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -872,6 +894,21 @@ class MindLoop:
             if self._has_user_spoke:
                 extra["LearnName"] = LearnName
             return {**self._tool_registry, **extra}
+        if self._is_agenda:
+            # Pure agenda turn (self-directed agenda spec §5.2, R1-C1,
+            # SECURITY-LOAD-BEARING): reached only when origin_tier ==
+            # "internal" (the non-internal branch above already returned)
+            # AND self._is_reflection is False (that branch above already
+            # returned too) AND self._is_agenda is True, which by its own
+            # construction already means "no live UserSpoke this batch" (see
+            # the `and not self._has_user_spoke` in _run_one_turn). A batch
+            # that co-bundles an AgendaMoment with a real UserSpoke has
+            # _is_agenda == False and falls through to the _has_user_spoke
+            # branch below instead — full registry, the user's request is
+            # never silently restricted.
+            return {
+                n: c for n, c in self._tool_registry.items() if n in AGENDA_TOOLS
+            }
         if self._has_user_spoke:
             return {**self._tool_registry, "LearnName": LearnName}
         return self._tool_registry
@@ -1286,8 +1323,19 @@ class MindLoop:
         transports (e.g. Discord) reject an empty/whitespace message
         outright, and a raised exception there must not be able to take down
         the whole turn/connection over content that was never meaningful.
+
+        Self-directed agenda (spec 2026-07-07 §5.3, R1-M1): a pure
+        AgendaMoment turn is her thinking internally, not talking — if she
+        streams text, it must not reach any local voice/UI sink (which is
+        what an origin-less internal turn's sink resolves to). The turn's
+        recent_outputs/_turn_speech bookkeeping in the callers still records
+        it for trace/audit; only the outbound sink write is suppressed here,
+        at this single chokepoint, so reflection/reactive/every other turn
+        kind is unaffected.
         """
         if not sentence.strip():
+            return
+        if self._is_agenda:
             return
         origin = self._ctx.current_origin
         registry = self._ctx.channel_registry
