@@ -226,6 +226,22 @@ class MindLoop:
         # (_emit_sentence), doll-transcript suppression, and the I1
         # no-fabrication post-turn check — all four read this SAME flag.
         self._is_diary: bool = False
+        # Whole-branch review WB-1 (LOAD-BEARING, decoupled from the strict
+        # pure-batch flag above): "does THIS batch carry a DiaryMoment at
+        # all", regardless of what else co-batched with it. The 23:00
+        # DiaryMoment often co-batches with another origin-less internal
+        # perception (AgendaMoment fires ~every 7 min, ReflectionMoment polls
+        # ~every 5 s — both peak exactly when the system is idle at diary
+        # time), which makes the strict `_is_diary` False. Gating the I1
+        # post-turn miss-check on strict `_is_diary` alone means a co-batched
+        # diary turn that misses gets ZERO signal — no marker, no retry — the
+        # exact silent failure I1 exists to prevent. This flag is used
+        # SOLELY for that one post-turn check; every other `_is_diary`
+        # consumer (registry narrowing, speech suppression, doll-transcript
+        # suppression, [Today's log] injection) stays on the strict flag —
+        # those must stay conservative so a co-batched live UserSpoke is
+        # never silenced/whitewashed.
+        self._diary_in_batch: bool = False
         # I1 per-day retry flag (spec §2.3): sentinel date-string, "" until
         # the first missed diary turn. Prevents an infinite re-enqueue loop —
         # only ONE retry per calendar day, regardless of how many more times
@@ -462,6 +478,10 @@ class MindLoop:
         self._is_diary = bool(perceptions) and all(
             p.kind == "DiaryMoment" for p in perceptions
         )
+        # WB-1: looser co-batch signal for the I1 post-turn miss-check ONLY
+        # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
+        # every turn like `_is_diary` above — this assignment IS the reset.
+        self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -790,7 +810,12 @@ class MindLoop:
         # and re-enqueue exactly ONE retry DiaryMoment. `_diary_retry_date`
         # is the per-day flag that caps this at one retry — without it, a
         # model that keeps declining to write would re-enqueue forever.
-        if self._is_diary and not self._turn_wrote_diary:
+        # Whole-branch review WB-1: gated on `_diary_in_batch` (co-batch-
+        # tolerant), NOT the strict `_is_diary` — a DiaryMoment riding along
+        # with e.g. an AgendaMoment/ReflectionMoment must still get this
+        # guarantee even though the turn itself ran non-narrowed (see the
+        # `_diary_in_batch` field comment in `__init__`).
+        if self._diary_in_batch and not self._turn_wrote_diary:
             today = date.today().isoformat()
             logger.warning(
                 "diary turn ended with no WriteDiary (turn=%s)",

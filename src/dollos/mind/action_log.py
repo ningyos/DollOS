@@ -24,7 +24,9 @@ def _clip(s: str, n: int) -> str:
 
 def action_phrase_for_tool(name: str, arguments: dict, prior_mood_emotion: str) -> str | None:
     """Her deliberate action → phrase, or None to skip (not whitelisted /
-    no material change). Phrases start with 我 (her doing it)."""
+    no material change). Phrases are past-tense; most start with 我 (her
+    doing it) — e.g. LearnName's 有人開始叫我「X」 does not, since that one
+    describes something said TO her, not an action she performed."""
     a = arguments or {}
     if name == "Shell":
         cmd = redact_secrets(str(a.get("command", ""))).splitlines()[0] if a.get("command") else ""
@@ -64,7 +66,11 @@ def action_phrase_for_perception(kind: str, data: dict) -> str | None:
     """A world event (something that happened to her) → phrase, or None."""
     d = data or {}
     if kind == "ToolResultArrived":
-        return f"{d.get('tool', '?')}「{d.get('task_id', '?')}」跑完了[{d.get('status', '?')}]:{_clip(d.get('summary', ''), 80)}"
+        tool = d.get("tool", "?")
+        task_id = d.get("task_id", "?")
+        status = d.get("status", "?")
+        summary = _clip(d.get("summary", ""), 80)
+        return f"{tool}「{task_id}」跑完了[{status}]:{summary}"
     if kind == "MonitorFired":
         return f"Monitor {d.get('monitor_id', '?')} 觸發:{_clip(d.get('line', ''), 80)}"
     if kind == "MonitorEnded":

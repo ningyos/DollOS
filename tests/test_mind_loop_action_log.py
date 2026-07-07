@@ -86,3 +86,44 @@ async def test_internal_wake_perceptions_not_logged(tmp_path):
     await ml.iterate()
     log = _today_log(tmp_path)
     assert not any(is_action_log_line(l) for l in log.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_mood_change_to_new_emotion_is_logged(tmp_path):
+    """Cheap cleanup: MoodTool end-to-end through _dispatch_tool. Guards the
+    snapshot-before-dispatch ordering (prior_mood_emotion captured BEFORE
+    dispatch_one runs MoodTool.run, which mutates state.mood in place) —
+    if a future change moved the snapshot to AFTER dispatch, this would
+    silently regress to "never logs a mood change" (prior == new always)."""
+    state = MindState()
+    assert state.mood.emotion == "平靜"   # default, sanity-check the premise
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "你還好嗎"}))
+    stream = (
+        'SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: MoodTool\n</think>\n\n'
+        '<tool_call>\n{"name":"MoodTool","arguments":{"emotion":"開心","reason":"聊得開心"}}\n</tool_call>'
+    )
+    ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
+    await ml.iterate()
+    assert state.mood.emotion == "開心"   # MoodTool.run did mutate state
+    log = _today_log(tmp_path)
+    assert any(is_action_log_line(l) and "心情變成「開心」" in l for l in log.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_mood_unchanged_to_same_emotion_is_NOT_logged(tmp_path):
+    """Calling MoodTool with the SAME emotion as the current mood is not a
+    material change — action_phrase_for_tool returns None for it, so
+    nothing should land in the action log."""
+    state = MindState()
+    assert state.mood.emotion == "平靜"   # default, sanity-check the premise
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "你還好嗎"}))
+    stream = (
+        'SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: MoodTool\n</think>\n\n'
+        '<tool_call>\n{"name":"MoodTool","arguments":{"emotion":"平靜","reason":"一如往常"}}\n</tool_call>'
+    )
+    ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
+    await ml.iterate()
+    log = _today_log(tmp_path)
+    assert not any(is_action_log_line(l) and "心情變成" in l for l in log.splitlines())

@@ -68,7 +68,18 @@ async def append_action_log(
 
     Format: `- HH:MM:SS ▸ <phrase>\\n`. Shares the daily transcript file with
     append_transcript so the diary reads one coherent day; the ▸ prefix lets
-    consolidation filter these out (is_action_log_line)."""
+    consolidation filter these out (is_action_log_line).
+
+    Whole-branch review WB-2 (I2 invariant chokepoint): some mapper fields
+    (MoodTool emotion, LearnName token, PinSelf op/section, AdvanceGoal/
+    CloseLoop id) are interpolated into `phrase` without `_clip`, so a
+    model-emitted newline could split the action line — the tail then loses
+    its ▸ prefix, `is_action_log_line` stops matching it, and it leaks past
+    consolidation's action-log filter. Sanitized HERE, at the single writer
+    chokepoint, rather than at every call site — collapsing any embedded
+    newline to a space guarantees every action write is exactly one line,
+    regardless of which mapper produced `phrase`."""
+    phrase = phrase.replace("\n", " ").replace("\r", " ")
     path = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%H:%M:%S")
