@@ -392,6 +392,14 @@ def _percep_body(p) -> str:
             "——下次注意，這不是在演，是妳真正的樣子。"
         )
     if p.kind == "ChannelMessage":
+        if d.get("channel_kind") == "mcp":
+            # AI peer over MCP (spec §B.4): descriptive narration, not a
+            # command — she knows the sender is another AI, self-declared and
+            # unverified, and keeps external_public agency (she may not reply).
+            return (
+                f"[AI peer 私訊] {d.get('author', '?')}"
+                f"(另一個 AI,自稱,未驗證):{d.get('content', '')}"
+            )
         # P1e Task 6: surface owner/stranger identity — otherwise Doll has no
         # in-prompt signal for who she's talking to and can't judge whether/
         # how to respond. Descriptive narration only (not a command); P1d's
