@@ -459,6 +459,14 @@ class DollOS:
                 )
             else:
                 self.service_supervisor.register(self._build_bridge_spec(settings))
+        if settings.mcp.enabled:
+            if settings.mcp.config is None or not settings.mcp.config.exists():
+                logger.error(
+                    "mcp enabled but config missing (%s) — not registering",
+                    settings.mcp.config,
+                )
+            else:
+                self.service_supervisor.register(self._build_mcp_spec(settings))
 
         self.workflow_runner = WorkflowRunner(
             adapter=self.adapter,
@@ -676,6 +684,35 @@ class DollOS:
             ))
         except Exception:
             logger.exception("failed to emit BridgeDown perception")
+
+    def _build_mcp_spec(self, settings: Settings) -> ServiceSpec:
+        """Build the dollos-mcp ServiceSpec: argv (already-resolved absolute
+        paths) + WS URL derivation. Mirrors _build_bridge_spec. The mcp.toml
+        secret/bind config never appears here — only its *path* does; the
+        mcp process reads it itself (same discipline as the bridge token)."""
+        argv = (
+            sys.executable, "-m", "dollos.mcp_server",
+            "--daemon", _derive_daemon_ws(settings.ipc),
+            "--config", str(settings.mcp.config.expanduser().resolve()),
+            "--data-root", str(settings.data.root.expanduser().resolve()),
+        )
+        return ServiceSpec(
+            name="mcp-server", argv=argv,
+            on_gave_up=self._emit_mcp_down_perception,
+        )
+
+    def _emit_mcp_down_perception(self, name: str, rc: int | None) -> None:
+        """Terminal event: the MCP peer channel is entirely offline (crash-loop
+        cap hit). Mirror _emit_bridge_down_perception — synchronous callback
+        inside the supervise task, only enqueue, never do heavy work."""
+        try:
+            self._perception_queue.put(Perception(
+                kind="McpDown",
+                t=time.time(),
+                data={"service": name, "rc": rc},
+            ))
+        except Exception:
+            logger.exception("failed to emit McpDown perception")
 
     def _make_sink(self) -> "asyncio.Queue[ServerMessage | None]":
         """Build a TTSObservingSink that fetches the voice session at speak-time."""

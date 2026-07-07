@@ -24,6 +24,10 @@ config.toml
 # Local discord-bridge config — holds the bot TOKEN, on-device only, never commit
 # (copy of bridge.example.toml). Also cover common local/secret config variants.
 bridge.toml
+
+# Local mcp-server config — holds bind config (+ P2 debug secret), on-device
+# only, never commit (copy of mcp.example.toml).
+mcp.toml
 *.local.toml
 config.*.toml
 !config.example.toml
