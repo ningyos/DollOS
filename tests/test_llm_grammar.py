@@ -77,6 +77,8 @@ def test_grammar_has_per_tool_call_rule_for_each_tool():
         "OpenLoop": "open-loop-call",
         "CloseLoop": "close-loop-call",
         "MoodTool": "mood-tool-call",
+        "PursueGoal": "pursue-goal-call",
+        "AdvanceGoal": "advance-goal-call",
     }
     for cls in TOOLS:
         rid = expected_rule_ids[cls.__name__]

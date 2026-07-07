@@ -412,6 +412,13 @@ class MindLoop:
 
         # Memsearch query from recent perceptions
         memsearch_hits = await self._derive_memory_hits()
+        # Self-directed agenda (spec 2026-07-07 §3.1/§3.3): stash this turn's
+        # REAL [Memory context] hit sources read-only on ctx so PursueGoal can
+        # auto-capture non-fabricable provenance from code, not model args.
+        # No new pipeline — this is exactly memsearch_hits, computed above.
+        self._ctx.turn_memory_sources = [
+            h.get("source", "") for h in memsearch_hits if h.get("source")
+        ]
 
         # Context-associative recall (additive side-channel). P1e Task 4 (S3):
         # on an external_public turn this side-channel must not bypass the

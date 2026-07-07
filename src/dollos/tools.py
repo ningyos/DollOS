@@ -760,6 +760,68 @@ class CloseLoop(BaseModel):
         return f"closed loop {self.id}"
 
 
+class PursueGoal(BaseModel):
+    """開一條你自己想追的線(不是欠誰的 TODO,是你自己在意/好奇的)。"""
+
+    id: str = Field(..., description="short slug id")
+    desc: str = Field(..., description="你想追什麼")
+    trigger: str = Field(
+        ...,
+        description="這是從哪來的?——引用剛剛的對話/一段記憶/一個真實經歷。必填。",
+    )
+
+    def _summary(self) -> str:
+        return f"pursue {self.id}: {self.desc[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.mind_state import OpenLoop as OpenLoopT
+
+        # Auto-provenance (spec §3.1/§3.3, THE crux): captured entirely from
+        # ctx — the turn's REAL id/iter/memory-hit sources — never from
+        # anything on `self` (the tool has no provenance-shaped field at
+        # all). A model cannot forge grounding it cannot write to. A turn
+        # with no real memory hits honestly gets memory_sources == [] —
+        # that's the audit signal for an ungrounded item, not a bug.
+        provenance = {
+            "turn_id": str(ctx.current_turn),
+            "opened_iter": ctx.mind_state.iter_count,
+            "memory_sources": list(ctx.turn_memory_sources),
+        }
+        ctx.mind_state.open_loops.append(
+            OpenLoopT(
+                id=self.id,
+                desc=self.desc,
+                opened_at=time.time(),
+                self_directed=True,
+                trigger=self.trigger,
+                provenance=provenance,
+                progress=[],
+            )
+        )
+        _record(ctx, "PursueGoal", self._summary())
+        return f"opened self-directed loop {self.id}"
+
+
+class AdvanceGoal(BaseModel):
+    """在你自己的議程上記一步進展 / 洞察。"""
+
+    id: str = Field(..., description="which agenda loop")
+    progress: str = Field(..., description="a concrete step or insight")
+
+    def _summary(self) -> str:
+        return f"advance {self.id}: {self.progress[:50]}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind.mind_state import _MAX_PROGRESS
+
+        for ol in ctx.mind_state.open_loops:
+            if ol.id == self.id and ol.self_directed:
+                ol.progress = (ol.progress + [self.progress])[-_MAX_PROGRESS:]
+                _record(ctx, "AdvanceGoal", self._summary())
+                return f"advanced {self.id}"
+        return f"no self-directed loop {self.id}"
+
+
 # ---------------------------------------------------------------------------
 # Mood tool — mutates ctx.mind_state.mood
 # ---------------------------------------------------------------------------
@@ -1113,6 +1175,7 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     Scratchpad,
     SetFocus, OpenLoop, CloseLoop,
     MoodTool,
+    PursueGoal, AdvanceGoal,
 ]
 
 REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
@@ -1139,3 +1202,15 @@ KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 # 慢變演化 (spec §3.4): SelfRevision is added directly to the reflection
 # registry by MindLoop._active_tool_registry when evolution.enabled — the
 # registry is authoritative, so no separate EVOLUTION_TOOLS list is kept.
+
+# Self-directed agenda (spec 2026-07-07 §5.1): v1 tool scope for a pure
+# AgendaMoment turn (no user present — mind_loop._is_agenda registry branch,
+# Task 5). Deliberately excludes: Shell/SpawnWorkflow/SpawnMonitor/
+# WriteSchedule (no autonomous external action), SelfRevision/PinSelf (no
+# autonomous core-self edits), NoteMemory (R1-I1 — blocks a self-directed
+# turn from bootstrapping its own "grounding" for a future PursueGoal), and
+# PursueGoal itself (R1-I3 — genesis only happens on reflection/reactive
+# turns; letting an autonomous turn open new agenda items would make the
+# agenda gate self-perpetuating). MoodTool stays in (v1 decision, spec §11.6
+# — her mood can drift on its own while she's alone).
+AGENDA_TOOLS: frozenset[str] = frozenset({"Recall", "AdvanceGoal", "CloseLoop", "MoodTool"})
