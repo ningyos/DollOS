@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 ACTION_PREFIX = "▸"
-_ACTION_LINE_RE = re.compile(r"^- \d{2}:\d{2}:\d{2} ▸ ")
+_ACTION_LINE_RE = re.compile(rf"^- \d{{2}}:\d{{2}}:\d{{2}} {re.escape(ACTION_PREFIX)} ")
 
 
 async def append_transcript(
@@ -61,7 +61,7 @@ def is_action_log_line(line: str) -> bool:
 async def append_action_log(
     *,
     transcripts_root: Path,
-    memsearch: "FtsMemory",
+    memsearch: FtsMemory,
     phrase: str,
 ) -> None:
     """Append one ▸-marked action/event line to today's transcript and reindex.
