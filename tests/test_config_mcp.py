@@ -37,3 +37,11 @@ def test_settings_absent_mcp_table_defaults_off():
     # Settings is extra="forbid" but McpConfig has a default_factory, so a
     # config with no [mcp] table is valid and yields enabled=false.
     assert Settings.model_fields["mcp"].default_factory().enabled is False
+
+
+def test_mcp_query_token_defaults_none():
+    assert McpConfig().query_token is None
+
+
+def test_mcp_query_token_accepted():
+    assert McpConfig(enabled=True, config="mcp.toml", query_token="s3cr3t").query_token == "s3cr3t"

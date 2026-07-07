@@ -173,6 +173,7 @@ class McpConfig(BaseModel):
 
     enabled: bool = False                 # opt-in;預設關 → 零開銷
     config: Path | None = None            # 指向獨立 mcp.toml(enabled 時 required)
+    query_token: str | None = None        # non-empty enables the debug read-query surface (spec §C.3)
 
     @field_validator("config", mode="before")
     @classmethod

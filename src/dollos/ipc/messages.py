@@ -69,6 +69,24 @@ class ChannelEvent(BaseModel):
     payload: dict
 
 
+class QueryState(BaseModel):
+    """Debug-only read query: snapshot Doll's self-state. Carries a REQUIRED
+    daemon token — the daemon fail-closes any query whose token ≠ settings.mcp.query_token
+    (the IPC server has no connection auth; see spec §C.3 R-DECISION-4)."""
+    type: Literal["query_state"] = "query_state"
+    query_id: str
+    token: str
+
+
+class QueryRecent(BaseModel):
+    """Debug-only read query: recent EXTERNAL_PUBLIC-origin interactions (n clamped
+    by the daemon). REQUIRED daemon token, same fail-closed rule as QueryState."""
+    type: Literal["query_recent"] = "query_recent"
+    query_id: str
+    token: str
+    n: int = 20
+
+
 ClientMessage = Annotated[
     TextInput
     | Interrupt
@@ -77,7 +95,9 @@ ClientMessage = Annotated[
     | UtteranceStart
     | UtteranceEnd
     | ChannelRegister
-    | ChannelEvent,
+    | ChannelEvent
+    | QueryState
+    | QueryRecent,
     Field(discriminator="type"),
 ]
 _client_adapter: TypeAdapter[ClientMessage] = TypeAdapter(ClientMessage)
@@ -153,9 +173,19 @@ class TurnEndAddressed(BaseModel):
     channel_id: str
 
 
+class QueryResult(BaseModel):
+    """Response to a QueryState/QueryRecent, correlated by query_id. ok=false means
+    the token was missing/wrong or the query surface is disabled — payload is empty,
+    no data returned (fail-closed)."""
+    type: Literal["query_result"] = "query_result"
+    query_id: str
+    ok: bool
+    payload: dict
+
+
 ServerMessage = Annotated[
     TextChunk | TurnEnd | ErrorMsg | SayAborted | WebRTCAnswerOut | ICECandidateOut
-    | AddressedText | TurnEndAddressed,
+    | AddressedText | TurnEndAddressed | QueryResult,
     Field(discriminator="type"),
 ]
 

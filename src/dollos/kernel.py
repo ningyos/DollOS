@@ -20,6 +20,9 @@ from dollos.ipc.messages import (
     ChannelRegister,
     ICECandidateIn,
     Interrupt,
+    QueryRecent,
+    QueryResult,
+    QueryState,
     SayAborted,
     ServerMessage,
     TextInput,
@@ -367,6 +370,15 @@ def _derive_daemon_ws(ipc) -> str:
     if ":" in host and not host.startswith("["):  # bare IPv6 literal (e.g. "::1")
         host = f"[{host}]"                        # bracket it — ws://::1:PORT is unparseable
     return f"ws://{host}:{ipc.port}"
+
+
+def _perception_text(p) -> str:
+    """Best-effort text extractor for a Perception's data dict, for the
+    QueryRecent debug read surface (P2 Task 1). ChannelMessage bodies key
+    their text as ``content`` (mind_prompt.py:432,441); ``text`` is a
+    fallback for other kinds that happen to carry it."""
+    d = p.data or {}
+    return str(d.get("content") or d.get("text") or "")
 
 
 class DollOS:
@@ -830,6 +842,48 @@ class DollOS:
             await self._accumulator.add(
                 msg.channel_id, {"t": now, "event": event}, window
             )
+        elif isinstance(msg, (QueryState, QueryRecent)):
+            # Debug-only read side-channel (spec §C.3). FAIL-CLOSED: the IPC
+            # server has no connection auth, so authorize by a daemon-known
+            # token here, BEFORE any state is read.
+            expected = self.settings.mcp.query_token
+            if not expected or msg.token != expected:
+                logger.warning(
+                    "rejected %s: missing/invalid query_token", msg.type
+                )
+                sink.put_nowait(QueryResult(query_id=msg.query_id, ok=False, payload={}))
+                return
+            if isinstance(msg, QueryState):
+                # Synchronous snapshot — no await between read and put_nowait.
+                # current_self is NOT a MindState field: it is the ratified
+                # prose from self_history.jsonl's latest evo_adopt (mirror
+                # mind_loop.py:242-245). sanctioned_text is a sync file read
+                # → snapshot-safe (no await).
+                from dollos.mind import self_history
+                cs = self_history.sanctioned_text(
+                    self.settings.data.root / "memory" / "self_history.jsonl"
+                ) or ""
+                payload = {
+                    "mood": self._mind_state.mood.emotion,  # Mood is a dataclass; take the display field, NOT str(Mood)
+                    "current_self": cs,
+                }
+            else:  # QueryRecent
+                n = max(0, min(msg.n, 100))  # clamp
+                # REUSE the canonical external-safe filter (do NOT reinvent —
+                # a security filter with two definitions drifts).
+                # _public_safe_perceptions allowlists kind=="ChannelMessage"
+                # AND not author_is_owner; a future sensitive kind is
+                # excluded by default (fail-closed on the KIND allowlist).
+                # recent_outputs is deliberately excluded entirely: OutputRecord
+                # has no origin field so it can't be scoped (fail-closed).
+                from dollos.mind.mind_prompt import _public_safe_perceptions
+                items = [
+                    {"kind": p.kind, "text": _perception_text(p)[:500], "ts": p.t}
+                    for p in _public_safe_perceptions(list(self._mind_state.recent_perceptions))
+                ]
+                payload = {"items": (items[-n:] if n else [])}  # n==0 → [] (items[-0:] would return ALL)
+            sink.put_nowait(QueryResult(query_id=msg.query_id, ok=True, payload=payload))
+            return
         else:
             logger.warning("unhandled message type: %r", type(msg).__name__)
 
