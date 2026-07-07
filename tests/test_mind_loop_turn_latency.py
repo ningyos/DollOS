@@ -1,0 +1,57 @@
+"""Tests for turn-level think/speak/first-speak latency telemetry wired into
+``MindLoop._llm_iterate`` (延遲壓縮 Part 1 Task 2).
+
+Epoch = ``_llm_iterate`` entry. ``first_speak_ms`` is measured at the single
+outbound chokepoint (``_emit_sentence``), AFTER its existing suppression
+guards (whitespace-only / agenda / diary) — a suppressed sentence must never
+count as "spoke"."""
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from dollos.mind.mind_state import Perception
+from tests._mindloop_factory import make_mindloop
+from tests.test_mind_loop import _ScriptedLLM, _speech_pass
+
+
+class _CapturingRecorder:
+    def __init__(self):
+        self.records = []
+
+    async def record(self, rec):
+        self.records.append(rec)
+
+
+def _user_perception(text: str) -> Perception:
+    return Perception(kind="UserSpoke", t=time.time(), data={"text": text})
+
+
+@pytest.mark.asyncio
+async def test_turn_emits_latency_record_with_first_speak(tmp_path):
+    rec = _CapturingRecorder()
+    llm = _ScriptedLLM([_speech_pass("你好")])
+    ml = make_mindloop(memory_root=tmp_path, llm=llm, turn_latency_recorder=rec)
+
+    await ml._run_one_turn([_user_perception("hi")])
+
+    assert len(rec.records) == 1
+    r = rec.records[0]
+    assert r.first_speak_ms is not None and r.first_speak_ms >= 0
+    assert r.speak_chars > 0
+    assert r.think_chars > 0
+    assert r.mode == "deliberate"
+    assert r.n_passes >= 1
+    assert r.had_tool_call is False
+    assert r.total_ms is not None and r.total_ms >= 0
+    assert r.ttft_ms is None  # Part 1: not measured here yet
+
+
+@pytest.mark.asyncio
+async def test_no_recorder_is_a_noop(tmp_path):
+    """turn_latency_recorder=None (default) must not raise or break the turn."""
+    llm = _ScriptedLLM([_speech_pass("你好")])
+    ml = make_mindloop(memory_root=tmp_path, llm=llm)
+
+    await ml._run_one_turn([_user_perception("hi")])  # must not raise
