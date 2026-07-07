@@ -239,3 +239,63 @@ async def test_disconnect_unregisters_channel_from_both_registries(
     from dollos.mind.sink_resolver import DummySink
 
     assert isinstance(dollos._sink_resolver(origin="discord:123"), DummySink)
+
+
+# ----- Whole-branch review: disconnect also reaps the AttentionGate Session -----
+
+
+@pytest.mark.asyncio
+async def test_disconnect_reaps_attention_session(tmp_path: Path) -> None:
+    """On disconnect, the AttentionGate Session minted for this sink's
+    channel(s) is also reaped — not just SinkResolver/ChannelRegistry.
+
+    Without this, AttentionGate._sessions grows unbounded: the MCP connector
+    mints a unique one-shot channel_id (``mcp:<conn>:<call>``) per talk()
+    call, and unlike the other three per-call structures the kernel already
+    reaps on disconnect, the Session that channel_id opens in AttentionGate
+    would otherwise survive for the daemon's entire uptime, even across
+    connector restarts.
+
+    A still-connected channel's session must be left untouched.
+    """
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    dollos._bootstrapped_dates.add(__import__("datetime").date.today())
+
+    # Connection A: a one-shot MCP-style channel that mints a Session, then
+    # disconnects.
+    sink_a: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink_a)
+    await dollos._handle_message(
+        ChannelRegister(channel_id="mcp:conn1:call1", locus="external", kind="mcp"),
+        sink_a,
+    )
+    await dollos._handle_message(
+        ChannelEvent(
+            channel_id="mcp:conn1:call1",
+            payload={"author_id": "peer", "is_dm": True, "text": "hi"},
+        ),
+        sink_a,
+    )
+    assert "mcp:conn1:call1" in dollos._attention._sessions
+
+    # Connection B: stays connected — its session must survive A's disconnect.
+    sink_b: asyncio.Queue = asyncio.Queue()
+    await dollos._handle_connect(sink_b)
+    await dollos._handle_message(
+        ChannelRegister(channel_id="discord:999", locus="external", kind="discord"),
+        sink_b,
+    )
+    await dollos._handle_message(
+        ChannelEvent(
+            channel_id="discord:999",
+            payload={"author_id": "u1", "is_dm": True, "text": "hi"},
+        ),
+        sink_b,
+    )
+    assert "discord:999" in dollos._attention._sessions
+
+    await dollos._handle_disconnect(sink_a)
+
+    assert "mcp:conn1:call1" not in dollos._attention._sessions
+    assert "discord:999" in dollos._attention._sessions

@@ -991,11 +991,19 @@ class DollOS:
             self._sink_resolver.unregister(handle)
         # Carry I-1: unregister any external channel registrations this sink
         # made, from both SinkResolver and ChannelRegistry.
+        # Whole-branch review (mcp-p1-peer): also reap the AttentionGate
+        # Session each such channel_id may have opened. Unlike the other
+        # three per-call structures reaped here, the Session was previously
+        # NOT reaped on disconnect, so AttentionGate._sessions grew
+        # unbounded for the MCP connector's one-shot channel_ids
+        # (mcp:<conn>:<call>, unique per talk() call) across the daemon's
+        # entire uptime, surviving even connector restarts.
         for channel_id, channel_handle in self._channel_sink_handles.pop(
             id(sink), {}
         ).items():
             self._sink_resolver.unregister(channel_handle)
             self._channel_registry.unregister(channel_id)
+            self._attention.forget(channel_id)
 
     async def _maybe_bootstrap_plan(self) -> None:
         """Fire Awoke/bootstrap perception if today has no schedule yet.

@@ -191,3 +191,40 @@ def test_admit_decision_and_session_are_dataclasses_with_expected_fields():
     s = Session(channel_id="c1", participants={"u1"}, last_activity=1.0, turn_count=0, window_s=90.0)
     assert s.channel_id == "c1" and s.participants == {"u1"}
     assert s.turn_count == 0 and s.window_s == 90.0
+
+
+# ----- forget() — bound _sessions growth on disconnect (whole-branch review) -----
+
+
+def test_forget_removes_session_for_channel():
+    """forget() removes the channel's Session — this is what the kernel calls
+    on disconnect so a one-shot MCP channel_id's Session doesn't outlive the
+    connection (otherwise AttentionGate._sessions grows O(total calls) for
+    the daemon's entire uptime, since MCP mints a unique channel_id per
+    talk() call)."""
+    g = _gate()
+    g.admit(_e(channel_id="c1", is_dm=True), now=100.0)
+    assert "c1" in g._sessions
+
+    g.forget("c1")
+
+    assert "c1" not in g._sessions
+
+
+def test_forget_unknown_channel_is_idempotent_noop():
+    """forget() on a channel_id with no session must not raise (disconnect
+    may race with expiry/disengage having already deleted the session)."""
+    g = _gate()
+    g.forget("never-seen")  # must not raise
+    assert "never-seen" not in g._sessions
+
+
+def test_forget_leaves_other_channels_untouched():
+    g = _gate()
+    g.admit(_e(channel_id="c1", is_dm=True), now=100.0)
+    g.admit(_e(channel_id="c2", is_dm=True), now=100.0)
+
+    g.forget("c1")
+
+    assert "c1" not in g._sessions
+    assert "c2" in g._sessions

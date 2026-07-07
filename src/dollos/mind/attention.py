@@ -200,6 +200,24 @@ class AttentionGate:
         s.last_activity = now
         return AdmitDecision(True, "l1_continuation")
 
+    def forget(self, channel_id: str) -> None:
+        """Reap ``channel_id``'s engagement Session (whole-branch review,
+        mcp-p1-peer): the kernel calls this from ``_handle_disconnect`` for
+        every channel_id a disconnecting sink had registered, mirroring how
+        it already reaps that sink's SinkResolver/ChannelRegistry entries.
+
+        Without this, ``_sessions`` grows O(total admitted channel_ids) for
+        the daemon's entire uptime — harmless for Discord (stable, long-lived
+        channel_ids) but unbounded for the MCP connector, which mints a
+        unique one-shot ``mcp:<conn>:<call>`` channel_id per ``talk()`` call
+        and never revisits it after disconnect.
+
+        Idempotent: popping an absent key is a no-op, not an error — a
+        session may already be gone (window expiry / disengage) by the time
+        disconnect runs.
+        """
+        self._sessions.pop(channel_id, None)
+
     def note_reply(self, channel_id: str, now: float) -> None:
         """Record that Doll spoke on ``channel_id`` (kernel calls this AFTER
         she replies, Task 4). Advances turn_count and decays the window;
