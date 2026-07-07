@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dollos.memory_writer import append_transcript
+from dollos.memory_writer import append_transcript, append_action_log, is_action_log_line
 
 
 class _FakeMemSearch:
@@ -85,3 +85,28 @@ async def test_append_transcript_uses_seconds_in_timestamp(tmp_path):
     content = expected.read_text()
     # Expect `- HH:MM:SS 主人說：hi` (3 colon-separated time groups).
     assert re.search(r"^- \d{2}:\d{2}:\d{2} 主人說：hi$", content.strip())
+
+
+class _FakeMem:
+    def __init__(self): self.indexed = []
+    async def index_file(self, p): self.indexed.append(p)
+
+
+@pytest.mark.asyncio
+async def test_append_action_log_writes_marked_line_and_indexes(tmp_path):
+    mem = _FakeMem()
+    await append_action_log(transcripts_root=tmp_path, memsearch=mem, phrase="我跑了指令 ls")
+    f = tmp_path / f"{date.today():%Y-%m-%d}.md"
+    text = f.read_text(encoding="utf-8")
+    assert "▸ 我跑了指令 ls" in text
+    assert re.match(r"^- \d{2}:\d{2}:\d{2} ▸ 我跑了指令 ls\n$", text)
+    assert mem.indexed == [f]
+
+
+def test_is_action_log_line_distinguishes_action_from_conversation():
+    assert is_action_log_line("- 14:05:00 ▸ 我跑了指令 ls")
+    assert is_action_log_line("- 23:00:01 ▸ Monitor mon-2 觸發:oom")
+    assert not is_action_log_line("- 14:05:00 主人說：你在幹嘛")
+    assert not is_action_log_line("- 14:05:00 我說：在看 log")
+    assert not is_action_log_line("")
+    assert not is_action_log_line("## 2026-07-07 日記")
