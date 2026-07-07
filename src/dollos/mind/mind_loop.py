@@ -18,7 +18,8 @@ from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.templates import build_voice_first_grammar
-from dollos.memory_writer import append_transcript
+from dollos.memory_writer import append_transcript, append_action_log
+from dollos.mind.action_log import action_phrase_for_tool
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
@@ -217,6 +218,7 @@ class MindLoop:
         self._energy_enabled = energy_enabled
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
+        self._turn_wrote_diary: bool = False
         self._self_profile_enabled = self_profile_enabled
         # P8 mechanical persona enforcement (spec §2). Absent kwarg ⇒ empty
         # Enforcement() defaults ⇒ check_persona_violations always returns []
@@ -524,6 +526,7 @@ class MindLoop:
         # blocked waiting for a TurnEnd that never arrived).
         self._turn_speech.clear()
         self._turn_had_tool = False
+        self._turn_wrote_diary = False
         try:
             # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
             # before rendering. Frozen when evolution disabled (already-sanctioned
@@ -1395,9 +1398,26 @@ class MindLoop:
         self, name: str, arguments: dict
     ) -> ToolResult | None:
         """Dispatch via shared dispatch_one (spec §3.6), then record the outcome
-        into Doll's tool memory (Spec B Layer 1 — live-only)."""
+        into Doll's tool memory (Spec B Layer 1 — live-only). Also — for
+        owner/internal turns only (C1) — append a whitelisted action line to
+        the day's action log."""
+        prior_mood = self._ctx.mind_state.mood.emotion   # snapshot before dispatch (Mood-change)
         r = await dispatch_one(name, arguments, self._ctx, self._active_tool_registry())
         record_tool_outcome(self._ctx.mind_state, name, r)
+        if name == "WriteDiary":
+            self._turn_wrote_diary = True
+        # 🔒 C1: never log a stranger turn's action into the owner-tier transcript.
+        if self._ctx.origin_tier != "external_public":
+            phrase = action_phrase_for_tool(name, arguments, prior_mood)
+            if phrase:
+                try:
+                    await append_action_log(
+                        transcripts_root=self._ctx.transcripts_root,
+                        memsearch=self._ctx.memsearch,
+                        phrase=phrase,
+                    )
+                except Exception:
+                    logger.exception("action-log write (tool) failed; continuing")
         return r
 
     def shutdown(self) -> None:
