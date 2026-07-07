@@ -162,6 +162,32 @@ class BridgeConfig(BaseModel):
         return self
 
 
+class McpConfig(BaseModel):
+    """MCP-server internalization pointer (spec 2026-07-06 §A.4).
+
+    最小指標區塊(P1):只有 enabled + 指向獨立 mcp.toml 的 config 路徑。
+    真正的 bind_host/bind_port(+P2 的 debug_secret/query_token)留在 mcp.toml,
+    daemon 只知道那個檔案的路徑。逐欄鏡射 BridgeConfig。
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False                 # opt-in;預設關 → 零開銷
+    config: Path | None = None            # 指向獨立 mcp.toml(enabled 時 required)
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _expand_user(cls, v: object) -> object:
+        if isinstance(v, (str, Path)):
+            return Path(v).expanduser()
+        return v
+
+    @model_validator(mode="after")
+    def _require_config_when_enabled(self) -> "McpConfig":
+        if self.enabled and self.config is None:
+            raise ValueError("[mcp].enabled=true 需要 [mcp].config 指向 mcp.toml")
+        return self
+
+
 class CognitionConfig(BaseModel):
     """Mind-state vitals — surfaces LLM consumption as a [Cognition] block.
 
@@ -293,6 +319,7 @@ class Settings(BaseModel):
     trace: TraceSettings = Field(default_factory=lambda: TraceSettings())
     attention: AttentionSettings = Field(default_factory=lambda: AttentionSettings())
     bridge: BridgeConfig = Field(default_factory=lambda: BridgeConfig())
+    mcp: McpConfig = Field(default_factory=lambda: McpConfig())
 
 
 def load_settings(path: Path) -> Settings:
