@@ -8,13 +8,27 @@ Runs TWO roles in one process:
   1. outward: a FastMCP streamable-HTTP server bound loopback (mcp.toml
      [server] bind_host/bind_port). bind_host is fail-closed validated to a
      loopback literal (spec §E) — any other value raises and refuses to
-     start. Exposes the peer tool talk(name, message).
+     start. Exposes the peer tool talk(name, message) plus, for debug
+     connections (P2 Task 2), authenticate(secret) / get_state() /
+     get_recent(n).
   2. inward: a daemon IPC WS client (reconnecting), feeding inbound frames
-     to DaemonLink.dispatch and sending ChannelRegister/ChannelEvent out.
+     to DaemonLink.dispatch and sending ChannelRegister/ChannelEvent/
+     QueryState/QueryRecent out.
 
 Thin untested wiring on purpose — all IPC-mapping logic lives in
-DaemonLink (tests/test_mcp_daemon_link.py). Mirrors
-discord_bridge/__main__.py.
+DaemonLink (tests/test_mcp_daemon_link.py, tests/test_mcp_debug_mode.py).
+Mirrors discord_bridge/__main__.py.
+
+P2 Task 2 — debug mode secret gate (spec §C.1, grounded correction I1):
+FastMCP (mcp 1.28.1) exposes a GLOBAL tool set — it cannot show different
+tools per connection. So get_state/get_recent are ALWAYS registered; their
+BODIES hard-check a per-session ``_authed`` flag before touching
+DaemonLink.query(...). That per-session check (not the daemon's
+query_token, which every connector call carries regardless of debug
+status) IS the access control for MCP clients — see _require_debug.
+The gate primitives (_try_authenticate / _require_debug) are pulled out as
+plain functions precisely so they're unit-testable without a real MCP
+Context/session (tests/test_mcp_debug_mode.py).
 """
 from __future__ import annotations
 
@@ -29,6 +43,7 @@ from pathlib import Path
 import websockets
 from mcp.server.fastmcp import Context, FastMCP
 
+from dollos.ipc.messages import QueryRecent, QueryState
 from dollos.mcp_server.daemon_link import DaemonLink
 
 logger = logging.getLogger("dollos.mcp_server")
@@ -74,6 +89,23 @@ def _load_mcp_config(path: Path) -> tuple[str, int]:
     return bind_host, bind_port
 
 
+def _load_debug_config(path: Path) -> tuple[str, str]:
+    """Load [server].debug_secret / query_token from mcp.toml (spec §C.1/§C.3).
+
+    Both default to "" (empty) when unset. Empty debug_secret → debug mode
+    is disabled entirely: _try_authenticate NEVER succeeds (see below), so
+    get_state/get_recent stay permanently gated and talk() never stamps
+    debug_reliable — fail-closed, no separate "is debug configured" branch
+    to get out of sync with the auth check itself.
+    """
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    srv = raw.get("server", {})
+    debug_secret = srv.get("debug_secret") or ""
+    query_token = srv.get("query_token") or ""
+    return debug_secret, query_token
+
+
 # conn_uuid grouping: one id per MCP client connection (spec §B.1). Keyed on the
 # ServerSession object identity when available. NOTE: correctness does NOT depend
 # on this being truly per-connection — call_uuid (uuid4) already makes every
@@ -92,6 +124,47 @@ def _conn_uuid(ctx: Context) -> str:
         cid = uuid.uuid4().hex[:8]
         _conn_ids[key] = cid
     return cid
+
+
+# P2 Task 2 — debug mode per-session state (spec §C.1). Keyed the same way as
+# _conn_ids (id(ctx.session)). A session id in this set has presented the
+# correct mcp.toml debug_secret via authenticate(secret) and is allowed to
+# call get_state/get_recent and gets debug_reliable=True talk().
+_authed: set[int] = set()
+
+
+def _try_authenticate(session_id: int, secret: str, debug_secret: str) -> bool:
+    """Fail-closed secret compare + per-session ``_authed`` mutation.
+
+    Pulled out as a plain function (no Context/FastMCP involved) so the
+    gate itself is unit-testable (tests/test_mcp_debug_mode.py) without a
+    real MCP client. Empty/unset ``debug_secret`` NEVER authenticates —
+    debug mode is disabled entirely, not "any secret works". No exception
+    on mismatch, no leak of whether a secret is even configured — the
+    caller (the `authenticate` tool) always returns the same shape either
+    way.
+    """
+    if debug_secret and secret == debug_secret:
+        _authed.add(session_id)
+        return True
+    return False
+
+
+def _require_debug(session_id: int) -> None:
+    """Hard per-session gate for get_state/get_recent (spec §C.1, grounded
+    correction I1). This is REAL enforcement, not cosmetic: FastMCP exposes
+    a single global tool set, so this body-level check — not tool
+    registration, not the daemon's query_token (every connector call
+    carries that regardless of debug status) — is the only thing stopping
+    any local MCP client from reading mood/current_self/recent
+    external_public interactions. Raises so the MCP tool call surfaces as
+    an explicit error to the caller, never a silent empty/partial result.
+    """
+    if session_id not in _authed:
+        raise PermissionError(
+            "not authenticated — call authenticate(secret) with the debug "
+            "secret first (get_state/get_recent are debug-only tools)"
+        )
 
 
 async def _run_daemon_link(daemon_url: str, link: DaemonLink) -> None:
@@ -123,6 +196,7 @@ async def run(args: argparse.Namespace) -> None:
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
     )
     bind_host, bind_port = _load_mcp_config(args.config)
+    debug_secret, query_token = _load_debug_config(args.config)
     link = DaemonLink()
 
     mcp = FastMCP("DollOS", host=bind_host, port=bind_port)
@@ -137,8 +211,50 @@ async def run(args: argparse.Namespace) -> None:
         silent. Returns {status, text} where status is one of "reply"
         (she answered), "no_response" (she read it and chose not to
         reply), or "timeout" (no reply within the time limit).
+
+        On an authenticated debug connection (see `authenticate`), this
+        nudges Doll toward a substantive reply (best-effort, spec §C.2) —
+        it does not unlock any new capability.
         """
-        return await link.talk(_conn_uuid(ctx), name, message)
+        debug_reliable = id(ctx.session) in _authed
+        return await link.talk(
+            _conn_uuid(ctx), name, message, debug_reliable=debug_reliable
+        )
+
+    @mcp.tool()
+    async def authenticate(secret: str, ctx: Context) -> dict:
+        """Present the debug secret to unlock get_state/get_recent
+        introspection and reliable-reply talk() for this connection.
+
+        Returns {"debug": true} on a correct secret, {"debug": false}
+        otherwise (wrong secret, no secret presented, or debug mode
+        disabled in mcp.toml) — no exception, no indication of whether a
+        secret is even configured.
+        """
+        ok = _try_authenticate(id(ctx.session), secret, debug_secret)
+        return {"debug": ok}
+
+    @mcp.tool()
+    async def get_state(ctx: Context) -> dict:
+        """Debug-only: snapshot Doll's self-state — {"mood": str,
+        "current_self": str}. Requires a prior authenticate(secret) call
+        with the correct debug secret on this connection; otherwise raises.
+        """
+        _require_debug(id(ctx.session))
+        return await link.query(QueryState(query_id=uuid.uuid4().hex, token=query_token))
+
+    @mcp.tool()
+    async def get_recent(ctx: Context, n: int = 20) -> dict:
+        """Debug-only: the most recent (up to `n`, daemon-clamped to 100)
+        external_public-origin interactions — {"items": [{"kind", "text",
+        "ts"}, ...]}. Never includes owner-private conversation. Requires
+        a prior authenticate(secret) call with the correct debug secret on
+        this connection; otherwise raises.
+        """
+        _require_debug(id(ctx.session))
+        return await link.query(
+            QueryRecent(query_id=uuid.uuid4().hex, token=query_token, n=n)
+        )
 
     await asyncio.gather(
         mcp.run_streamable_http_async(),
