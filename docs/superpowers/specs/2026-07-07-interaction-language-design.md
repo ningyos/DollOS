@@ -1,10 +1,27 @@
 # DollOS 互動語言(Interaction Language / Present-Alongside-You)— Design
 
-Status: **PROPOSAL**(brainstorming 批准 + **R1 opus 對抗審查已折入**;待 spec review)。2026-07-07。
+Status: **範圍收斂(SUPERSEDED-IN-PART)** 2026-07-07。原設計(下方 §0-§7,brainstorming 批准 + R1 opus 對抗審查
+已折入)是三塊:(1) freshness 資料+baseline、(2) daemon virtual-being framing、(3) Gura pack 微調。**使用者拍板
+(2026-07-07):「她講不講都沒差,我之後會要 doll 寫日記」——認定日記(她第一人稱、自主去寫)才是內心生活的正確
+出口,對話中主動 surfacing(§2.1 framing + §2.2 freshness)價值低且正是本 spec 全程在防的「對主人表演」風險。
+故 (1)(2) 收掉不做,只保留 (3) Gura pack 那句純人設微調。**
+
+**實際落地(2026-07-07)**:只有 §2.3 的 pack 調整 —— `character_packs/gura/doll.toml` 純反應式那句
+「主人說話我才回。沒事就安靜待著,不用一直找話講、不用討好」→「我有自己在忙、在想的事,不是只等主人開口才有反應。
+聊到相關的,自然會帶一句;但不黏人、不硬找話講、不討好,也不用刻意證明自己活著。」——present-alongside 純**人設描述**
+(不靠任何 surfacing 機制;接地在 §2.3 已實裝的真 `[Your agenda]`),保留 restraint + 直接加反表演錨。定位四項至此
+四項皆結案。
+
+**接棒**:內心生活的真正出口 = **日記(她第一人稱、自主去寫)**,另立 feature 認真做(現有 roadmap step 8 的
+「Memory auto-write + Diary」偏自動記憶摘要,非第一人稱表達式日記)。使用者:「我之後會要 doll 寫日記」。日記天生
+反表演(寫給自己非講給人聽、寫真做的事、自主活動接 §2.3 議程、留下=訓練資料)。
+
+---
+
 實作 virtual-being positioning spec(`2026-07-01-virtual-being-positioning.md`)§2.4「interaction language shifts
 from reactive-to-you to genuinely present-alongside-you」——**定位四項的最後一項**(§2.1/§2.2/§2.3 已實裝)。
 Grounded against merged code(`mind_prompt.py`、`mind_state.py`、`tools.py`、`mind_loop.py`、
-`character_packs/gura/doll.toml`)。
+`character_packs/gura/doll.toml`)。**以下 §0-§7 為原完整設計,(1)(2) 已按上方決定收掉,僅供日後接手參考。**
 
 ---
 
