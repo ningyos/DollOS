@@ -109,6 +109,8 @@ DollOS/
 | Roadmap step 30 — 慢變演化 (current_self「現在的我」：evidence layer + ratification + Mode A evolution pass；3 plans, spec `2026-07-02-slow-self-evolution-design.md`) | Merged, live-smoke-verified |
 | Roadmap step 31 — Discord bridge internalization + generic ServiceSupervisor (bridge 變 daemon 子行程；PDEATHSIG 反孤兒、SIGINT graceful、crash-loop cap + BridgeDown perception；dollosctl 單服務化；spec `2026-07-06-bridge-internalization-design.md`) | Merged |
 | Roadmap step 32 — MCP server（外部 AI ⇄ Doll，第二個 ServiceSupervisor 服務；P1 peer talk〔`talk` tool，origin_tier=external_public〕+ P2 debug mode〔`debug_secret` 閘 + `get_state`/`get_recent` 透過新的已驗證 IPC query 協定，daemon `query_token` fail-closed，`recent_outputs` 排除〕+ reliability nudge；spec `2026-07-06-mcp-server-design.md`） | Merged |
+| Roadmap step 33 — 自主議程 self-directed agenda（positioning §2.3；self_directed OpenLoop + code-captured auto-provenance〔模型寫不到〕+ AgendaObserver 四閘〔idle+energy+active-loop+throttle〕→ AgendaMoment 自發 turn，AGENDA_TOOLS 認知子集〔無 Shell/自主外部〕、抑制對外發話、reactive 優先；spec `2026-07-07-self-directed-agenda-design.md`） | Merged |
+| Roadmap step 34 — 日記 = 看著當天 action log 寫的第一人稱反思（把對話 transcript 長成完整 action log〔對話+白名單動作+世界事件，C1 origin-gated、NoteMemory 輕指標、Mood 只記變化、Shell 遮敏感值〕；consolidation 過濾隔離〔I2〕；config 化每日 DiaryMoment 專用回合〔收窄 `{WriteDiary,Recall}` + 注入 `[Today's log]` 全天 + 抑制發話/transcript + I1 不造假保證〔warn+marker+單次 retry，co-batch 容忍〕〕；spec `2026-07-07-diary-action-log-design.md`） | Merged |
 
 ### 已歸檔（被後續 step 取代）
 
