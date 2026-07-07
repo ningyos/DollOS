@@ -137,7 +137,7 @@ max_log_chars = 40000   # [Today's log] 安全上限(通常讀全天,極端日�
   漏進 transcript = 半真半假的「口說日記」,I1 案例 a)。日記只經 WriteDiary 落 `shared/`,不對外、不進 action log。
 - **🔒 回合後保證(I1,不造假)**:DiaryMoment 回合 cascade 結束後,**明確檢查這回合有沒有呼叫過 WriteDiary**
   (per-turn flag,非 `_turn_had_tool`)。沒有 → `logger.warning`(帶 turn id)+ **可觀測 trace/metric marker**
-  +(可選)**最多重排一次** DiaryMoment。**永不代生假日記**(no-fallback 鐵律 + 假日記零價值)。
+  + **重排一次** DiaryMoment(單次,用 per-day flag 防無限重排)。**永不代生假日記**(no-fallback 鐵律 + 假日記零價值)。
 - **觸發措辭**:日終空間感(「今天結束了。這是你的一天〔攤在 [Today's log]〕。這是你寫日記的時間。」)——obligation
   但有尊嚴,對齊 Self-First(framing 非命令)。
 
@@ -206,5 +206,5 @@ max_log_chars = 40000   # [Today's log] 安全上限(通常讀全天,極端日�
 1. **白名單邊界**(§2.1 表):已含 LearnName + loop-open(PursueGoal)對稱 CloseLoop;RemoveMonitor/PinSelf 記。確認或刪減。
 2. **`[Today's log]` = 讀全天**(M1 修正,不再 tail 鑰匙孔),僅 `max_log_chars`(default 40000)當安全上限。確認上限值。
 3. **日記回合措辭**:DiaryMoment 敘述須是空間/邀請語氣(obligation 非命令,對齊 Self-First),plan 定稿。
-4. **I1 retry**:日記 miss 時要不要「重排一次 DiaryMoment」,還是只 warning+marker?傾向 warning+marker+一次 retry。確認。
+4. **I1 retry**:✅ 已定 = warning + marker + **重排一次**(單次,per-day flag 防無限重排)。
 5. **v2 睡後 trigger** 確認延後、僅存念。
