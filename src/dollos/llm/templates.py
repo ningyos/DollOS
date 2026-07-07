@@ -376,6 +376,12 @@ def build_qwen3_think_tool_grammar(tools: list[type[BaseModel]]) -> str:
     return head + body + _JSON_STR_RULES
 
 
+# Deliberate think 行長上限（codepoint）。斬 idle-turn 的 think 空轉長尾。
+# 一般行 64 對正常推理夠用；REVIEW 較寬（會持久化進 recent_reviews，避免語意殘缺）。
+_THINK_LINE_CAP = 64
+_REVIEW_LINE_CAP = 120
+
+
 def build_voice_first_grammar(tools: list[type[BaseModel]]) -> str:
     """Build a GBNF grammar for voice-first output.
 
@@ -410,8 +416,9 @@ def build_voice_first_grammar(tools: list[type[BaseModel]]) -> str:
     head = (
         "root ::= think segments\n"
         'think ::= "SEEN: " line "INTENT: " line "TOOL: " line '
-        '"REVIEW: " line "MOOD: " line "</think>\\n\\n"\n'
-        'line ::= [^\\n]+ "\\n"\n'
+        '"REVIEW: " rline "MOOD: " line "</think>\\n\\n"\n'
+        f'line ::= [^\\n]{{1,{_THINK_LINE_CAP}}} "\\n"\n'
+        f'rline ::= [^\\n]{{1,{_REVIEW_LINE_CAP}}} "\\n"\n'
         "segments ::= segment*\n"
         "segment ::= speak | tool-call\n"
         "speak ::= [^<]+\n"
