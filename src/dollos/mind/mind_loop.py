@@ -932,15 +932,24 @@ class MindLoop:
         without losing the morning/evening bookends.
 
         Returns ``None`` when no log file exists for today (e.g. a
-        DiaryMoment firing on a day with zero recorded activity) — the
-        caller passes that straight through to ``render_mind``'s
-        ``today_log_block=None``, which simply omits the block.
+        DiaryMoment firing on a day with zero recorded activity), when the
+        file exists but is empty/whitespace-only, or when the read fails for
+        ANY reason (permissions, mid-write decode error, a directory sitting
+        where the file should be, ...) — best-effort only. The caller passes
+        that straight through to ``render_mind``'s ``today_log_block=None``,
+        which simply omits the block. This is deliberately broad
+        (``OSError``/``UnicodeError``, not just ``FileNotFoundError``): a
+        read failure must never propagate out of turn composition and abort
+        the diary turn BEFORE the I1 post-turn guarantee (warn + marker +
+        one retry) runs — that would drop the turn with no signal at all.
         """
         cap = self._diary_max_log_chars
         f = self._ctx.transcripts_root / f"{date.today():%Y-%m-%d}.md"
         try:
             raw = f.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        except (OSError, UnicodeError):
+            return None
+        if not raw.strip():
             return None
         if len(raw) > cap:
             half = cap // 2
