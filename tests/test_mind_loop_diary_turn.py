@@ -138,6 +138,55 @@ async def test_diary_miss_warns_and_reenqueues_once(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplog):
+    """WB-1 (whole-branch review, LOAD-BEARING): the 23:00 DiaryMoment often
+    co-batches with another origin-less internal perception (AgendaMoment
+    fires ~every 7 min, ReflectionMoment polls ~every 5 s — both peak
+    exactly when the system is idle at diary time). On co-batch the STRICT
+    `_is_diary` ("is the ENTIRE batch DiaryMoment") is False, so the turn
+    correctly falls through to normal (non-narrowed, non-suppressed)
+    behavior — verified below via the registry spy. But the I1 post-turn
+    miss-check must NOT ride on that same strict flag, or a co-batched
+    diary turn that misses gets ZERO signal: no marker, no retry — exactly
+    the silent failure I1 exists to prevent. The looser `_diary_in_batch`
+    flag ("a DiaryMoment is present at all") decouples the two."""
+    state = MindState()
+    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n")
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
+    queue.put(Perception(kind="AgendaMoment", t=time.time(), data={}))
+    # she does NOT call WriteDiary (ends with TOOL: none, no tool_call at all)
+    stream = "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\n"
+    ml = make_mindloop(
+        memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream),
+    )
+    # capture the active registry to confirm the co-batch turn was NOT
+    # narrowed to {WriteDiary, Recall} — the strict-flag behavior stays intact.
+    captured = {}
+    orig = ml._active_tool_registry
+    ml._active_tool_registry = lambda: (captured.__setitem__("reg", set(orig().keys())) or orig())
+    with caplog.at_level("WARNING"):
+        await ml.iterate()
+    # strict flag correctly stayed False (co-batch, not a pure diary turn) —
+    # so registry/speech/transcript-suppression/today-log-injection all took
+    # their normal (non-diary) path.
+    assert ml._is_diary is False
+    assert captured["reg"] != {"WriteDiary", "Recall"}
+    # ...yet the I1 miss-check still fired (observability preserved).
+    assert any(
+        "diary" in r.message.lower() and "no WriteDiary" in r.message
+        for r in caplog.records
+    )
+    assert any(
+        isinstance(o, OutputRecord) and o.kind == "DiaryMissed"
+        for o in state.recent_outputs
+    )
+    # exactly one DiaryMoment re-enqueued (the AgendaMoment was consumed by
+    # this turn, not re-queued — only the diary retry survives).
+    assert ml._queue._queue.qsize() == 1
+
+
+@pytest.mark.asyncio
 async def test_diary_turn_does_not_leak_into_transcript_file(tmp_path):
     """M-1: her diary-turn musings (naked text streamed AFTER </think>, the
     real speech region — NOT inside <think>, which the parser discards

@@ -52,7 +52,7 @@ async def run_consolidation(
     # Isolation (spec §3 I2): the keeper extracts 主人 preferences from a
     # conversation 逐字稿 — action-log lines are not conversation, drop them
     # so they neither mislead extraction nor starve the tail budget.
-    convo = "\n".join(l for l in raw.splitlines() if not is_action_log_line(l))
+    convo = "\n".join(ln for ln in raw.splitlines() if not is_action_log_line(ln))
     transcript = convo[-transcript_tail_chars:]
 
     # Render subagent scaffolding system prompt with KEEPER_TOOLS only.
