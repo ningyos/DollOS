@@ -83,7 +83,7 @@ class Perception:
         "UserSpoke", "ToolResultArrived", "MonitorFired",
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
         "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
-        "PersonaDriftDetected", "ChannelMessage", "BridgeDown",
+        "PersonaDriftDetected", "ChannelMessage", "BridgeDown", "McpDown",
         "AgendaMoment",
     ]
     t: float

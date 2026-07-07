@@ -19,7 +19,7 @@ from dollos.character import Enforcement
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript, append_action_log
-from dollos.mind.action_log import action_phrase_for_tool
+from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
@@ -383,6 +383,24 @@ class MindLoop:
                         logger.exception(
                             "transcript write (user) failed; continuing"
                         )
+
+            # World events (things that happened to her) → action log (Task
+            # 4). Structurally owner/internal-only: strangers cannot produce
+            # Shell/Workflow/Monitor results (those tools aren't in
+            # EXTERNAL_TOOLS), so ToolResult/Monitor/service-down perceptions
+            # never carry a stranger origin — no origin gate needed here.
+            # (Also: origin_tier is only derived AFTER this loop below, so it
+            # would be stale if we tried to gate on it here.)
+            wphrase = action_phrase_for_perception(p.kind, p.data or {})
+            if wphrase:
+                try:
+                    await append_action_log(
+                        transcripts_root=self._ctx.transcripts_root,
+                        memsearch=self._ctx.memsearch,
+                        phrase=wphrase,
+                    )
+                except Exception:
+                    logger.exception("action-log write (event) failed; continuing")
 
         # Gate NoteToolLesson to reflection turns only (Spec B §5).
         self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)

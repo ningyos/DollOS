@@ -61,3 +61,28 @@ async def test_writediary_sets_turn_flag(tmp_path):
     # WriteDiary itself is NOT logged as an action line (meta skip)
     log = _today_log(tmp_path)
     assert not any(is_action_log_line(l) and "WriteDiary" in l for l in log.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_world_events_are_logged(tmp_path):
+    state = MindState()
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="MonitorFired", t=time.time(),
+                         data={"monitor_id": "mon-2", "line": "OOM killed"}))
+    stream = "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\n"
+    ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
+    await ml.iterate()
+    log = _today_log(tmp_path)
+    assert any(is_action_log_line(l) and "Monitor mon-2 觸發:OOM killed" in l for l in log.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_internal_wake_perceptions_not_logged(tmp_path):
+    state = MindState()
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="AgendaMoment", t=time.time(), data={}))
+    stream = "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\n"
+    ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
+    await ml.iterate()
+    log = _today_log(tmp_path)
+    assert not any(is_action_log_line(l) for l in log.splitlines())
