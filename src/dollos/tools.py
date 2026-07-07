@@ -775,6 +775,23 @@ class PursueGoal(BaseModel):
 
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind.mind_state import OpenLoop as OpenLoopT
+        from dollos.mind.mind_state import _MAX_SELF_LOOPS
+
+        # Cap enforcement (whole-branch review Finding 2): _MAX_SELF_LOOPS
+        # was defined in mind_state.py but never checked here, making it
+        # dead code — this tool appended unconditionally. Count existing
+        # self_directed loops and refuse to open another once at the cap,
+        # rather than letting her agenda grow unbounded.
+        self_directed_count = sum(
+            1 for ol in ctx.mind_state.open_loops if ol.self_directed
+        )
+        if self_directed_count >= _MAX_SELF_LOOPS:
+            _record(ctx, "PursueGoal", f"capacity reached, refused {self.id}")
+            return (
+                f"you're at your self-directed agenda capacity "
+                f"({_MAX_SELF_LOOPS} open loops) — CloseLoop something first "
+                f"before opening {self.id}"
+            )
 
         # Auto-provenance (spec §3.1/§3.3, THE crux): captured entirely from
         # ctx — the turn's REAL id/iter/memory-hit sources — never from

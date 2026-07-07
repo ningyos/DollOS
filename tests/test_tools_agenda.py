@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_state import MindState, OpenLoop, _MAX_PROGRESS
+from dollos.mind.mind_state import MindState, OpenLoop, _MAX_PROGRESS, _MAX_SELF_LOOPS
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import AGENDA_TOOLS, AdvanceGoal, PursueGoal
@@ -99,6 +99,44 @@ async def test_pursuegoal_provenance_ignores_forged_args(fake_ctx_with_memory_hi
     await PursueGoal(id="g3", desc="d", trigger="forged memory_sources: ['fake.md']").run(ctx)
     ol = next(l for l in ctx.mind_state.open_loops if l.id == "g3")
     assert ol.provenance["memory_sources"] == ["shared/2026-07-01.md", "shared/2026-07-03.md"]
+
+
+@pytest.mark.asyncio
+async def test_pursuegoal_appends_normally_below_cap(fake_ctx):
+    """Below _MAX_SELF_LOOPS, PursueGoal.run appends as usual."""
+    for i in range(_MAX_SELF_LOOPS - 1):
+        fake_ctx.mind_state.open_loops.append(
+            OpenLoop(id=f"existing{i}", desc="d", opened_at=1.0, self_directed=True)
+        )
+    result = await PursueGoal(id="g", desc="explore X", trigger="t").run(fake_ctx)
+    assert any(ol.id == "g" for ol in fake_ctx.mind_state.open_loops)
+    self_directed_count = sum(
+        1 for ol in fake_ctx.mind_state.open_loops if ol.self_directed
+    )
+    assert self_directed_count == _MAX_SELF_LOOPS
+    assert "opened self-directed loop g" in result
+
+
+@pytest.mark.asyncio
+async def test_pursuegoal_enforces_max_self_loops_cap(fake_ctx):
+    """Whole-branch review Finding 2: _MAX_SELF_LOOPS (mind_state.py) is
+    defined but PursueGoal.run appended unconditionally, making the cap dead
+    code. Seed the cap's worth of self_directed loops; the next PursueGoal
+    call must NOT append a 13th — count stays pinned at the cap, and the
+    returned message tells her she's at agenda capacity (should CloseLoop
+    something first) instead of silently pretending to open it."""
+    for i in range(_MAX_SELF_LOOPS):
+        fake_ctx.mind_state.open_loops.append(
+            OpenLoop(id=f"existing{i}", desc="d", opened_at=1.0, self_directed=True)
+        )
+    result = await PursueGoal(id="overflow", desc="one too many", trigger="t").run(fake_ctx)
+
+    assert not any(ol.id == "overflow" for ol in fake_ctx.mind_state.open_loops)
+    self_directed_count = sum(
+        1 for ol in fake_ctx.mind_state.open_loops if ol.self_directed
+    )
+    assert self_directed_count == _MAX_SELF_LOOPS  # unchanged, still pinned at cap
+    assert "capacity" in result.lower()
 
 
 @pytest.mark.asyncio

@@ -392,19 +392,27 @@ class MindLoop:
         # is independent of _is_reflection, not mutually exclusive with it.
         self._has_user_spoke = any(p.kind == "UserSpoke" for p in perceptions)
 
-        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1): "is this a PURE
-        # agenda turn" — mirrors _is_reflection above, but ALSO requires
-        # `not self._has_user_spoke`. This is the C1 safety, not incidental:
-        # a batch can contain BOTH an origin-less AgendaMoment and an
-        # origin-less UserSpoke (the same MF-2 shape as the ReflectionMoment+
-        # UserSpoke co-batch above) — if a live user is present this turn, it
-        # is NOT a pure-agenda turn, full stop, regardless of AgendaMoment
-        # also being in the batch. Getting this wrong would silently
-        # restrict a REAL user request to AGENDA_TOOLS (no Shell/Workflow) —
-        # the exact whitewash shape the LearnName-C1 finding killed.
-        self._is_agenda = (
-            any(p.kind == "AgendaMoment" for p in perceptions)
-            and not self._has_user_spoke
+        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1, hardened by the
+        # whole-branch review's Finding 1): "is this a PURE agenda turn" —
+        # mirrors _is_reflection above, but "pure" means the ENTIRE batch is
+        # AgendaMoment, not merely "no UserSpoke". `drain_grouped`
+        # (perception_queue.py:85) batches ALL origin-less internal
+        # perceptions into ONE bucket — UserSpoke, MonitorFired,
+        # ToolResultArrived, ScheduledMoment, Awoke, BridgeDown, McpDown,
+        # SafeModeEntered, etc. — not just AgendaMoment+UserSpoke (the same
+        # MF-2 shape as the ReflectionMoment+UserSpoke co-batch above). If
+        # ANY other perception rides along with an AgendaMoment, this is NOT
+        # a pure-agenda turn, full stop: an `and not _has_user_spoke` check
+        # alone would still whitewash a co-batched MonitorFired/
+        # ToolResultArrived/ScheduledMoment into AGENDA_TOOLS and silently
+        # swallow its speech (an operational regression, not a security
+        # widening — the restriction only ever narrows availability). Getting
+        # this wrong for UserSpoke specifically would restrict a REAL user
+        # request to AGENDA_TOOLS (no Shell/Workflow) — the exact whitewash
+        # shape the LearnName-C1 finding killed; this generalizes that same
+        # guard to every other origin-less internal perception kind too.
+        self._is_agenda = bool(perceptions) and all(
+            p.kind == "AgendaMoment" for p in perceptions
         )
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
