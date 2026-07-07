@@ -427,10 +427,16 @@ def _percep_body(p) -> str:
             # AI peer over MCP (spec §B.4): descriptive narration, not a
             # command — she knows the sender is another AI, self-declared and
             # unverified, and keeps external_public agency (she may not reply).
-            return (
+            body = (
                 f"[AI peer 私訊] {d.get('author', '?')}"
                 f"(另一個 AI,自稱,未驗證):{d.get('content', '')}"
             )
+            if d.get("debug_reliable"):
+                # P2 Task 3 (spec §C.2): soft, best-effort nudge for a debug
+                # connection — text only, does NOT change origin_tier or the
+                # tool registry (still external_public / EXTERNAL_TOOLS).
+                body += "（這是除錯通道，請務必給出實質回覆，別已讀不回。）"
+            return body
         # P1e Task 6: surface owner/stranger identity — otherwise Doll has no
         # in-prompt signal for who she's talking to and can't judge whether/
         # how to respond. Descriptive narration only (not a command); P1d's
