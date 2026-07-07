@@ -22,22 +22,32 @@ Mirrors discord_bridge/__main__.py.
 P2 Task 2 — debug mode secret gate (spec §C.1, grounded correction I1):
 FastMCP (mcp 1.28.1) exposes a GLOBAL tool set — it cannot show different
 tools per connection. So get_state/get_recent are ALWAYS registered; their
-BODIES hard-check a per-session ``_authed`` flag before touching
+BODIES hard-check per-session membership in ``_authed`` before touching
 DaemonLink.query(...). That per-session check (not the daemon's
 query_token, which every connector call carries regardless of debug
 status) IS the access control for MCP clients — see _require_debug.
-The gate primitives (_try_authenticate / _require_debug) are pulled out as
-plain functions precisely so they're unit-testable without a real MCP
-Context/session (tests/test_mcp_debug_mode.py).
+The gate primitives (_try_authenticate / _require_debug) and the tool
+bodies (_get_state_impl / _get_recent_impl) are pulled out as plain
+functions precisely so they're unit-testable without a real MCP
+Context/session, including that the auth check runs BEFORE DaemonLink is
+ever queried (tests/test_mcp_debug_mode.py).
+
+Review fix (P2 Task 2 hardening): ``_authed`` is keyed on the session
+OBJECT via a weakref.WeakSet, not ``id(session)`` — an int-keyed set would
+let a later, never-authenticated session inherit access once CPython
+reuses the original session's freed memory address (auth-bleed via id()
+reuse). See the ``_authed`` module comment for detail.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import logging
 import sys
 import tomllib
 import uuid
+import weakref
 from pathlib import Path
 
 import websockets
@@ -126,14 +136,27 @@ def _conn_uuid(ctx: Context) -> str:
     return cid
 
 
-# P2 Task 2 — debug mode per-session state (spec §C.1). Keyed the same way as
-# _conn_ids (id(ctx.session)). A session id in this set has presented the
-# correct mcp.toml debug_secret via authenticate(secret) and is allowed to
-# call get_state/get_recent and gets debug_reliable=True talk().
-_authed: set[int] = set()
+# P2 Task 2 — debug mode per-session state (spec §C.1). Keyed on the
+# ServerSession OBJECT ITSELF (not id(ctx.session) — see I1 review fix)
+# via a weakref.WeakSet: a session in this set has presented the correct
+# mcp.toml debug_secret via authenticate(secret) and is allowed to call
+# get_state/get_recent and gets debug_reliable=True talk().
+#
+# Why WeakSet and not a plain ``set[int]`` of ids: CPython reuses a freed
+# object's memory address for a later allocation. A ``set[int]`` keyed on
+# id(session) survives the original session being garbage-collected — so a
+# BRAND NEW, never-authenticated session object that happens to land at
+# that same freed address would read as "authed" (auth-bleed via id()
+# reuse). Keying on the object itself closes that: membership is real
+# identity, not an address, and a WeakSet automatically drops its entry
+# the instant the session object is collected — there is no reaping logic
+# to keep in sync with disconnects. mcp 1.28.1's ServerSession (via
+# BaseSession) supports weak references (has ``__weakref__``, verified),
+# so this works with the installed SDK without a fallback.
+_authed: "weakref.WeakSet" = weakref.WeakSet()
 
 
-def _try_authenticate(session_id: int, secret: str, debug_secret: str) -> bool:
+def _try_authenticate(session: object, secret: str, debug_secret: str) -> bool:
     """Fail-closed secret compare + per-session ``_authed`` mutation.
 
     Pulled out as a plain function (no Context/FastMCP involved) so the
@@ -142,15 +165,20 @@ def _try_authenticate(session_id: int, secret: str, debug_secret: str) -> bool:
     debug mode is disabled entirely, not "any secret works". No exception
     on mismatch, no leak of whether a secret is even configured — the
     caller (the `authenticate` tool) always returns the same shape either
-    way.
+    way. ``secret`` is caller-provided input, so it is compared against
+    ``debug_secret`` with ``hmac.compare_digest`` (constant-time) rather
+    than ``==`` to avoid a timing side-channel on the secret.
+
+    ``session`` must be the session OBJECT (e.g. ``ctx.session``), not
+    ``id(ctx.session)`` — see the ``_authed`` module comment for why.
     """
-    if debug_secret and secret == debug_secret:
-        _authed.add(session_id)
+    if debug_secret and hmac.compare_digest(secret, debug_secret):
+        _authed.add(session)
         return True
     return False
 
 
-def _require_debug(session_id: int) -> None:
+def _require_debug(session: object) -> None:
     """Hard per-session gate for get_state/get_recent (spec §C.1, grounded
     correction I1). This is REAL enforcement, not cosmetic: FastMCP exposes
     a single global tool set, so this body-level check — not tool
@@ -159,12 +187,38 @@ def _require_debug(session_id: int) -> None:
     any local MCP client from reading mood/current_self/recent
     external_public interactions. Raises so the MCP tool call surfaces as
     an explicit error to the caller, never a silent empty/partial result.
+
+    ``session`` must be the session OBJECT, not ``id(ctx.session)``.
     """
-    if session_id not in _authed:
+    if session not in _authed:
         raise PermissionError(
             "not authenticated — call authenticate(secret) with the debug "
             "secret first (get_state/get_recent are debug-only tools)"
         )
+
+
+async def _get_state_impl(link: DaemonLink, query_token: str, session: object) -> dict:
+    """Body of the ``get_state`` tool, pulled out as a plain function (I2
+    review fix) so tests can assert the auth check runs BEFORE the daemon
+    is ever queried — not just that ``_require_debug`` raises in
+    isolation. ``_require_debug`` must stay the first statement: it must
+    raise, and ``link.query`` must never be awaited, for an unauthed
+    session.
+    """
+    _require_debug(session)
+    return await link.query(QueryState(query_id=uuid.uuid4().hex, token=query_token))
+
+
+async def _get_recent_impl(
+    link: DaemonLink, query_token: str, session: object, n: int
+) -> dict:
+    """Body of the ``get_recent`` tool — see ``_get_state_impl`` docstring;
+    same auth-before-query contract (I2 review fix).
+    """
+    _require_debug(session)
+    return await link.query(
+        QueryRecent(query_id=uuid.uuid4().hex, token=query_token, n=n)
+    )
 
 
 async def _run_daemon_link(daemon_url: str, link: DaemonLink) -> None:
@@ -216,7 +270,13 @@ async def run(args: argparse.Namespace) -> None:
         nudges Doll toward a substantive reply (best-effort, spec §C.2) —
         it does not unlock any new capability.
         """
-        debug_reliable = id(ctx.session) in _authed
+        # Mirrors _conn_uuid's degrade-on-exception behavior: ctx.session
+        # access is best-effort here too, so a session that can't be
+        # resolved just loses the debug nudge rather than breaking talk().
+        try:
+            debug_reliable = ctx.session in _authed
+        except Exception:
+            debug_reliable = False
         return await link.talk(
             _conn_uuid(ctx), name, message, debug_reliable=debug_reliable
         )
@@ -231,7 +291,7 @@ async def run(args: argparse.Namespace) -> None:
         disabled in mcp.toml) — no exception, no indication of whether a
         secret is even configured.
         """
-        ok = _try_authenticate(id(ctx.session), secret, debug_secret)
+        ok = _try_authenticate(ctx.session, secret, debug_secret)
         return {"debug": ok}
 
     @mcp.tool()
@@ -240,8 +300,7 @@ async def run(args: argparse.Namespace) -> None:
         "current_self": str}. Requires a prior authenticate(secret) call
         with the correct debug secret on this connection; otherwise raises.
         """
-        _require_debug(id(ctx.session))
-        return await link.query(QueryState(query_id=uuid.uuid4().hex, token=query_token))
+        return await _get_state_impl(link, query_token, ctx.session)
 
     @mcp.tool()
     async def get_recent(ctx: Context, n: int = 20) -> dict:
@@ -251,10 +310,7 @@ async def run(args: argparse.Namespace) -> None:
         a prior authenticate(secret) call with the correct debug secret on
         this connection; otherwise raises.
         """
-        _require_debug(id(ctx.session))
-        return await link.query(
-            QueryRecent(query_id=uuid.uuid4().hex, token=query_token, n=n)
-        )
+        return await _get_recent_impl(link, query_token, ctx.session, n)
 
     await asyncio.gather(
         mcp.run_streamable_http_async(),

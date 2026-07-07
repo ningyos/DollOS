@@ -35,6 +35,26 @@ def _sent_of_type(ws: _FakeWS, t: str) -> list[dict]:
     return [d for d in (json.loads(s) for s in ws.sent) if d.get("type") == t]
 
 
+class _FakeSession:
+    """Stand-in for ctx.session — an ordinary (non-slotted) object, so it
+    supports weak references just like a real mcp ServerSession. Only
+    identity/hashability matter for the ``_authed`` membership checks.
+    """
+
+
+class _FakeLink:
+    """Stand-in for DaemonLink — records every query() call and returns a
+    canned payload, so tests can assert whether the daemon was ever hit.
+    """
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.query_calls: list = []
+
+    async def query(self, msg):
+        self.query_calls.append(msg)
+        return self._payload
+
+
 # ===== 1. query round-trip =====
 
 @pytest.mark.asyncio
@@ -150,38 +170,138 @@ async def test_query_timeout_raises():
 
 
 # ===== 4. secret gate: right secret authenticates, wrong/absent does not =====
+#
+# NOTE: sessions are real (non-slotted) objects, not bare ints — _authed is
+# a weakref.WeakSet keyed on the session object itself (see I1 below), and
+# CPython ints cannot be weakly referenced.
 
 def test_wrong_secret_does_not_authenticate():
     _authed.clear()
-    assert _try_authenticate(111, "wrong", "correct-secret") is False
-    assert 111 not in _authed
+    session = _FakeSession()
+    assert _try_authenticate(session, "wrong", "correct-secret") is False
+    assert session not in _authed
 
 
 def test_empty_debug_secret_never_authenticates_fail_closed():
     _authed.clear()
     # debug mode disabled (mcp.toml debug_secret unset/empty) → NEVER
     # authenticates, even with an empty or arbitrary presented secret.
-    assert _try_authenticate(222, "", "") is False
-    assert _try_authenticate(222, "anything", "") is False
-    assert 222 not in _authed
+    session = _FakeSession()
+    assert _try_authenticate(session, "", "") is False
+    assert _try_authenticate(session, "anything", "") is False
+    assert session not in _authed
 
 
 def test_right_secret_authenticates():
     _authed.clear()
-    assert _try_authenticate(333, "correct-secret", "correct-secret") is True
-    assert 333 in _authed
+    session = _FakeSession()
+    assert _try_authenticate(session, "correct-secret", "correct-secret") is True
+    assert session in _authed
 
 
 def test_require_debug_blocks_unauthed_session():
     _authed.clear()
+    session = _FakeSession()
     with pytest.raises(PermissionError):
-        _require_debug(999)
+        _require_debug(session)
 
 
 def test_require_debug_allows_authed_session():
     _authed.clear()
-    assert _try_authenticate(444, "s", "s") is True
-    _require_debug(444)  # must not raise
+    session = _FakeSession()
+    assert _try_authenticate(session, "s", "s") is True
+    _require_debug(session)  # must not raise
+
+
+# ===== 4b. I1 — auth is keyed on session OBJECT, immune to id() reuse =====
+
+def test_authed_membership_is_by_object_not_shared_state():
+    """Two distinct session objects — only the one that actually presented
+    the secret is authed. This is the property that closes the id() reuse
+    bleed: a stale int key could be satisfied by ANY later object allocated
+    at the same address, but object membership in a WeakSet cannot.
+    """
+    _authed.clear()
+    authed_session = _FakeSession()
+    other_session = _FakeSession()
+    assert _try_authenticate(authed_session, "secret", "secret") is True
+
+    _require_debug(authed_session)  # must not raise
+    with pytest.raises(PermissionError):
+        _require_debug(other_session)
+
+
+def test_authed_entry_is_reclaimed_when_session_is_garbage_collected():
+    """A WeakSet drops its entry once the session object is GC'd — so a
+    brand-new (unauthenticated) session object can never "inherit" a stale
+    authed entry, even if CPython later reuses the freed memory address for
+    it (the classic id()-reuse bleed this fix closes).
+    """
+    import gc
+    import weakref
+
+    _authed.clear()
+    session = _FakeSession()
+    assert _try_authenticate(session, "secret", "secret") is True
+    assert len(_authed) == 1
+
+    weak = weakref.ref(session)
+    del session
+    gc.collect()
+    assert weak() is None  # actually collected
+    assert len(_authed) == 0  # WeakSet auto-dropped the entry
+
+
+# ===== 4c. I2 — get_state/get_recent bodies enforce _require_debug BEFORE
+# ever touching DaemonLink.query(); an id()/order refactor that dropped the
+# gate would leave link.query_calls non-empty for an unauthed session. =====
+
+@pytest.mark.asyncio
+async def test_get_state_impl_blocks_unauthed_session_and_never_queries():
+    from dollos.mcp_server.__main__ import _get_state_impl
+    _authed.clear()
+    link = _FakeLink({"mood": "calm", "current_self": "..."})
+    session = _FakeSession()
+    with pytest.raises(PermissionError):
+        await _get_state_impl(link, "tok", session)
+    assert link.query_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_state_impl_allows_authed_session_and_queries():
+    from dollos.mcp_server.__main__ import _get_state_impl
+    _authed.clear()
+    link = _FakeLink({"mood": "calm", "current_self": "..."})
+    session = _FakeSession()
+    assert _try_authenticate(session, "s", "s") is True
+    result = await _get_state_impl(link, "tok", session)
+    assert result == {"mood": "calm", "current_self": "..."}
+    assert len(link.query_calls) == 1
+    assert link.query_calls[0].token == "tok"
+
+
+@pytest.mark.asyncio
+async def test_get_recent_impl_blocks_unauthed_session_and_never_queries():
+    from dollos.mcp_server.__main__ import _get_recent_impl
+    _authed.clear()
+    link = _FakeLink({"items": []})
+    session = _FakeSession()
+    with pytest.raises(PermissionError):
+        await _get_recent_impl(link, "tok", session, 20)
+    assert link.query_calls == []
+
+
+@pytest.mark.asyncio
+async def test_get_recent_impl_allows_authed_session_and_queries():
+    from dollos.mcp_server.__main__ import _get_recent_impl
+    _authed.clear()
+    link = _FakeLink({"items": ["a"]})
+    session = _FakeSession()
+    assert _try_authenticate(session, "s", "s") is True
+    result = await _get_recent_impl(link, "tok", session, 5)
+    assert result == {"items": ["a"]}
+    assert len(link.query_calls) == 1
+    assert link.query_calls[0].n == 5
 
 
 # ===== 5. debug talk() stamps debug_reliable=True; non-debug omits it =====
