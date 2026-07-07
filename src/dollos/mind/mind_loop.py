@@ -16,7 +16,7 @@ from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolResult, dispatch_one
 from dollos.character import Enforcement
-from dollos.ipc.messages import AddressedText, TextChunk
+from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.templates import build_voice_first_grammar
 from dollos.memory_writer import append_transcript
 from dollos.mind.associative_search import associative_search
@@ -639,12 +639,22 @@ class MindLoop:
             # Call LLM (streams text → sink; dispatches tool calls inline)
             await self._llm_iterate(prompt, trace_blocks=trace_blocks)
         finally:
-            # Signal end-of-turn to the connection pump: a None turn-separator
-            # is converted to TurnEnd by the IPC pump. Always fires once per
-            # real turn (even on error) so a text/IPC client never hangs
-            # waiting for turn_end. Voice path: TTSObservingSink passes None
-            # through unchanged (not a TextChunk, so no TTS side effect).
-            self._ctx.sink_resolver(self._ctx.current_origin).put_nowait(None)
+            # Signal end-of-turn to the connection pump. For an EXTERNAL origin,
+            # emit a channel-addressed turn-end (TurnEndAddressed) so a
+            # multiplexing connector (mcp/discord) can tell which channel_id
+            # finished — symmetric to _emit_sentence's AddressedText branch.
+            # For internal/voice (origin-less) turns, emit the None separator
+            # exactly as before (pump converts it to a global TurnEnd; the
+            # voice TTSObservingSink passes None through unchanged). Always
+            # fires once per real turn (even on error) so no client hangs.
+            origin = self._ctx.current_origin
+            registry = self._ctx.channel_registry
+            if origin and registry is not None and registry.locus_of(origin) == "external":
+                self._ctx.sink_resolver(origin).put_nowait(
+                    TurnEndAddressed(channel_id=origin)
+                )
+            else:
+                self._ctx.sink_resolver(self._ctx.current_origin).put_nowait(None)
 
         # B3 energy consumption — only when Doll produced cognitive output this turn.
         # P1e Task 5 (I4): a stranger's Discord turn (external_public) is exempt —
