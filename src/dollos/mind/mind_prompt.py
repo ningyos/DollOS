@@ -270,6 +270,16 @@ def _render_associative(hits: list[dict]) -> str:
     Each bullet: ``- [axis=value] <snippet (100 chars)>``. Hits without
     an ``_axis`` marker are skipped (they wouldn't be here in practice).
     Capped to 6 bullets for token cost.
+
+    R-DECISION-5 (review fix, mirrors ``_render_memory`` above): a peer's
+    NoteMemory writes under external_public/; associative_search() pools
+    from the same unscoped memsearch call on an OWNER turn (only
+    consolidated/ is pool-excluded there, for pull-only gating — see
+    associative_search.py:139) so an axis-matched external_public/ hit can
+    reach this render UNFILTERED. Flag it untrusted so it can't masquerade
+    as Doll's own trusted memory through this third read path. Same
+    trailing-slash directory-boundary check as ``_render_memory`` /
+    ``_format_hit``, so external_public_evil/ never matches.
     """
     if not hits:
         return "(none)"
@@ -281,7 +291,12 @@ def _render_associative(hits: list[dict]) -> str:
         if len(snippet) > 100:
             snippet = snippet[:97] + "..."
         tag = f"{axis}={value}" if axis else "?"
-        lines.append(f"- [{tag}] {snippet}")
+        prefix = (
+            "[外部AI·未驗證] "
+            if "external_public/" in (h.get("source") or "")
+            else ""
+        )
+        lines.append(f"- [{tag}] {prefix}{snippet}")
     return "\n".join(lines)
 
 
