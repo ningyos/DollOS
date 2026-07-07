@@ -35,6 +35,14 @@ def _user_perception(text: str = "hi") -> Perception:
     return Perception(kind="UserSpoke", t=time.time(), data={"text": text})
 
 
+def _monitor_fired_perception() -> Perception:
+    return Perception(
+        kind="MonitorFired",
+        t=time.time(),
+        data={"monitor_id": "m1", "line": "some output line"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_pure_agenda_turn_gets_exactly_agenda_tools(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
@@ -110,3 +118,31 @@ async def test_reactive_turn_still_emits_speech_to_sink(tmp_path):
     items = _drain_sink(sink)
     speech_items = [i for i in items if i is not None]
     assert speech_items != []
+
+
+@pytest.mark.asyncio
+async def test_agenda_cobatched_with_other_internal_perception_keeps_full_registry_and_speech(tmp_path):
+    """Whole-branch review Finding 1 (operational-safety): ``drain_grouped``
+    (perception_queue.py:85) batches ALL origin-less internal perceptions
+    into ONE bucket — not just AgendaMoment+UserSpoke. An AgendaMoment
+    co-batched with ANY other origin-less perception (MonitorFired here,
+    stands in for ToolResultArrived/ScheduledMoment/Awoke/BridgeDown/etc.)
+    must NOT be treated as a pure-agenda turn either — otherwise a monitor
+    alert lands in the same batch as a stray AgendaMoment and gets silently
+    downgraded to AGENDA_TOOLS with its speech suppressed."""
+    sink: asyncio.Queue = asyncio.Queue()
+    ml = make_mindloop(memory_root=tmp_path, sink=sink)
+
+    await ml._run_one_turn([_agenda_moment(), _monitor_fired_perception()])
+
+    assert ml._is_agenda is False, (
+        "_is_agenda must be False when co-batched with ANY other origin-less "
+        "internal perception, not just UserSpoke"
+    )
+    reg = ml._active_tool_registry()
+    assert "Shell" in reg
+    assert set(AGENDA_TOOLS).issubset(reg.keys())  # full registry is a superset
+
+    items = _drain_sink(sink)
+    speech_items = [i for i in items if i is not None]
+    assert speech_items != [], "the co-batched turn's speech must not be swallowed"
