@@ -13,6 +13,7 @@ from datetime import date as _date
 from pathlib import Path
 
 from dollos.agent_engine import run_agent
+from dollos.memory_writer import is_action_log_line
 from dollos.mind.mind_state import save_state
 from dollos.tools import KEEPER_TOOLS
 
@@ -47,7 +48,12 @@ async def run_consolidation(
     if not src.exists():
         logger.info("consolidation: no transcript for %s; skip", target_date)
         return False
-    transcript = src.read_text(encoding="utf-8")[-transcript_tail_chars:]
+    raw = src.read_text(encoding="utf-8")
+    # Isolation (spec §3 I2): the keeper extracts 主人 preferences from a
+    # conversation 逐字稿 — action-log lines are not conversation, drop them
+    # so they neither mislead extraction nor starve the tail budget.
+    convo = "\n".join(l for l in raw.splitlines() if not is_action_log_line(l))
+    transcript = convo[-transcript_tail_chars:]
 
     # Render subagent scaffolding system prompt with KEEPER_TOOLS only.
     tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
