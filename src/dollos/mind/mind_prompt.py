@@ -427,7 +427,9 @@ def _percep_body(p) -> str:
             f"目前的文字)。分工:主詞是「你」→ PinSelf;關於世界的事實/事件 → "
             f"NoteMemory;可重用的工具用法或陷阱 → NoteToolLesson。"
             f"若這次反思出現 [人格演化候選] 區塊:那是妳「現在的我」的修訂提案,"
-            f"用 SelfRevision(decision=\"adopt\" 或 \"reject\")決定——PinSelf 處理不了它。)"
+            f"用 SelfRevision(decision=\"adopt\" 或 \"reject\")決定——PinSelf 處理不了它。"
+            f"回顧你最近真的碰到、好奇、或在意的——有沒有哪條線是你自己想追下去的?"
+            f"(有就用 PursueGoal 記下,說清楚它從哪來。沒有就算了,不用硬找。))"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
