@@ -62,11 +62,19 @@ class PendingEvent:
     summary: str
 
 
+_MAX_PROGRESS = 8
+_MAX_SELF_LOOPS = 12
+
+
 @dataclass
 class OpenLoop:
     id: str
     desc: str
     opened_at: float
+    self_directed: bool = False
+    trigger: str = ""
+    provenance: dict = field(default_factory=dict)   # code-filled at genesis; model cannot write
+    progress: list = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +84,7 @@ class Perception:
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
         "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
         "PersonaDriftDetected", "ChannelMessage", "BridgeDown",
+        "AgendaMoment",
     ]
     t: float
     data: dict
