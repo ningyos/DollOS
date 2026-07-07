@@ -362,3 +362,39 @@ def test_pick_target_date_excludes_today(tmp_path):
     s = MindState(); s.last_consolidated_date = "2026-06-20"
     t = _mk_trigger(tmp_path, s, transcripts_root=tdir)
     assert t._pick_target_date(today="2026-06-30") is None  # today not sealed yet
+
+
+# ---------------------------------------------------------------------------
+# Task 5: filter action-log lines out of the keeper's transcript input (I2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_consolidation_filters_out_action_lines(tmp_path, monkeypatch):
+    """Action-log lines must not reach the keeper's '逐字稿' input."""
+    import dollos.mind.consolidation as C
+    troot = tmp_path / "transcripts"; troot.mkdir()
+    (troot / "2026-07-06.md").write_text(
+        "- 10:00:00 主人說：早\n"
+        "- 10:00:05 我說：早安\n"
+        "- 10:01:00 ▸ 我跑了指令 ls -la\n"
+        "- 10:02:00 ▸ Monitor mon-1 觸發:noise\n",
+        encoding="utf-8",
+    )
+    captured = {}
+    async def _fake_run_agent(*, task, **kw):
+        captured["task"] = task
+        return {"details": "- 主人早上會打招呼"}
+    monkeypatch.setattr(C, "run_agent", _fake_run_agent)
+
+    ok = await C.run_consolidation(
+        target_date="2026-07-06",
+        adapter=None, renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        memory_root=tmp_path, transcripts_root=troot,
+        tool_output_store=None, consolidated_dir=tmp_path / "consolidated",
+    )
+    assert ok
+    assert "主人說：早" in captured["task"]
+    assert "我說：早安" in captured["task"]
+    assert "我跑了指令" not in captured["task"]     # action line filtered
+    assert "Monitor mon-1" not in captured["task"]  # event line filtered
