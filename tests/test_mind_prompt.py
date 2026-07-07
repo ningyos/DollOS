@@ -265,6 +265,14 @@ def test_bridge_down_perception_rendered():
     assert "{" not in body  # must be prose, not a raw dict dump (fallback str(d))
 
 
+def test_diary_moment_renders_nonempty_narrative():
+    from dollos.mind.mind_prompt import _percep_body
+
+    body = _percep_body(Perception(kind="DiaryMoment", t=0.0, data={}))
+    assert body.strip()  # not blank
+    assert "日記" in body
+
+
 def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")

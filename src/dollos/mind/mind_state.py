@@ -84,7 +84,7 @@ class Perception:
         "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
         "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
         "PersonaDriftDetected", "ChannelMessage", "BridgeDown", "McpDown",
-        "AgendaMoment",
+        "AgendaMoment", "DiaryMoment",
     ]
     t: float
     data: dict
