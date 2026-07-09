@@ -34,6 +34,7 @@ from dollos.ipc.messages import (
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
+from dollos.llm.grammar_probe import assert_bounded_repetition_supported
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
@@ -58,6 +59,7 @@ from dollos.schedule import due_entries, load_schedule
 from dollos.service_supervisor import _RETENTION_DAYS, ServiceSpec, ServiceSupervisor
 from dollos.shell_runner import ShellRunner
 from dollos.telemetry.llm_calls import TelemetryRecorder
+from dollos.telemetry.turn_latency import TurnLatencyRecorder
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
 from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
@@ -389,6 +391,12 @@ class DollOS:
         # and the CognitionWorker (reading side).
         telemetry_dir = settings.data.root / settings.cognition.telemetry_dir_subpath
         self.telemetry_recorder = TelemetryRecorder(telemetry_dir)
+        # 延遲壓縮 Part 1 Task 2: turn-level think/speak/first-speak latency
+        # telemetry, same directory as the per-call TelemetryRecorder above —
+        # daily-rotated JSONL with a distinct filename prefix
+        # (turn_latency-*.jsonl vs llm_calls-*.jsonl), so both recorders
+        # share one dir with zero collision.
+        self.turn_latency_recorder = TurnLatencyRecorder(telemetry_dir)
         self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
@@ -576,6 +584,7 @@ class DollOS:
             model_id=settings.llm.model_alias,
             on_turn_complete=self._on_turn_complete,
             diary_max_log_chars=settings.diary.max_log_chars,
+            turn_latency_recorder=self.turn_latency_recorder,
         )
 
         self._reflection_observer = ReflectionObserver(
@@ -1202,6 +1211,14 @@ class DollOS:
             logger.warning("dirty restart detected — previous daemon crashed")
         await self.memsearch.index()
         try:
+            # Fail-closed startup probe (spec §11 / R1-7): an old llama-server
+            # rejects GBNF `{m,n}` bounded repetition (Task 1's think
+            # line-length bound depends on it) with a per-request HTTP error,
+            # not a Python build-time raise — no-fallback can't catch that.
+            # Abort boot here, before the server/IPC comes up, rather than
+            # let every conversation turn crash later.
+            await assert_bounded_repetition_supported(self.adapter)
+
             await self.server.start()
 
             # Replay any pending WAL entries from a previous (possibly crashed) run
