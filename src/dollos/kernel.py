@@ -34,6 +34,7 @@ from dollos.ipc.messages import (
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
 from dollos.llm.composed import ComposedLLMAdapter
+from dollos.llm.grammar_probe import assert_bounded_repetition_supported
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
@@ -1210,6 +1211,14 @@ class DollOS:
             logger.warning("dirty restart detected — previous daemon crashed")
         await self.memsearch.index()
         try:
+            # Fail-closed startup probe (spec §11 / R1-7): an old llama-server
+            # rejects GBNF `{m,n}` bounded repetition (Task 1's think
+            # line-length bound depends on it) with a per-request HTTP error,
+            # not a Python build-time raise — no-fallback can't catch that.
+            # Abort boot here, before the server/IPC comes up, rather than
+            # let every conversation turn crash later.
+            await assert_bounded_repetition_supported(self.adapter)
+
             await self.server.start()
 
             # Replay any pending WAL entries from a previous (possibly crashed) run

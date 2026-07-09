@@ -524,6 +524,11 @@ async def test_kernel_shutdown_awaits_workflow_runner_stop(tmp_path, monkeypatch
     monkeypatch.setattr(dollos.memsearch, "close", lambda: None)
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    # Startup probe (Task 3) makes a real network call — stub it so this
+    # shutdown-ordering test doesn't hit test.local's fake base_url.
+    monkeypatch.setattr(
+        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
+    )
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -660,6 +665,11 @@ async def test_shutdown_consolidation_before_memsearch_close(tmp_path, monkeypat
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    # Startup probe (Task 3) makes a real network call — stub it so this
+    # shutdown-ordering test doesn't hit test.local's fake base_url.
+    monkeypatch.setattr(
+        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
+    )
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -777,6 +787,11 @@ async def test_shutdown_gathers_inflight_keeper(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    # Startup probe (Task 3) makes a real network call — stub it so this
+    # shutdown-ordering test doesn't hit test.local's fake base_url.
+    monkeypatch.setattr(
+        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
+    )
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -901,6 +916,11 @@ async def test_shutdown_gathers_inflight_skeptic(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
+    # Startup probe (Task 3) makes a real network call — stub it so this
+    # shutdown-ordering test doesn't hit test.local's fake base_url.
+    monkeypatch.setattr(
+        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
+    )
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
