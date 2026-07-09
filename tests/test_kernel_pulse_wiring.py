@@ -8,9 +8,13 @@ Core assertions:
 1. ``kernel._pulse_observer`` exists, shares the kernel's real
    ``_perception_queue``, and its throttle/window come from
    ``settings.system_pulse``.
-2. ``kernel._pulse_task`` is initialized to None at construction time (task
-   creation itself only happens inside the async ``start()``, gated on
-   ``alerts_enabled`` — not exercised here since that needs a live loop).
+2. ``kernel._pulse_task`` is initialized to None at construction time,
+   regardless of ``alerts_enabled`` — task creation itself only happens
+   inside the async ``start()``, gated on ``alerts_enabled``. That gate is
+   NOT exercised here (it needs a live event loop); coverage is deferred to
+   the live-smoke checklist, consistent with the sibling observers
+   (agenda / reflection / consolidation / evolution), which defer their own
+   start()-gate coverage to the same tier boundary.
 """
 from pathlib import Path
 
@@ -63,18 +67,29 @@ def test_pulse_observer_constructed_sharing_queue_and_config(tmp_path: Path) -> 
     assert kernel._pulse_observer._window_stuck_s == 456.0
 
 
-def test_pulse_task_not_started_at_construction(tmp_path: Path) -> None:
-    """Task creation happens inside start(), not __init__ — __init__ only
-    initializes the field to None (mirrors _agenda_task)."""
-    settings = _make_settings(tmp_path, system_pulse=SystemPulseConfig(alerts_enabled=True))
-    kernel = DollOS(settings)
+def test_pulse_task_field_initializes_none(tmp_path: Path) -> None:
+    """``_pulse_task`` initializes to None at construction regardless of
+    ``alerts_enabled`` — __init__ unconditionally sets it to None; the
+    real task-creation happens inside the async start(), gated on
+    ``settings.system_pulse.alerts_enabled``. That start()-level gate is
+    NOT exercised here (it needs a live event loop); it is covered by the
+    live-smoke checklist (see the plan's "Live Smoke" section), consistent
+    with how the sibling observers (agenda / reflection / consolidation /
+    evolution) defer their own start()-gate coverage to the same tier
+    boundary. This test only proves the field is honestly None pre-start
+    in both the enabled and disabled configurations — it cannot and does
+    not distinguish "the gate works" from "the gate is broken/inverted."
+    """
+    enabled_dir = tmp_path / "enabled"
+    disabled_dir = tmp_path / "disabled"
+    enabled_dir.mkdir()
+    disabled_dir.mkdir()
+    enabled_settings = _make_settings(enabled_dir, system_pulse=SystemPulseConfig(alerts_enabled=True))
+    disabled_settings = _make_settings(disabled_dir, system_pulse=SystemPulseConfig(alerts_enabled=False))
 
-    assert kernel._pulse_task is None
+    enabled_kernel = DollOS(enabled_settings)
+    disabled_kernel = DollOS(disabled_settings)
 
-
-def test_pulse_task_field_none_when_alerts_disabled(tmp_path: Path) -> None:
-    settings = _make_settings(tmp_path, system_pulse=SystemPulseConfig(alerts_enabled=False))
-    kernel = DollOS(settings)
-
-    assert kernel._pulse_observer is not None  # still constructed, just never scheduled
-    assert kernel._pulse_task is None
+    assert enabled_kernel._pulse_task is None
+    assert disabled_kernel._pulse_observer is not None  # still constructed, just never scheduled
+    assert disabled_kernel._pulse_task is None
