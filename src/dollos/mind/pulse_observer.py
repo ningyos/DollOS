@@ -106,6 +106,7 @@ def evaluate_alerts(
         # same window
         if not present:
             stuck_since = None  # stepped away → streak broken (continuous-present model)
+            stuck_armed = True  # stepping away IS the recovery event → re-arm
         elif stuck_since is None:
             stuck_since = now   # returned / first present tick → start streak
         elif (now - stuck_since) >= window_stuck_s:
