@@ -266,6 +266,13 @@ class MindLoop:
         self._turn_think_chars: int = 0
         self._turn_speak_chars: int = 0
         self._turn_passes: int = 0
+        # Whole-branch review Finding #1: this turn's triggering perception
+        # kinds, deduped + sorted (e.g. ["UserSpoke"] vs ["AgendaMoment"]) —
+        # stashed in `_run_one_turn` (the only place with the actual batch),
+        # read back here in `_llm_iterate`'s `finally` for the
+        # `TurnLatencyRecord`. Self-sufficient chat/non-chat discriminator
+        # for Part 2 (spec §1.3/§3.2/§7.2).
+        self._turn_perception_kinds: list[str] = []
         self._self_profile_enabled = self_profile_enabled
         # P8 mechanical persona enforcement (spec §2). Absent kwarg ⇒ empty
         # Enforcement() defaults ⇒ check_persona_violations always returns []
@@ -493,6 +500,12 @@ class MindLoop:
         # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
         # every turn like `_is_diary` above — this assignment IS the reset.
         self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
+
+        # Whole-branch review Finding #1: stash THIS batch's triggering
+        # perception kinds for `_llm_iterate`'s `TurnLatencyRecord` (see the
+        # `_turn_perception_kinds` field comment in `__init__`). Deduped +
+        # sorted so the JSONL value is stable regardless of batch order.
+        self._turn_perception_kinds = sorted({p.kind for p in perceptions})
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -1180,6 +1193,13 @@ class MindLoop:
         # P1f trace: initialized OUTSIDE the try so `finally` can always see
         # it, even if an exception fires before begin_turn() runs.
         turn_trace = None
+        # Whole-branch review Finding #1: same reasoning as `turn_trace`
+        # above — initialized OUTSIDE the try so `finally`'s
+        # `TurnLatencyRecord` construction can always read `turn_id`, even if
+        # `self._cascade_logger.start_turn()` itself raises before assigning
+        # it inside the try. Without this, that exception's `finally` would
+        # hit `NameError: turn_id` and mask the original exception.
+        turn_id = None
 
         # 延遲壓縮 Part 1 Task 2: turn epoch + reset turn-scoped latency
         # accumulators. Epoch is `_llm_iterate` entry (spec §3.2), NOT
@@ -1412,6 +1432,8 @@ class MindLoop:
                     mode="deliberate",  # Part 2 改為 self._think_mode
                     n_passes=self._turn_passes,
                     had_tool_call=self._turn_had_tool,
+                    perception_kinds=self._turn_perception_kinds,
+                    turn_id=turn_id,
                 )
                 await self._turn_latency_recorder.record(rec)
             self._cascade_ctx = None

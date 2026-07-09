@@ -46,6 +46,12 @@ async def test_turn_emits_latency_record_with_first_speak(tmp_path):
     assert r.had_tool_call is False
     assert r.total_ms is not None and r.total_ms >= 0
     assert r.ttft_ms is None  # Part 1: not measured here yet
+    # Whole-branch review Finding #1: chat turns must be self-identifiable
+    # so Part 2 can filter ["UserSpoke"]/["ChannelMessage"] apart from idle
+    # Awoke / ReflectionMoment / AgendaMoment / DiaryMoment turns.
+    assert r.perception_kinds == ["UserSpoke"]
+    # No cascade_logger wired in this factory call → turn_id stays None.
+    assert r.turn_id is None
 
 
 @pytest.mark.asyncio
@@ -90,3 +96,40 @@ async def test_suppressed_agenda_turn_records_no_first_speak(tmp_path):
         "sanity: the turn ran a real pass with think content, it wasn't "
         "simply an empty no-op turn"
     )
+    # Whole-branch review Finding #1: an agenda turn must be distinguishable
+    # from a chat turn via perception_kinds alone — this is the whole point
+    # of the field (without it, this suppressed-speech agenda turn would be
+    # byte-identical in the JSONL to a real chat turn).
+    assert r.perception_kinds == ["AgendaMoment"]
+    assert r.perception_kinds != ["UserSpoke"]
+
+
+class _StubCascadeLogger:
+    """Minimal cascade_logger stub — just enough to prove `turn_id` on the
+    latency record round-trips `start_turn()`'s return value."""
+
+    FIXED_TURN_ID = "cafebabe"
+
+    def start_turn(self) -> str:
+        return self.FIXED_TURN_ID
+
+    def log_iter(self, **kwargs) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_turn_id_present_when_cascade_logger_wired(tmp_path):
+    """`turn_id` must be non-None and match the cascade_logger's minted id
+    when one is wired — the precise join key back to cascade_log/trace
+    JSONL (whole-branch review Finding #1)."""
+    rec = _CapturingRecorder()
+    llm = _ScriptedLLM([_speech_pass("你好")])
+    ml = make_mindloop(
+        memory_root=tmp_path, llm=llm, turn_latency_recorder=rec,
+        cascade_logger=_StubCascadeLogger(),
+    )
+
+    await ml._run_one_turn([_user_perception("hi")])
+
+    assert len(rec.records) == 1
+    assert rec.records[0].turn_id == _StubCascadeLogger.FIXED_TURN_ID

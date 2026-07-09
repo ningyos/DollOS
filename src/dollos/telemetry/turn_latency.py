@@ -27,6 +27,19 @@ class TurnLatencyRecord:
     mode: str          # "deliberate" | "reflex"（Part 1 恆 "deliberate"）
     n_passes: int
     had_tool_call: bool
+    # Whole-branch review Finding #1: turn-kind discriminator. Without this,
+    # chat (UserSpoke/ChannelMessage) turns are indistinguishable in the
+    # JSONL from idle Awoke / ReflectionMoment / AgendaMoment / DiaryMoment
+    # turns — and Part 2's whole purpose (reading REAL chat-turn think-size
+    # / first_speak distributions, spec §1.3/§3.2/§7.2) depends on being
+    # able to filter them apart. Deduped + sorted `Perception.kind`s from
+    # the batch that triggered this turn — self-sufficient, no join needed
+    # to tell chat from non-chat.
+    perception_kinds: list[str]
+    # Precise join key back to the existing cascade_log / trace JSONL (same
+    # turn_id minted by `_cascade_logger.start_turn()`). None when no
+    # cascade_logger is wired.
+    turn_id: str | None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
