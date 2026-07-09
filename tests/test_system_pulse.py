@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -292,3 +292,29 @@ def test_latest_idle_s_none_when_stale(monkeypatch):
         idle_s=45.0,
     )
     assert sp.latest_idle_s() is None
+
+
+def test_latest_sample_none_when_no_sample():
+    sp = SystemPulse(poll_interval_s=60.0, enabled=True)
+    assert sp.latest_sample() is None
+
+
+def test_latest_sample_none_when_disabled():
+    sp = SystemPulse(poll_interval_s=60.0, enabled=False)
+    sp._last_sample = PulseSample(taken_at=datetime.now(), load1=1.0, ncpu=8)
+    assert sp.latest_sample() is None
+
+
+def test_latest_sample_returns_fresh():
+    sp = SystemPulse(poll_interval_s=60.0, enabled=True)
+    s = PulseSample(taken_at=datetime.now(), load1=1.0, ncpu=8)
+    sp._last_sample = s
+    assert sp.latest_sample() is s
+
+
+def test_latest_sample_none_when_stale():
+    sp = SystemPulse(poll_interval_s=60.0, enabled=True)
+    sp._last_sample = PulseSample(
+        taken_at=datetime.now() - timedelta(seconds=200), load1=1.0, ncpu=8
+    )
+    assert sp.latest_sample() is None

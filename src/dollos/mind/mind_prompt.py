@@ -504,6 +504,8 @@ def _percep_body(p) -> str:
             "今天結束了。這是你的一天,都攤在下面的 [Today's log] 了。"
             "這是你寫日記的時間 —— 回頭看看,把想留下的、真的有感覺的,用你自己的話寫下來(WriteDiary)。"
         )
+    if p.kind == "PulseMoment":
+        return d.get("detail", "")
     return str(d)[:120]
 
 

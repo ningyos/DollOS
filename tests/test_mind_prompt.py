@@ -273,6 +273,22 @@ def test_diary_moment_renders_nonempty_narrative():
     assert "日記" in body
 
 
+def test_pulse_moment_renders_full_detail_not_truncated_dict():
+    from dollos.mind.mind_prompt import _percep_body
+
+    long_title = "報告" * 40  # long window title pushes detail well past 120 chars
+    detail = f"盯著「{long_title}」連續 118 分鐘沒換"
+    p = Perception(
+        kind="PulseMoment",
+        t=time.time(),
+        data={"concern": "window_stuck", "detail": detail},
+    )
+    body = _percep_body(p)
+    assert body == detail  # self-contained detail rendered verbatim
+    assert "連續 118 分鐘沒換" in body  # actionable tail must survive
+    assert "{" not in body and "}" not in body  # must be prose, not a raw dict dump
+
+
 def test_decision_time_marker_is_last():
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
