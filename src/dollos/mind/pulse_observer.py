@@ -12,8 +12,13 @@ behavior is 100% testable without mocking clocks, queues, or subprocesses.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, replace
 
+from dollos.mind.mind_state import Perception
+from dollos.mind.perception_queue import PerceptionQueue
 from dollos.perception.system_pulse import PulseSample, bucket_battery, bucket_gpu_temp
 
 _PRESENT_IDLE_S = 60.0  # idle_s below this == user actively present (matches bucket_idle "present")
@@ -154,3 +159,62 @@ def evaluate_alerts(
         last_fire_at=last_fire_at,
     )
     return emitted, new_state
+
+
+_POLL_INTERVAL_S = 60.0
+
+logger = logging.getLogger(__name__)
+
+
+class PulseObserver:
+    """Thin IO shell around evaluate_alerts (spec §4.2). Mirrors AgendaObserver:
+    poll SystemPulse, run the pure policy, put PulseMoment perceptions.
+    """
+
+    def __init__(
+        self,
+        *,
+        system_pulse,
+        queue: PerceptionQueue,
+        throttle_s: float,
+        window_stuck_s: float,
+        poll_interval_s: float = _POLL_INTERVAL_S,
+    ) -> None:
+        self._system_pulse = system_pulse
+        self._queue = queue
+        self._throttle_s = throttle_s
+        self._window_stuck_s = window_stuck_s
+        self._poll_interval_s = poll_interval_s
+        self._state = AlertState.initial()
+        self._shutdown = False
+
+    def _tick(self, now: float) -> None:
+        sample = self._system_pulse.latest_sample()
+        if sample is None:
+            return
+        alerts, self._state = evaluate_alerts(
+            self._state, sample, now,
+            throttle_s=self._throttle_s, window_stuck_s=self._window_stuck_s,
+        )
+        for a in alerts:
+            self._queue.put(Perception(
+                kind="PulseMoment", t=now,
+                data={"concern": a.slug, "detail": a.text},
+            ))
+            logger.info("PulseMoment fired: %s", a.slug)
+
+    async def run(self) -> None:
+        # boot grace: seed last_fire_at = now so a standing bad state at daemon
+        # start doesn't fire instantly on every restart (mirrors AgendaObserver
+        # not treating cold start as overdue). First alert eligible throttle_s
+        # after boot.
+        self._state = replace(self._state, last_fire_at=time.time())
+        while not self._shutdown:
+            await asyncio.sleep(self._poll_interval_s)
+            try:
+                self._tick(time.time())
+            except Exception:
+                logger.exception("pulse tick failed; continuing")
+
+    def shutdown(self) -> None:
+        self._shutdown = True
