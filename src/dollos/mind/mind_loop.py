@@ -44,6 +44,7 @@ from dollos.tools import (
     LearnName,
     NoteToolLesson,
     PinSelf,
+    PULSE_TOOLS,
     SelfRevision,
 )
 from dollos.wal.perception_log import PerceptionWAL
@@ -244,6 +245,9 @@ class MindLoop:
         # those must stay conservative so a co-batched live UserSpoke is
         # never silenced/whitewashed.
         self._diary_in_batch: bool = False
+        # Pure PulseMoment turn flag (spec 2026-07-09 §5.2). Same "entire batch"
+        # guard as _is_agenda/_is_diary. Unlike them, does NOT suppress speech.
+        self._is_pulse: bool = False
         # I1 per-day retry flag (spec §2.3): sentinel date-string, "" until
         # the first missed diary turn. Prevents an infinite re-enqueue loop —
         # only ONE retry per calendar day, regardless of how many more times
@@ -500,6 +504,13 @@ class MindLoop:
         # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
         # every turn like `_is_diary` above — this assignment IS the reset.
         self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
+
+        # Pure PulseMoment turn (spec 2026-07-09 §5.2): same pure-batch guard —
+        # a PulseMoment co-batched with a live UserSpoke (or any other kind)
+        # falls through to a normal turn, never narrowed.
+        self._is_pulse = bool(perceptions) and all(
+            p.kind == "PulseMoment" for p in perceptions
+        )
 
         # Whole-branch review Finding #1: stash THIS batch's triggering
         # perception kinds for `_llm_iterate`'s `TurnLatencyRecord` (see the
@@ -1100,6 +1111,16 @@ class MindLoop:
             # never silently restricted.
             return {
                 n: c for n, c in self._tool_registry.items() if n in AGENDA_TOOLS
+            }
+        if self._is_pulse:
+            # Pure pulse turn (spec §5.3): narrow to PULSE_TOOLS (cognition +
+            # speech). Reached only when origin_tier == "internal" and not
+            # reflection/diary/agenda (all returned above) and the whole batch
+            # is PulseMoment — a co-batched UserSpoke makes _is_pulse False and
+            # falls through to the full-registry branch below. Speech is NOT
+            # suppressed for this turn (see _emit_sentence — _is_pulse absent).
+            return {
+                n: c for n, c in self._tool_registry.items() if n in PULSE_TOOLS
             }
         if self._has_user_spoke:
             return {**self._tool_registry, "LearnName": LearnName}

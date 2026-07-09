@@ -1239,3 +1239,10 @@ AGENDA_TOOLS: frozenset[str] = frozenset({"Recall", "AdvanceGoal", "CloseLoop", 
 # etc.) is excluded so the turn cannot do anything BUT write (or research
 # toward) the diary entry.
 DIARY_TOOLS: frozenset[str] = frozenset({"WriteDiary", "Recall"})
+
+# Pure PulseMoment turn (spec 2026-07-09 §5.3): cognition-only + speech ON.
+# She can Recall/NoteMemory/adjust Mood and SPEAK UP, but no autonomous
+# external action (no Shell/Workflow) on a self-wake. Speech is NOT gated by
+# this set — it stays on because _is_pulse is deliberately absent from
+# _emit_sentence's suppression (unlike AGENDA/DIARY).
+PULSE_TOOLS: frozenset[str] = frozenset({"Recall", "NoteMemory", "MoodTool"})
