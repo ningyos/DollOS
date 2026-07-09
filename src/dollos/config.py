@@ -128,12 +128,22 @@ class VoiceSettings(BaseModel):
 
 
 class SystemPulseConfig(BaseModel):
-    """Proprioception poller — surfaces host vitals as a [Self pulse] block."""
+    """Proprioception poller — surfaces host vitals as a [Self pulse] block,
+    and (alerts_enabled) wakes Doll via a PulseMoment when a vital crosses a
+    negative/actionable/worsening threshold. See spec
+    docs/superpowers/specs/2026-07-09-system-pulse-proactive-trigger-design.md.
+    """
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
     poll_interval_s: float = 60.0
     include_active_window: bool = True   # privacy opt-out
+
+    # Proactive trigger (spec §6). alerts_enabled=False → PulseObserver never
+    # starts; behavior is exactly today's passive-only [Self pulse] block.
+    alerts_enabled: bool = True
+    alert_throttle_s: float = 900.0      # global min interval between alerts (15 min)
+    window_stuck_s: float = 5400.0       # same-window continuous-present threshold (90 min)
 
 
 class BridgeConfig(BaseModel):

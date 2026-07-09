@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from dollos.config import BridgeConfig, Settings, load_settings
+from dollos.config import BridgeConfig, Settings, SystemPulseConfig, load_settings
 
 
 _BASE_TOML = """
@@ -367,3 +367,17 @@ def test_settings_with_bridge_block(tmp_path):
     s = Settings.model_validate(d)
     assert s.bridge.enabled is True
     assert s.bridge.config == Path("bridge.toml")
+
+
+def test_system_pulse_alert_defaults():
+    c = SystemPulseConfig()
+    assert c.alerts_enabled is True
+    assert c.alert_throttle_s == 900.0
+    assert c.window_stuck_s == 5400.0
+
+
+def test_system_pulse_alert_override():
+    c = SystemPulseConfig(alerts_enabled=False, alert_throttle_s=60.0, window_stuck_s=120.0)
+    assert c.alerts_enabled is False
+    assert c.alert_throttle_s == 60.0
+    assert c.window_stuck_s == 120.0
