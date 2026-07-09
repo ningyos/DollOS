@@ -48,6 +48,7 @@ from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import Perception, load_state
 from dollos.mind.name_aliases import NameAliasStore, passes_alias_guard
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.pulse_observer import PulseObserver
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.mind.trace import TraceWriter
@@ -600,6 +601,16 @@ class DollOS:
             energy_idle_threshold_s=settings.energy.idle_threshold_s,
         )
 
+        # PulseObserver — proactive host-vitals wake (spec 2026-07-09 §7),
+        # mirrors AgendaObserver. Shares the perception queue; policy lives in
+        # evaluate_alerts. Gated on start() by system_pulse.alerts_enabled.
+        self._pulse_observer = PulseObserver(
+            system_pulse=self.system_pulse,
+            queue=self._perception_queue,
+            throttle_s=settings.system_pulse.alert_throttle_s,
+            window_stuck_s=settings.system_pulse.window_stuck_s,
+        )
+
         # ConsolidationTrigger — sleep-time memory consolidation (B2)
         self._consolidation_trigger = ConsolidationTrigger(
             state=self._mind_state,
@@ -675,6 +686,7 @@ class DollOS:
         self._mind_task: asyncio.Task[None] | None = None
         self._reflection_task: asyncio.Task[None] | None = None
         self._agenda_task: asyncio.Task[None] | None = None
+        self._pulse_task: asyncio.Task[None] | None = None
         self._consolidation_trigger_task: asyncio.Task[None] | None = None
         # Per-day fired set — scheduler dedupe across its 30s polling.
         self._fired_today: dict[date, set] = {}
@@ -1262,6 +1274,12 @@ class DollOS:
             self._agenda_task = asyncio.create_task(
                 self._agenda_observer.run(), name="agenda-observer"
             )
+            # Proactive pulse alerts (spec §7). Gated separately from the passive
+            # poller: alerts_enabled=False keeps today's passive-only behavior.
+            if self.settings.system_pulse.alerts_enabled:
+                self._pulse_task = asyncio.create_task(
+                    self._pulse_observer.run(), name="pulse-observer"
+                )
             if self.settings.consolidation.enabled:
                 self._consolidation_trigger_task = asyncio.create_task(
                     self._consolidation_trigger.run(), name="consolidation-trigger"
@@ -1301,6 +1319,12 @@ class DollOS:
                     self._agenda_task.cancel()
                     await asyncio.gather(
                         self._agenda_task, return_exceptions=True
+                    )
+                if self._pulse_task is not None:
+                    self._pulse_observer.shutdown()
+                    self._pulse_task.cancel()
+                    await asyncio.gather(
+                        self._pulse_task, return_exceptions=True
                     )
                 # Stop runners before MindLoop so result perceptions
                 # don't arrive after loop shuts down
