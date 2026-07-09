@@ -414,6 +414,23 @@ class SystemPulse:
             return None
         return s.idle_s
 
+    def latest_sample(self) -> PulseSample | None:
+        """The last fresh PulseSample, else None.
+
+        None when: disabled / no sample yet / sample is stale (older than 2x
+        poll interval). Mirrors ``latest_idle_s``'s staleness guard so a dead
+        poll loop can't feed the PulseObserver an ancient reading.
+        """
+        if not self._enabled:
+            return None
+        s = self._last_sample
+        if s is None:
+            return None
+        age = (datetime.now() - s.taken_at).total_seconds()
+        if age > 2 * self._poll_interval_s:
+            return None
+        return s
+
     async def poll_now(self) -> None:
         """Force one immediate poll (for tests / smoke)."""
         self._last_sample = await self._poll_once()
