@@ -38,7 +38,8 @@ async def assert_bounded_repetition_supported(llm: LLMAdapter) -> None:
                     break
     except Exception as e:
         raise RuntimeError(
-            "llama-server 不支援 GBNF bounded repetition `{m,n}`；"
-            "DollOS 的 think 行長綁定需要它。請升級 llama.cpp "
-            f"（原始錯誤：{e!r}）"
+            "GBNF bounded repetition `{m,n}` 探測失敗——可能是 llama-server "
+            "連不上（尚未啟動 / 位址錯誤），也可能是版本過舊不支援 `{m,n}`"
+            "（DollOS 的 think 行長綁定需要它，請升級 llama.cpp）。"
+            f"原始錯誤：{e!r}"
         ) from e
