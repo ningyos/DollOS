@@ -19,9 +19,12 @@ from dataclasses import dataclass, replace
 
 from dollos.mind.mind_state import Perception
 from dollos.mind.perception_queue import PerceptionQueue
-from dollos.perception.system_pulse import PulseSample, bucket_battery, bucket_gpu_temp
-
-_PRESENT_IDLE_S = 60.0  # idle_s below this == user actively present (matches bucket_idle "present")
+from dollos.perception.system_pulse import (
+    PulseSample,
+    bucket_battery,
+    bucket_gpu_temp,
+    bucket_idle,
+)
 
 
 @dataclass(frozen=True)
@@ -95,7 +98,7 @@ def evaluate_alerts(
 
     # --- window_stuck: same active_window, continuous present streak >= threshold ---
     stuck_bad = False
-    present = sample.idle_s is not None and sample.idle_s < _PRESENT_IDLE_S
+    present = sample.idle_s is not None and bucket_idle(sample.idle_s) == "present"
     win = sample.active_window
     if win is None:
         # window tracking off / unavailable → reset accumulator
