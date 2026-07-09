@@ -462,7 +462,12 @@ def evaluate_alerts(
     else:
         # same window
         if not present:
-            stuck_since = None  # stepped away → streak broken (continuous-present model)
+            # stepped away → streak broken AND re-armed. Step-away is the
+            # recovery signal for window_stuck (symmetric to battery/gpu
+            # re-arming on any not-bad tick); without re-arming here the rule
+            # fires at most once per window title forever. (review-fixed)
+            stuck_since = None
+            stuck_armed = True
         elif stuck_since is None:
             stuck_since = now   # returned / first present tick → start streak
         elif (now - stuck_since) >= window_stuck_s:
