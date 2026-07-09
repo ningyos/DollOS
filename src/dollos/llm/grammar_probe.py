@@ -9,12 +9,13 @@ build-time raise（grammar 只是字串組裝），no-fallback 章節接不到�
 from __future__ import annotations
 
 from contextlib import aclosing
-from typing import Any
+
+from dollos.llm.adapter import LLMAdapter
 
 _PROBE_GRAMMAR = "root ::= [a]{1,2}\n"
 
 
-async def assert_bounded_repetition_supported(llm: Any) -> None:
+async def assert_bounded_repetition_supported(llm: LLMAdapter) -> None:
     """Send one minimal-cost completion using a `{m,n}` GBNF grammar.
 
     Returns ``None`` on success. Raises ``RuntimeError`` if the backend
