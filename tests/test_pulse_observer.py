@@ -11,16 +11,6 @@ def _sample(**kw) -> PulseSample:
     return PulseSample(taken_at=datetime.now(), **kw)
 
 
-def _eval(st, sample, now, last_fire_at=0.0):
-    # last_fire_at threaded via state; helper keeps tests terse
-    st = AlertState(
-        battery_armed=st.battery_armed, gpu_armed=st.gpu_armed,
-        stuck_window=st.stuck_window, stuck_since=st.stuck_since,
-        stuck_armed=st.stuck_armed, last_fire_at=last_fire_at,
-    )
-    return evaluate_alerts(st, sample, now, throttle_s=THROTTLE, window_stuck_s=STUCK)
-
-
 # --- battery_critical edge + re-arm ---
 
 def test_battery_critical_fires_once_on_edge():
@@ -109,6 +99,36 @@ def test_window_stuck_streak_broken_by_stepping_away():
     alerts, st = evaluate_alerts(st, back, 1060.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
     assert alerts == []
     assert st.stuck_since == 1060.0
+
+
+def test_window_stuck_rearms_after_step_away_and_refires():
+    st = AlertState.initial()
+    # establish streak at t=0, present, "editor"
+    s0 = _sample(active_window="editor", idle_s=5.0)
+    _, st = evaluate_alerts(st, s0, 0.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert st.stuck_window == "editor" and st.stuck_since == 0.0
+
+    # 90 min later, still present, same window → fires once, disarms
+    s1 = _sample(active_window="editor", idle_s=5.0)
+    alerts, st = evaluate_alerts(st, s1, STUCK, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert [a.slug for a in alerts] == ["window_stuck"]
+    assert st.stuck_armed is False
+
+    # step away (idle high), same window → recovery event: re-arm
+    away = _sample(active_window="editor", idle_s=300.0)
+    _, st = evaluate_alerts(st, away, 6000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert st.stuck_since is None
+    assert st.stuck_armed is True
+
+    # return present, same window → streak restarts at return time
+    back = _sample(active_window="editor", idle_s=5.0)
+    _, st = evaluate_alerts(st, back, 6060.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert st.stuck_since == 6060.0
+
+    # another full STUCK elapses, present, same window → fires AGAIN
+    alerts, st = evaluate_alerts(st, back, 6060.0 + STUCK, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert [a.slug for a in alerts] == ["window_stuck"]
+    assert st.stuck_armed is False
 
 
 # --- throttle + deferred-retry ---
