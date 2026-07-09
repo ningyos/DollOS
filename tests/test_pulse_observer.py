@@ -1,6 +1,9 @@
 from datetime import datetime
 
-from dollos.mind.pulse_observer import Alert, AlertState, evaluate_alerts
+import pytest
+
+from dollos.mind.perception_queue import PerceptionQueue
+from dollos.mind.pulse_observer import Alert, AlertState, PulseObserver, evaluate_alerts
 from dollos.perception.system_pulse import PulseSample
 
 THROTTLE = 900.0
@@ -150,3 +153,79 @@ def test_throttle_defers_second_candidate_not_drops():
     # next call after throttle → gpu fires
     alerts, st4 = evaluate_alerts(st3, s, 12_000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
     assert [a.slug for a in alerts] == ["gpu_hot"]
+
+
+# --- PulseObserver IO shell ---
+#
+# NOTE (queue-API adaptation): the brief's test sketch calls `q.drain_grouped()`
+# synchronously and treats it as a flat `list[Perception]`. The real
+# `PerceptionQueue.drain_grouped()` (src/dollos/mind/perception_queue.py) is
+# `async` and returns `list[list[Perception]]` — one bucket per origin
+# `data["channel_id"]` (spec §3.1 R2-C1). PulseMoment perceptions carry no
+# channel_id, so they all land in a single bucket. `_drained()` below awaits
+# drain_grouped() and flattens the buckets into a flat perception list,
+# preserving order, so the assertions below check the same behavior the
+# brief intended (one PulseMoment perception with data["concern"]/["detail"]).
+#
+# Second adaptation: `drain()` (which `drain_grouped()` wraps) blocks
+# indefinitely when the queue is empty and `timeout_s` is None — there is no
+# non-blocking "peek what's queued" mode. The no-emit assertion needs to
+# observe an empty result without hanging forever, so `_drained()` passes a
+# short `timeout_s` throughout; when perceptions are already queued (put()
+# is synchronous/non-blocking) the underlying `queue.get()` resolves almost
+# immediately regardless, so this doesn't change the emit-path assertions.
+
+
+class _FakePulse:
+    def __init__(self, sample):
+        self._sample = sample
+
+    def latest_sample(self):
+        return self._sample
+
+
+def _observer(sample):
+    q = PerceptionQueue()
+    obs = PulseObserver(
+        system_pulse=_FakePulse(sample), queue=q,
+        throttle_s=THROTTLE, window_stuck_s=STUCK,
+    )
+    return obs, q
+
+
+async def _drained(q, timeout_s: float = 0.1):
+    buckets = await q.drain_grouped(timeout_s=timeout_s)
+    return [p for bucket in buckets for p in bucket]
+
+
+@pytest.mark.asyncio
+async def test_tick_emits_pulsemoment_on_battery_edge():
+    s = _sample(battery_pct=12.0, battery_status="Discharging")
+    obs, q = _observer(s)
+    obs._tick(10_000.0)
+    perts = await _drained(q)
+    assert len(perts) == 1
+    p = perts[0]
+    assert p.kind == "PulseMoment"
+    assert p.data["concern"] == "battery_critical"
+    assert "放電" in p.data["detail"]
+
+
+@pytest.mark.asyncio
+async def test_tick_no_emit_when_sample_none():
+    obs, q = _observer(None)
+    obs._tick(10_000.0)
+    assert await _drained(q) == []
+
+
+@pytest.mark.asyncio
+async def test_tick_throttle_within_window_defers():
+    s = _sample(battery_pct=12.0, battery_status="Discharging", gpus=[(50.0, 80.0)])
+    obs, q = _observer(s)
+    obs._tick(10_000.0)              # battery fires, gpu deferred (same-call throttle)
+    first = await _drained(q)
+    assert [p.data["concern"] for p in first] == ["battery_critical"]
+    obs._tick(10_100.0)             # within 900s of last fire → nothing
+    assert await _drained(q) == []
+    obs._tick(11_000.0)            # throttle passed → gpu fires
+    assert [p.data["concern"] for p in await _drained(q)] == ["gpu_hot"]
