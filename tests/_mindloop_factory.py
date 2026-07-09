@@ -38,6 +38,8 @@ def make_mindloop(
     cost_per_turn: float = 0.05,
     on_turn_complete=None,
     diary_max_log_chars: int = 40000,
+    turn_latency_recorder=None,
+    cascade_logger=None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
@@ -74,4 +76,6 @@ def make_mindloop(
         cost_per_turn=cost_per_turn,
         on_turn_complete=on_turn_complete,
         diary_max_log_chars=diary_max_log_chars,
+        turn_latency_recorder=turn_latency_recorder,
+        cascade_logger=cascade_logger,
     )

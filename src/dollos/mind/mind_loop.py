@@ -35,6 +35,7 @@ from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
+from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
     AGENDA_TOOLS,
@@ -166,6 +167,7 @@ class MindLoop:
         model_id: str | None = None,
         on_turn_complete: Callable[[str | None, bool], None] | None = None,
         diary_max_log_chars: int = 40000,
+        turn_latency_recorder=None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -255,6 +257,22 @@ class MindLoop:
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
         self._turn_wrote_diary: bool = False
+        # 延遲壓縮 Part 1 Task 2: turn-level think/speak/first-speak latency
+        # telemetry (spec §3.2/§7). `turn_latency_recorder=None` is a full
+        # no-op — every consumer below gates on it being non-None.
+        self._turn_latency_recorder = turn_latency_recorder
+        self._turn_t0: float | None = None
+        self._turn_first_speak_ms: float | None = None
+        self._turn_think_chars: int = 0
+        self._turn_speak_chars: int = 0
+        self._turn_passes: int = 0
+        # Whole-branch review Finding #1: this turn's triggering perception
+        # kinds, deduped + sorted (e.g. ["UserSpoke"] vs ["AgendaMoment"]) —
+        # stashed in `_run_one_turn` (the only place with the actual batch),
+        # read back here in `_llm_iterate`'s `finally` for the
+        # `TurnLatencyRecord`. Self-sufficient chat/non-chat discriminator
+        # for Part 2 (spec §1.3/§3.2/§7.2).
+        self._turn_perception_kinds: list[str] = []
         self._self_profile_enabled = self_profile_enabled
         # P8 mechanical persona enforcement (spec §2). Absent kwarg ⇒ empty
         # Enforcement() defaults ⇒ check_persona_violations always returns []
@@ -482,6 +500,12 @@ class MindLoop:
         # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
         # every turn like `_is_diary` above — this assignment IS the reset.
         self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
+
+        # Whole-branch review Finding #1: stash THIS batch's triggering
+        # perception kinds for `_llm_iterate`'s `TurnLatencyRecord` (see the
+        # `_turn_perception_kinds` field comment in `__init__`). Deduped +
+        # sorted so the JSONL value is stable regardless of batch order.
+        self._turn_perception_kinds = sorted({p.kind for p in perceptions})
 
         # Evidence-layer provenance (spec §3.2): one turn value shared by all
         # cascade/refeed passes of this iteration.
@@ -1169,6 +1193,25 @@ class MindLoop:
         # P1f trace: initialized OUTSIDE the try so `finally` can always see
         # it, even if an exception fires before begin_turn() runs.
         turn_trace = None
+        # Whole-branch review Finding #1: same reasoning as `turn_trace`
+        # above — initialized OUTSIDE the try so `finally`'s
+        # `TurnLatencyRecord` construction can always read `turn_id`, even if
+        # `self._cascade_logger.start_turn()` itself raises before assigning
+        # it inside the try. Without this, that exception's `finally` would
+        # hit `NameError: turn_id` and mask the original exception.
+        turn_id = None
+
+        # 延遲壓縮 Part 1 Task 2: turn epoch + reset turn-scoped latency
+        # accumulators. Epoch is `_llm_iterate` entry (spec §3.2), NOT
+        # `_run_one_turn` — this is the point Doll starts actually deciding
+        # what to say, not perception/render bookkeeping. Reset here (not in
+        # __init__ only) because `_llm_iterate` runs once per turn but the
+        # MindLoop instance is long-lived across turns.
+        self._turn_t0 = time.time()
+        self._turn_first_speak_ms = None
+        self._turn_think_chars = 0
+        self._turn_speak_chars = 0
+        self._turn_passes = 0
 
         try:
             self._cascade_ctx = CascadeCtx()
@@ -1214,6 +1257,17 @@ class MindLoop:
                     sink=sink,
                 )
                 pass_latency_ms = int((time.monotonic() - pass_start) * 1000)
+
+                # 延遲壓縮 Part 1 Task 2: accumulate this pass's think-chars
+                # (everything before the first `</think>`) + advance the
+                # turn-scoped pass counter — `finally` below can't see the
+                # loop-local `pass_idx`, so mirror it into a turn field here,
+                # on every pass including a cancelled-mid-stream one (its
+                # partial raw_buf is still real streamed content, not
+                # synthesized).
+                raw_so_far = "".join(raw_buf)
+                self._turn_think_chars += len(raw_so_far.split("</think>", 1)[0])
+                self._turn_passes = pass_idx + 1
 
                 if self._cascade_ctx.cancelled:
                     return
@@ -1361,6 +1415,27 @@ class MindLoop:
                 # speech = this turn's full spoken text; silence = none spoken.
                 speech = self._collect_turn_speech()
                 turn_trace.finish(speech=speech, silence=(speech == ""))
+            # 延遲壓縮 Part 1 Task 2: turn-level latency record. `_turn_t0`
+            # guards against a `finally` reached without the turn ever
+            # starting (defensive; `_llm_iterate` always sets it first thing).
+            # `record()` itself never raises (log-and-continue) — telemetry
+            # must not be able to fail a turn.
+            if self._turn_latency_recorder is not None and self._turn_t0 is not None:
+                total_ms = (time.time() - self._turn_t0) * 1000.0
+                rec = TurnLatencyRecord(
+                    ts=time.time(),
+                    first_speak_ms=self._turn_first_speak_ms,
+                    think_chars=self._turn_think_chars,
+                    speak_chars=self._turn_speak_chars,
+                    total_ms=total_ms,
+                    ttft_ms=None,       # pass1 TTFT 由 llm_calls 已有；此處不重複量
+                    mode="deliberate",  # Part 2 改為 self._think_mode
+                    n_passes=self._turn_passes,
+                    had_tool_call=self._turn_had_tool,
+                    perception_kinds=self._turn_perception_kinds,
+                    turn_id=turn_id,
+                )
+                await self._turn_latency_recorder.record(rec)
             self._cascade_ctx = None
 
     async def _stream_one_pass(
@@ -1506,11 +1581,18 @@ class MindLoop:
         journaling, not a conversation, so any naked text she streams (e.g.
         commentary alongside the WriteDiary call) must not leak to a
         connected sink either.
+
+        延遲壓縮 Part 1 Task 2: also the single chokepoint for first-speak
+        latency + speak_chars telemetry — measured AFTER both guards above,
+        so a suppressed/whitespace-only sentence never counts as "spoke".
         """
         if not sentence.strip():
             return
         if self._is_agenda or self._is_diary:
             return
+        if self._turn_first_speak_ms is None and self._turn_t0 is not None:
+            self._turn_first_speak_ms = (time.time() - self._turn_t0) * 1000.0
+        self._turn_speak_chars += len(sentence)
         origin = self._ctx.current_origin
         registry = self._ctx.channel_registry
         if origin and registry is not None and registry.locus_of(origin) == "external":
