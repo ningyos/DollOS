@@ -55,3 +55,38 @@ async def test_no_recorder_is_a_noop(tmp_path):
     ml = make_mindloop(memory_root=tmp_path, llm=llm)
 
     await ml._run_one_turn([_user_perception("hi")])  # must not raise
+
+
+def _agenda_moment() -> Perception:
+    return Perception(kind="AgendaMoment", t=time.time(), data={})
+
+
+@pytest.mark.asyncio
+async def test_suppressed_agenda_turn_records_no_first_speak(tmp_path):
+    """A pure AgendaMoment turn is speech-suppressed at the ``_emit_sentence``
+    chokepoint (``self._is_agenda`` guard, mind_loop.py ~L1571) — the model
+    DOES produce a spoken sentence, but it never reaches the sink because the
+    guard returns before the first-speak/speak_chars measurement below it.
+    Regression guard: if that measurement is ever hoisted above the
+    suppression guards, this test flips ``first_speak_ms`` from None to a
+    real value and catches it.
+
+    ``think_chars > 0`` proves this was a genuine full pass (measured
+    earlier in ``_llm_iterate``, unaffected by the guard) — not merely an
+    empty/no-op turn that trivially has no speech."""
+    rec = _CapturingRecorder()
+    llm = _ScriptedLLM([_speech_pass("這句話不會被送出")])
+    ml = make_mindloop(memory_root=tmp_path, llm=llm, turn_latency_recorder=rec)
+
+    await ml._run_one_turn([_agenda_moment()])
+
+    assert len(rec.records) == 1
+    r = rec.records[0]
+    assert r.first_speak_ms is None, (
+        "suppressed (agenda) turn must never count as having spoken"
+    )
+    assert r.speak_chars == 0
+    assert r.think_chars > 0, (
+        "sanity: the turn ran a real pass with think content, it wasn't "
+        "simply an empty no-op turn"
+    )
