@@ -36,9 +36,13 @@ def make_mindloop(
     model_id: str | None = None,
     energy_enabled: bool = False,
     cost_per_turn: float = 0.05,
+    token_per_energy_unit: float = 2000.0,
+    thermal_multiplier_warm: float = 1.15,
+    thermal_multiplier_hot: float = 1.4,
     on_turn_complete=None,
     diary_max_log_chars: int = 40000,
     turn_latency_recorder=None,
+    vitals_recorder=None,
     cascade_logger=None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
@@ -74,8 +78,12 @@ def make_mindloop(
         model_id=model_id,
         energy_enabled=energy_enabled,
         cost_per_turn=cost_per_turn,
+        token_per_energy_unit=token_per_energy_unit,
+        thermal_multiplier_warm=thermal_multiplier_warm,
+        thermal_multiplier_hot=thermal_multiplier_hot,
         on_turn_complete=on_turn_complete,
         diary_max_log_chars=diary_max_log_chars,
         turn_latency_recorder=turn_latency_recorder,
+        vitals_recorder=vitals_recorder,
         cascade_logger=cascade_logger,
     )

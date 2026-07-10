@@ -73,6 +73,15 @@ def bucket_idle(idle_s: float) -> str:
     return "long-away"
 
 
+def thermal_multiplier(temp_c: float, warm: float, hot: float) -> float:
+    """Metabolic vital model §2.3 (Task 5): a hot GPU makes the SAME work cost
+    more ATP. Pure function, reuses ``bucket_gpu_temp``'s existing 55/75°C
+    buckets so the drain multiplier and the `[Self pulse]` heat wording never
+    drift apart. cool -> 1.0 (no penalty), warm -> ``warm``, hot -> ``hot``."""
+    b = bucket_gpu_temp(temp_c)
+    return hot if b == "hot" else warm if b == "warm" else 1.0
+
+
 # Sample dataclass -----------------------------------------------------
 
 @dataclass
@@ -82,6 +91,7 @@ class PulseSample:
     ncpu: int | None = None
     mem_used_pct: float | None = None
     gpus: list[tuple[float, float]] = field(default_factory=list)
+    gpu_power: list[tuple[float, float]] = field(default_factory=list)
     battery_pct: float | None = None
     battery_status: str | None = None
     active_window: str | None = None
@@ -165,18 +175,29 @@ async def _run_cmd(argv: list[str], timeout_s: float) -> str | None:
             proc.kill()
 
 
-async def read_nvidia_smi(timeout_s: float = 2.0) -> list[tuple[float, float]]:
+async def read_nvidia_smi(
+    timeout_s: float = 2.0,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Returns (gpus, gpu_power).
+
+    ``gpus`` is (mem_used_pct, temp_c) per GPU, as before. ``gpu_power`` is
+    (draw_w, limit_w) per GPU that reported power telemetry — parsed
+    independently of mem/temp so a card (or old driver) missing power
+    columns still contributes its mem/temp reading; it just doesn't
+    contribute a power.draw entry.
+    """
     text = await _run_cmd(
         [
             "nvidia-smi",
-            "--query-gpu=memory.used,memory.total,temperature.gpu",
+            "--query-gpu=memory.used,memory.total,temperature.gpu,power.draw,power.limit",
             "--format=csv,noheader,nounits",
         ],
         timeout_s,
     )
     if text is None:
-        return []
+        return [], []
     gpus: list[tuple[float, float]] = []
+    gpu_power: list[tuple[float, float]] = []
     for line in text.splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 3:
@@ -190,7 +211,15 @@ async def read_nvidia_smi(timeout_s: float = 2.0) -> list[tuple[float, float]]:
         if total <= 0:
             continue
         gpus.append(((used / total) * 100.0, temp))
-    return gpus
+        draw = lim = None
+        if len(parts) >= 5:
+            try:
+                draw, lim = float(parts[3]), float(parts[4])
+            except ValueError:
+                draw = lim = None
+        if draw is not None and lim is not None:
+            gpu_power.append((draw, lim))
+    return gpus, gpu_power
 
 
 def read_battery() -> tuple[float | None, str | None]:
@@ -270,7 +299,11 @@ def render_block(sample: PulseSample, *, include_active_window: bool) -> str:
         temp_parts = " / ".join(f"{t:.0f}°C" for _, t in sample.gpus)
         hottest = max(t for _, t in sample.gpus)
         b = bucket_gpu_temp(hottest)
-        lines.append(f"- vital heat: {b} ({temp_parts}); GPU mem {mem_parts}")
+        line = f"- vital heat: {b} ({temp_parts}); GPU mem {mem_parts}"
+        if sample.gpu_power:
+            max_draw = max(draw for draw, _ in sample.gpu_power)
+            line += f" · {max_draw:.0f}w"
+        lines.append(line)
 
     if sample.battery_pct is not None:
         b = bucket_battery(sample.battery_pct)
@@ -367,18 +400,20 @@ class SystemPulse:
         load1, ncpu = read_loadavg()
         mem_pct = read_meminfo()
         battery_pct, battery_status = read_battery()
-        gpus, active_window, idle_s, net_open = await asyncio.gather(
+        nvidia_result, active_window, idle_s, net_open = await asyncio.gather(
             read_nvidia_smi(),
             read_active_window() if self._include_active_window else _none(),
             read_idle_seconds(),
             check_network(),
         )
+        gpus, gpu_power = nvidia_result
         return PulseSample(
             taken_at=datetime.now(),
             load1=load1,
             ncpu=ncpu,
             mem_used_pct=mem_pct,
             gpus=gpus,
+            gpu_power=gpu_power,
             battery_pct=battery_pct,
             battery_status=battery_status,
             active_window=active_window,

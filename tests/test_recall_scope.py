@@ -379,7 +379,8 @@ class _CapturingLLM:
         self.user_prompts: list[str] = []
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
+        on_usage=None,
     ):
         self.user_prompts.append(user)
 
@@ -392,7 +393,7 @@ class _CapturingLLM:
 
     async def stream_messages(
         self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None,
+        purpose="cascade", stop=None, tools=None, on_usage=None,
     ):
         class _Chunk:
             def __init__(self, text, done):

@@ -39,8 +39,10 @@ from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
+from dollos.perception.system_pulse import thermal_multiplier
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.telemetry.turn_latency import TurnLatencyRecord
+from dollos.telemetry.vitals import VitalsRecord
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
     AGENDA_TOOLS,
@@ -161,6 +163,9 @@ class MindLoop:
         cascade_logger=None,
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
+        token_per_energy_unit: float = 2000.0,
+        thermal_multiplier_warm: float = 1.15,
+        thermal_multiplier_hot: float = 1.4,
         self_profile_enabled: bool = False,
         enforcement: Enforcement | None = None,
         system_prompt_suffix: str = "",
@@ -174,6 +179,7 @@ class MindLoop:
         on_turn_complete: Callable[[str | None, bool], None] | None = None,
         diary_max_log_chars: int = 40000,
         turn_latency_recorder=None,
+        vitals_recorder=None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -266,10 +272,41 @@ class MindLoop:
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
         self._turn_wrote_diary: bool = False
+        # 代謝 vital (spec 2026-07-10 §2.2, Task 2): token-driven drain.
+        self._token_per_energy_unit = token_per_energy_unit
+        # 代謝 vital §2.3 (Task 5): hot-GPU multiplier on the token drain.
+        self._thermal_mult_warm = thermal_multiplier_warm
+        self._thermal_mult_hot = thermal_multiplier_hot
+        # This turn's own token effort, accumulated across cascade passes via
+        # on_usage (one call per pass — see _on_turn_usage). Contamination-
+        # proof: only THIS loop's LLM calls hit THIS loop's callback. Cleared
+        # per turn in the SAME spot as _turn_speech.clear() (_run_one_turn).
+        self._turn_prompt_tokens: int | None = None
+        self._turn_completion_tokens: int | None = None
+        # Stashed at the drain site for Task 3's VitalsRecord.
+        self._turn_energy_cost: float = 0.0
+        self._turn_cost_mode: str = "measured"
+        self._turn_tokens_total: int | None = None
+        # Task 5: (gpu_hottest_c, gpu_power_w, battery_pct) from the SAME
+        # latest_sample() the thermal multiplier reads, for VitalsRecord's
+        # ambient fields. None until a real draining turn with a fresh
+        # sample overwrites it (see the drain block below).
+        self._turn_ambient: tuple[float | None, float | None, float | None] = (
+            None, None, None,
+        )
+        # Task 3: mirror of `_llm_iterate`'s local `turn_id` join key. The
+        # drain gate lives in `_run_one_turn`, AFTER `_llm_iterate` (and its
+        # local `turn_id`) has already gone out of scope — so it's stashed
+        # here on self instead. Set on every real turn (never gated on the
+        # energy drain), so — unlike the three fields above, which are only
+        # written inside the drain gate and can carry a stale prior-turn
+        # value on a gate-skipped turn — this one is always fresh.
+        self._turn_id: str | None = None
         # 延遲壓縮 Part 1 Task 2: turn-level think/speak/first-speak latency
         # telemetry (spec §3.2/§7). `turn_latency_recorder=None` is a full
         # no-op — every consumer below gates on it being non-None.
         self._turn_latency_recorder = turn_latency_recorder
+        self._vitals_recorder = vitals_recorder
         self._turn_t0: float | None = None
         self._turn_first_speak_ms: float | None = None
         self._turn_think_chars: int = 0
@@ -398,6 +435,16 @@ class MindLoop:
                     return "external_dm"
                 return "external_public"
         return "internal"
+
+    def _on_turn_usage(self, prompt: int | None, completion: int | None) -> None:
+        """Accumulate this turn's own token usage (one call per cascade pass,
+        via `on_usage` threaded through the LLM stream stack — Task 1). A
+        None-usage pass contributes nothing; the turn total stays None only
+        when NO pass reported usage (→ flat_legacy at the drain site)."""
+        if prompt is not None:
+            self._turn_prompt_tokens = (self._turn_prompt_tokens or 0) + prompt
+        if completion is not None:
+            self._turn_completion_tokens = (self._turn_completion_tokens or 0) + completion
 
     async def _run_one_turn(self, perceptions: list[Perception]) -> bool:
         """Process one origin bucket: sync → render → llm → execute → persist.
@@ -648,6 +695,8 @@ class MindLoop:
         self._turn_speech.clear()
         self._turn_had_tool = False
         self._turn_wrote_diary = False
+        self._turn_prompt_tokens = None
+        self._turn_completion_tokens = None
         try:
             # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
             # before rendering. Frozen when evolution disabled (already-sanctioned
@@ -827,7 +876,73 @@ class MindLoop:
         produced = bool(self._turn_speech) or self._turn_had_tool
         consumes = self._ctx.origin_tier != "external_public"
         if self._energy_enabled and produced and consumes:
-            self._state.energy = max(0.0, self._state.energy - self._cost_per_turn)
+            p = self._turn_prompt_tokens
+            c = self._turn_completion_tokens
+            if p is not None or c is not None:                    # measured
+                token_cost = ((c or 0) + 0.25 * (p or 0)) / self._token_per_energy_unit
+                cost_mode = "measured"
+                tokens_total = (c or 0) + (p or 0)
+            else:                                                  # D1 = sanctioned degrade
+                token_cost = self._cost_per_turn
+                cost_mode = "flat_legacy"
+                tokens_total = None
+            # 代謝 vital §2.3 (Task 5): hot GPU makes the SAME token effort
+            # cost more ATP. latest_sample() is read ONCE here and shared by
+            # both the multiplier and the VitalsRecord ambient fields below —
+            # never re-queried, so the two can't observe different samples.
+            # No fallback: a stale/absent sample (latest_sample()'s own
+            # >2x-poll-interval staleness guard) leaves mult=1.0 and every
+            # ambient field None, rather than fabricating a body reading.
+            mult = 1.0
+            hottest_c = gpu_w = batt = None
+            if self._system_pulse is not None:
+                try:
+                    s = self._system_pulse.latest_sample()
+                except Exception:
+                    s = None
+                if s is not None:
+                    if s.gpus:
+                        hottest_c = max(t for _, t in s.gpus)
+                        mult = thermal_multiplier(
+                            hottest_c, self._thermal_mult_warm, self._thermal_mult_hot
+                        )
+                    if getattr(s, "gpu_power", None):
+                        gpu_w = max(draw for draw, _ in s.gpu_power)
+                    batt = s.battery_pct
+            drain = token_cost * mult
+            energy_before = self._state.energy
+            self._state.energy = max(0.0, self._state.energy - drain)
+            self._turn_energy_cost = drain
+            self._turn_cost_mode = cost_mode
+            self._turn_tokens_total = tokens_total
+            self._turn_ambient = (hottest_c, gpu_w, batt)
+            # 代謝 vital (spec 2026-07-10 §2.2, Task 3): per-turn RL substrate
+            # = the (state, action, cost, state') tuple. MUST be emitted
+            # INSIDE this gate, not unconditionally at end of turn — outside
+            # it, a gate-skipped turn (e.g. external_public) would read this
+            # turn's stash fields still holding the LAST draining turn's
+            # values and silently emit a wrong vitals row for a turn that
+            # never actually drained. `record()` itself never raises
+            # (log-and-continue), and the dispatch here is also wrapped
+            # defensively so a vitals failure can never break the turn.
+            # energy_cost is NOMINAL effort (may exceed energy_before-energy_after
+            # at the floor); energy_before/after give the actual delta.
+            if self._vitals_recorder is not None:
+                try:
+                    await self._vitals_recorder.record(VitalsRecord(
+                        ts=time.time(),
+                        turn_id=self._turn_id,
+                        tokens_total=self._turn_tokens_total,
+                        energy_cost=self._turn_energy_cost,
+                        energy_before=energy_before,
+                        energy_after=self._state.energy,
+                        cost_mode=self._turn_cost_mode,
+                        gpu_hottest_c=self._turn_ambient[0],
+                        gpu_power_w=self._turn_ambient[1],
+                        battery_pct=self._turn_ambient[2],
+                    ))
+                except Exception:
+                    logger.exception("vitals record dispatch failed; continuing")
 
         # Doll-side transcript: one line per turn, full text (B1). Suppressed
         # on a dedicated diary turn (spec §2.3, Task 7): her private
@@ -1242,6 +1357,11 @@ class MindLoop:
         # it inside the try. Without this, that exception's `finally` would
         # hit `NameError: turn_id` and mask the original exception.
         turn_id = None
+        # Task 3: reset the self-stashed mirror in lockstep with the local
+        # default above — an exception before the mint below must not leave
+        # `self._turn_id` carrying the PREVIOUS turn's id into this turn's
+        # (would-be) VitalsRecord.
+        self._turn_id = None
 
         # 延遲壓縮 Part 1 Task 2: turn epoch + reset turn-scoped latency
         # accumulators. Epoch is `_llm_iterate` entry (spec §3.2), NOT
@@ -1258,6 +1378,7 @@ class MindLoop:
         try:
             self._cascade_ctx = CascadeCtx()
             turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
+            self._turn_id = turn_id  # Task 3: mirror for `_run_one_turn`'s drain gate
             # Begin the turn envelope. Trace must NOT depend on cascade_logger
             # being wired — when turn_id is None (no logger), mint a
             # standalone id so the trace still gets a stable turn_id.
@@ -1511,6 +1632,7 @@ class MindLoop:
                 max_tokens=2048,
                 grammar=self._active_grammar(),
                 purpose="cascade",
+                on_usage=self._on_turn_usage,
             )
         else:
             stream = self._llm.stream_messages(
@@ -1519,6 +1641,7 @@ class MindLoop:
                 max_tokens=2048,
                 grammar=self._active_grammar(),
                 purpose="cascade",
+                on_usage=self._on_turn_usage,
             )
 
         # aclosing() ensures the SSE/HTTP connection is torn down on any early
