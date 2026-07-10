@@ -73,6 +73,15 @@ def bucket_idle(idle_s: float) -> str:
     return "long-away"
 
 
+def thermal_multiplier(temp_c: float, warm: float, hot: float) -> float:
+    """Metabolic vital model §2.3 (Task 5): a hot GPU makes the SAME work cost
+    more ATP. Pure function, reuses ``bucket_gpu_temp``'s existing 55/75°C
+    buckets so the drain multiplier and the `[Self pulse]` heat wording never
+    drift apart. cool -> 1.0 (no penalty), warm -> ``warm``, hot -> ``hot``."""
+    b = bucket_gpu_temp(temp_c)
+    return hot if b == "hot" else warm if b == "warm" else 1.0
+
+
 # Sample dataclass -----------------------------------------------------
 
 @dataclass

@@ -39,6 +39,7 @@ from dollos.mind.perception_queue import PerceptionQueue
 from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
+from dollos.perception.system_pulse import thermal_multiplier
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
@@ -163,6 +164,8 @@ class MindLoop:
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
         token_per_energy_unit: float = 2000.0,
+        thermal_multiplier_warm: float = 1.15,
+        thermal_multiplier_hot: float = 1.4,
         self_profile_enabled: bool = False,
         enforcement: Enforcement | None = None,
         system_prompt_suffix: str = "",
@@ -271,6 +274,9 @@ class MindLoop:
         self._turn_wrote_diary: bool = False
         # 代謝 vital (spec 2026-07-10 §2.2, Task 2): token-driven drain.
         self._token_per_energy_unit = token_per_energy_unit
+        # 代謝 vital §2.3 (Task 5): hot-GPU multiplier on the token drain.
+        self._thermal_mult_warm = thermal_multiplier_warm
+        self._thermal_mult_hot = thermal_multiplier_hot
         # This turn's own token effort, accumulated across cascade passes via
         # on_usage (one call per pass — see _on_turn_usage). Contamination-
         # proof: only THIS loop's LLM calls hit THIS loop's callback. Cleared
@@ -281,6 +287,13 @@ class MindLoop:
         self._turn_energy_cost: float = 0.0
         self._turn_cost_mode: str = "measured"
         self._turn_tokens_total: int | None = None
+        # Task 5: (gpu_hottest_c, gpu_power_w, battery_pct) from the SAME
+        # latest_sample() the thermal multiplier reads, for VitalsRecord's
+        # ambient fields. None until a real draining turn with a fresh
+        # sample overwrites it (see the drain block below).
+        self._turn_ambient: tuple[float | None, float | None, float | None] = (
+            None, None, None,
+        )
         # Task 3: mirror of `_llm_iterate`'s local `turn_id` join key. The
         # drain gate lives in `_run_one_turn`, AFTER `_llm_iterate` (and its
         # local `turn_id`) has already gone out of scope — so it's stashed
@@ -873,12 +886,35 @@ class MindLoop:
                 token_cost = self._cost_per_turn
                 cost_mode = "flat_legacy"
                 tokens_total = None
-            # v1a: thermal multiplier = 1.0 (Task 5 wires the real one here)
-            drain = token_cost
+            # 代謝 vital §2.3 (Task 5): hot GPU makes the SAME token effort
+            # cost more ATP. latest_sample() is read ONCE here and shared by
+            # both the multiplier and the VitalsRecord ambient fields below —
+            # never re-queried, so the two can't observe different samples.
+            # No fallback: a stale/absent sample (latest_sample()'s own
+            # >2x-poll-interval staleness guard) leaves mult=1.0 and every
+            # ambient field None, rather than fabricating a body reading.
+            mult = 1.0
+            hottest_c = gpu_w = batt = None
+            if self._system_pulse is not None:
+                try:
+                    s = self._system_pulse.latest_sample()
+                except Exception:
+                    s = None
+                if s is not None:
+                    if s.gpus:
+                        hottest_c = max(t for _, t in s.gpus)
+                        mult = thermal_multiplier(
+                            hottest_c, self._thermal_mult_warm, self._thermal_mult_hot
+                        )
+                    if getattr(s, "gpu_power", None):
+                        gpu_w = max(draw for draw, _ in s.gpu_power)
+                    batt = s.battery_pct
+            drain = token_cost * mult
             self._state.energy = max(0.0, self._state.energy - drain)
             self._turn_energy_cost = drain
             self._turn_cost_mode = cost_mode
             self._turn_tokens_total = tokens_total
+            self._turn_ambient = (hottest_c, gpu_w, batt)
             # 代謝 vital (spec 2026-07-10 §2.2, Task 3): per-turn RL substrate
             # = the (state, action, cost, state') tuple. MUST be emitted
             # INSIDE this gate, not unconditionally at end of turn — outside
@@ -897,6 +933,9 @@ class MindLoop:
                         energy_cost=self._turn_energy_cost,
                         energy_after=self._state.energy,
                         cost_mode=self._turn_cost_mode,
+                        gpu_hottest_c=self._turn_ambient[0],
+                        gpu_power_w=self._turn_ambient[1],
+                        battery_pct=self._turn_ambient[2],
                     ))
                 except Exception:
                     logger.exception("vitals record dispatch failed; continuing")

@@ -17,6 +17,7 @@ from dollos.perception.system_pulse import (
     bucket_mem,
     read_nvidia_smi,
     render_block,
+    thermal_multiplier,
 )
 
 
@@ -49,6 +50,12 @@ def test_bucket_gpu_temp():
     assert bucket_gpu_temp(74.9) == "warm"
     assert bucket_gpu_temp(75) == "hot"
     assert bucket_gpu_temp(90) == "hot"
+
+
+def test_thermal_multiplier_buckets():
+    assert thermal_multiplier(40.0, 1.15, 1.4) == 1.0    # cool (<55)
+    assert thermal_multiplier(65.0, 1.15, 1.4) == 1.15   # warm (55-75)
+    assert thermal_multiplier(90.0, 1.15, 1.4) == 1.4    # hot (>75)
 
 
 def test_bucket_battery():
