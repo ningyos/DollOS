@@ -52,7 +52,7 @@ class _CapturingLLM:
         self.last_user = None
 
     async def stream_completion(self, system, user, prefill, max_tokens=1024,
-                                grammar=None, purpose="cascade"):
+                                grammar=None, purpose="cascade", on_usage=None):
         self.last_user = user
 
         class _Chunk:

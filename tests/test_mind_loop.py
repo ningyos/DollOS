@@ -24,7 +24,8 @@ class _FakeLLM:
         self._returns = returns
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
+        on_usage=None,
     ):
         class _Chunk:
             def __init__(self, text, done):
@@ -35,7 +36,7 @@ class _FakeLLM:
 
     async def stream_messages(
         self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None,
+        purpose="cascade", stop=None, tools=None, on_usage=None,
     ):
         class _Chunk:
             def __init__(self, text, done):
@@ -448,7 +449,8 @@ class _SlowFakeLLM:
         self.consumed = 0
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
+        on_usage=None,
     ):
         class _Chunk:
             def __init__(self, text, done):
@@ -679,14 +681,28 @@ class _ScriptedLLM:
     and counts total passes so tests can assert single-pass vs multi-pass.
     """
 
-    def __init__(self, scripts: list[str], before_pass=None):
+    def __init__(
+        self, scripts: list[str], before_pass=None,
+        usages: list[tuple[int | None, int | None]] | None = None,
+    ):
         self._scripts = scripts
         self.pass_count = 0
         self.captured_messages: list[list[dict]] = []
         self.before_pass = before_pass
+        # Optional per-pass (prompt, completion) usage, reported via
+        # on_usage — opt-in (default None → no invocation, so every
+        # pre-existing consumer of this fake is unaffected). Lets
+        # multi-pass-accumulation tests drive on_usage through a REAL
+        # re-feed cascade instead of calling _on_turn_usage directly.
+        self._usages = usages
 
     def _script_for(self, idx: int) -> str:
         return self._scripts[idx] if idx < len(self._scripts) else self._scripts[-1]
+
+    def _usage_for(self, idx: int) -> tuple[int | None, int | None] | None:
+        if self._usages is None:
+            return None
+        return self._usages[idx] if idx < len(self._usages) else self._usages[-1]
 
     async def _emit(self, text):
         class _Chunk:
@@ -698,24 +714,32 @@ class _ScriptedLLM:
 
     async def stream_completion(
         self, system, user, prefill="", max_tokens=1024, grammar=None,
-        purpose="cascade",
+        purpose="cascade", on_usage=None,
     ):
         idx = self.pass_count
         self.pass_count += 1
         if self.before_pass is not None:
             self.before_pass(idx)
+        if on_usage is not None:
+            usage = self._usage_for(idx)
+            if usage is not None:
+                on_usage(*usage)
         async for c in self._emit(self._script_for(idx)):
             yield c
 
     async def stream_messages(
         self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None,
+        purpose="cascade", stop=None, tools=None, on_usage=None,
     ):
         idx = self.pass_count
         self.pass_count += 1
         self.captured_messages.append(list(messages))
         if self.before_pass is not None:
             self.before_pass(idx)
+        if on_usage is not None:
+            usage = self._usage_for(idx)
+            if usage is not None:
+                on_usage(*usage)
         async for c in self._emit(self._script_for(idx)):
             yield c
 
@@ -1162,7 +1186,8 @@ class _CaptureLLM:
         self.captured_user: str | None = None
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
+        on_usage=None,
     ):
         self.captured_user = user
 
