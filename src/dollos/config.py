@@ -236,6 +236,12 @@ class EnergyConfig(BaseModel):
     restore_per_tick: float = 0.05
     idle_threshold_s: int = 600
     restore_debounce_s: int = 300
+    # 代謝 vital model (spec 2026-07-10 §2.2, Task 2): token-driven drain
+    # replaces the flat cost_per_turn as the primary formula. Calibrated so
+    # a typical turn's drain lands near the old cost_per_turn; smoke-tuned
+    # (spec §7 D4). cost_per_turn is now ONLY the D1 flat_legacy degrade
+    # (both prompt and completion token counts missing for the whole turn).
+    token_per_energy_unit: float = 2000.0
 
 
 class SelfProfileConfig(BaseModel):

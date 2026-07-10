@@ -333,6 +333,7 @@ class _MindLLMAdapter:
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
         async for chunk in self._adapter.stream_completion(
             system=system,
@@ -341,6 +342,7 @@ class _MindLLMAdapter:
             max_tokens=max_tokens,
             grammar=grammar,
             purpose=purpose,
+            on_usage=on_usage,
         ):
             yield chunk
 
@@ -351,6 +353,7 @@ class _MindLLMAdapter:
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
         async for chunk in self._adapter.stream_messages(
             system=system,
@@ -358,6 +361,7 @@ class _MindLLMAdapter:
             max_tokens=max_tokens,
             grammar=grammar,
             purpose=purpose,
+            on_usage=on_usage,
         ):
             yield chunk
 
@@ -574,6 +578,7 @@ class DollOS:
             cascade_logger=self._cascade_logger,
             energy_enabled=settings.energy.enabled,
             cost_per_turn=settings.energy.cost_per_turn,
+            token_per_energy_unit=settings.energy.token_per_energy_unit,
             self_profile_enabled=settings.self_profile.enabled,
             enforcement=self._doll_pack.enforcement,
             evolution_enabled=settings.evolution.enabled,

@@ -161,6 +161,7 @@ class MindLoop:
         cascade_logger=None,
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
+        token_per_energy_unit: float = 2000.0,
         self_profile_enabled: bool = False,
         enforcement: Enforcement | None = None,
         system_prompt_suffix: str = "",
@@ -266,6 +267,18 @@ class MindLoop:
         self._cost_per_turn = cost_per_turn
         self._turn_had_tool: bool = False
         self._turn_wrote_diary: bool = False
+        # 代謝 vital (spec 2026-07-10 §2.2, Task 2): token-driven drain.
+        self._token_per_energy_unit = token_per_energy_unit
+        # This turn's own token effort, accumulated across cascade passes via
+        # on_usage (one call per pass — see _on_turn_usage). Contamination-
+        # proof: only THIS loop's LLM calls hit THIS loop's callback. Cleared
+        # per turn in the SAME spot as _turn_speech.clear() (_run_one_turn).
+        self._turn_prompt_tokens: int | None = None
+        self._turn_completion_tokens: int | None = None
+        # Stashed at the drain site for Task 3's VitalsRecord.
+        self._turn_energy_cost: float = 0.0
+        self._turn_cost_mode: str = "measured"
+        self._turn_tokens_total: int | None = None
         # 延遲壓縮 Part 1 Task 2: turn-level think/speak/first-speak latency
         # telemetry (spec §3.2/§7). `turn_latency_recorder=None` is a full
         # no-op — every consumer below gates on it being non-None.
@@ -398,6 +411,16 @@ class MindLoop:
                     return "external_dm"
                 return "external_public"
         return "internal"
+
+    def _on_turn_usage(self, prompt: int | None, completion: int | None) -> None:
+        """Accumulate this turn's own token usage (one call per cascade pass,
+        via `on_usage` threaded through the LLM stream stack — Task 1). A
+        None-usage pass contributes nothing; the turn total stays None only
+        when NO pass reported usage (→ flat_legacy at the drain site)."""
+        if prompt is not None:
+            self._turn_prompt_tokens = (self._turn_prompt_tokens or 0) + prompt
+        if completion is not None:
+            self._turn_completion_tokens = (self._turn_completion_tokens or 0) + completion
 
     async def _run_one_turn(self, perceptions: list[Perception]) -> bool:
         """Process one origin bucket: sync → render → llm → execute → persist.
@@ -648,6 +671,8 @@ class MindLoop:
         self._turn_speech.clear()
         self._turn_had_tool = False
         self._turn_wrote_diary = False
+        self._turn_prompt_tokens = None
+        self._turn_completion_tokens = None
         try:
             # 慢變演化 tamper tripwire (spec §5): detect/repair external edits
             # before rendering. Frozen when evolution disabled (already-sanctioned
@@ -827,7 +852,22 @@ class MindLoop:
         produced = bool(self._turn_speech) or self._turn_had_tool
         consumes = self._ctx.origin_tier != "external_public"
         if self._energy_enabled and produced and consumes:
-            self._state.energy = max(0.0, self._state.energy - self._cost_per_turn)
+            p = self._turn_prompt_tokens
+            c = self._turn_completion_tokens
+            if p is not None or c is not None:                    # measured
+                token_cost = ((c or 0) + 0.25 * (p or 0)) / self._token_per_energy_unit
+                cost_mode = "measured"
+                tokens_total = (c or 0) + (p or 0)
+            else:                                                  # D1 = sanctioned degrade
+                token_cost = self._cost_per_turn
+                cost_mode = "flat_legacy"
+                tokens_total = None
+            # v1a: thermal multiplier = 1.0 (Task 5 wires the real one here)
+            drain = token_cost
+            self._state.energy = max(0.0, self._state.energy - drain)
+            self._turn_energy_cost = drain
+            self._turn_cost_mode = cost_mode
+            self._turn_tokens_total = tokens_total
 
         # Doll-side transcript: one line per turn, full text (B1). Suppressed
         # on a dedicated diary turn (spec §2.3, Task 7): her private
@@ -1511,6 +1551,7 @@ class MindLoop:
                 max_tokens=2048,
                 grammar=self._active_grammar(),
                 purpose="cascade",
+                on_usage=self._on_turn_usage,
             )
         else:
             stream = self._llm.stream_messages(
@@ -1519,6 +1560,7 @@ class MindLoop:
                 max_tokens=2048,
                 grammar=self._active_grammar(),
                 purpose="cascade",
+                on_usage=self._on_turn_usage,
             )
 
         # aclosing() ensures the SSE/HTTP connection is torn down on any early
