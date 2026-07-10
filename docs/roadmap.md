@@ -24,6 +24,11 @@
 | Roadmap step 30 — 慢變演化(current_self「現在的我」:evidence layer + ratification + Mode A evolution pass)| Merged 2026-07-03, live-smoke-verified |
 | Roadmap step 31 — Discord bridge internalization + generic ServiceSupervisor | Merged 2026-07-06 |
 | Roadmap step 32 — MCP server (peer talk + secret-gated debug mode: `get_state`/`get_recent` via authenticated IPC query, `query_token` fail-closed) | Merged 2026-07-07 |
+| Roadmap step 33 — 自主議程 self-directed agenda (self_directed OpenLoop + AgendaObserver 四閘 → AgendaMoment 自發回合，抑制對外發話、reactive 優先) | Merged 2026-07-07 |
+| Roadmap step 34 — 日記 = 第一人稱反思當天 action log (對話+白名單動作+世界事件；config 化 DiaryMoment 專用回合) | Merged 2026-07-07 |
+| Roadmap step 35 — System Pulse 主動觸發 (PulseObserver → PulseMoment 自發回合；battery critical / gpu hot / window stuck 跨負向門檻喚醒，發話 ON、工具收窄 PULSE_TOOLS、evaluate_alerts edge+re-arm+throttle deferred-retry) | Merged 2026-07-09, live-smoke-verified |
+| Roadmap step 36 — System Pulse 臨場感調校 (Alert severity + 純 pulse 回合 [Body signal] 描述性框架〔critical 傾向出聲/advisory 傾向安靜，Self-First〕+ PulseMoment 進 diary action-log) | Merged 2026-07-09, live-smoke-verified (critical 出聲率 1/3→5/5) |
+| Roadmap step 37 — 代謝 vital 模型 v1a+v1b (state.energy 消耗改由本回合 token 驅動〔on_usage in-loop 歸因〕× GPU 熱乘數；VitalsRecorder per-turn RL 底材；瓦數只記錄不扣血；電池天花板 v2 留 LattePanda) | Merged 2026-07-10, live-smoke-verified (抓到並修 aclose-chain critical bug) |
 
 ---
 
