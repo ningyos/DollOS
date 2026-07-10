@@ -910,6 +910,7 @@ class MindLoop:
                         gpu_w = max(draw for draw, _ in s.gpu_power)
                     batt = s.battery_pct
             drain = token_cost * mult
+            energy_before = self._state.energy
             self._state.energy = max(0.0, self._state.energy - drain)
             self._turn_energy_cost = drain
             self._turn_cost_mode = cost_mode
@@ -924,6 +925,8 @@ class MindLoop:
             # never actually drained. `record()` itself never raises
             # (log-and-continue), and the dispatch here is also wrapped
             # defensively so a vitals failure can never break the turn.
+            # energy_cost is NOMINAL effort (may exceed energy_before-energy_after
+            # at the floor); energy_before/after give the actual delta.
             if self._vitals_recorder is not None:
                 try:
                     await self._vitals_recorder.record(VitalsRecord(
@@ -931,6 +934,7 @@ class MindLoop:
                         turn_id=self._turn_id,
                         tokens_total=self._turn_tokens_total,
                         energy_cost=self._turn_energy_cost,
+                        energy_before=energy_before,
                         energy_after=self._state.energy,
                         cost_mode=self._turn_cost_mode,
                         gpu_hottest_c=self._turn_ambient[0],

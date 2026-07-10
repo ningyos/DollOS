@@ -143,6 +143,27 @@ device = "cuda:0"
 # engine = "piper-vits"
 
 # ----------------------------------------------------------------------
+# Energy — B3 energy system (active-consumes, idle-restores, prompt-
+# injects), extended by the 代謝 vital model (2026-07-10 spec) into a
+# token-driven drain. cost_per_turn is now ONLY the D1 flat_legacy degrade
+# (both prompt and completion token counts missing for the whole turn);
+# token_per_energy_unit is the primary formula's divisor. The thermal
+# multipliers make a hot GPU cost MORE ATP for the same token effort,
+# reusing system_pulse's cool/warm/hot GPU buckets (55/75°C). All of
+# token_per_energy_unit/thermal_multiplier_* are smoke-tuned (spec §7 D4).
+# ----------------------------------------------------------------------
+
+[energy]
+enabled = true
+cost_per_turn = 0.05           # D1 flat_legacy degrade only (token counts missing all turn)
+restore_per_tick = 0.05
+idle_threshold_s = 600
+restore_debounce_s = 300
+token_per_energy_unit = 2000.0   # primary drain formula: (completion + 0.25*prompt) / this
+thermal_multiplier_warm = 1.15   # GPU 55-75°C
+thermal_multiplier_hot = 1.4     # GPU >75°C
+
+# ----------------------------------------------------------------------
 # Self pulse — Doll's proprioception of her host (CPU / mem / GPU /
 # battery / focused window / network). Surfaces as a [Self pulse] block
 # only when a bucket changes, not every iteration.

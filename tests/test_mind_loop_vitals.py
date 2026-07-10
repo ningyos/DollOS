@@ -30,6 +30,23 @@ class _CapturingRecorder:
         self.records.append(rec)
 
 
+class _StubCascadeLogger:
+    """Mints a fresh id per call — mirrors CascadeLogger.start_turn()'s real
+    per-turn uuid behavior (tests/test_mind_loop_turn_latency.py's
+    ``_StubCascadeLogger`` uses a FIXED id instead, since that test only
+    needs to prove round-tripping; here we need genuine freshness)."""
+
+    def __init__(self):
+        self._n = 0
+
+    def start_turn(self) -> str:
+        self._n += 1
+        return f"turn-{self._n}"
+
+    def log_iter(self, **kwargs) -> None:
+        pass
+
+
 def _user_perception(text: str) -> Perception:
     return Perception(kind="UserSpoke", t=time.time(), data={"text": text})
 
@@ -53,11 +70,12 @@ async def test_draining_turn_emits_vitals_row(tmp_path):
     VitalsRecord must be emitted with the same values that landed in the
     stash fields."""
     rec = _CapturingRecorder()
-    llm = _ScriptedLLM([_speech_pass("你好")])
+    llm = _ScriptedLLM([_speech_pass("你好"), _speech_pass("再說一次")])
     ml = make_mindloop(
         memory_root=tmp_path, llm=llm,
         energy_enabled=True, cost_per_turn=0.1,
         vitals_recorder=rec,
+        cascade_logger=_StubCascadeLogger(),
     )
 
     await ml._run_one_turn([_user_perception("hi")])
@@ -67,6 +85,15 @@ async def test_draining_turn_emits_vitals_row(tmp_path):
     assert r.energy_cost == pytest.approx(0.1)
     assert r.energy_after == pytest.approx(0.9)
     assert r.cost_mode == "flat_legacy"  # no token usage callback wired here
+    assert r.turn_id is not None
+
+    # Second draining turn — the RL row's turn_id must be FRESH per turn,
+    # not a stale/frozen value carried over from the first (join-key
+    # correctness for a future consecutive-row reward computation).
+    await ml._run_one_turn([_user_perception("hi again")])
+    assert len(rec.records) == 2
+    assert rec.records[1].turn_id is not None
+    assert rec.records[1].turn_id != r.turn_id
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,7 @@ async def test_vitals_recorder_writes_row(tmp_path: Path):
     rec = VitalsRecorder(tmp_path)
     await rec.record(VitalsRecord(
         ts=1_000_000.0, turn_id="t-abc", tokens_total=1100,
-        energy_cost=0.55, energy_after=0.45, cost_mode="measured",
+        energy_cost=0.55, energy_before=1.0, energy_after=0.45, cost_mode="measured",
     ))
     files = list(tmp_path.glob("vitals-*.jsonl"))
     assert len(files) == 1
@@ -36,5 +36,5 @@ async def test_vitals_recorder_never_raises_on_bad_dir(tmp_path: Path):
     rec = VitalsRecorder(bad)
     await rec.record(VitalsRecord(
         ts=1.0, turn_id=None, tokens_total=None,
-        energy_cost=0.0, energy_after=1.0, cost_mode="flat_legacy",
+        energy_cost=0.0, energy_before=1.0, energy_after=1.0, cost_mode="flat_legacy",
     ))   # 不得 raise

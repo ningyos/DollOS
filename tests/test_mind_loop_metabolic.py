@@ -45,6 +45,18 @@ from tests._mindloop_factory import make_mindloop
 from tests.test_mind_loop import _FakeLLM, _ScriptedLLM, _recall_pass, _speech_pass
 
 
+class _CapturingRecorder:
+    """Spy VitalsRecorder — mirrors tests/test_mind_loop_vitals.py's fixture
+    of the same name so the emitted VitalsRecord can be asserted on directly,
+    rather than the pre-persistence `_turn_ambient` stash."""
+
+    def __init__(self):
+        self.records = []
+
+    async def record(self, rec):
+        self.records.append(rec)
+
+
 class _FakePulse:
     """Mirrors tests/test_pulse_observer.py's _FakePulse: a stand-in for
     SystemPulse exposing only the one method the drain site reads."""
@@ -291,11 +303,12 @@ async def test_stale_or_absent_sample_multiplier_one(tmp_path):
 async def test_hot_gpu_ambient_fields_reach_vitals_record(tmp_path):
     """The same latest_sample() the multiplier reads also fills VitalsRecord's
     ambient fields (gpu_hottest_c/gpu_power_w/battery_pct) -- Task 3's vitals
-    log gets the real body reading, not None, on a turn with a fresh sample."""
-    from dollos.telemetry.vitals import VitalsRecorder
-
+    log gets the real body reading, not None, on a turn with a fresh sample.
+    Asserts on the emitted VitalsRecord itself (via a spy recorder), not the
+    pre-persistence `_turn_ambient` stash -- the stash could be right while a
+    bug in the record() call site still drops/misorders the fields."""
     state = MindState()
-    recorder = VitalsRecorder(tmp_path / "vitals")
+    recorder = _CapturingRecorder()
     ml = make_mindloop(
         memory_root=tmp_path,
         state=state,
@@ -318,4 +331,8 @@ async def test_hot_gpu_ambient_fields_reach_vitals_record(tmp_path):
     )
     await ml.iterate()
 
-    assert ml._turn_ambient == (90.0, 250.0, 77.0)
+    assert len(recorder.records) == 1
+    r = recorder.records[0]
+    assert r.gpu_hottest_c == pytest.approx(90.0)
+    assert r.gpu_power_w == pytest.approx(250.0)
+    assert r.battery_pct == pytest.approx(77.0)
