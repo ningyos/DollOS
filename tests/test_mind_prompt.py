@@ -530,3 +530,49 @@ def test_external_public_teeth_owner_marker_would_leak_unfiltered():
     state = _seed_mixed_state()
     unfiltered = _render_perceptions(state.recent_perceptions, time.time())
     assert "owner-secret-marker-999" in unfiltered
+
+
+# --- Task 2: [Body signal] framing block ---
+
+
+def test_body_signal_critical_wording():
+    from dollos.mind.mind_prompt import render_body_signal
+    out = render_body_signal([("critical", "電量掉到 12% 而且在放電")])
+    assert out is not None
+    assert out.startswith("[Body signal]")
+    assert "電量掉到 12% 而且在放電" in out
+    assert "主人多半會想知道" in out          # critical lean-to-surface phrasing
+    assert "不緊急" not in out
+
+
+def test_body_signal_advisory_wording():
+    from dollos.mind.mind_prompt import render_body_signal
+    out = render_body_signal([("advisory", "盯著「editor」連續 118 分鐘沒換")])
+    assert out is not None
+    assert "不緊急" in out                    # advisory lean-to-restraint phrasing
+    assert "主人多半會想知道" not in out
+    assert "連續 118 分鐘沒換" in out
+
+
+def test_body_signal_mixed_takes_critical():
+    from dollos.mind.mind_prompt import render_body_signal
+    out = render_body_signal([("advisory", "卡視窗"), ("critical", "電量低")])
+    assert "主人多半會想知道" in out          # any critical → critical framing
+    assert "卡視窗" in out and "電量低" in out
+
+
+def test_body_signal_empty_returns_none():
+    from dollos.mind.mind_prompt import render_body_signal
+    assert render_body_signal([]) is None
+
+
+def test_body_signal_block_precedes_decision_time():
+    """D3: [Body signal] must be the last framing she reads before deciding —
+    i.e. it renders BEFORE [Decision time] in the full render_mind output."""
+    state = MindState()
+    out = render_mind(
+        state, memsearch_hits=[], system_prompt="SYS",
+        body_signal_block="[Body signal]\ntest body",
+    )
+    assert "[Body signal]" in out
+    assert out.index("[Body signal]") < out.index("[Decision time]")

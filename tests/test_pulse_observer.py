@@ -229,3 +229,40 @@ async def test_tick_throttle_within_window_defers():
     assert await _drained(q) == []
     obs._tick(11_000.0)            # throttle passed → gpu fires
     assert [p.data["concern"] for p in await _drained(q)] == ["gpu_hot"]
+
+
+# --- severity field (Task 1) ---
+
+
+def test_battery_alert_severity_critical():
+    st = AlertState.initial()
+    s = _sample(battery_pct=12.0, battery_status="Discharging")
+    alerts, _ = evaluate_alerts(st, s, 10_000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].severity == "critical"
+
+
+def test_gpu_alert_severity_critical():
+    st = AlertState.initial()
+    s = _sample(gpus=[(50.0, 80.0)])
+    alerts, _ = evaluate_alerts(st, s, 10_000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].severity == "critical"
+
+
+def test_window_stuck_alert_severity_advisory():
+    st = AlertState.initial()
+    s0 = _sample(active_window="editor", idle_s=5.0)
+    _, st = evaluate_alerts(st, s0, 0.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    s1 = _sample(active_window="editor", idle_s=5.0)
+    alerts, _ = evaluate_alerts(st, s1, STUCK, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].severity == "advisory"
+
+
+@pytest.mark.asyncio
+async def test_tick_puts_severity_in_data():
+    s = _sample(battery_pct=12.0, battery_status="Discharging")
+    obs, q = _observer(s)
+    obs._tick(10_000.0)
+    perts = await _drained(q)
+    p = perts[0]
+    assert p.data["severity"] == "critical"
+    assert p.data["concern"] == "battery_critical"
