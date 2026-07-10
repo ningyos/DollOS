@@ -40,6 +40,7 @@ def make_mindloop(
     on_turn_complete=None,
     diary_max_log_chars: int = 40000,
     turn_latency_recorder=None,
+    vitals_recorder=None,
     cascade_logger=None,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
@@ -79,5 +80,6 @@ def make_mindloop(
         on_turn_complete=on_turn_complete,
         diary_max_log_chars=diary_max_log_chars,
         turn_latency_recorder=turn_latency_recorder,
+        vitals_recorder=vitals_recorder,
         cascade_logger=cascade_logger,
     )
