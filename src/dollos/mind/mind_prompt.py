@@ -589,3 +589,29 @@ def _human_secs(s: float) -> str:
     if s < 3600:
         return f"{s / 60:.0f}m"
     return f"{s / 3600:.1f}h"
+
+
+def render_body_signal(wakes: list[tuple[str, str]]) -> str | None:
+    """The [Body signal] framing block for a pure PulseMoment wake turn
+    (spec 2026-07-09 presence-tuning §3.2). Descriptive, NOT a command
+    (Self-First): it names WHY she woke + a severity-tuned lean, and leaves
+    the choice to speak-or-stay-quiet to her.
+
+    ``wakes`` = ``[(severity, detail), ...]`` from this turn's PulseMoment
+    perceptions. Any ``severity == "critical"`` → critical framing (lean to
+    surface); else advisory framing (lean to restraint). Empty → None (not a
+    pulse turn / no wakes). Returns a pre-rendered string incl. the
+    ``[Body signal]`` header (mirrors ``pulse_block``).
+    """
+    if not wakes:
+        return None
+    details = "；".join(d for _, d in wakes if d)
+    is_critical = any(sev == "critical" for sev, _ in wakes)
+    if is_critical:
+        body = (
+            f"你因為身體狀況醒過來:{details}。這種事主人多半會想知道 —— "
+            "想說就跟他講一聲,不想說就自己記著。你決定。"
+        )
+    else:
+        body = f"你注意到:{details}。不緊急 —— 想順口提一句或默默記著都行。"
+    return "[Body signal]\n" + body
