@@ -42,6 +42,7 @@ def render_mind(
     *,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
+    body_signal_block: str | None = None,
     today_log_block: str | None = None,
     associative_hits: list[dict] | None = None,
     primary_language: str = "繁體中文",
@@ -61,6 +62,10 @@ def render_mind(
     ``cognition_block`` — optional pre-rendered ``[Cognition]`` block from
     ``perception.cognition.CognitionWorker.snapshot()``. Inserted right
     after ``[Self pulse]``.
+
+    ``body_signal_block`` — pre-rendered ``[Body signal]`` from
+    ``render_body_signal()``, only on pure PulseMoment turns; inserted right
+    before ``[Decision time]``.
 
     ``today_log_block`` — optional pre-rendered ``[Today's log]`` block from
     ``MindLoop._read_today_log()`` (spec §2.2, Task 7): the day's full
@@ -212,6 +217,8 @@ def render_mind(
             "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。",
             "",
         ])
+    if body_signal_block:
+        blocks.extend([body_signal_block, ""])
     blocks.extend([
         "[Decision time]",
         "What do you do this iteration? Output a JSON array of 0..N actions.",
