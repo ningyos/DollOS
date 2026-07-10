@@ -31,6 +31,7 @@ from dollos.perception.system_pulse import (
 class Alert:
     slug: str   # "battery_critical" | "gpu_hot" | "window_stuck"
     text: str   # self-contained zh description → PulseMoment.data.detail
+    severity: str    # "critical" | "advisory" (spec §3.1)
 
 
 @dataclass(frozen=True)
@@ -126,17 +127,20 @@ def evaluate_alerts(
         candidates.append(("battery", Alert(
             slug="battery_critical",
             text=f"電量掉到 {sample.battery_pct:.0f}% 而且在放電",
+            severity="critical",
         )))
     if gpu_bad and gpu_armed:
         candidates.append(("gpu", Alert(
             slug="gpu_hot",
             text=f"GPU 溫度到 {hottest:.0f}°C,燙",
+            severity="critical",
         )))
     if stuck_bad and stuck_armed:
         mins = int((now - stuck_since) / 60)
         candidates.append(("window", Alert(
             slug="window_stuck",
             text=f"盯著「{stuck_window}」連續 {mins} 分鐘沒換",
+            severity="advisory",
         )))
 
     # --- throttle with deferred-retry; consume arm only on emit ---
@@ -202,9 +206,9 @@ class PulseObserver:
         for a in alerts:
             self._queue.put(Perception(
                 kind="PulseMoment", t=now,
-                data={"concern": a.slug, "detail": a.text},
+                data={"concern": a.slug, "detail": a.text, "severity": a.severity},
             ))
-            logger.info("PulseMoment fired: %s", a.slug)
+            logger.info("PulseMoment fired: %s (%s)", a.slug, a.severity)
 
     async def run(self) -> None:
         # boot grace: seed last_fire_at = now so a standing bad state at daemon
