@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING
 
 from dollos.llm.adapter import LLMAdapter, StreamChunk
@@ -31,13 +31,14 @@ class ComposedLLMAdapter(LLMAdapter):
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         prompt = self._template.render(
             system=system, user=user, prefill=prefill, tools=tools
         )
         async for chunk in self._provider.stream(
             prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar,
-            purpose=purpose,
+            purpose=purpose, on_usage=on_usage,
         ):
             yield chunk
 
@@ -51,12 +52,13 @@ class ComposedLLMAdapter(LLMAdapter):
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         prompt = self._template.render_messages(
             system=system, messages=messages, tools=tools
         )
         async for chunk in self._provider.stream(
             prompt=prompt, stop=stop, max_tokens=max_tokens, grammar=grammar,
-            purpose=purpose,
+            purpose=purpose, on_usage=on_usage,
         ):
             yield chunk
