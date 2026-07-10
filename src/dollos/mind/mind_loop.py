@@ -633,7 +633,7 @@ class MindLoop:
         if self._is_pulse:
             wakes = [
                 (
-                    (p.data or {}).get("severity", "advisory"),
+                    (p.data or {}).get("severity", "critical"),
                     (p.data or {}).get("detail", ""),
                 )
                 for p in perceptions

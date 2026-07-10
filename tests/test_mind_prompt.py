@@ -564,3 +564,15 @@ def test_body_signal_mixed_takes_critical():
 def test_body_signal_empty_returns_none():
     from dollos.mind.mind_prompt import render_body_signal
     assert render_body_signal([]) is None
+
+
+def test_body_signal_block_precedes_decision_time():
+    """D3: [Body signal] must be the last framing she reads before deciding —
+    i.e. it renders BEFORE [Decision time] in the full render_mind output."""
+    state = MindState()
+    out = render_mind(
+        state, memsearch_hits=[], system_prompt="SYS",
+        body_signal_block="[Body signal]\ntest body",
+    )
+    assert "[Body signal]" in out
+    assert out.index("[Body signal]") < out.index("[Decision time]")
