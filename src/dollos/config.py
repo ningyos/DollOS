@@ -242,6 +242,11 @@ class EnergyConfig(BaseModel):
     # (spec §7 D4). cost_per_turn is now ONLY the D1 flat_legacy degrade
     # (both prompt and completion token counts missing for the whole turn).
     token_per_energy_unit: float = 2000.0
+    # 代謝 vital model §2.3 (Task 5): hot-GPU multiplier on the token drain,
+    # reusing bucket_gpu_temp's cool/warm/hot buckets (55/75°C). Smoke-tuned
+    # (spec §7 D4), same status as token_per_energy_unit above.
+    thermal_multiplier_warm: float = 1.15
+    thermal_multiplier_hot: float = 1.4
 
 
 class SelfProfileConfig(BaseModel):

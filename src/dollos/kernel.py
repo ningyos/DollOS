@@ -585,6 +585,8 @@ class DollOS:
             energy_enabled=settings.energy.enabled,
             cost_per_turn=settings.energy.cost_per_turn,
             token_per_energy_unit=settings.energy.token_per_energy_unit,
+            thermal_multiplier_warm=settings.energy.thermal_multiplier_warm,
+            thermal_multiplier_hot=settings.energy.thermal_multiplier_hot,
             self_profile_enabled=settings.self_profile.enabled,
             enforcement=self._doll_pack.enforcement,
             evolution_enabled=settings.evolution.enabled,

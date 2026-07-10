@@ -23,15 +23,37 @@ from the flat cost_per_turn model) computes:
 v1a: the thermal multiplier is fixed at 1.0 (Task 5 wires the real one) —
 drain == token_cost this task, so the arithmetic below has no multiplier
 term.
+
+Task 5 adds the real thermal multiplier: the drain site reads
+``self._system_pulse.latest_sample()`` ONCE, and if the sample is fresh and
+carries ``gpus``, multiplies ``token_cost`` by ``thermal_multiplier(hottest_c,
+warm, hot)`` — a hot GPU makes the SAME token effort cost more ATP. A
+stale/absent sample (``latest_sample()`` returns None, mirroring
+PulseObserver/AgendaObserver's own no-fallback staleness guard) leaves the
+multiplier at 1.0 -- no fabricated ambient reading.
 """
 from __future__ import annotations
+
+from datetime import datetime
 
 import pytest
 
 from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
+from dollos.perception.system_pulse import PulseSample
 from tests._mindloop_factory import make_mindloop
 from tests.test_mind_loop import _FakeLLM, _ScriptedLLM, _recall_pass, _speech_pass
+
+
+class _FakePulse:
+    """Mirrors tests/test_pulse_observer.py's _FakePulse: a stand-in for
+    SystemPulse exposing only the one method the drain site reads."""
+
+    def __init__(self, sample):
+        self._sample = sample
+
+    def latest_sample(self):
+        return self._sample
 
 
 class _UsageLLM:
@@ -212,3 +234,88 @@ async def test_multi_pass_accumulates_before_single_drain(tmp_path):
     assert state.energy == pytest.approx(1.0 - expected)
     assert ml._turn_cost_mode == "measured"
     assert ml._turn_tokens_total == 150 + 280
+
+
+@pytest.mark.asyncio
+async def test_hot_gpu_raises_drain(tmp_path):
+    """A hot GPU sample multiplies the token-driven drain (spec §2.3, Task 5):
+    token_cost 1000/2000 = 0.5, hottest_c=90 -> hot bucket -> ×1.4 -> 0.7."""
+    state = MindState()
+    ml = make_mindloop(
+        memory_root=tmp_path,
+        state=state,
+        queue=_user_turn_queue(),
+        llm=_UsageLLM("hi", prompt=0, completion=1000),
+        energy_enabled=True,
+        cost_per_turn=0.05,
+        token_per_energy_unit=2000.0,
+        thermal_multiplier_warm=1.15,
+        thermal_multiplier_hot=1.4,
+    )
+    ml._system_pulse = _FakePulse(
+        PulseSample(taken_at=datetime.now(), gpus=[(50.0, 90.0)])
+    )
+    await ml.iterate()
+
+    # token_cost = (1000 + 0.25*0) / 2000 = 0.5; drain = 0.5 * 1.4 = 0.7
+    assert state.energy == pytest.approx(1.0 - 0.7)
+    assert ml._turn_energy_cost == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
+async def test_stale_or_absent_sample_multiplier_one(tmp_path):
+    """latest_sample() returning None (stale/absent, per SystemPulse's own
+    no-fallback staleness guard) must NOT fabricate a multiplier -> 1.0,
+    drain unchanged from the plain token_cost."""
+    state = MindState()
+    ml = make_mindloop(
+        memory_root=tmp_path,
+        state=state,
+        queue=_user_turn_queue(),
+        llm=_UsageLLM("hi", prompt=0, completion=1000),
+        energy_enabled=True,
+        cost_per_turn=0.05,
+        token_per_energy_unit=2000.0,
+        thermal_multiplier_warm=1.15,
+        thermal_multiplier_hot=1.4,
+    )
+    ml._system_pulse = _FakePulse(None)  # stale/absent
+    await ml.iterate()
+
+    # token_cost = (1000 + 0.25*0) / 2000 = 0.5; no multiplier -> drain 0.5
+    assert state.energy == pytest.approx(1.0 - 0.5)
+    assert ml._turn_energy_cost == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_hot_gpu_ambient_fields_reach_vitals_record(tmp_path):
+    """The same latest_sample() the multiplier reads also fills VitalsRecord's
+    ambient fields (gpu_hottest_c/gpu_power_w/battery_pct) -- Task 3's vitals
+    log gets the real body reading, not None, on a turn with a fresh sample."""
+    from dollos.telemetry.vitals import VitalsRecorder
+
+    state = MindState()
+    recorder = VitalsRecorder(tmp_path / "vitals")
+    ml = make_mindloop(
+        memory_root=tmp_path,
+        state=state,
+        queue=_user_turn_queue(),
+        llm=_UsageLLM("hi", prompt=0, completion=1000),
+        energy_enabled=True,
+        cost_per_turn=0.05,
+        token_per_energy_unit=2000.0,
+        thermal_multiplier_warm=1.15,
+        thermal_multiplier_hot=1.4,
+        vitals_recorder=recorder,
+    )
+    ml._system_pulse = _FakePulse(
+        PulseSample(
+            taken_at=datetime.now(),
+            gpus=[(50.0, 90.0)],
+            gpu_power=[(250.0, 320.0)],
+            battery_pct=77.0,
+        )
+    )
+    await ml.iterate()
+
+    assert ml._turn_ambient == (90.0, 250.0, 77.0)
