@@ -47,12 +47,14 @@ class _FakeProvider(Provider):
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage=None,
     ) -> AsyncIterator[StreamChunk]:
         self.last_prompt = prompt
         self.last_stop = stop
         self.last_max_tokens = max_tokens
         self.last_grammar = grammar
         self.last_purpose = purpose
+        self.last_on_usage = on_usage
         for chunk in self._chunks:
             yield chunk
 
@@ -129,7 +131,10 @@ async def test_composed_passes_tools_to_template():
             return "RENDERED"
 
     class _StubProvider:
-        async def stream(self, *, prompt, stop=None, max_tokens=1024, grammar=None, purpose="cascade"):
+        async def stream(
+            self, *, prompt, stop=None, max_tokens=1024, grammar=None,
+            purpose="cascade", on_usage=None,
+        ):
             captured["prompt"] = prompt
             yield StreamChunk(text="ok", done=True)
 

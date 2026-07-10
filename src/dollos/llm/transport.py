@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 
@@ -39,11 +39,15 @@ class Provider(ABC):
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream tokens. Caller owns prompt formatting. `grammar` is a GBNF
         string used to constrain sampling when the backend supports it; pass
         None for unconstrained sampling. `purpose` is a free-form tag stored
-        in telemetry for cognition vitals (e.g. "cascade", "subagent")."""
+        in telemetry for cognition vitals (e.g. "cascade", "subagent").
+        `on_usage` — invoked once per call in the `finally` block with
+        (prompt_tokens, completion_tokens); either may be None when the
+        backend omits usage."""
         ...
 
 
@@ -80,6 +84,7 @@ class LlamaCppProvider(Provider):
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         body = {
             "prompt": prompt,
@@ -154,6 +159,11 @@ class LlamaCppProvider(Provider):
                         prompt_tokens = pe
                     if isinstance(pp, int):
                         completion_tokens = pp
+                if on_usage is not None:
+                    try:
+                        on_usage(prompt_tokens, completion_tokens)
+                    except Exception:
+                        logger.exception("on_usage callback raised (continuing)")
                 if self._recorder is not None:
                     context_pct: float | None = None
                     if prompt_tokens is not None and self._max_context_tokens:

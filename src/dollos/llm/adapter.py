@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -38,11 +38,14 @@ class LLMAdapter(ABC):
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion. `tools` is forwarded to the template; transports
         ignore it (the prompt encodes tool definitions as text). `grammar` is
         a GBNF string forwarded to the provider's sampler when supported (None
-        = unconstrained sampling)."""
+        = unconstrained sampling). `on_usage` — invoked once per call in the
+        transport `finally` with (prompt_tokens, completion_tokens); either
+        may be None when the backend omits usage."""
         ...
 
     @abstractmethod
@@ -56,6 +59,7 @@ class LLMAdapter(ABC):
         tools: list[type[BaseModel]] | None = None,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from a multi-message conversation history.
 
@@ -66,5 +70,9 @@ class LLMAdapter(ABC):
         opens a fresh assistant `<think>` turn at the end regardless of the
         last message's role.
 
-        Single-shot non-cascade callers keep using `stream_completion`."""
+        Single-shot non-cascade callers keep using `stream_completion`.
+
+        `on_usage` — invoked once per call in the transport `finally` with
+        (prompt_tokens, completion_tokens); either may be None when the
+        backend omits usage."""
         ...
