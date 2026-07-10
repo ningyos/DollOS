@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import aclosing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -336,16 +337,22 @@ class _MindLLMAdapter:
         purpose: str = "cascade",
         on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
-        async for chunk in self._adapter.stream_completion(
-            system=system,
-            user=user,
-            prefill=prefill,
-            max_tokens=max_tokens,
-            grammar=grammar,
-            purpose=purpose,
-            on_usage=on_usage,
-        ):
-            yield chunk
+        # aclosing() — same reasoning as ComposedLLMAdapter (composed.py):
+        # a plain `async for ... yield` does NOT propagate GeneratorExit into
+        # the inner generator on early exit, so on_usage would fire too late.
+        async with aclosing(
+            self._adapter.stream_completion(
+                system=system,
+                user=user,
+                prefill=prefill,
+                max_tokens=max_tokens,
+                grammar=grammar,
+                purpose=purpose,
+                on_usage=on_usage,
+            )
+        ) as s:
+            async for chunk in s:
+                yield chunk
 
     async def stream_messages(
         self,
@@ -356,15 +363,19 @@ class _MindLLMAdapter:
         purpose: str = "cascade",
         on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
-        async for chunk in self._adapter.stream_messages(
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
-            grammar=grammar,
-            purpose=purpose,
-            on_usage=on_usage,
-        ):
-            yield chunk
+        # aclosing() — see stream_completion() above for why this matters.
+        async with aclosing(
+            self._adapter.stream_messages(
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                grammar=grammar,
+                purpose=purpose,
+                on_usage=on_usage,
+            )
+        ) as s:
+            async for chunk in s:
+                yield chunk
 
 
 def _derive_daemon_ws(ipc) -> str:
