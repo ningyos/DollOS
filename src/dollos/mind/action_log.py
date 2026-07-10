@@ -77,4 +77,6 @@ def action_phrase_for_perception(kind: str, data: dict) -> str | None:
         return f"Monitor {d.get('monitor_id', '?')} 結束(exit {d.get('exit_status', '?')})"
     if kind in ("BridgeDown", "McpDown"):
         return f"{d.get('service', '?')} 掛了(rc={d.get('rc', '?')})"
+    if kind == "PulseMoment":
+        return f"身體狀況:{_clip(d.get('detail', ''), 80)}"
     return None
