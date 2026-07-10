@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import aclosing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -61,6 +62,7 @@ from dollos.service_supervisor import _RETENTION_DAYS, ServiceSpec, ServiceSuper
 from dollos.shell_runner import ShellRunner
 from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.telemetry.turn_latency import TurnLatencyRecorder
+from dollos.telemetry.vitals import VitalsRecorder
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
 from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
@@ -333,16 +335,24 @@ class _MindLLMAdapter:
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
-        async for chunk in self._adapter.stream_completion(
-            system=system,
-            user=user,
-            prefill=prefill,
-            max_tokens=max_tokens,
-            grammar=grammar,
-            purpose=purpose,
-        ):
-            yield chunk
+        # aclosing() — same reasoning as ComposedLLMAdapter (composed.py):
+        # a plain `async for ... yield` does NOT propagate GeneratorExit into
+        # the inner generator on early exit, so on_usage would fire too late.
+        async with aclosing(
+            self._adapter.stream_completion(
+                system=system,
+                user=user,
+                prefill=prefill,
+                max_tokens=max_tokens,
+                grammar=grammar,
+                purpose=purpose,
+                on_usage=on_usage,
+            )
+        ) as s:
+            async for chunk in s:
+                yield chunk
 
     async def stream_messages(
         self,
@@ -351,15 +361,21 @@ class _MindLLMAdapter:
         max_tokens: int = 1024,
         grammar: str | None = None,
         purpose: str = "cascade",
+        on_usage: Callable[[int | None, int | None], None] | None = None,
     ):
-        async for chunk in self._adapter.stream_messages(
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
-            grammar=grammar,
-            purpose=purpose,
-        ):
-            yield chunk
+        # aclosing() — see stream_completion() above for why this matters.
+        async with aclosing(
+            self._adapter.stream_messages(
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                grammar=grammar,
+                purpose=purpose,
+                on_usage=on_usage,
+            )
+        ) as s:
+            async for chunk in s:
+                yield chunk
 
 
 def _derive_daemon_ws(ipc) -> str:
@@ -398,6 +414,11 @@ class DollOS:
         # (turn_latency-*.jsonl vs llm_calls-*.jsonl), so both recorders
         # share one dir with zero collision.
         self.turn_latency_recorder = TurnLatencyRecorder(telemetry_dir)
+        # 代謝 vital (spec 2026-07-10 §2.2, Task 3): per-turn RL substrate,
+        # separate dir/prefix from both recorders above (vitals-*.jsonl under
+        # data/traces/vitals, alongside the finetune trace writer's own
+        # data/traces root — no filename collision, distinct subdir).
+        self.vitals_recorder = VitalsRecorder(settings.data.root / "traces" / "vitals")
         self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
@@ -574,6 +595,9 @@ class DollOS:
             cascade_logger=self._cascade_logger,
             energy_enabled=settings.energy.enabled,
             cost_per_turn=settings.energy.cost_per_turn,
+            token_per_energy_unit=settings.energy.token_per_energy_unit,
+            thermal_multiplier_warm=settings.energy.thermal_multiplier_warm,
+            thermal_multiplier_hot=settings.energy.thermal_multiplier_hot,
             self_profile_enabled=settings.self_profile.enabled,
             enforcement=self._doll_pack.enforcement,
             evolution_enabled=settings.evolution.enabled,
@@ -586,6 +610,7 @@ class DollOS:
             on_turn_complete=self._on_turn_complete,
             diary_max_log_chars=settings.diary.max_log_chars,
             turn_latency_recorder=self.turn_latency_recorder,
+            vitals_recorder=self.vitals_recorder,
         )
 
         self._reflection_observer = ReflectionObserver(

@@ -15,7 +15,9 @@ from dollos.perception.system_pulse import (
     bucket_idle,
     bucket_load,
     bucket_mem,
+    read_nvidia_smi,
     render_block,
+    thermal_multiplier,
 )
 
 
@@ -48,6 +50,12 @@ def test_bucket_gpu_temp():
     assert bucket_gpu_temp(74.9) == "warm"
     assert bucket_gpu_temp(75) == "hot"
     assert bucket_gpu_temp(90) == "hot"
+
+
+def test_thermal_multiplier_buckets():
+    assert thermal_multiplier(40.0, 1.15, 1.4) == 1.0    # cool (<55)
+    assert thermal_multiplier(65.0, 1.15, 1.4) == 1.15   # warm (55-75)
+    assert thermal_multiplier(90.0, 1.15, 1.4) == 1.4    # hot (>75)
 
 
 def test_bucket_battery():
@@ -132,6 +140,27 @@ def test_render_block_complete():
     assert "attention: VSCode — tts_qwen3.py" in text
     assert "breath since last input: present (12s ago)" in text
     assert "outside link: open" in text
+
+
+def test_render_block_gpu_power_presence_gated():
+    s = PulseSample(
+        taken_at=datetime(2026, 5, 18, 21, 34, 12),
+        gpus=[(45.0, 42.0), (12.0, 51.0)],
+        gpu_power=[(120.5, 165.0), (90.0, 165.0)],
+    )
+    text = render_block(s, include_active_window=True)
+    assert "vital heat: cool" in text
+    assert "· 120w" in text  # max draw across GPUs, rounded
+
+
+def test_render_block_omits_power_suffix_when_gpu_power_empty():
+    s = PulseSample(
+        taken_at=datetime(2026, 5, 18, 21, 34, 12),
+        gpus=[(45.0, 42.0)],
+    )
+    text = render_block(s, include_active_window=True)
+    assert "vital heat: cool" in text
+    assert "w" not in text.split("vital heat")[1].split("\n")[0]
 
 
 def test_render_block_omits_missing_fields():
@@ -242,13 +271,13 @@ async def test_poll_now_populates_sample():
     # Patch nvidia/xprintidle/network to return nothing fast
     with patch(
         "dollos.perception.system_pulse.read_nvidia_smi",
-        return_value=_async_return([]),
+        return_value=([], []),
     ), patch(
         "dollos.perception.system_pulse.read_idle_seconds",
-        return_value=_async_return(None),
+        return_value=None,
     ), patch(
         "dollos.perception.system_pulse.check_network",
-        return_value=_async_return(False),
+        return_value=False,
     ):
         await sp.poll_now()
     assert sp._last_sample is not None
@@ -257,11 +286,54 @@ async def test_poll_now_populates_sample():
     assert sp._last_sample.mem_used_pct is not None
 
 
-def _async_return(value):
-    """Helper: return a coroutine resolving to `value` (for patch.return_value)."""
-    async def _coro():
+def _const_async(value):
+    """Helper: an async function that ignores its args and always returns `value`.
+
+    Used to monkeypatch `_run_cmd` (which takes argv/timeout_s args) so
+    `read_nvidia_smi` sees a fixed fake CSV string on every call.
+    """
+    async def _fake(*args, **kwargs):
         return value
-    return _coro()
+    return _fake
+
+
+# ---------------------------------------------------------- nvidia power
+
+@pytest.mark.asyncio
+async def test_nvidia_parses_power_draw_parallel(monkeypatch):
+    # fake nvidia-smi CSV: memory.used, memory.total, temperature.gpu, power.draw, power.limit
+    fake = "1024, 8192, 70, 120.5, 165.0\n"
+    monkeypatch.setattr("dollos.perception.system_pulse._run_cmd", _const_async(fake))
+    gpus, gpu_power = await read_nvidia_smi()
+    assert gpus == [(1024 / 8192 * 100.0, 70.0)]
+    assert gpu_power == [(120.5, 165.0)]
+
+
+@pytest.mark.asyncio
+async def test_nvidia_power_absent_columns_still_parses_mem_temp(monkeypatch):
+    fake = "1024, 8192, 70\n"  # old 3-col output (driver without power telemetry)
+    monkeypatch.setattr("dollos.perception.system_pulse._run_cmd", _const_async(fake))
+    gpus, gpu_power = await read_nvidia_smi()
+    assert gpus == [(1024 / 8192 * 100.0, 70.0)]
+    assert gpu_power == []  # defensive: power omitted, mem/temp intact
+
+
+@pytest.mark.asyncio
+async def test_nvidia_power_partial_column_failure_still_parses_mem_temp(monkeypatch):
+    """A malformed power column (e.g. '[N/A]') must not drop mem/temp for that line."""
+    fake = "1024, 8192, 70, [N/A], [N/A]\n"
+    monkeypatch.setattr("dollos.perception.system_pulse._run_cmd", _const_async(fake))
+    gpus, gpu_power = await read_nvidia_smi()
+    assert gpus == [(1024 / 8192 * 100.0, 70.0)]
+    assert gpu_power == []
+
+
+@pytest.mark.asyncio
+async def test_nvidia_no_smi_returns_empty_pair(monkeypatch):
+    monkeypatch.setattr("dollos.perception.system_pulse._run_cmd", _const_async(None))
+    gpus, gpu_power = await read_nvidia_smi()
+    assert gpus == []
+    assert gpu_power == []
 
 
 def test_latest_idle_s_none_when_no_sample():

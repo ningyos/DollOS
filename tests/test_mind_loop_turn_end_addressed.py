@@ -27,7 +27,8 @@ class _SeqLLM:
         self._i = 0
 
     async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade"
+        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
+        on_usage=None,
     ):
         text = self._returns[self._i]
         self._i += 1
@@ -35,7 +36,7 @@ class _SeqLLM:
 
     async def stream_messages(
         self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None,
+        purpose="cascade", stop=None, tools=None, on_usage=None,
     ):
         yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
 
