@@ -59,3 +59,17 @@ def test_perception_phrase_world_events():
     ) == "mcp-server 掛了(rc=2)"
     assert action_phrase_for_perception("UserSpoke", {"text": "hi"}) is None
     assert action_phrase_for_perception("AgendaMoment", {}) is None
+
+
+def test_pulse_moment_action_phrase():
+    phrase = action_phrase_for_perception(
+        "PulseMoment",
+        {"concern": "battery_critical", "detail": "電量掉到 12% 而且在放電", "severity": "critical"},
+    )
+    assert phrase is not None
+    assert "電量掉到 12% 而且在放電" in phrase
+
+
+def test_non_pulse_kind_still_none():
+    # a kind action_phrase_for_perception doesn't handle → still None (unchanged)
+    assert action_phrase_for_perception("ReflectionMoment", {}) is None

@@ -23,7 +23,12 @@ from dollos.memory_writer import append_transcript, append_action_log
 from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
-from dollos.mind.mind_prompt import OPEN_LOOP_STALE_S, energy_bucket_line, render_mind
+from dollos.mind.mind_prompt import (
+    OPEN_LOOP_STALE_S,
+    energy_bucket_line,
+    render_body_signal,
+    render_mind,
+)
 from dollos.mind.mind_state import (
     MindState,
     OutputRecord,
@@ -621,6 +626,21 @@ class MindLoop:
             except Exception:
                 logger.exception("cognition.snapshot raised; omitting block")
 
+        # [Body signal] framing (spec 2026-07-09 presence-tuning §3.2): only
+        # on a pure PulseMoment turn (co-batched with anything else, this
+        # stays None — same pure-batch guard as `_is_pulse` itself).
+        body_signal_block: str | None = None
+        if self._is_pulse:
+            wakes = [
+                (
+                    (p.data or {}).get("severity", "critical"),
+                    (p.data or {}).get("detail", ""),
+                )
+                for p in perceptions
+                if p.kind == "PulseMoment"
+            ]
+            body_signal_block = render_body_signal(wakes)
+
         # The try/finally here wraps the render calls too so the turn-end None
         # sentinel is always emitted — even when render_tool_outcomes() or
         # render_mind() raises (I1: previously those could leave IPC clients
@@ -705,6 +725,7 @@ class MindLoop:
                 self._system_prompt_for_turn(),
                 pulse_block=pulse_block,
                 cognition_block=cognition_block,
+                body_signal_block=body_signal_block,
                 today_log_block=self._read_today_log() if self._is_diary else None,
                 associative_hits=associative_hits,
                 primary_language=self._primary_language,
