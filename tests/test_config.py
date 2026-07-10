@@ -226,7 +226,7 @@ def test_energy_config_defaults():
     c = EnergyConfig()
     assert c.enabled is True and c.cost_per_turn == 0.05
     assert c.restore_per_tick == 0.05 and c.idle_threshold_s == 600 and c.restore_debounce_s == 300
-    assert c.token_per_energy_unit == 2000.0
+    assert c.token_per_energy_unit == 24000.0
 
 
 def test_energy_config_on_settings(tmp_path: Path):
@@ -238,7 +238,7 @@ def test_energy_config_on_settings(tmp_path: Path):
     assert s.energy.restore_per_tick == 0.05
     assert s.energy.idle_threshold_s == 600
     assert s.energy.restore_debounce_s == 300
-    assert s.energy.token_per_energy_unit == 2000.0
+    assert s.energy.token_per_energy_unit == 24000.0
 
 
 def test_self_profile_config_defaults():

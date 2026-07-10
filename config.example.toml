@@ -159,7 +159,7 @@ cost_per_turn = 0.05           # D1 flat_legacy degrade only (token counts missi
 restore_per_tick = 0.05
 idle_threshold_s = 600
 restore_debounce_s = 300
-token_per_energy_unit = 2000.0   # primary drain formula: (completion + 0.25*prompt) / this
+token_per_energy_unit = 24000.0  # primary drain formula: (completion + 0.25*prompt) / this; calibrated from llm_calls telemetry so a typical turn ≈ 0.05 (re-tune per install)
 thermal_multiplier_warm = 1.15   # GPU 55-75°C
 thermal_multiplier_hot = 1.4     # GPU >75°C
 

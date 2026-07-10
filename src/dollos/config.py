@@ -241,7 +241,7 @@ class EnergyConfig(BaseModel):
     # a typical turn's drain lands near the old cost_per_turn; smoke-tuned
     # (spec §7 D4). cost_per_turn is now ONLY the D1 flat_legacy degrade
     # (both prompt and completion token counts missing for the whole turn).
-    token_per_energy_unit: float = 2000.0
+    token_per_energy_unit: float = 24000.0  # calibrated from llm_calls telemetry (median (completion+0.25·prompt)≈1193) so a typical turn ≈ cost_per_turn (0.05); smoke-tuned per-install (spec §7 D4)
     # 代謝 vital model §2.3 (Task 5): hot-GPU multiplier on the token drain,
     # reusing bucket_gpu_temp's cool/warm/hot buckets (55/75°C). Smoke-tuned
     # (spec §7 D4), same status as token_per_energy_unit above.
