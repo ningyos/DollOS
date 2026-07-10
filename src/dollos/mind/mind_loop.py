@@ -41,6 +41,7 @@ from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.stream_events import SpeakChunk, ToolCallReady
 from dollos.telemetry.turn_latency import TurnLatencyRecord
+from dollos.telemetry.vitals import VitalsRecord
 from dollos.tool_parser import ToolStreamParser
 from dollos.tools import (
     AGENDA_TOOLS,
@@ -175,6 +176,7 @@ class MindLoop:
         on_turn_complete: Callable[[str | None, bool], None] | None = None,
         diary_max_log_chars: int = 40000,
         turn_latency_recorder=None,
+        vitals_recorder=None,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -279,10 +281,19 @@ class MindLoop:
         self._turn_energy_cost: float = 0.0
         self._turn_cost_mode: str = "measured"
         self._turn_tokens_total: int | None = None
+        # Task 3: mirror of `_llm_iterate`'s local `turn_id` join key. The
+        # drain gate lives in `_run_one_turn`, AFTER `_llm_iterate` (and its
+        # local `turn_id`) has already gone out of scope — so it's stashed
+        # here on self instead. Set on every real turn (never gated on the
+        # energy drain), so — unlike the three fields above, which are only
+        # written inside the drain gate and can carry a stale prior-turn
+        # value on a gate-skipped turn — this one is always fresh.
+        self._turn_id: str | None = None
         # 延遲壓縮 Part 1 Task 2: turn-level think/speak/first-speak latency
         # telemetry (spec §3.2/§7). `turn_latency_recorder=None` is a full
         # no-op — every consumer below gates on it being non-None.
         self._turn_latency_recorder = turn_latency_recorder
+        self._vitals_recorder = vitals_recorder
         self._turn_t0: float | None = None
         self._turn_first_speak_ms: float | None = None
         self._turn_think_chars: int = 0
@@ -868,6 +879,27 @@ class MindLoop:
             self._turn_energy_cost = drain
             self._turn_cost_mode = cost_mode
             self._turn_tokens_total = tokens_total
+            # 代謝 vital (spec 2026-07-10 §2.2, Task 3): per-turn RL substrate
+            # = the (state, action, cost, state') tuple. MUST be emitted
+            # INSIDE this gate, not unconditionally at end of turn — outside
+            # it, a gate-skipped turn (e.g. external_public) would read this
+            # turn's stash fields still holding the LAST draining turn's
+            # values and silently emit a wrong vitals row for a turn that
+            # never actually drained. `record()` itself never raises
+            # (log-and-continue), and the dispatch here is also wrapped
+            # defensively so a vitals failure can never break the turn.
+            if self._vitals_recorder is not None:
+                try:
+                    await self._vitals_recorder.record(VitalsRecord(
+                        ts=time.time(),
+                        turn_id=self._turn_id,
+                        tokens_total=self._turn_tokens_total,
+                        energy_cost=self._turn_energy_cost,
+                        energy_after=self._state.energy,
+                        cost_mode=self._turn_cost_mode,
+                    ))
+                except Exception:
+                    logger.exception("vitals record dispatch failed; continuing")
 
         # Doll-side transcript: one line per turn, full text (B1). Suppressed
         # on a dedicated diary turn (spec §2.3, Task 7): her private
@@ -1282,6 +1314,11 @@ class MindLoop:
         # it inside the try. Without this, that exception's `finally` would
         # hit `NameError: turn_id` and mask the original exception.
         turn_id = None
+        # Task 3: reset the self-stashed mirror in lockstep with the local
+        # default above — an exception before the mint below must not leave
+        # `self._turn_id` carrying the PREVIOUS turn's id into this turn's
+        # (would-be) VitalsRecord.
+        self._turn_id = None
 
         # 延遲壓縮 Part 1 Task 2: turn epoch + reset turn-scoped latency
         # accumulators. Epoch is `_llm_iterate` entry (spec §3.2), NOT
@@ -1298,6 +1335,7 @@ class MindLoop:
         try:
             self._cascade_ctx = CascadeCtx()
             turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
+            self._turn_id = turn_id  # Task 3: mirror for `_run_one_turn`'s drain gate
             # Begin the turn envelope. Trace must NOT depend on cascade_logger
             # being wired — when turn_id is None (no logger), mint a
             # standalone id so the trace still gets a stable turn_id.

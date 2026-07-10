@@ -61,6 +61,7 @@ from dollos.service_supervisor import _RETENTION_DAYS, ServiceSpec, ServiceSuper
 from dollos.shell_runner import ShellRunner
 from dollos.telemetry.llm_calls import TelemetryRecorder
 from dollos.telemetry.turn_latency import TurnLatencyRecorder
+from dollos.telemetry.vitals import VitalsRecorder
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import MAIN_TOOLS
 from dollos.voice.engines import ASR_REGISTRY, TTS_REGISTRY, ASREngine, TTSEngine
@@ -402,6 +403,11 @@ class DollOS:
         # (turn_latency-*.jsonl vs llm_calls-*.jsonl), so both recorders
         # share one dir with zero collision.
         self.turn_latency_recorder = TurnLatencyRecorder(telemetry_dir)
+        # 代謝 vital (spec 2026-07-10 §2.2, Task 3): per-turn RL substrate,
+        # separate dir/prefix from both recorders above (vitals-*.jsonl under
+        # data/traces/vitals, alongside the finetune trace writer's own
+        # data/traces root — no filename collision, distinct subdir).
+        self.vitals_recorder = VitalsRecorder(settings.data.root / "traces" / "vitals")
         self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
@@ -591,6 +597,7 @@ class DollOS:
             on_turn_complete=self._on_turn_complete,
             diary_max_log_chars=settings.diary.max_log_chars,
             turn_latency_recorder=self.turn_latency_recorder,
+            vitals_recorder=self.vitals_recorder,
         )
 
         self._reflection_observer = ReflectionObserver(
