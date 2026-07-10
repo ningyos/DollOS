@@ -23,6 +23,7 @@ class VitalsRecord:
     turn_id: str | None
     tokens_total: int | None
     energy_cost: float
+    energy_before: float
     energy_after: float
     cost_mode: str            # "measured" | "flat_legacy"
     # v1b ambient (Task 5); None until then
