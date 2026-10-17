@@ -1,6 +1,6 @@
 # Doll Harness：架構、原生 tool calling 與權限模型
 
-**狀態**：DRAFT v3（待使用者審）
+**狀態**：APPROVED（使用者 2026-10-17 審閱通過）
 **版本紀錄**：v1 用 Python REPL（Monty）當動作介面；v2 改成 shell 優先並併入權限模型；v3（本版）依使用者決定改成**原生 tool calling + MCP 擴充**。shell 和 Python REPL 為什麼不用，見 §11。
 **日期**：2026-10-17
 **關聯**：`2026-10-17-think-ab-qwen38-design.md`（評分工具共用）、`2026-07-03-dollos-mvp-discord-presence-design.md`（origin_tier 的來源）、`2026-07-06-mcp-server-design.md`（DollOS 已經是 MCP server；本文讓它也成為 MCP client）
