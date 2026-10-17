@@ -18,12 +18,11 @@ Personal AI Ecosystem — Doll lives on your computer (her brain), and your iPho
 
 UI（Tauri + Cubism Web）   ←→   localhost WS
 iPhone Body（Swift app）    ←→   WS + WebRTC over Tailscale
-  └─ Reflex layer（Apple Foundation Models, on-device）
 ```
 
 **Computer = soul + brain.** Memory, personality, decisions all live in DollOS on the user's computer.
 
-**iPhone = body.** A native Swift app: senses (mic + VAD, touch, app state), Live2D presentation, and an on-device reflex layer on Apple Foundation Models that reacts within ~500 ms by picking pre-rendered reflex lines and expressions. It never writes memory; every reflex is reported to the brain. When the brain is unreachable the app says so and queues your input. Android is deferred.
+**iPhone = body.** A native Swift app: senses (mic + VAD, touch, app state), and Live2D presentation. No model runs on the phone: every sensation becomes a perception for the brain, and every word she says comes from the brain. When the brain is unreachable the app says so and queues your input. Android is deferred.
 
 **BYO big LLM.** DollOS only hosts a small Inner Voice model (0.6B–1.7B). Big model is user's choice (cloud API or self-hosted llama.cpp).
 

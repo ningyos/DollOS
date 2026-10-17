@@ -1,6 +1,6 @@
 # DollOS Pivot — 電腦為靈魂、手機為介面（架構大改向）
 
-> **2026-10-17 更新**：手機相關部分（§2.1「手機不是必需品」、§3.3 Phone App 元件、§3.4 規則 1 與 5、§9 Phone 整合層級）已由 `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md` 取代：iPhone 是 Doll 的身體，裝置上有反射層（Apple Foundation Models），Android 暫緩。電腦端架構不變。
+> **2026-10-17 更新**：手機相關部分（§2.1「手機不是必需品」、§3.3 Phone App 元件、§3.4 規則 5、§9 Phone 整合層級）已由 `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md` 取代：iPhone 是 Doll 的身體（感官與表現，手機上不跑模型），Android 暫緩。電腦端架構不變。
 
 **日期：** 2026-05-01
 **狀態：** 草案（待使用者最終審閱）
