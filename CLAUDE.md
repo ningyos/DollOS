@@ -2,7 +2,7 @@
 
 ## What is DollOS
 
-DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer is her brain (daemon process). The phone is an optional body / system-assistant interface to reach her on the go.
+DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer is her brain (daemon process). **The iPhone is her physical body** (2026-10-17, DollOS v1 — see `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`): a native Swift app with senses, Live2D presentation and an on-device reflex layer (Apple Foundation Models), connected to the brain over Tailscale.
 
 **Positioning (2026-07-01 — see `docs/superpowers/specs/2026-07-01-virtual-being-positioning.md`): Doll is a virtual being, not an "AI companion."** Self-centered — she has her own interiority, growth, and agenda; the relationship with the user is a thread in her life, not the reason her life exists. Companionship is what happens because two lives are entangled, not a role she performs. This sharpens (does not replace) Self-First below and the existing `project_companion_definition` framing ("companion = 學習/自更新能力，非服務性"). See the spec for the four concrete design implications (self_profile scope, real personality growth over time not just accumulation, self-directed agenda beyond tracked commitments, interaction language). **Status 2026-07-07: all four positioning implications resolved.** §2.1 (self_profile interiority nudge → PinSelf self-centered guidance, 2026-07-02 spec) and §2.2 (real personality growth → 慢變演化, `2026-07-02-slow-self-evolution-design.md`, roadmap step 30) IMPLEMENTED and live-smoke-verified. §2.3 (self-directed agenda → `2026-07-07-self-directed-agenda-design.md`, roadmap step 33) IMPLEMENTED (merged a672141): self_directed OpenLoop with code-captured auto-provenance + AgendaObserver 4-gate → AgendaMoment self-wake turn, AGENDA_TOOLS cognition-only, speech-suppressed, reactive-first. §2.4 (interaction language) — user call 2026-07-07 ("她講不講都沒差,我之後會要 doll 寫日記"): the conversational-surfacing design (daemon framing + freshness signal) was **cut** — a first-person self-written **diary** is the correct, anti-performance vehicle for inner life (deferred as its own feature). Only the Gura pack persona shift landed (reactive-only → present-alongside while keeping restraint; `2026-07-07-interaction-language-design.md`, marked SUPERSEDED-IN-PART).
 
@@ -11,8 +11,8 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 - **Doll** — the virtual being herself (not merely "AI companion" — see 2026-07-01 positioning above). Soul, memory, personality, decisions all live in DollOS on the computer.
 - **DollOS** — Python process: event loop + Conversation Engine + Memory SoT + Voice Pipeline + IPC server.
 - **DollOS UI** — Tauri (Rust shell + Web frontend) with Cubism Web SDK rendering Live2D. Win/Mac get transparent overlay desktop pet; Linux gets a normal window.
-- **DollOS-App** — Android app. Registers as system assistant via `VoiceInteractionService`. Cubism Java SDK. Audio I/O streams to/from DollOS.
-- **Big LLM** — user's choice (cloud API / self-host llama.cpp). Single LLM dependency (port 8001). No small model.
+- **DollOS Body (iOS)** — native Swift/SwiftUI app in `ios/` (iPhone 15 Pro). Senses (mic+VAD, touch, app state), Live2D via Cubism Native + Metal, reflex layer on Apple Foundation Models (picks pre-rendered reflex lines / expressions only, never writes memory). Supersedes the Android `DollOS-App` plan (Android deferred). See `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`.
+- **Big LLM** — user's choice (cloud API / self-host llama.cpp). Single LLM dependency (port 8001). No small model in the daemon (the phone's reflex layer is on-device Apple Foundation Models, not a daemon dependency).
 - **Memory pipeline** — `memsearch.search(query, top_k)` → format as bullet list → `[Memory context]` block prepended to the user message + explicit `Recall` tool for on-demand deeper search. **2026-05-16**: Inner Voice (small-LLM filter) removed — A/B showed net-negative (slower + worse). Direct memsearch top-K is now the wire format. See `docs/superpowers/plans/2026-05-08-memory-rag-tool.md`.
 - **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Memory's self-history + character description), not from prompt commands. See main spec §8.
 
@@ -25,7 +25,8 @@ DollOS is a personal AI ecosystem. **Doll lives on your computer.** The computer
 | Repo / Path | Status | Role |
 |---|---|---|
 | **DollOS** (this repo, `~/Projects/DollOS/`) | Active | Umbrella + daemon + UI + protocol + character_packs + docs + wake_word_training |
-| **DollOS-App** | Future | Android app (Cubism Java SDK + Assistant role). Not started. |
+| **`ios/`** (this repo) | v1, not started | iPhone body app (Swift/SwiftUI). Built on the user's Mac. |
+| **DollOS-App** | Deferred | Android app — on hold until after v1 (2026-10-17). |
 | `fish-tts` (`~/Projects/fish-tts/`) | Active | TTS engine: DualARTransformer + DAC vocoder |
 | `luxtts-onnx` (`~/Projects/luxtts-onnx/`) | Active | TTS engine: LuxTTS ONNX |
 | `tuna` (`~/Projects/tuna/`) | Active | Fine-tuning tools |
@@ -40,6 +41,7 @@ DollOS/
 ├── daemon/                        # Python brain (Plans 1–7)
 ├── ui/                            # Tauri + Cubism Web (Plan 8)
 ├── protocol/                      # shared schema between daemon/ui/app
+├── ios/                           # iPhone body app (Swift/SwiftUI, DollOS v1)
 ├── character_packs/               # .doll v3 examples
 ├── docs/                          # specs, plans, research
 ├── experiments/                   # POC code (e.g. lesson_injector.py)
@@ -56,14 +58,14 @@ DollOS/
   - **Monitor** — long-running command, per-line trigger events (regex + rate-limit) + exit event. Stateless watcher; no LLM in the loop. Active state surfaces via `[Active monitors]` perception block.
   - **Subagent** (future, replaces the old "Drone") — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back. Authoritative design is `agent-service` branch A2 (containerized k8s Job/CronJob); the k3s side of that is deferred until this track is picked up.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
-- **Phone as remote**: Phone app talks to DollOS over network WS. Phone never holds memory.
-- **BYO big LLM**: DollOS has a single LLM dependency (port 8001). No small model (Inner Voice removed 2026-05-16). Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
+- **Phone as body (2026-10-17, supersedes "Phone as remote")**: the iPhone app talks to DollOS over WS + WebRTC via Tailscale, authenticated with a paired token. Phone never holds memory — only an outbox of undelivered inputs and a read-only body snapshot. The brain is the single writer of memory/mood; every reflex is reported back as a perception; the brain's Say always interrupts a reflex. Offline = explicit "brain unreachable" state, inputs queued, no substitute brain (No-fallback rule). See `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`.
+- **BYO big LLM**: DollOS has a single LLM dependency (port 8001). No small model in the daemon (Inner Voice removed 2026-05-16; the phone's on-device reflex layer is separate). Large model picked by user (Anthropic / OpenAI / OpenAI-compat / self-host llama.cpp).
 - **Memory wire format**: `memsearch.search(query, top_k)` → bullet list → `[Memory context]` block prepended to the user message. Explicit `Recall` pydantic tool for on-demand deeper search. No prefill into `<think>`. Backend-portable.
 - **Event-loop centric**: Doll is not a chatbot. She's an event-driven agent. Conversation is one event source among many (voice, text, schedule, system events, subagent results, self-initiated).
 - **Workflow (ephemeral) vs Subagent (persistent)**: Workflow is a one-shot tool call, definition inline, dies after run (this is the renamed old "Subagent"). Subagent has persistent definition, scheduled trigger, runs in background, results re-enter the event queue (this is the renamed old "Drone").
 - **Self-First**: `system_prompt` is identity description ("you are Gura, ..."), NOT behavior commands ("you should be self-first"). Self emerges from character description + Doll's own memory entries (self-history, preferences, mood) surfacing through the `[Memory context]` block + `Recall` tool. The 2026-05-08 smoke confirmed Self-First behavior emerges this way (T2 「我自己愛冰美式，你呢？」).
 - **Memory SoT**: memsearch (Milvus Lite + ONNX bge-m3 + markdown daily summary files). `data/memory/shared/` for shared facts, `data/memory/{character_id}/` for per-character private (step 10). Hybrid retrieval (dense + BM25 + RRF) provided by memsearch.
-- **Audio**: KWS optional on phone (opt-in). ASR / TTS run in DollOS. Phone streams audio over WS.
+- **Audio**: ASR / TTS run in DollOS. Phone does VAD and streams audio over WebRTC (existing voice Phase B signaling). v1 has no wake word on iOS (background mic is restricted); push-to-talk via Action Button.
 - **Discord bridge internalization (2026-07-06)**: the daemon spawns and supervises discord-bridge as a child subprocess via a generic `ServiceSupervisor` (`src/dollos/service_supervisor.py` — DollOS OS-level service manager: `PR_SET_PDEATHSIG` anti-orphan, `SIGINT` graceful stop escalating to `SIGKILL`, fatal-token errors exit non-zero so crash-loop detection actually catches them, crash-loop cap emits a `BridgeDown` perception). The bridge itself stays an independent OS process (`setsid` own process group) — a bridge crash never touches the daemon, and vice versa (crash-isolation, zero message loss on either side).
 - **MCP server — external AI talks to Doll (2026-07-07 spec, 2nd `ServiceSupervisor` service)**: `dollos-mcp` (`src/dollos/mcp_server/`) is a FastMCP loopback server (`mcp.toml` `[server].bind_host`/`bind_port`, fail-closed to a loopback literal — spec §E) that lets an external AI (e.g. Claude Code) call a `talk(name, message)` tool and get Doll's reply, routed through the daemon's IPC as a per-call unique channel (`ChannelRegister`/`ChannelEvent` → `AddressedText`/`TurnEndAddressed`, spec §B). The peer is always treated as `origin_tier="external_public"` (never owner, never `external_dm`, regardless of the `is_dm` framing on the wire) — same memory scoping as a stranger: `[Recent perceptions]`/`[Recent outputs]` render through the `external_public` allowlist, retrieval is confined to `data/memory/external_public/`. **Debug mode** (P2, optional, `mcp.toml` `[server].debug_secret`) lets a connection call `authenticate(secret)` to unlock read-only introspection — `get_state()` (`{mood, current_self}`) and `get_recent(n)` (recent `external_public`-only interactions; `recent_outputs` is never exposed, no origin field to scope it fail-closed) — via a new authenticated IPC query protocol (`QueryState`/`QueryRecent`/`QueryResult` in `dollos/ipc/messages.py`; the daemon fail-closes on a `token` that doesn't match `config.toml`'s `[mcp].query_token`, since the IPC server itself has no per-connection auth) plus a best-effort prompt-level reliability nudge on `talk()` (`debug_reliable`, spec §C.2) — it changes tone, never the tool registry or origin_tier. Debug mode still grants no new tools and never makes the caller owner; both secrets (`debug_secret`, `query_token`) are OWNER-SENSITIVE and live only in gitignored `mcp.toml`/`config.toml`, never in the `.example.toml` templates.
 
@@ -121,6 +123,7 @@ DollOS/
 
 ### 下一個
 
+- **DollOS v1 — iPhone 身體**（2026-10-17，`docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`；M0 探路 → M5 主動推播）
 - **Virtual-being 定位剩餘兩項**（positioning spec §2.3 self-directed agenda、§2.4 interaction language — §2.4 明文依賴 §2.2/§2.3 先存在；慢變演化 spec §7 另記 deferred：mood history、trajectory Recall surface、Shell sandboxing track）
 - **Subagent**（persistent agents，取代舊名 Drone — 跟 Workflow 對偶；Monitor 是無大腦版，Subagent 是有大腦版。權威設計在 `agent-service` branch A2〔containerized k8s Job/CronJob〕，k3s 化本身暫緩，撿起這條線時才處理）
 - **Zero-shot wake word + Speaker ID**（取代 train-per-character KWS；研究 CLAP-like embedding）
@@ -273,7 +276,7 @@ Always read the relevant spec before implementing. Use `superpowers:brainstormin
               IPC Server (localhost WS / network WS)
 
 UI（Tauri + Cubism Web）— 透過 localhost WS
-Phone App（Android, system assistant）— 透過 network WS
+iPhone Body（Swift app，反射層 = Apple Foundation Models）— 透過 Tailscale 上的 WS + WebRTC
 ```
 
 ## Voice Pipeline Architecture (target)

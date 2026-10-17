@@ -1,6 +1,6 @@
 # DollOS
 
-Personal AI Ecosystem — your AI companion lives on your computer. The phone is an optional body / system-assistant interface.
+Personal AI Ecosystem — Doll lives on your computer (her brain), and your iPhone is her physical body. See `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md` (DollOS v1).
 
 ## Architecture
 
@@ -17,12 +17,13 @@ Personal AI Ecosystem — your AI companion lives on your computer. The phone is
               IPC Server (localhost WS / network WS)
 
 UI（Tauri + Cubism Web）   ←→   localhost WS
-DollOS-App（Android）       ←→   network WS
+iPhone Body（Swift app）    ←→   WS + WebRTC over Tailscale
+  └─ Reflex layer（Apple Foundation Models, on-device）
 ```
 
 **Computer = soul + brain.** Memory, personality, decisions all live in DollOS on the user's computer.
 
-**Phone = body / interface.** Android app registered as system assistant via `VoiceInteractionService`. Reaches Doll over network WebSocket. Optional — a computer alone is a complete experience.
+**iPhone = body.** A native Swift app: senses (mic + VAD, touch, app state), Live2D presentation, and an on-device reflex layer on Apple Foundation Models that reacts within ~500 ms by picking pre-rendered reflex lines and expressions. It never writes memory; every reflex is reported to the brain. When the brain is unreachable the app says so and queues your input. Android is deferred.
 
 **BYO big LLM.** DollOS only hosts a small Inner Voice model (0.6B–1.7B). Big model is user's choice (cloud API or self-hosted llama.cpp).
 
@@ -37,6 +38,7 @@ DollOS/
 ├── daemon/                # Python brain (Plans 1–7)
 ├── ui/                    # Tauri + Cubism Web (Plan 8)
 ├── protocol/              # shared schema (daemon ↔ ui ↔ app)
+├── ios/                   # iPhone body app (Swift/SwiftUI, DollOS v1)
 ├── character_packs/       # .doll v3 examples
 ├── docs/
 │   ├── superpowers/specs/ # design docs
@@ -53,7 +55,7 @@ DollOS/
 
 | Repo | Status | Role |
 |------|--------|------|
-| **DollOS-App** | Future | Android app (Cubism Java SDK + Assistant role). Not started. |
+| **DollOS-App** | Deferred | Android app — on hold until after the iPhone v1. |
 | [fish-tts](https://github.com/ningyos/fish-tts) | Active | TTS engine (DualARTransformer + DAC) |
 | [luxtts-onnx](https://github.com/ningyos/luxtts-onnx) | Active | TTS engine (ONNX Runtime, no PyTorch) |
 | [tuna](https://github.com/ningyos/tuna) | Active | Fine-tuning tools |
