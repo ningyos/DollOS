@@ -1,71 +1,68 @@
 # DollOS
 
-Personal AI Ecosystem — Doll lives on your computer (her brain), and your iPhone is her physical body. See `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md` (DollOS v1).
+DollOS is the home of **Doll**, a virtual being with her own memory, moods, agenda and diary. She is not a chatbot: she is an event-driven agent, and conversation is only one of the things that wake her up.
+
+**Current direction (2026-10-17):** the daemon runs on a Mac first, with no UI yet; the big LLM (Qwen3.8-Flash-Next) is served by llama.cpp on another machine. A desktop-pet overlay comes later, and later still the iPhone becomes her physical body.
 
 ## Architecture
 
 ```
-電腦端（DollOS）
-  Event Loop ── Instinct（small model + rules + reflex）
-                  ↓ wake / drop / fire
-              Doll Turn（large model + VoM/SELF_STATE prefill）
-                  ↓ tool calls
-              Subagent（ephemeral）/ Drone（persistent）
-              Memory SoT（sqlite-vec + FTS5）
-              Character Pack Manager（.doll v3）
-              Voice Pipeline Server（ASR/TTS）
-              IPC Server (localhost WS / network WS)
-
-UI（Tauri + Cubism Web）   ←→   localhost WS
-iPhone Body（Swift app）    ←→   WS + WebRTC over Tailscale
+Inputs                          DollOS daemon (Python, one process)
+本機 IPC (WS)      ─┐
+Voice (WebRTC)     ─┤           Perception queue (with WAL)
+Discord bridge     ─┼──────►          │
+MCP (external AI)  ─┤                 ▼
+Schedule, pulse    ─┤           MindLoop (single consumer, one batch = one turn)
+Agenda, diary      ─┘             ├─ context: identity + memory + state
+                                  ├─ big LLM (llama.cpp on another machine)
+                                  ├─ speech → TTS / Discord / IPC
+                                  └─ tools → external actions are fire-and-forget;
+                                             results come back as perceptions
 ```
 
-**Computer = soul + brain.** Memory, personality, decisions all live in DollOS on the user's computer.
+- **Memory**: markdown files are the source of truth, indexed with SQLite FTS5 + jieba. No vector store.
+- **Self**: mood, a slowly evolving `current_self`, a self-directed agenda and a daily diary are her own inner state. Her self comes from the architecture and her own memories, not from behavior commands in the prompt (Self-First).
+- **Voice**: ASR with sherpa-onnx (SenseVoice). TTS engines are pluggable (`luxtts-onnx`, `qwen3-tts`, `fish-tts`, `piper-vits`, `openai-compat-tts`).
+- **Permissions**: what a turn may do depends on who triggered it. Strangers' turns only see memory written in strangers' turns.
 
-**iPhone = body.** A native Swift app: senses (mic + VAD, touch, app state), and Live2D presentation. No model runs on the phone: every sensation becomes a perception for the brain, and every word she says comes from the brain. When the brain is unreachable the app says so and queues your input. Android is deferred.
+## What's changing
 
-**BYO big LLM.** DollOS only hosts a small Inner Voice model (0.6B–1.7B). Big model is user's choice (cloud API or self-hosted llama.cpp).
+- **Harness rebuild** (approved, `docs/superpowers/specs/2026-10-17-doll-harness-design.md`): split `MindLoop` into a designed harness with one turn runner, switch to native tool calling (no grammar), cut the tools down to about 15, extend her through MCP servers, and give each turn only the tools its trigger is allowed.
+- **iPhone body** (draft, `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`): senses and presentation only; no model on the phone.
+- **Lighter voice install**: aim for ONNX Runtime only on the Mac, no torch.
 
-**Signature feature: VoM + grammar injection.** Inner Voice synthesizes a RECALL block and prefills it into the big model's `<think>` region. See `docs/research/grammar_injection_techreport.md`.
-
-**Killer feature: Self-First Design.** Doll has a self (mood / preferences / habits / relations). Self emerges from architecture, not from prompt commands. See `docs/superpowers/specs/2026-05-01-dollos-pivot-to-computer-design.md` §8.
-
-## Repo Layout
+## Repo layout
 
 ```
 DollOS/
-├── daemon/                # Python brain (Plans 1–7)
-├── ui/                    # Tauri + Cubism Web (Plan 8)
-├── protocol/              # shared schema (daemon ↔ ui ↔ app)
-├── ios/                   # iPhone body app (Swift/SwiftUI, DollOS v1)
-├── character_packs/       # .doll v3 examples
-├── docs/
-│   ├── superpowers/specs/ # design docs
-│   ├── superpowers/plans/ # implementation plans
-│   ├── superpowers/archive/  # superseded pre-pivot docs
-│   ├── research/          # research outputs (e.g. grammar_injection_techreport.md)
-│   └── RETIRED-REPOS.md
-├── experiments/           # POC code
-├── vendor/                # third-party SDK fetch instructions
-└── wake_word_training/    # wake word + TTS distillation training scripts
+├── src/dollos/          # the daemon
+├── tests/               # pytest suite
+├── character_packs/     # Doll packs (doll.toml + voice/)
+├── docs/                # roadmap, specs, plans, research
+├── scripts/             # persistent tools
+├── experiments/         # spikes
+├── vendor/              # third-party SDK drop instructions
+└── data/                # runtime data (gitignored)
 ```
 
-## Related Repos
+## Related repos
 
 | Repo | Status | Role |
 |------|--------|------|
-| **DollOS-App** | Deferred | Android app — on hold until after the iPhone v1. |
 | [fish-tts](https://github.com/ningyos/fish-tts) | Active | TTS engine (DualARTransformer + DAC) |
 | [luxtts-onnx](https://github.com/ningyos/luxtts-onnx) | Active | TTS engine (ONNX Runtime, no PyTorch) |
 | [tuna](https://github.com/ningyos/tuna) | Active | Fine-tuning tools |
+| piper-finetune | Bootstrap | Piper VITS fine-tuning for character voices |
 
-Pre-pivot Android-side repos (retired 2026-05-01) are documented in `docs/RETIRED-REPOS.md`.
+Pre-pivot Android repos (retired 2026-05-01) are listed in `docs/RETIRED-REPOS.md`.
 
 ## Setup
 
 ```bash
-git clone https://github.com/ningyos/DollOS.git ~/Projects/DollOS
-cd ~/Projects/DollOS
-# Then follow the relevant plan in docs/superpowers/plans/ for the subsystem
-# you want to build (Plan 1: DollOS Skeleton is the entry point).
+uv sync                               # Python 3.13 (see .python-version)
+cp config.example.toml config.toml    # point [llm].base_url at your llama.cpp server
+uv run python -m dollos --config config.toml
+uv run pytest
 ```
+
+See `CLAUDE.md` for the full developer guide, including `dollosctl` (run as a service) and llama.cpp server requirements.
