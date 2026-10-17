@@ -91,7 +91,7 @@
 ### §4.3 品質評審（盲測）
 
 - **LLM 評審，成對比較**：同一情境、同一 seed，把 A 和某個 B 組的完整回應並排給評審模型，左右順序隨機，不透露組別。評審在四個面向上選「左較好／右較好／差不多」：**角色一致、回應恰當、自然（不像助理或客服）、簡潔**。報告 B 對 A 的勝率（平手各算半勝）。
-- **評審模型**：不能用 Qwen3.8 自己評自己。建議用 Claude 或其他外部強模型（見 §8 Q1）。
+- **評審模型**（使用者 2026-10-17 決定）：外部強模型 **Claude Opus 5.5**（`claude-opus-5-5`），不用 Qwen3.8 自己評自己。API key 從環境變數 `ANTHROPIC_API_KEY` 讀，只給評審腳本 `scripts/think_ab_judge.py` 使用，不進 daemon 設定。評審 prompt、模型 id 和每次判決都存進結果目錄，方便重現。
 - **使用者抽查**：從成對比較中隨機抽 20 組給使用者盲評。**使用者的判斷優先**：如果和 LLM 評審明顯不一致，以使用者為準，並回頭檢查評審 prompt。
 
 ### §4.4 副作用檢查
@@ -133,13 +133,13 @@
 - `mind_prompt.py`：free 模式下不渲染 `[Recent self-review]`。
 - `cascade_log` / `trace`：free 模式存原始 think。
 - `turn_latency` 遙測：新增 `think_mode`、`think_tokens`、`think_capped`、`seed`、`arm` 欄位。
-- `scripts/think_ab.py`（常駐工具，不是用完即刪的 smoke）：執行情境、收集結果到 `runs/think_ab/<日期>/`；`scripts/think_ab_report.py` 產生摘要表。
+- `scripts/think_ab.py`（常駐工具，不是用完即刪的 smoke）：執行情境、收集結果到 `runs/think_ab/<日期>/`；`scripts/think_ab_judge.py` 呼叫 Claude 做成對盲評，並產生給使用者抽查的 20 組盲評表；`scripts/think_ab_report.py` 產生摘要表。
 - 結果寫成 `docs/research/2026-10-xx-think-ab-results.md`。
 
 ---
 
 ## §8 待決問題
 
-1. **Q1 評審模型**：用哪個外部模型當評審？需要 API key 放在 daemon 以外的地方（只給評審腳本用）。如果不想用外部 API，就全部改成使用者盲評，但抽查數量要增加到每組至少 40 組。
+1. ~~**Q1 評審模型**~~：已決定（2026-10-17），外部強模型 Claude 做成對盲評，使用者抽查 20 組，見 §4.3。
 2. **Q2 seed 的確定性**：MTP / speculative decoding 開啟時，同一個 seed 不一定能產生一樣的輸出。執行前先用同一個 seed 跑兩次確認；不確定時，成對比較仍然有效，只是變異會比較大。
 3. **Q3 情境集是否足夠**：12 個情境偏重對話和工具。如果使用者最在意的是別的行為（例如主動性、沉默的時機），要補情境。
