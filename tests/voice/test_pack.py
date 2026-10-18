@@ -247,3 +247,47 @@ def test_resolve_raises_when_pack_lacks_variant():
     vc = VoiceConfig(tts={"luxtts-onnx": {"prompt_path": "p.npz"}}, engine="qwen3-tts")
     with pytest.raises(ValueError, match="qwen3-tts"):
         resolve_voice_kwargs(vc, {"engine": "luxtts-onnx"})
+
+
+# ----- real gura pack + config.example.toml, end to end -----
+
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def test_gura_pack_builds_luxtts_from_example_config(tmp_path: Path, monkeypatch):
+    """The shipped gura pack + config.example.toml build a LuxTTSEngine.
+
+    Covers the pack's engine override, the example's ``device = "auto"``
+    reaching luxtts-onnx unchanged, and build_voice_engines handing the real
+    engine no stray kwargs.
+    """
+    import tomllib
+    from unittest.mock import MagicMock, patch
+
+    from dollos.kernel import build_voice_engines
+    from dollos.voice import engines as eng_mod
+    from dollos.voice.engines import ASREngine
+    from dollos.voice.tts_luxtts import LuxTTSEngine
+
+    class _FakeASR(ASREngine):
+        def __init__(self, **kw): pass
+        async def transcribe(self, audio_pcm, sample_rate): return ""
+        async def aclose(self): pass
+
+    monkeypatch.setitem(eng_mod.ASR_REGISTRY, "fake-asr", _FakeASR)
+    example = tomllib.loads((_REPO / "config.example.toml").read_text())
+    pack_dir = _REPO / "character_packs" / "gura"
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=MagicMock()) as cls:
+        _, tts = build_voice_engines(
+            pack_dir,
+            data_root=tmp_path / "data",
+            voice_asr={"engine": "fake-asr"},
+            voice_tts=example["voice"]["tts"],
+        )
+
+    assert isinstance(tts, LuxTTSEngine)
+    assert cls.call_args.kwargs["provider"] == "auto"
+    cls.return_value.load_prompt.assert_called_once_with(
+        str(pack_dir / "voice" / "luxtts" / "prompt.npz")
+    )

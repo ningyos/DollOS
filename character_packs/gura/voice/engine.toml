@@ -1,6 +1,6 @@
-# gura declares qwen3-tts (Chinese-capable; luxtts can't do gura's Chinese).
-# luxtts block kept as an alternate so gura still loads under a luxtts default.
-engine = "qwen3-tts"
+# gura speaks English first, so she uses luxtts (runs on the Mac CPU).
+# The qwen3 block is kept; it needs torch, so only use it on a GPU machine.
+engine = "luxtts-onnx"
 
 [tts.qwen3-tts]
 ref_audio = "voice/qwen3/ref.wav"
