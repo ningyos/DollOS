@@ -380,3 +380,20 @@ def test_scaffolding_reflection_section_omits_selfrevision_when_evolution_disabl
     assert out_absent == out_false
     assert "SelfRevision" not in out_absent
     assert "[人格演化候選]" not in out_absent
+
+
+def test_scaffolding_example_speaks_english_and_notes_in_chinese():
+    """The only dialogue example: the owner asks in English and Doll answers
+    in plain English (no particle, no "~"); the NoteMemory text stays in
+    Traditional Chinese to match `[memory] primary_language` (spec Q7)."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    start = out.index("Concrete example")
+    end = out.index("The `<tool_call>` block is what makes the note real.", start)
+    example = out[start:end]
+    assert '"Can you remember that I need to eat breakfast tomorrow?"' in example
+    assert "SEEN: user asked me to remember that they need to eat breakfast tomorrow" in example
+    assert '{"text": "主人要我記得：明天要吃早餐"}' in example
+    assert "Okay, noted. Breakfast tomorrow." in example
+    assert "好啦" not in example
+    assert "~" not in example
