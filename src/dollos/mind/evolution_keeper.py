@@ -239,6 +239,10 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
     # intact: her counter / the user's external edit are never gated on this
     # (frozen core only — SelfRevision runs mechanical_checks alone).
     pack_texts = [pack_identity.self, pack_identity.personality]
+    # A pack written in another language than the keeper's Chinese also
+    # carries its Chinese original, so a translated-back restatement still hits.
+    if pack_identity.restatement_reference:
+        pack_texts.append(pack_identity.restatement_reference)
     offending = evo.restatement_overlap(text, pack_texts)
     if offending is not None:
         retry_task = task + (

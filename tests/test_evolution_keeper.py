@@ -332,6 +332,71 @@ async def test_pass_restatement_retry_error_kills_not_error(tmp_path, monkeypatc
     assert last["reason"].startswith("mechanical:restatement")
 
 
+# --- restatement_reference: English pack + Chinese reference (gura English
+# plan Task 6). The keeper writes Chinese while looking at English factory
+# prose, so the likely restatement is a translation back to the Chinese
+# original — only the reference can catch it. ---
+
+_ZH_FACTORY = "安靜的好奇:不懂就問或自己查,不假裝知道"
+ZH_RESTATING = VALID + "。" + _ZH_FACTORY + "。"
+
+
+def _english_pack_kwargs(mr):
+    from dollos.character import Identity
+    kw = _pass_kwargs(mr)
+    kw["pack_identity"] = Identity(
+        self="I'm a test character. I live on my owner's Mac.",
+        personality="- Quiet curiosity: when I don't know something, I ask or look it up.",
+        taboos="- No making things up.",
+        restatement_reference="我是測試角色,現在住在主人的 Mac 上。\n\n- " + _ZH_FACTORY + "。")
+    return kw
+
+
+@pytest.mark.asyncio
+async def test_pass_chinese_reference_blocks_restated_chinese_original(tmp_path, monkeypatch):
+    mr, hist = _seed_root(tmp_path)
+    kw = _english_pack_kwargs(mr)
+    ident = kw["pack_identity"]
+    # The English factory prose alone never matches the Chinese restatement.
+    assert evo.restatement_overlap(ZH_RESTATING, [ident.self, ident.personality]) is None
+
+    async def fake_keeper(**kw):
+        return {"details": f"CANDIDATE\n{ZH_RESTATING}\n依據:\n- s1 存活"}
+
+    async def fake_skeptic(**kw):
+        raise AssertionError("skeptic must not run on the restatement-kill path")
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**kw)
+    assert out == "kill"
+    last = self_history.read_events(hist)[-1]
+    assert last["kind"] == "evo_kill"
+    assert last["reason"].startswith("mechanical:restatement")
+    assert _ZH_FACTORY in last["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pass_chinese_reference_lets_unrestated_candidate_through(tmp_path, monkeypatch):
+    mr, hist = _seed_root(tmp_path)
+    seen = {}
+
+    async def fake_keeper(**kw):
+        seen["task"] = kw["task"]
+        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+
+    async def fake_skeptic(**kw):
+        return "pass"
+
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
+    out = await ek.run_evolution_pass(**_english_pack_kwargs(mr))
+    assert out == "candidate"
+    slot = evo.load_slot(mr / "self_evolution" / "pending.json")
+    assert slot.candidate == VALID
+    assert _ZH_FACTORY not in seen["task"]   # the reference never enters the prompt
+
+
 # --- _run_full_skeptic: F1 personality block + F4 verdict parse ---
 
 

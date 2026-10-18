@@ -1,9 +1,12 @@
 """Tests for PromptRenderer."""
 
+from pathlib import Path
+
 import pytest
 from jinja2 import TemplateNotFound
 
-from dollos.character import Identity
+from dollos.character import DollPack, Identity
+from dollos.kernel import split_scaffolding
 from dollos.prompts import PromptRenderer
 
 
@@ -217,6 +220,23 @@ def test_scaffolding_renders_identity_sections():
     assert "- 好奇" in out
     assert "## Taboos" in out
     assert "- 不 LARP" in out
+
+
+def test_system_prompt_omits_restatement_reference():
+    """Gura English plan Task 6: the real gura pack's Chinese
+    restatement_reference feeds only the evolution restatement gate — none of
+    its lines may reach the system prompt the kernel builds."""
+    pack = DollPack.load(Path(__file__).resolve().parent.parent / "character_packs" / "gura")
+    prefix, suffix = split_scaffolding(
+        PromptRenderer(), identity=pack.identity, available_skills=[],
+        tool_registry={}, evolution_enabled=True)
+    prompt = prefix + suffix
+    assert pack.identity.personality.strip() in prompt
+    lines = [ln.strip() for ln in pack.identity.restatement_reference.splitlines()
+             if ln.strip()]
+    assert lines
+    for line in lines:
+        assert line not in prompt
 
 
 

@@ -1,9 +1,10 @@
 """Doll pack: directory-as-pack character config (TOML manifest).
 
 A pack is a directory containing `doll.toml` with `[meta]` (id, name) and
-`[identity]` (self / personality / taboos Markdown blobs). Renderer-side,
-identity is laid out by `scaffolding.jinja` — TOML supplies structure,
-Markdown supplies content.
+`[identity]` (self / personality / taboos Markdown blobs, plus an optional
+`restatement_reference` that is never rendered). Renderer-side, identity is
+laid out by `scaffolding.jinja` — TOML supplies structure, Markdown supplies
+content.
 
 Note on the `Identity.self` field name: it shadows Python's `self`
 keyword in method context. Pydantic v2 handles this fine for data fields
@@ -43,6 +44,13 @@ class Identity(BaseModel):
     self: str
     personality: str
     taboos: str
+    # 2026-10-18 gura-english-luxtts plan Task 6: the factory self +
+    # personality in another language (出廠人格的另一種語言版本). Read only by
+    # the keeper path's restatement gate (evolution_keeper.run_evolution_pass)
+    # — the keeper writes Chinese while reading English factory prose, so its
+    # likeliest restatement is a translation back to the Chinese original.
+    # Never rendered into any prompt.
+    restatement_reference: str = ""
 
 
 class Enforcement(BaseModel):
