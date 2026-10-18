@@ -38,6 +38,54 @@ def test_luxtts_prompt_missing_raises(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize("device", ["auto", "cpu", "cuda"])
+def test_luxtts_device_passed_through_as_provider(tmp_path: Path, device: str):
+    """Each device luxtts-onnx understands reaches LuxTTSOnnx unchanged."""
+    from unittest.mock import MagicMock, patch
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=MagicMock()) as cls:
+        LuxTTSEngine(
+            model_dir=tmp_path / "models",
+            prompt_path=prompt_path,
+            device=device,
+        )
+
+    cls.assert_called_once_with(model_dir=str(tmp_path / "models"), provider=device)
+
+
+def test_luxtts_device_defaults_to_auto(tmp_path: Path):
+    from unittest.mock import MagicMock, patch
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx", return_value=MagicMock()) as cls:
+        LuxTTSEngine(model_dir=tmp_path / "models", prompt_path=prompt_path)
+
+    assert cls.call_args.kwargs["provider"] == "auto"
+
+
+def test_luxtts_unknown_device_raises_before_loading(tmp_path: Path):
+    """An unknown device is a config error, not a silent switch to CPU."""
+    from unittest.mock import patch
+
+    prompt_path = tmp_path / "prompt.npz"
+    prompt_path.write_bytes(b"fake")
+
+    with patch("dollos.voice.tts_luxtts.LuxTTSOnnx") as cls:
+        with pytest.raises(ValueError, match="metal"):
+            LuxTTSEngine(
+                model_dir=tmp_path / "models",
+                prompt_path=prompt_path,
+                device="metal",
+            )
+
+    cls.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_luxtts_peak_normalize(tmp_path: Path, monkeypatch):
     """synthesize() should boost a low-amplitude signal to near peak_target."""
