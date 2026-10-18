@@ -1,6 +1,6 @@
 # Mind Loop 重新設計：一個自己，很多地方
 
-**狀態**：DRAFT（待使用者審）
+**狀態**：APPROVED（使用者 2026-10-18：「看起來不錯」）
 **日期**：2026-10-17
 **關聯**：`2026-10-17-doll-harness-design.md`（APPROVED；本文是它上面那一層：有哪些回合、什麼時候跑、狀態誰寫、怎麼耐久）、`2026-07-01-virtual-being-positioning.md`、`2026-07-07-self-directed-agenda-design.md`、`2026-07-07-diary-action-log-design.md`、`2026-07-02-slow-self-evolution-design.md`、`2026-07-10-metabolic-vital-model-design.md`、`2026-07-09-system-pulse-proactive-trigger-design.md`、`2026-10-17-dollos-v1-iphone-body-design.md`
 
