@@ -407,6 +407,55 @@ async def test_kernel_builds_voice_engines_from_pack(tmp_path: Path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_kernel_builds_tts_without_data_root(tmp_path: Path, monkeypatch):
+    """TTS gets only the merged pack + config kwargs, no ``data_root``.
+
+    The fake takes named parameters and no ``**kw``, like the real engines
+    (luxtts/fish/piper/openai/qwen3), so a stray kwarg is a TypeError.
+    """
+    from dollos.voice import engines as eng_mod
+    from dollos.voice.engines import ASREngine, TTSEngine
+
+    class _FakeASR(ASREngine):
+        def __init__(self, **kw): pass
+        async def transcribe(self, audio_pcm, sample_rate): return ""
+        async def aclose(self): pass
+
+    class _StrictTTS(TTSEngine):
+        sample_rate = 48000
+        def __init__(self, *, ref_text: str, device: str = "cpu") -> None:
+            self.ref_text = ref_text
+            self.device = device
+        async def synthesize(self, text):
+            yield b""
+        async def aclose(self): pass
+
+    monkeypatch.setitem(eng_mod.ASR_REGISTRY, "fake-asr", _FakeASR)
+    monkeypatch.setitem(eng_mod.TTS_REGISTRY, "strict-tts", _StrictTTS)
+
+    pack_dir = tmp_path / "pack"
+    pack_dir.mkdir()
+    (pack_dir / "doll.toml").write_text(
+        '[meta]\nid="t"\nname="T"\n[identity]\nself="x"\npersonality="x"\ntaboos="x"\n'
+    )
+    voice_dir = pack_dir / "voice"
+    voice_dir.mkdir()
+    (voice_dir / "engine.toml").write_text(
+        '[tts.strict-tts]\nref_text = "hi"\n'
+    )
+
+    from dollos.kernel import build_voice_engines
+    _, tts = build_voice_engines(
+        pack_dir,
+        data_root=tmp_path / "data",
+        voice_asr={"engine": "fake-asr"},
+        voice_tts={"engine": "strict-tts", "device": "auto"},
+    )
+    assert isinstance(tts, _StrictTTS)
+    assert (tts.ref_text, tts.device) == ("hi", "auto")
+
+
+@pytest.mark.asyncio
 async def test_kernel_no_voice_when_dollos_config_absent(tmp_path: Path):
     from dollos.kernel import build_voice_engines
 
