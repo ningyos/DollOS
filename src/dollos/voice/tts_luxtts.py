@@ -28,6 +28,9 @@ _FRAME_MS = 20
 _SAMPLES_PER_CHUNK = _SAMPLE_RATE * _FRAME_MS // 1000  # 960 samples
 _CHUNK_BYTES = _SAMPLES_PER_CHUNK * 2  # 2 bytes per int16 sample → 1920
 
+# Providers the locked luxtts-onnx understands; "auto" = CUDA if available, else CPU.
+_DEVICES = ("auto", "cpu", "cuda")
+
 
 def _pcm_chunks(audio_f32: np.ndarray) -> Iterator[bytes]:
     """Convert float32 [-1, 1] audio at 48 kHz into 20ms int16 PCM byte chunks."""
@@ -52,7 +55,7 @@ class LuxTTSEngine(TTSEngine):
         *,
         model_dir: Path,
         prompt_path: Path,
-        device: str = "cpu",
+        device: str = "auto",
         num_steps: int = 8,
         t_shift: float = 0.9,
         guidance_scale: float = 3.0,
@@ -60,6 +63,11 @@ class LuxTTSEngine(TTSEngine):
         peak_target: float = 0.95,
         eq_curve_path: Path | str | None = None,
     ) -> None:
+        if device not in _DEVICES:
+            raise ValueError(
+                f"unknown luxtts device {device!r}; "
+                f"available: {', '.join(_DEVICES)}"
+            )
         self._speed = speed
         self._peak_target = float(peak_target)
         self._eq_fir = None
@@ -82,8 +90,7 @@ class LuxTTSEngine(TTSEngine):
                 "luxtts EQ loaded from %s (%d taps, peak_normalize=%.3f)",
                 eq_curve_path, len(fir), eq_peak,
             )
-        provider = "cuda" if device == "cuda" else "cpu"
-        self._tts = LuxTTSOnnx(model_dir=str(model_dir), provider=provider)
+        self._tts = LuxTTSOnnx(model_dir=str(model_dir), provider=device)
         self._prompt = self._tts.load_prompt(str(prompt_path))
         self._num_steps = num_steps
         self._t_shift = t_shift
