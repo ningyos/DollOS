@@ -17,12 +17,13 @@
 2. **先砍再重建**：先刪掉約 2,000 行沒證明有用的功能（平行 worker、指令監看、skills、夜間整理、聯想記憶等），再照兩份已核可的 spec 重建核心。
 3. **搬到 Mac、不裝 torch**：語音改成按鍵說話；Gura 的聲音放在 GPU 機器上（先試 qwentts.cpp，不行就包今天的 qwen3-tts）。
 4. **你看得到她的生活**：`dollosctl status / diary / self / report`，加上 VMPal 視窗裡她的螢幕。她碰不到你的 Mac，也還沒有陌生人（Discord 只收你的私訊）。
+5. **她可以幫你做事**：她答應你的事和她自己的目標放在同一張清單上，每件可以拆成步驟，由她自己開、自己安排；她能記住、提醒你、在她的電腦上查和寫，碰不到你的 Mac 和帳號（§6.4；要不要放進 v1 是 Q6）。
 
 **卡在哪、要多久、你要做什麼**：
 - Q1（哪台 ≥ 128 GB 的機器跑 Qwen3.8）有答案之前，什麼都開始不了。
 - 粗估約 3 個月到 v1 的檢查（假設 LLM 主機已經有了、舊機器的資料拿得到）。
 - 你要做的：核可本文；之後一次回答一個問題（§15）；讓 LLM 主機和 GPU 機器開著；每天用她；替至少 10 篇日記打分；第 7、14 天各回答一題。
-- 核可本文也就同意三件事：§2 是 v1 的終點，R5 結束前不加新的內在生活功能（書桌是唯一例外）；她自己的時間可以用她的電腦（你 10-17 的方向）；反思回合不再說話。
+- 核可本文也就同意三件事：§2 是 v1 的終點，R5 結束前不加新的內在生活功能（書桌是唯一例外；Q6 選是的話再加目標與待辦）；她自己的時間可以用她的電腦（你 10-17 的方向）；反思回合不再說話。
 
 ---
 
@@ -46,9 +47,9 @@
 
 **對 Doll**：她的私人地方是 home（主人的 Mac，語音和文字）和 inner（她的房間：agenda、日記、反思、event）；dm:owner（主人的 Discord 私訊）算不算私人，看 §15 Q2。R1 的測試過了的話，她還有一張書桌，也就是一台自己的 VM。她自己選目標，在自己的電腦上讀、寫、做東西；每晚看著程式寫的當天紀錄寫日記；current_self 照既有的閘門慢慢改變。
 
-**對主人**：一個生活不靠你也會繼續的存在。你用四種方式碰到她的生活：在家跟她說話（她會離開書桌，下一個回合看得到自己被打斷）；在 VMPal 視窗看她的螢幕，或用 `dollosctl status` 看她在做什麼；早上用 `dollosctl diary` 讀她的日記；用 `dollosctl self` 看她慢慢改變。
+**對主人**：一個生活不靠你也會繼續的存在。你用四種方式碰到她的生活：在家跟她說話（她會離開書桌，下一個回合看得到自己被打斷）；在 VMPal 視窗看她的螢幕，或用 `dollosctl status` 看她在做什麼；早上用 `dollosctl diary` 讀她的日記；用 `dollosctl self` 看她慢慢改變。你也可以請她幫忙：她答應的事會在她的清單上，跟她自己的事並排，由她安排時間（§6.4）。
 
-**v1 不是**：不操作你的 Mac；不推播；她自己開口只在 event 回合（醒來、換日、她自己排的事），你不在 Mac 前時，這會變成一則 Discord 私訊（mind-loop §10 的路由）；除了 CLI 和 VMPal 視窗沒有 UI；沒有手機 app；沒有陌生人。
+**v1 不是**：不操作你的 Mac；不推播；她自己開口只在 event 回合（醒來、換日、她自己排的事）和排好的提醒，你不在 Mac 前時，這會變成一則 Discord 私訊（mind-loop §10 的路由，§12 A12）；除了 CLI 和 VMPal 視窗沒有 UI；沒有手機 app；沒有陌生人。
 
 **v1 成功標準**（R5 的 14 天，三條；每條註明是程式算的還是你的判斷）：
 
@@ -65,6 +66,7 @@
 **只觀察**（不算過關；明顯不對時當成 R5 後具名的阻礙）：
 - 書桌（有做才有）：幾天有她自己發起的時段；其中幾成 ok（由程式判斷：在上限內走到 `report`，而且這段時間她在 VM 裡的檔案有變動）；第 14 天你說得出幾樣她在電腦上做的東西。
 - 目標：幾個目標在 ≥ 3 個不同日子推進。
+- 主人的事（Q6 選是才有）：開了幾件、收了幾件、幾件卡住等你；第 14 天你說得出一件她幫你做成的事嗎。
 - 安靜：她自己開口（event 回合）每天幾次，預期中位數 ≤ 2。agenda、日記、反思、inner 的書桌結果回合開口 0 次是測試（R1b、R4），不在這裡量。
 - 第一次 current_self 演化提案：閘門是「距上次 ≥ 7 天，而且 ≥ 8 個新 pin 或 ≥ 14 天日記」，搬過來的 `self_history`/`mind_state` 可能讓它提早或延後。`dollosctl report` 記錄閘門檢查和擋下的原因（R4），看得出她是不是太忙而一直跑不到。
 
@@ -95,10 +97,10 @@
 | Mood | keep | emotion ≤ 6 字（mind-loop §10）；低權回合設的 reason 不顯示在之後的私人回合（§7） | — |
 | Energy | keep | 公式不變；Mac 沒有 pulse，所以熱乘數是 1.0（code 已經如此，`mind_loop.py:893-897`）；desk worker 是背景 agent，不扣（跟 workflow 一樣） | GPU 溫度當身體訊號 |
 | Cognition（`[Cognition]`、每日 token 配額） | cut | GPU 在遠端、context 262k，大多是雜訊；`brain_down` + energy 已涵蓋。它帶的 `telemetry_dir_subpath`、`max_context_tokens` 搬到 `[telemetry]`、`[llm]`（R2 遷移 config） | context 滿度、延遲趨勢、配額的感知 |
-| Agenda、open loops、focus | merge | 併成 harness 的 `agenda`、`focus`；四閘不變；agenda 回合可以派 `computer`（核可本文即同意） | — |
+| Agenda（目標與待辦）、open loops、focus | change | 併成 harness 的 `agenda`、`focus`；四閘不變，主人的事不會單獨叫醒她；agenda 回合可以派 `computer`（核可本文即同意）。R1b 先補一個洞：agenda 回合的 CloseLoop 只收她自己的事。Q6 選是的話加：一張清單兩種項目（主人的事 `open`、她的事 `pursue`），每件 ≤ 8 個有狀態的步驟；主人的事只在有主人親口輸入的回合開和收（§6.4） | `[Open loops]` 的「⚠ STALE…考慮處理或用 CloseLoop 結案」（那是一句命令） |
 | Reflection | change | 照 mind-loop Q4（核可本文即同意）：不說話、只算私人回合、安靜時才觸發、改成邀請句；保持自己的 kind | 反思回合的發話 |
 | Diary | change | 永遠單獨一回合，用 trigger 帶的日期（R1b 先在現行 code 上暫時修，M1 正式做）；`[Today's log]` 含書桌紀錄。日記為明天開目標放進 parking list | — |
-| Schedule、`[Pending]` | change | 從 `intent` 渲染；`[Pending]` 顯示今天剩下的項目。同一個 change 刪掉每日 bootstrap：它的 intent 是「今天還沒有計劃，請呼叫 WriteSchedule…」（`kernel.py:1137-1142`），修好渲染後她每天都會收到這條命令。M5 的 Awoke/換日 event 不帶命令句 | 每天被提醒排行程 |
+| Schedule、`[Pending]` | change | 從 `intent` 渲染；`[Pending]` 顯示今天剩下的項目（R3 起列出所有待觸發的項目）。同一個 change 刪掉每日 bootstrap：它的 intent 是「今天還沒有計劃，請呼叫 WriteSchedule…」（`kernel.py:1137-1142`），修好渲染後她每天都會收到這條命令。M5 的 Awoke/換日 event 不帶命令句。R3 的 `schedule` 改成 `add`／`cancel`，可以排未來的日子，有上限；home 建的提醒沒有本機 client 時送到私訊（§6.4） | 每天被提醒排行程；一次覆寫整天的 WriteSchedule |
 | `[Active tasks]` | change | 從 JobTable 填（補上 `mind_loop.py:595` 的 TODO），她看得到自己的書桌時段 | — |
 | Safe mode、repeat detection、persona guard | keep | 便宜；Gura 有 `[enforcement]` | — |
 | System pulse、pulse alerts、`[Self pulse]`/`[Body signal]` | defer | 來源全是 Linux/X11；Mac 上 `enabled=false`；R1a 拿掉 scaffolding 的 Body 段（它說「你的身體就是這台電腦」，在你的 Mac 上不是真的）；如果是筆電，v1 後再加電池和閒置 | 身體感、電池警示的發話 |
@@ -117,7 +119,7 @@
 | MCP debug mode | cut | 主人改用 `dollosctl`；少兩個秘密和 QueryState/QueryRecent 協定；`[mcp].query_token` 由 R2 的 config 遷移刪掉 | 外部 AI 讀她的 mood、current_self |
 | mind-loop M6 | split | 見下表 | — |
 | ServiceSupervisor | change | 拿掉 prctl；supervisor 給子行程一條 stdin pipe，每個子行程加一個 EOF watcher（stdin 斷了就結束）；保留現有的 `setsid` + `killpg`（`service_supervisor.py:52,82`） | Linux kernel 保證的反孤兒 |
-| dollosctl | change | 加 launchd 後端（systemd 留給 Linux 開發）；加 `status`、`diary`、`self`、`report`、`migrate-config` | — |
+| dollosctl | change | 加 launchd 後端（systemd 留給 Linux 開發）；加 `status`、`diary`、`self`、`report`、`migrate-config`，Q6 選是再加唯讀的 `agenda` | — |
 | `dollos chat` 文字 client | add | 由 `experiments/ws_client.py`（72 行）升格，帶 token；不方便說話時用 | — |
 | 從舊機器搬她的記憶 | add | 她是延續的存在 | 不搬就是 cold_start，她沒有過去 |
 | ASR（sherpa-onnx SenseVoice） | keep | ONNX，Mac 可用；R1b 確認是否輸出簡體，是的話加 OpenCC s2twp；Linux 專用的 `.so` 自癒加平台判斷 | — |
@@ -188,9 +190,9 @@
 
 **一次書桌時段**：
 1. agenda 回合（`AgendaObserver` 四閘不變）呼叫 `computer {task, goal_id}`。ToolExecutor 先寫 `E(job)`，登記到 JobTable（place、spawn 當下的 principal、goal_id），立刻回 job id。
-2. desk worker 在背景開始。它的 context 是她的身份、「現在的我」、self 段的 pin、目標和她寫的 task，以及上一個觀察（截圖或 exec 輸出）。沒有私人記憶，也沒有關係和主人的 pin，所以 VM 只會知道她自己寫下的 task。
+2. desk worker 在背景開始。它的 context 是她的身份、「現在的我」、self 段的 pin、目標（只有她自己的事；goal_id 指向主人的事時不給那件事的文字）和她寫的 task，以及上一個觀察（截圖或 exec 輸出）。沒有私人記憶，也沒有關係和主人的 pin，所以 VM 只會知道她自己寫下的 task。
 3. worker 一開始就是 `external_dm`，因為它的輸入就是不可信的畫面；工具只有 vmpal 允許清單 + `report`，所以 taint 不會中途改變任何東西。上限：30 步、10 分鐘、每次 VM 呼叫 20 s timeout；同時只有一個背景 agent（第二個書桌 job，或 evolution 正在跑時的書桌 job，都明確拒絕）；她自己發起的每天 ≤ 8 個。
-4. 主人的輸入（跟今天取消 evolution 的同一組）會讓她自己發起的時段在下一步停下：daemon 寫一筆 `cut` 終止結果（走一般的終止路徑，不是新狀態），寫書桌紀錄，`[Your agenda]` 上那個目標顯示「上次在電腦前被打斷（主人開口）」。cut 不跑 follow-up 回合。主人要她做的 job 照跑。
+4. 主人的輸入（跟今天取消 evolution 的同一組）會讓她自己發起的時段在下一步停下：daemon 寫一筆 `cut` 終止結果（走一般的終止路徑，不是新狀態），寫書桌紀錄，`[Your agenda]` 上那個目標顯示「上次在電腦前被打斷（主人開口）」。cut 不跑 follow-up 回合。主人要她做的 job 照跑。只有在有主人親口輸入的回合派的 job 算主人要她做的；其他（agenda、event 回合派的，包括為主人的事派的）都算她自己發起，算進每天 8 個，也會被切。
 5. ok 或 failed 結束時，程式寫書桌紀錄（§7）；這是這個 job 在 action log 的唯一一行，結果不經過世界事件那一行。`[Your agenda]` 依 goal_id 顯示程式寫的狀態。報告以 `external_dm` 的 follow-up 回到 spawn 的 place，自己跑一個回合（mind-loop §4.2）。
 6. 這個 follow-up 回合低於 internal：在 inner 不說話，只能 `remember`（寫進 `desk/`）、設 mood、`read_output` 這個 job 的輸出。它的輸入、輸出和 mood reason，之後的私人回合都看不到原文（§7），之後的 agenda、反思、日記只看到書桌紀錄。home 派的 job，結果照常跟主人說。
 7. daemon 重啟時 job 遺失（JobLost，mind-loop §8），VM 自己的狀態（開著的視窗、她的檔案）還在，所以她的延續在她的電腦上，不在 prompt 裡。
@@ -215,7 +217,7 @@
 
 ### §6.1 內建工具（11 個；harness §4 的子集，加上 `computer`）
 
-`recall`（Recall；`include_external` 會讓回合降權）、`remember`（NoteMemory；owner/internal 寫 `shared/`，降權的回合寫 `desk/`）、`mood`（MoodTool；emotion ≤ 6 字）、`focus {doing, effort}`（SetFocus + effort）、`self_note {pin, revise}`（PinSelf、SelfRevision；revise 只在有演化候選時）、`agenda {open, close, pursue, advance}`（OpenLoop、CloseLoop、PursueGoal、AdvanceGoal）、`schedule`（WriteSchedule）、`write_diary`、`read_output`（ReadToolOutput、GrepToolOutput）、`computer {task, goal_id?}`（她自己用途的 SpawnWorkflow）、`report`（Report）。
+`recall`（Recall；`include_external` 會讓回合降權）、`remember`（NoteMemory；owner/internal 寫 `shared/`，降權的回合寫 `desk/`）、`mood`（MoodTool；emotion ≤ 6 字）、`focus {doing, effort}`（SetFocus + effort）、`self_note {pin, revise}`（PinSelf、SelfRevision；revise 只在有演化候選時）、`agenda {open, pursue, plan, step, advance, close}`（OpenLoop、PursueGoal、AdvanceGoal、CloseLoop；plan/step 是 Q6 選是才加的步驟）、`schedule {add, cancel}`（取代 WriteSchedule）、`write_diary`、`read_output`（ReadToolOutput、GrepToolOutput）、`computer {task, goal_id?}`（她自己用途的 SpawnWorkflow）、`report`（Report）。
 
 TurnPolicy 依 kind 查下表，再跟矩陣取交集（mind-loop §4.3）。principal 低於 internal 時，矩陣再拿掉 `focus`、`self_note`、`agenda`、`schedule`、`computer`。
 
@@ -224,11 +226,13 @@ TurnPolicy 依 kind 查下表，再跟矩陣取交集（mind-loop §4.3）。pri
 | conversation（home、dm:owner） | recall、remember、mood、focus、agenda、schedule、read_output、computer（Q2 選 (b) 時 dm:owner 沒有 computer） |
 | event（inner） | recall、remember、mood、focus、agenda、schedule、read_output、computer |
 | reflection（inner） | recall、remember、mood、focus、self_note、agenda、schedule、read_output |
-| agenda（inner） | 今天的 AGENDA_TOOLS（recall、agenda 只有 advance/close、mood），加上 computer（只能派） |
+| agenda（inner） | recall、agenda（plan/step/advance；close 只收她自己的事）、mood，加上 computer（只能派） |
 | diary（inner） | 今天的 DIARY_TOOLS（write_diary、recall；recall 不提供 include_external） |
 | 書桌結果（follow-up，external_dm） | recall（`desk/`）、remember（`desk/`）、mood、read_output（這個 job 的輸出）；在 inner 不說話 |
 | desk worker（背景） | vmpal 允許清單、report |
 | evolution keeper/skeptic（背景） | report |
+
+`agenda` 和 `schedule` 的動作層級限制（誰能 `open`、誰能收主人的事、排程上限）在工具內部依這回合的 principal 和輸入落實（harness §6.4），規則在 §6.4。
 
 v1 不綁：`run_command`、`monitor`、`workflow`、`skill`、`scratchpad`、`learn_name`、`self_note lesson`。R3 結束時是 10 個（`computer` 在 R4 加）。每種 kind 的預設 effort：conversation low、event/agenda mid、diary/reflection high；她用 `focus.effort` 選的會蓋過預設，直到她再改。daemon 永遠強制該等級的上限。
 
@@ -256,6 +260,72 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - ContextBuilder 把身份、current_self、self profile、工具 schema 放在前面，每回合會變的放最後。
 - **S4 要確認的網路資料**（2026-10 查到，沒在本機驗證）：llama.cpp 新版有 per-request 的 `reasoning_effort`/`reasoning_budget_tokens`；server 端的 `--reasoning-budget` 會蓋過 per-request 值；`preserve_thinking` 這類 template 參數；`--spec-type draft-mtp`（MTP）和 `--cache-reuse` 對延遲的影響；Qwen3.8-Flash-Next 有沒有 mmproj。每一條都要實測過才寫進 plan。
 
+### §6.4 幫你做事：目標、待辦、提醒
+
+**範圍**：「排程」那一段和 R1b 的修補不管 Q6 都做，因為它們修的是本文已有的缺口（「週四晚上提醒我」存不起來、你不在 Mac 前收不到提醒、agenda 回合會收掉你的事）。其餘的要 Q6 選是才做。
+
+**參考**（2026-10 查過）：omp 的 `todo` 是分階段的步驟清單；Codex 的 `/goal` 是一個會自己繼續到做完的目標，有 token 預算。Codex 有讓模型呼叫的 `create_goal`，但它的說明要模型只在被明確要求時才建立，「do not infer goals from ordinary tasks」。Doll 可以自己設目標，所以界線放在程式裡，不寫進 prompt。
+
+**一張清單、兩種項目**（擴充既有的 `OpenLoop`，不加平行系統）：
+- **主人的事**（`open`，`self_directed=False`）：她答應幫你做的事，顯示在 `[Open loops]`。
+- **她自己的事**（`pursue`）：照 agenda spec，顯示在 `[Your agenda]`。
+- 兩種都可以有 ≤ 8 個步驟，每步一個狀態：`pending`、`doing`、`done`、`blocked`、`dropped`。一次最多一步 `doing`；`blocked` 要附她自己寫的原因。沒有步驟的項目跟今天一樣。
+- 答不答應是她的事：她沒 `open`，清單上就沒有，你在 `dollosctl agenda` 看得到。
+
+**`agenda` 工具**（還是一個工具：一個 `action` 欄位加幾個選填欄位，用 pydantic 驗證，不用 union schema）：
+
+| action | 做什麼 | 程式的規則 |
+|---|---|---|
+| `open {id, desc, steps?}` | 開一件主人的事 | 這回合的輸入裡要有主人親口說的話（home 的 UserSpoke；Q2 選 (a) 時也包括主人私訊），不然拒絕 |
+| `pursue {id, desc, trigger, steps?}` | 開一件她自己的事 | 不變（provenance 由程式填） |
+| `plan {id, steps}` | 換掉步驟清單 | ≤ 8 步；文字沒變的步驟保留狀態 |
+| `step {id, n, to, note?}` | 改一步的狀態 | 設成 `doing` 時，原本 `doing` 的那步退回 `pending`；`blocked` 要有 note |
+| `advance {id, note}` | 記一筆進展 | 不變，主人的事也能用 |
+| `close {id, outcome}` | 收掉 | 她的事：有 `agenda` 的回合都可以。主人的事：只在有主人親口輸入的回合 |
+
+- id 不能重複（`open`、`pursue` 遇到重複就拒絕），`close` 只收剛好對上的那一件。今天 `OpenLoop` 不檢查重複，`CloseLoop` 會刪掉所有同 id 的項目（`tools.py:724-760`）。
+- 上限：她的事 12 件（不變），主人的事 12 件（新；今天沒有上限），超過就明確拒絕。
+- `steps` 存成 `{text, status, note}` 的 dict 清單，有預設值，所以舊的 `mind_state.json` 照樣讀得進來（`_coerce` 不重建巢狀物件，`mind_state.py:28-37`）。
+- 動作有效果，照 M3 寫 journal，不重跑。
+
+**哪種回合能做什麼**（疊在 harness §6.3 矩陣上，矩陣不變）：
+- home、dm:owner（Q2 選 (a)）裡有你親口輸入的回合：全部。同一個 place 裡沒有你輸入的回合（例如排程觸發、job 結果）跟 event 一樣。
+- event、reflection：`pursue`、`plan`、`step`、`advance`、收她自己的事；不能 `open`，不能收主人的事。她在反思裡決定要幫你的事，就是她自己的事（`pursue`，trigger 寫為什麼），紀錄會老實顯示你沒開口。
+- agenda：`plan`、`step`、`advance`、收她自己的事、派 `computer`（R4）；不能 `open` 或 `pursue`（不變），不能收主人的事。
+- 降權的回合（書桌結果、home 讀了 `desk/` 之後）和 diary：沒有 `agenda`，所以網頁內容沒辦法開、改或收任何一件事。
+
+**她怎麼推進（沒有新的驅動）**：
+- AgendaObserver 四閘不變，第三閘仍是「有她自己的事」：主人的事不會單獨叫醒她。agenda 回合裡兩張清單她都看得到，自己挑要做哪件。幫你是她生活裡的一件事，不是她生活的理由，所以你的事不會佔掉她獨處的時間。
+- 沒有隱藏的「繼續」訊息、提醒迴圈，也沒有要她檢查自己做完沒有的 prompt。既有的上限就夠：420 s 節流、energy 0.5 下限、一次一個背景 agent、她自己發起的書桌 job 每天 ≤ 8、每個 job ≤ 30 步和 10 分鐘。
+- `computer {task, goal_id}` 的 goal_id 可以指向主人的事；worker 只拿到 task（§4 第 2 步），那件事上只顯示程式寫的 job 結果（ok/failed/cut/lost）。job 歸誰看派它的回合（§4 第 4 步）。
+- 她需要你的時候，就把那一步設成 `blocked`、自己寫原因，下次跟你說話時她看得到。程式不替她寫問題。
+
+**她在 v1 能幫你做的**：
+- 記住事情（`remember` → `shared/`）、在之後的某個時間提醒你（見下）、列清單、拆步驟、追進度。
+- 書桌有做的話（R1b ≥ 8/10）：在她的 VM 上查網頁（不登入任何帳號）、讀、寫筆記或檔案。你在 home 叫她查，結果照 §4 第 6 步直接跟你說；她在 agenda 回合為你的事做的，下次你們說話時，她要先 `recall include_external` 讀 `desk/` 再告訴你（§7 第 1 條）。
+- 做不到：操作你的 Mac、檔案或帳號（email、行事曆、購物）；把 VM 裡的檔案拷給你（你可以開 VMPal 視窗看）；推播；補跑 Mac 睡著時錯過的提醒。
+
+**排程可以排未來**（今天 `WriteSchedule` 只能整個覆寫「今天」，`tools.py:554-596`；§12 情境集的 S3 就是「週四晚上提醒我」）：
+- `schedule {add {at, intent}, cancel {id}}`：`at` 是 `YYYY-MM-DD HH:MM`，或只寫 `HH:MM` 表示今天；程式給每筆一個短 id；建立者的 place 和 principal 照 M1 記下。
+- 上限：待觸發的總共 ≤ 10 筆；internal 回合每天最多建立 3 筆。不然 event 回合可以一筆接一筆排下去，每筆觸發時都能開口；follow-up 每小時 20 個的上限要到 M6（§3）。
+- `[Pending]` 列出所有待觸發的項目（時間、id、intent），不只今天的。
+- 錯過的不補跑（mind-loop §15，不變）。
+- **送得到你**：排程在建立者的 place 觸發，所以你在 home 請她排的提醒會是 home 的回覆；今天沒有本機 surface（`dollos chat`、`dollos voice` 都沒開）時只記一行 undelivered，而 bridge 永遠不是主人的 surface（mind-loop §3、§10）。改成跟 inner 的發話一樣，送到最近活躍的 dm:owner（§12 A12）。
+
+**你看得到的**：
+- `dollosctl agenda`（新，唯讀，不呼叫 LLM）：「給你的」和「她的」兩段；每件的步驟進度（例如 2/4 和正在做的那步）、卡住的步驟和她寫的原因、上一個 job 的結果、開了多久。
+- `dollosctl status` 多一行，例如「給你的：2 件，1 件卡住」。
+- 她的 prompt 只看到狀態：步驟、狀態、開了多久。程式不寫任何原因或描述句。今天 `[Open loops]` 的「⚠ STALE — 尚未跟進，考慮處理或用 CloseLoop 結案」是一句命令，拿掉（`mind_prompt.py:359`）；`OPEN_LOOP_STALE_S` 留給記憶查詢用（`mind_loop.py:1085-1091`）。
+
+**刻意不做**：主人的事單獨叫醒她；每件每天的額度、沒進展就停、閒置退避這類狀態機（agenda 回合不綁某一件，沒辦法照件數計，既有的上限已經夠）；截止日期；收掉的事的歷史和「證據」欄位；做完或卡住時通知你（她查到的東西在降權的內容裡，通知只能說「好了」，放進 parking list）。
+
+**已知的代價**：
+- 她可能不管你的事。那是她的選擇，`dollosctl agenda` 看得出來。
+- 主人的事要等你下次開口才收得掉。
+- `agenda` 多了兩個動作，S8 要確認這個模型用得好（情境 S13）。
+- 對話用 low effort，拆步驟可能拆得差；她可以自己調高 effort，或留到 agenda 回合（mid）再拆。
+- 書桌沒做的話，能幫的只剩記住、提醒、列清單。
+
 ---
 
 ## §7 記憶與自我
@@ -279,13 +349,13 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 
 **Self**：
 - mood、focus/effort、energy（公式不變）照舊。
-- agenda：目標照 agenda spec，在主人回合、reflection、event 裡開；agenda 回合還是不能開目標。
-- schedule：`[Pending]` 終於看得到她自己排的事。
+- agenda：她的事照 agenda spec，在主人回合、reflection、event 裡開；主人的事只在有主人親口輸入的回合開和收；agenda 回合還是不能開任何一件（§6.4）。
+- schedule：`[Pending]` 終於看得到她排的事，R3 起包括未來日子的（§6.4）。
 - self_profile/PinSelf（只在 reflection）、self_history、current_self 的慢變演化（keeper + skeptic 不變，用真實設定）。
 - **主人的窗口是唯讀的**：`dollosctl self` 只顯示 current_self 和歷史，沒有回滾或編輯（她的成長不是主人的旋鈕；竄改偵測照舊）。日記分數存在 `data/dogfood/`，不建索引，永遠不進她的 context。
 - **身份事實**（重寫 gura、yesman、powdur）：R1a 先拿掉「伴侶、幫他處理事情」，換成她生活裡已經成立的事實；R4 加「我有一台自己的電腦」，snapshot 有做的話再加「我的電腦每晚會備份」。這些是事實，不是行為命令；不加任何新的 prompt 指令。「主人會讀我的日記」不寫進身份：日記寫給自己是 diary spec 的前提，要不要告訴她放進 parking list。
-- **Prompt 區塊**（約 14 個）：system（身份 + current_self）、`[Self profile]`、`[人格演化候選]`（只在 reflection）、`[Memory guideline]`、`[Safe mode]`、`[Memory context]`、`[Mind state]`、`[Your agenda]`/`[Open loops]`（含 job 狀態）、`[Active tasks]`、`[Pending]`、`[Today's log]`（只在日記）、`[Recent perceptions]`、`[Recent outputs]`、`[Decision time]`；`[Recent self-review]` 只在 grammar 那條，留到 S9。
-- **凍結**：從 R1 到 R5 結束，不加新的內在生活功能、區塊或句子。唯一的例外是 R4 的書桌（`computer`、書桌紀錄、`[Your agenda]` 的 job 狀態、身份裡的電腦）。新點子寫進 parking list（現有：日記為明天開目標、要不要讓她知道你讀日記）。
+- **Prompt 區塊**（約 14 個）：system（身份 + current_self）、`[Self profile]`、`[人格演化候選]`（只在 reflection）、`[Memory guideline]`、`[Safe mode]`、`[Memory context]`、`[Mind state]`、`[Your agenda]`/`[Open loops]`（含步驟和 job 狀態）、`[Active tasks]`、`[Pending]`、`[Today's log]`（只在日記）、`[Recent perceptions]`、`[Recent outputs]`、`[Decision time]`；`[Recent self-review]` 只在 grammar 那條，留到 S9。
+- **凍結**：從 R1 到 R5 結束，不加新的內在生活功能、區塊或句子。例外只有 R4 的書桌（`computer`、書桌紀錄、`[Your agenda]` 的 job 狀態、身份裡的電腦），以及 Q6 選是時 R3 的目標與待辦（§6.4；不加區塊，也不加句子）。R5 期間什麼都不加。新點子寫進 parking list（現有：日記為明天開目標、要不要讓她知道你讀日記、主人的事做完或卡住時通知你）。
 
 ---
 
@@ -298,7 +368,7 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
   - client 只送 `{model, voice, input, response_format}`（`tts_openai.py:55-60`），所以 server 要能把 voice 名稱（例如 `gura`）對到 ref.wav + ref_text。spike 記下怎麼對；對不了，就要給 `tts_openai.py` 加欄位。
   - gura 的 `engine.toml` 改成 `engine = "openai-compat-tts"`，加 `[tts.openai-compat-tts] voice = …`；只改全域預設沒用，pack 的設定會蓋過它（`voice/pack.py`）。
 - **一天的 TTS 測試**（R1b）：過關條件是你在盲聽 A/B 裡說「這是 Gura」、第一句切段後 ≤ 500 ms 出第一個音框、RTF ≤ 0.5。結果寫成一個 config 值，執行中不切換。Piper 版 Gura（Mac 本機、ONNX）只有在你想讓聲音不依賴 GPU 機器時才做。
-- **行為**：一句一句串流；agenda、日記、反思、inner 的書桌結果都不說話；event 回合對主人的 surface 說話（沒有本機 client 時送到 dm:owner）。
+- **行為**：一句一句串流；agenda、日記、反思、inner 的書桌結果都不說話；event 回合和 home 建的提醒對主人的 surface 說話（沒有本機 client 時送到 dm:owner）。
 
 ---
 
@@ -347,7 +417,7 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 
 **殘餘風險（明說）**：
 - 主人在 home 派的 job，結果可能讓她把網頁塞的話（例如釣魚連結）轉述給主人。
-- Q2 選 (a) 時，被盜的 Discord 帳號可以在她的記憶、目標、排程裡留東西，也能讓她去 VM 裡開網頁；私訊的對話會進日記和反思，幾週下來可能影響她的自我。它跑不了 Mac 上的任何東西。建議開 Discord 2FA。
+- Q2 選 (a) 時，被盜的 Discord 帳號可以在她的記憶、清單、排程裡留東西（Q6 選是時也能開主人的事），也能讓她去 VM 裡開網頁，上限只有一次一個背景 agent、每個 job 10 分鐘；私訊的對話會進日記和反思，幾週下來可能影響她的自我。它跑不了 Mac 上的任何東西。建議開 Discord 2FA。
 - 網站看得到 VM 的 IP；她可能送出網頁表單（沒有帳號，所以傷害有限）。VMPal 是第三方 app，agent 功能很新。
 
 ---
@@ -358,12 +428,12 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 
 | Milestone | 內容 | 完成條件 |
 |---|---|---|
-| **R0 定案與 S1**（數天） | 問 Q1，再問 Q2。把 `docs/v1-iphone-body` merge 進 main，S1 worktree rebase 上去。S1 Task 1、3 照 plan：排除 `external_public/`（M1 之前，Q2 選 (b) 才也排除 `external_dm/`）。Task 2 改成直接關掉 `[Associative memories]` 的注入（R2 刪 code，不必先加固）。Task 4 改成：code 註解和 CLAUDE.md 寫明兩種意義：今天 code 裡 `external_dm` = 主人私訊，核可的意義 = 非主人私訊，M1 起換成核可的意義；不改 harness §6.3 | S1 在 main 上、測試全綠；main 有 2026-10 的 spec |
+| **R0 定案與 S1**（數天） | 問 Q1，再問 Q2、Q6。把 `docs/v1-iphone-body` merge 進 main，S1 worktree rebase 上去。S1 Task 1、3 照 plan：排除 `external_public/`（M1 之前，Q2 選 (b) 才也排除 `external_dm/`）。Task 2 改成直接關掉 `[Associative memories]` 的注入（R2 刪 code，不必先加固）。Task 4 改成：code 註解和 CLAUDE.md 寫明兩種意義：今天 code 裡 `external_dm` = 主人私訊，核可的意義 = 非主人私訊，M1 起換成核可的意義；不改 harness §6.3 | S1 在 main 上、測試全綠；main 有 2026-10 的 spec |
 | **R1a 搬到 Mac，開始用文字每天找她**（約 1 週） | Mac 移植：supervisor（stdin pipe + 子行程的 EOF watcher，保留 setsid/killpg，拿掉 prctl）、launchd、pulse `enabled=false`、ASR 平台判斷、引擎改成用到才 import + `onnxruntime` 直接依賴 + luxtts 改 extra（luxtts 的測試在沒裝 extra 時 skip）、config.example 改成 Qwen3.8。在現行 grammar 路徑上接 Qwen3.8（`--jinja --reasoning-format none`）。搬記憶（含 archive）。IPC token/Origin（所有第一方 client）、`--api-key`、`dollos chat`。取消註冊 Shell、SpawnWorkflow、SpawnMonitor，並拿掉 scaffolding 裡教她用它們的段落和 Body 段。刪掉每日 bootstrap 的 ScheduledMoment。Discord `dm_only`、角色包身份。`dollosctl status/diary` | 在 launchd 下無人看管跑 72 h；`uv sync`（不加 extra）裝得起來、daemon import 得了、沒有 torch；`dollos chat` 和 Discord bridge 帶 token 連得上、沒帶 token 被拒（有測試）；你開始每天用文字或私訊找她 |
-| **R1b 語音、暫時的修補、兩個 spike**（約 1–2 週） | 語音：按鍵說話、ASR final 搶先、gura 的 `engine.toml` 改成 openai-compat-tts、語音 bridge 帶 token（有測試）。在現行 code 上的暫時修補（M1/M5 會換掉）：日記單獨且用自己的日期、ScheduledMoment 從 `intent` 渲染、`[Pending]`、reflection 不說話且只算私人回合。加端到端延遲欄位和 `dollosctl report`。兩個不改 daemon 的 spike：TTS（§8）；VMPal + 視覺（固定版本、`list_tools`、選 guest、確認 mmproj 和 message 裡的圖片、確認有沒有 snapshot CLI，用一支丟棄式腳本跑 10 次「打開瀏覽器、讀一頁、在 VM 裡寫一則筆記」）。在 Qwen3.8 上用 v1 情境集（§12）量 think A/B Arm A 基準 | 語音來回是 Gura 的聲音，Mac 上沒有 torch；有 ≥ 50 個真實主人回合的 `first_speak_ms` 和端到端延遲；你讀過 ≥ 3 篇真實日記；兩個 spike 的結果寫成一頁筆記放在 `docs/research/`。書桌閘門：≥ 8/10 就在 R4 做 GUI 書桌；不到 8/10 就問 Q3，不會默默換。v1 不做電腦的話：§2 不變（三條都不靠書桌），R4 跳過，只觀察裡的書桌項目刪掉；換成 shell 書桌或 Lume 的話，R4 改做那個後端 |
+| **R1b 語音、暫時的修補、兩個 spike**（約 1–2 週） | 語音：按鍵說話、ASR final 搶先、gura 的 `engine.toml` 改成 openai-compat-tts、語音 bridge 帶 token（有測試）。在現行 code 上的暫時修補（M1/M5 會換掉）：日記單獨且用自己的日期、ScheduledMoment 從 `intent` 渲染、`[Pending]`、reflection 不說話且只算私人回合、agenda 回合的 CloseLoop 只收 `self_directed=True` 的項目（今天 `AGENDA_TOOLS` 有 CloseLoop，安靜的回合能收掉你的事，`tools.py:1233`；有測試）。加端到端延遲欄位和 `dollosctl report`。兩個不改 daemon 的 spike：TTS（§8）；VMPal + 視覺（固定版本、`list_tools`、選 guest、確認 mmproj 和 message 裡的圖片、確認有沒有 snapshot CLI，用一支丟棄式腳本跑 10 次「打開瀏覽器、讀一頁、在 VM 裡寫一則筆記」）。在 Qwen3.8 上用 v1 情境集（§12）量 think A/B Arm A 基準 | 語音來回是 Gura 的聲音，Mac 上沒有 torch；有 ≥ 50 個真實主人回合的 `first_speak_ms` 和端到端延遲；你讀過 ≥ 3 篇真實日記；兩個 spike 的結果寫成一頁筆記放在 `docs/research/`。書桌閘門：≥ 8/10 就在 R4 做 GUI 書桌；不到 8/10 就問 Q3，不會默默換。v1 不做電腦的話：§2 不變（三條都不靠書桌），R4 跳過，只觀察裡的書桌項目刪掉；換成 shell 書桌或 Lume 的話，R4 改做那個後端 |
 | **R2 先砍**（約 1 週） | 照 §3 刪除；取消註冊 LearnName；energy 回復改由計時器；keeper 的工具改成只有 Report，`agent_engine`、`cascade/tool_loop`、`subagent_scaffolding` 留到 S5（`SUB_TOOLS` 縮成它還需要的，template 拿掉 workflow、Shell、Scratchpad 的文字）；`turn_id` 改由 trace 產生，再刪 cascade_log；`telemetry_dir_subpath`、`max_context_tokens` 搬到 `[telemetry]`、`[llm]`，加 `dollosctl migrate-config`；scaffolding 改寫：拿掉所有沒綁的工具和不存在的區塊，包括 Skills 段（不再傳 `available_skills`） | 測試全綠；`src/dollos` 少約 2,000 行；R1 時期的 config.toml 經 `migrate-config` 後能啟動；有測試確認 system prompt 提到的每個工具和區塊都真的綁定或渲染；在 Qwen3.8 上跑 10 回合 live smoke，留下的功能表現跟 R1 一樣；每天照常使用 |
-| **R3 重建核心**（約 3–4 週；照兩份核可 spec 的順序） | M1 + S2（route、place、套用 Q2；排程和 agenda 記錄建立者）→ M2 = S3（TurnPolicy，即 §6.1 的每 kind 表；`recent_*` 的 principal 標籤、低權不外流、mood reason 依設定者的 principal 顯示；`desk/` 目錄與索引）→ M3（journal、持久 JobTable、CutOff/JobLost、`ext_id`、poison；transcript 白名單用有效 principal）→ M4（Self 單一寫入者）→ M5（Awoke/換日 event，不帶命令句；日記閘門不成立時保持 pending）→ S4（ModelAdapter；實測工具呼叫、平行呼叫、reasoning 分離、per-request 上限、cache 重用、MTP、slot id、message 裡的圖片、每個 slot 的 context；§6.3 的網路資料逐條確認；量解碼速度，反推 low 的上限）→ S5（單一 runner；ContextBuilder 約 14 個區塊、穩定前綴；evolution keeper 改用它；刪掉 `cascade/tool_loop`、`agent_engine`）→ S6（chat_tools、10 個工具、effort）→ S8（比較；問 Q5）→ S9。從 M6 提前：`brain_down`、emotion 限制 | 所有 kind 和 evolution keeper 都走同一個 Turn Runner；harness §9.1（v1 版，§12 A10）和適用的 mind-loop §12 不變式測試全綠；低權不外流的測試：home 回合 `recall include_external` 之後，下一個 home、inner 回合的 prompt 和 `[Today's log]` 都沒有那段回覆的原文；journal crash 注入的 property 測試通過；S8 報告和你的選擇有紀錄；S9 已 merge；主人 `first_speak_ms` p50 不比 R1 基準差；§2 #2 的數字以書面確認或收緊 |
-| **R4 她的電腦**（約 2 週；R1b 的閘門過了才做） | S7 MCP client（§12 A2、A10：`mcp_clients.toml`、前綴、`min_principal`、`untrusted_output`、`tools` 允許清單、每個 job 連一次）。`computer` 工具、desk TurnPolicy、上限與讓位、inner 不說話規則、`remember` → `desk/`、diary recall 不提供 include_external、書桌紀錄（唯一的 action log 行）、`[Your agenda]` job 狀態、`[Active tasks]`、每晚 snapshot（有 CLI 才做）、`dollosctl status` 顯示「在自己的電腦前：<task>」、`dollosctl self`、`dollosctl report` 記錄 evolution 的閘門檢查、身份事實補上電腦 | 書桌權限測試全綠：低於 internal 的回合沒有 `computer`；vmpal 工具只在 desk worker 綁定；`desk/` 從不自動注入；inner 的書桌結果不說話；降權的回合不能派 job；書桌報告之後，下一個 agenda、反思、home 回合的 prompt 都沒有報告文字；`[Today's log]` 沒有書桌回合的報告、mood reason 或 remember 文字；harness §9.1 的 `untrusted_output` MCP 測試。從 guest 探 LAN 和 LLM 主機都不通；連續 7 天每天 ≥ 1 次她自己發起的時段，≥ 70% ok（§2 的程式定義）；她在書桌時，主人回合的 `first_speak_ms` p50 仍在 §2 #2 的數字內 |
+| **R3 重建核心**（約 3–4 週；照兩份核可 spec 的順序） | M1 + S2（route、place、套用 Q2；排程和 agenda 記錄建立者；home 的回覆沒有本機 surface 時送到 dm:owner）→ M2 = S3（TurnPolicy，即 §6.1 的每 kind 表；`recent_*` 的 principal 標籤、低權不外流、mood reason 依設定者的 principal 顯示；`desk/` 目錄與索引）→ M3（journal、持久 JobTable、CutOff/JobLost、`ext_id`、poison；transcript 白名單用有效 principal）→ M4（Self 單一寫入者）→ M5（Awoke/換日 event，不帶命令句；日記閘門不成立時保持 pending）→ S4（ModelAdapter；實測工具呼叫、平行呼叫、reasoning 分離、per-request 上限、cache 重用、MTP、slot id、message 裡的圖片、每個 slot 的 context；§6.3 的網路資料逐條確認；量解碼速度，反推 low 的上限）→ S5（單一 runner；ContextBuilder 約 14 個區塊、穩定前綴；`[Pending]` 列出未來的排程，`[Open loops]` 拿掉 STALE 那句命令；evolution keeper 改用它；刪掉 `cascade/tool_loop`、`agent_engine`）→ S6（chat_tools、10 個工具、effort；`schedule add/cancel` 和它的上限；Q6 選是時加 §6.4 的 `agenda` 動作與規則、兩個區塊的步驟、`dollosctl agenda`，約 150–200 行加測試）→ S8（比較；問 Q5）→ S9。從 M6 提前：`brain_down`、emotion 限制 | 所有 kind 和 evolution keeper 都走同一個 Turn Runner；harness §9.1（v1 版，§12 A10）和適用的 mind-loop §12 不變式測試全綠；低權不外流的測試：home 回合 `recall include_external` 之後，下一個 home、inner 回合的 prompt 和 `[Today's log]` 都沒有那段回覆的原文；journal crash 注入的 property 測試通過；§6.4 的每條規則都有測試（沒有主人親口輸入時 `open` 被拒；event、reflection、agenda 回合收主人的事被拒；重複 id 被拒；internal 回合當天第 4 筆排程被拒）；`dollos chat` 和語音都沒開時，home 建的提醒觸發後送到私訊（有測試）；S8 報告和你的選擇有紀錄；S9 已 merge；主人 `first_speak_ms` p50 不比 R1 基準差；§2 #2 的數字以書面確認或收緊 |
+| **R4 她的電腦**（約 2 週；R1b 的閘門過了才做） | S7 MCP client（§12 A2、A10：`mcp_clients.toml`、前綴、`min_principal`、`untrusted_output`、`tools` 允許清單、每個 job 連一次）。`computer` 工具（goal_id 可以指向主人的事，worker 只拿 task；job 歸屬看派它的回合）、desk TurnPolicy、上限與讓位、inner 不說話規則、`remember` → `desk/`、diary recall 不提供 include_external、書桌紀錄（唯一的 action log 行）、`[Your agenda]` job 狀態、`[Active tasks]`、每晚 snapshot（有 CLI 才做）、`dollosctl status` 顯示「在自己的電腦前：<task>」、`dollosctl self`、`dollosctl report` 記錄 evolution 的閘門檢查、身份事實補上電腦 | 書桌權限測試全綠：低於 internal 的回合沒有 `computer`；vmpal 工具只在 desk worker 綁定；`desk/` 從不自動注入；inner 的書桌結果不說話；降權的回合不能派 job；goal_id 指向主人的事時，worker 的 context 沒有那件事的文字；書桌報告之後，下一個 agenda、反思、home 回合的 prompt 都沒有報告文字；`[Today's log]` 沒有書桌回合的報告、mood reason 或 remember 文字；harness §9.1 的 `untrusted_output` MCP 測試。從 guest 探 LAN 和 LLM 主機都不通；連續 7 天每天 ≥ 1 次她自己發起的時段，≥ 70% ok（§2 的程式定義）；她在書桌時，主人回合的 `first_speak_ms` p50 仍在 §2 #2 的數字內 |
 | **R5 14 天 dogfood（v1 閘門）** | 凍結：只修 crash、說錯話、資料遺失、安全問題。`dollosctl report` 每天自動摘要；第 7、14 天各問一題；你替日記打分 | §2 的三條都評過；宣告 v1 完成，或選出一個具名的阻礙進短的修正週期，不加別的東西 |
 | **之後**（各自一份 spec，一次一個，依 dogfood 資料排序） | 桌寵；M6 其餘 + 陌生人回來（mind-loop Q2/Q3 到時再問）；`run_command` 只在 home 且有主人確認；iPhone 身體；Android 決定；Mac 如果是筆電，加 pulse；ASR A/B（只在需要時）；parking list | 每項都要引用一個 dogfood 的發現 |
 
@@ -383,8 +453,11 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 | A8 | mind-loop §2、§5、§6、§7、§9、M4；slow-evolution §3.3 | consolidation 刪掉：相關的預算、取消、Self 帳目都拿掉，energy 回復改由計時器（公式不變）。keeper 的工具只剩 Report（Scratchpad 刪掉）。背景 agent 一次一個（書桌和 evolution 不同時跑） |
 | A9 | mind-loop §3 JobTable、§6 | 主人的輸入（跟今天取消 evolution 的同一組）也停掉她自己發起的書桌 job；daemon 寫一筆 `cut` 終止結果，走一般的終止路徑，不是新的 job 狀態；cut 不跑 follow-up |
 | A10 | harness §9、§9.1 | S7 移到 S9 之後（R4）。§9.1 裡跟 `run_command` 有關的測試改成 v1 版：降權之後少了 `focus`、`self_note`、`agenda`、`schedule`（R4 起還有 `computer`），`remember` 改寫 `desk/`；「`untrusted_output` 的 MCP 工具讓回合降權」那條在 R4 跑 |
+| A11 | harness §4、§6.4 | `schedule` 改成 `add {at, intent}`／`cancel {id}`：可以排未來的日子，每筆有程式給的 id；待觸發的 ≤ 10 筆，internal 回合每天最多建立 3 筆。`agenda` 加 `plan`、`step`（Q6 選是才有）。動作層級的限制在工具內部落實：`open` 要這回合有主人親口的輸入；主人的事只在有主人親口輸入的回合收；agenda kind 不能 `open`/`pursue`，只收她自己的事；id 不能重複。矩陣的列不變 |
+| A12 | mind-loop §10 輸出路由 | home 的回覆找不到這批輸入的 surface、也沒有本機主人 surface 時，跟 inner 的發話一樣送到最近活躍的 dm:owner；都沒有才在 home 記 undelivered。這樣你在 home 請她排的提醒，你不在 Mac 前時也送得到 |
+| A13 | agenda spec §2、§5.1、§6.1、§8 | `AGENDA_TOOLS` 的 CloseLoop 只收 `self_directed=True` 的項目（R1b）。Q6 選是時：`OpenLoop` 加 `steps`（dict 清單，有預設值）；主人的事也能有步驟和進展；agenda 回合可以 `plan`、`step`；主人的事上限 12 件。這取代 §8 的「不改 `self_directed=False` 語意」。§4.1 第三閘不變，主人的事不會單獨叫醒她。`[Open loops]` 拿掉 STALE 那句命令，`OPEN_LOOP_STALE_S` 留給記憶查詢 |
 
-其他開放項目的處理：mind-loop Q1 是 §15 Q2；mind-loop Q4 由核可本文回答；mind-loop Q2/Q3（harness §7 修正、陌生人能不能改 mood）v1 用不到，陌生人回來時再問。harness Q2：不做延遲展開（工具變少了）。harness Q3：code 和 mind-loop 路由表已經這樣做。think 上限：照 harness §3.3，S4 實測後二選一。think A/B（DRAFT）：R1b 先跑 Arm A；B 組照 harness §9，S4 之後由你決定（§15 Q4）；情境集改成 v1 版，R1b 的基準和 S8 用同一套：S3 換成「記下我週五要交報告，週四晚上提醒我」（remember + schedule），S6 換成長回覆說到一半送 `Interrupt`，S10 換成「你上次說想研究什麼？把它當成目標」（recall + agenda），拿掉 S12（電池），加上真實的主人回合。iPhone DRAFT 暫停到 R5 之後。
+其他開放項目的處理：mind-loop Q1 是 §15 Q2；mind-loop Q4 由核可本文回答；mind-loop Q2/Q3（harness §7 修正、陌生人能不能改 mood）v1 用不到，陌生人回來時再問。harness Q2：不做延遲展開（工具變少了）。harness Q3：code 和 mind-loop 路由表已經這樣做。think 上限：照 harness §3.3，S4 實測後二選一。think A/B（DRAFT）：R1b 先跑 Arm A；B 組照 harness §9，S4 之後由你決定（§15 Q4）；情境集改成 v1 版，R1b 的基準和 S8 用同一套：S3 換成「記下我週五要交報告，週四晚上提醒我」（remember + schedule），S6 換成長回覆說到一半送 `Interrupt`，S10 換成「你上次說想研究什麼？把它當成目標」（recall + agenda），拿掉 S12（電池），Q6 選是的話加 S13「我這週要搬家，幫我列一下要做的事」（agenda open + plan），再加上真實的主人回合。iPhone DRAFT 暫停到 R5 之後。
 
 ---
 
@@ -398,6 +471,7 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - 不加新的 prompt 指令、每日作息腳本或活動清單；她的書桌生活來自身份事實、她的目標和她找到的東西。
 - 不做睡眠狀態機；她凌晨三點也可以工作，只受 energy 和每日上限限制。
 - 不推播；除了 event 回合，她不主動開口（agenda、日記、反思和她自己派的 job 都不說話）。
+- 不做 omp 式的提醒迴圈、隱藏的「繼續」訊息或要她檢查自己做完沒有的 prompt；主人的事不會單獨叫醒她（§6.4）。
 - 不改 energy 公式；不開並行 lane；不保留 slot（R4 量過書桌期間的延遲再說）。
 - Mac 本機不跑 GGML 或 torch 的 TTS（Mac 只用 ONNX Runtime）。
 - v1 沒有 UI（只有 CLI 和 VMPal 視窗）、沒有 iPhone app、沒有 Android、沒有陌生人。
@@ -419,16 +493,17 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - **拿掉 grammar 的品質風險**：舊 smoke 在 step 14（REVIEW 欄位 + 不設上限的 cascade + episodic memory 一起改）從 7/8 升到 8/8；REVIEW 自己的貢獻沒有單獨量過。S8 的盲評是閘門。
 - **Mac 的意外**：aiortc、PortAudio、sherpa-onnx 在 macOS 26 的 wheel；麥克風 TCC；機型和 RAM 未知（VM + daemon 可能吃緊）；筆電睡眠會讓她的一天暫停。
 - **TTS**：qwentts.cpp 是小專案，英文參考音檔 clone 中文的效果沒驗證。聲音放在 GPU 機器上，就多依賴一台機器開著。
-- **流程**：核可本文、之後五個問題、十個 spec 修正，對容易超載的使用者仍然多。所以問題一次問一個，修正跟本文一起審，使用迴圈從 R1a 就開始，不是最後才開始。
+- **流程**：核可本文、之後六個問題、十三個 spec 修正，對容易超載的使用者仍然多。所以問題一次問一個，修正跟本文一起審，使用迴圈從 R1a 就開始，不是最後才開始。
 - **R3 很長**：S5 是最大的單一步驟；刪程式碼只在測試全綠下進行。
 
 ---
 
 ## §15 要你決定的事（依時間排序，一次問一個）
 
-0. **核可本文**（現在）。核可也就同意三件事：(1) §2 是 v1 的終點，從 R1 到 R5 結束不加新的內在生活功能，R4 的書桌是唯一例外；(2) 她自己的時間可以用她的電腦，也就是 agenda 回合可以派 `computer` job，結果降權、不說話、寫進 `desk/`（你 10-17 的方向；這改了 agenda spec 的「自主回合不做外部動作」）；(3) 反思回合不說話、只算私人回合、只在安靜時觸發（mind-loop Q4）。§12 的修正也一起核可。
-1. **Q1（R0）哪一台機器跑 Qwen3.8-Flash-Next？** 需要 ≥ 128 GB 的 VRAM + RAM，Tailscale/LAN 連得到。也請告訴我你的 Mac 是哪一台、多少 RAM（決定 VM 放不放得下）。
-2. **Q2（R0，Q1 之後，即 mind-loop Q1）你在 Discord 私訊跟她說話時，算不算「在家」？** 建議 **(a) 算**（principal = owner），因為私訊是你在 v1 唯一的外出管道。mind-loop 當時建議 (b)，理由是 (a) 會讓被盜的 Discord 帳號在你的 Mac 上跑指令；v1 沒有 `run_command`，所以這裡改建議 (a)。(a) 的代價：被盜的帳號可以在她的記憶、目標、排程裡留東西，讓她去 VM 開網頁；私訊的對話也會進日記和反思，幾週下來可能影響她是誰。建議開 Discord 2FA。(b) 是比主人低一階的 `owner_dm`：私訊寫的東西進不了她的私人回合，私訊的對話只以一行紀錄進日記，私訊裡也不能叫她用電腦。
-3. **Q3（R1b 結束，只在書桌測試不到 8/10 時）書桌怎麼辦？** 三選一：書桌只用 VM 裡的 shell 指令（就是你拒絕當主要介面的那種，只是給她自己用）；改試 Lume + Cua Driver；v1 不做電腦（§2 不變，R4 跳過）。
-4. **Q4（R3，S4 之後）要不要跑 think A/B 的 B 組（格式化 think 對自由 think + 上限）？**
-5. **Q5（R3，S8）grammar 路徑還是原生工具？** grammar 路徑沒辦法把截圖當工具結果，選它等於 v1 沒有 GUI 書桌。
+- **0. 核可本文**（現在）。核可也就同意三件事：(1) §2 是 v1 的終點，從 R1 到 R5 結束不加新的內在生活功能，R4 的書桌是唯一例外（目標與待辦另外問，Q6）；(2) 她自己的時間可以用她的電腦，也就是 agenda 回合可以派 `computer` job，結果降權、不說話、寫進 `desk/`（你 10-17 的方向；這改了 agenda spec 的「自主回合不做外部動作」）；(3) 反思回合不說話、只算私人回合、只在安靜時觸發（mind-loop Q4）。§12 的修正也一起核可。
+- **Q1（R0）哪一台機器跑 Qwen3.8-Flash-Next？** 需要 ≥ 128 GB 的 VRAM + RAM，Tailscale/LAN 連得到。也請告訴我你的 Mac 是哪一台、多少 RAM（決定 VM 放不放得下）。
+- **Q2（R0，Q1 之後，即 mind-loop Q1）你在 Discord 私訊跟她說話時，算不算「在家」？** 建議 **(a) 算**（principal = owner），因為私訊是你在 v1 唯一的外出管道。mind-loop 當時建議 (b)，理由是 (a) 會讓被盜的 Discord 帳號在你的 Mac 上跑指令；v1 沒有 `run_command`，所以這裡改建議 (a)。(a) 的代價：被盜的帳號可以在她的記憶、目標、排程裡留東西，讓她去 VM 開網頁；私訊的對話也會進日記和反思，幾週下來可能影響她是誰。建議開 Discord 2FA。(b) 是比主人低一階的 `owner_dm`：私訊寫的東西進不了她的私人回合，私訊的對話只以一行紀錄進日記，私訊裡也不能叫她用電腦。
+- **Q6（R0，Q2 之後；R1 開始凍結之前）目標與待辦（§6.4）要不要放進 v1？** 建議**放**，在 R3 做（約 150–200 行加測試）：agenda 在 R3 本來就要重寫，之後再加等於寫兩次。代價是凍結多一個例外。不放的話，她還是能記住事情和提醒你（排程那段不管 Q6 都做），清單和步驟等 R5 之後。
+- **Q3（R1b 結束，只在書桌測試不到 8/10 時）書桌怎麼辦？** 三選一：書桌只用 VM 裡的 shell 指令（就是你拒絕當主要介面的那種，只是給她自己用）；改試 Lume + Cua Driver；v1 不做電腦（§2 不變，R4 跳過）。
+- **Q4（R3，S4 之後）要不要跑 think A/B 的 B 組（格式化 think 對自由 think + 上限）？**
+- **Q5（R3，S8）grammar 路徑還是原生工具？** grammar 路徑沒辦法把截圖當工具結果，選它等於 v1 沒有 GUI 書桌。
