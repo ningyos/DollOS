@@ -121,3 +121,30 @@ def test_doll_pack_declares_chinese_alias_seed():
     chars, clearing A3's `passes_alias_guard` (MIN_ALIAS_LEN=2)."""
     pack = DollPack.load(_REPO_DOLL_PACK)
     assert pack.meta.aliases == ["娃娃"]
+
+
+# --- Doll speaks English (2026-10-18 doll-english-luxtts plan, Task 6) ---
+
+
+def test_doll_personality_says_she_talks_in_english():
+    """Same shape as helper's CN-in / EN-out rule (test_helper_pack.py): the
+    language is one plain fact in her personality, not a command."""
+    pack = DollPack.load(_REPO_DOLL_PACK)
+    assert "English" in pack.identity.personality
+
+
+def test_doll_pack_carries_chinese_restatement_reference():
+    """The Chinese factory self + personality stays in the pack for the keeper
+    restatement gate. Its first paragraph ends like the English version (lives
+    on the owner's Mac), not the old AI-companion line."""
+    pack = DollPack.load(_REPO_DOLL_PACK)
+    ref = pack.identity.restatement_reference
+    assert ref.strip()
+    assert "我就是我本人" in ref
+    assert "AI 伴侶" not in ref
+
+
+def test_restatement_reference_defaults_to_empty():
+    """Optional field: a pack without it (helper) loads with an empty string."""
+    pack = DollPack.load(_REPO_HELPER_PACK)
+    assert pack.identity.restatement_reference == ""
