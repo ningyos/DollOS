@@ -1,8 +1,8 @@
 # DollOS 重新設計：住在你 Mac 上、有一台自己電腦的 Doll
 
 **狀態**：DRAFT（待使用者審）
-**日期**：2026-10-18
-**關聯**：`2026-10-17-doll-harness-design.md`（APPROVED）、`2026-10-17-mind-loop-redesign-design.md`（APPROVED）。本文不重寫這兩份，只決定 v1 留哪些功能、做的先後，以及對它們的修正（全部列在 §12）。另見 `2026-07-01-virtual-being-positioning.md`、`2026-07-07-self-directed-agenda-design.md`、`2026-07-07-diary-action-log-design.md`、`2026-07-02-slow-self-evolution-design.md`、`2026-10-17-dollos-v1-iphone-body-design.md`（DRAFT）、`2026-10-17-think-ab-qwen38-design.md`（DRAFT）、`plans/2026-10-17-s1-external-memory-isolation.md`（進行中）
+**日期**：2026-10-18（同日修訂：Gura 先講英文，聲音改成 Mac CPU 上的 luxtts，GPU 機器不再跑 TTS；§8）
+**關聯**：`plans/2026-10-18-gura-english-luxtts-mac.md`（§8 的 plan，待審）、`2026-10-17-doll-harness-design.md`（APPROVED）、`2026-10-17-mind-loop-redesign-design.md`（APPROVED）。本文不重寫這兩份，只決定 v1 留哪些功能、做的先後，以及對它們的修正（全部列在 §12）。另見 `2026-07-01-virtual-being-positioning.md`、`2026-07-07-self-directed-agenda-design.md`、`2026-07-07-diary-action-log-design.md`、`2026-07-02-slow-self-evolution-design.md`、`2026-10-17-dollos-v1-iphone-body-design.md`（DRAFT）、`2026-10-17-think-ab-qwen38-design.md`（DRAFT）、`plans/2026-10-17-s1-external-memory-isolation.md`（進行中）
 
 ---
 
@@ -15,14 +15,14 @@
 **最大的改變**：
 1. **她獨處時有事做**：去自己的電腦上做她選的事；你一開口，她就離開電腦。
 2. **先砍再重建**：先刪掉約 2,000 行沒證明有用的功能（平行 worker、指令監看、skills、夜間整理、聯想記憶等），再照兩份已核可的 spec 重建核心。
-3. **搬到 Mac、不裝 torch**：語音改成按鍵說話；Gura 的聲音放在 GPU 機器上（先試 qwentts.cpp，不行就包今天的 qwen3-tts）。
+3. **搬到 Mac、不裝 torch**：語音改成按鍵說話；Gura 先講英文，聲音直接在 Mac 的 CPU 上產生（luxtts，你的 M5 上約 3.5 倍即時），不需要 GPU 機器。她講中文留到之後。
 4. **你看得到她的生活**：`dollosctl status / diary / self / report`，加上 VMPal 視窗裡她的螢幕。她碰不到你的 Mac，也還沒有陌生人（Discord 只收你的私訊）。
 5. **她可以幫你做事**：她答應你的事和她自己的目標放在同一張清單上，每件可以拆成步驟，由她自己開、自己安排；她能記住、提醒你、在她的電腦上查和寫，碰不到你的 Mac 和帳號（§6.4；要不要放進 v1 是 Q6）。
 
 **卡在哪、要多久、你要做什麼**：
 - Q1（哪台 ≥ 128 GB 的機器跑 Qwen3.8）有答案之前，什麼都開始不了。
 - 粗估約 3 個月到 v1 的檢查（假設 LLM 主機已經有了、舊機器的資料拿得到）。
-- 你要做的：核可本文；之後一次回答一個問題（§15）；讓 LLM 主機和 GPU 機器開著；每天用她；替至少 10 篇日記打分；第 7、14 天各回答一題。
+- 你要做的：核可本文；之後一次回答一個問題（§15）；讓 LLM 主機開著；每天用她；替至少 10 篇日記打分；第 7、14 天各回答一題。
 - 核可本文也就同意三件事：§2 是 v1 的終點，R5 結束前不加新的內在生活功能（書桌是唯一例外；Q6 選是的話再加目標與待辦）；她自己的時間可以用她的電腦（你 10-17 的方向）；反思回合不再說話。
 
 ---
@@ -35,7 +35,7 @@
 | 2 | 她獨處時沒事可做：agenda 回合只有 Recall/AdvanceGoal/CloseLoop/MoodTool，而且不說話 | `tools.py:1233` |
 | 3 | 機制比證據多：23 個工具、9 種工具集合、約 25 個 prompt 區塊、7 種自發回合，多數只有單元測試 | `tools.py:1188-1248`、`mind_prompt.py:37-226` |
 | 4 | 壞掉或死掉的部分：`[Active tasks]`/`[Pending]` 每回合渲染但從沒人寫；排程文字寫在 `intent`、渲染讀 `text`，所以每個排程回合都是空白；scaffolding 提到不存在的區塊和已經沒用的工具；4 個設定沒人讀 | `mind_loop.py:595-596`、`kernel.py:1141,1215` 對 `mind_prompt.py:426-427`、`scaffolding.jinja:21-27,168-192` |
-| 5 | 搬不到 Mac：prctl PDEATHSIG、systemd、`/proc`/`nvidia-smi`/`xdotool`、luxtts 預設 CUDA；Gura 的 TTS（qwen3-tts）要 torch | `service_supervisor.py:32-55`、`ctl/systemctl.py`、`perception/system_pulse.py`、`config.example.toml:118`、`character_packs/gura/voice/engine.toml` |
+| 5 | 搬不到 Mac：prctl PDEATHSIG、systemd、`/proc`/`nvidia-smi`/`xdotool`、luxtts 預設 CUDA；Gura 的 TTS（qwen3-tts）要 torch | `service_supervisor.py:32-55`、`ctl/systemctl.py`、`perception/system_pulse.py`、`config.example.toml:124`、`character_packs/gura/voice/engine.toml` |
 | 6 | 只接得上 llama.cpp `/completion` + grammar，BYO LLM 不是真的 | `config.py:13-14` |
 | 7 | 角色包的身份跟定位矛盾：Gura 寫「主人的 AI 伴侶，陪著他，也幫他處理事情」，yesman、powdur 都自稱 companion | `character_packs/gura/doll.toml:12`、`yesman/doll.toml:9`、`powdur/doll.toml:7` |
 
@@ -125,13 +125,13 @@
 | ASR（sherpa-onnx SenseVoice） | keep | ONNX，Mac 可用；R1b 確認是否輸出簡體，是的話加 OpenCC s2twp；Linux 專用的 `.so` 自癒加平台判斷 | — |
 | 語音輸入 | change | v1 的簡化：還沒有 UI，雜音觸發搶先也沒測過，所以先用按鍵說話 | 免持對話 |
 | 語音搶先 | change | ASR final 走今天的打斷路徑（中止播放 + `Interrupted`，`kernel.py:1008-1033`），提前到 R1b；沒唸出來的句子的 note 留在 M6 | transcript 可能記下你沒聽到的句子 |
-| TTS | change | Mac 上只有 `openai-compat-tts` client，TTS server 放在 GPU 機器（§8）。gura 的 `engine.toml` 改成 openai-compat-tts（pack 的設定會蓋過全域預設）。luxtts 改成 extra：引擎改成用到才 import，`onnxruntime` 改成直接依賴（語音 bridge 的 VAD 要用，`voice/bridge/vad.py:14`） | Mac 上的 Powdur 聲音；GPU 機器關著時沒有聲音 |
-| Piper 版 Gura | defer | Mac 本機的 ONNX 選項；只有你想讓聲音不依賴 GPU 機器時才做 | — |
+| TTS | change | Gura 先講英文，用 luxtts-onnx 在 Mac CPU 上跑（M5 實測 RTF 0.27，§8）。gura 的 `engine.toml` 改成 luxtts-onnx（pack 的設定會蓋過全域預設）。依賴不用改：luxtts-onnx 本來就是基本依賴，只用 ONNX Runtime | 她的中文語音（之後再做）；Mac 上的 Powdur 聲音 |
+| Piper 版 Gura | defer | 讓她講中文的兩條路之一（另一條是 GPU 機器上的 TTS server），v1 之後再選 | — |
 | voice_eval | defer | dev 用，要 torch | — |
 | llm_calls、turn_latency、trace | keep | 量 v1；加一個端到端欄位（輸入結束到第一個音框） | — |
 | cascade_log | merge | 併進 trace；`turn_id` 先改由 trace 產生（`turn_latency` 用它 join，`mind_loop.py:1380,1599`），再刪 cascade_log | 另一種格式的同一份資料 |
 | Vitals recorder | cut | 沒有人讀 | 給未來 RL 的原料 |
-| Character packs | change | 「伴侶、幫他處理事情」改成她生活的事實（§7）；gura 當範例預設；powdur 在 Mac 上只有文字 | — |
+| Character packs | change | 「伴侶、幫他處理事情」改成她生活的事實（§7）；gura 當範例預設，身份改成英文（§8）；powdur 在 Mac 上只有文字 | — |
 | 死掉的設定、區塊、過時的 example config | cut | 4 個 flag、scaffolding 裡沒綁的工具和不存在的區塊；config 改成 Qwen3.8 與真實 context | 無 |
 | llama-server `--api-key` | add | 每個 prompt 都帶著她的記憶和截圖 | — |
 | Think A/B 的 B 組 | defer | 照 harness §9：S4 實測後由你決定要不要跑（§15 Q4） | — |
@@ -170,20 +170,19 @@
 │        ▼                                                                      │
 │   Turn Runner：TurnPolicy ∩ 矩陣 → ToolRegistry → ContextBuilder               │
 │                → ModelAdapter（chat_tools；effort → 上限）→ ToolExecutor       │
-│        │ 說話 → 句子切段 → TTS client  │ 11 個內建工具                         │
+│        │ 說話 → 句子切段 → TTS（CPU）  │ 11 個內建工具                         │
 │        ▼                                ▼                                     │
 │   Self（唯一寫入者）：mood、energy、agenda、schedule、JobTable、self_profile、  │
 │     current_self、self_history、memory/*.md + FTS5（shared/ transcripts/ desk/）│
 │   背景 agent（一次一個；同一個 Turn Runner；讀快照）：                          │
 │     desk worker（computer job） │ evolution keeper/skeptic                     │
 │   主人的窗口：dollosctl status │ diary [--rate] │ self │ report（不呼叫 LLM）    │
-└──────┬──────────────────────┬──────────────────────────────┬──────────────────┘
-       │ /v1/chat/completions │ /audio/speech                │ MCP（只在 desk worker）
-       │（Tailscale/LAN，      │（openai-compat）              ▼
-       │  --api-key）          ▼                         她的電腦：一台 VMPal VM
-       ▼                  GPU 機器：TTS server            沒有主人帳密、共用資料夾和剪貼簿；
-  LLM 主機：llama.cpp（固定版本）                         擋 LAN 與 LLM 主機
-  Qwen3.8-Flash-Next Q4、-np 2、--jinja
+└──────┬─────────────────────────────────────────────────────┬──────────────────┘
+       │ /v1/chat/completions                                │ MCP（只在 desk worker）
+       │（Tailscale/LAN，--api-key）                         ▼
+       ▼                                                 她的電腦：一台 VMPal VM
+  LLM 主機：llama.cpp（固定版本）                        沒有主人帳密、共用資料夾和剪貼簿；
+  Qwen3.8-Flash-Next Q4、-np 2、--jinja                  擋 LAN 與 LLM 主機
 ```
 
 **跟兩份核可 spec 的關係**：核心原樣使用。mind-loop §2–§10 管地方、路由、排程、journal、Self、可見性；harness §2–§6 管五個元件、原生工具、矩陣（唯一的權限來源）、taint 只降權。Turn Runner 的介面照 mind-loop §11；背景 agent 照 mind-loop §11 用同一個 runner、讀快照、不另寫 B/C，desk worker 就是這種背景 agent。本文在核心上做的事：裁剪工具和區塊（§3、§6.1）、加一種 job（`computer`，§6.2）、加一條「低權不外流」規則（§7）、調整先後順序（§11）。對核可 spec 的每一處文字修正都列在 §12。
@@ -353,34 +352,49 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - schedule：`[Pending]` 終於看得到她排的事，R3 起包括未來日子的（§6.4）。
 - self_profile/PinSelf（只在 reflection）、self_history、current_self 的慢變演化（keeper + skeptic 不變，用真實設定）。
 - **主人的窗口是唯讀的**：`dollosctl self` 只顯示 current_self 和歷史，沒有回滾或編輯（她的成長不是主人的旋鈕；竄改偵測照舊）。日記分數存在 `data/dogfood/`，不建索引，永遠不進她的 context。
-- **身份事實**（重寫 gura、yesman、powdur）：R1a 先拿掉「伴侶、幫他處理事情」，換成她生活裡已經成立的事實；R4 加「我有一台自己的電腦」，snapshot 有做的話再加「我的電腦每晚會備份」。這些是事實，不是行為命令；不加任何新的 prompt 指令。「主人會讀我的日記」不寫進身份：日記寫給自己是 diary spec 的前提，要不要告訴她放進 parking list。
+- **身份事實**（重寫 gura、yesman、powdur）：R1a 先拿掉「伴侶、幫他處理事情」，換成她生活裡已經成立的事實（Gura 這一步跟她的英文身份一起做，只改一次，§8）；R4 加「我有一台自己的電腦」，snapshot 有做的話再加「我的電腦每晚會備份」。這些是事實，不是行為命令；不加任何新的 prompt 指令。「主人會讀我的日記」不寫進身份：日記寫給自己是 diary spec 的前提，要不要告訴她放進 parking list。
 - **Prompt 區塊**（約 14 個）：system（身份 + current_self）、`[Self profile]`、`[人格演化候選]`（只在 reflection）、`[Memory guideline]`、`[Safe mode]`、`[Memory context]`、`[Mind state]`、`[Your agenda]`/`[Open loops]`（含步驟和 job 狀態）、`[Active tasks]`、`[Pending]`、`[Today's log]`（只在日記）、`[Recent perceptions]`、`[Recent outputs]`、`[Decision time]`；`[Recent self-review]` 只在 grammar 那條，留到 S9。
 - **凍結**：從 R1 到 R5 結束，不加新的內在生活功能、區塊或句子。例外只有 R4 的書桌（`computer`、書桌紀錄、`[Your agenda]` 的 job 狀態、身份裡的電腦），以及 Q6 選是時 R3 的目標與待辦（§6.4；不加區塊，也不加句子）。R5 期間什麼都不加。新點子寫進 parking list（現有：日記為明天開目標、要不要讓她知道你讀日記、主人的事做完或卡住時通知你）。
 
 ---
 
-## §8 語音（Mac 上沒有 torch）
+## §8 語音（Mac 上沒有 torch；Gura 先講英文）
+
+你 2026-10-18 的決定：Gura 先講英文。這樣她的聲音可以直接在 Mac 的 CPU 上產生，v1 不需要 GPU 機器。plan：`plans/2026-10-18-gura-english-luxtts-mac.md`。
 
 - **輸入**：bridge 改成按鍵說話（在它的終端機按一個切換鍵，不需要額外的 macOS 權限）。按下送 `Interrupt`（中止播放），接著 `UtteranceStart`；放開送 `UtteranceEnd`。silero VAD 只用來修掉前後的靜音（`voice/bridge/controller.py`）。從終端機跑 `dollos voice`，麥克風權限才會給前景 app。
-- **ASR**：SenseVoice int8 在 CPU 上跑，不變。R1b 確認中文輸出是不是簡體；是的話，在變成 UserSpoke 之前用 OpenCC s2twp 轉，否則 jieba/FTS 會搜不到語音逐字稿。`asr_sherpa.py` 的 `libonnxruntime.so` 自癒只在 Linux 跑。台灣口音的 ASR A/B 只在 dogfood 顯示 ASR 是問題時才做。
+- **ASR**：SenseVoice int8 在 CPU 上跑，不變。R1b 確認中文輸出是不是簡體；是的話，在變成 UserSpoke 之前用 OpenCC s2twp 轉，否則 jieba/FTS 會搜不到語音逐字稿。`asr_sherpa.py` 的 `libonnxruntime.so` 自癒只在 Linux 跑。台灣口音的 ASR A/B 只在 dogfood 顯示 ASR 是問題時才做。她講英文不影響 ASR：SenseVoice 自己判斷語言，你講中文或英文都可以。
 - **搶先**：ASR final 走今天的打斷路徑：中止播放、送 `Interrupted`。沒唸出來的句子還是會進 transcript，要等 M6 的 note 才修。
-- **TTS**：照你的方向，Mac 上只用 ONNX Runtime，所以 daemon 只用既有的 `openai-compat-tts` client，server 跑在 GPU 機器上。先試 qwentts.cpp 的 tts-server（GGML，OpenAI 相容的串流 PCM，用 WAV + 逐字稿 zero-shot clone；約 189 stars 的小專案）；不過就把今天的 qwen3-tts 包成 OpenAI 相容的小服務。Gura 本來就是參考音檔 clone（`engine.toml`：`ref.wav` + `ref_text`），不是 fine-tune；那段參考音檔是英文，設定卻是 `language = "Chinese"`，所以測試要拿同一段音檔和同一個設定，跟今天 qwen3-tts 的輸出比。
-  - client 只送 `{model, voice, input, response_format}`（`tts_openai.py:55-60`），所以 server 要能把 voice 名稱（例如 `gura`）對到 ref.wav + ref_text。spike 記下怎麼對；對不了，就要給 `tts_openai.py` 加欄位。
-  - gura 的 `engine.toml` 改成 `engine = "openai-compat-tts"`，加 `[tts.openai-compat-tts] voice = …`；只改全域預設沒用，pack 的設定會蓋過它（`voice/pack.py`）。
-- **一天的 TTS 測試**（R1b）：過關條件是你在盲聽 A/B 裡說「這是 Gura」、第一句切段後 ≤ 500 ms 出第一個音框、RTF ≤ 0.5。結果寫成一個 config 值，執行中不切換。Piper 版 Gura（Mac 本機、ONNX）只有在你想讓聲音不依賴 GPU 機器時才做。
+- **TTS**：luxtts-onnx 在 Mac 的 CPU 上跑（ONNX Runtime，沒有 torch、不需要 GPU 機器）。
+  - 2026-10-18 在你的 Mac（M5、16 GB、macOS 27、onnxruntime 1.31）量到的 RTF：CPU 英文 0.27、中文 0.30（約 3.5 倍即時）；WebGPU 0.23／0.25（要另外裝外掛，快不了多少）；CoreML 不能用（vocos 建不起來，decoder 比 CPU 慢）。
+  - `device = "auto"`：有 CUDA 就用 CUDA，沒有就用 CPU。DollOS 鎖的 luxtts-onnx（`d29f673`）本來就是這樣，CPU 的路徑也跟 `feat/apple-silicon` 一樣，所以 v1 不需要 merge 那個分支。`tts_luxtts.py:85` 今天只會傳 `cuda` 或 `cpu`（`auto` 也變成 `cpu`），改成照設定原樣傳；不認得的值直接報錯，不默默改用 CPU。WebGPU 只在之後量到需要時才開，那時再 merge 那個分支。
+  - 英文不需要語言參數：luxtts-onnx 逐字判斷中英，英文交給 espeak en-us（含數字和縮寫的正規化）；英文句子裡夾的中文詞會用中文唸。
+  - 聲音提示：gura 已經有 luxtts 的提示檔（3 秒，「wake up! 喂！喂！wake up!」）。聽起來不像她，就用 30 秒的英文 `voice/qwen3/ref.wav` 重新編碼；提示越長，合成越慢。
+  - luxtts 一整句合成完才出第一個音框，所以第一個音框約在 RTF × 句長之後（2 秒的句子約 0.55 秒）。§2 #2 的語音數字（放開說話鍵到第一個音框 p50 ≤ 3.0 s）不變。
+  - gura 的 `engine.toml` 改成 `engine = "luxtts-onnx"`；只改全域預設沒用，pack 的設定會蓋過它（`voice/pack.py:156-157`）。
+- **她講英文**：
+  - 身份裡寫一句事實：她聽得懂中文和英文，說話用英文（跟 yesman 一樣）。Gura 的 identity、personality、taboos 改成英文，草稿在 plan 附錄 A，等你核可。只適用中文的規則（不堆「啦／嘛／喔／呀」）拿掉；`[enforcement]`（禁「a~」、驚嘆號最多連一個）不變，英文一樣適用。
+  - scaffolding 裡唯一的對話範例是中文（`scaffolding.jinja:101-117`），範例會把模型拉向它的語言，換成英文。
+  - 她自己寫的東西（日記、記憶筆記、「現在的我」）用什麼語言是 Q7，建議維持繁體中文。這樣不用改程式（既有的 `[memory] primary_language = "繁體中文"` 每回合就要她用繁體中文記，`mind_prompt.py:246-259`），搬過來的記憶也照樣搜得到。代價：演化的「不可重述出廠人格」檢查是逐句比字，中文候選跟英文的出廠人格永遠比不中，所以 pack 留一份中文原文，只給這個檢查用（plan Task 6）。
+  - 內部的中文框架句（`[External situation]`、工具回傳、action log 等）不動；你聽不到它們，只有 smoke 顯示中文漏進她說的話時才改。
+- **英文會碰到的兩個既有問題**（plan 裡各有測試）：
+  - `kernel.py:308` 多傳了 `data_root` 給 TTS 引擎，可是五個 TTS 引擎都不收這個參數，所以一開語音就 TypeError。跟語言無關，但不修就沒有聲音（在 Python 3.13 環境實際跑過，確定會 TypeError）。
+  - 句子切段看到「.」就切：「Wait... what?」會切出單獨的「.」送去 TTS（Discord 也會收到一則只有「.」的訊息），「3.14」會被切成兩半。改成 `.?!` 後面接空白才算句尾，連續的標點算一個句尾；長句的強制切段改成切在空白。
+- **聽一次**（R1b，取代原本的 TTS spike）：你在 Mac 上跑 plan 附的指令，產生幾句 Gura 的英文，聽完說「是 Gura」或「不像」；不像就重新編碼提示，再聽一次。RTF 要 ≤ 0.5（已量到 0.27）。選好的提示就是 pack 裡的 `prompt.npz`，執行中不切換。
+- **她講中文**（v1 之後，到時候選一條）：用 `piper-finetune` 訓練 Piper 版 Gura（Mac 本機、ONNX），或在 GPU 機器上跑 TTS server（qwentts.cpp 或包今天的 qwen3-tts，daemon 用既有的 `openai-compat-tts` client）。luxtts 自己也能唸中文（RTF 0.30），只是 pack 的註解說唸不好 Gura 的中文。
 - **行為**：一句一句串流；agenda、日記、反思、inner 的書桌結果都不說話；event 回合和 home 建的提醒對主人的 surface 說話（沒有本機 client 時送到 dm:owner）。
 
 ---
 
 ## §9 部署與安裝
 
-**Mac**（跑 daemon）：Apple Silicon、macOS 26（VMPal 需要）。機型和 RAM 在 Q1 一起問；粗估 daemon + ASR 約 1 GB、VM 4–8 GB。Python 3.13（S1 Task 0 的 `.python-version`）+ uv，`brew install portaudio uv`。不裝 torch 和 CUDA；`uv sync` 不加 extra 就要能 import daemon、跑 `dollos voice`（引擎改成用到才 import，`onnxruntime` 是直接依賴）。
+**Mac**（跑 daemon）：Apple Silicon、macOS 26 以上（VMPal 需要）。你的是 M5、16 GB、macOS 27（2026-10-18 量 luxtts 時知道的）；粗估 daemon + ASR 約 1 GB、VM 4–8 GB，luxtts 的記憶體還沒量。Python 3.13（S1 Task 0 的 `.python-version`）+ uv，`brew install portaudio uv`。不裝 torch 和 CUDA；`uv sync` 不加 extra 就要能 import daemon、跑 `dollos voice`（luxtts-onnx 本來就是基本依賴，只用 ONNX Runtime；要 torch 的引擎都在 extra 裡，用到才 import）。
 - `dollosctl install`：寫 launchd LaunchAgent（KeepAlive，log 在 `~/Library/Logs/DollOS`），產生 `owner_token`（放在 config.toml 旁邊的 0600 檔），詢問 LLM 的 base_url 和 API key；既有的「資料目錄裝錯」檢查保留。systemd 後端留給 Linux 開發，這是依平台選擇，不是 fallback。
 - **token 怎麼給 client**：你自己跑的 `dollos chat`、`dollos voice` 讀那個 0600 檔；daemon 啟動的子行程（Discord bridge、MCP server）由 ServiceSupervisor 用環境變數帶，不放在命令列（今天 bridge 的 argv 只有 `--daemon ws://…`，`kernel.py:739-748`）。
 - **config 遷移**：R2 刪掉 `[cognition]`、`[consolidation]`、`[mcp].query_token`。每個設定 model 都是 `extra="forbid"`，所以舊的 config.toml 會讓 daemon 啟動失敗、在 KeepAlive 下一直重啟。R2 附 `dollosctl migrate-config`（先備份，再搬欄位、刪掉這幾段），R2 的完成條件包括遷移後能啟動。
 - 插電時設定不睡眠；Mac 睡著時她的一天就暫停，醒來的 Awoke 會說離線多久。
 
-**GPU 機器**（跑 TTS server）：今天跑 qwen3-tts 的那台；TTS server 用它自己的服務管理，只走 Tailscale 或 LAN。
+**GPU 機器**：v1 不需要（TTS 在 Mac 上，§8）。她之後講中文、而且選了 TTS server 那條路時才會用到。
 
 **LLM 主機**（§15 Q1）：需要 ≥ 128 GB 的 VRAM + RAM（Q4 GGUF 約 87 GB，網路資料；zenith 放不下）。llama.cpp 固定在支援這個模型的版本；`--jinja -c 262144 -np 2 --api-key`（每個 slot 約 131k，日記約 40k 字的 log 要塞得進一個 slot）。視覺、MTP、cache reuse、think 上限的 server 參數都等 S4 量過再定（§6.3）。只走 Tailscale 或 LAN，不開公開 port。
 
@@ -388,11 +402,11 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 
 **她的記憶**：如果舊機器（`/home/progcat/Projects/DollOS/data`）還有資料，第一次啟動前把 `memory/`、`self_profile.md`、`self_history.jsonl`、`current_self.md`、`self_evolution/`、`mind_state.json` 搬過來；`skills/`、`shared/consolidated/`、`shared/tool_playbook.md` 移到 `memory/archive/`，`build_memsearch` 不再索引 `skills/`；然後從 markdown 重建 `fts.db`。如果 Q2 選 (a)，M1 時把舊的 `external_dm/`（舊 code 裡就是主人私訊）移進 `shared/`。
 
-**安裝步驟**（README 的草稿；LLM 主機和 TTS server 已經在跑）：
+**安裝步驟**（README 的草稿；LLM 主機已經在跑）：
 1. `brew install uv portaudio`、`git clone`、`uv sync`。
-2. `cp config.example.toml config.toml`，填 `[llm].base_url`、API key 和 TTS server 的 URL。
+2. `cp config.example.toml config.toml`，填 `[llm].base_url` 和 API key；`[voice.tts.luxtts-onnx] device` 用預設的 `"auto"`。
 3. `uv run dollosctl install && uv run dollosctl start`。
-4. `uv run dollos voice`（或 `dollos chat`）；`dollosctl status` 顯示「休息中」。
+4. `uv run dollos voice`（或 `dollos chat`；第一次會下載 ASR 和 luxtts 的模型）；`dollosctl status` 顯示「休息中」。
 5. （R4 起）安裝 VMPal、建她的 VM、把 MCP 設定貼進 `mcp_clients.toml`。
 
 ---
@@ -429,13 +443,13 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 | Milestone | 內容 | 完成條件 |
 |---|---|---|
 | **R0 定案與 S1**（數天） | 問 Q1，再問 Q2、Q6。把 `docs/v1-iphone-body` merge 進 main，S1 worktree rebase 上去。S1 Task 1、3 照 plan：排除 `external_public/`（M1 之前，Q2 選 (b) 才也排除 `external_dm/`）。Task 2 改成直接關掉 `[Associative memories]` 的注入（R2 刪 code，不必先加固）。Task 4 改成：code 註解和 CLAUDE.md 寫明兩種意義：今天 code 裡 `external_dm` = 主人私訊，核可的意義 = 非主人私訊，M1 起換成核可的意義；不改 harness §6.3 | S1 在 main 上、測試全綠；main 有 2026-10 的 spec |
-| **R1a 搬到 Mac，開始用文字每天找她**（約 1 週） | Mac 移植：supervisor（stdin pipe + 子行程的 EOF watcher，保留 setsid/killpg，拿掉 prctl）、launchd、pulse `enabled=false`、ASR 平台判斷、引擎改成用到才 import + `onnxruntime` 直接依賴 + luxtts 改 extra（luxtts 的測試在沒裝 extra 時 skip）、config.example 改成 Qwen3.8。在現行 grammar 路徑上接 Qwen3.8（`--jinja --reasoning-format none`）。搬記憶（含 archive）。IPC token/Origin（所有第一方 client）、`--api-key`、`dollos chat`。取消註冊 Shell、SpawnWorkflow、SpawnMonitor，並拿掉 scaffolding 裡教她用它們的段落和 Body 段。刪掉每日 bootstrap 的 ScheduledMoment。Discord `dm_only`、角色包身份。`dollosctl status/diary` | 在 launchd 下無人看管跑 72 h；`uv sync`（不加 extra）裝得起來、daemon import 得了、沒有 torch；`dollos chat` 和 Discord bridge 帶 token 連得上、沒帶 token 被拒（有測試）；你開始每天用文字或私訊找她 |
-| **R1b 語音、暫時的修補、兩個 spike**（約 1–2 週） | 語音：按鍵說話、ASR final 搶先、gura 的 `engine.toml` 改成 openai-compat-tts、語音 bridge 帶 token（有測試）。在現行 code 上的暫時修補（M1/M5 會換掉）：日記單獨且用自己的日期、ScheduledMoment 從 `intent` 渲染、`[Pending]`、reflection 不說話且只算私人回合、agenda 回合的 CloseLoop 只收 `self_directed=True` 的項目（今天 `AGENDA_TOOLS` 有 CloseLoop，安靜的回合能收掉你的事，`tools.py:1233`；有測試）。加端到端延遲欄位和 `dollosctl report`。兩個不改 daemon 的 spike：TTS（§8）；VMPal + 視覺（固定版本、`list_tools`、選 guest、確認 mmproj 和 message 裡的圖片、確認有沒有 snapshot CLI，用一支丟棄式腳本跑 10 次「打開瀏覽器、讀一頁、在 VM 裡寫一則筆記」）。在 Qwen3.8 上用 v1 情境集（§12）量 think A/B Arm A 基準 | 語音來回是 Gura 的聲音，Mac 上沒有 torch；有 ≥ 50 個真實主人回合的 `first_speak_ms` 和端到端延遲；你讀過 ≥ 3 篇真實日記；兩個 spike 的結果寫成一頁筆記放在 `docs/research/`。書桌閘門：≥ 8/10 就在 R4 做 GUI 書桌；不到 8/10 就問 Q3，不會默默換。v1 不做電腦的話：§2 不變（三條都不靠書桌），R4 跳過，只觀察裡的書桌項目刪掉；換成 shell 書桌或 Lume 的話，R4 改做那個後端 |
+| **R1a 搬到 Mac，開始用文字每天找她**（約 1 週） | Mac 移植：supervisor（stdin pipe + 子行程的 EOF watcher，保留 setsid/killpg，拿掉 prctl）、launchd、pulse `enabled=false`、ASR 平台判斷、config.example 改成 Qwen3.8。在現行 grammar 路徑上接 Qwen3.8（`--jinja --reasoning-format none`）。搬記憶（含 archive）。IPC token/Origin（所有第一方 client）、`--api-key`、`dollos chat`。取消註冊 Shell、SpawnWorkflow、SpawnMonitor，並拿掉 scaffolding 裡教她用它們的段落和 Body 段。刪掉每日 bootstrap 的 ScheduledMoment。Discord `dm_only`、角色包身份。`dollosctl status/diary` | 在 launchd 下無人看管跑 72 h；`uv sync`（不加 extra）裝得起來、daemon import 得了、沒有 torch；`dollos chat` 和 Discord bridge 帶 token 連得上、沒帶 token 被拒（有測試）；你開始每天用文字或私訊找她 |
+| **R1b 語音、暫時的修補、書桌 spike**（約 1–2 週） | 語音：按鍵說話、ASR final 搶先、Gura 講英文並用 Mac CPU 上的 luxtts（英文 plan；除了 Task 6 的 smoke，都不需要 LLM 主機，R0 之後就可以做）、語音 bridge 帶 token（有測試）。在現行 code 上的暫時修補（M1/M5 會換掉）：日記單獨且用自己的日期、ScheduledMoment 從 `intent` 渲染、`[Pending]`、reflection 不說話且只算私人回合、agenda 回合的 CloseLoop 只收 `self_directed=True` 的項目（今天 `AGENDA_TOOLS` 有 CloseLoop，安靜的回合能收掉你的事，`tools.py:1233`；有測試）。加端到端延遲欄位和 `dollosctl report`。一個不改 daemon 的 spike：VMPal + 視覺（固定版本、`list_tools`、選 guest、確認 mmproj 和 message 裡的圖片、確認有沒有 snapshot CLI，用一支丟棄式腳本跑 10 次「打開瀏覽器、讀一頁、在 VM 裡寫一則筆記」）。在 Qwen3.8 上用 v1 情境集（§12）量 think A/B Arm A 基準 | 語音來回是 Gura 的英文聲音（你聽過，說是她），Mac 上沒有 torch；有 ≥ 50 個真實主人回合的 `first_speak_ms` 和端到端延遲；你讀過 ≥ 3 篇真實日記；spike 的結果寫成一頁筆記放在 `docs/research/`。書桌閘門：≥ 8/10 就在 R4 做 GUI 書桌；不到 8/10 就問 Q3，不會默默換。v1 不做電腦的話：§2 不變（三條都不靠書桌），R4 跳過，只觀察裡的書桌項目刪掉；換成 shell 書桌或 Lume 的話，R4 改做那個後端 |
 | **R2 先砍**（約 1 週） | 照 §3 刪除；取消註冊 LearnName；energy 回復改由計時器；keeper 的工具改成只有 Report，`agent_engine`、`cascade/tool_loop`、`subagent_scaffolding` 留到 S5（`SUB_TOOLS` 縮成它還需要的，template 拿掉 workflow、Shell、Scratchpad 的文字）；`turn_id` 改由 trace 產生，再刪 cascade_log；`telemetry_dir_subpath`、`max_context_tokens` 搬到 `[telemetry]`、`[llm]`，加 `dollosctl migrate-config`；scaffolding 改寫：拿掉所有沒綁的工具和不存在的區塊，包括 Skills 段（不再傳 `available_skills`） | 測試全綠；`src/dollos` 少約 2,000 行；R1 時期的 config.toml 經 `migrate-config` 後能啟動；有測試確認 system prompt 提到的每個工具和區塊都真的綁定或渲染；在 Qwen3.8 上跑 10 回合 live smoke，留下的功能表現跟 R1 一樣；每天照常使用 |
 | **R3 重建核心**（約 3–4 週；照兩份核可 spec 的順序） | M1 + S2（route、place、套用 Q2；排程和 agenda 記錄建立者；home 的回覆沒有本機 surface 時送到 dm:owner）→ M2 = S3（TurnPolicy，即 §6.1 的每 kind 表；`recent_*` 的 principal 標籤、低權不外流、mood reason 依設定者的 principal 顯示；`desk/` 目錄與索引）→ M3（journal、持久 JobTable、CutOff/JobLost、`ext_id`、poison；transcript 白名單用有效 principal）→ M4（Self 單一寫入者）→ M5（Awoke/換日 event，不帶命令句；日記閘門不成立時保持 pending）→ S4（ModelAdapter；實測工具呼叫、平行呼叫、reasoning 分離、per-request 上限、cache 重用、MTP、slot id、message 裡的圖片、每個 slot 的 context；§6.3 的網路資料逐條確認；量解碼速度，反推 low 的上限）→ S5（單一 runner；ContextBuilder 約 14 個區塊、穩定前綴；`[Pending]` 列出未來的排程，`[Open loops]` 拿掉 STALE 那句命令；evolution keeper 改用它；刪掉 `cascade/tool_loop`、`agent_engine`）→ S6（chat_tools、10 個工具、effort；`schedule add/cancel` 和它的上限；Q6 選是時加 §6.4 的 `agenda` 動作與規則、兩個區塊的步驟、`dollosctl agenda`，約 150–200 行加測試）→ S8（比較；問 Q5）→ S9。從 M6 提前：`brain_down`、emotion 限制 | 所有 kind 和 evolution keeper 都走同一個 Turn Runner；harness §9.1（v1 版，§12 A10）和適用的 mind-loop §12 不變式測試全綠；低權不外流的測試：home 回合 `recall include_external` 之後，下一個 home、inner 回合的 prompt 和 `[Today's log]` 都沒有那段回覆的原文；journal crash 注入的 property 測試通過；§6.4 的每條規則都有測試（沒有主人親口輸入時 `open` 被拒；event、reflection、agenda 回合收主人的事被拒；重複 id 被拒；internal 回合當天第 4 筆排程被拒）；`dollos chat` 和語音都沒開時，home 建的提醒觸發後送到私訊（有測試）；S8 報告和你的選擇有紀錄；S9 已 merge；主人 `first_speak_ms` p50 不比 R1 基準差；§2 #2 的數字以書面確認或收緊 |
 | **R4 她的電腦**（約 2 週；R1b 的閘門過了才做） | S7 MCP client（§12 A2、A10：`mcp_clients.toml`、前綴、`min_principal`、`untrusted_output`、`tools` 允許清單、每個 job 連一次）。`computer` 工具（goal_id 可以指向主人的事，worker 只拿 task；job 歸屬看派它的回合）、desk TurnPolicy、上限與讓位、inner 不說話規則、`remember` → `desk/`、diary recall 不提供 include_external、書桌紀錄（唯一的 action log 行）、`[Your agenda]` job 狀態、`[Active tasks]`、每晚 snapshot（有 CLI 才做）、`dollosctl status` 顯示「在自己的電腦前：<task>」、`dollosctl self`、`dollosctl report` 記錄 evolution 的閘門檢查、身份事實補上電腦 | 書桌權限測試全綠：低於 internal 的回合沒有 `computer`；vmpal 工具只在 desk worker 綁定；`desk/` 從不自動注入；inner 的書桌結果不說話；降權的回合不能派 job；goal_id 指向主人的事時，worker 的 context 沒有那件事的文字；書桌報告之後，下一個 agenda、反思、home 回合的 prompt 都沒有報告文字；`[Today's log]` 沒有書桌回合的報告、mood reason 或 remember 文字；harness §9.1 的 `untrusted_output` MCP 測試。從 guest 探 LAN 和 LLM 主機都不通；連續 7 天每天 ≥ 1 次她自己發起的時段，≥ 70% ok（§2 的程式定義）；她在書桌時，主人回合的 `first_speak_ms` p50 仍在 §2 #2 的數字內 |
 | **R5 14 天 dogfood（v1 閘門）** | 凍結：只修 crash、說錯話、資料遺失、安全問題。`dollosctl report` 每天自動摘要；第 7、14 天各問一題；你替日記打分 | §2 的三條都評過；宣告 v1 完成，或選出一個具名的阻礙進短的修正週期，不加別的東西 |
-| **之後**（各自一份 spec，一次一個，依 dogfood 資料排序） | 桌寵；M6 其餘 + 陌生人回來（mind-loop Q2/Q3 到時再問）；`run_command` 只在 home 且有主人確認；iPhone 身體；Android 決定；Mac 如果是筆電，加 pulse；ASR A/B（只在需要時）；parking list | 每項都要引用一個 dogfood 的發現 |
+| **之後**（各自一份 spec，一次一個，依 dogfood 資料排序） | 桌寵；M6 其餘 + 陌生人回來（mind-loop Q2/Q3 到時再問）；`run_command` 只在 home 且有主人確認；iPhone 身體；Android 決定；Mac 如果是筆電，加 pulse；ASR A/B（只在需要時）；她講中文（Piper 版 Gura 或 GPU 機器上的 TTS server，§8）；parking list | 每項都要引用一個 dogfood 的發現 |
 
 ---
 
@@ -475,9 +489,9 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - 不改 energy 公式；不開並行 lane；不保留 slot（R4 量過書桌期間的延遲再說）。
 - Mac 本機不跑 GGML 或 torch 的 TTS（Mac 只用 ONNX Runtime）。
 - v1 沒有 UI（只有 CLI 和 VMPal 視窗）、沒有 iPhone app、沒有 Android、沒有陌生人。
-- 不訓練 Piper（除非你想讓聲音不依賴 GPU 機器）、不跑 voice_eval、不做 ASR A/B（除非 dogfood 指出問題）。
+- v1 不訓練 Piper、不架 TTS server（她講中文時再選一條，§8）、不跑 voice_eval、不做 ASR A/B（除非 dogfood 指出問題）。
 - 不讓主人回滾或編輯她的自我；日記分數不進她的 context。
-- 執行中不在替代方案之間切換：書桌用哪個後端、TTS 用哪個 server，都由 spike 一次決定。
+- 執行中不在替代方案之間切換：書桌用哪個後端由 spike 一次決定；TTS 固定是 luxtts，`device` 是 config 值，提示檔是 pack 裡的檔案。
 - v1 期間除了這份 spec 和它的 plan，不再開新 spec；點子寫進 parking list。
 
 ---
@@ -491,9 +505,9 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - **書桌時段搶 slot**：背景 worker 佔一個 slot，主人回合可能拿不到快取好的前綴。§2 #2 包括書桌期間的回合，R4 另外驗收。
 - **她的電腦生活可能很空**：她可能漫無目的地逛網頁，讀起來像 bot；日記也看不到她讀了什麼（§7 已知的代價）。日記分數會量到這個；怎麼修等資料出來再決定。
 - **拿掉 grammar 的品質風險**：舊 smoke 在 step 14（REVIEW 欄位 + 不設上限的 cascade + episodic memory 一起改）從 7/8 升到 8/8；REVIEW 自己的貢獻沒有單獨量過。S8 的盲評是閘門。
-- **Mac 的意外**：aiortc、PortAudio、sherpa-onnx 在 macOS 26 的 wheel；麥克風 TCC；機型和 RAM 未知（VM + daemon 可能吃緊）；筆電睡眠會讓她的一天暫停。
-- **TTS**：qwentts.cpp 是小專案，英文參考音檔 clone 中文的效果沒驗證。聲音放在 GPU 機器上，就多依賴一台機器開著。
-- **流程**：核可本文、之後六個問題、十三個 spec 修正，對容易超載的使用者仍然多。所以問題一次問一個，修正跟本文一起審，使用迴圈從 R1a 就開始，不是最後才開始。
+- **Mac 的意外**：aiortc、PortAudio、sherpa-onnx 在 macOS 26 的 wheel；麥克風 TCC；16 GB 要放 VM、daemon 和語音，可能吃緊；筆電睡眠會讓她的一天暫停。
+- **TTS 和英文**：Gura 的 luxtts 提示只有 3 秒，聽起來可能不像她（不像就用 30 秒的 `ref.wav` 重新編碼，§8）。一整句合成完才出聲，長句的第一個音框會晚。她的身份是英文、內在紀錄是中文（Q7 選中文時），中文可能漏進她說的話，smoke 要看。
+- **流程**：核可本文、之後七個問題、十三個 spec 修正，對容易超載的使用者仍然多。所以問題一次問一個，修正跟本文一起審，使用迴圈從 R1a 就開始，不是最後才開始。
 - **R3 很長**：S5 是最大的單一步驟；刪程式碼只在測試全綠下進行。
 
 ---
@@ -501,9 +515,10 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 ## §15 要你決定的事（依時間排序，一次問一個）
 
 - **0. 核可本文**（現在）。核可也就同意三件事：(1) §2 是 v1 的終點，從 R1 到 R5 結束不加新的內在生活功能，R4 的書桌是唯一例外（目標與待辦另外問，Q6）；(2) 她自己的時間可以用她的電腦，也就是 agenda 回合可以派 `computer` job，結果降權、不說話、寫進 `desk/`（你 10-17 的方向；這改了 agenda spec 的「自主回合不做外部動作」）；(3) 反思回合不說話、只算私人回合、只在安靜時觸發（mind-loop Q4）。§12 的修正也一起核可。
-- **Q1（R0）哪一台機器跑 Qwen3.8-Flash-Next？** 需要 ≥ 128 GB 的 VRAM + RAM，Tailscale/LAN 連得到。也請告訴我你的 Mac 是哪一台、多少 RAM（決定 VM 放不放得下）。
+- **Q1（R0）哪一台機器跑 Qwen3.8-Flash-Next？** 需要 ≥ 128 GB 的 VRAM + RAM，Tailscale/LAN 連得到。
 - **Q2（R0，Q1 之後，即 mind-loop Q1）你在 Discord 私訊跟她說話時，算不算「在家」？** 建議 **(a) 算**（principal = owner），因為私訊是你在 v1 唯一的外出管道。mind-loop 當時建議 (b)，理由是 (a) 會讓被盜的 Discord 帳號在你的 Mac 上跑指令；v1 沒有 `run_command`，所以這裡改建議 (a)。(a) 的代價：被盜的帳號可以在她的記憶、目標、排程裡留東西，讓她去 VM 開網頁；私訊的對話也會進日記和反思，幾週下來可能影響她是誰。建議開 Discord 2FA。(b) 是比主人低一階的 `owner_dm`：私訊寫的東西進不了她的私人回合，私訊的對話只以一行紀錄進日記，私訊裡也不能叫她用電腦。
 - **Q6（R0，Q2 之後；R1 開始凍結之前）目標與待辦（§6.4）要不要放進 v1？** 建議**放**，在 R3 做（約 150–200 行加測試）：agenda 在 R3 本來就要重寫，之後再加等於寫兩次。代價是凍結多一個例外。不放的話，她還是能記住事情和提醒你（排程那段不管 Q6 都做），清單和步驟等 R5 之後。
+- **Q7（英文 plan 的 Task 5 之前）她自己寫的東西（日記、記憶筆記、「現在的我」）維持繁體中文，還是也改英文？** 建議**維持中文**：不用改程式（既有的 `[memory] primary_language` 已經是繁體中文）；搬過來的記憶照樣搜得到；你讀日記也是中文。代價是她的身份是英文、內在紀錄是中文，pack 要留一份中文原文給演化的重述檢查（§8）。改英文的話，`primary_language`、演化的提示、字數上限和句子切法、mood 的 emotion ≤ 6 字（mind-loop §10）都要跟著改；搜尋是比字的，中文的問句找不到英文筆記，反過來也一樣。
 - **Q3（R1b 結束，只在書桌測試不到 8/10 時）書桌怎麼辦？** 三選一：書桌只用 VM 裡的 shell 指令（就是你拒絕當主要介面的那種，只是給她自己用）；改試 Lume + Cua Driver；v1 不做電腦（§2 不變，R4 跳過）。
 - **Q4（R3，S4 之後）要不要跑 think A/B 的 B 組（格式化 think 對自由 think + 上限）？**
 - **Q5（R3，S8）grammar 路徑還是原生工具？** grammar 路徑沒辦法把截圖當工具結果，選它等於 v1 沒有 GUI 書桌。
