@@ -305,7 +305,7 @@ def build_voice_engines(
     tts_name, tts_kwargs = resolve_voice_kwargs(cfg, voice_tts)
     if tts_name not in TTS_REGISTRY:
         raise ValueError(f"unknown TTS engine in [voice.tts]: {tts_name!r}")
-    tts =TTS_REGISTRY[tts_name](**tts_kwargs)
+    tts = TTS_REGISTRY[tts_name](**tts_kwargs)
     return asr, tts
 
 
