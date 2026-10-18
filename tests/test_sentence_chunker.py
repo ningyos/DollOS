@@ -73,3 +73,54 @@ def test_leading_newlines_before_reply_never_yield_whitespace_only_chunk_token_b
     out += list(c.flush())
     assert not any(not chunk.strip() for chunk in out), f"whitespace-only chunk leaked: {out!r}"
     assert "".join(out) == "主人好。"
+
+
+def test_ellipsis_is_one_terminator():
+    c = SentenceChunker()
+    out = list(c.feed("Wait... what?")) + list(c.flush())
+    assert out == ["Wait... ", "what?"]
+
+
+def test_decimal_point_does_not_split():
+    c = SentenceChunker()
+    out = list(c.feed("Pi is 3.14 or so.")) + list(c.flush())
+    assert out == ["Pi is 3.14 or so."]
+
+
+def test_mixed_half_width_run_is_one_terminator():
+    c = SentenceChunker()
+    out = list(c.feed("Hmm?! Really.")) + list(c.flush())
+    assert out == ["Hmm?! ", "Really."]
+
+
+def test_half_width_punct_at_buffer_end_waits_for_next_feed():
+    """The period is the last char of the first feed, so the chunker can't
+    tell yet whether it ends a sentence ("Hello. ") or not ("3.14") — it
+    holds it until the next feed shows the following char."""
+    c = SentenceChunker()
+    first = list(c.feed("Hello."))
+    assert first == []
+    out = first + list(c.feed(" Bye")) + list(c.flush())
+    assert out == ["Hello. ", "Bye"]
+
+
+def test_forced_flush_splits_after_last_space():
+    c = SentenceChunker(max_chars=22)
+    out = list(c.feed("the quick brown fox jumps over the lazy dog")) + list(c.flush())
+    assert out == ["the quick brown fox ", "jumps over the lazy ", "dog"]
+
+
+def test_forced_flush_space_right_at_limit_stays_with_chunk():
+    """A space just past `max_chars` is still a word boundary — cutting there
+    keeps "defghij" whole instead of splitting off a short "abc "."""
+    c = SentenceChunker(max_chars=11)
+    out = list(c.feed("abc defghij klm")) + list(c.flush())
+    assert out == ["abc defghij ", "klm"]
+
+
+def test_forced_flush_never_yields_whitespace_only_chunk():
+    """The only space is the leading one, so cutting after it would yield a
+    lone " " — dropped like any other whitespace-only chunk."""
+    c = SentenceChunker(max_chars=5)
+    out = list(c.feed(" abcdefgh")) + list(c.flush())
+    assert out == ["abcde", "fgh"]
