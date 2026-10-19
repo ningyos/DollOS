@@ -48,7 +48,7 @@ def make_mindloop(
     conversation_budget_tokens: int = 24000,
     system_pulse=None,
     cognition=None,
-    primary_language: str = "Traditional Chinese",
+    primary_language: str = "English",
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.

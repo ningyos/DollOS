@@ -126,11 +126,13 @@ def test_doll_pack_declares_chinese_alias_seed():
 # --- Doll speaks English (2026-10-18 doll-english-luxtts plan, Task 6) ---
 
 
-def test_doll_personality_says_she_talks_in_english():
+def test_doll_personality_says_she_talks_and_writes_in_english():
     """Same shape as helper's CN-in / EN-out rule (test_helper_pack.py): the
-    language is one plain fact in her personality, not a command."""
+    language is one plain fact in her personality, not a command. All-English
+    plan Task 2: it covers what she writes as well as what she says."""
     pack = DollPack.load(_REPO_DOLL_PACK)
-    assert "English" in pack.identity.personality
+    assert ("- I understand both Chinese and English, but I talk and write "
+            "in English.") in pack.identity.personality
 
 
 def test_doll_pack_carries_chinese_restatement_reference():

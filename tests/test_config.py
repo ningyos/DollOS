@@ -240,26 +240,29 @@ max_turns = 10
     assert settings.conversation_history.max_turns == 10
 
 
-def test_memory_primary_language_defaults_to_traditional_chinese(tmp_path: Path) -> None:
-    """[memory] is optional; primary_language defaults to "Traditional Chinese"
-    when absent (an English name: it is interpolated into the English
-    [Memory guideline])."""
+def test_memory_primary_language_defaults_to_english(tmp_path: Path) -> None:
+    """[memory] is optional; primary_language defaults to "English" when
+    absent: everything she writes down is in English (all-English plan
+    Task 2, Q7 reversed). It is a language name interpolated into the
+    English [Memory guideline]."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(_BASE_TOML)
     settings = load_settings(config_path)
-    assert settings.memory.primary_language == "Traditional Chinese"
+    assert settings.memory.primary_language == "English"
 
 
 def test_primary_language_defaults_agree() -> None:
-    """MindLoop's own default and config.example.toml say the same as
-    MemoryConfig's default."""
+    """MindLoop's own default, the test factory's default and
+    config.example.toml say the same as MemoryConfig's default."""
     import inspect
 
     from dollos.config import MemoryConfig
     from dollos.mind.mind_loop import MindLoop
+    from tests._mindloop_factory import make_mindloop
 
     default = MemoryConfig().primary_language
     assert inspect.signature(MindLoop).parameters["primary_language"].default == default
+    assert inspect.signature(make_mindloop).parameters["primary_language"].default == default
     example = Path(__file__).resolve().parents[1] / "config.example.toml"
     assert load_settings(example).memory.primary_language == default
 
@@ -271,11 +274,11 @@ def test_memory_primary_language_override(tmp_path: Path) -> None:
         _BASE_TOML
         + """
 [memory]
-primary_language = "English"
+primary_language = "Japanese"
 """
     )
     settings = load_settings(config_path)
-    assert settings.memory.primary_language == "English"
+    assert settings.memory.primary_language == "Japanese"
 
 
 def test_consolidation_config_defaults(tmp_path: Path):

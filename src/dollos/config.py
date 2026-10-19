@@ -66,14 +66,15 @@ class MemsearchConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Memory-WRITE policy knobs (how Doll records memory, not where it's stored).
 
-    ``primary_language`` is the language Doll writes memory in (NoteMemory /
-    diary), regardless of the source language — mixing original-language proper
-    nouns / technical terms where natural is fine. It is injected as a per-turn
-    behavioral guideline (prompt engineering), NOT enforced by a subsystem.
+    ``primary_language`` is the language of everything Doll writes down —
+    notes, diary, who I am now, self-profile, agenda, schedule — regardless of
+    the source language; original-language proper nouns / technical terms
+    where natural are fine. It is described in the system message's
+    [Memory guideline] (prompt engineering), NOT enforced by a subsystem.
     """
     model_config = ConfigDict(extra="forbid")
 
-    primary_language: str = "Traditional Chinese"
+    primary_language: str = "English"
 
 
 class ConversationHistoryConfig(BaseModel):
