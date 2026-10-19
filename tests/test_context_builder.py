@@ -322,8 +322,8 @@ async def test_interrupt_after_tool_calls_answers_every_call(tmp_path):
     ml, queue = _loop(tmp_path, model)
     dispatch = ml._dispatch_tool
 
-    async def _dispatch_then_interrupt(name, args):
-        r = await dispatch(name, args)
+    async def _dispatch_then_interrupt(name, args, registry=None):
+        r = await dispatch(name, args, registry)
         ml.cancel_current_cascade()
         return r
 
