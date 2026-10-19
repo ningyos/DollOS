@@ -205,17 +205,22 @@ def strip_surfacing_markers(text: str) -> str:
     return text.strip()
 
 
+def _strip_and_nfkc(text: str) -> str:
+    """Strip surfacing markers → NFKC. Shared first step of both echo branches."""
+    return unicodedata.normalize("NFKC", strip_surfacing_markers(text))
+
+
 def _normalize_echo(text: str) -> str:
-    """Echo-equivalence normalization (spec §3.4, Plan-2 amended form):
-    strip surfacing markers → NFKC → drop ALL punctuation and whitespace.
-    Deliberately self-contained and STRICTER than persona_guard's
+    """Echo-equivalence normalization for the EXACT branch (spec §3.4, Plan-2
+    amended form): strip surfacing markers → NFKC → drop ALL punctuation and
+    whitespace. Deliberately self-contained and STRICTER than persona_guard's
     fingerprint normalization — equivalence false-positives are safe
     (they adopt the skeptic-passed candidate verbatim), so CJK echo
-    jitter (stray spaces, 。vs !) must not defeat the exact branch."""
-    text = strip_surfacing_markers(text)
-    text = unicodedata.normalize("NFKC", text)
+    jitter (stray spaces, 。vs !) must not defeat the exact branch.
+    NOT used for the Jaccard branch: with spaces gone, jieba reads a whole
+    English paragraph as one token."""
     return "".join(
-        c for c in text
+        c for c in _strip_and_nfkc(text)
         if not c.isspace() and not unicodedata.category(c).startswith("P")
     )
 
@@ -224,13 +229,15 @@ def echo_equivalent(text: str, reference: str) -> bool:
     """True when ``text`` is an echo/paraphrase of ``reference`` (spec §3.4):
     normalized-exact-equal OR jieba-Jaccard ≥ ``ECHO_SIMILARITY``. The weak
     model paraphrases; exact-match alone would misroute an intended adopt into a
-    needless 送審 round-trip."""
+    needless 送審 round-trip. The Jaccard branch gets the marker-stripped NFKC
+    text with its spaces kept, so English splits into words;
+    ``pairwise_jaccard`` itself lowercases, collapses whitespace and strips
+    punctuation (persona_guard._normalize_for_fingerprint)."""
     from dollos.mind.persona_guard import pairwise_jaccard
-    n_text = _normalize_echo(text)
-    n_ref = _normalize_echo(reference)
-    if n_text == n_ref:
+    if _normalize_echo(text) == _normalize_echo(reference):
         return True
-    return pairwise_jaccard(n_text, n_ref) >= ECHO_SIMILARITY
+    return pairwise_jaccard(_strip_and_nfkc(text),
+                            _strip_and_nfkc(reference)) >= ECHO_SIMILARITY
 
 
 def log_or_raise(history_path: Path, *, kind: str, **fields) -> None:
@@ -465,9 +472,10 @@ def process_tripwire(*, current_self_path: Path, history_path: Path,
 
 _PIN_KINDS = frozenset({"pin_add", "pin_replace", "pin_remove", "pin_reconfirm"})
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# Sentence boundaries for the restatement gate: full-width 。!?; + ASCII ?!;
-# + newline (commas do NOT split — a clause is not a sentence).
-_SENTENCE_SPLIT_RE = re.compile(r"[。!?;?!;\n]+")
+# Sentence boundaries for the restatement gate: 。！？； (full-width) + .!?;
+# (ASCII) + newline, so Chinese and English prose both split. Commas do NOT
+# split (a clause is not a sentence); an ASCII "." inside "e.g." or "3.5" does.
+_SENTENCE_SPLIT_RE = re.compile(r"[。！？；.!?;\n]+")
 
 
 def restatement_overlap(candidate: str, pack_texts: list[str], *,
@@ -477,7 +485,7 @@ def restatement_overlap(candidate: str, pack_texts: list[str], *,
     weak keeper restates factory prose on the first-version path and the weak
     skeptic won't enforce check (c) even when sharpened — so shape goes to code
     (ref: constrained decoding is shape, not semantics). Split ``candidate``
-    AND pack prose into sentences (。!?;?!\\n); compare each candidate sentence
+    AND pack prose into sentences (``_SENTENCE_SPLIT_RE``); compare each candidate sentence
     ≥ ``min_sentence_chars`` against each pack sentence via
     ``persona_guard.pairwise_jaccard``; any pair ≥ ``threshold`` → return the
     offending candidate sentence (the kill/feedback reason), else None.

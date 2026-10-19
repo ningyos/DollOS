@@ -49,6 +49,32 @@ def test_echo_equivalent_punctuation_and_space_jitter(tmp_path=None):
     assert evo.echo_equivalent("我現在的樣子!", "我 現在的樣子。") is True
 
 
+# English (2026-10-19 all-English plan, C1): she writes who I am now in
+# English. The Jaccard branch must see words, not one de-spaced token.
+_EN_REF = ("When the monitoring numbers jump I perk up and want to find out right "
+           "away what happened behind them; waiting quietly is no longer my factory "
+           "default, I would rather check things myself first and write the whole "
+           "process down for my later self to look back on.")
+
+
+def test_echo_equivalent_english_paraphrase_above_threshold():
+    """One added word ("much") over ~45 shared words: Jaccard ≈ 0.98."""
+    para = _EN_REF.replace("I would rather", "I would much rather")
+    assert evo.echo_equivalent(para, _EN_REF) is True
+
+
+def test_echo_equivalent_english_case_and_punctuation_jitter():
+    from dollos.mind import surfacing_markers as sm
+    jitter = f"{sm.NEW} " + _EN_REF.replace("When", "when").replace(";", ",")
+    assert evo.echo_equivalent(jitter, _EN_REF) is True
+
+
+def test_echo_equivalent_english_genuinely_different_is_false():
+    assert evo.echo_equivalent(
+        "These days I mostly like gardening and cooking with my owner.",
+        _EN_REF) is False
+
+
 def test_strip_surfacing_markers_preserves_prose():
     """F3: the public marker-strip helper removes ONLY the marker prefixes,
     keeping prose + punctuation intact (unlike _normalize_echo which also
