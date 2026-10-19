@@ -29,7 +29,7 @@
   工具說明有中文（A/B/C）：有講話的 6 次全中文；工具換英文（D/E/F）：3 次全英文（Fisher exact p≈0.012）。F 只換了工具，system 的中文、標籤（包括 `mood: 平靜`）、guideline 都還在，她講英文。外部 `ch:` 的工具只有 3 個（66 個漢字），live 時那裡本來就英文。
 - **量**：private 第一個 request 7571 token，漢字約 800 個（工具 681、system 113、`[Mind state]` 6），其中約 615 在只有 internal tier 才有的工具說明（PinSelf 203、SelfRevision 189、LearnName 137、PursueGoal 54、AdvanceGoal 15、Shell 9、MoodTool 6、SpawnMonitor 2）。
 - **限制**：Awoke 常常只呼叫工具不講話（工具換英文的 12 次裡只有 3 次講話，原樣類 9 次裡 6 次），英文變體各只有 1 句能判斷；分不出哪個工具的中文最關鍵。沒測到的：開機排程那句、ReflectionMoment 內文、system 裡採納後的中文「現在的我」、舊資料夾裡的中文 `[Recent outputs]`、英文框架下她寫的筆記和日記還是不是中文。
-- **明確的語言規則有三條**：personality 的 "I understand both Chinese and English, but I talk in English."（她的身份，要保留）；`[Memory guideline]` 要她用繁體中文寫（Q7，保留但改寫）；`MoodTool.emotion` 的 "one Chinese word (e.g. '開心')"（`tools.py:894`，讓 mood 標籤永遠是中文）。mood 是中文這件事是照 Q7 設計的：Q7 列的「改英文要跟著改」裡有「mood 的 emotion ≤ 6 字」，已核可的 mind-loop spec（`2026-10-17-mind-loop-redesign-design.md:297`）也打算在 pydantic 層把 emotion 限制成 ≤ 6 個字、不能有空白和標點。F 裡 `mood: 平靜` 還在，她照樣講英文，所以這個 plan 預設不動它（見「要你決定」）。
+- **明確的語言規則有三條**：personality 的 "I understand both Chinese and English, but I talk in English."（她的身份，要保留）；`[Memory guideline]` 要她用繁體中文寫（Q7，保留但改寫）；`MoodTool.emotion` 的 "one Chinese word (e.g. '開心')"（`tools.py:894`，讓 mood 標籤永遠是中文）。mood 是中文這件事是照 Q7 設計的：Q7 列的「改英文要跟著改」裡有「mood 的 emotion ≤ 6 字」，已核可的 mind-loop spec（`2026-10-17-mind-loop-redesign-design.md:297`）也打算在 pydantic 層把 emotion 限制成 ≤ 6 個字、不能有空白和標點。F 裡 `mood: 平靜` 還在，她照樣講英文，原本預設不動它；使用者後來選了英文 mood（見「已決定」）。
 - **簡體**：prompt 沒有任何地方說「說話用繁體」，只有記憶寫作有。她一講中文，第二頁就混進簡體，再被 `[Recent outputs]` 重播。說話變英文後這條路就斷了；筆記和日記由 guideline 的 "Traditional Chinese" 管。這個 plan 不加轉換器，只在驗收量。
 - **「主人」到處都是**：system 3 處、NoteMemory／PinSelf／LearnName 說明、ReflectionMoment 內文、self-profile 段落標題、逐字稿的 `主人說`、`[Body signal]`。英文身份說 "my owner"。
 
@@ -155,7 +155,7 @@
 - 她自己寫的東西的語言（Q7）：筆記、日記、議程、「現在的我」、self-profile 條目，和已經存在的記憶檔、`mind_state.json`。
 - evolution keeper／trigger skeptic／consolidation 的 agent prompt（是另外的 request，照設計用中文）。skeptic 的 KILL 理由（agent 的輸出，或 `evolution_trigger.py:219、278` 的預設）會出現在候選區塊的 notice 裡，跟著維持中文。
 - 記憶檔的 `## … 日記`／`## … 計劃` 標題（`tools.py:207、626`）：`evolution.py:494-535` 的 `has_diary_heading`／`diary_days_since` 和 `evolution_keeper.py:102` 靠「日記」找日記，Mode A 演化靠它觸發、keeper 靠它收證據；演化的測試用寫死的中文標題，改了寫入端測試照過、正式環境卻再也找不到新日記。進 prompt 的只有 Recall 結果裡的兩個字，不值得。
-- mood 字（見「要你決定」）。
+- （mood 字已決定改英文，在範圍內。）
 - 不進 prompt 的中文：日誌、trace、給 client 的錯誤訊息（例如 `tool_loop.py:310-311` 的 `ErrorMsg`）；處理中文的程式（斷句、FTS、`persona_guard`、`name_aliases` 的停用字）。
 - 自動簡轉繁（opencc）：驗收量到筆記有簡體才另外做。
 - 死碼：STALE 標記（`mind_prompt.py:450`）、`_render_perceptions`、`_render_outputs_header`、`render_tool_notes`，這裡不刪。
