@@ -1,6 +1,8 @@
 """Mode A pure helpers (spec §3.3: material gate / interval dynamics / HWM)."""
 import time
 
+import pytest
+
 from dollos.mind import evolution as evo, self_history
 
 
@@ -51,6 +53,42 @@ def test_has_diary_heading_is_heading_anchored(tmp_path):
     assert evo.has_diary_heading("## 日記") is True
     assert evo.has_diary_heading("我今天寫了日記,但這是純筆記") is False
     assert evo.has_diary_heading("") is False
+
+
+# All-English plan Task 3: WriteDiary now writes ``## … Diary``; old files
+# (another machine) carry ``## … 日記`` and must still count.
+_DIARY_HEADINGS = [
+    "## 2026-10-19 21:04:05 [mood:calm] Diary",      # what WriteDiary writes now
+    "## 2026-10-19 21:04:05 Diary  ",                 # trailing space
+    "## 2026-07-01 23:10:00 [mood:calm] 日記",       # old files
+    "## 日記 (12:34:56)",                             # oldest heading format
+]
+_NOT_DIARY = [
+    "## 12:00",                                        # a note heading
+    "## 2026-10-19 21:04:05 Plan",                     # WriteSchedule's summary
+    "## Diary ideas for tomorrow",                     # mentions the word, not a diary
+    "I wrote in my Diary",                             # prose, not a heading
+]
+
+
+@pytest.mark.parametrize("heading", _DIARY_HEADINGS)
+def test_has_diary_heading_reads_english_and_old_chinese(heading):
+    assert evo.has_diary_heading(f"{heading}\nbody") is True
+
+
+@pytest.mark.parametrize("line", _NOT_DIARY)
+def test_has_diary_heading_rejects_non_diary_lines(line):
+    assert evo.has_diary_heading(f"{line}\nbody") is False
+
+
+def test_diary_days_since_counts_english_and_old_chinese_diaries(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    for i, heading in enumerate(_DIARY_HEADINGS, start=1):
+        (shared / f"2026-10-0{i}.md").write_text(f"{heading}\nbody", encoding="utf-8")
+    for i, line in enumerate(_NOT_DIARY, start=5):
+        (shared / f"2026-10-0{i}.md").write_text(f"{line}\nbody", encoding="utf-8")
+    assert evo.diary_days_since(shared, 0.0) == len(_DIARY_HEADINGS)
 
 
 # --- restatement gate (live-smoke SA adjudication #2) ---

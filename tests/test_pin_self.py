@@ -90,11 +90,16 @@ async def test_pinself_add_writes_file_and_not_indexed(make_mind_ctx):
 async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
     """Verify that self-profile cap is enforced only AFTER accumulation.
 
-    With max_chars=120:
-    - First add of 40 chars serializes to ~96 chars → succeeds (no error)
-    - Second add of 40 chars would serialize to ~147 chars → fails (has 'at its limit')
+    The cap is the empty file (three section titles) plus one and a half
+    bullets of 40 chars:
+    - First add serializes to scaffold + one bullet → succeeds (no error)
+    - Second add would serialize to scaffold + two bullets → fails (has 'at its limit')
     This ensures we test the accumulate-then-cap path, not immediate cap-on-first."""
-    ctx = make_mind_ctx(self_profile_max_chars=120)
+    from dollos.mind import self_profile as sp
+
+    scaffold = sum(len(f"## {t}\n") for t in sp.SECTION_TITLES.values())
+    bullet = len("- [s1·2026-01-01] \n") + 40
+    ctx = make_mind_ctx(self_profile_max_chars=scaffold + bullet + bullet // 2)
 
     # First add should succeed
     msg1 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)

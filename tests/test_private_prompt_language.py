@@ -775,7 +775,7 @@ CASES = [
     tool_result_self_revision,
     tool_result_learn_name,
     memory_transcript_and_action_log,
-    _waits_for(3, memory_her_files),
+    memory_her_files,
     _waits_for(5, agent_keeper_task),
     _waits_for(5, agent_full_skeptic_task),
     _waits_for(5, agent_mode_b_skeptic_task),

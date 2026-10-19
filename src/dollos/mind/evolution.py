@@ -499,12 +499,17 @@ def restatement_overlap(candidate: str, pack_texts: list[str], *,
 
 
 def has_diary_heading(text: str) -> bool:
-    """True if ``text`` carries a WriteDiary-style ``## … 日記`` heading line.
-    The single diary predicate shared by ``diary_days_since`` (material gate) and
-    the keeper bundle's diary classification (``evolution_keeper.assemble_bundle``)
-    — one definition so the two can never drift (a bare ``"日記"`` substring match
-    would wrongly count a note that merely mentions the word)."""
-    return any(line.startswith("##") and "日記" in line for line in text.splitlines())
+    """True if ``text`` carries a WriteDiary-style heading line: ``## … Diary``,
+    or ``## … 日記`` (including the oldest ``## 日記 (12:34:56)``). WriteDiary
+    writes only the English one; the Chinese is for reading files written
+    before the all-English plan (2026-10-19), which may exist on another
+    machine. The single diary predicate shared by ``diary_days_since``
+    (material gate) and the keeper bundle's diary classification
+    (``evolution_keeper.assemble_bundle``) — one definition so the two can
+    never drift (a bare substring match would wrongly count a note that merely
+    mentions the word)."""
+    return any(line.startswith("##") and ("日記" in line or line.rstrip().endswith(" Diary"))
+               for line in text.splitlines())
 
 
 def count_new_pin_events(history_path: Path, hwm: int) -> int:
@@ -525,8 +530,9 @@ def count_new_pin_events(history_path: Path, hwm: int) -> int:
 
 def diary_days_since(shared_dir: Path, since_epoch: float) -> int:
     """Diary-days material clause: distinct dated shared/*.md files whose
-    FILENAME date is after ``since_epoch``'s date, containing a 日記 heading
-    (WriteDiary appends ``## … 日記`` sections to memory_root/shared/{date}.md).
+    FILENAME date is after ``since_epoch``'s date, containing a diary heading
+    (WriteDiary appends ``## … Diary`` sections to memory_root/shared/{date}.md;
+    old files carry ``## … 日記``, see ``has_diary_heading``).
     Filename-date, not mtime — deterministic, matches assemble_bundle's own
     stem-based windowing (plan review C2)."""
     if not shared_dir.exists():

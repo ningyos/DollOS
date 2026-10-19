@@ -205,7 +205,7 @@ class WriteDiary(BaseModel):
         path.parent.mkdir(parents=True, exist_ok=True)
         heading = build_heading(ctx.mind_state)
         with path.open("a") as f:
-            f.write(f"\n## {heading} 日記\n\n{self.content}\n")
+            f.write(f"\n## {heading} Diary\n\n{self.content}\n")
         await ctx.memsearch.index_file(path)
         _record(ctx, "WriteDiary", self._summary())
         return "diary written"
@@ -619,7 +619,7 @@ class WriteSchedule(BaseModel):
 
         heading = build_heading(ctx.mind_state)
         with md_path.open("a") as f:
-            f.write(f"\n## {heading} 計劃\n\n")
+            f.write(f"\n## {heading} Plan\n\n")
             for e in parsed:
                 f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
         await ctx.memsearch.index_file(md_path)
