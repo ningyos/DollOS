@@ -110,7 +110,7 @@ async def test_wiring_iterate_does_not_tripwire_when_disabled(tmp_path):
 @pytest.mark.asyncio
 async def test_wiring_iterate_calls_surface_or_expire_on_reflection(tmp_path):
     """F6(c): iterate() surfaces an awaiting_doll slot on reflection turns — the
-    surfaced_count increments, the ctx flag arms, and the [人格演化候選] block
+    surfaced_count increments, the ctx flag arms, and the [Self revision candidate] block
     reaches the rendered prompt (delete surface_or_expire → all three fail)."""
     sp = tmp_path / "self_evolution" / "pending.json"
     evo.save_slot(sp, evo.make_keeper_slot(
@@ -124,7 +124,7 @@ async def test_wiring_iterate_calls_surface_or_expire_on_reflection(tmp_path):
     await ml.iterate()
     assert evo.load_slot(sp).surfaced_count == 1              # surface ran
     assert ml._ctx.evolution_candidate_surfaced is True        # gate armed
-    assert "[人格演化候選]" in llm.last_user                    # block rendered
+    assert "[Self revision candidate]" in llm.last_user                    # block rendered
 
 
 @pytest.mark.asyncio

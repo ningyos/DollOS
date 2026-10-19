@@ -56,7 +56,7 @@ async def test_full_loop_candidate_to_adopt(tmp_path, monkeypatch):
         slot_path=slot_path, history_path=hist,
         current_self_path=mr / "current_self.md", sanctioned_text=None,
         max_surfacings=5, min_age_days=2.0, now=2000.0, mind_state=MindState())
-    assert block is not None and "[人格演化候選]" in block and VALID in block
+    assert block is not None and "[Self revision candidate]" in block and VALID in block
 
     ctx = types.SimpleNamespace(
         memory_root=mr, evolution_latched=False, evolution_candidate_surfaced=True,

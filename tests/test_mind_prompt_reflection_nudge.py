@@ -17,8 +17,8 @@ def _reflection_perception():
 
 def test_reflection_nudge_contains_agenda_grounding_wording():
     text = _percep_body(_reflection_perception())
-    assert "回顧" in text
-    assert "自己想追下去的" in text
+    assert "Think back on" in text
+    assert "a thread you want to follow yourself" in text
     assert "PursueGoal" in text
 
 
@@ -28,15 +28,15 @@ def test_reflection_nudge_allows_finding_nothing():
     'you have goals, go pursue them', which would manufacture empty
     performed goals."""
     text = _percep_body(_reflection_perception())
-    assert "沒有就算了" in text
-    assert "不用硬找" in text
+    assert "If not, never mind" in text
+    assert "no need to force one" in text
 
 
 def test_reflection_nudge_asks_for_provenance():
     """PursueGoal's required `trigger` field must be self-explained — the
     nudge tells her to say where the pursuit came from."""
     text = _percep_body(_reflection_perception())
-    assert "說清楚它從哪來" in text
+    assert "say where it came from" in text
 
 
 def test_reflection_nudge_appears_after_existing_pinself_content():
@@ -51,7 +51,7 @@ def test_non_reflection_perception_has_no_agenda_nudge():
     p = Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"})
     text = _percep_body(p)
     assert "PursueGoal" not in text
-    assert "自己想追下去的" not in text
+    assert "a thread you want to follow yourself" not in text
 
 
 def test_reflection_turn_prompt_contains_agenda_nudge():
@@ -61,7 +61,7 @@ def test_reflection_turn_prompt_contains_agenda_nudge():
         MindState(), Seen(), "internal", [_reflection_perception()], time.time(),
     )
     assert "PursueGoal" in out
-    assert "自己想追下去的" in out
+    assert "a thread you want to follow yourself" in out
 
 
 def test_non_reflection_turn_prompt_has_no_agenda_nudge():
@@ -70,4 +70,4 @@ def test_non_reflection_turn_prompt_has_no_agenda_nudge():
         [Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"})], time.time(),
     )
     assert "PursueGoal" not in out
-    assert "自己想追下去的" not in out
+    assert "a thread you want to follow yourself" not in out

@@ -64,10 +64,10 @@ def test_perception_phrase_world_events():
 def test_pulse_moment_action_phrase():
     phrase = action_phrase_for_perception(
         "PulseMoment",
-        {"concern": "battery_critical", "detail": "電量掉到 12% 而且在放電", "severity": "critical"},
+        {"concern": "battery_critical", "detail": "battery down to 12% and discharging", "severity": "critical"},
     )
     assert phrase is not None
-    assert "電量掉到 12% 而且在放電" in phrase
+    assert "battery down to 12% and discharging" in phrase
 
 
 def test_non_pulse_kind_still_none():

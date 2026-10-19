@@ -30,7 +30,7 @@ from dollos.perception.system_pulse import (
 @dataclass(frozen=True)
 class Alert:
     slug: str   # "battery_critical" | "gpu_hot" | "window_stuck"
-    text: str   # self-contained zh description → PulseMoment.data.detail
+    text: str   # self-contained English description → PulseMoment.data.detail
     severity: str    # "critical" | "advisory" (spec §3.1)
 
 
@@ -126,20 +126,20 @@ def evaluate_alerts(
     if battery_bad and battery_armed:
         candidates.append(("battery", Alert(
             slug="battery_critical",
-            text=f"電量掉到 {sample.battery_pct:.0f}% 而且在放電",
+            text=f"battery down to {sample.battery_pct:.0f}% and discharging",
             severity="critical",
         )))
     if gpu_bad and gpu_armed:
         candidates.append(("gpu", Alert(
             slug="gpu_hot",
-            text=f"GPU 溫度到 {hottest:.0f}°C,燙",
+            text=f"GPU at {hottest:.0f}°C, hot",
             severity="critical",
         )))
     if stuck_bad and stuck_armed:
         mins = int((now - stuck_since) / 60)
         candidates.append(("window", Alert(
             slug="window_stuck",
-            text=f"盯著「{stuck_window}」連續 {mins} 分鐘沒換",
+            text=f'staring at "{stuck_window}" for {mins} minutes without switching',
             severity="advisory",
         )))
 

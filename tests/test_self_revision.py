@@ -276,7 +276,7 @@ async def test_adopt_file_write_fails_twice_logs_error_clears_slot(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_counter_text_marker_prefix_stripped_before_storage(tmp_path):
-    """F3: the model may echo the 【候選·新】 marker into `text`; the stored
+    """F3: the model may echo the ⟪proposed⟫ marker into `text`; the stored
     counter candidate must carry NO marker prefix (storage-side analogue of
     A1's _strip_incoming_tag)."""
     from dollos.mind import surfacing_markers as markers

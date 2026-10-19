@@ -301,7 +301,7 @@ def test_external_public_renders_only_allowed_blocks():
         tool_habits_hits=[{"content": "## h\n\n[situation] s\nlesson\n", "chunk_hash": "hb"}],
         pulse_block="[Self pulse]\npulse-marker", cognition_block="[Cognition]\ncog-marker",
         tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 1 ok",
-        evolution_block="[人格演化候選]\nevo-marker",
+        evolution_block="[Self revision candidate]\nevo-marker",
         body_signal_block="[Body signal]\nbody-marker",
     )
     assert "mood: 煩" in delta
@@ -327,7 +327,7 @@ def test_private_events_render_on_internal_turns():
         state, seen, "internal", [], NOW + 1,
         pulse_block="[Self pulse]\npulse-shift",
         tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 1 ok",
-        evolution_block="[人格演化候選]\nevo-marker",
+        evolution_block="[Self revision candidate]\nevo-marker",
         body_signal_block="[Body signal]\nbody-marker",
     )
     for marker in ("pulse-shift", "[Tool outcomes", "evo-marker", "body-marker"):
