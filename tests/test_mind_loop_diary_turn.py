@@ -53,26 +53,15 @@ async def test_diary_turn_narrows_tools_and_injects_today_log(tmp_path):
     # capture the active registry on the diary turn
     orig = ml._active_tool_registry
     ml._active_tool_registry = lambda: (captured.__setitem__("reg", set(orig().keys())) or orig())
-    # capture render_mind's kwargs to verify the full day's log was injected
-    import dollos.mind.mind_loop as mind_loop_mod
-    orig_render_mind = mind_loop_mod.render_mind
-
-    def _spy_render_mind(*args, **kwargs):
-        captured["today_log_block"] = kwargs.get("today_log_block")
-        return orig_render_mind(*args, **kwargs)
-
-    mind_loop_mod.render_mind = _spy_render_mind
-    try:
-        await ml.iterate()
-    finally:
-        mind_loop_mod.render_mind = orig_render_mind
+    await ml.iterate()
     assert ml._is_diary is True
     assert captured["reg"] == {"WriteDiary", "Recall"}     # narrowed
-    # the day's full action log made it into the composed prompt (the whole
+    # the day's full action log made it into the one-off request (the whole
     # point of the dedicated turn — spec §2.2).
-    assert captured["today_log_block"] is not None
-    assert "12:00:00" in captured["today_log_block"]
-    assert "我跑了指令 ls" in captured["today_log_block"]
+    request = ml._llm.calls[0]["messages"][1]["content"]
+    assert "[Today's log]" in request
+    assert "12:00:00" in request
+    assert "我跑了指令 ls" in request
 
 
 @pytest.mark.asyncio
@@ -230,7 +219,6 @@ async def test_diary_turn_truncates_oversized_log_head_and_tail(tmp_path):
     _seed_today_log(tmp_path, raw)
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
-    captured = {}
     stream = (
         'SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: WriteDiary\n</think>\n\n'
         '<tool_call>\n{"name":"WriteDiary","arguments":{"content":"今天跑了點東西"}}\n</tool_call>'
@@ -239,20 +227,9 @@ async def test_diary_turn_truncates_oversized_log_head_and_tail(tmp_path):
         memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream),
         diary_max_log_chars=200,
     )
-    import dollos.mind.mind_loop as mind_loop_mod
-    orig_render_mind = mind_loop_mod.render_mind
-
-    def _spy_render_mind(*args, **kwargs):
-        captured["today_log_block"] = kwargs.get("today_log_block")
-        return orig_render_mind(*args, **kwargs)
-
-    mind_loop_mod.render_mind = _spy_render_mind
-    try:
-        await ml.iterate()
-    finally:
-        mind_loop_mod.render_mind = orig_render_mind
-    block = captured["today_log_block"]
-    assert block is not None
+    await ml.iterate()
+    request = ml._llm.calls[0]["messages"][1]["content"]
+    block = request[request.index("[Today's log]"):]
     assert "…(中段略)…" in block
     assert head_marker in block   # head slice survived
     assert tail_marker in block   # tail slice survived

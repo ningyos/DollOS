@@ -37,6 +37,10 @@ MAX_CASCADE_PASSES = 16
 TOOL_MESSAGE_MAX_CHARS = 8000
 UNCUT_TOOLS = frozenset({"InvokeSkill"})
 
+# The tool message of a call that never ran because the turn was interrupted
+# (plan 2026-10-18 Task 9): every call in a reply must have its tool message.
+NOT_RUN = "not run: turn interrupted"
+
 
 @dataclass
 class ToolResult:
@@ -138,6 +142,7 @@ async def dispatch_one(
 async def run_tool_calls(
     calls: Sequence[ToolCall],
     dispatch: Callable[[str, dict], Awaitable[ToolResult | None]],
+    stop: Callable[[], bool] | None = None,
 ) -> list[ToolOutcome]:
     """Run one reply's tool calls in index order, one ``tool`` message each,
     in the same order (the server template matches results to calls by order
@@ -148,9 +153,16 @@ async def run_tool_calls(
     answers "ok"; a failure answers with its error text. A message over
     ``TOOL_MESSAGE_MAX_CHARS`` is cut (``UNCUT_TOOLS`` excepted); the
     ``ToolResult`` keeps the full text.
+
+    ``stop()`` is checked before each call; once it is true, that call and
+    the rest do not run and answer ``NOT_RUN``.
     """
     outcomes: list[ToolOutcome] = []
     for call in calls:
+        if stop is not None and stop():
+            result = ToolResult(tool_name=call.name, success=False, detail=NOT_RUN)
+            outcomes.append(ToolOutcome(call, result, tool_message(call.id, NOT_RUN)))
+            continue
         error = None
         try:
             args = json.loads(call.arguments)

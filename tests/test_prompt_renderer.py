@@ -258,11 +258,17 @@ def test_system_prompt_omits_restatement_reference():
 
 
 
-def test_scaffolding_explains_pending_events_block():
-    """gap #4: scaffolding teaches Doll what `[Pending events]` means."""
+def test_scaffolding_explains_the_append_only_conversation():
+    """Plan 2026-10-18 Task 9: scaffolding teaches the new format — one new
+    message per turn starting with the time, a page snapshot, hits given once
+    per page — and no longer explains blocks that never render."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
-    assert "[Pending events]" in out
+    assert "[New conversation page" in out
+    assert "each turn adds one new message" in out
+    assert "once per page" in out
+    assert "[Pending events]" not in out
+    assert "[Active monitors]" not in out
 
 
 def test_scaffolding_documents_tool_output_paging():

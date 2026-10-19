@@ -440,7 +440,9 @@ async def test_cancel_mid_stream_exits_iterate_cleanly(tmp_path):
     slow_llm = _SlowFakeLLM(chunks, delay=0.1)
     loop = _make_mind_loop(tmp_path, llm=slow_llm)
 
-    task = asyncio.create_task(loop._llm_iterate("prompt"))
+    task = asyncio.create_task(loop._run_one_turn(
+        [Perception(kind="UserSpoke", t=1.0, data={"text": "hi"})]
+    ))
     await asyncio.sleep(0.15)
     assert loop.is_cascade_active is True
     loop.cancel_current_cascade()
@@ -697,9 +699,10 @@ async def test_recall_result_refed_in_same_turn(tmp_path):
 
     assert llm.pass_count == 2
     second = llm.calls[1]["messages"]
-    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
-    assert second[2]["tool_calls"][0]["function"]["name"] == "Recall"
-    assert second[3]["tool_call_id"] == second[2]["tool_calls"][0]["id"]
+    # system, the page snapshot, the turn's message, then the reply + result.
+    assert [m["role"] for m in second] == ["system", "user", "user", "assistant", "tool"]
+    assert second[3]["tool_calls"][0]["function"]["name"] == "Recall"
+    assert second[4]["tool_call_id"] == second[3]["tool_calls"][0]["id"]
 
     # Both passes' speech reached the sink, in order.
     chunks = _drain_queue(sink)
@@ -1051,9 +1054,9 @@ async def test_persona_enforcement_default_never_fires(tmp_path):
 
 @pytest.mark.asyncio
 async def test_primary_language_threads_into_rendered_prompt(tmp_path):
-    """MindLoop receives primary_language and threads it into render_mind, so the
-    [Memory guideline] block appears in the per-turn prompt with the configured
-    language interpolated (covers article-ingestion turns too)."""
+    """MindLoop receives primary_language and threads it into the system
+    message, so the [Memory guideline] block is in every request with the
+    configured language interpolated (covers article-ingestion turns too)."""
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
 
@@ -1077,9 +1080,11 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
 
     await loop.iterate()
 
-    assert llm.last_user is not None
-    assert "[Memory guideline]" in llm.last_user
-    assert "English" in llm.last_user
+    system = llm.calls[0]["messages"][0]
+    assert system["role"] == "system"
+    assert "[Memory guideline]" in system["content"]
+    assert "English" in system["content"]
+    assert "[Memory guideline]" not in llm.last_user
 
 
 @pytest.mark.asyncio
@@ -1176,11 +1181,12 @@ async def test_subagent_dispatch_does_not_record_to_doll(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_turn_end_none_emitted_when_render_mind_raises(tmp_path, monkeypatch):
-    """I1 regression: if render_mind() raises, the turn-end None sentinel must
-    still reach the sink so IPC clients don't block forever waiting for TurnEnd.
+async def test_turn_end_none_emitted_when_render_raises(tmp_path, monkeypatch):
+    """I1 regression: if rendering the turn's message raises, the turn-end
+    None sentinel must still reach the sink so IPC clients don't block
+    forever waiting for TurnEnd.
 
-    Before the fix: the try/finally only wrapped _llm_iterate(); render_mind()
+    Before the fix: the try/finally only wrapped _llm_iterate(); rendering
     was called outside it, so an exception there skipped the finally entirely.
     After the fix: the try/finally also wraps the render calls.
     """
@@ -1196,9 +1202,9 @@ async def test_turn_end_none_emitted_when_render_mind_raises(tmp_path, monkeypat
     ctx = _make_mind_ctx(tmp_path, sink=sink, state=state)
 
     def _boom_render(*a, **k):
-        raise RuntimeError("render_mind exploded")
+        raise RuntimeError("render exploded")
 
-    monkeypatch.setattr(ml, "render_mind", _boom_render)
+    monkeypatch.setattr(ml, "render_turn_delta", _boom_render)
 
     loop = MindLoop(
         state=state,
@@ -1211,12 +1217,12 @@ async def test_turn_end_none_emitted_when_render_mind_raises(tmp_path, monkeypat
     )
 
     # iterate() re-raises the render error — catch it so the test continues.
-    with pytest.raises(RuntimeError, match="render_mind exploded"):
+    with pytest.raises(RuntimeError, match="render exploded"):
         await loop.iterate()
 
     items = _drain_queue(sink)
     assert None in items, (
-        "turn-end None must be emitted even when render_mind() raises; "
+        "turn-end None must be emitted even when rendering raises; "
         f"got sink items: {items!r}"
     )
 

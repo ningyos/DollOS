@@ -522,6 +522,7 @@ class DollOS:
             turn_latency_recorder=self.turn_latency_recorder,
             vitals_recorder=self.vitals_recorder,
             think_budget_tokens=settings.llm.think_budget_tokens,
+            conversation_budget_tokens=settings.llm.conversation_budget_tokens,
         )
 
         self._reflection_observer = ReflectionObserver(

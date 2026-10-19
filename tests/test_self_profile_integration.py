@@ -9,7 +9,7 @@ exercise together:
    makes the "no duplicate injection" property hold: the file can never be
    picked up by ``FtsMemory.index()`` / ``index_file()`` and re-surfaced via
    memsearch on top of the always-injected ``[Self profile]`` block.
-2. e2e — ``self_profile.apply(add)`` -> ``render_block`` -> ``render_mind``
+2. e2e — ``self_profile.apply(add)`` -> ``render_block`` -> ``render_epoch_start``
    produces a prompt containing the pinned text (the full pin -> always
    -inject path works end to end).
 """
@@ -29,7 +29,7 @@ from dollos.config import (
 )
 from dollos.kernel import build_memsearch
 from dollos.mind import self_profile as sp
-from dollos.mind.mind_prompt import render_mind
+from dollos.mind.mind_prompt import Seen, render_epoch_start
 from dollos.mind.mind_state import MindState
 
 
@@ -97,8 +97,8 @@ def test_memory_root_not_in_fts_paths(tmp_path: Path):
 
 
 def test_pinned_self_appears_in_next_prompt(tmp_path: Path):
-    """e2e: apply(add) -> render_block -> render_mind surfaces the pinned
-    text in the next prompt via the always-injected [Self profile] block."""
+    """e2e: apply(add) -> render_block -> render_epoch_start surfaces the
+    pinned text on the next page via the [Self profile] block."""
     profile = tmp_path / "self_profile.md"
     sp.apply(
         profile,
@@ -112,6 +112,6 @@ def test_pinned_self_appears_in_next_prompt(tmp_path: Path):
     body = sp.render_block(profile)
     assert body is not None
 
-    out = render_mind(MindState(), [], "SYS", self_profile_text=body)
+    out = render_epoch_start(MindState(), Seen(), "internal", 0.0, self_profile_text=body)
     assert "我們可以直話直說" in out
     assert "[Self profile]" in out

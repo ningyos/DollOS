@@ -63,21 +63,20 @@ def _drain_sink(sink: asyncio.Queue) -> list:
 
 
 async def _render_kwargs_for_batch(ml, perceptions: list[Perception], monkeypatch) -> dict:
-    """Drive one turn, capturing the kwargs `render_mind` was called with —
-    same capture seam as tests/test_energy.py's energy_line tests
-    (monkeypatch.setattr on the `dollos.mind.mind_loop` module's imported
-    `render_mind` name, delegate to the original so the turn still completes
-    normally)."""
+    """Drive one turn, capturing the kwargs the turn's message
+    (`render_turn_delta`) was rendered with (monkeypatch.setattr on the
+    `dollos.mind.mind_loop` module's imported name, delegate to the original
+    so the turn still completes normally)."""
     import dollos.mind.mind_loop as mind_loop_mod
 
-    orig_render_mind = mind_loop_mod.render_mind
+    orig_render = mind_loop_mod.render_turn_delta
     captured: dict = {}
 
     def _capture(*args, **kwargs):
         captured.update(kwargs)
-        return orig_render_mind(*args, **kwargs)
+        return orig_render(*args, **kwargs)
 
-    monkeypatch.setattr(mind_loop_mod, "render_mind", _capture)
+    monkeypatch.setattr(mind_loop_mod, "render_turn_delta", _capture)
     await ml._run_one_turn(perceptions)
     return captured
 
@@ -101,7 +100,7 @@ async def test_pure_pulse_turn_has_body_signal_block(tmp_path, monkeypatch):
 
     body_signal_block = captured.get("body_signal_block")
     assert body_signal_block is not None, (
-        "pure PulseMoment turn must pass a non-None body_signal_block to render_mind"
+        "pure PulseMoment turn must pass a non-None body_signal_block to render_turn_delta"
     )
     assert "[Body signal]" in body_signal_block
     assert "主人多半會想知道" in body_signal_block

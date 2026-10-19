@@ -218,19 +218,19 @@ def test_energy_bucket_line_boundaries():
     assert "偏低" in energy_bucket_line(0.39)
 
 
-def test_render_mind_omits_energy_when_line_none(tmp_path):
-    from dollos.mind.mind_prompt import render_mind
+def test_snapshot_omits_energy_when_line_none(tmp_path):
+    from dollos.mind.mind_prompt import Seen, render_epoch_start
     from dollos.mind.mind_state import MindState
     state = MindState()
-    prompt = render_mind(state, [], "You are Doll.", energy_line=None)
+    prompt = render_epoch_start(state, Seen(), "internal", 0.0, energy_line=None)
     assert "精力" not in prompt
 
 
-def test_render_mind_includes_energy_line(tmp_path):
-    from dollos.mind.mind_prompt import render_mind
+def test_snapshot_includes_energy_line(tmp_path):
+    from dollos.mind.mind_prompt import Seen, render_epoch_start
     from dollos.mind.mind_state import MindState
     state = MindState()
-    prompt = render_mind(state, [], "You are Doll.", energy_line="精力: 偏低 (0.3)")
+    prompt = render_epoch_start(state, Seen(), "internal", 0.0, energy_line="精力: 偏低 (0.3)")
     assert "精力: 偏低 (0.3)" in prompt
 
 
@@ -239,20 +239,9 @@ def test_render_mind_includes_energy_line(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path, monkeypatch):
-    """energy_enabled=False: iterate() passes energy_line=None to render_mind
-    → the rendered prompt sent to the LLM contains no '精力:' block."""
-    import dollos.mind.mind_loop as _ml
-
-    _orig_render = _ml.render_mind
-    captured_energy_lines: list = []
-
-    def capturing_render(state, hits, *args, **kw):
-        captured_energy_lines.append(kw.get("energy_line"))
-        return _orig_render(state, hits, *args, **kw)
-
-    monkeypatch.setattr(_ml, "render_mind", capturing_render)
-
+async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path):
+    """energy_enabled=False: the messages sent to the model (page snapshot
+    and the turn's message) contain no '精力:' line."""
     state = MindState()
     queue = PerceptionQueue()
     queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
@@ -266,27 +255,15 @@ async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path, monkeypatc
     )
     await loop.iterate()
 
-    assert captured_energy_lines, "render_mind was never called — iterate() did not reach render"
-    assert captured_energy_lines[0] is None, (
-        f"energy_enabled=False must pass energy_line=None; got {captured_energy_lines[0]!r}"
-    )
+    sent = loop._llm.calls[0]["messages"]
+    assert sent[1]["content"].startswith("[New conversation page")
+    assert not any("精力" in m["content"] for m in sent)
 
 
 @pytest.mark.asyncio
-async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path, monkeypatch):
-    """energy_enabled=True: iterate() passes a non-None energy_line to render_mind
-    → the rendered prompt contains '精力:' (contrast to disabled case above)."""
-    import dollos.mind.mind_loop as _ml
-
-    _orig_render = _ml.render_mind
-    captured_energy_lines: list = []
-
-    def capturing_render(state, hits, *args, **kw):
-        captured_energy_lines.append(kw.get("energy_line"))
-        return _orig_render(state, hits, *args, **kw)
-
-    monkeypatch.setattr(_ml, "render_mind", capturing_render)
-
+async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path):
+    """energy_enabled=True: the page snapshot sent to the model carries the
+    '精力:' line in [Mind state] (contrast to disabled case above)."""
     state = MindState()
     queue = PerceptionQueue()
     queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
@@ -300,13 +277,8 @@ async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path, monkeypatch):
     )
     await loop.iterate()
 
-    assert captured_energy_lines, "render_mind was never called — iterate() did not reach render"
-    assert captured_energy_lines[0] is not None, (
-        "energy_enabled=True must pass a non-None energy_line"
-    )
-    assert "精力" in captured_energy_lines[0], (
-        f"energy_line should contain '精力'; got {captured_energy_lines[0]!r}"
-    )
+    snapshot = loop._llm.calls[0]["messages"][1]["content"]
+    assert "[Mind state]" in snapshot and "精力" in snapshot
 
 
 # ---------------------------------------------------------------------------

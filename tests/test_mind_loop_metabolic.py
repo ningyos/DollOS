@@ -199,9 +199,11 @@ async def test_multi_pass_accumulates_before_single_drain(tmp_path):
     result is sent back — mirrors
     tests/test_mind_loop.py::test_recall_result_refed_in_same_turn).
     on_usage fires once per pass; the drain site must SUM both passes and
-    drain exactly ONCE, not per-pass."""
+    drain exactly ONCE, not per-pass. on_usage carries each call's NEW prompt
+    tokens (plan 2026-10-18 Task 9): pass 2's prompt is pass 1's 100 + 200
+    plus 50 new."""
     scripts = [_recall_pass(speech="查一下"), _speech_pass("找到了")]
-    usages = [(100, 200), (50, 80)]  # (prompt, completion) per pass
+    usages = [(100, 200), (350, 80)]  # (prompt, completion) per pass; 50 new on pass 2
 
     state = MindState()
     ml = make_mindloop(

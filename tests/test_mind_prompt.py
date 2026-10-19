@@ -1,45 +1,31 @@
-"""Tests for render_mind — the MindLoop prompt renderer."""
-import time
-from collections import deque
+"""Tests for the MindLoop prompt renderer's blocks.
 
-import pytest
+The whole-prompt ``render_mind`` is gone (plan 2026-10-18 Task 9): a
+conversation opens a page with ``render_epoch_start`` and adds one
+``render_turn_delta`` per turn, so the blocks are checked through those
+(their own composition tests live in tests/test_turn_delta.py).
+"""
+import time
 
 from dollos.mind.mind_state import (
-    MindState, Mood, ActiveTask, OpenLoop, PendingEvent,
+    MindState, OpenLoop,
     Perception, OutputRecord,
 )
-from dollos.mind.mind_prompt import render_mind
+from dollos.mind.mind_prompt import (
+    Seen,
+    render_epoch_start,
+    render_memory_guideline,
+    render_turn_delta,
+)
+
+NOW = 1_790_000_000.0
 
 
-def test_renders_all_blocks_in_order():
-    state = MindState(focus="testing", mood=Mood(emotion="calm", reason="just woke up"))
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYSTEM PROMPT HERE")
-    # Order check via index-of
-    expected_order = [
-        "SYSTEM PROMPT HERE",
-        "[Memory context]",
-        "[Mind state]",
-        "[Active tasks]",
-        "[Open loops]",
-        "[Pending]",
-        "[Scratchpad]",
-        "[Recent perceptions]",
-        "[Recent outputs]",
-        "[Decision time]",
-    ]
-    last_idx = -1
-    for marker in expected_order:
-        idx = prompt.index(marker)
-        assert idx > last_idx, f"{marker} out of order"
-        last_idx = idx
-
-
-def test_empty_state_renders_none_placeholders():
-    state = MindState()
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert "(no relevant memories)" in prompt
-    assert "[Active tasks]" in prompt and "(none)" in prompt
-    assert "(empty)" in prompt  # scratchpad
+def _delta(state: MindState, **kw) -> str:
+    """A turn's message right after a page opened: only what ``kw`` adds."""
+    seen = Seen()
+    render_epoch_start(state, seen, "internal", NOW)
+    return render_turn_delta(state, seen, "internal", [], NOW + 1, **kw)
 
 
 def test_memory_hits_rendered_as_bullets():
@@ -48,29 +34,16 @@ def test_memory_hits_rendered_as_bullets():
         {"content": "user likes coffee", "source": "shared/2026-05-12.md"},
         {"content": "user lives in Taipei", "source": "shared/2026-05-13.md"},
     ]
-    prompt = render_mind(state, memsearch_hits=hits, system_prompt="SYS")
-    assert "- user likes coffee" in prompt
-    assert "- user lives in Taipei" in prompt
-
-
-def test_active_tasks_show_elapsed():
-    state = MindState()
-    state.active_tasks.append(ActiveTask(
-        task_id="shell-1", kind="shell", summary="ls /tmp",
-        started_at=time.time() - 5.0,
-    ))
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert "shell-1" in prompt
-    assert "ls /tmp" in prompt
-    # elapsed shown
-    assert "5" in prompt  # ~5s elapsed
+    out = _delta(state, memory_hits=hits)
+    assert "- user likes coffee" in out
+    assert "- user lives in Taipei" in out
 
 
 def test_open_loops_rendered():
     state = MindState()
-    state.open_loops.append(OpenLoop(id="t1", desc="check tmp", opened_at=time.time() - 10))
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert "t1" in prompt and "check tmp" in prompt
+    state.open_loops.append(OpenLoop(id="t1", desc="check tmp", opened_at=NOW - 10))
+    out = render_epoch_start(state, Seen(), "internal", NOW)
+    assert "t1" in out and "check tmp" in out
 
 
 def test_open_loops_empty_renders_none():
@@ -116,18 +89,16 @@ def test_recent_perceptions_newest_last():
     state = MindState()
     state.recent_perceptions.append(Perception(kind="UserSpoke", t=100.0, data={"text": "first"}))
     state.recent_perceptions.append(Perception(kind="UserSpoke", t=200.0, data={"text": "second"}))
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    idx_first = prompt.index("first")
-    idx_second = prompt.index("second")
-    assert idx_first < idx_second  # newest last
+    out = render_epoch_start(state, Seen(), "internal", NOW)
+    assert out.index("first") < out.index("second")  # newest last
 
 
 def test_recent_outputs_block():
     state = MindState()
-    state.recent_outputs.append(OutputRecord(t=time.time() - 3, kind="Speech", summary="spoke: hi"))
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert "spoke: hi" in prompt
-    assert "don't repeat yourself" in prompt.lower()
+    state.recent_outputs.append(OutputRecord(t=NOW - 3, kind="Speech", summary="spoke: hi"))
+    out = render_epoch_start(state, Seen(), "internal", NOW)
+    assert "[Recent outputs]" in out
+    assert "spoke: hi" in out
 
 
 def test_recent_outputs_warns_on_recent_speech():
@@ -292,16 +263,6 @@ def test_pulse_moment_renders_full_detail_not_truncated_dict():
     assert "{" not in body and "}" not in body  # must be prose, not a raw dict dump
 
 
-def test_decision_time_marker_is_last():
-    """Model API plan Task 6: [Decision time] asks the question only — tool
-    calls are native, so no 'Output a JSON array of 0..N actions'."""
-    state = MindState()
-    prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert prompt.rstrip().endswith("[Decision time]\nWhat do you do this iteration?")
-    assert "JSON array" not in prompt
-    assert "0..N actions" not in prompt
-
-
 def test_interrupted_perception_rendered():
     import time
     from dollos.mind.mind_state import Perception
@@ -345,65 +306,36 @@ def test_awoke_cold_start_unchanged():
     assert "cold_start" in body
 
 
-def test_recent_self_review_block_omitted_when_empty():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    s = MindState()
-    out = render_mind(s, [], "SYS")
-    assert "[Recent self-review]" not in out
+# --- P6.3 (Task 8): safe mode on a page snapshot ---
 
 
-def test_render_mind_without_system_prompt_starts_at_first_block():
-    """MindLoop sends the system prompt as its own message: render_mind then
-    omits it and starts at the first dynamic block, same order otherwise."""
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    s = MindState()
-    with_sys = render_mind(s, [], "SYS-PROMPT-MARKER")
-    without = render_mind(s, [])
-    assert "SYS-PROMPT-MARKER" not in without
-    assert without.startswith("[Memory guideline]")
-    assert with_sys == "SYS-PROMPT-MARKER\n\n" + without
-
-
-# --- P6.3 (Task 8): [Safe mode] banner ---
-
-
-def test_safe_mode_banner_rendered():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
+def test_safe_mode_shown_on_page_snapshot():
     s = MindState()
     s.safe_mode = True
     s.safe_mode_reason = "3 consecutive tool failures"
-    out = render_mind(s, [], "SYS")
+    out = render_epoch_start(s, Seen(), "internal", NOW)
     assert "[Safe mode]" in out
     assert "3 consecutive tool failures" in out
 
 
-def test_safe_mode_banner_omitted_when_off():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    s = MindState()
-    out = render_mind(s, [], "SYS")
+def test_safe_mode_omitted_from_page_snapshot_when_off():
+    out = render_epoch_start(MindState(), Seen(), "internal", NOW)
     assert "[Safe mode]" not in out
 
 
 # --- Memory-writing guideline (primary language + understand-then-write) ---
 
 
-def test_memory_guideline_present_with_default_language():
-    """Every turn carries a [Memory guideline] block; default language is 繁體中文."""
-    state = MindState()
-    out = render_mind(state, [], "SYS")
-    assert "[Memory guideline]" in out
+def test_memory_guideline_names_the_language():
+    """The [Memory guideline] (now in the system message, see
+    MindLoop._system_for_turn) interpolates the configured primary_language."""
+    out = render_memory_guideline("繁體中文")
+    assert out.startswith("[Memory guideline]")
     assert "繁體中文" in out
 
 
 def test_memory_guideline_language_is_parameterized():
-    """The guideline interpolates the configured primary_language."""
-    state = MindState()
-    out = render_mind(state, [], "SYS", primary_language="English")
-    assert "[Memory guideline]" in out
+    out = render_memory_guideline("English")
     assert "English" in out
     # The default must NOT leak through when a different language is configured.
     assert "繁體中文" not in out
@@ -411,40 +343,17 @@ def test_memory_guideline_language_is_parameterized():
 
 def test_memory_guideline_says_understand_then_write_own_words():
     """The guideline must instruct understand-first, own-words, no verbatim copy."""
-    state = MindState()
-    out = render_mind(state, [], "SYS")
-    guideline = out[out.index("[Memory guideline]"):out.index("[Memory context]")]
-    lowered = guideline.lower()
+    lowered = render_memory_guideline("繁體中文").lower()
     assert "own words" in lowered
     assert "verbatim" in lowered
 
 
-def test_render_mind_includes_tool_notes_when_recent_failures():
-    import time
-    from collections import deque
-    from dollos.mind.mind_state import MindState, ToolFailure
-    from dollos.mind.mind_prompt import render_mind
-    s = MindState()
-    s.recent_tool_failures = deque(
-        [ToolFailure(t=time.time(), tool="Shell", detail="timeout after 60s")], maxlen=10
-    )
-    out = render_mind(s, [], "sys")
-    assert "[Tool notes]" in out and "Shell" in out and "timeout" in out
-
-
-def test_render_mind_omits_tool_notes_when_no_failures():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    out = render_mind(MindState(), [], "sys")
-    assert "[Tool notes]" not in out
-
-
 def test_tool_outcomes_block_only_when_passed():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
     s = MindState()
-    assert "[Tool outcomes" not in render_mind(s, [], "sys")
-    out = render_mind(s, [], "sys", tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 3 ok, 1 fail")
+    assert "[Tool outcomes" not in _delta(s)
+    out = _delta(
+        s, tool_outcomes_block="[Tool outcomes since last reflection]\n- Shell: 3 ok, 1 fail"
+    )
     assert "[Tool outcomes" in out and "Shell" in out
 
 
@@ -452,11 +361,10 @@ def test_tool_outcomes_block_only_when_passed():
 
 
 def test_tool_habits_block_gated():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    assert "[Tool habits]" not in render_mind(MindState(), [], "sys")
-    out = render_mind(MindState(), [], "sys",
-                      tool_habits_hits=[{"content": "## h\n\n[situation] grep\nuse Grep\n"}])
+    assert "[Tool habits]" not in _delta(MindState())
+    out = _delta(
+        MindState(), tool_habits_hits=[{"content": "## h\n\n[situation] grep\nuse Grep\n"}]
+    )
     assert "[Tool habits]" in out and "use Grep" in out
 
 
@@ -471,8 +379,9 @@ def test_tool_habits_block_gated():
 
 def _seed_mixed_state() -> MindState:
     """One owner UserSpoke (private, must be scoped out on external_public)
-    + one stranger ChannelMessage (public-safe, must survive scoping) +
-    one prior Speech output (must be suppressed entirely on external_public)."""
+    + one stranger ChannelMessage in channel c1 (public-safe, must survive
+    scoping) + one prior Speech output (must be suppressed entirely on
+    external_public)."""
     state = MindState()
     state.recent_perceptions.append(Perception(
         kind="UserSpoke", t=time.time(),
@@ -482,7 +391,8 @@ def _seed_mixed_state() -> MindState:
         kind="ChannelMessage", t=time.time(),
         data={
             "content": "stranger-public-marker-123", "channel": "general",
-            "author": "rando", "author_is_owner": False, "is_dm": False,
+            "channel_id": "c1", "author": "rando", "author_is_owner": False,
+            "is_dm": False,
         },
     ))
     state.recent_outputs.append(OutputRecord(
@@ -493,7 +403,7 @@ def _seed_mixed_state() -> MindState:
 
 def test_external_public_scopes_recent_perceptions_and_suppresses_outputs():
     state = _seed_mixed_state()
-    out = render_mind(state, [], "SYS", origin_tier="external_public")
+    out = render_epoch_start(state, Seen(), "external_public", NOW, channel_id="c1")
     assert "owner-secret-marker-999" not in out
     assert "stranger-public-marker-123" in out
     assert "[Recent outputs]" not in out
@@ -501,22 +411,19 @@ def test_external_public_scopes_recent_perceptions_and_suppresses_outputs():
 
 
 def test_internal_turn_control_shows_owner_marker_and_outputs():
-    """Control: internal (default origin_tier) renders BOTH blocks in full,
-    unchanged by this fix."""
+    """Control: the private conversation recaps its own (origin-less)
+    perceptions and renders [Recent outputs]."""
     state = _seed_mixed_state()
-    out = render_mind(state, [], "SYS")  # origin_tier defaults to "internal"
+    out = render_epoch_start(state, Seen(), "internal", NOW)
     assert "owner-secret-marker-999" in out
-    assert "stranger-public-marker-123" in out
     assert "[Recent outputs]" in out
     assert "owner-private-reply-marker" in out
 
 
-def test_external_dm_turn_control_shows_owner_marker_and_outputs():
-    """Control: external_dm (owner's own DM) is NOT scoped — owner sees her
-    own full working memory, mirroring the retrieval-scope control tests."""
+def test_external_dm_turn_control_shows_outputs():
+    """Control: external_dm (owner's own DM) keeps [Recent outputs]."""
     state = _seed_mixed_state()
-    out = render_mind(state, [], "SYS", origin_tier="external_dm")
-    assert "owner-secret-marker-999" in out
+    out = render_epoch_start(state, Seen(), "external_dm", NOW, channel_id="dm1")
     assert "[Recent outputs]" in out
     assert "owner-private-reply-marker" in out
 
@@ -524,8 +431,8 @@ def test_external_dm_turn_control_shows_owner_marker_and_outputs():
 def test_external_public_teeth_owner_marker_would_leak_unfiltered():
     """Teeth: prove the owner marker genuinely lives in recent_perceptions
     (i.e. this isn't a vacuous pass because the marker never renders at all)
-    — the unfiltered renderer DOES include it, so the scoped render_mind
-    excluding it is a real, non-trivial effect of the C3 filter."""
+    — the unfiltered renderer DOES include it, so the scoped snapshot
+    excluding it is a real, non-trivial effect of the scoping."""
     from dollos.mind.mind_prompt import _render_perceptions
     state = _seed_mixed_state()
     unfiltered = _render_perceptions(state.recent_perceptions, time.time())
@@ -564,15 +471,3 @@ def test_body_signal_mixed_takes_critical():
 def test_body_signal_empty_returns_none():
     from dollos.mind.mind_prompt import render_body_signal
     assert render_body_signal([]) is None
-
-
-def test_body_signal_block_precedes_decision_time():
-    """D3: [Body signal] must be the last framing she reads before deciding —
-    i.e. it renders BEFORE [Decision time] in the full render_mind output."""
-    state = MindState()
-    out = render_mind(
-        state, memsearch_hits=[], system_prompt="SYS",
-        body_signal_block="[Body signal]\ntest body",
-    )
-    assert "[Body signal]" in out
-    assert out.index("[Body signal]") < out.index("[Decision time]")
