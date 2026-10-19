@@ -80,6 +80,22 @@ async def test_adopt_echo_equivalent_takes_candidate_not_paraphrase(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_adopt_english_paraphrase_takes_candidate(tmp_path):
+    """English (2026-10-19 all-English plan, C1): an English paraphrase echo
+    is an adopt of the candidate, not a counter-proposal."""
+    cand = ("When the monitoring numbers jump I perk up and want to find out right "
+            "away what happened behind them; waiting quietly is no longer my factory "
+            "default, I would rather check things myself first and write the whole "
+            "process down for my later self to look back on.")
+    para = cand.replace("I would rather", "I would much rather")
+    _seed_awaiting_doll(tmp_path, candidate=cand)
+    ctx = _ctx(tmp_path)
+    result = await SelfRevision(decision="adopt", text=para).run(ctx)
+    assert "Adopted" in result
+    assert (tmp_path / "current_self.md").read_text(encoding="utf-8") == cand
+
+
+@pytest.mark.asyncio
 async def test_adopt_text_equivalent_to_sanctioned_is_refused(tmp_path):
     # Seed a prior adoption so sanctioned text exists. Candidate (default seed)
     # is GENUINELY different from sanctioned — the degenerate

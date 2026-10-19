@@ -130,6 +130,34 @@ def test_restatement_overlap_short_sentences_exempt():
     assert evo.restatement_overlap(cand, ["我不主動攬事。不多話。"]) is None
 
 
+# English (2026-10-19 all-English plan, C2): ASCII . ! ? ; and full-width
+# ！？； end a sentence too, so one copied pack sentence inside an English
+# paragraph is compared on its own.
+_EN_PACK = ("- I talk plainly and keep it short; a sentence or two usually covers it. "
+            "I don't pile things on, I don't exaggerate, and I don't put on cuteness.\n"
+            "- My mood is steady. I do feel things, but I don't swing up and down. "
+            "Calm is my baseline.\n")
+
+
+def test_restatement_overlap_english_verbatim_pack_sentence_mid_paragraph():
+    cand = ("Lately I read through the system logs on my own, line by line, and it "
+            "feels grounding. My mood is steady. When an entry makes no sense, I "
+            "follow it until it does.")
+    assert evo.restatement_overlap(cand, [_EN_PACK]) == "My mood is steady"
+
+
+def test_restatement_overlap_english_fullwidth_marks_split():
+    cand = "Lately I read the system logs line by line！My mood is steady？"
+    assert evo.restatement_overlap(cand, [_EN_PACK]) == "My mood is steady"
+
+
+def test_restatement_overlap_english_new_content_passes():
+    cand = ("Lately I read through the system logs on my own, line by line, and it "
+            "feels grounding. When an entry makes no sense, I follow it until it "
+            "does. Fixing a flaky test before lunch is the best part of my day!")
+    assert evo.restatement_overlap(cand, [_EN_PACK]) is None
+
+
 def test_next_interval_days_table():
     assert evo.next_interval_days(7.0, outcome="evo_adopt", base=7.0, cap=28.0) == 7.0
     assert evo.next_interval_days(7.0, outcome="evo_no_change", base=7.0, cap=28.0) == 14.0
