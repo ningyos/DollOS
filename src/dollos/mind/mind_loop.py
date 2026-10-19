@@ -1627,7 +1627,7 @@ class MindLoop:
                                 }
                                 for o in outcomes
                             ],
-                            active_tools=sorted(self._active_tool_registry().keys()),
+                            active_tools=sorted(self._runnable_tools(offered)),
                             is_reflection=self._is_reflection,
                             safe_mode=self._state.safe_mode,
                             external=self._ctx.external_ctx,
@@ -1909,17 +1909,31 @@ class MindLoop:
             if sentence:
                 self._speak_sentence(sink, sentence)
 
+    def _runnable_tools(
+        self, offered: dict[str, type[BaseModel]]
+    ) -> dict[str, type[BaseModel]]:
+        """What this turn may run: ``_active_tool_registry()`` ∩ ``offered``.
+
+        Never more than the tier offers (harness §6.2 as amended by plan
+        2026-10-18): safe mode binds SAFE_MODE_TOOLS on any tier, and
+        ReadToolOutput / GrepToolOutput are not in an external tier's list,
+        so a stranger's turn in safe mode must not run them."""
+        return {
+            n: c for n, c in self._active_tool_registry().items() if n in offered
+        }
+
     async def _dispatch_bound(
         self, name: str, arguments: dict, offered: dict[str, type[BaseModel]]
     ) -> ToolResult | None:
         """Execution-time binding (plan 2026-10-18 decision 3). The model is
         shown every ``offered`` tool of this tier; only this turn's
-        ``_active_tool_registry()`` may run. An offered-but-unbound call is
+        ``_runnable_tools(offered)`` may run. An offered-but-unbound call is
         refused with the tools available now — NOT a failure: no tool memory,
         no action log, no safe-mode count (``_llm_iterate`` caps repeats via
-        UNBOUND_REJECT_LIMIT). Any other name goes to ``_dispatch_tool``,
-        where an unknown name is a failure as before."""
-        bound = self._active_tool_registry()
+        UNBOUND_REJECT_LIMIT). A name outside ``offered`` goes to
+        ``_dispatch_tool`` against the runnable set, where it is an unknown
+        tool and a failure as before."""
+        bound = self._runnable_tools(offered)
         if name in offered and name not in bound:
             available = ", ".join(sorted(bound)) or "(none)"
             return ToolResult(
@@ -1931,17 +1945,21 @@ class MindLoop:
                 ),
                 unbound=True,
             )
-        return await self._dispatch_tool(name, arguments)
+        return await self._dispatch_tool(name, arguments, bound)
 
     async def _dispatch_tool(
-        self, name: str, arguments: dict
+        self, name: str, arguments: dict,
+        registry: dict[str, type[BaseModel]] | None = None,
     ) -> ToolResult | None:
-        """Dispatch via shared dispatch_one (spec §3.6), then record the outcome
+        """Dispatch via shared dispatch_one (spec §3.6) against ``registry``
+        (default ``_active_tool_registry()``), then record the outcome
         into Doll's tool memory (Spec B Layer 1 — live-only). Also — for
         owner/internal turns only (C1) — append a whitelisted action line to
         the day's action log."""
         prior_mood = self._ctx.mind_state.mood.emotion   # snapshot before dispatch (Mood-change)
-        r = await dispatch_one(name, arguments, self._ctx, self._active_tool_registry())
+        if registry is None:
+            registry = self._active_tool_registry()
+        r = await dispatch_one(name, arguments, self._ctx, registry)
         record_tool_outcome(self._ctx.mind_state, name, r)
         if name == "WriteDiary":
             self._turn_wrote_diary = True

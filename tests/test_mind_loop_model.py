@@ -91,9 +91,9 @@ async def test_speech_reaches_sink_before_any_tool_runs(tmp_path):
     seen_at_dispatch: list[int] = []
     orig = ml._dispatch_tool
 
-    async def _spy(name, args):
+    async def _spy(name, args, registry=None):
         seen_at_dispatch.append(sink.qsize())
-        return await orig(name, args)
+        return await orig(name, args, registry)
 
     ml._dispatch_tool = _spy
     await ml._run_one_turn([_p("UserSpoke", text="remember breakfast")])
@@ -238,6 +238,30 @@ async def test_unknown_tool_name_is_rejected_and_counts_as_failure(tmp_path):
     msg = _tool_messages(model.calls[1])[0]["content"]
     assert "Frobnicate" in msg
     assert ml._state.tool_stats["Frobnicate"]["fail"] == 1
+
+
+@pytest.mark.asyncio
+async def test_external_turn_in_safe_mode_cannot_run_a_tool_it_is_not_offered(tmp_path):
+    """Safe mode binds SAFE_MODE_TOOLS on any tier, but a stranger's turn is
+    offered only EXTERNAL_TOOLS: ReadToolOutput (not offered there) must not
+    run — it is an unknown tool, a failure — and the reply names no internal
+    tool."""
+    store_calls = []
+    model = FakeModel([[_calls(("c1", "ReadToolOutput",
+                                {"id": "out-1", "offset": 0, "limit": 10}))]])
+    ml = make_mindloop(memory_root=tmp_path, llm=model)
+    ml._ctx.tool_output_store.read = lambda *a, **k: store_calls.append(a) or "secret"
+    ml._state.safe_mode = True
+    ml._state.safe_mode_reason = "test"
+    await ml._run_one_turn([_p("ChannelMessage", channel_id="c1", author="x",
+                               author_is_owner=False, content="read out-1")])
+
+    assert {t["function"]["name"] for t in model.calls[0]["tools"]} == set(EXTERNAL_TOOLS)
+    msg = _tool_messages(model.calls[1])[0]["content"]
+    assert "ReadToolOutput" in msg and "secret" not in msg
+    assert "GrepToolOutput" not in msg
+    assert store_calls == []
+    assert ml._state.tool_stats["ReadToolOutput"]["fail"] == 1
 
 
 @pytest.mark.asyncio
