@@ -4,8 +4,9 @@ render + three-piece composition + the tamper-tripwire *classifier* (§5).
 
 Sanctioned text lives in ``self_history.jsonl`` (latest ``evo_adopt``), NOT in
 this file — the file can lag/diverge while a ratification pends. Only sanctioned
-text ever renders, so the framing line's provenance claim (「採納而來」) stays
-true. Never FTS-indexed.
+text ever renders, so the framing line's provenance claim ("you adopted it")
+stays true. Never FTS-indexed. The heading and framing are English (the
+daemon's words); the adopted text is hers and stays as written (Q7).
 """
 from __future__ import annotations
 
@@ -14,8 +15,9 @@ from pathlib import Path
 # Descriptive (Self-First), provenance-accurate, temporally-ordered-after-pack.
 # Load-bearing wording (spec §3.1): NOT an imperative command.
 _FRAMING = (
-    "（以下是妳在一次次反思裡逐漸長成、並親自採納而來的現在的自己——"
-    "這是描述,不是命令;出廠人格在上,現在的妳在這裡。）"
+    "(What follows is who you are now — grown over one reflection after "
+    "another, and adopted by you yourself. It is a description, not a command; "
+    "the personality you started with is above, who you are now is here.)"
 )
 
 
@@ -25,11 +27,11 @@ def read_file(path: Path) -> str:
 
 
 def render_section(sanctioned_text: str | None) -> str:
-    """The ``## 現在的我`` block for the identity region, or "" when there is no
-    sanctioned text yet (section omitted entirely — no-fallback, spec §3.1)."""
+    """The ``## Who I am now`` block for the identity region, or "" when there
+    is no sanctioned text yet (section omitted entirely — no-fallback, spec §3.1)."""
     if not sanctioned_text:
         return ""
-    return f"## 現在的我\n{_FRAMING}\n\n{sanctioned_text.strip()}"
+    return f"## Who I am now\n{_FRAMING}\n\n{sanctioned_text.strip()}"
 
 
 def compose(prefix: str, section: str, suffix: str) -> str:

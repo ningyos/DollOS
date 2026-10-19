@@ -415,7 +415,7 @@ def test_scaffolding_reflection_section_mentions_selfrevision_when_evolution_ena
     end = out.index("# Output", start)
     reflection_section = out[start:end]
     assert "SelfRevision" in reflection_section
-    assert "[人格演化候選]" in reflection_section
+    assert "[Self revision candidate]" in reflection_section
     assert "PinSelf" in reflection_section
 
 
@@ -428,7 +428,7 @@ def test_scaffolding_reflection_section_omits_selfrevision_when_evolution_disabl
     out_false = renderer.render("scaffolding", identity=_identity(), evolution_enabled=False)
     assert out_absent == out_false
     assert "SelfRevision" not in out_absent
-    assert "[人格演化候選]" not in out_absent
+    assert "[Self revision candidate]" not in out_absent
 
 
 def test_scaffolding_example_speaks_english_and_notes_in_chinese():
@@ -458,6 +458,23 @@ def test_scaffolding_keeps_saying_is_not_doing():
     out = renderer.render("scaffolding", identity=_identity())
     assert "saying you did something is NOT doing it" in out
     assert "**MUST also call `NoteMemory`**" in out
+    assert '"I noted that" / "I\'ll remember that" / "got it, noted", you' in out
+
+
+def test_scaffolding_speaks_of_your_owner_in_english():
+    """English-speech plan Task 3: the scaffolding's own words are English
+    ("主人" → "your owner"); the only Chinese left is the example note, which
+    shows her notes staying in Traditional Chinese (Q7)."""
+    import re
+    out = PromptRenderer().render("scaffolding", identity=_identity(),
+                                  evolution_enabled=True)
+    start = out.index("# Reflection")
+    reflection = out[start:out.index("# Output", start)]
+    flat = " ".join(reflection.split())
+    assert "your relationship with your owner" in flat
+    assert "a pattern you've noticed in your owner" in flat
+    rest = out.replace('"主人要我記得：明天要吃早餐"', "")
+    assert not re.search(r"[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]", rest)
 
 
 def test_subagent_scaffolding_teaches_no_wire_format():

@@ -329,23 +329,37 @@ def test_safe_mode_omitted_from_page_snapshot_when_off():
 def test_memory_guideline_names_the_language():
     """The [Memory guideline] (now in the system message, see
     MindLoop._system_for_turn) interpolates the configured primary_language."""
-    out = render_memory_guideline("繁體中文")
+    out = render_memory_guideline("Traditional Chinese")
     assert out.startswith("[Memory guideline]")
-    assert "繁體中文" in out
+    assert "written in Traditional Chinese" in out
 
 
 def test_memory_guideline_language_is_parameterized():
     out = render_memory_guideline("English")
-    assert "English" in out
+    assert "written in English" in out
     # The default must NOT leak through when a different language is configured.
-    assert "繁體中文" not in out
+    assert "Traditional Chinese" not in out
 
 
 def test_memory_guideline_says_understand_then_write_own_words():
-    """The guideline must instruct understand-first, own-words, no verbatim copy."""
-    lowered = render_memory_guideline("繁體中文").lower()
+    """The guideline describes understand-first, own-words, no verbatim copy."""
+    lowered = render_memory_guideline("Traditional Chinese").lower()
     assert "own words" in lowered
     assert "verbatim" in lowered
+
+
+def test_memory_guideline_describes_rather_than_commands():
+    """Self-First (English-speech plan Task 3): the guideline describes how
+    her notes and diary are written; the old command phrasing stays out."""
+    out = render_memory_guideline("Traditional Chinese")
+    assert out == (
+        "[Memory guideline] Your notes and diary are written in Traditional "
+        "Chinese (proper nouns and technical terms may stay in their original "
+        "language), in your own words — you understand something first and "
+        "write what it means to you; you don't copy source text verbatim."
+    )
+    for command in ("write it in", "Record your", "never copy"):
+        assert command not in out
 
 
 def test_tool_outcomes_block_only_when_passed():
