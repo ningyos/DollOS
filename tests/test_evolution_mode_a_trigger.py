@@ -13,7 +13,7 @@ from dollos.mind.mind_state import MindState
 def _trigger(tmp_path, state=None, **kw):
     state = state or MindState()
     defaults = dict(
-        state=state, adapter=None, renderer=None, memsearch=None,
+        state=state, model=None, renderer=None, memsearch=None,
         memory_root=tmp_path, transcripts_root=tmp_path / "tx",
         tool_output_store=None, pack_identity=None, consolidation_trigger=None,
         idle_threshold_s=0, persist_path=tmp_path / "mind_state.json",

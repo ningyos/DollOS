@@ -1,110 +1,28 @@
 """Shared fakes + factory functions for MindLoop / tool tests."""
 
 import asyncio
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from dollos.character import Identity
-from dollos.llm.adapter import LLMAdapter, StreamChunk
 from dollos.tool_outputs import ToolOutputStore
+from tests._fake_model import FakeModel
 
 
 def _doll_identity(self_: str = "You are Doll.") -> Identity:
     return Identity(self=self_, personality="- chill", taboos="- no LARP")
 
 
-@dataclass
-class _FakeAdapter(LLMAdapter):
-    """Fake LLMAdapter — yields a configurable sequence of chunks.
-
-    Captures call args for assertions. Records each call's keyword args
-    in `self.calls`. For dispatcher (multi-message) tests the relevant
-    entry is `calls[i]["messages"]`; legacy `stream_completion` callers
-    populate `calls[i]["user"]` / `calls[i]["prefill"]` for back-compat
-    with small-model code paths in tests.
-    """
-
-    chunks: list[StreamChunk] = field(default_factory=list)
-    delay: float = 0.0
-    calls: list[dict] = field(default_factory=list)
-
-    async def stream_completion(
-        self,
-        *,
-        system: str,
-        user: str,
-        prefill: str = "",
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-    ) -> AsyncIterator[StreamChunk]:
-        self.calls.append(
-            {"system": system, "user": user, "prefill": prefill, "tools": tools}
-        )
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        for c in self.chunks:
-            yield c
-
-    async def stream_messages(
-        self,
-        *,
-        system: str,
-        messages: list[dict],
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-    ) -> AsyncIterator[StreamChunk]:
-        self.calls.append(
-            {"system": system, "messages": list(messages), "tools": tools}
-        )
-        if self.delay:
-            await asyncio.sleep(self.delay)
-        for c in self.chunks:
-            yield c
-
-
-class _HangAdapter(LLMAdapter):
-    """Adapter that hangs forever (for stop()/cancel tests)."""
+class _HangModel(FakeModel):
+    """FakeModel whose every call hangs forever (for stop()/cancel tests)."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.entered = asyncio.Event()
 
-    async def stream_completion(
-        self,
-        *,
-        system: str,
-        user: str,
-        prefill: str = "",
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-    ) -> AsyncIterator[StreamChunk]:
+    async def stream(self, **kw):
         self.entered.set()
         await asyncio.Event().wait()  # forever
-        yield StreamChunk(text="", done=True)  # pragma: no cover
-
-    async def stream_messages(
-        self,
-        *,
-        system: str,
-        messages: list[dict],
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-    ) -> AsyncIterator[StreamChunk]:
-        self.entered.set()
-        await asyncio.Event().wait()  # forever
-        yield StreamChunk(text="", done=True)  # pragma: no cover
+        yield  # pragma: no cover
 
 
 class _FakeMemSearch:

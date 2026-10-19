@@ -520,8 +520,8 @@ class Report(BaseModel):
     )
 
     async def run(self, ctx: "MindCtx") -> None:
-        # Side-effect: stash args into ctx for run_agent to pick up.
-        # Returning None ends the cascade naturally (no tool_response cycle).
+        # Side-effect: stash args into ctx for run_agent to pick up; its
+        # early-exit check ends the cascade after this pass.
         ctx.agent_report = {
             "status": self.status,
             "summary": self.summary,

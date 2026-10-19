@@ -1015,6 +1015,18 @@ def test_kernel_mind_loop_runs_on_the_chat_model(tmp_path: Path) -> None:
     assert dollos._mind_loop._think_budget_tokens == 512
 
 
+def test_kernel_agents_run_on_the_chat_model(tmp_path: Path) -> None:
+    """Workflow, consolidation and evolution agents stream through the same
+    chat ModelAdapter with the configured think budget."""
+    settings = _make_settings(tmp_path)
+    settings.llm.think_budget_tokens = 512
+    dollos = DollOS(settings)
+    for agent in (dollos.workflow_runner, dollos._consolidation_trigger,
+                  dollos._evolution_trigger):
+        assert agent._model is dollos.model
+        assert agent._think_budget_tokens == 512
+
+
 @pytest.mark.asyncio
 async def test_boot_check_failure_aborts_before_server_start(tmp_path, monkeypatch):
     """DollOS.run() awaits model.check() BEFORE server.start(), and lets a

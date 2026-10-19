@@ -263,7 +263,7 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
 
     ok = await C.run_consolidation(
         target_date="2026-06-29",
-        adapter=object(), renderer=_FakeRenderer(), memsearch=ms,
+        model=object(), renderer=_FakeRenderer(), memsearch=ms,
         memory_root=tmp_path, transcripts_root=tdir,
         tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
         max_tokens=2048, transcript_tail_chars=8000,
@@ -281,6 +281,40 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
     assert (tmp_path / "consolidated" / "2026-06-29.md") in ms.indexed
 
 
+@pytest.mark.asyncio
+async def test_run_consolidation_streams_keeper_on_the_model(tmp_path):
+    """The keeper agent runs on the ModelAdapter: purpose 'consolidation',
+    KEEPER_TOOLS as schemas, the given answer and think budgets."""
+    from dollos.llm.tool_schema import tool_schemas
+    from dollos.mind import consolidation as C
+    from dollos.tool_outputs import ToolOutputStore
+    from dollos.tools import KEEPER_TOOLS
+    from tests._fake_model import FakeModel
+
+    tdir = tmp_path / "transcripts"; tdir.mkdir()
+    (tdir / "2026-06-29.md").write_text("- 12:00 主人說：我喜歡冰美式\n")
+    report = (
+        '<tool_call>{"name": "Report", "arguments": {"status": "ok", '
+        '"summary": "s", "details": "- 主人偏好冰美式"}}</tool_call>'
+    )
+    model = FakeModel([report])
+    ok = await C.run_consolidation(
+        target_date="2026-06-29",
+        model=model, renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        memory_root=tmp_path, transcripts_root=tdir,
+        tool_output_store=ToolOutputStore(tmp_path / "out"),
+        consolidated_dir=tmp_path / "consolidated",
+        max_tokens=2048, think_budget_tokens=300,
+    )
+    assert ok is True
+    [call] = model.calls
+    assert call["purpose"] == "consolidation"
+    assert call["tools"] == tool_schemas(KEEPER_TOOLS)
+    assert (call["max_tokens"], call["think_budget"]) == (2048, 300)
+    assert call["messages"][0]["role"] == "system"
+    assert "冰美式" in call["messages"][1]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Task 5: ConsolidationTrigger conditions + date selection
 # ---------------------------------------------------------------------------
@@ -290,7 +324,7 @@ def _mk_trigger(tmp_path, state, **over):
     from dollos.mind.consolidation import ConsolidationTrigger
     defaults = dict(
         state=state, persist_path=tmp_path / "s.json",
-        adapter=object(), renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        model=object(), renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
         memory_root=tmp_path, transcripts_root=tmp_path / "transcripts",
         tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
         system_pulse=None,
@@ -389,7 +423,7 @@ async def test_consolidation_filters_out_action_lines(tmp_path, monkeypatch):
 
     ok = await C.run_consolidation(
         target_date="2026-07-06",
-        adapter=None, renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        model=None, renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
         memory_root=tmp_path, transcripts_root=troot,
         tool_output_store=None, consolidated_dir=tmp_path / "consolidated",
     )

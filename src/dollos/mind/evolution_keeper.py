@@ -151,21 +151,24 @@ def parse_keeper_report(details: str) -> tuple[str, str, str]:
     return "candidate", body.strip(), ""
 
 
-async def _run_keeper_agent(*, task, adapter, renderer, memsearch, memory_root,
-                            transcripts_root, tool_output_store, max_tokens):
+async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
+                            transcripts_root, tool_output_store, max_tokens,
+                            think_budget_tokens):
     tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
     system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
     return await run_agent(
-        task=task, system=system, adapter=adapter, renderer=renderer,
+        task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
         tools=KEEPER_TOOLS, max_tokens=max_tokens,
+        think_budget=think_budget_tokens, purpose="evolution",
         shell_runner=None, monitor_runner=None)
 
 
 async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_identity,
-                            adapter, renderer, memsearch, memory_root,
-                            transcripts_root, tool_output_store, max_tokens):
+                            model, renderer, memsearch, memory_root,
+                            transcripts_root, tool_output_store, max_tokens,
+                            think_budget_tokens):
     """(a)-(e) skeptic on the byte-identical bundle. → 'pass' | 'kill:<reason>'."""
     tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
     system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
@@ -174,10 +177,11 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
         taboos=pack_identity.taboos, current=current or "(尚無)", candidate=candidate,
         rationale=rationale or "(未附)", bundle=bundle)
     report = await run_agent(
-        task=task, system=system, adapter=adapter, renderer=renderer,
+        task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
         tools=KEEPER_TOOLS, max_tokens=max_tokens,
+        think_budget=think_budget_tokens, purpose="evolution",
         shell_runner=None, monitor_runner=None)
     if not report or not report.get("details"):
         raise RuntimeError("skeptic returned no verdict")
@@ -193,12 +197,16 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
     raise RuntimeError(f"skeptic verdict neither PASS nor KILL: {details[:40]!r}")
 
 
-async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
+async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
                              transcripts_root: Path, tool_output_store,
                              pack_identity, enforcement, floor: int, cap: int,
                              max_tokens: int, now: float, hwm: int = 0,
-                             window_days: float = 28.0) -> str:
-    """One Mode-A pass → "no_change" | "candidate" | "kill" | "error"."""
+                             window_days: float = 28.0,
+                             think_budget_tokens: int = 1024) -> str:
+    """One Mode-A pass → "no_change" | "candidate" | "kill" | "error".
+
+    ``max_tokens`` is each agent call's answer budget; ``think_budget_tokens``
+    caps its thinking on top."""
     history_path = memory_root / "self_history.jsonl"
     slot_path = memory_root / "self_evolution" / "pending.json"
     current = self_history.sanctioned_text(history_path)
@@ -210,9 +218,10 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
         floor=floor, cap=cap)
     try:
         report = await _run_keeper_agent(
-            task=task, adapter=adapter, renderer=renderer, memsearch=memsearch,
+            task=task, model=model, renderer=renderer, memsearch=memsearch,
             memory_root=memory_root, transcripts_root=transcripts_root,
-            tool_output_store=tool_output_store, max_tokens=max_tokens)
+            tool_output_store=tool_output_store, max_tokens=max_tokens,
+            think_budget_tokens=think_budget_tokens)
         kind, text, rationale = parse_keeper_report(
             (report or {}).get("details", ""))
     except Exception:
@@ -250,10 +259,11 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
             "刪掉所有重述出廠的句子,只留下紀錄顯示的變化,重寫一次。")
         try:
             report = await _run_keeper_agent(
-                task=retry_task, adapter=adapter, renderer=renderer,
+                task=retry_task, model=model, renderer=renderer,
                 memsearch=memsearch, memory_root=memory_root,
                 transcripts_root=transcripts_root,
-                tool_output_store=tool_output_store, max_tokens=max_tokens)
+                tool_output_store=tool_output_store, max_tokens=max_tokens,
+                think_budget_tokens=think_budget_tokens)
             kind, text, rationale = parse_keeper_report(
                 (report or {}).get("details", ""))
         except Exception:
@@ -285,10 +295,11 @@ async def run_evolution_pass(*, adapter, renderer, memsearch, memory_root: Path,
     try:
         verdict = await _run_full_skeptic(
             candidate=text, rationale=rationale, bundle=bundle, current=current,
-            pack_identity=pack_identity, adapter=adapter, renderer=renderer,
+            pack_identity=pack_identity, model=model, renderer=renderer,
             memsearch=memsearch, memory_root=memory_root,
             transcripts_root=transcripts_root,
-            tool_output_store=tool_output_store, max_tokens=max_tokens)
+            tool_output_store=tool_output_store, max_tokens=max_tokens,
+            think_budget_tokens=think_budget_tokens)
     except Exception:
         logger.exception("evolution full skeptic errored")
         evo.log_or_raise(history_path, kind=evo.EVO_ERROR, detail="skeptic error")

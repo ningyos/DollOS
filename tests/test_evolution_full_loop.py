@@ -44,7 +44,7 @@ async def test_full_loop_candidate_to_adopt(tmp_path, monkeypatch):
     monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
 
     out = await ek.run_evolution_pass(
-        adapter=None, renderer=None, memsearch=None, memory_root=mr,
+        model=None, renderer=None, memsearch=None, memory_root=mr,
         transcripts_root=mr / "tx", tool_output_store=None, pack_identity=_identity(),
         enforcement=Enforcement(), floor=80, cap=600, max_tokens=2048,
         now=1000.0, hwm=0)
@@ -87,7 +87,7 @@ async def test_full_loop_no_change_starves_quietly(tmp_path, monkeypatch):
     monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
 
     out = await ek.run_evolution_pass(
-        adapter=None, renderer=None, memsearch=None, memory_root=mr,
+        model=None, renderer=None, memsearch=None, memory_root=mr,
         transcripts_root=mr / "tx", tool_output_store=None, pack_identity=_identity(),
         enforcement=Enforcement(), floor=80, cap=600, max_tokens=2048,
         now=1000.0, hwm=0)
@@ -118,7 +118,7 @@ async def test_full_loop_skeptic_kill_no_slot(tmp_path, monkeypatch):
     monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
 
     out = await ek.run_evolution_pass(
-        adapter=None, renderer=None, memsearch=None, memory_root=mr,
+        model=None, renderer=None, memsearch=None, memory_root=mr,
         transcripts_root=mr / "tx", tool_output_store=None, pack_identity=_identity(),
         enforcement=Enforcement(), floor=80, cap=600, max_tokens=2048,
         now=1000.0, hwm=0)
