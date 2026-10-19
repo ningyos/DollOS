@@ -1046,13 +1046,14 @@ class DollOS:
             self._bootstrapped_dates.add(today)
             return
         self._bootstrapped_dates.add(today)
-        # Push a ScheduledMoment perception for daily plan bootstrap.
-        # MindLoop drains it; Doll decides to call WriteSchedule.
+        # Push a ScheduledMoment perception for daily plan bootstrap. The
+        # intent only describes the day (Self-First): whether to plan it is
+        # hers to decide.
         self._perception_queue.put(
             Perception(
                 kind="ScheduledMoment",
                 t=time.time(),
-                data={"intent": "今天還沒有計劃，請呼叫 WriteSchedule 安排今天的行程。"},
+                data={"intent": "A new day. Nothing is on today's schedule yet."},
             )
         )
 

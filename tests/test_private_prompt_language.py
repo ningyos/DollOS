@@ -612,7 +612,7 @@ CASES = [
     _case(snapshot_filled_state),
     _case(delta_awoke),
     _case(delta_user_spoke),
-    _case(delta_bootstrap_schedule, 6, "the bootstrap ScheduledMoment command"),
+    _case(delta_bootstrap_schedule),
     _case(delta_reflection),
     _case(evolution_block_other_origins),
     _case(delta_persona_drift),
