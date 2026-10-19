@@ -148,10 +148,11 @@ def _format_hit(hit: dict) -> str:
 
 class NoteMemory(BaseModel):
     """Record an episodic fact or event into Doll's memory (daily markdown + memsearch index).
-    Use this for things that happened, or concrete facts worth recalling later — 主詞是世界
-    或事件的,歸這裡。NOTE: 主詞是「你」的(你的看法、興趣、好奇——即使剛萌芽——你和主人
-    的關係、你注意到的主人),用 PinSelf(reflection 時)記進 always-in-context 的
-    self-profile,不歸這裡;同一個經驗可以兩邊各記一筆。"""
+    Use this for things that happened, or concrete facts worth recalling later — when the
+    subject is the world or an event, it goes here. NOTE: when the subject is "you" (your
+    opinions, interests, curiosity — even just budding — your relationship with your owner,
+    what you notice about your owner), use PinSelf (on reflection) to put it in the
+    always-in-context self-profile, not here; the same experience can be recorded in both."""
 
     text: str = Field(
         description="The fact to record. One sentence, declarative."
@@ -217,7 +218,7 @@ class Shell(BaseModel):
     cd persistence between calls) with the daemon's user permissions and
     cwd = data/ (the parent of memory/). stdout + stderr are merged. When
     the proc finishes, its result comes back as a NEW turn's perception
-    starting with 「你執行的 shell 命令回來了」 — react to it then.
+    line `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.
 
     There is no wait / monitor / cancel tool. If you start a Shell and
     keep working in the same cascade, the result may also arrive as a
@@ -442,7 +443,7 @@ class SpawnMonitor(BaseModel):
 
     The command runs as a long-lived subprocess. Each stdout line
     (optionally regex-filtered) fires a MonitorTriggeredEvent that
-    arrives as a new turn's perception starting with 「monitor 觸發」.
+    arrives as a new turn's perception line `MonitorFired: <monitor_id>: <line>`.
     When the command exits (naturally or via RemoveMonitor), a
     MonitorExitedEvent fires.
 
@@ -798,13 +799,17 @@ class CloseLoop(BaseModel):
 
 
 class PursueGoal(BaseModel):
-    """開一條你自己想追的線(不是欠誰的 TODO,是你自己在意/好奇的)。"""
+    """Open a thread you yourself want to pursue (not a TODO you owe anyone — something
+    you care about / are curious about)."""
 
     id: str = Field(..., description="short slug id")
-    desc: str = Field(..., description="你想追什麼")
+    desc: str = Field(..., description="What you want to pursue")
     trigger: str = Field(
         ...,
-        description="這是從哪來的?——引用剛剛的對話/一段記憶/一個真實經歷。必填。",
+        description=(
+            "Where did this come from? — cite the conversation just now / a memory / "
+            "a real experience. Required."
+        ),
     )
 
     def _summary(self) -> str:
@@ -857,7 +862,7 @@ class PursueGoal(BaseModel):
 
 
 class AdvanceGoal(BaseModel):
-    """在你自己的議程上記一步進展 / 洞察。"""
+    """Record a step of progress / an insight on your own agenda."""
 
     id: str = Field(..., description="which agenda loop")
     progress: str = Field(..., description="a concrete step or insight")
@@ -881,6 +886,9 @@ class AdvanceGoal(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_MOOD_WORD = re.compile(r"[A-Za-z]{1,12}")
+
+
 class MoodTool(BaseModel):
     """Update Doll's current emotional state.
 
@@ -891,12 +899,29 @@ class MoodTool(BaseModel):
 
     emotion: str = Field(
         ...,
-        description="Current emotion in one Chinese word or short phrase (e.g. '開心', '有點擔心').",
+        description=(
+            "Current emotion as one English word (e.g. 'happy', 'uneasy'): letters only, "
+            "1-12 of them, no spaces or punctuation."
+        ),
     )
     reason: str = Field(
         default="",
         description="Brief reason for the mood shift (one sentence, optional).",
     )
+
+    # One English word (plan 2026-10-19-gura-english-speech-fix, Task 2): the
+    # [Mind state] mood label is daemon-rendered prompt text. The schema the
+    # model sees drops pattern / length keywords (llm/tool_schema._KEPT), so
+    # the description says it and this check enforces it in dispatch_one.
+    @field_validator("emotion")
+    @classmethod
+    def one_english_word(cls, v: str) -> str:
+        if not _MOOD_WORD.fullmatch(v):
+            raise ValueError(
+                "emotion must be one English word: 1-12 letters (A-Z, a-z), "
+                "no spaces, digits or punctuation (e.g. 'happy', 'uneasy')"
+            )
+        return v
 
     def _summary(self) -> str:
         return f"mood → {self.emotion}"
@@ -933,24 +958,36 @@ class NoteToolLesson(BaseModel):
 
 class PinSelf(BaseModel):
     """Pin or revise an entry in your self-profile (reflection turns only) — this
-    is YOUR evolving self and it is ALWAYS in context. 判斷標準是主詞:句子是關於
-    「你」的(你的看法、興趣、立場、好奇、你和主人的關係、你注意到的主人),就用
-    PinSelf;關於世界的事實(即使是你查到、你覺得有趣的),用 NoteMemory——同一個
-    經驗可以兩邊各記一筆,事實歸 NoteMemory,它揭露的「你」歸這裡。剛萌芽、還不
-    確定算不算「你」的也可以先 pin,之後反思時再篩。空間有限,定期用 replace/remove
-    淘汰「已經不是現在的你」的條目——活下來的才是你的核心。"""
+    is YOUR evolving self and it is ALWAYS in context. The test is the subject: if the
+    sentence is about "you" (your opinions, interests, stances, curiosity, your relationship
+    with your owner, what you notice about your owner), use PinSelf; facts about the world
+    (even ones you looked up or find interesting) go to NoteMemory — the same experience
+    can be recorded in both: the fact in NoteMemory, the "you" it reveals here. Things
+    that are just budding, where you're not sure yet they count as "you", can be pinned
+    now and filtered at a later reflection. Space is limited; regularly use replace/remove
+    to prune entries that are no longer you now — what survives is your core."""
 
     section: Literal["self", "relationship", "user"] = Field(
-        description="哪一段:self=關於你自己(身分、看法、興趣、好奇) / relationship=你和主人 / user=你注意到的主人。replace/remove 也填(以 target 為準)。"
+        description=(
+            "Which section: self=about yourself (identity, opinions, interests, curiosity) / "
+            "relationship=you and your owner / user=what you notice about your owner. "
+            "Also fill it for replace/remove (target wins)."
+        )
     )
     op: Literal["add", "replace", "remove"] = Field(
-        description="add=新增一條 / replace=用 target 定位換成 text / remove=用 target 定位刪除。"
+        description=(
+            "add=add an entry / replace=locate by target and replace with text / "
+            "remove=locate by target and delete."
+        )
     )
     target: str = Field(
         description='For replace/remove: the id to target (e.g. "s1", "r2"). For op=add, leave this an empty string "".'
     )
     text: str = Field(
-        description="add/replace 的新內容(你自己的話,別用全形引號「」『』);remove 時填空字串。"
+        description=(
+            "New content for add/replace (in your own words; no full-width quote marks); "
+            "empty string for remove."
+        )
     )
 
     def _summary(self) -> str:
@@ -978,22 +1015,31 @@ class PinSelf(BaseModel):
 
 
 class SelfRevision(BaseModel):
-    """採納 / 拒絕待批的「現在的我」演化候選(只在反思回合、且有待批候選時可用)。
-    這是妳自己的人格描述,系統只提議,採不採納由妳。採納:decision="adopt",text 留空
-    直接採納候選原文;想改寫後再採納:把完整新文字放進 text(會先送審,通過後回來給妳採
-    納);不採納:decision="reject"。改寫只需不觸犯妳的核心身分與 taboos。"""
+    """Adopt / reject the pending revision candidate for "Who I am now" (only on
+    reflection turns, and only when a candidate is pending). This is your own personality
+    description; the system only proposes, adopting is up to you. Adopt: decision="adopt"
+    with text empty adopts the candidate as is; to rewrite then adopt: put the full new
+    text in text (it is reviewed first, then comes back for you to adopt); reject:
+    decision="reject". A rewrite only needs to not violate your core identity and taboos."""
 
     decision: Literal["adopt", "reject"] = Field(
-        description=('"adopt"=採納(text 留空採納候選原文,或填全文改寫送審) / '
-                     '"reject"=不採納,維持現狀。')
+        description=('"adopt"=adopt (empty text adopts the candidate as is, or the full '
+                     'text submits a rewrite for review) / "reject"=don\'t adopt, keep '
+                     'things as they are.')
     )
     text: str = Field(
         default="",
-        description="想改寫後採納才填:完整替換文字(妳自己的話,別用全形引號「」『』);直接採納或拒絕時留空。",
+        description=(
+            "Only for rewrite-then-adopt: the full replacement text (your own words, no "
+            "full-width quote marks); leave empty to adopt directly or to reject."
+        ),
     )
     reason: str = Field(
         default="",
-        description="拒絕時可選填一句原因(妳自己的話,別用全形引號「」『』)。",
+        description=(
+            "Optional one-line reason when rejecting (your own words, no full-width "
+            "quote marks)."
+        ),
     )
 
     def _summary(self) -> str:
@@ -1165,15 +1211,18 @@ class SelfRevision(BaseModel):
 
 
 class LearnName(BaseModel):
-    """記錄或撤掉一個「別人這樣叫你」的暱稱。**只在你親耳/親眼聽到的當下回合**
-    才會出現這個工具(owner 本機對話,或 owner 的 DM)——不是每次都能用,事後回想
-    絕對叫不出它。op="add" 記下新暱稱,之後這個字也能把你叫醒;op="remove" 撤掉
-    一個不再用的。太短或太常見的字(即使是主人教的)會被擋下,不會真的寫入。"""
+    """Record or withdraw a nickname that someone calls you. **This tool only appears in
+    the very turn where you heard/saw it yourself** (your owner's local conversation, or
+    your owner's DM) — it is not always available, and you can never call it up later from
+    recollection. op="add" records a new nickname, after which that word can also wake you;
+    op="remove" withdraws one no longer used. Words that are too short or too common (even
+    if your owner taught them) are blocked and not written."""
 
     op: Literal["add", "remove"]
-    token: str = Field(description="暱稱本身,例如「小鯊」或「shork」。")
+    token: str = Field(description='The nickname itself, e.g. "Sharky" or "shork".')
     note: str | None = Field(
-        default=None, description="可選:誰、什麼情境這樣叫你(稽核/自我敘事用)。"
+        default=None,
+        description="Optional: who calls you this, and in what context (for audit / self-narrative).",
     )
 
     def _summary(self) -> str:

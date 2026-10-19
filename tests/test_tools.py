@@ -880,10 +880,10 @@ async def test_mood_tool_updates_mind_state(tmp_path):
 
     state = MindState()
     ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    result = await MoodTool(emotion="開心", reason="因為今天天氣好").run(ctx)
-    assert state.mood.emotion == "開心"
+    result = await MoodTool(emotion="happy", reason="因為今天天氣好").run(ctx)
+    assert state.mood.emotion == "happy"
     assert state.mood.reason == "因為今天天氣好"
-    assert "開心" in result
+    assert "happy" in result
 
 
 @pytest.mark.asyncio
@@ -892,8 +892,8 @@ async def test_mood_tool_no_reason(tmp_path):
 
     state = MindState()
     ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
-    await MoodTool(emotion="平靜").run(ctx)
-    assert state.mood.emotion == "平靜"
+    await MoodTool(emotion="calm").run(ctx)
+    assert state.mood.emotion == "calm"
     assert state.mood.reason == ""
 
 
@@ -955,3 +955,48 @@ def test_note_tool_lesson_not_in_main_tools_but_in_reflection_tools():
     assert all(t in REFLECTION_TOOLS for t in MAIN_TOOLS)
 
 
+
+
+# ---------- MoodTool: one English word ----------
+
+
+@pytest.mark.parametrize("emotion", ["happy", "uneasy", "Calm", "a", "x" * 12])
+def test_mood_tool_accepts_one_english_word(emotion):
+    from dollos.tools import MoodTool
+
+    assert MoodTool(emotion=emotion).emotion == emotion
+
+
+@pytest.mark.parametrize("emotion", [
+    "開心",            # not English
+    "a bit worried",   # a phrase, not one word
+    "happy!",          # punctuation
+    "well-rested",     # punctuation inside
+    " happy",          # whitespace
+    "happy1",          # digit
+    "café",            # non-ASCII letter
+    "",                # empty
+    "x" * 13,          # longer than 12 letters
+])
+def test_mood_tool_rejects_anything_but_one_english_word(emotion):
+    from dollos.tools import MoodTool
+
+    with pytest.raises(ValidationError):
+        MoodTool(emotion=emotion)
+
+
+@pytest.mark.asyncio
+async def test_mood_tool_rejection_reaches_her_as_a_clear_tool_result(tmp_path):
+    """Through dispatch_one (the live path) the rejection is a failed tool
+    result that says what an emotion has to be; her mood stays as it was."""
+    from dollos.cascade.tool_loop import dispatch_one
+    from dollos.tools import MoodTool
+
+    state = MindState(mood=Mood(emotion="calm"))
+    ctx, _ms, _sink = _make_ctx(tmp_path, state=state)
+    r = await dispatch_one("MoodTool", {"emotion": "a bit worried"}, ctx,
+                           {"MoodTool": MoodTool})
+    assert r is not None and r.success is False
+    assert "one English word" in r.detail
+    assert "a bit worried" in r.detail
+    assert state.mood.emotion == "calm"
