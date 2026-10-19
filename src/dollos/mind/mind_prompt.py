@@ -350,18 +350,18 @@ def _public_safe_perceptions(percs) -> list:
 def render_memory_guideline(primary_language: str) -> str:
     """The persistent memory-WRITE guideline (primary language + own words).
 
-    Two rules, every turn: (1) record memory in the configured primary
-    language (proper nouns / technical terms may stay in their original
-    language where natural); (2) write your OWN understanding in your OWN
-    words — understand first, never copy source text verbatim. This shapes
-    NoteMemory / diary content, especially when ingesting articles.
+    Describes, every turn, how her notes and diary are written: (1) in the
+    configured primary language (proper nouns / technical terms may stay in
+    their original language); (2) in her own words — she understands first
+    and does not copy source text verbatim. This shapes NoteMemory / diary
+    content, especially when ingesting articles. Self-First: a description,
+    not a command (English-speech plan Task 3).
     """
     return (
-        f"[Memory guideline] When you record anything to memory (NoteMemory or "
-        f"diary), write it in {primary_language} — you may keep proper nouns and "
-        f"technical terms in their original language where natural. Record your "
-        f"OWN understanding in your OWN words; never copy source text verbatim — "
-        f"understand first, then write what it means to you."
+        f"[Memory guideline] Your notes and diary are written in {primary_language} "
+        f"(proper nouns and technical terms may stay in their original language), "
+        f"in your own words — you understand something first and write what it "
+        f"means to you; you don't copy source text verbatim."
     )
 
 

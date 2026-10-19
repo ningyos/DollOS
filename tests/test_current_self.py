@@ -10,12 +10,21 @@ def test_render_section_empty_when_none():
 
 def test_render_section_has_heading_and_descriptive_framing():
     out = current_self.render_section("我現在監控數字跳動時會主動來勁。")
-    assert out.startswith("## 現在的我")
+    assert out.startswith("## Who I am now\n")
+    # Her adopted text stays as she wrote it (Q7: Traditional Chinese).
     assert "我現在監控數字跳動時會主動來勁。" in out
-    # Descriptive, not imperative; provenance-accurate (採納而來).
-    assert "採納" in out
+    # Descriptive, not imperative; provenance-accurate (she adopted it).
+    assert "adopted" in out
+    assert "a description, not a command" in out
     # No imperative command phrasing.
-    assert "你應該" not in out and "妳應該" not in out
+    assert "you should" not in out.lower() and "you must" not in out.lower()
+
+
+def test_render_section_frame_is_english():
+    """The daemon's heading and framing carry no Chinese; only her text does."""
+    import re
+    out = current_self.render_section("X")
+    assert not re.search(r"[　-〿㐀-鿿豈-﫿＀-￯]", out)
 
 
 # ---- compose ----
@@ -29,7 +38,7 @@ def test_compose_places_section_between_prefix_and_suffix():
     prefix, suffix = "...## Taboos\n- no LARP\n", "\n# Behavior\nrules\n"
     section = current_self.render_section("我現在的樣子。")
     out = current_self.compose(prefix, section, suffix)
-    assert out.index("no LARP") < out.index("## 現在的我") < out.index("# Behavior")
+    assert out.index("no LARP") < out.index("## Who I am now") < out.index("# Behavior")
 
 
 # ---- classify_tripwire ----

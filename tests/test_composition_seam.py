@@ -53,7 +53,7 @@ def test_mindloop_compose_renders_section_when_sanctioned(tmp_path):
     ml = make_mindloop(memory_root=tmp_path, system_prompt="PFX\n",
                        system_prompt_suffix="\n# Behavior\n")
     out = ml._system_prompt_for_turn()
-    assert "## 現在的我" in out and "監控數字" in out
+    assert "## Who I am now" in out and "監控數字" in out
 
 
 def test_mindloop_compose_omits_section_when_no_sanctioned(tmp_path):

@@ -64,7 +64,7 @@ async def test_external_edit_ratification_end_to_end(tmp_path, monkeypatch):
 
     # 5. renders next turn without restart (composition reads sanctioned from log).
     section = current_self.render_section(self_history.sanctioned_text(hist))
-    assert "## 現在的我" in section and "夜裡慢慢整理系統日誌" in section
+    assert "## Who I am now" in section and "夜裡慢慢整理系統日誌" in section
 
 
 @pytest.mark.asyncio

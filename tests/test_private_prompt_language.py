@@ -604,8 +604,8 @@ def _case(source, fixed_by: int | None = None, what: str = ""):
 
 
 CASES = [
-    _case(system_prompt, 3, "scaffolding (主人, [人格演化候選]) still Chinese"),
-    _case(system_prompt_with_current_self, 3, "## 現在的我 heading and framing"),
+    _case(system_prompt),
+    _case(system_prompt_with_current_self),
     _case(tools_internal),
     _case(tools_external_public),
     _case(snapshot_default_state, 4, "default mood 平靜, 精力 line"),

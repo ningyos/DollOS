@@ -73,7 +73,7 @@ class MemoryConfig(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
 
-    primary_language: str = "繁體中文"
+    primary_language: str = "Traditional Chinese"
 
 
 class ConversationHistoryConfig(BaseModel):

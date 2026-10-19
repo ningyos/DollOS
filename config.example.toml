@@ -70,7 +70,7 @@ top_k = 10   # embedder-free lexical backend: SQLite FTS5 (BM25) + jieba CJK tok
 # ----------------------------------------------------------------------
 
 [memory]
-primary_language = "繁體中文"
+primary_language = "Traditional Chinese"
 
 # ----------------------------------------------------------------------
 # Conversation history sliding window — recent turn transcripts prepended

@@ -241,11 +241,27 @@ max_turns = 10
 
 
 def test_memory_primary_language_defaults_to_traditional_chinese(tmp_path: Path) -> None:
-    """[memory] is optional; primary_language defaults to 繁體中文 when absent."""
+    """[memory] is optional; primary_language defaults to "Traditional Chinese"
+    when absent (an English name: it is interpolated into the English
+    [Memory guideline])."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(_BASE_TOML)
     settings = load_settings(config_path)
-    assert settings.memory.primary_language == "繁體中文"
+    assert settings.memory.primary_language == "Traditional Chinese"
+
+
+def test_primary_language_defaults_agree() -> None:
+    """MindLoop's own default and config.example.toml say the same as
+    MemoryConfig's default."""
+    import inspect
+
+    from dollos.config import MemoryConfig
+    from dollos.mind.mind_loop import MindLoop
+
+    default = MemoryConfig().primary_language
+    assert inspect.signature(MindLoop).parameters["primary_language"].default == default
+    example = Path(__file__).resolve().parents[1] / "config.example.toml"
+    assert load_settings(example).memory.primary_language == default
 
 
 def test_memory_primary_language_override(tmp_path: Path) -> None:
