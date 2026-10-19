@@ -2,7 +2,7 @@
 
 **Spec**：`docs/superpowers/specs/2026-10-17-doll-harness-design.md` §2、§3，§9 的 S4、S6 的 chat_tools 部分，以及 S5 的 ContextBuilder（只做 MindLoop 用的部分）（APPROVED）。跟 spec 不一樣的地方列在文末「Spec 修正」，這份 plan 不改 spec。
 **日期**：2026-10-18；2026-10-19 加入「對話只往後加」（決定 3、6、7，Task 4 的固定工具清單，Task 8、Task 9）
-**狀態**：待使用者審
+**狀態**：APPROVED（使用者 2026-10-19）
 **分支 / worktree**：DollOS `feat/model-adapter-chat`，`.worktrees/model-adapter-chat/`，從 `feat/gura-english-luxtts`（`4840d75`，最新的 code）開。Server 是 `http://100.110.158.36:8080`。
 
 ---
