@@ -26,22 +26,18 @@ def _mcp_payload(**overrides):
 def test_debug_reliable_adds_nudge_and_keeps_ai_peer_framing():
     p = Perception(kind="ChannelMessage", t=1.0, data=_mcp_payload(debug_reliable=True))
     out = _percep_body(p)
-    # nudge present
-    assert "除錯" in out
-    assert "務必" in out
-    # P1 mcp AI-peer framing still present
-    assert "AI peer" in out
-    assert "Claude" in out
-    assert "hey Doll" in out
-    assert "陌生人" not in out
+    # descriptive nudge present, after the P1 mcp AI-peer framing
+    assert out == (
+        "[AI peer, DM] Claude (another AI, self-described, unverified): hey Doll"
+        " (This is a debug channel; the peer is checking whether you give a real reply.)"
+    )
 
 
 def test_no_debug_reliable_no_nudge_byte_unchanged_from_p1():
     p = Perception(kind="ChannelMessage", t=1.0, data=_mcp_payload())
     out = _percep_body(p)
-    assert "除錯" not in out
-    assert "務必" not in out
-    assert out == "[AI peer 私訊] Claude(另一個 AI,自稱,未驗證):hey Doll"
+    assert "debug" not in out
+    assert out == "[AI peer, DM] Claude (another AI, self-described, unverified): hey Doll"
 
 
 def test_debug_reliable_does_not_change_origin_tier():

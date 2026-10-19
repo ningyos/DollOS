@@ -1,5 +1,5 @@
-"""Tool memory — per-tool outcome stats, recent-failure notes, and the
-append-only tool-lesson playbook surfacing (Spec B)."""
+"""Tool memory — per-tool outcome stats and the append-only tool-lesson
+playbook surfacing (Spec B)."""
 from __future__ import annotations
 
 import logging
@@ -10,10 +10,6 @@ from pathlib import Path
 from dollos.mind.mind_state import MindState, ToolFailure
 
 logger = logging.getLogger(__name__)
-
-TOOL_NOTE_WINDOW_S = 3600.0  # only surface failures from the last hour
-_MAX_TOOL_NOTES = 5
-_DETAIL_CAP = 100
 
 
 def record_tool_outcome(state: MindState, name: str, result) -> None:
@@ -44,7 +40,7 @@ _OUTCOME_DETAIL_CAP = 100
 def render_tool_outcomes(tool_stats: dict, recent_tool_failures: deque) -> str | None:
     """[Tool outcomes since last reflection] — per-tool ok/fail + recent fail samples.
     Reflection-only; caller gates on is_reflection.
-    Returns None when tool_stats is empty (consistent with render_tool_notes/render_tool_habits)."""
+    Returns None when tool_stats is empty (consistent with render_tool_habits)."""
     if not tool_stats:
         return None
     lines = ["[Tool outcomes since last reflection]"]
@@ -105,20 +101,3 @@ def render_tool_habits(hits: list[dict]) -> str | None:
     if not lines:
         return None
     return "[Tool habits] (tool usage you learned before):\n" + "\n".join(lines)
-
-
-def render_tool_notes(recent_tool_failures: deque, now: float) -> str | None:
-    """[Tool notes] block from recent failures, or None when none are recent.
-
-    Window-filtered, deduped by tool (latest wins), newest-first, capped.
-    """
-    recent = [f for f in recent_tool_failures if now - f.t < TOOL_NOTE_WINDOW_S]
-    if not recent:
-        return None
-    latest: dict[str, ToolFailure] = {}
-    for f in recent:
-        if f.tool not in latest or f.t > latest[f.tool].t:
-            latest[f.tool] = f
-    ordered = sorted(latest.values(), key=lambda f: f.t, reverse=True)[:_MAX_TOOL_NOTES]
-    lines = [f"- {f.tool}: {f.detail[:_DETAIL_CAP]}" for f in ordered]
-    return "[Tool notes] 最近工具失敗（避免重蹈同樣錯誤）：\n" + "\n".join(lines)

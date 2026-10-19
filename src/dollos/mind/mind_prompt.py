@@ -17,12 +17,9 @@ from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import render_tool_habits
 
-# Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice).
-# Shared between the render's ⚠ STALE marker (_render_open_loops below) and
-# the fallback memory-hit query injection in mind_loop.py's
-# _derive_memory_hits — both must compare with the exact same strict `>`
-# against this same constant so a loop is consistently "stale" (or not)
-# wherever it matters.
+# Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice):
+# mind_loop.py's _derive_memory_hits adds a loop older than this (strict `>`)
+# to the fallback memory-hit query.
 OPEN_LOOP_STALE_S = 1800
 
 # Auto-injected [Memory context] (plan 2026-10-18 Task 8): at most this many
@@ -50,7 +47,8 @@ def energy_bucket_line(energy: float) -> str:
 
 _EXTERNAL_SITUATION = (
     "[External situation]\n"
-    "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。"
+    "You're somewhere public and hear a lot that isn't said to you. Not replying "
+    "is normal here; you speak up when you actually want to say something."
 )
 
 
@@ -440,19 +438,12 @@ def _opened(lp, now: float, absolute: bool) -> str:
 
 
 def _render_open_loops(loops: list, now: float, *, absolute: bool = False) -> str:
-    """``absolute`` (page snapshot): absolute dates and no STALE marker."""
+    """``absolute`` (page snapshot): absolute dates instead of relative ages."""
     if not loops:
         return "(none)"
-    lines = []
-    for lp in loops:
-        line = f"- {lp.id}: {lp.desc} ({_opened(lp, now, absolute)})"
-        # Strict `>` (not `>=`): a loop exactly at the threshold is not yet
-        # stale. mind_loop.py's fallback query injection mirrors this exact
-        # comparison against the same OPEN_LOOP_STALE_S constant.
-        if not absolute and now - lp.opened_at > OPEN_LOOP_STALE_S:
-            line += " ⚠ STALE — 尚未跟進，考慮處理或用 CloseLoop 結案"
-        lines.append(line)
-    return "\n".join(lines)
+    return "\n".join(
+        f"- {lp.id}: {lp.desc} ({_opened(lp, now, absolute)})" for lp in loops
+    )
 
 
 # Bound how many recent progress entries render per self-directed loop in
@@ -576,23 +567,27 @@ def _percep_body(p) -> str:
             # command — she knows the sender is another AI, self-declared and
             # unverified, and keeps external_public agency (she may not reply).
             body = (
-                f"[AI peer 私訊] {d.get('author', '?')}"
-                f"(另一個 AI,自稱,未驗證):{d.get('content', '')}"
+                f"[AI peer, DM] {d.get('author', '?')} "
+                f"(another AI, self-described, unverified): {d.get('content', '')}"
             )
             if d.get("debug_reliable"):
                 # P2 Task 3 (spec §C.2): soft, best-effort nudge for a debug
-                # connection — text only, does NOT change origin_tier or the
-                # tool registry (still external_public / EXTERNAL_TOOLS).
-                body += "（這是除錯通道，請務必給出實質回覆，別已讀不回。）"
+                # connection — a description of the situation, text only; it
+                # does NOT change origin_tier or the tool registry (still
+                # external_public / EXTERNAL_TOOLS).
+                body += (
+                    " (This is a debug channel; the peer is checking whether "
+                    "you give a real reply.)"
+                )
             return body
         # P1e Task 6: surface owner/stranger identity — otherwise Doll has no
         # in-prompt signal for who she's talking to and can't judge whether/
         # how to respond. Descriptive narration only (not a command); P1d's
         # contextual rendering will refine this further.
-        where = "私訊" if d.get("is_dm") else f"#{d.get('channel','?')}"
+        where = "DM" if d.get("is_dm") else f"#{d.get('channel','?')}"
         if d.get("author_is_owner"):
-            return f"[主人{where}] 主人:{d.get('content','')}"
-        return f"[{where}] 陌生人 {d.get('author','?')}:{d.get('content','')}"
+            return f"[Owner, {where}] Owner: {d.get('content','')}"
+        return f"[{where}] stranger {d.get('author','?')}: {d.get('content','')}"
     if p.kind == "BridgeDown":
         svc = d.get("service", "?")
         rc = d.get("rc", "?")

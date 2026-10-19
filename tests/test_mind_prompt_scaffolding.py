@@ -8,8 +8,9 @@ a public turn: she's overhearing a lot that isn't addressed to her.
 
 It is part of the page snapshot (``render_epoch_start``), only on
 ``origin_tier == "external_public"`` (a stranger in a public channel).
-Owner-DM (``external_dm``) is a private 1:1 — the "公開場合,
-不關妳的話" framing doesn't fit there, so it must NOT render. ``internal``
+Owner-DM (``external_dm``) is a private 1:1 — the "somewhere public,
+hearing a lot that isn't said to you" framing doesn't fit there, so it must
+NOT render. ``internal``
 (the default) must not render it either.
 """
 from __future__ import annotations
@@ -21,12 +22,17 @@ NOW = 1_790_000_000.0
 
 # Distinctive substring from the scaffolding nudge — descriptive narration,
 # not present in any other block.
-_NUDGE_MARKER = "不回應是很正常的"
+_NUDGE_MARKER = "Not replying is normal here"
 
 
 def test_external_public_turn_includes_scaffolding_nudge():
     out = render_epoch_start(MindState(), Seen(), "external_public", NOW, channel_id="c1")
     assert _NUDGE_MARKER in out
+    assert (
+        "[External situation]\n"
+        "You're somewhere public and hear a lot that isn't said to you. Not replying "
+        "is normal here; you speak up when you actually want to say something."
+    ) in out
 
 
 def test_internal_turn_does_not_include_scaffolding_nudge():

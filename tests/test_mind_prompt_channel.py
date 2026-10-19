@@ -21,18 +21,19 @@ def _cm(**data):
 
 
 def test_owner_dm_renders_owner_marker():
-    body = _percep_body(_cm(author_is_owner=True, content="幫我看一下"))
-    assert "主人" in body
-    assert "幫我看一下" in body
+    body = _percep_body(_cm(author_is_owner=True, is_dm=True, content="幫我看一下"))
+    assert body == "[Owner, DM] Owner: 幫我看一下"
+
+
+def test_owner_in_channel_renders_owner_marker_and_channel():
+    body = _percep_body(_cm(author_is_owner=True, channel="general", content="hi"))
+    assert body == "[Owner, #general] Owner: hi"
 
 
 def test_stranger_renders_stranger_marker_author_and_channel():
     body = _percep_body(_cm(author_is_owner=False, author="alice",
                              channel="general", content="hi there"))
-    assert "陌生人" in body
-    assert "alice" in body
-    assert "general" in body
-    assert "hi there" in body
+    assert body == "[#general] stranger alice: hi there"
 
 
 def test_owner_and_stranger_render_differently():
@@ -41,8 +42,8 @@ def test_owner_and_stranger_render_differently():
     owner_body = _percep_body(_cm(author_is_owner=True, content="same content"))
     stranger_body = _percep_body(_cm(author_is_owner=False, content="same content"))
     assert owner_body != stranger_body
-    assert "主人" not in stranger_body
-    assert "陌生人" not in owner_body
+    assert "Owner" not in stranger_body
+    assert "stranger" not in owner_body
 
 
 def test_stranger_dm_still_marks_stranger_not_owner():
@@ -51,5 +52,4 @@ def test_stranger_dm_still_marks_stranger_not_owner():
     not the DM/channel distinction."""
     body = _percep_body(_cm(is_dm=True, channel="DM", author_is_owner=False,
                              author="rando", content="hi"))
-    assert "陌生人" in body
-    assert "主人" not in body
+    assert body == "[DM] stranger rando: hi"

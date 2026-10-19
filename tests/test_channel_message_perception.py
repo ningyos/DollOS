@@ -25,4 +25,4 @@ def test_percep_body_renders_content_and_author():
 
 def test_percep_body_dm_marks_dm():
     body = _percep_body(_cm(is_dm=True, channel="DM", content="hi"))
-    assert "私訊" in body or "DM" in body
+    assert body.startswith("[DM] ")

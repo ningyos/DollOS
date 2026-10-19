@@ -1154,8 +1154,7 @@ class MindLoop:
             # text into the fallback query so idle/reflection/scheduled
             # turns actively retrieve memory related to unresolved
             # commitments, not just ambient recent-perception noise. Fresh
-            # loops (age <= OPEN_LOOP_STALE_S) are excluded. Uses the exact
-            # same strict `>` comparison as _render_open_loops.
+            # loops (age <= OPEN_LOOP_STALE_S) are excluded.
             now = time.time()
             parts.extend(
                 lp.desc for lp in self._state.open_loops
