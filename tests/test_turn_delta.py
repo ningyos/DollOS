@@ -279,7 +279,7 @@ def test_external_public_renders_only_allowed_blocks():
     seen = Seen()
     start = render_epoch_start(
         state, seen, "external_public", NOW, channel_id="pub",
-        self_profile_text="- s1: likes tea", energy_line="精力: 普通 (0.5)",
+        self_profile_text="- s1: likes tea", energy_line="energy: normal (0.5)",
         pulse_block="[Self pulse]\npulse-marker", cognition_block="[Cognition]\ncog-marker",
     )
     assert "[Self profile]" in start

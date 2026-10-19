@@ -35,17 +35,17 @@ MEMORY_HIT_MAX_CHARS = 300
 def energy_bucket_line(energy: float) -> str:
     """Return objective energy line for [Mind state] block (B3 spec §3.4).
 
-    Bucket boundaries: ≥0.7 → 飽滿; 0.4–0.7 → 普通; <0.4 → 偏低.
-    No feeling words (no 「累」); only objective zone label + numeric value.
+    Bucket boundaries: ≥0.7 → full; 0.4–0.7 → normal; <0.4 → low.
+    No feeling words (no "tired"); only objective zone label + numeric value.
     """
     value_str = f"{energy:.1f}"
     if energy >= 0.7:
-        bucket = "飽滿"
+        bucket = "full"
     elif energy >= 0.4:
-        bucket = "普通"
+        bucket = "normal"
     else:
-        bucket = "偏低"
-    return f"精力: {bucket} ({value_str})"
+        bucket = "low"
+    return f"energy: {bucket} ({value_str})"
 
 
 _EXTERNAL_SITUATION = (

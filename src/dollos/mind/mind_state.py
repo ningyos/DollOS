@@ -39,8 +39,9 @@ def _coerce(cls, d: dict):
 
 @dataclass
 class Mood:
-    """Doll's emotional state — a natural-language sentence."""
-    emotion: str = "平靜"
+    """Doll's emotional state: one English word (the [Mind state] mood label)
+    and an optional reason."""
+    emotion: str = "calm"
     reason: str = ""
 
 

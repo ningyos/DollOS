@@ -16,10 +16,19 @@ from dollos.mind import self_history
 
 logger = logging.getLogger(__name__)
 
+# Titles in self_profile.md itself. They stay Chinese so files written before
+# the English prompt parse unchanged and the char cap counts the same.
 SECTION_TITLES: dict[str, str] = {
     "self": "我學到的自己",
     "relationship": "我和主人",
     "user": "我注意到的主人",
+}
+# Titles the prompt shows ([Self profile] block). Plan 2026-10-19
+# gura-english-speech Task 4: the daemon's own words in her prompt are English.
+SECTION_DISPLAY_TITLES: dict[str, str] = {
+    "self": "What I've learned about myself",
+    "relationship": "Me and my owner",
+    "user": "What I've noticed about my owner",
 }
 SECTION_ORDER: list[str] = ["self", "relationship", "user"]
 _PREFIX: dict[str, str] = {"self": "s", "relationship": "r", "user": "u"}
@@ -229,7 +238,8 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
 
 def render_block(path: Path) -> str | None:
     """Body for the [Self profile] block; None if no bullets anywhere.
-    Empty sections (no bullets) are skipped."""
+    Empty sections (no bullets) are skipped. Sections carry their English
+    display titles; the bullets are hers, as written."""
     if not path.exists():
         return None
     sections = _parse(path.read_text())
@@ -239,7 +249,7 @@ def render_block(path: Path) -> str | None:
     for key in SECTION_ORDER:
         if not sections[key]:
             continue
-        out.append(f"## {SECTION_TITLES[key]}")
+        out.append(f"## {SECTION_DISPLAY_TITLES[key]}")
         for b in sections[key]:
             out.append(_format_bullet(b))
     return "\n".join(out)

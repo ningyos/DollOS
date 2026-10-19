@@ -199,23 +199,22 @@ def test_energy_restore_disabled_when_not_enabled(tmp_path):
 
 def test_energy_bucket_line_no_emotion_words():
     from dollos.mind.mind_prompt import energy_bucket_line
-    lo = energy_bucket_line(0.3)
-    assert "0.3" in lo and "偏低" in lo
-    assert "累" not in lo  # no feeling words (autonomy)
-    assert "飽滿" in energy_bucket_line(0.9)
-    assert "普通" in energy_bucket_line(0.5)
+    assert energy_bucket_line(0.3) == "energy: low (0.3)"
+    assert "tired" not in energy_bucket_line(0.3)  # no feeling words (autonomy)
+    assert energy_bucket_line(0.9) == "energy: full (0.9)"
+    assert energy_bucket_line(0.5) == "energy: normal (0.5)"
 
 
 def test_energy_bucket_line_boundaries():
     from dollos.mind.mind_prompt import energy_bucket_line
-    # exact boundary: 0.7 → 飽滿
-    assert "飽滿" in energy_bucket_line(0.7)
-    # just below 0.7 → 普通
-    assert "普通" in energy_bucket_line(0.69)
-    # exact 0.4 → 普通
-    assert "普通" in energy_bucket_line(0.4)
-    # just below 0.4 → 偏低
-    assert "偏低" in energy_bucket_line(0.39)
+    # exact boundary: 0.7 → full
+    assert energy_bucket_line(0.7) == "energy: full (0.7)"
+    # just below 0.7 → normal
+    assert "normal" in energy_bucket_line(0.69)
+    # exact 0.4 → normal
+    assert energy_bucket_line(0.4) == "energy: normal (0.4)"
+    # just below 0.4 → low
+    assert "low" in energy_bucket_line(0.39)
 
 
 def test_snapshot_omits_energy_when_line_none(tmp_path):
@@ -223,25 +222,25 @@ def test_snapshot_omits_energy_when_line_none(tmp_path):
     from dollos.mind.mind_state import MindState
     state = MindState()
     prompt = render_epoch_start(state, Seen(), "internal", 0.0, energy_line=None)
-    assert "精力" not in prompt
+    assert "energy:" not in prompt
 
 
 def test_snapshot_includes_energy_line(tmp_path):
     from dollos.mind.mind_prompt import Seen, render_epoch_start
     from dollos.mind.mind_state import MindState
     state = MindState()
-    prompt = render_epoch_start(state, Seen(), "internal", 0.0, energy_line="精力: 偏低 (0.3)")
-    assert "精力: 偏低 (0.3)" in prompt
+    prompt = render_epoch_start(state, Seen(), "internal", 0.0, energy_line="energy: low (0.3)")
+    assert "energy: low (0.3)" in prompt
 
 
 # ---------------------------------------------------------------------------
-# Issue 1: enabled=False end-to-end — prompt must not contain 精力 line
+# Issue 1: enabled=False end-to-end — prompt must not contain the energy line
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path):
     """energy_enabled=False: the messages sent to the model (page snapshot
-    and the turn's message) contain no '精力:' line."""
+    and the turn's message) contain no 'energy:' line."""
     state = MindState()
     queue = PerceptionQueue()
     queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
@@ -257,13 +256,13 @@ async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path):
 
     sent = loop._llm.calls[0]["messages"]
     assert sent[1]["content"].startswith("[New conversation page")
-    assert not any("精力" in m["content"] for m in sent)
+    assert not any("energy:" in m["content"] for m in sent)
 
 
 @pytest.mark.asyncio
 async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path):
     """energy_enabled=True: the page snapshot sent to the model carries the
-    '精力:' line in [Mind state] (contrast to disabled case above)."""
+    'energy:' line in [Mind state] (contrast to disabled case above)."""
     state = MindState()
     queue = PerceptionQueue()
     queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
@@ -278,7 +277,7 @@ async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path):
     await loop.iterate()
 
     snapshot = loop._llm.calls[0]["messages"][1]["content"]
-    assert "[Mind state]" in snapshot and "精力" in snapshot
+    assert "[Mind state]" in snapshot and "energy: full (1.0)" in snapshot
 
 
 # ---------------------------------------------------------------------------

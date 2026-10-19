@@ -21,6 +21,16 @@ def test_mindstate_initial_defaults() -> None:
     assert len(s.recent_outputs) == 0
 
 
+def test_default_mood_is_an_english_word_moodtool_accepts() -> None:
+    """Plan 2026-10-19 gura-english-speech Task 4: the [Mind state] mood
+    label is English; the default is one word MoodTool itself would take."""
+    from dollos.tools import MoodTool
+
+    s = MindState()
+    assert s.mood.emotion == "calm"
+    assert MoodTool(emotion=s.mood.emotion).emotion == "calm"
+
+
 def test_deque_maxlens_default() -> None:
     s = MindState()
     assert s.recent_perceptions.maxlen == 20

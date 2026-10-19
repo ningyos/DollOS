@@ -114,9 +114,54 @@ def test_render_block_skips_empty_sections(tmp_path):
     sp.apply(p, section="user", op="add", target="", text="主人常忘記吃午餐", max_chars=1200, today="2026-06-30")
     block = sp.render_block(p)
     assert block is not None
-    assert "## 我注意到的主人" in block
+    assert "## What I've noticed about my owner" in block
     assert "- [u1·2026-06-30] 主人常忘記吃午餐" in block
-    assert "## 我學到的自己" not in block  # 空段不渲染
+    assert "## What I've learned about myself" not in block  # 空段不渲染
+
+
+def test_render_block_shows_english_titles_file_keeps_chinese(tmp_path):
+    """Plan 2026-10-19 gura-english-speech Task 4: the prompt shows English
+    section titles; the file keeps its Chinese ones (no migration, same cap)."""
+    p = _p(tmp_path)
+    for section in ("self", "relationship", "user"):
+        sp.apply(p, section=section, op="add", target="", text=f"{section} 條目",
+                 max_chars=1200, today="2026-10-19")
+    assert p.read_text().splitlines()[0] == "## 我學到的自己"
+    assert "## 我和主人" in p.read_text() and "## 我注意到的主人" in p.read_text()
+    assert sp.render_block(p) == (
+        "## What I've learned about myself\n"
+        "- [s1·2026-10-19] self 條目\n"
+        "## Me and my owner\n"
+        "- [r1·2026-10-19] relationship 條目\n"
+        "## What I've noticed about my owner\n"
+        "- [u1·2026-10-19] user 條目"
+    )
+
+
+def test_existing_chinese_titled_file_reads_and_renders_english(tmp_path):
+    """A self_profile.md written before Task 4 (Chinese titles) parses as-is,
+    renders with English titles, and stays editable."""
+    p = _p(tmp_path)
+    p.write_text(
+        "## 我學到的自己\n- [s1·2026-06-30] 我重視誠實\n"
+        "## 我和主人\n"
+        "## 我注意到的主人\n- [u1·2026-06-30] 主人常熬夜\n"
+    )
+    assert sp.render_block(p) == (
+        "## What I've learned about myself\n"
+        "- [s1·2026-06-30] 我重視誠實\n"
+        "## What I've noticed about my owner\n"
+        "- [u1·2026-06-30] 主人常熬夜"
+    )
+    sp.apply(p, section="relationship", op="add", target="", text="一起看海",
+             max_chars=1200, today="2026-10-19")
+    body = p.read_text()
+    assert "## 我和主人\n- [r1·2026-10-19] 一起看海" in body
+    assert "- [s1·2026-06-30] 我重視誠實" in body and "- [u1·2026-06-30] 主人常熬夜" in body
+
+
+def test_display_titles_cover_every_section():
+    assert set(sp.SECTION_DISPLAY_TITLES) == set(sp.SECTION_ORDER) == set(sp.SECTION_TITLES)
 
 
 def test_unknown_section_add_friendly_error(tmp_path):
