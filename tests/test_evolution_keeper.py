@@ -6,8 +6,9 @@ import pytest
 from dollos.mind import evolution as evo, evolution_keeper as ek, self_history
 
 
-VALID = "我最近整理系統日誌時發現自己會安靜下來,那種一行行看下去的踏實感讓我上癮," \
-        "我開始主動找這類事情做,不再只是等主人開口才動。" + "細節" * 10
+VALID = ("Lately I've noticed I go quiet when I sort through system logs; reading them "
+         "line by line steadies me, and I've started looking for that kind of work "
+         "myself instead of waiting for my owner.")
 
 # Hermetic clock (review Important — single injected clock): the seeded
 # 2026-06/07 fixture dates sit inside NOW's 28-day window forever.
@@ -32,8 +33,18 @@ def test_assemble_bundle_contains_all_classes_and_returns_offset(tmp_path):
     mr, hist = _seed_root(tmp_path)
     bundle, off = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0,
                                      now=NOW)
-    assert "pin_add" in bundle and "日記" in bundle and "主人偏好深夜工作" in bundle
+    assert "pin_add" in bundle and "主人偏好深夜工作" in bundle
     assert off == hist.stat().st_size
+
+
+def test_assemble_bundle_labels_are_english(tmp_path):
+    """All-English plan Task 5: the daemon's labels around her record are
+    English (her old Chinese files inside them stay as written)."""
+    mr, _hist = _seed_root(tmp_path)
+    bundle, _ = ek.assemble_bundle(memory_root=mr, hwm=0, window_days=28.0, now=NOW)
+    assert "[self_history events]" in bundle
+    assert "[Diary 2026-07-01]" in bundle
+    assert "[consolidated · secondary 2026-06-30]" in bundle
 
 
 @pytest.mark.parametrize("heading,is_diary", [
@@ -78,14 +89,21 @@ def test_assemble_bundle_truncation_drops_oldest_diary_when_no_consolidated(tmp_
 
 
 def test_parse_keeper_report_no_change():
-    kind, text, rationale = ek.parse_keeper_report("NO_CHANGE 證據不足,沒有連貫的變化")
-    assert kind == "no_change" and "證據不足" in text
+    kind, text, rationale = ek.parse_keeper_report(
+        "NO_CHANGE: not enough evidence, no coherent shift")
+    assert kind == "no_change" and text == "not enough evidence, no coherent shift"
+
+
+def test_parse_keeper_report_bare_no_change_has_english_default_reason():
+    assert ek.parse_keeper_report("NO_CHANGE") == ("no_change", "not enough evidence", "")
 
 
 def test_parse_keeper_report_candidate():
-    details = f"CANDIDATE\n{VALID}\n依據:\n- s1 喜歡整理日誌 存活多週\n- 日記反覆出現"
+    details = (f"CANDIDATE\n{VALID}\nEvidence:\n- s1 likes sorting logs, survived weeks"
+               "\n- recurs in the diary")
     kind, text, rationale = ek.parse_keeper_report(details)
-    assert kind == "candidate" and text == VALID and "存活多週" in rationale
+    assert kind == "candidate" and text == VALID
+    assert rationale == "- s1 likes sorting logs, survived weeks\n- recurs in the diary"
 
 
 def test_parse_keeper_report_empty_raises():
@@ -93,29 +111,31 @@ def test_parse_keeper_report_empty_raises():
         ek.parse_keeper_report("")
 
 
-def test_parse_keeper_report_prefixless_but_dep_line_is_candidate():
-    """F4: a weak model that dropped the CANDIDATE prefix but kept the 依據
-    structure still parses as a candidate (structure present)."""
-    details = f"{VALID}\n依據:\n- s1 存活多週"
+def test_parse_keeper_report_prefixless_but_evidence_line_is_candidate():
+    """F4: a weak model that dropped the CANDIDATE prefix but kept the
+    Evidence structure still parses as a candidate (structure present)."""
+    details = f"{VALID}\nEvidence:\n- s1 survived weeks"
     kind, text, rationale = ek.parse_keeper_report(details)
-    assert kind == "candidate" and text == VALID and "存活多週" in rationale
+    assert kind == "candidate" and text == VALID and "survived weeks" in rationale
 
 
 def test_parse_keeper_report_unprefixed_garbage_raises():
-    """F4: 「沒有足夠證據,維持現狀」-style prose with no NO_CHANGE/CANDIDATE prefix
-    and no 依據 line is malformed → ValueError (→ evo_error, evidence preserved)."""
+    """F4: "Not enough evidence, keeping things as they are"-style prose with
+    no NO_CHANGE/CANDIDATE prefix and no Evidence line is malformed →
+    ValueError (→ evo_error, evidence preserved)."""
     with pytest.raises(ValueError):
-        ek.parse_keeper_report("沒有足夠證據,維持現狀")
+        ek.parse_keeper_report("Not enough evidence, keeping things as they are")
 
 
-def test_parse_keeper_report_dep_midsentence_not_truncated():
-    """F4: 依據 used mid-sentence (not on its own line) must NOT truncate the
-    candidate — the split anchors on a line boundary (\\n依據)."""
-    prose = "我做決定時會依據當下的證據,而不是憑感覺亂猜。" + "細節" * 30
-    details = f"CANDIDATE\n{prose}\n依據:\n- s1 存活多週"
+def test_parse_keeper_report_evidence_midsentence_not_truncated():
+    """F4: Evidence used mid-sentence (not at a line start) must NOT truncate
+    the candidate — the split anchors on a line boundary (\\nEvidence)."""
+    prose = ("When I decide something I weigh the Evidence in front of me, not a "
+             "hunch. Evidence matters to me more than it used to.")
+    details = f"CANDIDATE\n{prose}\nEvidence:\n- s1 survived weeks"
     kind, text, rationale = ek.parse_keeper_report(details)
-    assert kind == "candidate" and text == prose        # 依據 mid-sentence kept
-    assert "存活多週" in rationale
+    assert kind == "candidate" and text == prose        # mid-sentence Evidence kept
+    assert rationale == "- s1 survived weeks"
 
 
 @pytest.mark.asyncio
@@ -131,7 +151,8 @@ async def test_keeper_task_pins_no_restatement_rule(tmp_path, monkeypatch):
         return {"details": "NO_CHANGE 證據不足"}
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
     await ek.run_evolution_pass(**_pass_kwargs(mr))
-    assert "一個字都不需要重複" in seen["task"]
+    assert "you don't need to repeat a single word of it" in seen["task"]
+    assert "(none yet — this will be the first version)" in seen["task"]
 
 
 @pytest.mark.asyncio
@@ -165,7 +186,7 @@ async def test_pass_no_change_logs_and_returns(tmp_path, monkeypatch):
 async def test_pass_candidate_creates_awaiting_doll_slot_with_hwm(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1 survived"}
     async def fake_skeptic(**kw):
         return "pass"
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
@@ -191,7 +212,7 @@ async def test_pass_skeptic_receives_byte_identical_bundle(tmp_path, monkeypatch
     seen = {}
     async def fake_keeper(**kw):
         seen["keeper_task"] = kw["task"]
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1 survived"}
     async def fake_skeptic(**kw):
         seen["skeptic_bundle"] = kw["bundle"]
         return "pass"
@@ -201,14 +222,14 @@ async def test_pass_skeptic_receives_byte_identical_bundle(tmp_path, monkeypatch
     assert out == "candidate"
     assert seen["skeptic_bundle"] == expected_bundle   # byte-identical
     assert expected_bundle in seen["keeper_task"]      # same bytes keeper saw
-    assert "80–600 字" in seen["keeper_task"]          # configured bounds interpolated
+    assert "(English, 80–600 characters)" in seen["keeper_task"]  # configured bounds
 
 
 @pytest.mark.asyncio
 async def test_pass_mechanical_kill(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
-        return {"details": "CANDIDATE\n太短\n依據:\n- x"}
+        return {"details": "CANDIDATE\n太短\nEvidence:\n- x"}
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
     out = await ek.run_evolution_pass(**_pass_kwargs(mr))
     assert out == "kill"
@@ -220,7 +241,7 @@ async def test_pass_mechanical_kill(tmp_path, monkeypatch):
 async def test_pass_skeptic_kill(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1"}
     async def fake_skeptic(**kw):
         return "kill:引用的證據不存在"
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
@@ -252,7 +273,7 @@ async def test_pass_yields_to_slot_created_mid_pass(tmp_path, monkeypatch):
     external_candidate = "有人在 pass 進行中改了檔案。" + "字" * 80
 
     async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1 survived"}
 
     async def fake_skeptic(**kw):
         # Simulate the mid-await interleave: the tripwire lands an external
@@ -278,8 +299,8 @@ async def test_pass_yields_to_slot_created_mid_pass(tmp_path, monkeypatch):
 
 # --- restatement gate + one feedback retry (live-smoke SA adjudication #2) ---
 
-_FACTORY = "主人說話我才回,沒事就安靜待著"
-RESTATING = VALID + "。" + _FACTORY + "。"   # 98 chars — clears the 80 floor
+_FACTORY = "I only answer when my owner speaks, and otherwise I stay quiet"
+RESTATING = VALID + " " + _FACTORY + "."
 
 
 def _restating_kwargs(mr):
@@ -287,8 +308,8 @@ def _restating_kwargs(mr):
     the RESTATING candidate restates verbatim."""
     from dollos.character import Identity
     kw = _pass_kwargs(mr)
-    kw["pack_identity"] = Identity(self="我是測試角色",
-                                   personality=_FACTORY + "。", taboos="不編造")
+    kw["pack_identity"] = Identity(self="I'm a test character.",
+                                   personality=_FACTORY + ".", taboos="No making things up.")
     return kw
 
 
@@ -302,8 +323,8 @@ async def test_pass_restatement_retry_success_reaches_skeptic(tmp_path, monkeypa
     async def fake_keeper(**kw):
         calls.append(kw["task"])
         if len(calls) == 1:
-            return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
+            return {"details": f"CANDIDATE\n{RESTATING}\nEvidence:\n- s1 survived"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1 survived"}
 
     async def fake_skeptic(**kw):
         return "pass"
@@ -313,7 +334,7 @@ async def test_pass_restatement_retry_success_reaches_skeptic(tmp_path, monkeypa
     out = await ek.run_evolution_pass(**_restating_kwargs(mr))
     assert out == "candidate"
     assert len(calls) == 2
-    assert "上一版被退回" in calls[1]        # feedback phrase reached the retry
+    assert "The previous version was sent back" in calls[1]   # feedback reached the retry
     assert _FACTORY in calls[1]              # offending sentence quoted back
     slot = evo.load_slot(mr / "self_evolution" / "pending.json")
     assert slot.candidate == VALID           # the RETRY text landed, not the restating one
@@ -327,7 +348,7 @@ async def test_pass_restatement_both_attempts_kill(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
 
     async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
+        return {"details": f"CANDIDATE\n{RESTATING}\nEvidence:\n- s1 survived"}
 
     async def fake_skeptic(**kw):
         raise AssertionError("skeptic must not run on the restatement-kill path")
@@ -353,7 +374,7 @@ async def test_pass_restatement_retry_error_kills_not_error(tmp_path, monkeypatc
     async def fake_keeper(**kw):
         calls.append(kw["task"])
         if len(calls) == 1:
-            return {"details": f"CANDIDATE\n{RESTATING}\n依據:\n- s1 存活"}
+            return {"details": f"CANDIDATE\n{RESTATING}\nEvidence:\n- s1 survived"}
         raise RuntimeError("llm down on retry")
 
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
@@ -362,71 +383,6 @@ async def test_pass_restatement_retry_error_kills_not_error(tmp_path, monkeypatc
     last = self_history.read_events(hist)[-1]
     assert last["kind"] == "evo_kill"
     assert last["reason"].startswith("mechanical:restatement")
-
-
-# --- restatement_reference: English pack + Chinese reference (gura English
-# plan Task 6). The keeper writes Chinese while looking at English factory
-# prose, so the likely restatement is a translation back to the Chinese
-# original — only the reference can catch it. ---
-
-_ZH_FACTORY = "安靜的好奇:不懂就問或自己查,不假裝知道"
-ZH_RESTATING = VALID + "。" + _ZH_FACTORY + "。"
-
-
-def _english_pack_kwargs(mr):
-    from dollos.character import Identity
-    kw = _pass_kwargs(mr)
-    kw["pack_identity"] = Identity(
-        self="I'm a test character. I live on my owner's Mac.",
-        personality="- Quiet curiosity: when I don't know something, I ask or look it up.",
-        taboos="- No making things up.",
-        restatement_reference="我是測試角色,現在住在主人的 Mac 上。\n\n- " + _ZH_FACTORY + "。")
-    return kw
-
-
-@pytest.mark.asyncio
-async def test_pass_chinese_reference_blocks_restated_chinese_original(tmp_path, monkeypatch):
-    mr, hist = _seed_root(tmp_path)
-    kw = _english_pack_kwargs(mr)
-    ident = kw["pack_identity"]
-    # The English factory prose alone never matches the Chinese restatement.
-    assert evo.restatement_overlap(ZH_RESTATING, [ident.self, ident.personality]) is None
-
-    async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{ZH_RESTATING}\n依據:\n- s1 存活"}
-
-    async def fake_skeptic(**kw):
-        raise AssertionError("skeptic must not run on the restatement-kill path")
-
-    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
-    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
-    out = await ek.run_evolution_pass(**kw)
-    assert out == "kill"
-    last = self_history.read_events(hist)[-1]
-    assert last["kind"] == "evo_kill"
-    assert last["reason"].startswith("mechanical:restatement")
-    assert _ZH_FACTORY in last["reason"]
-
-
-@pytest.mark.asyncio
-async def test_pass_chinese_reference_lets_unrestated_candidate_through(tmp_path, monkeypatch):
-    mr, hist = _seed_root(tmp_path)
-    seen = {}
-
-    async def fake_keeper(**kw):
-        seen["task"] = kw["task"]
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s1 存活"}
-
-    async def fake_skeptic(**kw):
-        return "pass"
-
-    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
-    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
-    out = await ek.run_evolution_pass(**_english_pack_kwargs(mr))
-    assert out == "candidate"
-    slot = evo.load_slot(mr / "self_evolution" / "pending.json")
-    assert slot.candidate == VALID
-    assert _ZH_FACTORY not in seen["task"]   # the reference never enters the prompt
 
 
 # --- _run_full_skeptic: F1 personality block + F4 verdict parse ---
@@ -442,17 +398,17 @@ def _ident(personality="安靜"):
     return Identity(self="我是測試角色", personality=personality, taboos="不編造")
 
 
-async def _run_skeptic(monkeypatch, *, ident, details, capture=None):
+async def _run_skeptic(monkeypatch, *, ident, details, capture=None, cap=600):
     async def fake_run_agent(**kw):
         if capture is not None:
             capture["task"] = kw["task"]
         return {"summary": "s", "details": details}
     monkeypatch.setattr(ek, "run_agent", fake_run_agent)
     return await ek._run_full_skeptic(
-        candidate="候選文字", rationale="依據 x", bundle="BUNDLE", current="舊文",
-        pack_identity=ident, model=None, renderer=_StubRenderer(), memsearch=None,
-        memory_root=None, transcripts_root=None, tool_output_store=None, max_tokens=2048,
-        think_budget_tokens=1024)
+        candidate="候選文字", rationale="- x", bundle="BUNDLE", current="舊文",
+        pack_identity=ident, cap=cap, model=None, renderer=_StubRenderer(),
+        memsearch=None, memory_root=None, transcripts_root=None,
+        tool_output_store=None, max_tokens=2048, think_budget_tokens=1024)
 
 
 @pytest.mark.asyncio
@@ -473,7 +429,32 @@ async def test_full_skeptic_task_pins_partial_restatement_kill(monkeypatch):
     phrase in the RENDERED skeptic task."""
     cap = {}
     await _run_skeptic(monkeypatch, ident=_ident(), details="PASS", capture=cap)
-    assert "部分重述也算" in cap["task"]
+    assert "partial restatement counts too" in cap["task"]
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_task_uses_the_configured_cap(monkeypatch):
+    """Check (c) names her real budget: the configured cap, not a fixed 600."""
+    cap = {}
+    await _run_skeptic(monkeypatch, ident=_ident(), details="PASS", capture=cap,
+                       cap=2000)
+    assert "wastes her 2000 characters" in cap["task"]
+    assert "600" not in cap["task"]
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_task_english_placeholders(monkeypatch):
+    cap = {}
+    async def fake_run_agent(**kw):
+        cap["task"] = kw["task"]
+        return {"summary": "s", "details": "PASS"}
+    monkeypatch.setattr(ek, "run_agent", fake_run_agent)
+    await ek._run_full_skeptic(
+        candidate="c", rationale="", bundle="B", current=None, pack_identity=_ident(),
+        cap=600, model=None, renderer=_StubRenderer(), memsearch=None,
+        memory_root=None, transcripts_root=None, tool_output_store=None,
+        max_tokens=2048, think_budget_tokens=1024)
+    assert "(none yet)" in cap["task"] and "(none attached)" in cap["task"]
 
 
 @pytest.mark.asyncio
@@ -484,8 +465,15 @@ async def test_full_skeptic_pass_parses(monkeypatch):
 @pytest.mark.asyncio
 async def test_full_skeptic_kill_keeps_reason(monkeypatch):
     """F4: KILL reason is taken after the KILL prefix, not a blind details[4:]."""
-    v = await _run_skeptic(monkeypatch, ident=_ident(), details="KILL (c) 只是重述出廠人格")
-    assert v == "kill:(c) 只是重述出廠人格"
+    v = await _run_skeptic(monkeypatch, ident=_ident(),
+                           details="KILL: (c) only restates the factory persona")
+    assert v == "kill:(c) only restates the factory persona"
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_bare_kill_has_english_default_reason(monkeypatch):
+    v = await _run_skeptic(monkeypatch, ident=_ident(), details="KILL")
+    assert v == "kill:failed the (a)-(e) review"
 
 
 @pytest.mark.asyncio
@@ -526,8 +514,8 @@ async def test_full_skeptic_streams_with_evolution_purpose(tmp_path):
     from tests._fake_model import FakeModel
     model = FakeModel([_REPORT % "PASS 沒問題"])
     verdict = await ek._run_full_skeptic(
-        candidate="候選文字", rationale="依據 x", bundle="BUNDLE", current="舊文",
-        pack_identity=_ident(), **_agent_kwargs(model, tmp_path))
+        candidate="候選文字", rationale="- x", bundle="BUNDLE", current="舊文",
+        pack_identity=_ident(), cap=600, **_agent_kwargs(model, tmp_path))
     assert verdict == "pass"
     assert model.calls[0]["purpose"] == "evolution"
     assert model.calls[0]["think_budget"] == 300

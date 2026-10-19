@@ -240,24 +240,6 @@ def test_scaffolding_renders_identity_sections():
     assert "- 不 LARP" in out
 
 
-def test_system_prompt_omits_restatement_reference():
-    """Gura English plan Task 6: the real gura pack's Chinese
-    restatement_reference feeds only the evolution restatement gate — none of
-    its lines may reach the system prompt the kernel builds."""
-    pack = DollPack.load(Path(__file__).resolve().parent.parent / "character_packs" / "gura")
-    prefix, suffix = split_scaffolding(
-        PromptRenderer(), identity=pack.identity, available_skills=[],
-        evolution_enabled=True)
-    prompt = prefix + suffix
-    assert pack.identity.personality.strip() in prompt
-    lines = [ln.strip() for ln in pack.identity.restatement_reference.splitlines()
-             if ln.strip()]
-    assert lines
-    for line in lines:
-        assert line not in prompt
-
-
-
 def test_scaffolding_explains_the_append_only_conversation():
     """Plan 2026-10-18 Task 9: scaffolding teaches the new format — one new
     message per turn starting with the time, a page snapshot, hits given once

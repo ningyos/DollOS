@@ -133,20 +133,3 @@ def test_gura_personality_says_she_talks_and_writes_in_english():
     pack = DollPack.load(_REPO_GURA_PACK)
     assert ("- I understand both Chinese and English, but I talk and write "
             "in English.") in pack.identity.personality
-
-
-def test_gura_pack_carries_chinese_restatement_reference():
-    """The Chinese factory self + personality stays in the pack for the keeper
-    restatement gate. Its first paragraph ends like the English version (lives
-    on the owner's Mac), not the old AI-companion line."""
-    pack = DollPack.load(_REPO_GURA_PACK)
-    ref = pack.identity.restatement_reference
-    assert ref.strip()
-    assert "我就是我本人" in ref
-    assert "AI 伴侶" not in ref
-
-
-def test_restatement_reference_defaults_to_empty():
-    """Optional field: a pack without it (yesman) loads with an empty string."""
-    pack = DollPack.load(_REPO_YESMAN_PACK)
-    assert pack.identity.restatement_reference == ""

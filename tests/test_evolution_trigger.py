@@ -222,6 +222,30 @@ async def test_skeptic_kill_report_parses_reason(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skeptic_asks_for_english_reason_and_fills_english_placeholder(tmp_path, monkeypatch):
+    """A Mode-B KILL reason reaches her as the slot notice, so the skeptic is
+    asked to write it in English (all-English plan Task 5)."""
+    from dollos.mind import evolution_trigger as et_mod
+    seen = {}
+
+    async def _fake_run_agent(**kw):
+        seen["task"] = kw["task"]
+        return {"summary": "s", "details": "PASS"}
+    monkeypatch.setattr(et_mod, "run_agent", _fake_run_agent)
+    trig = _trigger(tmp_path, verdict=None, renderer=_StubRenderer())
+    await trig._skeptic(old_sanctioned=None, proposed="new proposal")
+    assert "a one-sentence reason in English" in seen["task"]
+    assert "[Who I am now, currently in effect]\n(none yet)" in seen["task"]
+
+
+@pytest.mark.asyncio
+async def test_skeptic_bare_kill_has_english_default_reason(tmp_path, monkeypatch):
+    trig = _skeptic_trigger(tmp_path, monkeypatch, {"summary": "s", "details": "KILL"})
+    assert await trig._skeptic(old_sanctioned=None, proposed="p") == \
+        "kill:contradicts the core identity or taboos"
+
+
+@pytest.mark.asyncio
 async def test_skeptic_garbled_report_never_silent_pass(tmp_path, monkeypatch):
     """Ambiguous / garbled Report text (no leading PASS) must resolve to KILL —
     fail-closed, never a silent pass."""
