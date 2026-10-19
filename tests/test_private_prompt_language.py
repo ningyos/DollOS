@@ -606,8 +606,8 @@ def _case(source, fixed_by: int | None = None, what: str = ""):
 CASES = [
     _case(system_prompt, 3, "scaffolding (主人, [人格演化候選]) still Chinese"),
     _case(system_prompt_with_current_self, 3, "## 現在的我 heading and framing"),
-    _case(tools_internal, 2, "tool descriptions"),
-    _case(tools_external_public, 2, "NoteMemory description"),
+    _case(tools_internal),
+    _case(tools_external_public),
     _case(snapshot_default_state, 4, "default mood 平靜, 精力 line"),
     _case(snapshot_filled_state, 4, "[Self profile] section titles, 精力 line"),
     _case(delta_awoke),

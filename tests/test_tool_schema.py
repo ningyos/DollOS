@@ -126,3 +126,30 @@ async def test_dispatch_one_rejects_values_the_server_does_not_check(tmp_path):
     )
     assert r is not None and r.success is False
     assert "op" in r.detail and "delete" in r.detail
+
+
+def test_every_tool_schema_is_english():
+    """Plan 2026-10-19 Task 2: the tool list is the start of every private
+    request; its descriptions are the daemon's words, so they carry no CJK
+    (examples included, e.g. LearnName's nickname)."""
+    from tests._cjk import cjk_runs
+
+    for entry in tool_schemas(ALL_TOOLS):
+        text = json.dumps(entry, ensure_ascii=False)
+        assert cjk_runs(text) == [], (entry["function"]["name"], cjk_runs(text))
+
+
+def test_result_descriptions_name_the_real_perception_lines():
+    """Shell / SpawnMonitor describe how their results come back with the
+    perception line she actually sees, not a stale paraphrase."""
+    shell = inspect.cleandoc(tools_mod.Shell.__doc__)
+    monitor = inspect.cleandoc(tools_mod.SpawnMonitor.__doc__)
+    assert "ToolResultArrived: Shell" in shell
+    assert "MonitorFired:" in monitor
+
+
+def test_mood_emotion_is_described_as_one_english_word():
+    desc = _params(tools_mod.MoodTool)["properties"]["emotion"]["description"]
+    assert "one English word" in desc
+    assert "'happy'" in desc and "'uneasy'" in desc
+    assert "phrase" not in desc
