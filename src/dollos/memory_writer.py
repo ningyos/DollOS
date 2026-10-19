@@ -33,20 +33,23 @@ async def append_transcript(
 ) -> None:
     """Append a turn line to today's transcript and reindex.
 
-    Format per line: `- [HH:MM:SS <role>] <text>\\n`. role is typically
-    "user" or "doll". Caller is responsible for ensuring transcripts_root
-    is a directory dedicated to transcripts (separate from shared LT memory).
+    Format per line: `- HH:MM:SS <speaker>: <text>\\n`, speaker `Owner` for
+    role "user" and `Me` for role "doll" (English daemon labels, plan
+    2026-10-19 Task 8; lines already on disk in the older `主人說：` /
+    `我說：` form stay as they are). Caller is responsible for ensuring
+    transcripts_root is a directory dedicated to transcripts (separate from
+    shared LT memory).
     """
     path = transcripts_root / f"{date.today():%Y-%m-%d}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%H:%M:%S")
     if role == "user":
-        speaker = "主人"
+        speaker = "Owner"
     elif role == "doll":
-        speaker = "我"
+        speaker = "Me"
     else:
         speaker = role  # fallback for any future roles
-    line = f"- {timestamp} {speaker}說：{text}\n"
+    line = f"- {timestamp} {speaker}: {text}\n"
     with path.open("a") as f:
         f.write(line)
     await memsearch.index_file(path)

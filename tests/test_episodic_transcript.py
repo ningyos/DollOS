@@ -52,7 +52,7 @@ async def test_user_turn_written_to_transcript(tmp_path):
     await loop.iterate()
 
     content = _today_transcript(ctx).read_text()
-    assert "主人說：你好嗎" in content
+    assert "Owner: 你好嗎" in content
     # transcript file was indexed
     assert _today_transcript(ctx) in ms.indexed
 
@@ -74,7 +74,7 @@ async def test_doll_turn_written_as_single_joined_line(tmp_path):
     await loop.iterate()
 
     content = _today_transcript(ctx).read_text()
-    doll_lines = [ln for ln in content.split("\n") if "我說：" in ln]
+    doll_lines = [ln for ln in content.split("\n") if " Me: " in ln]
     # exactly ONE doll line (turn-level, not per-sentence)
     assert len(doll_lines) == 1
     assert "第一句話。" in doll_lines[0]
@@ -95,8 +95,8 @@ async def test_system_turn_writes_no_user_line(tmp_path):
     await loop.iterate()
 
     content = _today_transcript(ctx).read_text()
-    assert "主人說：" not in content      # no user line
-    assert "我說：早安" in content        # doll line present
+    assert "Owner: " not in content      # no user line
+    assert "Me: 早安" in content        # doll line present
 
 
 @pytest.mark.asyncio
@@ -113,8 +113,8 @@ async def test_user_and_doll_lines_paired_in_order(tmp_path):
     await loop.iterate()
 
     lines = [ln for ln in _today_transcript(ctx).read_text().split("\n") if ln]
-    assert "主人說：今天好嗎" in lines[0]
-    assert "我說：很好喔" in lines[1]
+    assert "Owner: 今天好嗎" in lines[0]
+    assert "Me: 很好喔" in lines[1]
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_user_multiline_text_written_as_single_physical_line(tmp_path):
     await loop.iterate()
 
     content = _today_transcript(ctx).read_text()
-    user_lines = [ln for ln in content.split("\n") if "主人說：" in ln]
+    user_lines = [ln for ln in content.split("\n") if " Owner: " in ln]
     # exactly ONE physical line for the user bullet
     assert len(user_lines) == 1
     # both parts of the original text are present, joined by a space
