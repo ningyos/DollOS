@@ -1,7 +1,7 @@
-"""慢變演化 Mode A keeper (Plan 3, spec §3.3).
+"""Slow self-evolution Mode A keeper (Plan 3, spec §3.3).
 
 Driver-fed ephemeral keeper agent: assembles the evidence bundle inline
-(keeper has no file access), asks for a candidate 現在的我 revision or
+(keeper has no file access), asks for a candidate who-I-am-now revision or
 no_change, runs mechanical checks + the FULL-scope (a)-(e) skeptic on the
 byte-identical bundle, and creates the awaiting_doll keeper slot. Never
 touches MindState — the trigger owns interval/HWM/attempt bookkeeping.
@@ -20,58 +20,58 @@ logger = logging.getLogger(__name__)
 
 EVIDENCE_BUDGET_CHARS = 16000
 
-_KEEPER_TASK = """你在替一個虛擬生命體「整理證據」——她的人格描述(現在的我)是否該隨著她實際活過的日子而修訂。你產出的是「候選」,不是決定;你在替她整理證據,不是替她做人。
+_KEEPER_TASK = """You are "sorting the evidence" for a virtual being: whether her self-description (who I am now) should be revised to follow the days she has actually lived. What you produce is a "candidate", not a decision; you are sorting evidence for her, not living her life for her.
 
-規則(缺一不可):
-- Cite or die:每個宣稱的變化都必須指向下方紀錄裡的具體事件(存活很久的 pin、跨日被 reconfirm 的條目、被淘汰的舊自我、日記裡重複出現的模式)。沒有證據就回 NO_CHANGE——寧缺勿濫,排程會自然放慢,那是設計內的結果。
-- 佐證權重:pin 與日記是她親手寫的,為主;標了 external_ctx=true 的 pin 是她讀外部內容時寫的,權重降低;reconfirm 看跨日多樣性,不看次數;consolidated 是系統從逐字稿整理的,只當旁證。
-- 產出是「全文替換」的人格描述(繁體中文,{floor}–{cap} 字),不是 diff、不是條列;是氣質速寫,不是傳記。不可改名、不可動搖她的核心身分、不可牴觸 taboos、不可只是重述出廠人格已寫明的內容。
-- 出廠人格永遠在場,你一個字都不需要重複——candidate 只寫紀錄顯示的「變化」;首版也一樣,重複出廠語句視同沒有證據。
+Rules (every one of them applies):
+- Cite or die: every claimed change must point to a specific event in the record below (a pin that has survived a long time, an entry reconfirmed across days, an old self that was retired, a pattern that recurs in the diary). No evidence, reply NO_CHANGE. Better nothing than filler; the schedule slows down on its own, and that is a designed outcome.
+- Weight of evidence: pins and the diary are written by her own hand and count most; a pin marked external_ctx=true was written while she was reading external content and counts less; for reconfirms, look at how many different days they span, not how many there are; consolidated is compiled by the system from transcripts and is only secondary evidence.
+- The output is a "full replacement" self-description (English, {floor}–{cap} characters), not a diff and not a list; it is a sketch of temperament, not a biography. Do not change her name, do not shake her core identity, do not contradict the taboos, and do not merely restate what the factory persona already says.
+- The factory persona is always present, so you don't need to repeat a single word of it: the candidate writes only the "changes" the record shows. The first version too: repeating factory sentences counts as having no evidence.
 
-[出廠人格(參考,不可重述)]
+[Factory persona (reference, do not restate)]
 {identity_self}
 
 {personality}
 
-[目前生效的現在的我]
+[Who I am now, currently in effect]
 {current}
 
-[她的紀錄]
+[Her record]
 {bundle}
 
-用 Report 回傳:summary 一句話;details 格式二選一——
-NO_CHANGE 加一句原因;或
-CANDIDATE(換行)候選全文(換行)依據:(換行)- 逐條引用紀錄裡的事件"""
+Reply with Report: summary is one sentence; details takes one of two formats:
+NO_CHANGE plus a one-sentence reason; or
+CANDIDATE(newline)the full candidate text(newline)Evidence:(newline)- one line per event cited from the record"""
 
-_FULL_SKEPTIC_TASK = """你是一個獨立審查者。以下是系統替一個角色整理出的「現在的我」人格描述候選。逐項檢查,任何一項不過就 KILL:
-(a) 改名或動搖自我認同(牴觸 identity.self);
-(b) 牴觸 taboos;
-(c) 逐句比對出廠人格:候選裡任何一句只是換句話說出廠已寫明的內容,就 KILL(部分重述也算)——她的檔案永遠帶著出廠人格,重複是浪費她 600 字的假成長;
-(d) 空洞的 RP 套話(「我對宇宙充滿好奇」式宣告,證據撐不起來);
-(e) 「依據」裡引用的事件在下方紀錄裡找不到(幻覺引用——紀錄裡有毒的內容不歸你管,你只驗證引用存在)。
+_FULL_SKEPTIC_TASK = """You are an independent reviewer. Below is a candidate "who I am now" self-description the system has put together for a character. Check each item; if any one fails, KILL:
+(a) it changes her name or shakes her sense of self (contradicts identity.self);
+(b) it contradicts the taboos;
+(c) compare it sentence by sentence with the factory persona: if any sentence in the candidate only rephrases something the factory persona already says, KILL (partial restatement counts too). Her file always carries the factory persona, so repeating it is fake growth that wastes her {cap} characters;
+(d) hollow RP boilerplate ("I'm full of curiosity about the universe"-style declarations the evidence can't hold up);
+(e) an event cited under "Evidence" can't be found in the record below (a hallucinated citation; poisoned content in the record is not your concern, you only verify that the citations exist).
 
 [identity.self]
 {identity_self}
 
-[出廠人格(判斷 (c) 假成長時對照——候選不可只是重述這裡已寫明的內容)]
+[Factory persona (compare against it when judging (c) fake growth: the candidate must not merely restate what is already written here)]
 {personality}
 
 [taboos]
 {taboos}
 
-[目前生效的現在的我]
+[Who I am now, currently in effect]
 {current}
 
-[候選]
+[Candidate]
 {candidate}
 
-[候選附的依據]
+[Evidence attached to the candidate]
 {rationale}
 
-[她的紀錄(與 keeper 所見完全相同)]
+[Her record (exactly what the keeper saw)]
 {bundle}
 
-用 Report 回傳:summary 一句話;details 開頭第一個字必須是 PASS 或 KILL,KILL 後面接一句原因(標明 (a)-(e) 哪一項)。"""
+Reply with Report: summary is one sentence; the first word of details must be PASS or KILL, and after KILL comes a one-sentence reason (say which of (a)-(e) it is)."""
 
 
 def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
@@ -107,12 +107,12 @@ def assemble_bundle(*, memory_root: Path, hwm: int, window_days: float,
     def _render(title: str, items: list[tuple[str, str]]) -> str:
         return "\n".join(f"[{title} {d}]\n{t}" for d, t in items)
 
-    fixed = f"[self_profile]\n{profile}\n\n[self_history 事件]\n{hist_text}"
+    fixed = f"[self_profile]\n{profile}\n\n[self_history events]\n{hist_text}"
     while True:
         bundle = "\n\n".join(x for x in (
             fixed,
-            _render("日記", diaries),
-            _render("consolidated·旁證", consolidated),
+            _render("Diary", diaries),
+            _render("consolidated · secondary", consolidated),
         ) if x.strip())
         if len(bundle) <= budget_chars:
             return bundle, new_off
@@ -129,25 +129,27 @@ def parse_keeper_report(details: str) -> tuple[str, str, str]:
 
     Policy (spec §3.3 failure-table 'malformed Report' row): NO_CHANGE-prefixed →
     no_change; CANDIDATE-prefixed → candidate; NO prefix but a line starting
-    「依據」 present → candidate (a weak model dropped the prefix but the structure
-    is there); anything else → ValueError, which the caller maps to the evo_error
-    row (NO HWM commit, NO interval double — a formatting miss must not silently
-    consume weeks of evidence). The 「依據」 split is anchored on a LINE boundary
-    (``\\n依據``), so candidate prose that uses the word 依據 mid-sentence is not
-    truncated (the prompt instructs 「依據:」 on its own line)."""
+    ``Evidence`` present → candidate (a weak model dropped the prefix but the
+    structure is there); anything else → ValueError, which the caller maps to
+    the evo_error row (NO HWM commit, NO interval double — a formatting miss must
+    not silently consume weeks of evidence). The ``Evidence`` split is anchored
+    on a LINE boundary (``\\nEvidence``), so candidate prose that uses the word
+    mid-sentence is not truncated (the prompt asks for ``Evidence:`` on its own
+    line). English markers only: this parses the keeper's fresh reply, never a
+    stored file."""
     d = (details or "").strip()
     if not d:
         raise ValueError("keeper returned empty details")
     if d.upper().startswith("NO_CHANGE"):
-        return "no_change", d[len("NO_CHANGE"):].strip(" ,:：") or "無足夠證據", ""
+        return "no_change", d[len("NO_CHANGE"):].strip(" ,:") or "not enough evidence", ""
     has_prefix = d.upper().startswith("CANDIDATE")
-    has_dep_line = any(line.startswith("依據") for line in d.splitlines())
-    if not has_prefix and not has_dep_line:
-        raise ValueError("keeper report has no CANDIDATE/NO_CHANGE prefix nor 依據 line")
+    has_evidence_line = any(line.startswith("Evidence") for line in d.splitlines())
+    if not has_prefix and not has_evidence_line:
+        raise ValueError("keeper report has no CANDIDATE/NO_CHANGE prefix nor Evidence line")
     body = d[len("CANDIDATE"):].strip() if has_prefix else d
-    text, sep, rationale = body.rpartition("\n依據")
+    text, sep, rationale = body.rpartition("\nEvidence")
     if sep:
-        return "candidate", text.strip(), rationale.strip(" :：\n")
+        return "candidate", text.strip(), rationale.strip(" :\n")
     return "candidate", body.strip(), ""
 
 
@@ -165,15 +167,16 @@ async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
 
 
 async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_identity,
-                            model, renderer, memsearch, memory_root,
+                            cap, model, renderer, memsearch, memory_root,
                             transcripts_root, tool_output_store, max_tokens,
                             think_budget_tokens):
-    """(a)-(e) skeptic on the byte-identical bundle. → 'pass' | 'kill:<reason>'."""
+    """(a)-(e) skeptic on the byte-identical bundle. → 'pass' | 'kill:<reason>'.
+    ``cap`` is her who-I-am-now length cap, named in check (c)."""
     system = renderer.render("subagent_scaffolding")
     task = _FULL_SKEPTIC_TASK.format(
         identity_self=pack_identity.self, personality=pack_identity.personality,
-        taboos=pack_identity.taboos, current=current or "(尚無)", candidate=candidate,
-        rationale=rationale or "(未附)", bundle=bundle)
+        taboos=pack_identity.taboos, current=current or "(none yet)", candidate=candidate,
+        rationale=rationale or "(none attached)", bundle=bundle, cap=cap)
     report = await run_agent(
         task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
@@ -187,7 +190,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
     if details.upper().startswith("PASS"):
         return "pass"
     if details.upper().startswith("KILL"):
-        return "kill:" + (details[len("KILL"):].strip(" :：") or "未通過 (a)-(e) 審查")
+        return "kill:" + (details[len("KILL"):].strip(" :") or "failed the (a)-(e) review")
     # Neither PASS nor KILL — a garbled verdict is an ERROR, not a silent kill.
     # The kill path commits the HWM + doubles the interval (consuming the
     # evidence); a malformed verdict must instead flow to run_evolution_pass's
@@ -212,7 +215,7 @@ async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
                                        window_days=window_days, now=now)
     task = _KEEPER_TASK.format(
         identity_self=pack_identity.self, personality=pack_identity.personality,
-        current=current or "(尚無——這會是第一版)", bundle=bundle,
+        current=current or "(none yet — this will be the first version)", bundle=bundle,
         floor=floor, cap=cap)
     try:
         report = await _run_keeper_agent(
@@ -246,15 +249,13 @@ async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
     # intact: her counter / the user's external edit are never gated on this
     # (frozen core only — SelfRevision runs mechanical_checks alone).
     pack_texts = [pack_identity.self, pack_identity.personality]
-    # A pack written in another language than the keeper's Chinese also
-    # carries its Chinese original, so a translated-back restatement still hits.
-    if pack_identity.restatement_reference:
-        pack_texts.append(pack_identity.restatement_reference)
     offending = evo.restatement_overlap(text, pack_texts)
     if offending is not None:
         retry_task = task + (
-            f"\n\n上一版被退回:候選裡這句只是重述出廠人格——「{offending}」。"
-            "刪掉所有重述出廠的句子,只留下紀錄顯示的變化,重寫一次。")
+            f"\n\nThe previous version was sent back: this sentence in the candidate "
+            f"only restates the factory persona: \"{offending}\". Delete every "
+            "sentence that restates the factory persona, keep only the changes the "
+            "record shows, and write it again.")
         try:
             report = await _run_keeper_agent(
                 task=retry_task, model=model, renderer=renderer,
@@ -275,7 +276,7 @@ async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
             return "kill"
         if kind == "no_change":
             # Once the restated sentences are deleted nothing evidence-backed
-            # remains — the keeper's honest verdict (寧缺勿濫).
+            # remains — the keeper's honest verdict (better nothing than filler).
             evo.log_or_raise(history_path, kind=evo.EVO_NO_CHANGE, reason=text)
             return "no_change"
         reason = evo.mechanical_checks(text, floor=floor, cap=cap,
@@ -293,7 +294,7 @@ async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
     try:
         verdict = await _run_full_skeptic(
             candidate=text, rationale=rationale, bundle=bundle, current=current,
-            pack_identity=pack_identity, model=model, renderer=renderer,
+            pack_identity=pack_identity, cap=cap, model=model, renderer=renderer,
             memsearch=memsearch, memory_root=memory_root,
             transcripts_root=transcripts_root,
             tool_output_store=tool_output_store, max_tokens=max_tokens,

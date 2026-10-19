@@ -587,6 +587,6 @@ def history_snapshot(history_path: Path, hwm: int) -> tuple[str, int]:
             if ev.get(key):
                 parts.append(f"{key}={ev[key]}")
         if ev.get("external_ctx"):
-            parts.append("external_ctx=true(讀外部內容時寫下)")
+            parts.append("external_ctx=true (written while reading external content)")
         lines.append(" ".join(parts))
     return "\n".join(lines), len(raw)

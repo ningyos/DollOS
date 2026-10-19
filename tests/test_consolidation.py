@@ -262,7 +262,7 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
     captured = {}
     async def fake_run_agent(**kw):
         captured.update(kw)
-        return {"status": "ok", "details": "- 主人偏好冰美式"}
+        return {"status": "ok", "details": "- My owner prefers iced americano"}
     monkeypatch.setattr(C, "run_agent", fake_run_agent)
 
     ok = await C.run_consolidation(
@@ -274,9 +274,13 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
     )
     assert ok is True
     out = (tmp_path / "consolidated" / "2026-06-29.md").read_text()
-    assert "主人偏好冰美式" in out
+    assert "My owner prefers iced americano" in out
     # transcript 內容有 inline 進 task（driver-fed）
     assert "冰美式" in captured["task"]
+    # The owner may talk in Chinese; the facts are still written in English
+    # (all-English plan Task 5), stated as observations.
+    assert "Write each fact in English" in captured["task"]
+    assert '"My owner prefers X"' in captured["task"]
     # keeper 用 allowlist + 無 shell_runner
     from dollos.tools import KEEPER_TOOLS
     assert captured["tools"] is KEEPER_TOOLS
@@ -299,7 +303,7 @@ async def test_run_consolidation_streams_keeper_on_the_model(tmp_path):
     (tdir / "2026-06-29.md").write_text("- 12:00 Owner: 我喜歡冰美式\n")
     report = (
         '<tool_call>{"name": "Report", "arguments": {"status": "ok", '
-        '"summary": "s", "details": "- 主人偏好冰美式"}}</tool_call>'
+        '"summary": "s", "details": "- My owner prefers iced americano"}}</tool_call>'
     )
     model = FakeModel([report])
     ok = await C.run_consolidation(

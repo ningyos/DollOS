@@ -19,9 +19,9 @@ from dollos.tools import KEEPER_TOOLS
 
 logger = logging.getLogger(__name__)
 
-_KEEPER_TASK = """讀以下逐字稿,提取去重成簡潔的中性 candidate 事實——主人的穩定偏好/習慣、你們關係的進展、值得長期記住的模式。陳述為觀察(『主人偏好X』),不要自我宣告(『我是X』)。重複合併、過時捨棄。不確定就不寫,寧缺勿濫。準不要多。把結果用 Report 工具的 details 欄回傳,每條一行 markdown bullet。
+_KEEPER_TASK = """Read the transcript below and extract concise, neutral, deduplicated candidate facts: your owner's stable preferences and habits, how the two of you are getting along, patterns worth remembering long-term. State them as observations ("My owner prefers X"), not self-declarations ("I am X"). Merge duplicates, drop what's outdated. If you're unsure, leave it out; better nothing than filler. Accuracy over quantity. Write each fact in English, even when the transcript is in another language. Return the result in the details field of the Report tool, one markdown bullet per line.
 
-逐字稿:
+Transcript:
 {transcript}
 """
 

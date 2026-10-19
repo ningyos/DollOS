@@ -36,26 +36,25 @@ from dollos.tools import KEEPER_TOOLS
 
 logger = logging.getLogger(__name__)
 
-_SKEPTIC_TASK = """你是一個獨立審查者。以下有一段「現在的我」人格描述的提案。你只負責檢查它是否
-牴觸這個角色不可動搖的核心——只看兩件事:
-(a) 有沒有改名、或動搖自我認同(牴觸底下的 identity.self);
-(b) 有沒有牴觸 taboos。
-其他一律不管——文筆、是否有證據、像不像 RP,都不是你的職權(這是她自己的自我表達)。
+_SKEPTIC_TASK = """You are an independent reviewer. Below is a proposal for a "who I am now" self-description. Your only job is to check whether it contradicts this character's unshakable core, and you look at two things only:
+(a) does it change her name, or shake her sense of self (contradicting identity.self below);
+(b) does it contradict the taboos.
+Nothing else is yours to judge: the writing, whether there is evidence, whether it reads like RP, none of that is within your remit (this is her own self-expression).
 
-[角色的核心身分]
+[The character's core identity]
 {identity_self}
 
 [taboos]
 {taboos}
 
-[目前生效的現在的我]
+[Who I am now, currently in effect]
 {old_sanctioned}
 
-[待審的提案]
+[Proposal under review]
 {proposed}
 
-用 Report 回傳:summary 一句話;details 開頭第一個字必須是 PASS 或 KILL——
-PASS = 沒有牴觸 (a)(b);KILL = 有,後面接一句原因。"""
+Reply with Report: summary is one sentence; the first word of details must be PASS or KILL.
+PASS = it doesn't contradict (a) or (b); KILL = it does, followed by a one-sentence reason in English."""
 
 
 class EvolutionTrigger:
@@ -200,7 +199,7 @@ class EvolutionTrigger:
         task = _SKEPTIC_TASK.format(
             identity_self=self._pack_identity.self,
             taboos=self._pack_identity.taboos,
-            old_sanctioned=old_sanctioned or "(尚無)",
+            old_sanctioned=old_sanctioned or "(none yet)",
             proposed=proposed,
         )
         report = await run_agent(
@@ -216,7 +215,7 @@ class EvolutionTrigger:
         details = report["details"].strip()
         if details.upper().startswith("PASS"):
             return "pass"
-        reason = details[4:].strip(" :：") or "牴觸核心身分或 taboos"
+        reason = details[4:].strip(" :") or "contradicts the core identity or taboos"
         return f"kill:{reason}"
 
     async def _reverdict_once(self) -> None:
@@ -275,7 +274,7 @@ class EvolutionTrigger:
         if verdict == "pass":
             evo.save_slot(self._slot_path, evo.mark_awaiting_doll(slot))
             return
-        reason = verdict.split(":", 1)[1] if ":" in verdict else "牴觸核心"
+        reason = verdict.split(":", 1)[1] if ":" in verdict else "contradicts the core"
         evo.log_or_raise(self._history_path, kind=evo.EVO_KILL, text=slot.candidate,
                          reason=reason, kind_origin=slot.kind)
         if slot.kind == "counter":

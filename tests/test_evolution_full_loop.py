@@ -34,7 +34,7 @@ async def test_full_loop_candidate_to_adopt(tmp_path, monkeypatch):
 
     async def fake_keeper(**kw):
         assert "喜歡整理日誌0" in kw["task"]          # bundle actually reached the keeper
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s0 存活多週"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s0 survived weeks"}
 
     async def fake_skeptic(**kw):
         assert kw["bundle"]                            # byte-identical bundle forwarded
@@ -109,10 +109,10 @@ async def test_full_loop_skeptic_kill_no_slot(tmp_path, monkeypatch):
     mr = tmp_path
 
     async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{VALID}\n依據:\n- s0 存活多週"}
+        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s0 survived weeks"}
 
     async def fake_skeptic(**kw):
-        return "kill:(e) 依據引用的事件在紀錄裡找不到"
+        return "kill:(e) the cited event is not in the record"
 
     monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
     monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
@@ -129,4 +129,4 @@ async def test_full_loop_skeptic_kill_no_slot(tmp_path, monkeypatch):
     hist = mr / "self_history.jsonl"
     last = self_history.read_events(hist)[-1]
     assert last["kind"] == evo.EVO_KILL
-    assert last["reason"] == "(e) 依據引用的事件在紀錄裡找不到"
+    assert last["reason"] == "(e) the cited event is not in the record"
