@@ -74,7 +74,7 @@ class EvolutionTrigger:
                  idle_threshold_s: int = 600,
                  base_interval_days: float = 7.0, max_interval_days: float = 28.0,
                  min_history_events: int = 8, min_diary_days: int = 14,
-                 enforcement=None, floor: int = 80, cap: int = 600,
+                 enforcement=None, floor: int = 250, cap: int = 2000,
                  max_tokens: int = 1024, agent_timeout_s: int = 120,
                  think_budget_tokens: int = 1024) -> None:
         self._state = state

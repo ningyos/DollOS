@@ -265,7 +265,7 @@ class SelfProfileConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    max_chars: int = 1200
+    max_chars: int = 4000
 
 
 class EvolutionConfig(BaseModel):
@@ -280,8 +280,10 @@ class EvolutionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    current_self_max_chars: int = 600
-    current_self_min_chars: int = 80
+    # Sized for English (~3.3x the chars of the same content in Chinese).
+    # Only new text is checked; an adopted shorter Chinese one stays in_sync.
+    current_self_max_chars: int = 2000
+    current_self_min_chars: int = 250
     base_interval_days: float = 7.0    # floats — live smoke clamps to sub-day
     max_interval_days: float = 28.0
     idle_threshold_s: int = 600
@@ -291,7 +293,7 @@ class EvolutionConfig(BaseModel):
     pending_min_age_days: float = 2.0
     # Mode-A keeper LLM budget (mirrors ConsolidationConfig). Larger than the
     # keeper's __init__ defaults (1024/120, sized for Mode B's one-word verdict):
-    # a keeper generating an 80–600-CJK candidate + citations through a <think>
+    # a keeper generating a 250–2000-char candidate + citations through a <think>
     # block truncates at 1024. Mode B's skeptic shares these harmlessly.
     max_tokens: int = 2048
     agent_timeout_s: int = 240
