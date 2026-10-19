@@ -106,3 +106,16 @@ async def test_guard_rejected_add_does_not_write_provenance(tmp_path):
     await LearnName(op="add", token="hey").run(ctx)
     hist_path = tmp_path / "aliases_history.jsonl"
     assert not hist_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_results_are_english_in_her_voice(tmp_path):
+    """Plan 2026-10-19 Task 7: the result text is English; the add result
+    stays in her own voice. The token itself is hers, as given."""
+    ctx = _make_mind_ctx(tmp_path)
+    assert await LearnName(op="add", token="Sharky").run(ctx) == (
+        'Got it — from now on you can call me "Sharky" too.')
+    assert await LearnName(op="remove", token="Sharky").run(ctx) == (
+        'Dropped the nickname "Sharky".')
+    assert await LearnName(op="add", token="ok").run(ctx) == (
+        '"ok" is too short or too common to keep as a nickname.')

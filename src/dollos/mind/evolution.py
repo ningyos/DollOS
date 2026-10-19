@@ -370,12 +370,12 @@ def mechanical_checks(text: str, *, floor: int, cap: int, enforcement) -> str | 
     from dollos.mind.persona_guard import check_persona_violations
     n = len(text)
     if n < floor:
-        return f"太短了({n} 字,至少要 {floor} 字)——現在的我需要一段完整的描述。"
+        return f"Too short ({n} chars; at least {floor}) — who I am now needs a full description."
     if n > cap:
-        return f"太長了({n} 字,上限 {cap} 字)——精簡一下。"
+        return f"Too long ({n} chars; the limit is {cap}) — tighten it."
     violations = check_persona_violations(text, enforcement)
     if violations:
-        return "牴觸人設約束:" + "、".join(violations)
+        return "Breaks the persona constraints: " + "; ".join(violations)
     return None
 
 

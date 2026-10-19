@@ -69,26 +69,26 @@ async def test_consolidated_excluded_from_auto_inject(tmp_path):
 
 
 def test_recall_provenance_prefix_for_consolidated_hits():
-    """Recall format_hit places [系統整併·待確認] prefix BEFORE the date (spec §3.3)."""
+    """Recall format_hit places [consolidated · unconfirmed] prefix BEFORE the date (spec §3.3)."""
     from dollos.tools import _format_hit
     h_cons = {"content": "主人偏好冰美式", "source": "shared/consolidated/2026-06-29.md"}
     h_norm = {"content": "今天天氣好", "source": "shared/2026-06-30.md"}
     cons_result = _format_hit(h_cons)
     norm_result = _format_hit(h_norm)
     # Prefix present in consolidated hit
-    assert "[系統整併·待確認]" in cons_result
+    assert "[consolidated · unconfirmed]" in cons_result
     # Prefix is before the date — bullet content starts with prefix, not date
-    assert cons_result.startswith("- [系統整併·待確認]"), (
+    assert cons_result.startswith("- [consolidated · unconfirmed]"), (
         f"Expected prefix before date, got: {cons_result!r}"
     )
     # The date still appears, but after the prefix
-    prefix_pos = cons_result.index("[系統整併·待確認]")
+    prefix_pos = cons_result.index("[consolidated · unconfirmed]")
     date_pos = cons_result.index("2026-06-29")
     assert prefix_pos < date_pos, (
         f"Prefix should appear before date in: {cons_result!r}"
     )
     # Normal hits have no prefix
-    assert "[系統整併·待確認]" not in norm_result
+    assert "[consolidated · unconfirmed]" not in norm_result
 
 
 @pytest.mark.asyncio

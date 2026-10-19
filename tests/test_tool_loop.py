@@ -38,6 +38,19 @@ def test_format_validation_error_names_field_not_raw_wall():
     assert "validation error" not in msg.lower()
 
 
+def test_tool_error_messages_are_english():
+    """Plan 2026-10-19 Task 7: the daemon's own words in a tool result are
+    English (Gura talks English; the prompt's framing follows)."""
+    assert format_unknown_tool("Foo", {"Shell": Shell, "Recall": Recall}) == (
+        "Unknown tool 'Foo'. Available tools: Recall, Shell")
+    try:
+        ReadToolOutput.model_validate({"id": "x", "offset": 0, "limit": 0})
+    except ValidationError as e:
+        msg = format_validation_error(e, "ReadToolOutput")
+    assert msg.startswith("Tool ReadToolOutput got bad arguments: limit: ")
+    assert msg.endswith(" (you gave 0)")
+
+
 @pytest.mark.asyncio
 async def test_dispatch_one_unknown_tool_friendly(tmp_path):
     from tests._dispatcher_helpers import _make_mind_ctx

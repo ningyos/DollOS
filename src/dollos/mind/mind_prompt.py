@@ -379,7 +379,7 @@ def _render_memory(hits: list[dict]) -> str:
         # consolidated/'s prefix. Trailing slash = directory boundary, so a
         # sibling like external_public_evil/ never matches.
         prefix = (
-            "[外部AI·未驗證] "
+            "[external AI · unverified] "
             if "external_public/" in (h.get("source") or "")
             else ""
         )
@@ -420,7 +420,7 @@ def _render_associative(hits: list[dict]) -> str:
             snippet = snippet[:97] + "..."
         tag = f"{axis}={value}" if axis else "?"
         prefix = (
-            "[外部AI·未驗證] "
+            "[external AI · unverified] "
             if "external_public/" in (h.get("source") or "")
             else ""
         )

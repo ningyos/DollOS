@@ -131,9 +131,9 @@ def _format_hit(hit: dict) -> str:
     #                      unverified AI over MCP can NoteMemory here, so on an
     #                      owner Recall it must read as untrusted, never trusted.
     if "consolidated/" in source:
-        prefix = "[系統整併·待確認] "
+        prefix = "[consolidated · unconfirmed] "
     elif "external_public/" in source:
-        prefix = "[外部AI·未驗證] "
+        prefix = "[external AI · unverified] "
     else:
         prefix = ""
     if d is not None:
@@ -252,7 +252,7 @@ class Shell(BaseModel):
         )
         result = (
             f"shell dispatched (command={self.command!r}, "
-            f"timeout={self.timeout_s}s). 結果會以新事件回來。"
+            f"timeout={self.timeout_s}s). The result comes back as a new event."
         )
         _record(ctx, "Shell", self._summary())
         return result
@@ -286,12 +286,7 @@ class InvokeSkill(BaseModel):
             else:
                 existing = []
             available = ", ".join(existing) if existing else "(none yet)"
-            return (
-                f"Skill '{self.name}' 不存在。"
-                f"目前可用 skills: {available}\n"
-                f"建議：用 Shell 動手做 / 直接用語音回答 / 用 Recall 找其他相關記憶。"
-                f"不要再猜其他 skill 名字。"
-            )
+            return f"Skill '{self.name}' doesn't exist. Skills available now: {available}"
         _record(ctx, "InvokeSkill", self._summary())
         return path.read_text()
 
@@ -432,7 +427,7 @@ class SpawnWorkflow(BaseModel):
         result = (
             f"workflow {workflow_id} dispatched "
             f"({len(self.tasks)} tasks, mode={self.mode}, "
-            f"timeout={self.timeout_s}s). 結果會以新事件回來。"
+            f"timeout={self.timeout_s}s). The result comes back as a new event."
         )
         _record(ctx, "SpawnWorkflow", self._summary())
         return result
@@ -501,7 +496,7 @@ class SpawnMonitor(BaseModel):
             f"(command={self.command!r}, "
             f"match={self.match_regex!r}, "
             f"rate_limit_s={self.rate_limit_s}). "
-            f"觸發 / 結束都會以新事件回來。"
+            f"Each trigger and the exit come back as new events."
         )
         _record(ctx, "SpawnMonitor", self._summary())
         return result
@@ -1057,15 +1052,17 @@ class SelfRevision(BaseModel):
         # Per-turn latch (spec §3.4): first slot-mutating call per turn acts.
         if ctx.evolution_latched:
             _record(ctx, "SelfRevision", self._summary())
-            return "這一輪已處理過人格演化候選了,下次反思再說。"
+            return ("The self revision candidate has already been handled this turn; "
+                    "it waits for the next reflection.")
 
         slot = evo.load_slot(slot_path, history_path=hist)
         if slot is None:
             _record(ctx, "SelfRevision", self._summary())
-            return "目前沒有待批的演化候選。"
+            return "There is no self revision candidate pending right now."
         if slot.status != "awaiting_doll":
             _record(ctx, "SelfRevision", self._summary())
-            return "候選還在送審中,通過後會回來給妳採納。"
+            return ("The candidate is still under review; once it passes, it comes back "
+                    "to you to adopt.")
 
         # Surfaced-this-turn gate (review F5): a Mode-B skeptic PASS can flip
         # awaiting_skeptic→awaiting_doll mid-cascade, AFTER surface_or_expire
@@ -1074,7 +1071,8 @@ class SelfRevision(BaseModel):
         # must not adopt (or reject) text that never reached her eyes.
         if not ctx.evolution_candidate_surfaced:
             _record(ctx, "SelfRevision", self._summary())
-            return "這個候選這一輪還沒呈現給妳看,下次反思再決定。"
+            return ("This candidate hasn't been shown to you this turn; the decision "
+                    "waits for the next reflection.")
 
         sanctioned = self_history.sanctioned_text(hist)
 
@@ -1104,7 +1102,8 @@ class SelfRevision(BaseModel):
                                  text=slot.candidate)
             except OSError:
                 _record(ctx, "SelfRevision", self._summary())
-                return "拒絕時寫記錄失敗了,先沒生效——稍後再試一次。"
+                return ("Writing the record of the rejection failed, so it didn't take effect — "
+                        "try again later.")
             evo.clear_slot(slot_path)
             # Slot-resolution invariant (spec §3.4): a non-adopt clearing
             # restores the file to sanctioned (or deletes it, bootstrap).
@@ -1112,7 +1111,7 @@ class SelfRevision(BaseModel):
             _anchor_evolution_decision("reject")
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
-            return "好,維持現狀,這個候選先擱著。"
+            return "OK, things stay as they are; the candidate is set aside."
 
         # decision == "adopt"
         # Storage-side marker strip (review F3): the model's `text` may echo the
@@ -1126,7 +1125,8 @@ class SelfRevision(BaseModel):
             # schedule for nothing — refuse; slot unchanged.
             if sanctioned is not None and evo.echo_equivalent(slot.candidate, sanctioned):
                 _record(ctx, "SelfRevision", self._summary())
-                return "候選與現在的內容相同;要維持現狀用 decision=reject。"
+                return ("The candidate is the same as the current text; to keep things as "
+                        "they are, use decision=reject.")
             # Adopt the CANDIDATE verbatim (never her paraphrase, spec §3.4).
             old = sanctioned
             drift = None if old is None else round(1.0 - pairwise_jaccard(old, slot.candidate), 4)
@@ -1136,7 +1136,8 @@ class SelfRevision(BaseModel):
                                  old_text=old, drift_score=drift)
             except OSError:
                 _record(ctx, "SelfRevision", self._summary())
-                return "採納時寫記錄失敗了,先沒生效——稍後再試一次。"
+                return ("Writing the record of the adoption failed, so it didn't take effect — "
+                        "try again later.")
             # File-write-failure row (spec §3.3, review F1): the evo_adopt line
             # already flushed ⇒ sanctioned = log. Retry the file write once; on a
             # second failure this is a LOG (best-effort evo_error), not an abort —
@@ -1157,21 +1158,24 @@ class SelfRevision(BaseModel):
                     _anchor_evolution_decision("adopt")
                     ctx.evolution_latched = True
                     _record(ctx, "SelfRevision", self._summary())
-                    return "已採納並記錄,但檔案寫入失敗——系統會自動修復。"
+                    return ("Adopted and recorded, but writing the file failed — the system "
+                            "will repair it automatically.")
             evo.clear_slot(slot_path)
             _anchor_evolution_decision("adopt")
             ctx.evolution_latched = True
             _record(ctx, "SelfRevision", self._summary())
-            return "採納了,這就是現在的我。"
+            return "Adopted. This is who I am now."
 
         if sanctioned is not None and evo.echo_equivalent(proposed, sanctioned):
             _record(ctx, "SelfRevision", self._summary())
-            return "這和現在的內容相同;要維持現狀就用 decision=reject。"
+            return ("This is the same as the current text; to keep things as they are, "
+                    "use decision=reject.")
 
         # Genuinely different → counter-proposal.
         if slot.counter_round >= evo.COUNTER_ROUND_CAP:
             _record(ctx, "SelfRevision", self._summary())
-            return "這個候選已經改寫過兩次了,請直接採納或拒絕。"
+            return ("This candidate has already been rewritten twice; adopt it or reject "
+                    "it as it stands.")
         reason = evo.mechanical_checks(
             proposed, floor=ctx.current_self_min_chars,
             cap=ctx.current_self_max_chars, enforcement=ctx.enforcement)
@@ -1187,11 +1191,13 @@ class SelfRevision(BaseModel):
                              counter_round=counter.counter_round)
         except OSError:
             _record(ctx, "SelfRevision", self._summary())
-            return "送審時寫記錄失敗了,先沒生效——稍後再試一次。"
+            return ("Writing the record of the rewrite failed, so it didn't go to review — "
+                    "try again later.")
         evo.save_slot(slot_path, counter)
         ctx.evolution_latched = True
         _record(ctx, "SelfRevision", self._summary())
-        return "妳的改寫已送審,通過後會回來給妳採納。"
+        return ("Your rewrite has gone to review; once it passes, it comes back to you "
+                "to adopt.")
 
 
 # Part A / A2 (2026-07-06 self-learned-aliases spec §3.3, R1-hardened):
@@ -1235,7 +1241,7 @@ class LearnName(BaseModel):
         token = self.token.strip()
         if not passes_alias_guard(token):
             _record(ctx, "LearnName", self._summary())
-            return f"「{token or self.token}」太短或太常見了,沒辦法記成暱稱。"
+            return f'"{token or self.token}" is too short or too common to keep as a nickname.'
 
         store = NameAliasStore(ctx.memory_root / "name_aliases.json")
         if self.op == "add":
@@ -1244,10 +1250,10 @@ class LearnName(BaseModel):
             # tool only ever reaches run() on an owner-present turn (see
             # mind_loop._active_tool_registry), so this is always true.
             store.add(token, origin="owner", note=self.note, now=time.time())
-            result = f"記住了,之後你也可以叫我「{token}」。"
+            result = f'Got it — from now on you can call me "{token}" too.'
         else:
             store.remove(token)
-            result = f"「{token}」這個暱稱撤掉了。"
+            result = f'Dropped the nickname "{token}".'
 
         # Provenance (D3), mirrors PinSelf → self_history.log_event. This is
         # on the tool-call hot path, so a history-write failure must never

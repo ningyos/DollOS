@@ -23,8 +23,9 @@ SECTION_TITLES: dict[str, str] = {
     "relationship": "我和主人",
     "user": "我注意到的主人",
 }
-# Titles the prompt shows ([Self profile] block). Plan 2026-10-19
-# gura-english-speech Task 4: the daemon's own words in her prompt are English.
+# Titles the prompt shows ([Self profile] block, PinSelf results). Plan
+# 2026-10-19 gura-english-speech Tasks 4 and 7: the daemon's own words in her
+# prompt are English.
 SECTION_DISPLAY_TITLES: dict[str, str] = {
     "self": "What I've learned about myself",
     "relationship": "Me and my owner",
@@ -140,7 +141,12 @@ def _entries_listing(sections: dict[str, list[Bullet]]) -> str:
     """Richer than a bare id list — shows `id: text` so the model can retry
     either by id or by pasting the exact line."""
     entries = [f"{b.id}: {b.text}" for key in SECTION_ORDER for b in sections[key]]
-    return "、".join(entries) if entries else "(目前沒有任何條目)"
+    return "; ".join(entries) if entries else "(none yet)"
+
+
+def _not_found(target: str, sections: dict[str, list[Bullet]]) -> str:
+    return (f'No entry matches "{target}"; current entries: {_entries_listing(sections)}. '
+            f"Retry with an id (like s1) or paste the entry's text.")
 
 
 def _log_pin(history_path: Path | None, **fields) -> None:
@@ -168,7 +174,7 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
 
     if op == "add":
         if section not in SECTION_ORDER:
-            return f"未知 section:{section}"
+            return f"Unknown section: {section}"
         clean_text = _strip_incoming_tag(text)
         existing = next(
             (b for b in sections[section] if b.text == clean_text), None
@@ -193,41 +199,40 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
                         _log_pin(history_path, kind="pin_reconfirm", turn=turn,
                                  external_ctx=external_ctx, section=section,
                                  id=existing.id, text=clean_text)
-            return f"已有相同條目:{existing.id}(未重複新增)"
+            return f"Same entry already exists: {existing.id} (not added again)"
         new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
-        result = f"已 pin 到「{SECTION_TITLES[section]}」:{new_id}"
+        result = f'Pinned to "{SECTION_DISPLAY_TITLES[section]}": {new_id}'
         pending_log = dict(kind="pin_add", turn=turn, external_ctx=external_ctx,
                            section=section, id=new_id, text=clean_text)
     elif op == "replace":
         found = _find(sections, target)
         if found is None:
-            return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
-                     f"可用 id(如 s1)或貼該條目文字重試。")
+            return _not_found(target, sections)
         key, i = found
         old = sections[key][i]
         clean_text = _strip_incoming_tag(text)
         sections[key][i] = Bullet(id=old.id, date=today, text=clean_text)
-        result = f"已更新 {old.id}"
+        result = f"Updated {old.id}"
         pending_log = dict(kind="pin_replace", turn=turn, external_ctx=external_ctx,
                            section=key, id=old.id, text=clean_text, old_text=old.text)
     elif op == "remove":
         found = _find(sections, target)
         if found is None:
-            return (f"找不到符合「{target}」的條目;現有:{_entries_listing(sections)}。"
-                     f"可用 id(如 s1)或貼該條目文字重試。")
+            return _not_found(target, sections)
         key, i = found
         old = sections[key].pop(i)
-        result = f"已移除 {old.id}"
+        result = f"Removed {old.id}"
         pending_log = dict(kind="pin_remove", turn=turn, external_ctx=external_ctx,
                            section=key, id=old.id, text="", old_text=old.text)
     else:
-        return f"未知 op:{op}"
+        return f"Unknown op: {op}"
 
     serialized = _serialize(sections)
     if op in ("add", "replace") and len(serialized) > max_chars:
-        return (f"self-profile 已達上限({max_chars} 字),寫入後會是 {len(serialized)} 字。"
-                f"先 remove/replace 一些再 pin。")
+        return (f"self-profile is at its limit ({max_chars} chars); with this write it "
+                f"would be {len(serialized)} chars. Remove or replace some entries first, "
+                f"then pin.")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(serialized)
