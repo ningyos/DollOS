@@ -82,14 +82,13 @@ async def test_external_public_suppresses_auto_context(tmp_path: Path):
         await ms.index()
 
         state = MindState()
-        state.recent_perceptions.append(
-            Perception(kind="UserSpoke", t=1.0, data={"text": "unique-owner-fact-777"})
-        )
+        spoke = Perception(kind="UserSpoke", t=1.0, data={"text": "unique-owner-fact-777"})
+        state.recent_perceptions.append(spoke)
         ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
         ctx.origin_tier = "external_public"
         loop = _bare_loop(tmp_path, state, ctx)
 
-        hits = await loop._derive_memory_hits()
+        hits = await loop._derive_memory_hits([spoke])
         assert hits == []
     finally:
         ms.close()
@@ -105,14 +104,13 @@ async def test_internal_turn_auto_context_not_suppressed(tmp_path: Path):
         await ms.index()
 
         state = MindState()
-        state.recent_perceptions.append(
-            Perception(kind="UserSpoke", t=1.0, data={"text": "unique-owner-fact-888"})
-        )
+        spoke = Perception(kind="UserSpoke", t=1.0, data={"text": "unique-owner-fact-888"})
+        state.recent_perceptions.append(spoke)
         ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
         assert ctx.origin_tier == "internal"
         loop = _bare_loop(tmp_path, state, ctx)
 
-        hits = await loop._derive_memory_hits()
+        hits = await loop._derive_memory_hits([spoke])
         assert any("unique-owner-fact-888" in h.get("content", "") for h in hits)
     finally:
         ms.close()

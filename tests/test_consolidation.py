@@ -51,17 +51,18 @@ async def test_consolidated_excluded_from_auto_inject(tmp_path):
     from dollos.mind.mind_state import MindState, Perception
 
     class _SrcMemSearch(_FakeMemSearch):
-        async def search(self, query, top_k=5):
+        async def search(self, query, top_k=5, **_kw):
             return [
                 {"content": "主人偏好冰美式", "source": "shared/consolidated/2026-06-29.md"},
                 {"content": "今天天氣好", "source": "shared/2026-06-30.md"},
             ]
 
     state = MindState()
-    state.recent_perceptions.append(Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"}))
+    spoke = Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"})
+    state.recent_perceptions.append(spoke)
     ctx = _make_mind_ctx(tmp_path, memsearch=_SrcMemSearch(), state=state)
     loop = _bare_loop(tmp_path, state=state, ctx=ctx)
-    hits = await loop._derive_memory_hits()
+    hits = await loop._derive_memory_hits([spoke])
     sources = [h.get("source", "") for h in hits]
     assert not any("consolidated/" in s for s in sources)
     assert any("shared/2026-06-30" in s for s in sources)
@@ -154,7 +155,7 @@ class _QueryCapturingMemSearch(_FakeMemSearch):
         super().__init__(hits)
         self.queries: list[str] = []
 
-    async def search(self, query, top_k=5):
+    async def search(self, query, top_k=5, **_kw):
         self.queries.append(query)
         return self._hits
 
@@ -169,14 +170,15 @@ async def test_userspoke_branch_ignores_stale_open_loops(tmp_path):
     from dollos.mind.mind_state import OpenLoop
 
     state = MindState()
-    state.recent_perceptions.append(Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"}))
+    spoke = Perception(kind="UserSpoke", t=1.0, data={"text": "嗨"})
+    state.recent_perceptions.append(spoke)
     state.open_loops.append(
         OpenLoop(id="t1", desc="STALE_LOOP_MARKER_TEXT", opened_at=time.time() - OPEN_LOOP_STALE_S - 100)
     )
     ms = _QueryCapturingMemSearch()
     ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
     loop = _bare_loop(tmp_path, state=state, ctx=ctx)
-    await loop._derive_memory_hits()
+    await loop._derive_memory_hits([spoke])
     assert ms.queries == ["嗨"]
     assert "STALE_LOOP_MARKER_TEXT" not in ms.queries[0]
 
@@ -191,14 +193,15 @@ async def test_fallback_includes_stale_open_loop_desc(tmp_path):
     from dollos.mind.mind_state import OpenLoop
 
     state = MindState()
-    state.recent_perceptions.append(Perception(kind="ScheduledMoment", t=1.0, data={"text": "alarm"}))
+    moment = Perception(kind="ScheduledMoment", t=1.0, data={"intent": "alarm"})
+    state.recent_perceptions.append(moment)
     state.open_loops.append(
         OpenLoop(id="t1", desc="STALE_LOOP_MARKER_TEXT", opened_at=time.time() - OPEN_LOOP_STALE_S - 100)
     )
     ms = _QueryCapturingMemSearch()
     ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
     loop = _bare_loop(tmp_path, state=state, ctx=ctx)
-    await loop._derive_memory_hits()
+    await loop._derive_memory_hits([moment])
     assert len(ms.queries) == 1
     assert "STALE_LOOP_MARKER_TEXT" in ms.queries[0]
 
@@ -211,14 +214,15 @@ async def test_fallback_excludes_fresh_open_loop_desc(tmp_path):
     from dollos.mind.mind_state import OpenLoop
 
     state = MindState()
-    state.recent_perceptions.append(Perception(kind="ScheduledMoment", t=1.0, data={"text": "alarm"}))
+    moment = Perception(kind="ScheduledMoment", t=1.0, data={"intent": "alarm"})
+    state.recent_perceptions.append(moment)
     state.open_loops.append(
         OpenLoop(id="t1", desc="FRESH_LOOP_MARKER_TEXT", opened_at=time.time() - 10)
     )
     ms = _QueryCapturingMemSearch()
     ctx = _make_mind_ctx(tmp_path, memsearch=ms, state=state)
     loop = _bare_loop(tmp_path, state=state, ctx=ctx)
-    await loop._derive_memory_hits()
+    await loop._derive_memory_hits([moment])
     assert len(ms.queries) == 1
     assert "FRESH_LOOP_MARKER_TEXT" not in ms.queries[0]
 

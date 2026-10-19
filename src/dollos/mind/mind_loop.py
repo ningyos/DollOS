@@ -25,6 +25,7 @@ from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_per
 from dollos.mind.associative_search import associative_search
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import (
+    MEMORY_HITS_PER_TURN,
     OPEN_LOOP_STALE_S,
     energy_bucket_line,
     render_body_signal,
@@ -572,12 +573,13 @@ class MindLoop:
         # TODO Task 8.5: ProcessRegistry → state.active_tasks
         # TODO Task 8.5: Schedule → state.pending_events
 
-        # Memsearch query from recent perceptions
-        memsearch_hits = await self._derive_memory_hits()
+        # Memsearch query from this turn's own input; at most
+        # MEMORY_HITS_PER_TURN of the candidates render (plan 2026-10-18 Task 8).
+        memsearch_hits = (await self._derive_memory_hits(perceptions))[:MEMORY_HITS_PER_TURN]
         # Self-directed agenda (spec 2026-07-07 §3.1/§3.3): stash this turn's
         # REAL [Memory context] hit sources read-only on ctx so PursueGoal can
         # auto-capture non-fabricable provenance from code, not model args.
-        # No new pipeline — this is exactly memsearch_hits, computed above.
+        # Exactly the hits that render — never one the cap held back.
         self._ctx.turn_memory_sources = [
             h.get("source", "") for h in memsearch_hits if h.get("source")
         ]
@@ -1036,8 +1038,20 @@ class MindLoop:
         # So the caller truncates once, after every bucket, gated on all saves.
         return saved
 
-    async def _derive_memory_hits(self) -> list[dict]:
-        """Query memsearch from the most recent UserSpoke or last 3 perceptions.
+    async def _derive_memory_hits(self, perceptions: list[Perception]) -> list[dict]:
+        """Query memsearch from this turn's own input: what was said in
+        ``perceptions`` (UserSpoke text, ChannelMessage content), else their
+        last 3 bodies. Returns every candidate, best first; the caller caps
+        how many render.
+
+        The query is this batch, not the newest UserSpoke in the global
+        deque (mind-loop §10): an owner DM turn searches for the DM, a
+        reflection turn for the reflection, not the last thing said locally.
+
+        ``transcripts/`` is excluded at the SQL layer (plan 2026-10-18 Task
+        8): a day's transcript is one chunk, and the owner's line is written
+        before this query runs, so it matched almost every owner turn with
+        the whole day. ``Recall`` still searches it.
 
         P1e Task 4 (S3): on an external_public (stranger) turn the auto-
         injected ``[Memory context]`` is suppressed entirely — not just
@@ -1047,15 +1061,16 @@ class MindLoop:
         """
         if self._ctx.origin_tier == "external_public":
             return []
-        query = ""
-        for p in reversed(self._state.recent_perceptions):
+        said = []
+        for p in perceptions:
             if p.kind == "UserSpoke":
-                query = p.data.get("text", "")
-                break
-        if not query and len(self._state.recent_perceptions) > 0:
-            # fallback: concat last 3 perception bodies
-            last3 = list(self._state.recent_perceptions)[-3:]
-            parts = [str(p.data) for p in last3]
+                said.append(p.data.get("text", ""))
+            elif p.kind == "ChannelMessage":
+                said.append(p.data.get("content", ""))
+        query = " ".join(t for t in said if t)
+        if not query and perceptions:
+            # fallback: concat this batch's last 3 perception bodies
+            parts = [str(p.data) for p in perceptions[-3:]]
             # P7 cheap slice (spec §13.2): also pull stale open-loop desc
             # text into the fallback query so idle/reflection/scheduled
             # turns actively retrieve memory related to unresolved
@@ -1071,7 +1086,9 @@ class MindLoop:
         if not query:
             return []
         try:
-            hits = await self._ctx.memsearch.search(query, top_k=10)
+            hits = await self._ctx.memsearch.search(
+                query, top_k=10, exclude_prefixes=[self._ctx.transcripts_root]
+            )
             # B2 candidate pull-only: consolidated/ sources are never auto-injected
             # into [Memory context] — they are only surfaced via Recall (with
             # provenance prefix). Gating is self-contained here, not delegated.

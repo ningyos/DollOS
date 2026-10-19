@@ -33,7 +33,7 @@ class _FakeMemSearch:
     async def index_file(self, path):
         self.indexed.append(path)
 
-    async def search(self, query: str, top_k: int = 5):
+    async def search(self, query: str, top_k: int = 5, **_kw):
         return self._hits
 
 
