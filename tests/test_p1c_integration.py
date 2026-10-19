@@ -78,10 +78,8 @@ def _make_settings(tmp_path: Path, **attention_kwargs) -> Settings:
     )
     return Settings(
         llm=LLMConfig(
-            provider="llamacpp",
-            template="qwen3-thinking",
             base_url="http://test.local:8001",
-            model_alias="big",
+            model="big",
         ),
         ipc=IPCConfig(host="127.0.0.1", port=0),
         log=LogConfig(level="WARNING"),

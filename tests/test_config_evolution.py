@@ -6,7 +6,7 @@ from dollos.config import Settings
 _MIN = """
 [llm]
 base_url = "http://localhost:8001"
-model_alias = "test"
+model = "test"
 [character]
 pack = "packs/gura"
 """

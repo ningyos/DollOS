@@ -34,10 +34,8 @@ def _make_settings(tmp_path: Path) -> Settings:
     )
     return Settings(
         llm=LLMConfig(
-            provider="llamacpp",
-            template="qwen3-thinking",
             base_url="http://test.local:8001",
-            model_alias="big",
+            model="big",
         ),
         ipc=IPCConfig(host="127.0.0.1", port=0),
         log=LogConfig(level="WARNING"),
@@ -146,7 +144,7 @@ def test_kernel_has_tool_output_store(tmp_path: Path) -> None:
 def test_kernel_wires_trace_writer_when_enabled(tmp_path: Path) -> None:
     """settings.trace.enabled defaults True (紀錄=訓練資料) → kernel builds a
     real TraceWriter rooted at settings.trace.root and passes it (plus
-    model_id=settings.llm.model_alias) into MindLoop (P1f Task 6)."""
+    model_id=settings.llm.model) into MindLoop (P1f Task 6)."""
     from dollos.mind.trace import TraceWriter
 
     settings = _make_settings(tmp_path)
@@ -154,7 +152,7 @@ def test_kernel_wires_trace_writer_when_enabled(tmp_path: Path) -> None:
     dollos = DollOS(settings)
     assert isinstance(dollos._mind_loop._trace_writer, TraceWriter)
     assert dollos._mind_loop._trace_writer._root == Path(settings.trace.root)
-    assert dollos._mind_loop._model_id == settings.llm.model_alias == "big"
+    assert dollos._mind_loop._model_id == settings.llm.model == "big"
 
 
 def test_kernel_no_trace_writer_when_disabled(tmp_path: Path) -> None:
@@ -573,11 +571,9 @@ async def test_kernel_shutdown_awaits_workflow_runner_stop(tmp_path, monkeypatch
     monkeypatch.setattr(dollos.memsearch, "close", lambda: None)
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
-    # Startup probe (Task 3) makes a real network call — stub it so this
+    # Boot check makes a real network call — stub it so this
     # shutdown-ordering test doesn't hit test.local's fake base_url.
-    monkeypatch.setattr(
-        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
-    )
+    monkeypatch.setattr(dollos.model, "check", lambda: _noop())
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -714,11 +710,9 @@ async def test_shutdown_consolidation_before_memsearch_close(tmp_path, monkeypat
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
-    # Startup probe (Task 3) makes a real network call — stub it so this
+    # Boot check makes a real network call — stub it so this
     # shutdown-ordering test doesn't hit test.local's fake base_url.
-    monkeypatch.setattr(
-        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
-    )
+    monkeypatch.setattr(dollos.model, "check", lambda: _noop())
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -836,11 +830,9 @@ async def test_shutdown_gathers_inflight_keeper(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
-    # Startup probe (Task 3) makes a real network call — stub it so this
+    # Boot check makes a real network call — stub it so this
     # shutdown-ordering test doesn't hit test.local's fake base_url.
-    monkeypatch.setattr(
-        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
-    )
+    monkeypatch.setattr(dollos.model, "check", lambda: _noop())
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -965,11 +957,9 @@ async def test_shutdown_gathers_inflight_skeptic(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.server, "start", lambda: _noop())
     monkeypatch.setattr(dollos.server, "stop", lambda: _noop())
-    # Startup probe (Task 3) makes a real network call — stub it so this
+    # Boot check makes a real network call — stub it so this
     # shutdown-ordering test doesn't hit test.local's fake base_url.
-    monkeypatch.setattr(
-        "dollos.kernel.assert_bounded_repetition_supported", lambda llm: _noop()
-    )
+    monkeypatch.setattr(dollos.model, "check", lambda: _noop())
     monkeypatch.setattr(dollos, "_replay_wal", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "run", lambda: _noop())
     monkeypatch.setattr(dollos._mind_loop, "shutdown", lambda: None)
@@ -997,23 +987,35 @@ async def test_shutdown_gathers_inflight_skeptic(tmp_path, monkeypatch) -> None:
     )
 
 
-# ----- 延遲壓縮 Part 1 Task 3: startup probe wiring (fail-closed ordering) -----
+# ----- boot check wiring (fail-closed ordering) -----
+
+
+def test_kernel_builds_chat_model_from_settings(tmp_path: Path) -> None:
+    """[llm] builds the chat-completions ModelAdapter the boot check runs on."""
+    from dollos.llm.chat_completions import ChatCompletionsAdapter
+
+    settings = _make_settings(tmp_path)
+    settings.llm.api_key = "k"
+    dollos = DollOS(settings)
+    assert isinstance(dollos.model, ChatCompletionsAdapter)
+    assert dollos.model._base_url == "http://test.local:8001"
+    assert dollos.model._model == "big"
+    assert dollos.model._api_key == "k"
+    assert dollos.model._timeout_s == settings.llm.timeout_s
+    assert dollos.model._recorder is dollos.telemetry_recorder
 
 
 @pytest.mark.asyncio
-async def test_startup_probe_failure_aborts_before_server_start(tmp_path, monkeypatch):
-    """DollOS.run() calls assert_bounded_repetition_supported() BEFORE
-    server.start(), and lets a RuntimeError from the probe propagate rather
-    than swallow it — fail-closed (spec §11 / R1-7).
+async def test_boot_check_failure_aborts_before_server_start(tmp_path, monkeypatch):
+    """DollOS.run() awaits model.check() BEFORE server.start(), and lets a
+    RuntimeError from it propagate rather than swallow it — fail-closed: a
+    wrong URL or model id never brings the IPC server up.
 
-    Regression guard: nothing else in the suite pins this wiring. The 4
-    other kernel e2e tests that reach run() all monkeypatch the probe to a
-    noop, so a future change that moves the probe call after server.start(),
-    deletes it, or wraps it in a try/except that swallows the error would
-    pass every existing test silently. This test fails in exactly that
-    scenario: it asserts BOTH that run() raises, AND that server.start()
-    was never called (proof the IPC server never comes up when the probe
-    fails).
+    Regression guard: the other kernel e2e tests that reach run() all stub
+    check() to a noop, so a change that moves the check after
+    server.start(), deletes it, or swallows its error would pass them
+    silently. This test asserts BOTH that run() raises AND that
+    server.start() was never called.
     """
     from dollos.wal.pidfile import RestartKind
 
@@ -1028,22 +1030,20 @@ async def test_startup_probe_failure_aborts_before_server_start(tmp_path, monkey
     async def _spy_start() -> None:
         start_called.set()
 
-    async def _raising_probe(llm) -> None:
-        raise RuntimeError("probe: bounded repetition not supported")
+    async def _raising_check() -> None:
+        raise RuntimeError("model server does not serve that model")
 
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
     monkeypatch.setattr(dollos.memsearch, "close", lambda: None)
-    monkeypatch.setattr(
-        "dollos.kernel.assert_bounded_repetition_supported", _raising_probe
-    )
+    monkeypatch.setattr(dollos.model, "check", _raising_check)
     monkeypatch.setattr(dollos.server, "start", _spy_start)
     monkeypatch.setattr(dollos._pidfile, "acquire", lambda: RestartKind.COLD)
     monkeypatch.setattr(dollos._pidfile, "release", lambda: None)
 
-    with pytest.raises(RuntimeError, match="probe: bounded repetition not supported"):
+    with pytest.raises(RuntimeError, match="does not serve that model"):
         await asyncio.wait_for(dollos.run(), timeout=3.0)
 
     assert not start_called.is_set(), (
-        "server.start() was called even though the startup probe raised — "
-        "the fail-closed ordering (probe BEFORE server.start()) is broken"
+        "server.start() was called even though the boot check raised — "
+        "the fail-closed ordering (check BEFORE server.start()) is broken"
     )

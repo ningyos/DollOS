@@ -10,13 +10,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class LLMConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["llamacpp"] = "llamacpp"
-    template: Literal["qwen3-thinking"] = "qwen3-thinking"
+    # OpenAI-compatible /v1/chat/completions with native tool calling.
+    provider: Literal["openai-chat"] = "openai-chat"
     base_url: str
-    model_alias: str
-    timeout_s: float = 60.0
-    # concurrent LLM generations; set to your llama-server --parallel (cloud APIs can raise)
-    max_concurrency: int = 2
+    # the id the server lists in /v1/models; the boot check refuses any other
+    model: str
+    api_key: str = ""  # sent as a Bearer token only when set
+    # covers a cold prefill plus queueing behind other clients; the server
+    # sends no keep-alive during prefill
+    timeout_s: float = 300.0
+    # concurrent LLM generations; Strata has one compute slot
+    max_concurrency: int = 1
+    # thinking tokens per call (reasoning_budget_tokens); max_tokens is
+    # raised by this much so thinking never eats the answer budget
+    think_budget_tokens: int = 1024
 
 
 class IPCConfig(BaseModel):

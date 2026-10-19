@@ -2,12 +2,16 @@
 # Copy to config.toml and edit.
 
 [llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
-base_url = "http://127.0.0.1:8001"
-model_alias = "unsloth/Qwen3.6"
-timeout_s = 60.0
-max_concurrency = 2   # concurrent LLM generations; set to your llama-server --parallel (cloud APIs can raise)
+# Any OpenAI-compatible /v1/chat/completions server with native tool calling.
+# Boot checks /health and that `model` is listed in /v1/models, and refuses to
+# start otherwise.
+provider = "openai-chat"
+base_url = "http://100.110.158.36:8080"   # Strata
+model = "qwen3.8-flash-next-iq3_s"        # an id from /v1/models
+api_key = ""                               # sent as Bearer only when set
+timeout_s = 300.0         # cold prefill + queueing behind other clients
+max_concurrency = 1       # Strata has 1 compute slot, shared with every client
+think_budget_tokens = 1024   # thinking cap per call (reasoning_budget_tokens); at the cap the server cuts thinking short and she answers
 
 [ipc]
 host = "127.0.0.1"

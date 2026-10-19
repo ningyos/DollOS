@@ -10,10 +10,9 @@ from dollos.config import BridgeConfig, Settings, SystemPulseConfig, load_settin
 
 _BASE_TOML = """
 [llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
+provider = "openai-chat"
 base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
+model = "test-model"
 
 [ipc]
 host = "127.0.0.1"
@@ -137,10 +136,9 @@ def test_character_config_rejects_legacy_profile_path(tmp_path: Path):
     config_path.write_text(
         """
 [llm]
-provider = "llamacpp"
-template = "qwen3-thinking"
+provider = "openai-chat"
 base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
+model = "test-model"
 
 [character]
 profile_path = "experiments/test_character.jinja"
@@ -156,9 +154,8 @@ def test_load_settings_unknown_provider_raises(tmp_path: Path):
         """
 [llm]
 provider = "vllm"
-template = "qwen3-thinking"
 base_url = "http://127.0.0.1:8001"
-model_alias = "test-model"
+model = "test-model"
 
 [character]
 pack = "character_packs/gura"
@@ -166,6 +163,48 @@ pack = "character_packs/gura"
     )
     with pytest.raises(ValidationError):
         load_settings(config_path)
+
+
+def test_llm_config_defaults(tmp_path: Path):
+    """[llm] talks /v1/chat/completions; defaults fit Strata (one compute
+    slot, cold prefill plus queueing behind other clients)."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML)
+    llm = load_settings(config_path).llm
+    assert llm.provider == "openai-chat"
+    assert llm.base_url == "http://127.0.0.1:8001"
+    assert llm.model == "test-model"
+    assert llm.api_key == ""
+    assert llm.timeout_s == 300.0
+    assert llm.max_concurrency == 1
+    assert llm.think_budget_tokens == 1024
+
+
+@pytest.mark.parametrize("legacy", ['template = "qwen3-thinking"', 'model_alias = "test-model"'])
+def test_llm_config_rejects_legacy_fields(tmp_path: Path, legacy: str):
+    """An old llamacpp config.toml fails at load, naming the unknown field."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML.replace("[llm]\n", f"[llm]\n{legacy}\n"))
+    field = legacy.split(" =")[0]
+    with pytest.raises(ValidationError, match=field):
+        load_settings(config_path)
+
+
+def test_llm_config_rejects_llamacpp_provider(tmp_path: Path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_BASE_TOML.replace('"openai-chat"', '"llamacpp"'))
+    with pytest.raises(ValidationError):
+        load_settings(config_path)
+
+
+def test_example_config_points_at_strata():
+    """config.example.toml loads under the current schema and names the
+    model id Strata lists in /v1/models."""
+    example = Path(__file__).resolve().parents[1] / "config.example.toml"
+    llm = load_settings(example).llm
+    assert llm.base_url == "http://100.110.158.36:8080"
+    assert llm.model == "qwen3.8-flash-next-iq3_s"
+    assert llm.max_concurrency == 1
 
 
 def test_settings_includes_conversation_history_default(tmp_path: Path) -> None:
@@ -244,7 +283,7 @@ def test_energy_config_on_settings(tmp_path: Path):
 def test_self_profile_config_defaults():
     from dollos.config import Settings, LLMConfig, CharacterConfig
     s = Settings(
-        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        llm=LLMConfig(base_url="http://x", model="m"),
         character=CharacterConfig(pack="gura"),
     )
     assert s.self_profile.enabled is True
@@ -254,7 +293,7 @@ def test_self_profile_config_defaults():
 def test_diary_config_defaults():
     from dollos.config import Settings, LLMConfig, CharacterConfig
     s = Settings(
-        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        llm=LLMConfig(base_url="http://x", model="m"),
         character=CharacterConfig(pack="gura"),
     )
     assert s.diary.enabled is True
@@ -265,7 +304,7 @@ def test_diary_config_defaults():
 def test_trace_settings_default_enabled():
     from dollos.config import Settings, LLMConfig, CharacterConfig
     s = Settings(
-        llm=LLMConfig(base_url="http://x", model_alias="m"),
+        llm=LLMConfig(base_url="http://x", model="m"),
         character=CharacterConfig(pack="gura"),
     )
     assert s.trace.enabled is True
@@ -326,11 +365,9 @@ bogus_field = 1
 
 def _minimal_settings_dict(tmp_path):
     # LLMConfig + CharacterConfig 是 Settings 僅有的 required 欄位;其餘有預設。
-    # NOTE: LLMConfig's required fields are `base_url` + `model_alias` (not
-    # `model_id` — confirmed against src/dollos/config.py, adjusted from the
-    # task brief's draft helper to match the real schema).
+    # NOTE: LLMConfig's required fields are `base_url` + `model`.
     return {
-        "llm": {"base_url": "http://localhost:8001", "model_alias": "x"},
+        "llm": {"base_url": "http://localhost:8001", "model": "x"},
         "character": {"pack": str(tmp_path / "pack")},
     }
 

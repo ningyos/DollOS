@@ -34,7 +34,7 @@ Usage:
     uv run python scripts/persona_stability_smoke.py --config config.toml
 
   `--config` should point at a real DollOS config (for `[llm]` — base_url /
-  model_alias / template — and `[character].pack`), exactly like
+  model — and `[character].pack`), exactly like
   `python -m dollos --config <path>`. HOWEVER: this script unconditionally
   overrides `[ipc]` to an OS-assigned ephemeral port (port 0) and `[data]`
   to a fresh temp directory before constructing the DollOS instance — it

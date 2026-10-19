@@ -34,8 +34,8 @@ from dollos.ipc.messages import (
 )
 from dollos.ipc.server import WebSocketServer
 from dollos.llm.adapter import LLMAdapter
+from dollos.llm.chat_completions import ChatCompletionsAdapter
 from dollos.llm.composed import ComposedLLMAdapter
-from dollos.llm.grammar_probe import assert_bounded_repetition_supported
 from dollos.llm.templates import Qwen3ThinkingTemplate
 from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
@@ -91,35 +91,36 @@ def split_scaffolding(renderer, **ctx) -> tuple[str, str]:
     return prefix, suffix
 
 
+def build_model(
+    settings: Settings,
+    recorder: TelemetryRecorder | None = None,
+) -> ChatCompletionsAdapter:
+    return ChatCompletionsAdapter(
+        base_url=settings.llm.base_url,
+        model=settings.llm.model,
+        api_key=settings.llm.api_key,
+        timeout_s=settings.llm.timeout_s,
+        max_concurrency=settings.llm.max_concurrency,
+        recorder=recorder,
+        max_context_tokens=settings.cognition.max_context_tokens,
+    )
+
+
 def build_adapter(
     settings: Settings,
     recorder: TelemetryRecorder | None = None,
 ) -> LLMAdapter:
-    provider = _build_provider(settings, recorder=recorder)
-    template = _build_template(settings)
-    return ComposedLLMAdapter(provider=provider, template=template)
-
-
-def _build_provider(
-    settings: Settings,
-    recorder: TelemetryRecorder | None = None,
-) -> LlamaCppProvider:
-    if settings.llm.provider == "llamacpp":
-        return LlamaCppProvider(
-            base_url=settings.llm.base_url,
-            timeout_s=settings.llm.timeout_s,
-            recorder=recorder,
-            model_alias=settings.llm.model_alias,
-            max_context_tokens=settings.cognition.max_context_tokens,
-            max_concurrency=settings.llm.max_concurrency,
-        )
-    raise ValueError(f"unknown provider: {settings.llm.provider}")
-
-
-def _build_template(settings: Settings) -> Qwen3ThinkingTemplate:
-    if settings.llm.template == "qwen3-thinking":
-        return Qwen3ThinkingTemplate()
-    raise ValueError(f"unknown template: {settings.llm.template}")
+    """Legacy /completion + grammar adapter, kept only for callers not yet
+    moved to ``build_model`` (removed with them)."""
+    provider = LlamaCppProvider(
+        base_url=settings.llm.base_url,
+        timeout_s=settings.llm.timeout_s,
+        recorder=recorder,
+        model_alias=settings.llm.model,
+        max_context_tokens=settings.cognition.max_context_tokens,
+        max_concurrency=settings.llm.max_concurrency,
+    )
+    return ComposedLLMAdapter(provider=provider, template=Qwen3ThinkingTemplate())
 
 
 def build_memsearch(settings: Settings) -> FtsMemory:
@@ -418,6 +419,7 @@ class DollOS:
         # data/traces/vitals, alongside the finetune trace writer's own
         # data/traces root — no filename collision, distinct subdir).
         self.vitals_recorder = VitalsRecorder(settings.data.root / "traces" / "vitals")
+        self.model = build_model(settings, recorder=self.telemetry_recorder)
         self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
@@ -605,7 +607,7 @@ class DollOS:
             pending_max_surfacings=settings.evolution.pending_max_surfacings,
             pending_min_age_days=settings.evolution.pending_min_age_days,
             trace_writer=trace_writer,
-            model_id=settings.llm.model_alias,
+            model_id=settings.llm.model,
             on_turn_complete=self._on_turn_complete,
             diary_max_log_chars=settings.diary.max_log_chars,
             turn_latency_recorder=self.turn_latency_recorder,
@@ -1247,13 +1249,11 @@ class DollOS:
             logger.warning("dirty restart detected — previous daemon crashed")
         await self.memsearch.index()
         try:
-            # Fail-closed startup probe (spec §11 / R1-7): an old llama-server
-            # rejects GBNF `{m,n}` bounded repetition (Task 1's think
-            # line-length bound depends on it) with a per-request HTTP error,
-            # not a Python build-time raise — no-fallback can't catch that.
-            # Abort boot here, before the server/IPC comes up, rather than
-            # let every conversation turn crash later.
-            await assert_bounded_repetition_supported(self.adapter)
+            # Fail-closed boot check: the model server is up (/health) and
+            # serves the configured model (/v1/models). Abort here, before
+            # the IPC server comes up, rather than let every turn fail later.
+            # No generation request: it would evict the server's cache.
+            await self.model.check()
 
             await self.server.start()
 

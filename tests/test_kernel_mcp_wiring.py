@@ -24,8 +24,7 @@ def _make_settings(tmp_path: Path, *, mcp: McpConfig | None = None) -> Settings:
         'personality = "- chill"\ntaboos = "- no LARP"\n'
     )
     return Settings(
-        llm=LLMConfig(provider="llamacpp", template="qwen3-thinking",
-                      base_url="http://test.local:8001", model_alias="big"),
+        llm=LLMConfig(base_url="http://test.local:8001", model="big"),
         ipc=IPCConfig(host="127.0.0.1", port=9876),
         log=LogConfig(level="WARNING"),
         data=DataConfig(root=tmp_path / "data"),
