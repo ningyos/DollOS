@@ -1699,8 +1699,8 @@ class MindLoop:
         origins, including the None origin of internal turns).
 
         Guards the single outbound chokepoint: a whitespace-only "sentence"
-        (e.g. the grammar's `</think>` boilerplate newlines leaking past
-        `SentenceChunker` — regression, see `test_mind_loop_empty_speech_chunk.py`)
+        (e.g. the newlines that open a reply right after the thinking, split
+        out by `SentenceChunker` — regression, see `test_mind_loop_empty_speech_chunk.py`)
         has no deliverable content and must never reach the sink. Some
         transports (e.g. Discord) reject an empty/whitespace message
         outright, and a raised exception there must not be able to take down
