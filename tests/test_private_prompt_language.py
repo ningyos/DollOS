@@ -1,20 +1,25 @@
-"""Guard: the private conversation's prompt holds no Chinese the daemon wrote.
+"""Guard: the prompts that carry Doll's words hold no Chinese the daemon wrote.
 
-Plan ``docs/superpowers/plans/2026-10-19-gura-english-speech-fix.md`` Task 1.
-Gura talks in English because her identity says so; the prompt's own framing
-(tool descriptions, system scaffolding, labels, perception framing, tool
-results, the labels written into her memory files) is English too. The only
-Chinese allowed is hers: what she writes (filled here with the sentinel
-``她的字``), the configured ``primary_language`` value, and the scaffolding's
-example note (Q7: she talks English and writes her notes in Chinese).
+Plans ``docs/superpowers/plans/2026-10-19-gura-english-speech-fix.md`` Task 1
+and ``2026-10-19-doll-all-english.md`` Task 1. Doll talks and writes in
+English; so does everything the daemon puts around her words: tool
+descriptions, system scaffolding, labels, perception and channel framing, tool
+results, the headings written into her memory files, and the prompts of the
+agents that write for her (evolution keeper and skeptics, consolidation). The
+only Chinese allowed is the sentinel ``她的字``, which stands in for her own
+content (and other people's) wherever it can appear.
 
 Each case renders one source the way the daemon does, from a real
 ``DollOS(settings)`` (gura pack, temp data root, evolution and self-profile
-on). A new source of daemon text in the private prompt gets its own case here.
+on). A new source of daemon text gets its own case here. A case still waiting
+for its plan task is marked ``xfail(strict=True, reason="Task N")``; that task
+removes the mark.
 """
 from __future__ import annotations
 
 import json
+import re
+import string
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -23,6 +28,7 @@ from pathlib import Path
 import pytest
 
 from dollos.cascade.tool_loop import dispatch_one
+from dollos.character import Identity
 from dollos.config import (
     CharacterConfig,
     DataConfig,
@@ -37,7 +43,10 @@ from dollos.config import (
 from dollos.kernel import DollOS
 from dollos.llm.tool_schema import tool_schemas
 from dollos.memory_writer import append_action_log, append_transcript
+from dollos.mind import consolidation
 from dollos.mind import evolution as evo
+from dollos.mind import evolution_keeper as ek
+from dollos.mind import evolution_trigger
 from dollos.mind import self_profile
 from dollos.mind.action_log import action_phrase_for_perception, action_phrase_for_tool
 from dollos.mind.mind_prompt import (
@@ -56,8 +65,7 @@ from dollos.tools import _format_hit
 from tests._cjk import ForeignCJK, assert_only_allowed, cjk_runs
 
 SENTINEL = "她的字"
-# scaffolding.jinja's example NoteMemory text — Chinese on purpose (Q7).
-EXAMPLE_NOTE = "主人要我記得：明天要吃早餐"
+ALLOWED = [SENTINEL]
 GURA_PACK = Path(__file__).resolve().parents[1] / "character_packs" / "gura"
 
 
@@ -73,15 +81,15 @@ def test_cjk_runs_finds_ideographs_and_full_width_punctuation():
 
 
 def test_assert_only_allowed_passes_when_only_allowed_strings_carry_cjk():
-    assert_only_allowed(f"note {EXAMPLE_NOTE} and {SENTINEL}.", [EXAMPLE_NOTE, SENTINEL])
+    assert_only_allowed(f"note {SENTINEL} and {SENTINEL}.", ALLOWED)
 
 
 def test_assert_only_allowed_removes_whole_strings_not_substrings():
-    # 主人 is inside the allowed example note, but a bare 主人 is not allowed.
+    # 她 is inside the allowed sentinel, but a bare 她 is not allowed.
     with pytest.raises(ForeignCJK) as exc:
-        assert_only_allowed(f"{EXAMPLE_NOTE} / your 主人 here", [EXAMPLE_NOTE])
-    assert "主人" in str(exc.value)
-    assert "your 主人 here" in str(exc.value)  # the context around it
+        assert_only_allowed(f"{SENTINEL} / your 她 here", ALLOWED)
+    assert "她" in str(exc.value)
+    assert "your 她 here" in str(exc.value)  # the context around it
 
 
 # --------------------------------------------------------------------------- #
@@ -109,10 +117,6 @@ class Rig:
     @property
     def memory_root(self) -> Path:
         return self.ctx.memory_root
-
-    @property
-    def allowed(self) -> list[str]:
-        return [SENTINEL, self.kernel.settings.memory.primary_language, EXAMPLE_NOTE]
 
     # Same inputs as MindLoop._run_one_turn.
     def energy_line(self) -> str | None:
@@ -587,13 +591,164 @@ async def memory_transcript_and_action_log(rig: Rig) -> str:
     return (root / f"{date.today():%Y-%m-%d}.md").read_text(encoding="utf-8")
 
 
+async def _write_her_files(rig: Rig) -> None:
+    """A note, her diary, a schedule and self-profile pins (one while reading
+    external content), written by her tools as a turn would."""
+    await _run_tool(rig, "NoteMemory", {"text": SENTINEL})
+    await _run_tool(rig, "WriteDiary", {"content": SENTINEL})
+    await _run_tool(rig, "WriteSchedule",
+                    {"entries": [{"time": "09:00:00", "intent": SENTINEL}]})
+    for section in ("self", "relationship", "user"):
+        await _run_tool(rig, "PinSelf", {"section": section, "op": "add", "target": "",
+                                         "text": f"{SENTINEL} {section}"})
+    rig.ctx.external_ctx = True
+    await _run_tool(rig, "PinSelf", {"section": "self", "op": "add", "target": "",
+                                     "text": f"{SENTINEL} outside"})
+
+
+async def memory_her_files(rig: Rig) -> str:
+    """Her day file and self_profile.md, whole: the headings the daemon writes."""
+    await _write_her_files(rig)
+    return "\n".join(
+        (rig.memory_root / name).read_text(encoding="utf-8")
+        for name in (f"shared/{date.today():%Y-%m-%d}.md", "self_profile.md")
+    )
+
+
+# ---- the agents that write for her ------------------------------------------ #
+
+_NUMBERS = {"floor": 80, "cap": 600}
+
+
+def _fill(template: str) -> str:
+    """An agent prompt with every field filled: text as the sentinel (her
+    words, the pack's, the transcript), lengths as numbers."""
+    names = {name for _, name, _, _ in string.Formatter().parse(template) if name}
+    return template.format(**{n: _NUMBERS.get(n, SENTINEL) for n in names})
+
+
+async def agent_keeper_task(rig: Rig) -> str:
+    return _fill(ek._KEEPER_TASK)
+
+
+async def agent_full_skeptic_task(rig: Rig) -> str:
+    return _fill(ek._FULL_SKEPTIC_TASK)
+
+
+async def agent_mode_b_skeptic_task(rig: Rig) -> str:
+    return _fill(evolution_trigger._SKEPTIC_TASK)
+
+
+async def agent_consolidation_task(rig: Rig) -> str:
+    return _fill(consolidation._KEEPER_TASK)
+
+
+async def agent_keeper_retry(rig: Rig) -> str:
+    """The keeper's retry task: its first candidate restated the pack, so the
+    retry carries the feedback quoting that sentence (and, with no current
+    self yet, the first-version placeholder)."""
+    factory = SENTINEL * 4
+    cfg = rig.kernel.settings.evolution
+    floor, cap = cfg.current_self_min_chars, cfg.current_self_max_chars
+    tasks: list[str] = []
+
+    async def fake_keeper(**kw):
+        tasks.append(kw["task"])
+        if len(tasks) == 1:
+            return {"details": f"CANDIDATE\n{'x' * floor}\n{factory}"}
+        return {"details": "NO_CHANGE"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ek, "_run_keeper_agent", fake_keeper)
+        out = await ek.run_evolution_pass(
+            model=None, renderer=None, memsearch=None, memory_root=rig.memory_root,
+            transcripts_root=rig.ctx.transcripts_root, tool_output_store=None,
+            pack_identity=Identity(self=factory, personality=factory, taboos=SENTINEL),
+            enforcement=rig.kernel._doll_pack.enforcement, floor=floor, cap=cap,
+            max_tokens=2048, now=rig.now,
+        )
+    assert out == "no_change" and len(tasks) == 2
+    return tasks[1]
+
+
+async def agent_keeper_evidence_bundle(rig: Rig) -> str:
+    """The keeper's evidence block over files her tools wrote, plus a
+    consolidated day (where the keeper reads it: ``memory_root/consolidated``)."""
+    await _write_her_files(rig)
+    today = f"{date.today():%Y-%m-%d}"
+    consolidated = rig.memory_root / "consolidated" / f"{today}.md"
+    consolidated.parent.mkdir(parents=True, exist_ok=True)
+    consolidated.write_text(f"- {SENTINEL}\n", encoding="utf-8")
+    bundle, _ = ek.assemble_bundle(memory_root=rig.memory_root, hwm=0,
+                                   window_days=28.0, now=rig.now)
+    # Every class is in it: the diary and the consolidated day by date label,
+    # the self_history events with the external-content pin.
+    assert len(re.findall(rf"^\[[^\]\n]+ {today}\]$", bundle, re.M)) == 2
+    assert "external_ctx=true" in bundle
+    return bundle
+
+
+# ---- ch: turns ---------------------------------------------------------------- #
+
+
+def _channel_delta(rig: Rig, *messages: dict) -> str:
+    """A ch: turn's message for ChannelMessages in ``ch-1``, in the tier
+    MindLoop derives for them, on a page whose snapshot is current."""
+    perceptions = [Perception(kind="ChannelMessage", t=rig.now,
+                              data={"channel_id": "ch-1", "content": SENTINEL, **m})
+                   for m in messages]
+    tier = rig.ml._derive_origin_tier(perceptions)
+    seen = Seen()
+    render_epoch_start(rig.state, seen, tier, rig.now, channel_id="ch-1")
+    return render_turn_delta(rig.state, seen, tier, perceptions, rig.now)
+
+
+async def channel_owner_dm(rig: Rig) -> str:
+    return _channel_delta(rig, {"author": "owner", "author_is_owner": True, "is_dm": True})
+
+
+async def channel_owner_in_channel(rig: Rig) -> str:
+    return _channel_delta(rig, {"author": "owner", "author_is_owner": True, "is_dm": False,
+                                "channel": "general"})
+
+
+async def channel_stranger(rig: Rig) -> str:
+    return _channel_delta(
+        rig,
+        {"author": "alice", "author_is_owner": False, "is_dm": True},
+        {"author": "bob", "author_is_owner": False, "is_dm": False, "channel": "general"},
+    )
+
+
+_PEER = {"author": "peer-bot", "author_is_owner": False, "is_dm": True, "channel_kind": "mcp"}
+
+
+async def channel_ai_peer(rig: Rig) -> str:
+    return _channel_delta(rig, _PEER)
+
+
+async def channel_ai_peer_debug(rig: Rig) -> str:
+    return _channel_delta(rig, {**_PEER, "debug_reliable": True})
+
+
+async def snapshot_external_public(rig: Rig) -> str:
+    """A public channel's new page (carries [External situation])."""
+    return render_epoch_start(rig.state, Seen(), "external_public", rig.now,
+                              channel_id="ch-1")
+
+
 # --------------------------------------------------------------------------- #
 # The guard                                                                    #
 # --------------------------------------------------------------------------- #
 
+
+def _waits_for(task: int, source):
+    """A case that fails until plan Task ``task`` lands."""
+    return pytest.param(source, marks=pytest.mark.xfail(strict=True, reason=f"Task {task}"))
+
 CASES = [
-    system_prompt,
-    system_prompt_with_current_self,
+    _waits_for(2, system_prompt),
+    _waits_for(2, system_prompt_with_current_self),
     tools_internal,
     tools_external_public,
     snapshot_default_state,
@@ -620,6 +775,19 @@ CASES = [
     tool_result_self_revision,
     tool_result_learn_name,
     memory_transcript_and_action_log,
+    _waits_for(3, memory_her_files),
+    _waits_for(5, agent_keeper_task),
+    _waits_for(5, agent_full_skeptic_task),
+    _waits_for(5, agent_mode_b_skeptic_task),
+    _waits_for(5, agent_consolidation_task),
+    _waits_for(5, agent_keeper_retry),
+    _waits_for(5, agent_keeper_evidence_bundle),
+    _waits_for(7, channel_owner_dm),
+    _waits_for(7, channel_owner_in_channel),
+    _waits_for(7, channel_stranger),
+    _waits_for(7, channel_ai_peer),
+    _waits_for(7, channel_ai_peer_debug),
+    _waits_for(7, snapshot_external_public),
 ]
 
 
@@ -627,4 +795,4 @@ CASES = [
 async def test_private_prompt_has_only_her_own_chinese(rig: Rig, source) -> None:
     text = await source(rig)
     assert text.strip()
-    assert_only_allowed(text, rig.allowed)
+    assert_only_allowed(text, ALLOWED)
