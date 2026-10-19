@@ -36,6 +36,23 @@ def test_assemble_bundle_contains_all_classes_and_returns_offset(tmp_path):
     assert off == hist.stat().st_size
 
 
+@pytest.mark.parametrize("heading,is_diary", [
+    ("## 2026-07-01 23:10:00 [mood:calm] Diary", True),    # what WriteDiary writes now
+    ("## 2026-07-01 23:10:00 [mood:calm] 日記", True),     # old files
+    ("## 日記 (12:34:56)", True),                           # oldest heading format
+    ("## 12:00", False),                                    # a note heading
+])
+def test_assemble_bundle_reads_english_and_old_chinese_diaries(tmp_path, heading, is_diary):
+    """All-English plan Task 3: a day file is diary evidence by its heading,
+    English or old Chinese; a plain note is not."""
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared" / "2026-07-01.md").write_text(
+        f"{heading}\nquiet night sorting logs", encoding="utf-8")
+    bundle, _ = ek.assemble_bundle(memory_root=tmp_path, hwm=0, window_days=28.0,
+                                   now=NOW)
+    assert ("quiet night sorting logs" in bundle) is is_diary
+
+
 def test_assemble_bundle_truncation_drops_consolidated_first(tmp_path):
     mr, hist = _seed_root(tmp_path)
     big = "x" * 3000

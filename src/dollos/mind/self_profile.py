@@ -16,24 +16,26 @@ from dollos.mind import self_history
 
 logger = logging.getLogger(__name__)
 
-# Titles in self_profile.md itself. They stay Chinese so files written before
-# the English prompt parse unchanged and the char cap counts the same.
+# Section titles: in self_profile.md, in the [Self profile] block and in
+# PinSelf results (plan 2026-10-19 doll-all-english Task 3: one English table).
 SECTION_TITLES: dict[str, str] = {
-    "self": "我學到的自己",
-    "relationship": "我和主人",
-    "user": "我注意到的主人",
-}
-# Titles the prompt shows ([Self profile] block, PinSelf results). Plan
-# 2026-10-19 gura-english-speech Tasks 4 and 7: the daemon's own words in her
-# prompt are English.
-SECTION_DISPLAY_TITLES: dict[str, str] = {
     "self": "What I've learned about myself",
     "relationship": "Me and my owner",
     "user": "What I've noticed about my owner",
 }
+# Titles of files written before that plan (possibly on another machine).
+# Read only: such a file parses as-is and its next write carries the English
+# titles, every old bullet kept.
+_LEGACY_TITLES: dict[str, str] = {
+    "self": "我學到的自己",
+    "relationship": "我和主人",
+    "user": "我注意到的主人",
+}
 SECTION_ORDER: list[str] = ["self", "relationship", "user"]
 _PREFIX: dict[str, str] = {"self": "s", "relationship": "r", "user": "u"}
-_TITLE_TO_SECTION: dict[str, str] = {v: k for k, v in SECTION_TITLES.items()}
+_TITLE_TO_SECTION: dict[str, str] = {
+    title: key for table in (_LEGACY_TITLES, SECTION_TITLES) for key, title in table.items()
+}
 
 # - [s1·2026-06-30] text
 _BULLET_RE = re.compile(r"^- \[([a-z]\d+)·(\d{4}-\d{2}-\d{2})\] (.*)$")
@@ -202,7 +204,7 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
             return f"Same entry already exists: {existing.id} (not added again)"
         new_id = _next_id(sections[section], section)
         sections[section].append(Bullet(id=new_id, date=today, text=clean_text))
-        result = f'Pinned to "{SECTION_DISPLAY_TITLES[section]}": {new_id}'
+        result = f'Pinned to "{SECTION_TITLES[section]}": {new_id}'
         pending_log = dict(kind="pin_add", turn=turn, external_ctx=external_ctx,
                            section=section, id=new_id, text=clean_text)
     elif op == "replace":
@@ -244,7 +246,7 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
 def render_block(path: Path) -> str | None:
     """Body for the [Self profile] block; None if no bullets anywhere.
     Empty sections (no bullets) are skipped. Sections carry their English
-    display titles; the bullets are hers, as written."""
+    titles (an old Chinese-titled file too); the bullets are hers, as written."""
     if not path.exists():
         return None
     sections = _parse(path.read_text())
@@ -254,7 +256,7 @@ def render_block(path: Path) -> str | None:
     for key in SECTION_ORDER:
         if not sections[key]:
             continue
-        out.append(f"## {SECTION_DISPLAY_TITLES[key]}")
+        out.append(f"## {SECTION_TITLES[key]}")
         for b in sections[key]:
             out.append(_format_bullet(b))
     return "\n".join(out)

@@ -11,9 +11,9 @@ def test_add_scaffolds_file_and_assigns_id(tmp_path):
     msg = sp.apply(p, section="self", op="add", target="",
                    text="我比表面更在意休息", max_chars=1200, today="2026-06-30")
     body = p.read_text()
-    assert "## 我學到的自己" in body
-    assert "## 我和主人" in body
-    assert "## 我注意到的主人" in body
+    assert "## What I've learned about myself" in body
+    assert "## Me and my owner" in body
+    assert "## What I've noticed about my owner" in body
     assert "- [s1·2026-06-30] 我比表面更在意休息" in body
     assert "s1" in msg
 
@@ -119,15 +119,16 @@ def test_render_block_skips_empty_sections(tmp_path):
     assert "## What I've learned about myself" not in block  # 空段不渲染
 
 
-def test_render_block_shows_english_titles_file_keeps_chinese(tmp_path):
-    """Plan 2026-10-19 gura-english-speech Task 4: the prompt shows English
-    section titles; the file keeps its Chinese ones (no migration, same cap)."""
+def test_render_block_and_file_both_use_english_titles(tmp_path):
+    """Plan 2026-10-19 doll-all-english Task 3: the file she keeps and the
+    prompt block carry the same English section titles."""
     p = _p(tmp_path)
     for section in ("self", "relationship", "user"):
         sp.apply(p, section=section, op="add", target="", text=f"{section} 條目",
                  max_chars=1200, today="2026-10-19")
-    assert p.read_text().splitlines()[0] == "## 我學到的自己"
-    assert "## 我和主人" in p.read_text() and "## 我注意到的主人" in p.read_text()
+    assert p.read_text().splitlines()[0] == "## What I've learned about myself"
+    assert "## Me and my owner" in p.read_text()
+    assert "## What I've noticed about my owner" in p.read_text()
     assert sp.render_block(p) == (
         "## What I've learned about myself\n"
         "- [s1·2026-10-19] self 條目\n"
@@ -138,9 +139,11 @@ def test_render_block_shows_english_titles_file_keeps_chinese(tmp_path):
     )
 
 
-def test_existing_chinese_titled_file_reads_and_renders_english(tmp_path):
-    """A self_profile.md written before Task 4 (Chinese titles) parses as-is,
-    renders with English titles, and stays editable."""
+def test_old_chinese_titled_file_reads_and_is_rewritten_with_english_titles(tmp_path):
+    """A self_profile.md written before the all-English plan (Chinese titles,
+    possibly on another machine) still reads: its bullets render under the
+    English titles, and its next write keeps every old bullet while the file
+    ends up with English titles only."""
     p = _p(tmp_path)
     p.write_text(
         "## 我學到的自己\n- [s1·2026-06-30] 我重視誠實\n"
@@ -153,15 +156,20 @@ def test_existing_chinese_titled_file_reads_and_renders_english(tmp_path):
         "## What I've noticed about my owner\n"
         "- [u1·2026-06-30] 主人常熬夜"
     )
-    sp.apply(p, section="relationship", op="add", target="", text="一起看海",
-             max_chars=1200, today="2026-10-19")
-    body = p.read_text()
-    assert "## 我和主人\n- [r1·2026-10-19] 一起看海" in body
-    assert "- [s1·2026-06-30] 我重視誠實" in body and "- [u1·2026-06-30] 主人常熬夜" in body
+    assert sp.apply(p, section="relationship", op="add", target="", text="watching the sea",
+                    max_chars=1200, today="2026-10-19") == 'Pinned to "Me and my owner": r1'
+    assert p.read_text() == (
+        "## What I've learned about myself\n- [s1·2026-06-30] 我重視誠實\n"
+        "## Me and my owner\n- [r1·2026-10-19] watching the sea\n"
+        "## What I've noticed about my owner\n- [u1·2026-06-30] 主人常熬夜\n"
+    )
 
 
-def test_display_titles_cover_every_section():
-    assert set(sp.SECTION_DISPLAY_TITLES) == set(sp.SECTION_ORDER) == set(sp.SECTION_TITLES)
+def test_titles_cover_every_section():
+    """One English title table for file and prompt; the old Chinese titles
+    are kept only so old files still read."""
+    assert not hasattr(sp, "SECTION_DISPLAY_TITLES")
+    assert set(sp.SECTION_TITLES) == set(sp.SECTION_ORDER) == set(sp._LEGACY_TITLES)
 
 
 def test_unknown_section_add_friendly_error(tmp_path):
@@ -331,13 +339,13 @@ def test_add_preserves_bracket_content_without_date_separator(tmp_path):
 
 def test_apply_results_are_english_with_display_titles(tmp_path):
     """Plan 2026-10-19 Task 7: PinSelf's results are English and name the
-    section by its English display title (Task 4); the file keeps its Chinese
-    titles."""
+    section by its English title, which the file carries too (all-English
+    plan Task 3)."""
     p = _p(tmp_path)
     kw = dict(max_chars=1200, today="2026-10-19")
     assert sp.apply(p, section="relationship", op="add", target="", text="一起看海", **kw) == (
         'Pinned to "Me and my owner": r1')
-    assert "## 我和主人" in p.read_text()
+    assert "## Me and my owner" in p.read_text()
     assert sp.apply(p, section="relationship", op="add", target="", text="一起看海", **kw) == (
         "Same entry already exists: r1 (not added again)")
     assert sp.apply(p, section="self", op="replace", target="s9", text="x", **kw) == (
