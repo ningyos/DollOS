@@ -1,0 +1,10 @@
+{
+  "model": "qwen3.8-flash-next-iq3_s",
+  "stream": true,
+  "messages": [
+    {
+      "role": "narrator",
+      "content": "hi"
+    }
+  ]
+}
