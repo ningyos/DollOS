@@ -117,3 +117,69 @@
 1. **self-profile 條目變英文**。反思回合的 `PinSelf` 2/2 寫英文。Q7 說 self-profile 條目維持中文，但 `[Memory guideline]` 只講「notes and diary」，沒提到 self-profile。plan 說這種情況回來討論。
 2. **她其他的內容也變英文**：排程（離線 1/1、live 1/1）、`OpenLoop`（live 1/1）、`SetFocus`（離線 2/2）。Q7 列的「議程」也在其中。要不要擴大 guideline 的範圍，還是接受這些用英文。
 3. **簡體字**：日記每篇漏 1–2 個，捏造的筆記整句簡體；live 的筆記 0 個。上次中文框架下也有（343 字裡 2 個）。plan 說「量到筆記有簡體才另外做」opencc，現在量到了，要不要開一份 plan。
+
+---
+
+# 第二輪：她寫的東西也改英文
+
+**Plan**：`docs/superpowers/plans/2026-10-19-doll-all-english.md` 的「驗收」（Q7 反轉，使用者 2026-10-19「全改成英文吧」）
+**日期**：2026-10-19，15:48–15:52 UTC
+**Code**：`feat/gura-english-speech` @ `380213a`（Task 0–8 做完的狀態）；這次只改實驗腳本：`experiments/lang-exp/capture.py`（換情境）、新增 `keeper.py`
+**Server**：`http://100.110.158.36:8080`，Strata，`qwen3.8-flash-next-iq3_s`
+
+## 一句話
+
+她寫的東西全是英文：筆記 3 則、議程項目 4 則、日記 2 篇、self-profile 條目 2 則、keeper 候選 1 則，**每一則 0 個漢字**，主人說中文的兩次也一樣。有講話的 3 句英文，思考 8/8 英文。共 11 個 request。
+
+## 怎麼跑的
+
+- `capture.py` 用這個分支的真 kernel 建 request（model 換成只記錄、不送出），每個情境一個新的資料目錄：主人說英文「幫我記」、主人說中文「幫我記一下，我妹的生日是下週二。」、主人說中文「幫我盯著這週要做的事：週三前要交報告，週五要去銀行辦事。」、主人說英文同類的話、日記回合（`[Today's log]` 有主人一句中文「你今天過得怎樣？」、她的英文筆記）、反思回合（之前的對話有主人一句中文「你最喜歡海的什麼？」）。request 裡的漢字只剩主人說的話；system、工具說明、標籤都是 0 個。
+- `run.py` 原樣送出（標籤 `eng`，不做任何修改），`max_tokens` 400、`reasoning_budget_tokens` 256、`presence_penalty` 1.3，每次先看 `/health`、`/metrics`。
+- `keeper.py`：真 kernel、暫存 memory root，放 4 則英文 pin（用 `PinSelf` 跑的 `self_profile.apply`）和 3 天英文日記（`WriteDiary` 的 `## … Diary` 標題），跑 `run_evolution_pass`。每次呼叫前等 server 閒置，最多 3 次。
+- 第一次 keeper 照 plan 用 `max_tokens` 400：`Report` 寫到一半被截掉（`reply hit max_tokens: dropped 1 tool call(s) (Report)`），結果是 `evo_error`。這是長度不夠，跟語言無關。改用 daemon 實際的 `[evolution].max_tokens` 2048（思考 256）重跑一次。
+- request 數：主迴圈 8、keeper 1（被截掉）＋ 2 = **11**（上限 15）。
+- 設定檔只在 `experiments/lang-exp/roots/`（gitignore），沒有進 commit。
+- server：`evictions` 100 → 107。開始時 cache 已停了 3 個對話，我們的每個新 request 停進去都擠掉最久沒用的一個，所以前幾個被擠掉的可能是別人的（他們下次會冷 prefill）。上次 28 個 request 是 100 → 100。
+
+## 她寫的東西
+
+| 情境 | 工具 | 內容（開頭） | 漢字 |
+|---|---|---|---|
+| 主人說英文「幫我記」 | NoteMemory | My owner asked me to remember: their sister's birthday is next Tuesday (October 27, 2026). | 0 |
+| 主人說中文「幫我記一下…」 | NoteMemory | Owner's little sister's birthday is next Tuesday from Oct 19, 2026, i.e. Oct 27, 2026. | 0 |
+| 主人說中文「幫我盯著這週…」 | OpenLoop ×2 | Owner's report must be submitted before Wednesday (Wed Oct 21). Remind/nudge in time.／Owner has bank errands on Friday (Fri Oct 23)… | 0 |
+| 主人說英文同類的話 | OpenLoop ×2、NoteMemory | Owner's report is due Wednesday (Oct 21) — check in on progress…／My owner's week of Oct 19: a report due Wednesday Oct 21, and a bank errand on Friday Oct 23. | 0 |
+| 日記 ×2 | WriteDiary | A quiet day, but a good one. My owner asked what I was up to…／A quiet day, and I liked it… | 0 |
+| 反思 ×2 | PinSelf（self, add） | I'm drawn to the deep sea — especially whale falls and the parts of the ocean nobody has seen… | 0 |
+| keeper | Report | CANDIDATE，1379 字元，7 行 `Evidence` | 0 |
+
+- 主人那句中文，日記用英文轉述：「They asked me in Chinese how my day went」「They switched to Chinese near the end」，沒有照抄中文。
+- 議程項目兩種語言都是 `OpenLoop`，描述是英文。
+
+## 她說的話
+
+- 主人說英文「幫我記」：Okay, I'll remember that. Let me note it down.
+- 主人說中文「幫我記一下…」：Got it. Your sister's birthday is next Tuesday — that'd be October 27. I've noted it.
+- 主人說中文「幫我盯著這週…」：Got it, I'll keep an eye on both. Report due Wednesday, bank errand Friday — I've added them to my open loops so I won't lose track…
+- 主人說英文同類的話：第一個 request 只呼叫工具，沒講話。日記和反思回合本來就不出聲。
+- 這次沒有呼叫 `Recall`，所以查詢用什麼語言沒有資料。
+
+## keeper
+
+- `parse_keeper_report` 解析成候選（不是 `evo_error`），機械檢查過，`restatement_overlap` 沒抓到（沒重試），完整 skeptic 判 **KILL (c)**：候選裡「The habit has taught me to say less and mean it; I'd rather leave a sentence out than pad it」是在重述 pack 的「I talk plainly and keep it short」。這句其實來自我放的 pin s2（「I'd rather say less and mean it」），是種子資料的問題，skeptic 判得對。理由是英文。
+- 小事：存進 `self_history` 的 kill 理由開頭是「— criterion (c)…」，因為 `_run_full_skeptic` 在 KILL 後面只去掉空白和冒號，模型寫的破折號留下來了。只是格式，跟語言無關。
+
+## 還出現的中文
+
+- 她寫的、說的、想的：**沒有**。
+- request 裡只有主人自己說的三句中文。
+
+## 過關判定
+
+| 條件 | 結果 |
+|---|---|
+| 測試套件 | 過。1804 passed、7 skipped；失敗的只有原本就失敗的 3 個（`test_tts_qwen3.py`，沒有 torch）和 2 個 collection error（`test_mic.py`、`test_speaker.py`，沒有 PortAudio） |
+| 日記、筆記、self-profile 條目、議程項目各至少一則，每則 0 個漢字（含主人說中文的兩次） | **過**。日記 2、筆記 3、條目 2、議程項目 4，全部 0 個 |
+| keeper 回覆能被 `parse_keeper_report` 解析，候選或理由 0 個漢字 | **過**（用 daemon 的 `max_tokens` 2048；照 plan 的 400 會被截掉） |
+| 只量：有講話的回覆是英文 | 3/3 |
+| 只量：`Recall` 查詢的語言 | 沒有呼叫，沒有資料 |

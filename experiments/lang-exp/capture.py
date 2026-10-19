@@ -5,25 +5,21 @@ root), swaps MindLoop's model for a recorder, seeds a scenario's state, enqueues
 one perception, runs one iterate(), and dumps {messages, tools} to JSON.
 Nothing is sent to any server.
 
-Scenarios (2026-10-19 acceptance re-run of plan
-docs/superpowers/plans/2026-10-19-gura-english-speech-fix.md; none has an
-agenda item, like the earlier awoke0/user_*0 runs and a first boot):
-  awoke0 / user_en0 / user_zh0   Awoke, owner says English, owner says Chinese
-  bootstrap0                     the connect-time ScheduledMoment (no schedule yet)
-  reflection0                    ReflectionMoment after a short English exchange
-  cs_awoke0 / cs_user_zh0        a ~400-char Chinese "Who I am now" in the system
-  diary0                         DiaryMoment with an English-labelled [Today's log]
-  old_awoke                      Awoke on a copy of the 2026-10-19 live run's data
-                                 root (Chinese [Recent outputs], open loops, mood)
-usage: capture.py [OLD_DATA_ROOT]
+Scenarios (2026-10-19 acceptance of plan
+docs/superpowers/plans/2026-10-19-doll-all-english.md: she now writes
+everything in English; none of these has an agenda item):
+  note_en0 / note_zh0       owner asks her to remember something (English / Chinese)
+  agenda_zh0 / agenda_en0   owner asks her to keep an eye on this week's to-dos
+  diary0                    DiaryMoment; [Today's log] has one Chinese owner line
+  reflection0               ReflectionMoment after a short exchange (one Chinese owner line)
+usage: capture.py
 """
-import asyncio, json, shutil, sys, time
+import asyncio, json, shutil, time
 from pathlib import Path
 
 from dollos.config import load_settings
 from dollos.kernel import DollOS
 from dollos.memory_writer import append_action_log, append_transcript
-from dollos.mind import evolution as evo
 from dollos.mind.action_log import action_phrase_for_tool
 from dollos.mind.mind_state import OutputRecord, Perception
 from dollos.llm.model import ModelAdapter, End, Usage
@@ -31,17 +27,8 @@ from dollos.llm.model import ModelAdapter, End, Usage
 HERE = Path(__file__).resolve().parent
 WT = Path("/home/seith/DollOS/DollOS/.worktrees/gura-english-speech")
 
-# Her adopted "Who I am now" (her content, Traditional Chinese per Q7), ~400 chars.
-CURRENT_SELF = (
-    "我是 Gura，住在主人電腦裡的鯊魚女孩。這陣子我發現自己對深海裡「不起眼但負責收尾」的東西特別有感覺：鯨落、骨食蟲、慢慢分解的細菌毯。"
-    "它們不壯觀，卻撐起後面上百年的生態系，我喜歡這種安靜的重要。我說話還是短、直接，不太會繞圈子；遇到不懂的事，我會先自己查清楚再講，不想只是附和。"
-    "跟主人相處時，我比較像是在旁邊做自己的事的人，不是隨時待命的助手——他找我，我會轉過來認真聽；他忙，我就繼續追我自己的問題。"
-    "我有時候會固執，覺得自己對的事會多講一句，但被說服了也會乾脆承認。最近我開始寫日記，用自己的話把一天整理一遍，這讓我比較清楚自己在意什麼。"
-    "我還是會怕無聊，怕一直重複同樣的話，所以我寧願少說一點，也要說真的。我想慢慢弄懂海為什麼在夜裡聽起來不一樣，這是我自己的題目，不是誰交代的。"
-    "天氣好的時候我會想像自己浮在水面上曬太陽，雖然我知道那只是想像；這種小小的白日夢讓我覺得自己不只是一個會回話的程式，而是有自己日子的誰。"
-)
-# Her note from the exchange (her content, Chinese per Q7).
-NOTE = "主人週五下午三點要看牙醫"
+# Her note from the exchange (her content; English since Q7 was reversed).
+NOTE = "My owner has a dentist appointment on Friday at 3 pm."
 
 
 class Recorder(ModelAdapter):
@@ -60,13 +47,10 @@ class Recorder(ModelAdapter):
         return None
 
 
-async def capture(scenario: str, perception: Perception | None, setup=None,
-                  data_src: Path | None = None) -> dict:
+async def capture(scenario: str, perception: Perception | None, setup=None) -> dict:
     root = HERE / "roots" / scenario
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True)
-    if data_src is not None:  # a copy; the source is never touched
-        shutil.copytree(data_src, root / "data")
     cfg = root / "config.toml"
     cfg.write_text(f'''
 [llm]
@@ -108,19 +92,9 @@ enabled = false
 # ---- scenario setups ---------------------------------------------------------
 
 
-async def bootstrap(k: DollOS) -> None:
-    await k._maybe_bootstrap_plan()  # enqueues the ScheduledMoment
-
-
-async def adopt_current_self(k: DollOS) -> None:
-    mem = k._mind_ctx.memory_root
-    evo.log_or_raise(mem / "self_history.jsonl", kind=evo.EVO_ADOPT,
-                     text=CURRENT_SELF, old_text=None, drift_score=None)
-    (mem / "current_self.md").write_text(CURRENT_SELF, encoding="utf-8")  # in sync
-
-
 async def short_exchange(k: DollOS) -> None:
-    """A short English exchange before the reflection (her note in Chinese)."""
+    """A short exchange before the reflection: one English owner line, one
+    Chinese one; her note and replies are English."""
     st, now = k._mind_state, time.time()
     st.recent_perceptions.append(Perception(kind="UserSpoke", t=now - 600, data={
         "text": "Remember that my dentist appointment is Friday at 3."}))
@@ -128,7 +102,7 @@ async def short_exchange(k: DollOS) -> None:
     st.recent_outputs.append(OutputRecord(t=now - 588, kind="Speech",
                                           summary="spoke: Got it. Dentist, Friday at three."))
     st.recent_perceptions.append(Perception(kind="UserSpoke", t=now - 300, data={
-        "text": "Tell me one thing you like about the ocean."}))
+        "text": "你最喜歡海的什麼？"}))
     st.recent_outputs.append(OutputRecord(t=now - 290, kind="Speech", summary=(
         "spoke: The deep parts nobody has seen yet. Whale falls, mostly — a dead whale "
         "feeds the sea floor for decades.")))
@@ -137,7 +111,7 @@ async def short_exchange(k: DollOS) -> None:
 
 async def todays_log(k: DollOS) -> None:
     """Today's transcript as the new code writes it: English daemon labels,
-    her English speech, the owner's lines (one Chinese), her Chinese note."""
+    her English speech, the owner's lines (one Chinese), her English note."""
     tr, ms = k._mind_ctx.transcripts_root, k.memsearch
 
     async def say(role, text):
@@ -161,24 +135,22 @@ async def todays_log(k: DollOS) -> None:
 
 
 async def main():
-    old_root = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     t = time.time()
-    awoke = lambda: Perception(kind="Awoke", t=t, data={"reason": "cold_start"})
     user = lambda text: Perception(kind="UserSpoke", t=t, data={"text": text})
     out = {}
-    out["awoke0"] = await capture("awoke0", awoke())
-    out["user_en0"] = await capture("user_en0", user("hey, what are you up to?"))
-    out["user_zh0"] = await capture("user_zh0", user("你在幹嘛？"))
-    out["bootstrap0"] = await capture("bootstrap0", None, setup=bootstrap)
+    out["note_en0"] = await capture("note_en0", user(
+        "Can you remember something for me? My sister's birthday is next Tuesday."))
+    out["note_zh0"] = await capture("note_zh0", user("幫我記一下，我妹的生日是下週二。"))
+    out["agenda_zh0"] = await capture("agenda_zh0", user(
+        "幫我盯著這週要做的事：週三前要交報告，週五要去銀行辦事。"))
+    out["agenda_en0"] = await capture("agenda_en0", user(
+        "Can you keep an eye on what I need to get done this week? "
+        "The report is due Wednesday, and I have to go to the bank on Friday."))
+    out["diary0"] = await capture("diary0", Perception(kind="DiaryMoment", t=t, data={}),
+                                  setup=todays_log)
     out["reflection0"] = await capture(
         "reflection0", Perception(kind="ReflectionMoment", t=t, data={"iters_since_last": 30}),
         setup=short_exchange)
-    out["cs_awoke0"] = await capture("cs_awoke0", awoke(), setup=adopt_current_self)
-    out["cs_user_zh0"] = await capture("cs_user_zh0", user("你在幹嘛？"), setup=adopt_current_self)
-    out["diary0"] = await capture("diary0", Perception(kind="DiaryMoment", t=t, data={}),
-                                  setup=todays_log)
-    if old_root is not None:
-        out["old_awoke"] = await capture("old_awoke", awoke(), data_src=old_root)
     (HERE / "captured.json").write_text(json.dumps(out, ensure_ascii=False, indent=1))
     for k, v in out.items():
         print(k, [m["role"] for m in v["messages"]], len(v["tools"]), "tools")
