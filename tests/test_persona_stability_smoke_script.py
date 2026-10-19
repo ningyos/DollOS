@@ -55,7 +55,7 @@ def test_isolate_settings_never_uses_default_ipc_port(tmp_path):
     module = _load_script_module()
 
     live_settings = Settings(
-        llm=LLMConfig(base_url="http://127.0.0.1:8001", model_alias="test-model"),
+        llm=LLMConfig(base_url="http://127.0.0.1:8001", model="test-model"),
         ipc=IPCConfig(host="127.0.0.1", port=9876),
         character=CharacterConfig(pack=tmp_path / "some_pack"),
     )
