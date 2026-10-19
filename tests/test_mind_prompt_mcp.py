@@ -12,10 +12,8 @@ def test_mcp_channel_message_renders_as_ai_peer():
               "content": "hey Doll"},
     )
     out = _percep_body(p)
-    assert "AI peer" in out
-    assert "Claude" in out
-    assert "hey Doll" in out
-    assert "陌生人" not in out          # must NOT fall through to the stranger branch
+    assert out == "[AI peer, DM] Claude (another AI, self-described, unverified): hey Doll"
+    assert "stranger" not in out          # must NOT fall through to the stranger branch
 
 
 def test_non_mcp_channel_message_still_stranger():
@@ -25,8 +23,7 @@ def test_non_mcp_channel_message_still_stranger():
               "author_is_owner": False, "is_dm": True, "content": "yo"},
     )
     out = _percep_body(p)
-    assert "陌生人" in out
-    assert "AI peer" not in out
+    assert out == "[DM] stranger Bob: yo"
 
 
 def test_mcp_down_renders_lost_channel():

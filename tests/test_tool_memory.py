@@ -5,8 +5,8 @@ from collections import deque
 import pytest
 
 from dollos.cascade.tool_loop import ToolResult
-from dollos.mind.mind_state import MindState, ToolFailure
-from dollos.mind.tool_memory import record_tool_outcome, render_tool_notes, render_tool_outcomes
+from dollos.mind.mind_state import MindState
+from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes
 
 
 def test_record_success_none_and_fail():
@@ -27,20 +27,6 @@ def test_record_never_raises_on_bad_result():
     # setdefault runs AFTER result.success access, so a malformed result
     # leaves no zombie {ok:0,fail:0} entry in tool_stats.
     assert "X" not in s.tool_stats
-
-
-def test_render_tool_notes_gated_aged_deduped():
-    now = 1000.0
-    fails = deque([
-        ToolFailure(t=now - 10, tool="Shell", detail="timeout A"),
-        ToolFailure(t=now - 5, tool="Shell", detail="timeout B"),   # newer Shell → wins dedup
-        ToolFailure(t=now - 99999, tool="OldTool", detail="ancient"),  # aged out
-    ], maxlen=10)
-    out = render_tool_notes(fails, now)
-    assert out is not None
-    assert "timeout B" in out and "timeout A" not in out  # dedup keeps latest
-    assert "OldTool" not in out  # aged out (>1h)
-    assert render_tool_notes(deque(maxlen=10), now) is None  # no failures → no block
 
 
 def test_render_tool_outcomes_empty_stats_returns_none():

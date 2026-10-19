@@ -11,9 +11,7 @@ content (and other people's) wherever it can appear.
 
 Each case renders one source the way the daemon does, from a real
 ``DollOS(settings)`` (gura pack, temp data root, evolution and self-profile
-on). A new source of daemon text gets its own case here. A case still waiting
-for its plan task is marked ``xfail(strict=True, reason="Task N")``; that task
-removes the mark.
+on). A new source of daemon text gets its own case here.
 """
 from __future__ import annotations
 
@@ -749,10 +747,6 @@ async def snapshot_external_public(rig: Rig) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _waits_for(task: int, source):
-    """A case that fails until plan Task ``task`` lands."""
-    return pytest.param(source, marks=pytest.mark.xfail(strict=True, reason=f"Task {task}"))
-
 CASES = [
     system_prompt,
     system_prompt_with_current_self,
@@ -789,12 +783,12 @@ CASES = [
     agent_consolidation_task,
     agent_keeper_retry,
     agent_keeper_evidence_bundle,
-    _waits_for(7, channel_owner_dm),
-    _waits_for(7, channel_owner_in_channel),
-    _waits_for(7, channel_stranger),
-    _waits_for(7, channel_ai_peer),
-    _waits_for(7, channel_ai_peer_debug),
-    _waits_for(7, snapshot_external_public),
+    channel_owner_dm,
+    channel_owner_in_channel,
+    channel_stranger,
+    channel_ai_peer,
+    channel_ai_peer_debug,
+    snapshot_external_public,
 ]
 
 
