@@ -81,7 +81,9 @@ def build_context_filter(mind_state: "MindState", now: datetime | None = None) -
     tags: dict[str, str] = {}
 
     mood = getattr(mind_state.mood, "emotion", None) if mind_state.mood else None
-    # Mood is free-form Chinese — do NOT slugify (that strips all CJK).
+    # Mood is one free-form word: English since 2026-10-19, but a mood state
+    # saved before that can still be Chinese — do NOT slugify (that strips
+    # all CJK).
     # Sanitize only for tag-boundary safety: spaces → '_', drop ']'.
     mood_tag = mood.strip().replace(" ", "_").replace("]", "") if mood else None
     if mood_tag:

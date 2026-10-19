@@ -375,8 +375,8 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - **她講英文**：
   - 身份裡寫一句事實：她聽得懂中文和英文，說話用英文（跟 yesman 一樣）。Gura 的 identity、personality、taboos 改成英文，草稿在 plan 附錄 A，等你核可。只適用中文的規則（不堆「啦／嘛／喔／呀」）拿掉；`[enforcement]`（禁「a~」、驚嘆號最多連一個）不變，英文一樣適用。
   - scaffolding 裡唯一的對話範例是中文（`scaffolding.jinja:101-117`），範例會把模型拉向它的語言，換成英文。
-  - 她自己寫的東西（日記、記憶筆記、「現在的我」）用什麼語言是 Q7，建議維持繁體中文。這樣不用改程式（既有的 `[memory] primary_language = "繁體中文"` 每回合就要她用繁體中文記，`mind_prompt.py:246-259`），搬過來的記憶也照樣搜得到。代價：演化的「不可重述出廠人格」檢查是逐句比字，中文候選跟英文的出廠人格永遠比不中，所以 pack 留一份中文原文，只給這個檢查用（plan Task 6）。
-  - 內部的中文框架句（`[External situation]`、工具回傳、action log 等）不動；你聽不到它們，只有 smoke 顯示中文漏進她說的話時才改。**2026-10-19 已改**：live run 的私人對話回中文（`docs/research/2026-10-18-strata-first-numbers.md` finding 1），所以 private 這條路上 daemon 自己寫的字（工具說明、system 框架、標籤、感知框架、工具回傳、寫進記憶的逐字稿和 action log 標籤）全部換成英文，`primary_language` 的值改成 `"Traditional Chinese"`（plan `2026-10-19-gura-english-speech-fix.md`）。只有 `ch:` 看得到的框架（`[External situation]` 等）還是中文。
+  - 她自己寫的東西（日記、記憶筆記、「現在的我」、self-profile、議程、排程）用英文寫（Q7，2026-10-19 決定）：`[memory] primary_language = "English"`，`[Memory guideline]` 描述她寫下的所有東西都是這個語言。演化的 keeper 也寫英文，所以 pack 不再帶中文原文，「不可重述出廠人格」檢查直接逐句比英文 pack（句子切法認 `.!?;`，plan `2026-10-19-doll-all-english.md` Task 4–5）。
+  - 內部的中文框架句（`[External situation]`、工具回傳、action log 等）不動；你聽不到它們，只有 smoke 顯示中文漏進她說的話時才改。**2026-10-19 已改**：live run 的私人對話回中文（`docs/research/2026-10-18-strata-first-numbers.md` finding 1），所以 private 這條路上 daemon 自己寫的字（工具說明、system 框架、標籤、感知框架、工具回傳、寫進記憶的逐字稿和 action log 標籤）全部換成英文，`primary_language` 的值改成 `"English"`（plan `2026-10-19-gura-english-speech-fix.md`，2026-10-19 Q7 從 `"Traditional Chinese"` 再改成 `"English"`）。`ch:` 看得到的框架（`[External situation]`、頻道訊息和 MCP 的框架）也已改成英文（plan `2026-10-19-doll-all-english.md` Task 7）。
 - **英文會碰到的兩個既有問題**（plan 裡各有測試）：
   - `kernel.py:308` 多傳了 `data_root` 給 TTS 引擎，可是五個 TTS 引擎都不收這個參數，所以一開語音就 TypeError。跟語言無關，但不修就沒有聲音（在 Python 3.13 環境實際跑過，確定會 TypeError）。
   - 句子切段看到「.」就切：「Wait... what?」會切出單獨的「.」送去 TTS（Discord 也會收到一則只有「.」的訊息），「3.14」會被切成兩半。改成 `.?!` 後面接空白才算句尾，連續的標點算一個句尾；長句的強制切段改成切在空白。
@@ -506,7 +506,7 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - **她的電腦生活可能很空**：她可能漫無目的地逛網頁，讀起來像 bot；日記也看不到她讀了什麼（§7 已知的代價）。日記分數會量到這個；怎麼修等資料出來再決定。
 - **拿掉 grammar 的品質風險**：舊 smoke 在 step 14（REVIEW 欄位 + 不設上限的 cascade + episodic memory 一起改）從 7/8 升到 8/8；REVIEW 自己的貢獻沒有單獨量過。S8 的盲評是閘門。
 - **Mac 的意外**：aiortc、PortAudio、sherpa-onnx 在 macOS 26 的 wheel；麥克風 TCC；16 GB 要放 VM、daemon 和語音，可能吃緊；筆電睡眠會讓她的一天暫停。
-- **TTS 和英文**：Gura 的 luxtts 提示只有 3 秒，聽起來可能不像她（不像就用 30 秒的 `ref.wav` 重新編碼，§8）。一整句合成完才出聲，長句的第一個音框會晚。她的身份是英文、內在紀錄是中文（Q7 選中文時），中文可能漏進她說的話，smoke 要看。
+- **TTS 和英文**：Gura 的 luxtts 提示只有 3 秒，聽起來可能不像她（不像就用 30 秒的 `ref.wav` 重新編碼，§8）。一整句合成完才出聲，長句的第一個音框會晚。
 - **流程**：核可本文、之後七個問題、十三個 spec 修正，對容易超載的使用者仍然多。所以問題一次問一個，修正跟本文一起審，使用迴圈從 R1a 就開始，不是最後才開始。
 - **R3 很長**：S5 是最大的單一步驟；刪程式碼只在測試全綠下進行。
 
@@ -518,7 +518,7 @@ tools = ["…"]                  # 允許清單，R1 spike 用 list_tools 填；
 - **Q1（R0）哪一台機器跑 Qwen3.8-Flash-Next？** 需要 ≥ 128 GB 的 VRAM + RAM，Tailscale/LAN 連得到。
 - **Q2（R0，Q1 之後，即 mind-loop Q1）你在 Discord 私訊跟她說話時，算不算「在家」？** 建議 **(a) 算**（principal = owner），因為私訊是你在 v1 唯一的外出管道。mind-loop 當時建議 (b)，理由是 (a) 會讓被盜的 Discord 帳號在你的 Mac 上跑指令；v1 沒有 `run_command`，所以這裡改建議 (a)。(a) 的代價：被盜的帳號可以在她的記憶、目標、排程裡留東西，讓她去 VM 開網頁；私訊的對話也會進日記和反思，幾週下來可能影響她是誰。建議開 Discord 2FA。(b) 是比主人低一階的 `owner_dm`：私訊寫的東西進不了她的私人回合，私訊的對話只以一行紀錄進日記，私訊裡也不能叫她用電腦。
 - **Q6（R0，Q2 之後；R1 開始凍結之前）目標與待辦（§6.4）要不要放進 v1？** 建議**放**，在 R3 做（約 150–200 行加測試）：agenda 在 R3 本來就要重寫，之後再加等於寫兩次。代價是凍結多一個例外。不放的話，她還是能記住事情和提醒你（排程那段不管 Q6 都做），清單和步驟等 R5 之後。
-- **Q7（英文 plan 的 Task 5 之前）她自己寫的東西（日記、記憶筆記、「現在的我」）維持繁體中文，還是也改英文？** 建議**維持中文**：不用改程式（既有的 `[memory] primary_language` 已經是繁體中文）；搬過來的記憶照樣搜得到；你讀日記也是中文。代價是她的身份是英文、內在紀錄是中文，pack 要留一份中文原文給演化的重述檢查（§8）。改英文的話，`primary_language`、演化的提示、字數上限和句子切法、mood 的 emotion ≤ 6 字（mind-loop §10）都要跟著改；搜尋是比字的，中文的問句找不到英文筆記，反過來也一樣。**2026-10-19**：這張清單裡的 mood 已經改成英文（一個英文字，≤ 12 個字母，預設 `calm`；mind-loop §10 已更新，plan `2026-10-19-gura-english-speech-fix.md`）。她的筆記、日記、「現在的我」仍是繁體中文。
+- **Q7 她自己寫的東西用什麼語言？** **已決定（2026-10-19，使用者「全改成英文吧」）：她寫的東西全部英文**——筆記、日記、「現在的我」、self-profile、議程、排程（原本建議維持繁體中文）。plan `2026-10-19-doll-all-english.md` 改了：`primary_language` 預設 `"English"`、`[Memory guideline]` 涵蓋她寫下的所有東西、範例筆記英文；daemon 寫進她檔案的標題英文（`## … Diary`、`## … Plan`、self-profile 段落標題），舊的中文標題照樣讀得到；演化的 echo 檢查和斷句支援英文；演化和 consolidation 的 agent prompt 英文，pack 拿掉 `restatement_reference`；字數上限「現在的我」250／2000、self-profile 4000；`ch:` 框架英文。mood 在這之前已改成一個英文字（≤ 12 個字母，預設 `calm`；mind-loop §10，plan `2026-10-19-gura-english-speech-fix.md`）。另一台機器上的舊中文記憶不轉換，只保證讀得到。代價：搜尋是比字的，主人說中文時 `[Memory context]` 的查詢找不到英文筆記，舊的中文筆記也對不上英文查詢；先觀察，要改另寫 plan。
 - **Q3（R1b 結束，只在書桌測試不到 8/10 時）書桌怎麼辦？** 三選一：書桌只用 VM 裡的 shell 指令（就是你拒絕當主要介面的那種，只是給她自己用）；改試 Lume + Cua Driver；v1 不做電腦（§2 不變，R4 跳過）。
 - **Q4（R3，S4 之後）要不要跑 think A/B 的 B 組（格式化 think 對自由 think + 上限）？**
 - **Q5（R3，S8）grammar 路徑還是原生工具？** grammar 路徑沒辦法把截圖當工具結果，選它等於 v1 沒有 GUI 書桌。

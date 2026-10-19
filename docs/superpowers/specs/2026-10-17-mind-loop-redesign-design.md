@@ -295,7 +295,7 @@ Scheduler 挑中一個 place 時：
 | 外部 place X | 只有 X | emotion；reason 只在 X 設定時才顯示 | 沒有 |
 
 - **mood** 只有一份 `{emotion, reason, set_place, set_principal}`。`emotion` 在 pydantic 層限制為一個英文字：只有英文字母、≤ 12 個，不能有空白和標點（2026-10-19 使用者選英文 mood，原本是「≤ 6 個字」；已做在 `MoodTool.one_english_word`，plan `2026-10-19-gura-english-speech-fix.md` Task 2）。所以外部回合就算被注入，也只能把一個短詞放進主人的 `[Mind state]`。這是本文對 harness Q1 的回答（§17 Q3）。
-- **外出紀錄**：外部回合（Q1(b) 時也包括 dm:owner）commit 時，由程式在 action log 寫一行不含原文的描述句，例如「在一個公開頻道聊了 4 則，心情變成 煩」：只有 place 種類、則數和 emotion 的變化，沒有對方的文字，也沒有對方能控制的名稱。日記的 `[Today's log]` 看得到，所以她在外面的生活會進日記；consolidation 依 I2 本來就濾掉 action 行。
+- **外出紀錄**：外部回合（Q1(b) 時也包括 dm:owner）commit 時，由程式在 action log 寫一行不含原文的描述句，例如 "chatted 4 messages in a public channel; mood became irritated"（action log 是程式寫的，已經是英文，mood 也是一個英文字）：只有 place 種類、則數和 emotion 的變化，沒有對方的文字，也沒有對方能控制的名稱。日記的 `[Today's log]` 看得到，所以她在外面的生活會進日記；consolidation 依 I2 本來就濾掉 action 行。
 - 記憶自動注入依 harness S1，外部目錄不注入私人回合。`[Memory context]` 的查詢改用這回合自己的輸入。
 - 外部原文進入私人回合的唯一路徑是 `recall include_external`，讀了就降權。
 - safe_mode 和 RepeatLoop/PersonaDrift 警示都以 place 為單位：

@@ -106,7 +106,9 @@ def fingerprint_response(text: str) -> str:
 def _word_set(text: str) -> set[str]:
     """Tokenize normalized `text` into a set of words for Jaccard overlap.
 
-    CJK is load-bearing here (Doll speaks 繁體中文) — plain `str.split()`
+    CJK still matters here (Doll speaks and writes English since 2026-10-19,
+    but older replies and an older adopted current_self are Chinese, and
+    proper nouns may stay Chinese) — plain `str.split()`
     on whitespace would treat an entire unsegmented Chinese sentence as one
     giant "word" (Chinese doesn't delimit words with spaces), making the
     overlap check meaningless for real responses. So this uses `jieba`
