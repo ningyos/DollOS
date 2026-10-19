@@ -406,7 +406,7 @@ def test_scaffolding_reflection_section_keeps_operational_details():
 def test_scaffolding_reflection_section_mentions_selfrevision_when_evolution_enabled():
     """Live-smoke root cause (p2-live-smoke-report.md): SelfRevision was
     invisible in the model-facing prompt (PinSelf 22x vs SelfRevision 1x),
-    so the weak model routed [人格演化候選] decisions to PinSelf. The
+    so the weak model routed [Self revision candidate] decisions to PinSelf. The
     always-in-context Reflection section must name SelfRevision explicitly
     when evolution is enabled, and distinguish it from PinSelf."""
     renderer = PromptRenderer()

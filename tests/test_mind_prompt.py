@@ -222,7 +222,21 @@ def test_persona_drift_detected_perception_rendered():
     body = _percep_body(p)
     assert "banned substring found: 'a~'" in body
     assert "哈囉a~最近好嗎" in body
-    assert "人設約束" in body
+    assert "persona constraints" in body
+
+
+def test_persona_drift_describes_without_commanding():
+    """Plan 2026-10-19 Task 5: the perception says what happened — which
+    constraints, what she said — in English, with no "watch out next time"
+    command; several violations are joined with ", "."""
+    from dollos.mind.mind_prompt import _percep_body
+
+    body = _percep_body(Perception(
+        kind="PersonaDriftDetected",
+        t=time.time(),
+        data={"violations": ["v-one", "v-two"], "snippet": "S"},
+    ))
+    assert body == 'what you just said broke your persona constraints (v-one, v-two): "S"'
 
 
 def test_bridge_down_perception_rendered():
@@ -237,6 +251,17 @@ def test_bridge_down_perception_rendered():
     assert "discord-bridge" in body
     assert "rc=1" in body
     assert "{" not in body  # must be prose, not a raw dict dump (fallback str(d))
+    assert "lost one of your online channels" in body
+
+
+def test_mcp_down_perception_rendered():
+    from dollos.mind.mind_prompt import _percep_body
+
+    body = _percep_body(Perception(kind="McpDown", t=time.time(),
+                                   data={"service": "mcp-server", "rc": 2}))
+    assert "lost one of your online channels" in body
+    assert "mcp-server (the port external AIs connect through)" in body
+    assert "rc=2" in body
 
 
 def test_diary_moment_renders_nonempty_narrative():
@@ -244,14 +269,15 @@ def test_diary_moment_renders_nonempty_narrative():
 
     body = _percep_body(Perception(kind="DiaryMoment", t=0.0, data={}))
     assert body.strip()  # not blank
-    assert "日記" in body
+    assert "diary" in body
+    assert "[Today's log]" in body and "WriteDiary" in body
 
 
 def test_pulse_moment_renders_full_detail_not_truncated_dict():
     from dollos.mind.mind_prompt import _percep_body
 
     long_title = "報告" * 40  # long window title pushes detail well past 120 chars
-    detail = f"盯著「{long_title}」連續 118 分鐘沒換"
+    detail = f'staring at "{long_title}" for 118 minutes without switching'
     p = Perception(
         kind="PulseMoment",
         t=time.time(),
@@ -259,7 +285,7 @@ def test_pulse_moment_renders_full_detail_not_truncated_dict():
     )
     body = _percep_body(p)
     assert body == detail  # self-contained detail rendered verbatim
-    assert "連續 118 分鐘沒換" in body  # actionable tail must survive
+    assert "for 118 minutes without switching" in body  # actionable tail must survive
     assert "{" not in body and "}" not in body  # must be prose, not a raw dict dump
 
 
@@ -458,28 +484,28 @@ def test_external_public_teeth_owner_marker_would_leak_unfiltered():
 
 def test_body_signal_critical_wording():
     from dollos.mind.mind_prompt import render_body_signal
-    out = render_body_signal([("critical", "電量掉到 12% 而且在放電")])
+    out = render_body_signal([("critical", "battery down to 12% and discharging")])
     assert out is not None
     assert out.startswith("[Body signal]")
-    assert "電量掉到 12% 而且在放電" in out
-    assert "主人多半會想知道" in out          # critical lean-to-surface phrasing
-    assert "不緊急" not in out
+    assert "battery down to 12% and discharging" in out
+    assert "your owner would most likely want to know" in out  # critical lean-to-surface
+    assert "Not urgent" not in out
 
 
 def test_body_signal_advisory_wording():
     from dollos.mind.mind_prompt import render_body_signal
-    out = render_body_signal([("advisory", "盯著「editor」連續 118 分鐘沒換")])
+    out = render_body_signal([("advisory", 'staring at "editor" for 118 minutes without switching')])
     assert out is not None
-    assert "不緊急" in out                    # advisory lean-to-restraint phrasing
-    assert "主人多半會想知道" not in out
-    assert "連續 118 分鐘沒換" in out
+    assert "Not urgent" in out                # advisory lean-to-restraint phrasing
+    assert "would most likely want to know" not in out
+    assert "for 118 minutes without switching" in out
 
 
 def test_body_signal_mixed_takes_critical():
     from dollos.mind.mind_prompt import render_body_signal
-    out = render_body_signal([("advisory", "卡視窗"), ("critical", "電量低")])
-    assert "主人多半會想知道" in out          # any critical → critical framing
-    assert "卡視窗" in out and "電量低" in out
+    out = render_body_signal([("advisory", "window stuck"), ("critical", "battery low")])
+    assert "would most likely want to know" in out  # any critical → critical framing
+    assert "window stuck; battery low" in out       # details joined with "; "
 
 
 def test_body_signal_empty_returns_none():

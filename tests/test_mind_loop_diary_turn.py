@@ -207,7 +207,7 @@ async def test_diary_turn_does_not_leak_into_transcript_file(tmp_path):
 @pytest.mark.asyncio
 async def test_diary_turn_truncates_oversized_log_head_and_tail(tmp_path):
     """M-4: a day's log bigger than ``diary_max_log_chars`` is head+tail
-    sliced with the ``…(中段略)…`` marker (spec §2.2) rather than either
+    sliced with the ``…(middle omitted)…`` marker (spec §2.2) rather than either
     truncated from one end or blown past the context budget."""
     state = MindState()
     head_marker = "HEAD_SLICE_MARKER"
@@ -230,6 +230,7 @@ async def test_diary_turn_truncates_oversized_log_head_and_tail(tmp_path):
     await ml.iterate()
     request = ml._llm.calls[0]["messages"][1]["content"]
     block = request[request.index("[Today's log]"):]
-    assert "…(中段略)…" in block
+    assert block.startswith("[Today's log] (your day today — material for your diary)\n")
+    assert "…(middle omitted)…" in block
     assert head_marker in block   # head slice survived
     assert tail_marker in block   # tail slice survived

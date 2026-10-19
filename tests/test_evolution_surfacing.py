@@ -1,18 +1,50 @@
-"""[人格演化候選] surfacing + expiry (spec §3.4)."""
+"""[Self revision candidate] surfacing + expiry (spec §3.4)."""
 from dollos.mind import evolution as evo
 from dollos.mind import self_history
+from dollos.mind import surfacing_markers as sm
+from tests._cjk import cjk_runs
 
 
 def test_render_surfacing_keeper_has_all_load_bearing_parts():
     slot = evo.make_keeper_slot(candidate="我現在監控數字時會主動來勁。", rationale="活很久的 pin",
                                 hwm_before=None, created_ts=1.0)
     out = evo.render_surfacing(slot=slot, sanctioned_text="我以前沒事就安靜待著。", reminder_n=1)
-    assert "[人格演化候選]" in out
-    assert "我以前沒事就安靜待著。" in out and "我現在監控數字時會主動來勁。" in out
-    assert "活很久的 pin" in out            # rationale (keeper)
+    assert out.startswith("[Self revision candidate]\n")
+    assert f"{sm.OLD} 我以前沒事就安靜待著。" in out
+    assert f"{sm.NEW} 我現在監控數字時會主動來勁。" in out
+    assert "Based on: 活很久的 pin" in out     # rationale (keeper)
     assert "adopt" in out and "reject" in out  # operational hint
-    assert "採不採納由妳" in out or "由妳" in out  # 主權句
-    assert "第 1 次" in out                  # 第N次提醒
+    assert "is up to you" in out               # sovereignty line
+    assert "(reminder #1)" in out              # Nth reminder
+
+
+def test_render_surfacing_daemon_words_are_english():
+    """Plan 2026-10-19 Task 5: every word the daemon adds around her old and
+    new text (header, markers, origin notes, hint, sovereignty line) is
+    English — the only CJK left is the texts themselves."""
+    keeper = evo.make_keeper_slot(candidate="新", rationale="由", hwm_before=None,
+                                  created_ts=1.0)
+    keeper.notice = "因"
+    counter = evo.mark_awaiting_doll(evo.to_counter(keeper, new_text="新"))
+    external = evo.mark_awaiting_doll(evo.make_external_slot(candidate="新", created_ts=1.0))
+    for slot, sanctioned in ((keeper, "舊"), (counter, "舊"), (external, None)):
+        out = evo.render_surfacing(slot=slot, sanctioned_text=sanctioned, reminder_n=3)
+        assert set("".join(cjk_runs(out))) <= set("舊新由因"), out
+
+
+def test_markers_are_distinctive_and_not_cjk():
+    """The old/new markers are daemon words: English, bracketed so they can't
+    turn up in her own prose, and distinct from each other."""
+    assert sm.OLD != sm.NEW and sm.ALL == (sm.OLD, sm.NEW)
+    for mark in sm.ALL:
+        assert not cjk_runs(mark)
+        assert mark.startswith("⟪") and mark.endswith("⟫")
+
+
+def test_render_surfacing_first_version_note_when_nothing_adopted():
+    slot = evo.mark_awaiting_doll(evo.make_external_slot(candidate="新", created_ts=1.0))
+    out = evo.render_surfacing(slot=slot, sanctioned_text=None, reminder_n=1)
+    assert f'{sm.OLD} (no "Who I am now" yet — this would be the first version)' in out
 
 
 def test_render_surfacing_operational_hint_leads_with_tool_name():
@@ -23,21 +55,22 @@ def test_render_surfacing_operational_hint_leads_with_tool_name():
     slot = evo.make_keeper_slot(candidate="我現在監控數字時會主動來勁。", rationale="活很久的 pin",
                                 hwm_before=None, created_ts=1.0)
     out = evo.render_surfacing(slot=slot, sanctioned_text="我以前沒事就安靜待著。", reminder_n=1)
-    assert "用 SelfRevision 工具回應這個提案" in out
-    assert "這不是 PinSelf 的工作" in out
+    assert "Answer this proposal with the SelfRevision tool" in out
+    assert "this is not PinSelf's job" in out
     # The tool-name lead comes before the adopt/reject mechanics it introduces.
-    assert out.index("用 SelfRevision 工具回應這個提案") < out.index("decision=adopt")
+    lead = "Answer this proposal with the SelfRevision tool"
+    assert out.index(lead) < out.index("decision=adopt")
     # Existing load-bearing elements survive.
-    assert "採不採納由妳" in out or "由妳" in out  # 主權句
+    assert "is up to you" in out  # sovereignty line
 
 
 def test_render_surfacing_external_uses_neutral_attribution():
     slot = evo.make_external_slot(candidate="有人手動改的內容。", created_ts=1.0)
     slot.status = "awaiting_doll"
     out = evo.render_surfacing(slot=slot, sanctioned_text=None, reminder_n=2)
-    # Neutral attribution — never "可能是主人" (spec §3.4).
-    assert "無法確認是誰" in out
-    assert "可能是主人" not in out
+    # Neutral attribution — never "maybe it was your owner" (spec §3.4).
+    assert "can't tell who" in out
+    assert "owner" not in out
 
 
 def test_render_surfacing_counter_kill_notice_leads():
@@ -46,7 +79,8 @@ def test_render_surfacing_counter_kill_notice_leads():
     c = evo.to_counter(base, new_text="我的改寫。")
     reverted = evo.revert_to_fallback(c, reason="牴觸 taboo")
     out = evo.render_surfacing(slot=reverted, sanctioned_text=None, reminder_n=1)
-    assert "未通過" in out and "牴觸 taboo" in out and "原候選內容。" in out
+    assert "didn't pass" in out and "牴觸 taboo" in out and "原候選內容。" in out
+    assert out.index("didn't pass") < out.index("(reminder #1)")
 
 
 def test_surface_increments_count(tmp_path):
@@ -144,8 +178,8 @@ def test_kill_notice_is_one_shot_across_surfacings(tmp_path):
     first = evo.surface_or_expire(slot_path=sp, history_path=hist, current_self_path=cs,
                                   sanctioned_text=None, max_surfacings=5,
                                   min_age_days=2.0, now=1.0)
-    assert "未通過" in first and "牴觸 taboo" in first
+    assert "didn't pass" in first and "牴觸 taboo" in first
     second = evo.surface_or_expire(slot_path=sp, history_path=hist, current_self_path=cs,
                                    sanctioned_text=None, max_surfacings=5,
                                    min_age_days=2.0, now=2.0)
-    assert "未通過" not in second  # one-shot notice cleared after first surfacing
+    assert "didn't pass" not in second  # one-shot notice cleared after first surfacing

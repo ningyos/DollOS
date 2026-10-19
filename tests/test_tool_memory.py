@@ -107,3 +107,4 @@ def test_render_tool_habits_gated():
     assert render_tool_habits([]) is None
     out = render_tool_habits([{"content": "## h\n\n[situation] grep\nuse Grep\n"}])
     assert "[Tool habits]" in out and "grep" in out and "use Grep" in out
+    assert out.startswith("[Tool habits] (tool usage you learned before):\n")

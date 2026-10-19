@@ -53,7 +53,7 @@ async def test_external_edit_ratification_end_to_end(tmp_path, monkeypatch):
 
     # 3. surfacing uses neutral attribution.
     block = evo.render_surfacing(slot=evo.load_slot(sp), sanctioned_text=None, reminder_n=1)
-    assert "無法確認是誰" in block
+    assert "can't tell who" in block
 
     # 4. Doll adopts → sanctioned = edited, file kept, slot cleared, generation bumps.
     await SelfRevision(decision="adopt").run(_ctx(tmp_path))
@@ -81,7 +81,7 @@ async def test_counter_round_trip_then_adopt(tmp_path, monkeypatch):
     await SelfRevision(decision="adopt", text=my_rewrite).run(_ctx(tmp_path))
     assert evo.load_slot(sp).status == "awaiting_skeptic" and evo.load_slot(sp).kind == "counter"
 
-    # skeptic passes → awaiting_doll, surfaces "已通過".
+    # skeptic passes → awaiting_doll, surfaces "passed review".
     trig = EvolutionTrigger(
         state=types.SimpleNamespace(
             last_user_at=0.0, last_iter_at=0.0,
@@ -161,16 +161,16 @@ async def test_adopt_log_failure_writes_nothing(tmp_path, monkeypatch):
 
 def test_turn_message_places_evolution_block_after_self_profile():
     """Controller carry-item (Task 6/8 review): in a reflection turn's
-    message the [人格演化候選] block renders after a (changed) [Self profile]
+    message the [Self revision candidate] block renders after a (changed) [Self profile]
     and before the turn's perception lines, so it stays salient without
     displacing the self block (spec §3.4)."""
     state = MindState()
     self_profile_body = "## 我學到的自己\n- [s1·2026-07-02] 我重視誠實"
-    evolution_body = "[人格演化候選]\n（第 1 次提醒)\n舊：(尚無)\n新：候選文字"
+    evolution_body = "[Self revision candidate]\n(reminder #1)\n⟪current⟫ (尚無)\n⟪proposed⟫ 候選文字"
     reflection = Perception(kind="ReflectionMoment", t=0.0, data={"iters_since_last": 30})
     out = render_turn_delta(state, Seen(), "internal", [reflection], 0.0,
                             self_profile_text=self_profile_body,
                             evolution_block=evolution_body)
     assert (out.index("[Self profile]")
-            < out.index("[人格演化候選]")
+            < out.index("[Self revision candidate]")
             < out.index("ReflectionMoment:"))

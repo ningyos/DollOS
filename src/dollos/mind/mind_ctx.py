@@ -88,7 +88,7 @@ class MindCtx:
     # drain by MindLoop) + static-per-run evolution config + pack enforcement.
     evolution_latched: bool = False
     # Surfaced-this-turn gate (review F5): True only when surface_or_expire
-    # returned a [人格演化候選] block THIS turn (set by MindLoop, reset at drain
+    # returned a [Self revision candidate] block THIS turn (set by MindLoop, reset at drain
     # alongside the latch). SelfRevision refuses all slot-mutating ops when
     # False — a Mode-B skeptic PASS can flip awaiting_skeptic→awaiting_doll
     # mid-cascade AFTER surfacing already returned None, and the model must not

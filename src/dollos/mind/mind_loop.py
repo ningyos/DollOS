@@ -1224,8 +1224,8 @@ class MindLoop:
             return None
         if len(raw) > cap:
             half = cap // 2
-            raw = raw[:half] + "\n…(中段略)…\n" + raw[-half:]
-        return "[Today's log](你今天的一天,寫日記的素材)\n" + raw
+            raw = raw[:half] + "\n…(middle omitted)…\n" + raw[-half:]
+        return "[Today's log] (your day today — material for your diary)\n" + raw
 
     @staticmethod
     def _body_block(provider, method: str) -> str | None:

@@ -104,7 +104,7 @@ def render_tool_habits(hits: list[dict]) -> str | None:
             lines.append(f"- [{parsed[0]}] {parsed[1]}")
     if not lines:
         return None
-    return "[Tool habits]（過去學到的工具用法）：\n" + "\n".join(lines)
+    return "[Tool habits] (tool usage you learned before):\n" + "\n".join(lines)
 
 
 def render_tool_notes(recent_tool_failures: deque, now: float) -> str | None:

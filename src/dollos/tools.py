@@ -1116,7 +1116,7 @@ class SelfRevision(BaseModel):
 
         # decision == "adopt"
         # Storage-side marker strip (review F3): the model's `text` may echo the
-        # surfaced 【現行·舊】/【候選·新】 markers; those bytes must never become
+        # surfaced surfacing_markers (⟪current⟫/⟪proposed⟫); those bytes must never become
         # her self. Applied before the mechanical checks and before to_counter.
         proposed = evo.strip_surfacing_markers(self.text)
         if not proposed or evo.echo_equivalent(proposed, slot.candidate):

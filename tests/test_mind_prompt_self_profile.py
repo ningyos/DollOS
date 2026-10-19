@@ -29,29 +29,29 @@ def test_reflection_nudge_mentions_pinself():
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
     assert "PinSelf" in text
-    assert "self-profile" in text or "自己" in text
+    assert "yourself" in text
 
 
 def test_reflection_nudge_grounds_before_introspection():
-    """Anti-performativity guard: the grounding clause ('回看實際做過的事')
+    """Anti-performativity guard: the grounding clause ('look back at what you actually did')
     must come before any invitation to introspect, so a weak model doesn't
     free-associate ungrounded self-description."""
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert text.index("實際做過的事") < text.index("PinSelf")
+    assert text.index("what you actually did") < text.index("PinSelf")
 
 
 def test_reflection_nudge_states_subject_test():
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert "主詞" in text
+    assert 'the subject is "you" → PinSelf' in text
 
 
 def test_reflection_nudge_allows_write_loose_not_yet_durable():
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert "先記" in text
-    assert "淘汰會篩" in text
+    assert "record it anyway" in text
+    assert "pruning later does the filtering" in text
 
 
 def test_reflection_nudge_keeps_bootstrap_safe_clause():
@@ -59,15 +59,15 @@ def test_reflection_nudge_keeps_bootstrap_safe_clause():
     waits for a non-empty [Self profile] before its first pin."""
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert "不必等 [Self profile] 已經有內容才動作" in text
+    assert "no need to wait until [Self profile] already has entries" in text
 
 
 def test_reflection_nudge_keeps_operational_calling_hint():
     """Regression guard for commit 70de95a — without the explicit
-    (op=add,section 選 ...) hint, nudge salience regresses."""
+    (op=add, section one of ...) hint, nudge salience regresses."""
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert "op=add,section 選 self/relationship/user" in text
+    assert "PinSelf (op=add, section one of self/relationship/user)" in text
 
 
 def test_reflection_nudge_states_notetoollesson_division():
@@ -78,17 +78,31 @@ def test_reflection_nudge_states_notetoollesson_division():
 
 def test_reflection_nudge_states_selfrevision_division_of_labor():
     """Live-smoke root cause (p2-live-smoke-report.md): the ReflectionMoment
-    nudge was 100% PinSelf-focused, so the model conflated [人格演化候選]
+    nudge was 100% PinSelf-focused, so the model conflated [Self revision candidate]
     with PinSelf's self-profile machinery. A division-of-labor sentence
     naming SelfRevision must appear, without disturbing the load-bearing
     PinSelf content above it."""
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
-    assert "[人格演化候選]" in text
+    assert "[Self revision candidate]" in text
     assert "SelfRevision" in text
-    assert "PinSelf 處理不了它" in text
+    assert "PinSelf can't handle it" in text
     # Existing load-bearing PinSelf content must come first (appended after).
     assert text.index("NoteToolLesson") < text.index("SelfRevision")
+
+
+def test_reflection_nudge_is_english_and_names_the_candidate_block_like_surfacing():
+    """Plan 2026-10-19 Task 5: the nudge is the daemon's words — English — and
+    names the candidate block exactly as render_surfacing titles it."""
+    from dollos.mind import evolution as evo
+    from tests._cjk import cjk_runs
+    p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
+    text = _percep_body(p)
+    assert cjk_runs(text) == []
+    assert text.startswith("(time to reflect (5 iters since last). ")
+    slot = evo.make_keeper_slot(candidate="c", rationale="r", hwm_before=None, created_ts=1.0)
+    header = evo.render_surfacing(slot=slot, sanctioned_text="s", reminder_n=1).splitlines()[0]
+    assert header == "[Self revision candidate]" and header in text
 
 
 def test_self_profile_header_frames_prune_as_selection():

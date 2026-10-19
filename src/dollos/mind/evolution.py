@@ -193,7 +193,7 @@ def revert_to_fallback(slot: PendingSlot, *, reason: str) -> PendingSlot:
 
 
 def strip_surfacing_markers(text: str) -> str:
-    """Remove the ``[人格演化候選]`` marker prefixes (``surfacing_markers.ALL``)
+    """Remove the ``[Self revision candidate]`` marker prefixes (``surfacing_markers.ALL``)
     from ``text``, preserving prose/punctuation/content (spec §3.4, the
     storage-side analogue of A1's ``_strip_incoming_tag``). Used both by the
     ``SelfRevision`` counter path — the model's ``text`` may echo back the
@@ -243,33 +243,40 @@ def log_or_raise(history_path: Path, *, kind: str, **fields) -> None:
 
 def render_surfacing(*, slot: PendingSlot, sanctioned_text: str | None,
                      reminder_n: int) -> str:
-    """The ``[人格演化候選]`` perception body shown on ``awaiting_doll`` reflection
-    turns (spec §3.4). Marker-prefixed old/new full text + per-origin note +
-    operational hint + 主權句 + 第N次提醒 (the reminder count breaks byte-
-    identical correlated failure across surfacings)."""
+    """The ``[Self revision candidate]`` perception body shown on
+    ``awaiting_doll`` reflection turns (spec §3.4). Marker-prefixed old/new full
+    text + per-origin note + operational hint + sovereignty line + Nth reminder
+    (the reminder count breaks byte-identical correlated failure across
+    surfacings). The framing is the daemon's words, in English; the old/new
+    texts, the rationale and a kill notice are shown as written."""
     from dollos.mind import surfacing_markers as sm
-    old = sanctioned_text if sanctioned_text else "(還沒有現在的我——這會是第一版)"
+    old = (sanctioned_text if sanctioned_text
+           else '(no "Who I am now" yet — this would be the first version)')
     lines = [
-        "[人格演化候選]",
-        f"（第 {reminder_n} 次提醒)",
+        "[Self revision candidate]",
+        f"(reminder #{reminder_n})",
         f"{sm.OLD} {old}",
         f"{sm.NEW} {slot.candidate}",
     ]
     if slot.notice:
-        lines.insert(1, f"妳上一次的改寫未通過({slot.notice})——原候選仍在,如下。")
+        lines.insert(1, f"Your last rewrite didn't pass ({slot.notice}) — the original "
+                        "candidate is still here, below.")
     if slot.kind == "keeper" and slot.rationale:
-        lines.append(f"依據:{slot.rationale}")
+        lines.append(f"Based on: {slot.rationale}")
     elif slot.kind == "counter":
-        lines.append("來源:妳自己的改寫,已通過送審。")
+        lines.append("Source: your own rewrite; it passed review.")
     elif slot.kind == "external":
-        lines.append("來源:current_self.md 檔案被直接修改,系統無法確認是誰。")
+        lines.append("Source: the current_self.md file was edited directly; the system "
+                     "can't tell who did it.")
     lines.append(
-        "用 SelfRevision 工具回應這個提案(這不是 PinSelf 的工作):"
-        "採納:SelfRevision decision=adopt(不必填 text);"
-        "不採納:decision=reject;"
-        "想改寫後採納:把全文放進 text,會先送審再回來。"
+        "Answer this proposal with the SelfRevision tool (this is not PinSelf's job): "
+        "adopt: SelfRevision decision=adopt (no text needed); "
+        "don't adopt: decision=reject; "
+        "rewrite, then adopt: put the full text in text — it is reviewed first and "
+        "comes back to you."
     )
-    lines.append("這是妳的人格描述——採不採納由妳;改寫只需不觸犯妳的核心身分與 taboos。")
+    lines.append("This is the description of who you are — adopting it or not is up to "
+                 "you; a rewrite only has to stay clear of your core identity and taboos.")
     return "\n".join(lines)
 
 

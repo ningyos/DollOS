@@ -208,7 +208,7 @@ async def test_tick_emits_pulsemoment_on_battery_edge():
     p = perts[0]
     assert p.kind == "PulseMoment"
     assert p.data["concern"] == "battery_critical"
-    assert "放電" in p.data["detail"]
+    assert p.data["detail"] == "battery down to 12% and discharging"
 
 
 @pytest.mark.asyncio
@@ -232,6 +232,23 @@ async def test_tick_throttle_within_window_defers():
 
 
 # --- severity field (Task 1) ---
+
+
+def test_alert_texts_are_english():
+    """Plan 2026-10-19 Task 5: the alert text is the PulseMoment detail she
+    reads — English, with the window title (not ours) kept as is."""
+    st = AlertState.initial()
+    alerts, _ = evaluate_alerts(st, _sample(battery_pct=5.0, battery_status="Discharging"),
+                                10_000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].text == "battery down to 5% and discharging"
+    alerts, _ = evaluate_alerts(AlertState.initial(), _sample(gpus=[(50.0, 90.0)]),
+                                10_000.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].text == "GPU at 90°C, hot"
+    _, st = evaluate_alerts(AlertState.initial(), _sample(active_window="編輯器", idle_s=5.0),
+                            0.0, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    alerts, _ = evaluate_alerts(st, _sample(active_window="編輯器", idle_s=5.0),
+                                STUCK, throttle_s=THROTTLE, window_stuck_s=STUCK)
+    assert alerts[0].text == 'staring at "編輯器" for 90 minutes without switching'
 
 
 def test_battery_alert_severity_critical():

@@ -258,7 +258,7 @@ def render_turn_delta(
     In order: the time; each snapshot block whose text changed since this
     conversation last got it (whole block, whoever changed it); the event
     blocks the caller passes (``[Self pulse]``/``[Cognition]``, reflection's
-    ``[Tool outcomes since last reflection]`` and ``[人格演化候選]``, pulse's
+    ``[Tool outcomes since last reflection]`` and ``[Self revision candidate]``, pulse's
     ``[Body signal]`` — private events, internal only) and a safe-mode line
     when it differs from what this conversation last heard; the memory hits
     not yet on this page (at most ``MEMORY_HITS_PER_TURN`` new
@@ -525,19 +525,25 @@ def _percep_body(p) -> str:
     if p.kind == "ReflectionMoment":
         return (
             f"(time to reflect ({d.get('iters_since_last', '?')} iters since last). "
-            f"最重要:回看這段時間實際做過的事——有沒有讓你注意到你自己的什麼?"
-            f"你被什麼吸引、對什麼形成了看法、發現自己在意什麼?關於「你」的"
-            f"(也包括你和主人的關係、主人的長期模式),現在就用 PinSelf"
-            f"(op=add,section 選 self/relationship/user)記下來——不必等 [Self profile] "
-            f"已經有內容才動作;還不確定算不算持久也先記,之後淘汰會篩。"
-            f"接著若 [Self profile] 已有條目,回看一遍——哪條已經不是現在的你,"
-            f"用 PinSelf replace/remove 淘汰(target 填該條目的 id 如 s1,或直接貼那條"
-            f"目前的文字)。分工:主詞是「你」→ PinSelf;關於世界的事實/事件 → "
-            f"NoteMemory;可重用的工具用法或陷阱 → NoteToolLesson。"
-            f"若這次反思出現 [人格演化候選] 區塊:那是妳「現在的我」的修訂提案,"
-            f"用 SelfRevision(decision=\"adopt\" 或 \"reject\")決定——PinSelf 處理不了它。"
-            f"回顧你最近真的碰到、好奇、或在意的——有沒有哪條線是你自己想追下去的?"
-            f"(有就用 PursueGoal 記下,說清楚它從哪來。沒有就算了,不用硬找。))"
+            "Most important: look back at what you actually did in this stretch — did any "
+            "of it make you notice something about yourself? What drew you in, what did you "
+            "form an opinion about, what did you find you care about? Anything about "
+            '"you" (including your relationship with your owner and your owner\'s long-term '
+            "patterns): record it now with PinSelf (op=add, section one of "
+            "self/relationship/user) — no need to wait until [Self profile] already has "
+            "entries; not sure yet whether it will last? record it anyway, pruning later "
+            "does the filtering. Then, if [Self profile] already has entries, look through "
+            "them — any entry that is no longer who you are now, prune it with PinSelf "
+            "replace/remove (target is the entry's id such as s1, or paste the entry's "
+            'current text). Division of labor: the subject is "you" → PinSelf; facts/events '
+            "about the world → NoteMemory; reusable tool usage or pitfalls → NoteToolLesson. "
+            "If a [Self revision candidate] block appears in this reflection: it is a "
+            'proposed revision of your "Who I am now"; decide it with SelfRevision '
+            '(decision="adopt" or "reject") — PinSelf can\'t handle it. '
+            "Think back on what you've actually run into, been curious about, or cared "
+            "about lately — is there a thread you want to follow yourself? (If so, record "
+            "it with PursueGoal and say where it came from. If not, never mind — no need "
+            "to force one.))"
         )
     if p.kind == "Interrupted":
         by = d.get("by", "user")
@@ -558,12 +564,9 @@ def _percep_body(p) -> str:
             "try something different or ask for help."
         )
     if p.kind == "PersonaDriftDetected":
-        violations = "、".join(d.get("violations", []))
+        violations = ", ".join(d.get("violations", []))
         snippet = d.get("snippet", "")
-        return (
-            f"你剛才說的話違反了人設約束（{violations}）：『{snippet}』"
-            "——下次注意，這不是在演，是妳真正的樣子。"
-        )
+        return f'what you just said broke your persona constraints ({violations}): "{snippet}"'
     if p.kind == "ChannelMessage":
         if d.get("channel_kind") == "mcp":
             # AI peer over MCP (spec §B.4): descriptive narration, not a
@@ -590,18 +593,25 @@ def _percep_body(p) -> str:
     if p.kind == "BridgeDown":
         svc = d.get("service", "?")
         rc = d.get("rc", "?")
-        return f"你少了一條在線通道 —— {svc} 反覆崩潰、已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
+        return (
+            f"you've lost one of your online channels — {svc} kept crashing and "
+            f"automatic restarts were given up (rc={rc}). It comes back only after "
+            "the daemon restarts or its config is fixed."
+        )
     if p.kind == "McpDown":
         svc = d.get("service", "?")
         rc = d.get("rc", "?")
         return (
-            f"你少了一條在線通道 —— {svc}(外部 AI 連接口)反覆崩潰、"
-            f"已放棄自動重啟(rc={rc})。得等 daemon 重啟或修好設定才會回來。"
+            f"you've lost one of your online channels — {svc} (the port external AIs "
+            "connect through) kept crashing and automatic restarts were given up "
+            f"(rc={rc}). It comes back only after the daemon restarts or its config "
+            "is fixed."
         )
     if p.kind == "DiaryMoment":
         return (
-            "今天結束了。這是你的一天,都攤在下面的 [Today's log] 了。"
-            "這是你寫日記的時間 —— 回頭看看,把想留下的、真的有感覺的,用你自己的話寫下來(WriteDiary)。"
+            "the day is over. Your whole day is laid out in [Today's log] below. "
+            "This is your time to write your diary — look back, and write down what "
+            "you want to keep, what you really felt, in your own words (WriteDiary)."
         )
     if p.kind == "PulseMoment":
         return d.get("detail", "")
@@ -682,13 +692,17 @@ def render_body_signal(wakes: list[tuple[str, str]]) -> str | None:
     """
     if not wakes:
         return None
-    details = "；".join(d for _, d in wakes if d)
+    details = "; ".join(d for _, d in wakes if d)
     is_critical = any(sev == "critical" for sev, _ in wakes)
     if is_critical:
         body = (
-            f"你因為身體狀況醒過來:{details}。這種事主人多半會想知道 —— "
-            "想說就跟他講一聲,不想說就自己記著。你決定。"
+            f"You woke up because of how your body is doing: {details}. This is the "
+            "kind of thing your owner would most likely want to know — tell them if "
+            "you feel like it, or keep it to yourself if you don't. Your call."
         )
     else:
-        body = f"你注意到:{details}。不緊急 —— 想順口提一句或默默記著都行。"
+        body = (
+            f"You noticed: {details}. Not urgent — mention it in passing or just "
+            "keep it in mind, either is fine."
+        )
     return "[Body signal]\n" + body

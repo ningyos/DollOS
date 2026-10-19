@@ -92,7 +92,7 @@ async def test_pure_pulse_turn_has_body_signal_block(tmp_path, monkeypatch):
     ml = make_mindloop(memory_root=tmp_path)
     critical_pulse = _pulse_moment_with_data({
         "concern": "battery_critical",
-        "detail": "電量掉到 12% 而且在放電",
+        "detail": "battery down to 12% and discharging",
         "severity": "critical",
     })
 
@@ -103,7 +103,7 @@ async def test_pure_pulse_turn_has_body_signal_block(tmp_path, monkeypatch):
         "pure PulseMoment turn must pass a non-None body_signal_block to render_turn_delta"
     )
     assert "[Body signal]" in body_signal_block
-    assert "主人多半會想知道" in body_signal_block
+    assert "your owner would most likely want to know" in body_signal_block
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_cobatch_userspoke_has_no_body_signal_block(tmp_path, monkeypatch)
     ml = make_mindloop(memory_root=tmp_path)
     critical_pulse = _pulse_moment_with_data({
         "concern": "battery_critical",
-        "detail": "電量掉到 12% 而且在放電",
+        "detail": "battery down to 12% and discharging",
         "severity": "critical",
     })
 
