@@ -295,7 +295,7 @@ def main() -> int:
     print(f"[persona_smoke] scratch data root: {settings.data.root}")
 
     # Seed the scratch instance, pre-construction, so the probed Doll
-    # actually renders `## 現在的我` at that same generation. Composition
+    # actually renders `## Who I am now` at that same generation. Composition
     # reads the sanctioned current_self text from the self_history log
     # (latest evo_adopt), not from current_self.md directly — so the log
     # must be seeded, not just the file (which is written too, since other

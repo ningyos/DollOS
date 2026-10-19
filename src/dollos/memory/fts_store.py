@@ -5,10 +5,12 @@ sites use: ``search`` / ``index_file`` / ``index`` / ``close``. Markdown daily
 files under the configured paths are the source of truth; the SQLite DB
 (``<data.root>/memory/fts.db``) is a derived index.
 
-CJK is load-bearing — the user writes 繁體中文. FTS5 ``unicode61`` does not
-segment Chinese, so both the indexed content and the query are segmented with
-``jieba`` (index side: ``cut_for_search`` for recall; query side: ``cut``) and
-the resulting tokens drive a quoted OR-combined FTS5 MATCH expression.
+CJK is load-bearing — the owner may speak Chinese (transcripts), and memory
+written before 2026-10-19 is Chinese (Doll writes English since). FTS5
+``unicode61`` does not segment Chinese, so both the indexed content and the
+query are segmented with ``jieba`` (index side: ``cut_for_search`` for recall;
+query side: ``cut``) and the resulting tokens drive a quoted OR-combined FTS5
+MATCH expression.
 
 See docs/superpowers/specs/2026-06-26-embedder-free-memory-design.md.
 """

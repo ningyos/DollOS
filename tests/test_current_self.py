@@ -11,7 +11,8 @@ def test_render_section_empty_when_none():
 def test_render_section_has_heading_and_descriptive_framing():
     out = current_self.render_section("我現在監控數字跳動時會主動來勁。")
     assert out.startswith("## Who I am now\n")
-    # Her adopted text stays as she wrote it (Q7: Traditional Chinese).
+    # Her adopted text renders as she wrote it; she writes English now, and an
+    # older Chinese one like this (from before 2026-10-19) renders unchanged.
     assert "我現在監控數字跳動時會主動來勁。" in out
     # Descriptive, not imperative; provenance-accurate (she adopted it).
     assert "adopted" in out

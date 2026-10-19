@@ -6,7 +6,8 @@ Sanctioned text lives in ``self_history.jsonl`` (latest ``evo_adopt``), NOT in
 this file — the file can lag/diverge while a ratification pends. Only sanctioned
 text ever renders, so the framing line's provenance claim ("you adopted it")
 stays true. Never FTS-indexed. The heading and framing are English (the
-daemon's words); the adopted text is hers and stays as written (Q7).
+daemon's words); the adopted text is hers and renders as written: English
+since plan 2026-10-19 doll-all-english, and an older Chinese one unchanged.
 """
 from __future__ import annotations
 
