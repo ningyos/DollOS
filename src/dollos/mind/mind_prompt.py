@@ -217,7 +217,7 @@ def render_mind(
         blocks.extend([body_signal_block, ""])
     blocks.extend([
         "[Decision time]",
-        "What do you do this iteration? Output a JSON array of 0..N actions.",
+        "What do you do this iteration?",
     ])
     return "\n".join(blocks)
 
@@ -542,7 +542,7 @@ def _render_outputs_header(outs, now: float) -> str:
             snippet = last.summary[len("spoke: "):60] if last.summary.startswith("spoke: ") else last.summary[:60]
             warnings.append(
                 f"⚠ WARNING: you just spoke {age_s:.0f}s ago ('{snippet}…'). "
-                f"Don't repeat yourself — if there's nothing new to say, stay silent (no text outside tool_call)."
+                f"Don't repeat yourself — if there's nothing new to say, stay silent (say nothing)."
             )
 
     streak = detect_repeat_streak(outs)

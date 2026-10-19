@@ -847,9 +847,9 @@ class AdvanceGoal(BaseModel):
 class MoodTool(BaseModel):
     """Update Doll's current emotional state.
 
-    Call this when your inner <think> mood assessment has shifted. The new
-    mood is stored in MindState and surfaces in every subsequent iteration's
-    [Mind state] block.
+    Call this when your mood has shifted. The new mood is stored in
+    MindState and surfaces in every subsequent iteration's [Mind state]
+    block.
     """
 
     emotion: str = Field(

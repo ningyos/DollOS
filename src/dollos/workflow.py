@@ -96,14 +96,8 @@ class WorkflowRunner:
         self._cascade_logger = cascade_logger
         # [llm].think_budget_tokens: caps each agent call's thinking.
         self._think_budget_tokens = think_budget_tokens
-        self._tools_by_name: dict[str, type] = {
-            cls.__name__: cls for cls in SUB_TOOLS
-        }
         # Rendered once and reused across task / verify / synthesis agents.
-        self._system = self._renderer.render(
-            "subagent_scaffolding",
-            tool_registry=self._tools_by_name,
-        )
+        self._system = self._renderer.render("subagent_scaffolding")
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 

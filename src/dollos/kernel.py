@@ -555,7 +555,6 @@ class DollOS:
             self.renderer,
             identity=self._doll_pack.identity,
             available_skills=available_skills,
-            tool_registry=tool_registry,
             evolution_enabled=settings.evolution.enabled,
         )
 

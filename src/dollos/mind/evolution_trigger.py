@@ -196,8 +196,7 @@ class EvolutionTrigger:
 
     async def _skeptic(self, *, old_sanctioned: str | None, proposed: str) -> str:
         """Run the (a)+(b) skeptic. Returns 'pass' or 'kill:<reason>'."""
-        tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
-        system = self._renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
+        system = self._renderer.render("subagent_scaffolding")
         task = _SKEPTIC_TASK.format(
             identity_self=self._pack_identity.self,
             taboos=self._pack_identity.taboos,
