@@ -59,9 +59,7 @@ async def run_consolidation(
     convo = "\n".join(ln for ln in raw.splitlines() if not is_action_log_line(ln))
     transcript = convo[-transcript_tail_chars:]
 
-    # Render subagent scaffolding system prompt with KEEPER_TOOLS only.
-    tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
-    system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
+    system = renderer.render("subagent_scaffolding")
 
     report = await run_agent(
         task=_KEEPER_TASK.format(transcript=transcript),

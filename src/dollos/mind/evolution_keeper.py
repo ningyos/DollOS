@@ -154,8 +154,7 @@ def parse_keeper_report(details: str) -> tuple[str, str, str]:
 async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
                             transcripts_root, tool_output_store, max_tokens,
                             think_budget_tokens):
-    tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
-    system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
+    system = renderer.render("subagent_scaffolding")
     return await run_agent(
         task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
@@ -170,8 +169,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
                             transcripts_root, tool_output_store, max_tokens,
                             think_budget_tokens):
     """(a)-(e) skeptic on the byte-identical bundle. → 'pass' | 'kill:<reason>'."""
-    tools_by_name = {cls.__name__: cls for cls in KEEPER_TOOLS}
-    system = renderer.render("subagent_scaffolding", tool_registry=tools_by_name)
+    system = renderer.render("subagent_scaffolding")
     task = _FULL_SKEPTIC_TASK.format(
         identity_self=pack_identity.self, personality=pack_identity.personality,
         taboos=pack_identity.taboos, current=current or "(尚無)", candidate=candidate,

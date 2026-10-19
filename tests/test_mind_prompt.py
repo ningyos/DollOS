@@ -142,6 +142,9 @@ def test_recent_outputs_warns_on_recent_speech():
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" in out
     assert "spoke" in out
+    # Model API plan Task 6: no wire-format talk — silence is just "say nothing".
+    assert "stay silent (say nothing)" in out
+    assert "tool_call" not in out
 
 
 def test_recent_outputs_no_warn_old_speech():
@@ -290,9 +293,13 @@ def test_pulse_moment_renders_full_detail_not_truncated_dict():
 
 
 def test_decision_time_marker_is_last():
+    """Model API plan Task 6: [Decision time] asks the question only — tool
+    calls are native, so no 'Output a JSON array of 0..N actions'."""
     state = MindState()
     prompt = render_mind(state, memsearch_hits=[], system_prompt="SYS")
-    assert prompt.rstrip().endswith("0..N actions.") or "JSON array" in prompt[prompt.rfind("[Decision time]"):]
+    assert prompt.rstrip().endswith("[Decision time]\nWhat do you do this iteration?")
+    assert "JSON array" not in prompt
+    assert "0..N actions" not in prompt
 
 
 def test_interrupted_perception_rendered():

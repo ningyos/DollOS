@@ -77,8 +77,20 @@ def test_scaffolding_no_longer_restricts_single_speak_block():
     out = renderer.render("scaffolding")
     assert "single block at the end of your turn" not in out
     assert "Plan 2 fixes it" not in out
-    # The "interleave freely" line stays
-    assert "interleave" in out.lower()
+
+
+def test_scaffolding_output_states_speech_precedes_tool_calls():
+    """Model API plan Task 6: the protocol puts speech before tool calls in
+    one reply (no more 'interleave freely'); after the tool results come back
+    she may speak again or stay silent."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding")
+    start = out.index("# Output")
+    end = out.index("# Interrupts", start)
+    output_section = out[start:end]
+    assert "interleave" not in out.lower()
+    assert "what you say comes before your tool calls" in output_section
+    assert "After the tool results come back" in output_section
 
 
 def test_render_blocks_substitutes_ctx_into_each_block():
@@ -154,12 +166,13 @@ def test_scaffolding_has_partitioned_sections():
     assert "# Skills" in out
 
 
-def test_scaffolding_includes_think_bridging_rule():
-    """Behavior section explains tool result -> think bridging."""
+def test_scaffolding_includes_tool_result_rule():
+    """Behavior section explains what to do when a tool result comes back —
+    without the old `<think>` markup (model API plan Task 6)."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
-    assert "Tool 結果回來" in out or "tool" in out.lower()
-    assert "<think>" in out
+    assert "When a tool result comes back, re-evaluate" in out
+    assert "<think>" not in out
 
 
 def test_scaffolding_includes_act_after_thinking_rule():
@@ -184,16 +197,21 @@ def test_scaffolding_memory_section_includes_curiosity_fallback():
     assert "unsure" in rendered or "don't fabricate" in rendered
 
 
-def test_scaffolding_has_think_structure_section():
-    """# Think structure section documents the 5 think-block fields
-    (SEEN / INTENT / REVIEW / MOOD / TOOL) so the model knows what each
-    slot is for. REVIEW is self-reflection; MOOD is the emotional snapshot
-    the dispatcher parses to update Doll's current mood."""
-    renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity())
-    assert "# Think structure" in out
-    for label in ("SEEN", "INTENT", "REVIEW", "MOOD", "TOOL"):
-        assert f"**{label}**:" in out, f"missing labeled bullet for {label}"
+def test_scaffolding_teaches_no_wire_format():
+    """Model API plan Task 6: thinking and tool calls are native on the chat
+    API and the server's own template teaches the tool-call format, so the
+    scaffolding carries no # Format / # Think structure / # Tools available
+    section and no `<think>` / JSON `<tool_call>` markup — two formats in one
+    prompt would fight. Rendered the way the kernel renders it (real pack)."""
+    pack = DollPack.load(Path(__file__).resolve().parent.parent / "character_packs" / "gura")
+    prefix, suffix = split_scaffolding(
+        PromptRenderer(), identity=pack.identity, available_skills=["x"],
+        evolution_enabled=True)
+    out = prefix + suffix
+    for marker in ("# Format", "# Think structure", "# Tools available",
+                   "<think>", "</think>", "<tool_call>", "</tool_call>",
+                   '"arguments"', "SEEN:", "INTENT:", "REVIEW:", "MOOD:"):
+        assert marker not in out, f"old format marker still taught: {marker!r}"
 
 
 def test_scaffolding_behavior_disambiguates_user_first_person():
@@ -229,7 +247,7 @@ def test_system_prompt_omits_restatement_reference():
     pack = DollPack.load(Path(__file__).resolve().parent.parent / "character_packs" / "gura")
     prefix, suffix = split_scaffolding(
         PromptRenderer(), identity=pack.identity, available_skills=[],
-        tool_registry={}, evolution_enabled=True)
+        evolution_enabled=True)
     prompt = prefix + suffix
     assert pack.identity.personality.strip() in prompt
     lines = [ln.strip() for ln in pack.identity.restatement_reference.splitlines()
@@ -268,44 +286,49 @@ def test_scaffolding_documents_scratchpad():
 
 
 def test_scaffolding_voice_framing_present():
-    """Voice-first output framing: scaffolding tells Doll that text outside
-    `<think>`/`<tool_call>` is spoken aloud via TTS, and explains silent turns."""
+    """Voice-first output framing: the reply text is spoken aloud via TTS,
+    thinking and tool calls are not heard, and silent turns are explained."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
-    # Voice framing — text outside <think>/<tool_call> is spoken
-    assert "spoken aloud" in out or "the user hears" in out or "TTS" in out
-    # Tool call markup present
-    assert "<tool_call>" in out
-    # Silent turn convention — empty/nothing
-    assert "nothing" in out.lower() or "silent" in out.lower()
+    out = renderer.render("scaffolding", identity=_identity())
+    start = out.index("# Output")
+    end = out.index("# Interrupts", start)
+    output_section = out[start:end]
+    assert "spoken aloud" in output_section and "the user hears" in output_section
+    assert "Your thinking is not heard." in output_section
+    assert "Tool calls are not heard." in output_section
+    assert "Nothing to say?" in output_section
 
 
 def test_scaffolding_drops_legacy_json_action_array():
     """Old `{"action": "..."}` JSON array convention must be gone."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
+    out = renderer.render("scaffolding", identity=_identity())
     assert '"action":' not in out
     assert "JSON array" not in out
 
 
-def test_scaffolding_renders_tools_doc():
-    """tool_registry → tools_doc rendered as `# Tools available` section."""
-    from dollos.tools import NoteMemory
+def test_renderer_no_longer_builds_tools_doc():
+    """Model API plan Task 6: tool descriptions reach the model through the
+    tool schemas, so the renderer no longer turns a `tool_registry` into a
+    `# Tools available` list — a stray `tool_registry` kwarg is just an unused
+    template variable."""
+    from dollos.tools import Shell
 
     renderer = PromptRenderer()
     out = renderer.render(
         "scaffolding",
         identity=_identity(),
-        tool_registry={"NoteMemory": NoteMemory},
+        tool_registry={"Shell": Shell},
     )
-    assert "NoteMemory" in out
+    assert "# Tools available" not in out
+    assert Shell.__doc__.strip().splitlines()[0] not in out
 
 
 def test_scaffolding_no_recent_thoughts_block_doc():
     """[Recent thoughts] block will be deleted in Task 8 — scaffolding no
     longer references it (avoid having to revisit later)."""
     renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity(), tool_registry={})
+    out = renderer.render("scaffolding", identity=_identity())
     assert "[Recent thoughts]" not in out
 
 
@@ -405,15 +428,41 @@ def test_scaffolding_reflection_section_omits_selfrevision_when_evolution_disabl
 def test_scaffolding_example_speaks_english_and_notes_in_chinese():
     """The only dialogue example: the owner asks in English and Doll answers
     in plain English (no particle, no "~"); the NoteMemory text stays in
-    Traditional Chinese to match `[memory] primary_language` (spec Q7)."""
+    Traditional Chinese to match `[memory] primary_language` (spec Q7).
+    Model API plan Task 6: described in prose, no format — the server's
+    template teaches how a tool call is written."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
     start = out.index("Concrete example")
-    end = out.index("The `<tool_call>` block is what makes the note real.", start)
+    end = out.index("The `NoteMemory` call is what makes the note real.", start)
     example = out[start:end]
     assert '"Can you remember that I need to eat breakfast tomorrow?"' in example
-    assert "SEEN: user asked me to remember that they need to eat breakfast tomorrow" in example
-    assert '{"text": "主人要我記得：明天要吃早餐"}' in example
-    assert "Okay, noted. Breakfast tomorrow." in example
+    assert 'you say "Okay, noted. Breakfast tomorrow."' in example
+    assert "call `NoteMemory`" in example
+    assert '"主人要我記得：明天要吃早餐"' in example
+    assert "{" not in example and "<" not in example
     assert "好啦" not in example
     assert "~" not in example
+
+
+def test_scaffolding_keeps_saying_is_not_doing():
+    """'Saying you did something is NOT doing it' survives the rewrite, with
+    NoteMemory as the example (model API plan Task 6)."""
+    renderer = PromptRenderer()
+    out = renderer.render("scaffolding", identity=_identity())
+    assert "saying you did something is NOT doing it" in out
+    assert "**MUST also call `NoteMemory`**" in out
+
+
+def test_subagent_scaffolding_teaches_no_wire_format():
+    """Model API plan Task 6: the worker prompt drops # Think structure and
+    the `<think>` / `<tool_call>` lines, keeps the Report rule, and says her
+    text reaches no one — acting means calling tools, ending means Report."""
+    out = PromptRenderer().render("subagent_scaffolding")
+    for marker in ("# Think structure", "<think>", "</think>", "<tool_call>",
+                   "SEEN", "INTENT:", "REVIEW", "naked-text"):
+        assert marker not in out, f"old format marker still taught: {marker!r}"
+    assert "you **must** call the `Report` tool to end" in out
+    assert 'Report(status="incomplete"' in out
+    assert "The text of your replies is not shown to anyone" in out
+    assert "To do anything, call a tool" in out
