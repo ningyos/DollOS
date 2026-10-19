@@ -2,7 +2,7 @@
 
 **Spec**：`docs/superpowers/specs/2026-10-18-dollos-redesign-design.md` §8（她講英文）、Q7（她寫的東西維持繁中）；問題來源 `docs/research/2026-10-18-strata-first-numbers.md` finding 1、表格「回覆是英文」那列
 **日期**：2026-10-19
-**狀態**：待使用者審
+**狀態**：APPROVED（使用者 2026-10-19；mood 選英文）
 **分支 / worktree**：DollOS `feat/gura-english-speech`，`.worktrees/gura-english-speech/`，疊在 `feat/model-adapter-chat`（`c931d1c`）上面。這份 plan 現在放在主 checkout、還沒 commit；Task 0 開分支時搬進去。
 
 ---
@@ -35,11 +35,11 @@
 
 **這個 plan 要做的**：daemon 自己寫的字（工具說明、system 框架、標籤、感知框架、工具回傳、寫進記憶的逐字稿和 action log 標籤）在 private 這條路上全部換成英文，「主人」譯成 "your owner"。開機排程那句命令改成英文的描述。不加任何「要用英文回」的命令：她講英文這件事已經寫在她的身份裡。
 
-**留著中文的只有她自己的內容**：她寫的筆記、日記、議程、scratchpad、排程內容、Recall 結果、採納的「現在的我」、self-profile 條目、她自己選的 mood 字（連同預設的 `平靜` 和 MoodTool 說明裡的範例 `開心`／`有點擔心`，見「要你決定」）；設定裡的 `primary_language` 值；scaffolding 那句範例筆記「主人要我記得：明天要吃早餐」（照 Q7 示範「講英文、筆記寫中文」；D、E 實驗把它翻成英文，F 實驗保留中文，都講英文）；記憶檔的 `日記`／`計劃` 標題（見不在範圍內）。
+**留著中文的只有她自己的內容**：她寫的筆記、日記、議程、scratchpad、排程內容、Recall 結果、採納的「現在的我」、self-profile 條目；設定裡的 `primary_language` 值；scaffolding 那句範例筆記「主人要我記得：明天要吃早餐」（照 Q7 示範「講英文、筆記寫中文」；D、E 實驗把它翻成英文，F 實驗保留中文，都講英文）；記憶檔的 `日記`／`計劃` 標題（見不在範圍內）。
 
 **prefix 規則**：system 和工具一改，每段對話在部署後開一次新頁（`context_builder.py:152-153` 比對 tools／system hash，不同就開新頁；對話只存在記憶體，重開本來就開新頁；不用寫遷移）。Strata 那邊要一次冷 prefill，約 31 秒。
 
-**要你決定（一件，有預設）**：mood 字用中文還是英文。預設照 Q7 留中文：`MoodTool` 說明和預設的 `平靜` 都不動。你要她的 mood 也是英文的話說一聲，要多做三件事：MoodTool 說明改成「一個英文字」（例如 'happy'、'uneasy'）、預設改 `calm`、mind-loop spec 的「≤ 6 個字、不能有空白」改成英文版（例如一個英文字、≤ 12 個字母）；舊記憶標的 `mood:平靜` 也不會再跟新的 mood 聯想到。
+**已決定（2026-10-19）：mood 用英文**。要多做三件事（已併進 Task 2、Task 4）：`MoodTool.emotion` 說明改成「一個英文字」（例如 'happy'、'uneasy'），用 pydantic 限制成一個英文字、≤ 12 個字母、沒有空白和標點；預設 mood 改成 `calm`；mind-loop spec §10 的「≤ 6 個字、不能有空白」要改成英文版，列在下面「Spec 修正」。舊記憶標的 `mood:平靜` 不會再跟新的 mood 聯想到（這台機器沒有舊資料，影響不大）。
 
 ---
 
@@ -60,7 +60,7 @@
 
 - 檔案：新增 `tests/_cjk.py`、`tests/test_private_prompt_language.py`
 - `_cjk.py`：`cjk_runs(text) -> list[str]`，抓連續的漢字（`㐀-鿿`、`豈-﫿`）和全形標點（`　-〿`、`＀-￯`）；`assert_only_allowed(text, allowed)`：先把每個允許字串**整串**從 text 裡拿掉，剩下的不准有任何 CJK，失敗時印出那段和前後文。不能用「每段都是某個允許字串的子字串」：範例筆記含「主人」，scaffolding 裡沒改到的「主人」會被放過，測試永遠不會紅。
-- 用真的 `DollOS(settings)` 拿 MindLoop（gura pack、暫存 data root、`[evolution]` 和 `[self_profile]` 開著；跟 `experiments/lang-exp/capture.py` 同一種建法，`tests/test_kernel.py` 的 `_make_settings` 可參考）。不要用 `tests/_mindloop_factory.py`：它的 system 預設是 `"SYS"`，測不到 scaffolding；`[人格演化候選]` 那段要 evolution 開著才會渲染，PinSelf／SelfRevision 要 self_profile／evolution 開著才在工具清單裡。她自己的內容一律填哨兵字串 `她的字`（mood、議程、scratchpad、self-profile 條目、記憶 hit、排程 intent、現在的我、候選內文、skeptic 的 notice）。允許清單 = 哨兵、`primary_language` 的值、範例筆記那一句、mood 的 `平靜`／`開心`／`有點擔心`（見「要你決定」；選英文 mood 就拿掉）。每個來源一個參數化 case：
+- 用真的 `DollOS(settings)` 拿 MindLoop（gura pack、暫存 data root、`[evolution]` 和 `[self_profile]` 開著；跟 `experiments/lang-exp/capture.py` 同一種建法，`tests/test_kernel.py` 的 `_make_settings` 可參考）。不要用 `tests/_mindloop_factory.py`：它的 system 預設是 `"SYS"`，測不到 scaffolding；`[人格演化候選]` 那段要 evolution 開著才會渲染，PinSelf／SelfRevision 要 self_profile／evolution 開著才在工具清單裡。她自己的內容一律填哨兵字串 `她的字`（mood、議程、scratchpad、self-profile 條目、記憶 hit、排程 intent、現在的我、候選內文、skeptic 的 notice）。允許清單 = 哨兵、`primary_language` 的值、範例筆記那一句。每個來源一個參數化 case：
   - system（`_system_for_turn()`，有和沒有採納的現在的我各一）
   - internal 和 external_public 的工具 schema（`json.dumps(..., ensure_ascii=False)`）
   - 新一頁的 snapshot：預設的 `MindState()`（不填 mood）一個，填滿哨兵的一個
@@ -74,7 +74,7 @@
 ### Task 2 — 工具說明換英文
 
 - 檔案：`src/dollos/tools.py`：NoteMemory `:151-154`、Shell `:220`、SpawnMonitor `:445`、PursueGoal `:801-807`、AdvanceGoal `:860`、PinSelf `:936-953`、SelfRevision `:981-996`、LearnName `:1168-1176`（docstring 和 `Field(description=...)` 都算）
-- 改法：照 `TOOLS_EN` 翻；「主人」→ "your owner"。`MoodTool.emotion`（`:894`）預設不動（見「要你決定」；`TOOLS_EN` 裡那句 "one word or short phrase (e.g. 'happy', 'a bit worried')" 有空白，跟 mind-loop spec 的 ≤ 6 字、無空白衝突，選英文 mood 也不能照抄）。Shell 和 SpawnMonitor 說明裡過時的「你執行的 shell 命令回來了」「monitor 觸發」改成真的感知行開頭（`ToolResultArrived`、`MonitorFired`）。LearnName 的範例暱稱「小鯊」換成英文的（"Sharky"）。
+- 改法：照 `TOOLS_EN` 翻；「主人」→ "your owner"。`MoodTool.emotion`（`:894`）改成 "one English word (e.g. 'happy', 'uneasy')"，並加 pydantic 驗證：只有英文字母、1–12 個、沒有空白和標點，違反就回清楚的錯誤（不要照抄 `TOOLS_EN` 那句有空白的 "short phrase"）。Shell 和 SpawnMonitor 說明裡過時的「你執行的 shell 命令回來了」「monitor 觸發」改成真的感知行開頭（`ToolResultArrived`、`MonitorFired`）。LearnName 的範例暱稱「小鯊」換成英文的（"Sharky"）。
 - 測試：Task 1 的工具 schema case 拿掉 xfail；`tests/test_tools.py`、`tests/test_tool_schema.py` 裡釘中文說明的斷言跟著改。
 
 ### Task 3 — system：scaffolding、記憶 guideline、現在的我的框架
@@ -91,7 +91,7 @@
 
 - 檔案：`src/dollos/mind/mind_prompt.py:35-48`、`src/dollos/mind/self_profile.py:20-22、230-245`
 - 改法：
-  - 預設 `Mood.emotion`（`mind_state.py:43`）`"平靜"` 不動（見「要你決定」）。選英文 mood 才改成 `"calm"`，那時 `test_mind_loop_action_log.py:99、119`、`test_associative_recall.py`、`test_kernel_query_handler.py` 釘的 `平靜` 跟著改；已存的 `mind_state.json` 不動。
+  - 預設 `Mood.emotion`（`mind_state.py:43`）改成 `"calm"`；`test_mind_loop_action_log.py:99、119`、`test_associative_recall.py`、`test_kernel_query_handler.py` 釘的 `平靜` 跟著改；已存的 `mind_state.json` 不動（裡面舊的中文 mood 會原樣顯示，直到她下次更新 mood）。
   - `energy_bucket_line`：`energy: full / normal / low (0.x)`，docstring 跟著改。
   - `[Self profile]` 渲染時用英文標題（`## What I've learned about myself`、`## Me and my owner`、`## What I've noticed about my owner`）：另加一張英文的顯示標題表，`render_block` 和 Task 7 的 PinSelf 回傳訊息（現在用 `SECTION_TITLES`）都用它。`SECTION_TITLES`、`_TITLE_TO_SECTION` 和檔案裡的中文標題不動，所以舊檔照讀、字數上限照舊算，不用遷移。
 - 測試：snapshot case 拿掉 xfail；`tests/test_energy.py`、`tests/test_mind_prompt_self_profile.py`、`tests/test_self_profile_store.py`、`tests/test_turn_delta.py`（`精力`）跟著改；加一條「舊的中文標題檔案讀得起來、渲染出英文標題」。
@@ -124,6 +124,13 @@
 
 - Task 1 的檔案裡不准再有 xfail；整個套件對 Task 0 的基準全綠。
 - `grep -rnP '[\x{4e00}-\x{9fff}]' src/dollos` 跑一次，剩下的每一處都要能歸進「不在範圍內」的某一條（ch:、agent prompt、註解和 docstring、日誌和給 client 的錯誤訊息、處理中文的程式、她的內容、mood、記憶檔標題），清單貼給你。
+
+---
+
+## Spec 修正
+
+- **mind-loop spec §10**（`2026-10-17-mind-loop-redesign-design.md:297`）：emotion 的限制從「≤ 6 個字、不能有空白和標點」改成「一個英文字、≤ 12 個字母、不能有空白和標點」（使用者 2026-10-19 選英文 mood）。
+- **redesign spec Q7**：「改英文要跟著改」清單裡的 mood 一項已經改了；她的筆記、日記、現在的我仍是繁體中文。
 
 ---
 
