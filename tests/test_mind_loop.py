@@ -1075,7 +1075,7 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
         system_prompt="You are Doll.",
         state_persist_path=tmp_path / "mind_state.json",
         tool_registry=tool_registry,
-        primary_language="English",
+        primary_language="Japanese",
     )
 
     await loop.iterate()
@@ -1083,7 +1083,7 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
     system = llm.calls[0]["messages"][0]
     assert system["role"] == "system"
     assert "[Memory guideline]" in system["content"]
-    assert "English" in system["content"]
+    assert "is in Japanese" in system["content"]
     assert "[Memory guideline]" not in llm.last_user
 
 

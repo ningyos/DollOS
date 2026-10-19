@@ -355,34 +355,47 @@ def test_safe_mode_omitted_from_page_snapshot_when_off():
 def test_memory_guideline_names_the_language():
     """The [Memory guideline] (now in the system message, see
     MindLoop._system_for_turn) interpolates the configured primary_language."""
-    out = render_memory_guideline("Traditional Chinese")
+    out = render_memory_guideline("English")
     assert out.startswith("[Memory guideline]")
-    assert "written in Traditional Chinese" in out
+    assert "is in English" in out
 
 
 def test_memory_guideline_language_is_parameterized():
-    out = render_memory_guideline("English")
-    assert "written in English" in out
+    out = render_memory_guideline("Japanese")
+    assert "is in Japanese" in out
     # The default must NOT leak through when a different language is configured.
-    assert "Traditional Chinese" not in out
+    assert "English" not in out
+
+
+def test_memory_guideline_covers_everything_she_writes():
+    """All-English plan Task 2: the guideline names everything she writes
+    down, not only notes and diary — self-profile, agenda and schedule came
+    out English while notes and diary stayed Chinese because they were not
+    covered; "who I am now" is hers too (she rewrites it via SelfRevision)."""
+    out = render_memory_guideline("English")
+    for kind in ("notes", "diary", "who I am now", "self-profile", "agenda", "schedule"):
+        assert kind in out
+    assert "Your notes and diary are written in" not in out
 
 
 def test_memory_guideline_says_understand_then_write_own_words():
     """The guideline describes understand-first, own-words, no verbatim copy."""
-    lowered = render_memory_guideline("Traditional Chinese").lower()
+    lowered = render_memory_guideline("English").lower()
     assert "own words" in lowered
     assert "verbatim" in lowered
 
 
 def test_memory_guideline_describes_rather_than_commands():
     """Self-First (English-speech plan Task 3): the guideline describes how
-    her notes and diary are written; the old command phrasing stays out."""
-    out = render_memory_guideline("Traditional Chinese")
+    everything she writes down is written; the old command phrasing stays
+    out."""
+    out = render_memory_guideline("English")
     assert out == (
-        "[Memory guideline] Your notes and diary are written in Traditional "
-        "Chinese (proper nouns and technical terms may stay in their original "
-        "language), in your own words — you understand something first and "
-        "write what it means to you; you don't copy source text verbatim."
+        "[Memory guideline] Everything you write down — notes, diary, who I "
+        "am now, self-profile, agenda, schedule — is in English (proper nouns "
+        "and technical terms may stay in their original language), in your "
+        "own words — you understand something first and write what it means "
+        "to you; you don't copy source text verbatim."
     )
     for command in ("write it in", "Record your", "never copy"):
         assert command not in out

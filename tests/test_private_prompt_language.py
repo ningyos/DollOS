@@ -747,8 +747,8 @@ def _waits_for(task: int, source):
     return pytest.param(source, marks=pytest.mark.xfail(strict=True, reason=f"Task {task}"))
 
 CASES = [
-    _waits_for(2, system_prompt),
-    _waits_for(2, system_prompt_with_current_self),
+    system_prompt,
+    system_prompt_with_current_self,
     tools_internal,
     tools_external_public,
     snapshot_default_state,

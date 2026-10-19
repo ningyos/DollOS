@@ -63,14 +63,15 @@ top_k = 10   # embedder-free lexical backend: SQLite FTS5 (BM25) + jieba CJK tok
 
 # ----------------------------------------------------------------------
 # Memory-WRITE policy (how Doll records memory, not where it's stored).
-# primary_language: the language Doll writes memory in (NoteMemory / diary),
-# regardless of the SOURCE language — proper nouns / technical terms may stay
-# in their original language where natural. Injected as a per-turn behavioral
-# guideline (prompt engineering), so it also covers article ingestion.
+# primary_language: the language of everything Doll writes down (notes,
+# diary, who I am now, self-profile, agenda, schedule), regardless of the
+# SOURCE language — proper nouns / technical terms may stay in their original
+# language where natural. Described in the system message's [Memory
+# guideline] (prompt engineering), so it also covers article ingestion.
 # ----------------------------------------------------------------------
 
 [memory]
-primary_language = "Traditional Chinese"
+primary_language = "English"
 
 # ----------------------------------------------------------------------
 # Conversation history sliding window — recent turn transcripts prepended

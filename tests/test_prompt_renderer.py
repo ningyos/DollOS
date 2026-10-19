@@ -431,12 +431,13 @@ def test_scaffolding_reflection_section_omits_selfrevision_when_evolution_disabl
     assert "[Self revision candidate]" not in out_absent
 
 
-def test_scaffolding_example_speaks_english_and_notes_in_chinese():
+def test_scaffolding_example_speaks_and_notes_in_english():
     """The only dialogue example: the owner asks in English and Doll answers
-    in plain English (no particle, no "~"); the NoteMemory text stays in
-    Traditional Chinese to match `[memory] primary_language` (spec Q7).
-    Model API plan Task 6: described in prose, no format — the server's
-    template teaches how a tool call is written."""
+    in plain English (no particle, no "~"); the NoteMemory text is English
+    too, matching `[memory] primary_language` (all-English plan Task 2, Q7
+    reversed). Model API plan Task 6: described in prose, no format — the
+    server's template teaches how a tool call is written."""
+    import re
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity())
     start = out.index("Concrete example")
@@ -445,9 +446,10 @@ def test_scaffolding_example_speaks_english_and_notes_in_chinese():
     assert '"Can you remember that I need to eat breakfast tomorrow?"' in example
     assert 'you say "Okay, noted. Breakfast tomorrow."' in example
     assert "call `NoteMemory`" in example
-    assert '"主人要我記得：明天要吃早餐"' in example
+    flat = " ".join(example.split())
+    assert '"My owner wants me to remember: breakfast tomorrow"' in flat
+    assert not re.search(r"[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]", example)
     assert "{" not in example and "<" not in example
-    assert "好啦" not in example
     assert "~" not in example
 
 
@@ -463,9 +465,7 @@ def test_scaffolding_keeps_saying_is_not_doing():
 
 def test_scaffolding_speaks_of_your_owner_in_english():
     """English-speech plan Task 3: the scaffolding's own words are English
-    ("主人" → "your owner"); the only Chinese left is the example note, which
-    shows her notes staying in Traditional Chinese (Q7)."""
-    import re
+    ("主人" → "your owner")."""
     out = PromptRenderer().render("scaffolding", identity=_identity(),
                                   evolution_enabled=True)
     start = out.index("# Reflection")
@@ -473,8 +473,21 @@ def test_scaffolding_speaks_of_your_owner_in_english():
     flat = " ".join(reflection.split())
     assert "your relationship with your owner" in flat
     assert "a pattern you've noticed in your owner" in flat
-    rest = out.replace('"主人要我記得：明天要吃早餐"', "")
-    assert not re.search(r"[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]", rest)
+
+
+def test_system_prompt_has_no_cjk_at_all():
+    """All-English plan Task 2: the system prompt the kernel builds from the
+    real gura pack carries no CJK at all — the example note is English now,
+    so nothing in it shows her writing Chinese."""
+    import re
+    pack = DollPack.load(Path(__file__).resolve().parent.parent / "character_packs" / "gura")
+    for evolution_enabled in (False, True):
+        prefix, suffix = split_scaffolding(
+            PromptRenderer(), identity=pack.identity, available_skills=["x"],
+            evolution_enabled=evolution_enabled)
+        found = re.findall(r"[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]+",
+                           prefix + suffix)
+        assert not found, found
 
 
 def test_subagent_scaffolding_teaches_no_wire_format():

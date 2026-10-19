@@ -175,7 +175,7 @@ class MindLoop:
         system_pulse: Any = None,
         cognition: Any = None,
         wal: PerceptionWAL | None = None,
-        primary_language: str = "Traditional Chinese",
+        primary_language: str = "English",
         cascade_logger=None,
         energy_enabled: bool = False,
         cost_per_turn: float = 0.05,
