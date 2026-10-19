@@ -10,9 +10,7 @@ example note (Q7: she talks English and writes her notes in Chinese).
 
 Each case renders one source the way the daemon does, from a real
 ``DollOS(settings)`` (gura pack, temp data root, evolution and self-profile
-on). A case still carrying daemon Chinese is a strict xfail naming the task
-that fixes it; that task removes the mark (strict: a fixed case left marked
-turns red).
+on). A new source of daemon text in the private prompt gets its own case here.
 """
 from __future__ import annotations
 
@@ -593,49 +591,39 @@ async def memory_transcript_and_action_log(rig: Rig) -> str:
 # The guard                                                                    #
 # --------------------------------------------------------------------------- #
 
-def _case(source, fixed_by: int | None = None, what: str = ""):
-    """One source; ``fixed_by`` = the plan task whose fix removes the mark.
-    ``raises=ForeignCJK``: a case that breaks for any other reason is red."""
-    marks = ()
-    if fixed_by is not None:
-        marks = pytest.mark.xfail(raises=ForeignCJK, strict=True,
-                                  reason=f"Task {fixed_by}: {what}")
-    return pytest.param(source, id=source.__name__, marks=marks)
-
-
 CASES = [
-    _case(system_prompt),
-    _case(system_prompt_with_current_self),
-    _case(tools_internal),
-    _case(tools_external_public),
-    _case(snapshot_default_state),
-    _case(snapshot_filled_state),
-    _case(delta_awoke),
-    _case(delta_user_spoke),
-    _case(delta_bootstrap_schedule),
-    _case(delta_reflection),
-    _case(evolution_block_other_origins),
-    _case(delta_persona_drift),
-    _case(delta_bridge_and_mcp_down),
-    _case(delta_pulse),
-    _case(delta_tool_result),
-    _case(delta_other_internal_kinds),
-    _case(delta_tool_habits),
-    _case(delta_memory_hits_with_provenance),
-    _case(diary_request),
-    _case(tool_result_unknown_tool),
-    _case(tool_result_bad_arguments),
-    _case(tool_result_dispatched),
-    _case(tool_result_invoke_skill_missing),
-    _case(tool_result_recall_provenance),
-    _case(tool_result_pin_self),
-    _case(tool_result_self_revision),
-    _case(tool_result_learn_name),
-    _case(memory_transcript_and_action_log),
+    system_prompt,
+    system_prompt_with_current_self,
+    tools_internal,
+    tools_external_public,
+    snapshot_default_state,
+    snapshot_filled_state,
+    delta_awoke,
+    delta_user_spoke,
+    delta_bootstrap_schedule,
+    delta_reflection,
+    evolution_block_other_origins,
+    delta_persona_drift,
+    delta_bridge_and_mcp_down,
+    delta_pulse,
+    delta_tool_result,
+    delta_other_internal_kinds,
+    delta_tool_habits,
+    delta_memory_hits_with_provenance,
+    diary_request,
+    tool_result_unknown_tool,
+    tool_result_bad_arguments,
+    tool_result_dispatched,
+    tool_result_invoke_skill_missing,
+    tool_result_recall_provenance,
+    tool_result_pin_self,
+    tool_result_self_revision,
+    tool_result_learn_name,
+    memory_transcript_and_action_log,
 ]
 
 
-@pytest.mark.parametrize("source", CASES)
+@pytest.mark.parametrize("source", CASES, ids=lambda fn: fn.__name__)
 async def test_private_prompt_has_only_her_own_chinese(rig: Rig, source) -> None:
     text = await source(rig)
     assert text.strip()
