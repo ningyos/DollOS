@@ -274,6 +274,41 @@ async def test_kernel_bootstrap_pushes_perception_on_first_connect_if_no_schedul
 
 
 @pytest.mark.asyncio
+async def test_kernel_bootstrap_intent_is_an_english_description(tmp_path):
+    """Plan 2026-10-19 Task 6: the bootstrap intent describes the day in
+    English; it names no tool and tells her nothing to do (Self-First)."""
+    from tests._cjk import cjk_runs
+
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+
+    await dollos._maybe_bootstrap_plan()
+
+    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
+    assert [p.kind for p in perceptions] == ["ScheduledMoment"]
+    intent = perceptions[0].data["intent"]
+    assert intent.strip()
+    assert cjk_runs(intent) == []
+    assert "WriteSchedule" not in intent
+    assert "please" not in intent.lower()
+
+
+@pytest.mark.asyncio
+async def test_kernel_bootstrap_pushes_nothing_when_schedule_exists(tmp_path):
+    """With today's schedule file present, the bootstrap pushes nothing at all."""
+    settings = _make_settings(tmp_path)
+    dollos = DollOS(settings)
+    today_str = f"{_date.today():%Y-%m-%d}"
+    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
+    sched_path.parent.mkdir(parents=True, exist_ok=True)
+    sched_path.write_text('[[entry]]\ntime = "07:00:00"\nintent = "x"\n')
+
+    await dollos._maybe_bootstrap_plan()
+
+    assert await dollos._perception_queue.drain(timeout_s=0.1) == []
+
+
+@pytest.mark.asyncio
 async def test_kernel_bootstrap_skips_when_schedule_exists(tmp_path):
     """If a schedule.toml exists for today, no bootstrap perception is pushed."""
     settings = _make_settings(tmp_path)
