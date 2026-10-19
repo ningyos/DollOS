@@ -116,7 +116,9 @@ async def test_external_public_turn_4way_split(tmp_path: Path):
         assert not not_expected.exists()
 
         # (d) auto-[Memory context] suppressed
-        hits = await loop._derive_memory_hits()
+        hits = await loop._derive_memory_hits(
+            [_channel_msg("owner-private-fact-pub-check", author_is_owner=False, t=2.0)]
+        )
         assert hits == []
 
         # (d2) explicit Recall also excludes the private tier on this turn

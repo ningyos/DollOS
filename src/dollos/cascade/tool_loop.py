@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # An agent that keeps calling tools without ever ending stops here.
 MAX_CASCADE_PASSES = 16
 
+# A tool message stays in the conversation (plan 2026-10-18 Task 8), so one
+# longer than this is cut. InvokeSkill is exempt: a skill is the full text
+# she has to follow and cannot be paged through.
+TOOL_MESSAGE_MAX_CHARS = 8000
+UNCUT_TOOLS = frozenset({"InvokeSkill"})
+
 
 @dataclass
 class ToolResult:
@@ -139,7 +145,9 @@ async def run_tool_calls(
 
     ``arguments`` is the raw JSON string from the server; it must parse to an
     object, else the call fails without running. A tool that returns None
-    answers "ok"; a failure answers with its error text.
+    answers "ok"; a failure answers with its error text. A message over
+    ``TOOL_MESSAGE_MAX_CHARS`` is cut (``UNCUT_TOOLS`` excepted); the
+    ``ToolResult`` keeps the full text.
     """
     outcomes: list[ToolOutcome] = []
     for call in calls:
@@ -159,6 +167,8 @@ async def run_tool_calls(
                 tool_name=call.name, success=True, detail="ok"
             )
         text = result.detail if result.detail else "ok"
+        if len(text) > TOOL_MESSAGE_MAX_CHARS and call.name not in UNCUT_TOOLS:
+            text = f"{text[:TOOL_MESSAGE_MAX_CHARS]}\n(cut; {len(text)} chars total)"
         outcomes.append(ToolOutcome(call, result, tool_message(call.id, text)))
     return outcomes
 

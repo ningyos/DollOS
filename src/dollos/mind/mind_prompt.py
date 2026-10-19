@@ -1,11 +1,20 @@
-"""Render MindState into a complete LLM prompt for one MindLoop iteration.
+"""Render MindState into the user messages of a MindLoop turn.
 
-Returns: the enabled dynamic blocks as a single string, optionally preceded
-by the system prompt.
+``render_mind`` returns the enabled dynamic blocks as a single string,
+optionally preceded by the system prompt — the whole picture, re-rendered
+every turn.
+
+``render_epoch_start`` / ``render_turn_delta`` (plan 2026-10-18 Task 8) are
+for a conversation that only grows at the end: the first writes the snapshot
+that opens a page, the second each turn's new message with only what changed
+since that conversation last saw it (tracked in its ``Seen``).
 """
 from __future__ import annotations
 
+import hashlib
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
@@ -18,6 +27,12 @@ from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
 # against this same constant so a loop is consistently "stale" (or not)
 # wherever it matters.
 OPEN_LOOP_STALE_S = 1800
+
+# Auto-injected [Memory context] (plan 2026-10-18 Task 8): at most this many
+# hits per turn, each cut to this many characters. On a page the cap counts
+# only hits she has not been shown yet.
+MEMORY_HITS_PER_TURN = 3
+MEMORY_HIT_MAX_CHARS = 300
 
 
 def energy_bucket_line(energy: float) -> str:
@@ -34,6 +49,12 @@ def energy_bucket_line(energy: float) -> str:
     else:
         bucket = "偏低"
     return f"精力: {bucket} ({value_str})"
+
+
+_EXTERNAL_SITUATION = (
+    "[External situation]\n"
+    "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。"
+)
 
 
 def render_mind(
@@ -208,11 +229,7 @@ def render_mind(
         # that isn't addressed to her. Only external_public: owner-DM
         # (external_dm) is a private 1:1 where "公開場合,不關妳的話" doesn't
         # apply.
-        blocks.extend([
-            "[External situation]",
-            "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。",
-            "",
-        ])
+        blocks.extend([_EXTERNAL_SITUATION, ""])
     if body_signal_block:
         blocks.extend([body_signal_block, ""])
     blocks.extend([
@@ -220,6 +237,256 @@ def render_mind(
         "What do you do this iteration?",
     ])
     return "\n".join(blocks)
+
+
+@dataclass
+class Seen:
+    """What one conversation has been sent on its current page.
+
+    ``blocks``: snapshot block name → sha256 of the text last sent, so a
+    block is resent only when its text changed (whoever changed it).
+    ``hits``: keys (``hit_key``) of the memory hits already on this page.
+    ``safe_mode``: the (on, reason) this conversation last heard — safe mode
+    is global, so each conversation hears a change on its own next turn.
+    """
+
+    blocks: dict[str, str] = field(default_factory=dict)
+    hits: set[str] = field(default_factory=set)
+    safe_mode: tuple[bool, str] = (False, "")
+
+
+def hit_key(hit: dict) -> str:
+    """A memory hit's identity on a page: its ``chunk_hash`` (FtsMemory
+    always sets one), else a hash of source + content."""
+    if hit.get("chunk_hash"):
+        return hit["chunk_hash"]
+    raw = f"{hit.get('source', '')}\0{hit.get('content', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def hits_in_context(hits: list[dict], seen: Seen) -> list[dict]:
+    """The hits among ``hits`` that are in her context: the ones this turn's
+    delta gave her, plus ones given earlier on this page. Call after
+    ``render_turn_delta``. A hit held back by the per-turn cap is not here,
+    so provenance (``ctx.turn_memory_sources``) never names what she never saw.
+    """
+    return [h for h in hits if hit_key(h) in seen.hits]
+
+
+def _stamp(t: float) -> str:
+    """Absolute local time for a turn or a page: ``14:05 Mon 10-19``."""
+    return time.strftime("%H:%M %a %m-%d", time.localtime(t))
+
+
+def _clock(t: float) -> str:
+    return time.strftime("%H:%M", time.localtime(t))
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _snapshot_blocks(
+    state: MindState,
+    tier: str,
+    now: float,
+    *,
+    self_profile_text: str | None,
+    energy_line: str | None,
+) -> list[tuple[str, str]]:
+    """``(name, full block text)`` of every snapshot block ``tier`` may see,
+    in render order. None of them carries a relative time, so the text only
+    changes when the state does.
+
+    external_public (mind-loop §10, the external-place row) sees only
+    ``[Self profile]`` (P1e accepted) and ``[Mind state]`` with the bare
+    emotion: no reason, no focus, no agenda/open loops/scratchpad.
+    ``[Self profile]`` reads "(empty)" while nothing is pinned.
+    """
+    mind = []
+    if tier == "external_public":
+        mind.append(f"mood: {state.mood.emotion}")
+    else:
+        mood = state.mood.emotion
+        if state.mood.reason:
+            mood = f"{state.mood.emotion} ({state.mood.reason})"
+        mind.extend([f"mood: {mood}", f"focus: {state.focus}"])
+    if energy_line is not None:
+        mind.append(energy_line)
+    blocks = [
+        (
+            "self_profile",
+            "[Self profile] (your evolving self — keep only what's still you; prune with PinSelf)\n"
+            + (self_profile_text or "(empty)"),
+        ),
+        ("mind_state", "[Mind state]\n" + "\n".join(mind)),
+    ]
+    if tier != "external_public":
+        blocks.extend([
+            (
+                "agenda",
+                "[Your agenda] (things you're pursuing because you want to)\n"
+                + _render_your_agenda(state.open_loops, now, absolute=True),
+            ),
+            (
+                "open_loops",
+                "[Open loops] (commitments you have made)\n"
+                + _render_open_loops(
+                    [lp for lp in state.open_loops if not lp.self_directed], now, absolute=True
+                ),
+            ),
+            ("scratchpad", "[Scratchpad]\n" + (state.scratchpad or "(empty)")),
+        ])
+    return blocks
+
+
+def _safe_mode_line(on: bool, reason: str) -> str:
+    if on:
+        return (
+            f"[Safe mode] on — {reason or 'repeated tool failures'}. Only Recall and "
+            "read-only tools are available right now; ask the user for help."
+        )
+    return "[Safe mode] off — all your tools are back."
+
+
+def _percep_line(p) -> str:
+    return f"{_clock(p.t)} {p.kind}: {_percep_body(p)}"
+
+
+def render_epoch_start(
+    state: MindState,
+    seen: Seen,
+    tier: str,
+    now: float,
+    *,
+    channel_id: str = "",
+    exclude=(),
+    self_profile_text: str | None = None,
+    energy_line: str | None = None,
+    pulse_block: str | None = None,
+    cognition_block: str | None = None,
+) -> str:
+    """The user message that opens a conversation page: a code-written
+    snapshot, no LLM summary. Resets ``seen`` to this page and records what
+    it sent, so the page's deltas carry only changes.
+
+    ``channel_id`` is the conversation's channel (``""`` = the private
+    conversation): ``[Recent perceptions]`` recaps only this conversation's
+    own perceptions, oldest first, minus ``exclude`` (this turn's own batch —
+    it was already appended to the deque and arrives in the first delta).
+    ``[Recent outputs]`` renders on internal and external_dm only (as
+    ``render_mind``); ``pulse_block``/``cognition_block`` (the current
+    ``[Self pulse]``/``[Cognition]``, from the caller) on internal only.
+
+    external_public's opening line does not point at Recall: there Recall
+    only searches ``external_public/`` and cannot find the channel's history.
+    """
+    seen.blocks.clear()
+    seen.hits.clear()
+    if tier == "external_public":
+        parts = [f"[New conversation page — {_stamp(now)}. Earlier context is not shown.]"]
+    else:
+        parts = [
+            f"[New conversation page — {_stamp(now)}. Earlier context is not shown; "
+            "use Recall for details.]"
+        ]
+    seen.safe_mode = (state.safe_mode, state.safe_mode_reason if state.safe_mode else "")
+    if state.safe_mode:
+        parts.append(_safe_mode_line(*seen.safe_mode))
+    for name, text in _snapshot_blocks(
+        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line
+    ):
+        seen.blocks[name] = _digest(text)
+        if name == "self_profile" and not self_profile_text:
+            continue
+        parts.append(text)
+        if name == "mind_state" and tier == "internal":
+            parts.extend(b for b in (pulse_block, cognition_block) if b)
+    if tier == "external_public":
+        parts.append(_EXTERNAL_SITUATION)
+    skip = {id(p) for p in exclude}
+    recap = [
+        _percep_line(p) for p in state.recent_perceptions
+        if (p.data or {}).get("channel_id", "") == channel_id and id(p) not in skip
+    ]
+    parts.append("[Recent perceptions] (newest last)\n" + ("\n".join(recap) or "(none)"))
+    if tier != "external_public":
+        outputs = [f"{_clock(o.t)} {o.summary}" for o in state.recent_outputs]
+        parts.append(
+            "[Recent outputs] (what you did recently — avoid repeating the same content)\n"
+            + ("\n".join(outputs) or "(none)")
+        )
+    return "\n\n".join(parts)
+
+
+def render_turn_delta(
+    state: MindState,
+    seen: Seen,
+    tier: str,
+    perceptions: list,
+    now: float,
+    *,
+    self_profile_text: str | None = None,
+    energy_line: str | None = None,
+    memory_hits: Sequence[dict] = (),
+    associative_hits: Sequence[dict] = (),
+    tool_habits_hits: Sequence[dict] = (),
+    pulse_block: str | None = None,
+    cognition_block: str | None = None,
+    tool_outcomes_block: str | None = None,
+    evolution_block: str | None = None,
+    body_signal_block: str | None = None,
+) -> str:
+    """One turn's new user message: only what is new to this conversation.
+    Records what it sent in ``seen``.
+
+    In order: the time; each snapshot block whose text changed since this
+    conversation last got it (whole block, whoever changed it); the event
+    blocks the caller passes (``[Self pulse]``/``[Cognition]``, reflection's
+    ``[Tool outcomes since last reflection]`` and ``[人格演化候選]``, pulse's
+    ``[Body signal]`` — private events, internal only) and a safe-mode line
+    when it differs from what this conversation last heard; the memory hits
+    not yet on this page (at most ``MEMORY_HITS_PER_TURN`` new
+    ``[Memory context]`` hits, each cut to ``MEMORY_HIT_MAX_CHARS``); then one
+    ``HH:MM Kind: body`` line per perception of this batch, in full.
+
+    external_public gets no memory auto-injection at all (no
+    ``[Memory context]``/``[Associative memories]``/``[Tool habits]``).
+    """
+    parts = [f"[{_stamp(now)}]"]
+    for name, text in _snapshot_blocks(
+        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line
+    ):
+        digest = _digest(text)
+        if seen.blocks.get(name) != digest:
+            seen.blocks[name] = digest
+            parts.append(text)
+    if tier == "internal":
+        parts.extend(
+            b for b in (
+                pulse_block, cognition_block, tool_outcomes_block,
+                evolution_block, body_signal_block,
+            ) if b
+        )
+    safe_mode = (state.safe_mode, state.safe_mode_reason if state.safe_mode else "")
+    if safe_mode != seen.safe_mode:
+        seen.safe_mode = safe_mode
+        parts.append(_safe_mode_line(*safe_mode))
+    if tier != "external_public":
+        new = [h for h in memory_hits if hit_key(h) not in seen.hits][:MEMORY_HITS_PER_TURN]
+        if new:
+            parts.append("[Memory context]\n" + _render_memory(new))
+        assoc = [h for h in associative_hits if hit_key(h) not in seen.hits][:6]
+        if assoc:
+            parts.append("[Associative memories]\n" + _render_associative(assoc))
+        habit_hits = [h for h in tool_habits_hits if hit_key(h) not in seen.hits]
+        habits = render_tool_habits(habit_hits)
+        if habits:
+            parts.append(habits)
+        seen.hits.update(hit_key(h) for h in (*new, *assoc, *habit_hits))
+    if perceptions:
+        parts.append("\n".join(_percep_line(p) for p in perceptions))
+    return "\n\n".join(parts)
 
 
 def _public_safe_perceptions(percs) -> list:
@@ -275,8 +542,13 @@ def _render_memory(hits: list[dict]) -> str:
             if "external_public/" in (h.get("source") or "")
             else ""
         )
-        lines.append(f"- {prefix}{content}")
+        lines.append(f"- {prefix}{_clip(content, MEMORY_HIT_MAX_CHARS)}")
     return "\n".join(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` characters, "…" marking a cut."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _render_associative(hits: list[dict]) -> str:
@@ -342,16 +614,25 @@ def _render_active_tasks(tasks: list, now: float) -> str:
     )
 
 
-def _render_open_loops(loops: list, now: float) -> str:
+def _opened(lp, now: float, absolute: bool) -> str:
+    """When a loop opened: relative ("opened 5m ago") for ``render_mind``,
+    an absolute date for the page snapshot, whose text must not age."""
+    if absolute:
+        return f"opened {time.strftime('%m-%d %H:%M', time.localtime(lp.opened_at))}"
+    return f"opened {_human_secs(now - lp.opened_at)} ago"
+
+
+def _render_open_loops(loops: list, now: float, *, absolute: bool = False) -> str:
+    """``absolute`` (page snapshot): absolute dates and no STALE marker."""
     if not loops:
         return "(none)"
     lines = []
     for lp in loops:
-        line = f"- {lp.id}: {lp.desc} (opened {_human_secs(now - lp.opened_at)} ago)"
+        line = f"- {lp.id}: {lp.desc} ({_opened(lp, now, absolute)})"
         # Strict `>` (not `>=`): a loop exactly at the threshold is not yet
         # stale. mind_loop.py's fallback query injection mirrors this exact
         # comparison against the same OPEN_LOOP_STALE_S constant.
-        if now - lp.opened_at > OPEN_LOOP_STALE_S:
+        if not absolute and now - lp.opened_at > OPEN_LOOP_STALE_S:
             line += " ⚠ STALE — 尚未跟進，考慮處理或用 CloseLoop 結案"
         lines.append(line)
     return "\n".join(lines)
@@ -363,7 +644,7 @@ def _render_open_loops(loops: list, now: float) -> str:
 AGENDA_PROGRESS_TAIL = 3
 
 
-def _render_your_agenda(loops: list, now: float) -> str:
+def _render_your_agenda(loops: list, now: float, *, absolute: bool = False) -> str:
     """Render only self_directed OpenLoops (things Doll is pursuing because
     she wants to, not because she owes the user) — desc + her stated
     ``trigger`` (why she started) + the recent tail of ``progress``.
@@ -377,7 +658,7 @@ def _render_your_agenda(loops: list, now: float) -> str:
         return "(none)"
     lines = []
     for lp in agenda_loops:
-        line = f"- {lp.id}: {lp.desc} (opened {_human_secs(now - lp.opened_at)} ago)"
+        line = f"- {lp.id}: {lp.desc} ({_opened(lp, now, absolute)})"
         if lp.trigger:
             line += f" — why: {lp.trigger}"
         lines.append(line)
@@ -409,18 +690,28 @@ def _render_perceptions(percs, now: float) -> str:
 def _percep_body(p) -> str:
     d = p.data or {}
     if p.kind == "UserSpoke":
-        return f"'{d.get('text', '')[:200]}'"
+        return f"'{d.get('text', '')}'"
     if p.kind == "ToolResultArrived":
-        return (
+        body = (
             f"{d.get('tool', '?')} {d.get('task_id', '?')} "
             f"[{d.get('status', '?')}]: {d.get('summary', '')[:120]}"
         )
+        # The id she pages with ReadToolOutput: Shell writes output_id,
+        # Workflow details_output_id.
+        if d.get("output_id"):
+            body += f" (output_id {d['output_id']}, {d.get('line_count', '?')} lines)"
+        elif d.get("details_output_id"):
+            body += (
+                f" (output_id {d['details_output_id']}, "
+                f"{d.get('details_line_count', '?')} lines)"
+            )
+        return body
     if p.kind == "MonitorFired":
         return f"{d.get('monitor_id', '?')}: {d.get('line', '')[:120]}"
     if p.kind == "MonitorEnded":
         return f"{d.get('monitor_id', '?')} (exit {d.get('exit_status', '?')})"
     if p.kind == "ScheduledMoment":
-        return d.get("text", "")[:200]
+        return d.get("intent", "")[:200]
     if p.kind == "Awoke":
         reason = d.get("reason", "?")
         if reason == "recovered":
@@ -509,6 +800,8 @@ def _percep_body(p) -> str:
         )
     if p.kind == "PulseMoment":
         return d.get("detail", "")
+    if p.kind == "AgendaMoment":
+        return "time for your own goals; nothing you say now is heard"
     return str(d)[:120]
 
 

@@ -20,6 +20,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import jieba
 from pydantic import BaseModel, Field, field_validator
 
 from dollos.mind import scratchpad_helpers
@@ -84,6 +85,39 @@ def _hit_in_range(
     if until is not None and d > until.date():
         return False
     return True
+
+
+# A Recall result stays in the conversation (plan 2026-10-18 Task 8), so each
+# hit is cut to this many characters (see _snippet).
+RECALL_HIT_MAX_CHARS = 500
+
+
+def _snippet(content: str, query: str, limit: int = RECALL_HIT_MAX_CHARS) -> str:
+    """``content`` cut to ``limit`` characters around the first place any
+    query term appears (case-insensitive); from the start when none does.
+    "…" marks each cut end, inside the limit.
+
+    A day's transcript is one chunk, so a cut from the start would never
+    reach "earlier today" — exactly what a new conversation page tells her
+    to Recall. Terms are the jieba tokens the FTS query is built from.
+    """
+    if len(content) <= limit:
+        return content
+    starts = []
+    for term in jieba.cut(query):
+        if not any(ch.isalnum() for ch in term):
+            continue
+        m = re.search(re.escape(term.strip()), content, re.IGNORECASE)
+        if m:
+            starts.append(m.start())
+    start = max(0, min(starts) - limit // 2) if starts else 0
+    start = min(start, len(content) - limit)
+    cut = content[start:start + limit]
+    if start > 0:
+        cut = "…" + cut[1:]
+    if start + limit < len(content):
+        cut = cut[:-1] + "…"
+    return cut
 
 
 def _format_hit(hit: dict) -> str:
@@ -327,7 +361,10 @@ class Recall(BaseModel):
         if not hits:
             result = "[no relevant memory]"
         else:
-            result = "\n".join(_format_hit(h) for h in hits)
+            result = "\n".join(
+                _format_hit({**h, "content": _snippet(h.get("content", ""), self.query)})
+                for h in hits
+            )
         _record(ctx, "Recall", self._summary())
         return result
 
