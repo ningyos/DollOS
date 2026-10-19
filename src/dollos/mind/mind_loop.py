@@ -1964,7 +1964,10 @@ class MindLoop:
         if name == "WriteDiary":
             self._turn_wrote_diary = True
         # 🔒 C1: never log a stranger turn's action into the owner-tier transcript.
-        if self._ctx.origin_tier != "external_public":
+        # A failed call (bad arguments, e.g. a MoodTool emotion that is not one
+        # English word, or a raise) did nothing, so it is not logged either.
+        failed = r is not None and not r.success
+        if self._ctx.origin_tier != "external_public" and not failed:
             phrase = action_phrase_for_tool(name, arguments, prior_mood)
             if phrase:
                 try:

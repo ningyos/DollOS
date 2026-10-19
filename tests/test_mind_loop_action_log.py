@@ -127,3 +127,22 @@ async def test_mood_unchanged_to_same_emotion_is_NOT_logged(tmp_path):
     assert state.mood.reason == "一如往常"   # the call was valid and did run
     log = _today_log(tmp_path)
     assert not any(is_action_log_line(l) and "mood changed to" in l for l in log.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_mood_call_rejected_by_validation_is_NOT_logged(tmp_path):
+    """MoodTool takes one English word; a call it rejects (a Chinese phrase
+    here) changes nothing, so the action log must not claim the mood
+    changed (diary spec §2.1: log only when MoodTool really changed it)."""
+    state = MindState()
+    queue = PerceptionQueue(wal=None)
+    queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "你還好嗎"}))
+    stream = (
+        'SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: MoodTool\n</think>\n\n'
+        '<tool_call>\n{"name":"MoodTool","arguments":{"emotion":"有點擔心","reason":"x"}}\n</tool_call>'
+    )
+    ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
+    await ml.iterate()
+    assert state.mood.emotion == "calm"   # rejected: the mood did not change
+    log = _today_log(tmp_path)
+    assert not any(is_action_log_line(l) and "mood changed to" in l for l in log.splitlines())
