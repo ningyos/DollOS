@@ -130,7 +130,7 @@ def _mk_trigger(tmp_path, state, **over):
 
     defaults = dict(
         state=state, persist_path=tmp_path / "s.json",
-        adapter=object(), renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
+        model=object(), renderer=_FakeRenderer(), memsearch=_FakeMemSearch(),
         memory_root=tmp_path, transcripts_root=tmp_path / "transcripts",
         tool_output_store=object(), consolidated_dir=tmp_path / "consolidated",
         system_pulse=None,

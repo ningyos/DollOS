@@ -25,7 +25,7 @@ def _trigger(tmp_path, *, verdict, consolidation_running=False, monkeypatch=None
     memory_root = tmp_path
     trig = EvolutionTrigger(
         state=MindState(),
-        adapter=object(), renderer=(renderer or object()), memsearch=object(),
+        model=object(), renderer=(renderer or object()), memsearch=object(),
         memory_root=memory_root, transcripts_root=tmp_path,
         tool_output_store=object(),
         pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
@@ -229,6 +229,31 @@ async def test_skeptic_garbled_report_never_silent_pass(tmp_path, monkeypatch):
                             {"summary": "s", "details": "嗯,我不太確定這個提案好不好"})
     verdict = await trig._skeptic(old_sanctioned="舊文", proposed="新提案")
     assert verdict.startswith("kill:")
+
+
+@pytest.mark.asyncio
+async def test_skeptic_streams_on_the_model_with_evolution_purpose(tmp_path):
+    """Mode-B skeptic runs on the trigger's ModelAdapter (purpose
+    'evolution', the trigger's answer and think budgets)."""
+    from dollos.tool_outputs import ToolOutputStore
+    from tests._fake_model import FakeModel
+
+    model = FakeModel([
+        '<tool_call>{"name": "Report", "arguments": {"status": "ok", '
+        '"summary": "s", "details": "PASS ok"}}</tool_call>'
+    ])
+    trig = EvolutionTrigger(
+        state=MindState(), model=model, renderer=_StubRenderer(), memsearch=object(),
+        memory_root=tmp_path, transcripts_root=tmp_path,
+        tool_output_store=ToolOutputStore(tmp_path / "out"),
+        pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
+        consolidation_trigger=None, persist_path=tmp_path / "mind_state.json",
+        max_tokens=1024, think_budget_tokens=300,
+    )
+    assert await trig._skeptic(old_sanctioned=None, proposed="新提案") == "pass"
+    [call] = model.calls
+    assert call["purpose"] == "evolution"
+    assert (call["max_tokens"], call["think_budget"]) == (1024, 300)
 
 
 # --- timeout enters the verdict_errors bound (review Important) ---

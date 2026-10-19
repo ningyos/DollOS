@@ -40,7 +40,7 @@ from dollos.tools import SUB_TOOLS
 if TYPE_CHECKING:
     from dollos.cascade.tool_loop import ToolResult
     from dollos.cascade_log import CascadeLogger
-    from dollos.llm.adapter import LLMAdapter
+    from dollos.llm.model import ModelAdapter
     from dollos.memory import FtsMemory
     from dollos.mind.perception_queue import PerceptionQueue
     from dollos.monitor_runner import MonitorRunner
@@ -72,7 +72,7 @@ class WorkflowRunner:
     def __init__(
         self,
         *,
-        adapter: "LLMAdapter",
+        model: "ModelAdapter",
         renderer: "PromptRenderer",
         memory_root: Path,
         memsearch: "FtsMemory",
@@ -82,8 +82,9 @@ class WorkflowRunner:
         monitor_runner: "MonitorRunner | None" = None,
         tool_output_store: "ToolOutputStore",
         cascade_logger: "CascadeLogger | None" = None,
+        think_budget_tokens: int = 1024,
     ) -> None:
-        self._adapter = adapter
+        self._model = model
         self._renderer = renderer
         self._memory_root = memory_root
         self._memsearch = memsearch
@@ -93,6 +94,8 @@ class WorkflowRunner:
         self._monitor_runner = monitor_runner
         self._tool_output_store = tool_output_store
         self._cascade_logger = cascade_logger
+        # [llm].think_budget_tokens: caps each agent call's thinking.
+        self._think_budget_tokens = think_budget_tokens
         self._tools_by_name: dict[str, type] = {
             cls.__name__: cls for cls in SUB_TOOLS
         }
@@ -320,7 +323,7 @@ class WorkflowRunner:
         return await run_agent(
             task=task,
             system=self._system,
-            adapter=self._adapter,
+            model=self._model,
             renderer=self._renderer,
             memory_root=self._memory_root,
             memsearch=self._memsearch,
@@ -329,7 +332,9 @@ class WorkflowRunner:
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
             tools=SUB_TOOLS,
-            max_tokens=4096,
+            max_tokens=4096,  # answer budget; thinking is on top
+            think_budget=self._think_budget_tokens,
+            purpose="workflow",
             on_iter_end=self._make_on_iter_end(),
         )
 
@@ -342,21 +347,18 @@ class WorkflowRunner:
 
         def _cb(
             iter_num: int,
-            assistant_text: str,
+            reasoning: str,
+            speech: str,
             tool_calls: "list[dict]",
             results: "list[ToolResult]",
             duration_ms: int,
         ) -> None:
-            # Agents still run on the grammar path (raw "<think>…</think>
-            # speech"); split it into the reasoning / speech fields until they
-            # move to the ModelAdapter.
-            reasoning, _, speech = assistant_text.partition("</think>")
             try:
                 self._cascade_logger.log_iter(
                     turn_id=turn_id,
                     iter=iter_num,
-                    reasoning=reasoning.removeprefix("<think>").strip(),
-                    speech=speech.strip(),
+                    reasoning=reasoning,
+                    speech=speech,
                     tool_calls=tool_calls,
                     results=results,
                     duration_ms=duration_ms,

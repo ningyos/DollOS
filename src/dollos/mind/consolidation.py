@@ -29,7 +29,7 @@ _KEEPER_TASK = """讀以下逐字稿,提取去重成簡潔的中性 candidate �
 async def run_consolidation(
     *,
     target_date: str,
-    adapter,
+    model,
     renderer,
     memsearch,
     memory_root: Path,
@@ -38,8 +38,12 @@ async def run_consolidation(
     consolidated_dir: Path,
     max_tokens: int = 2048,
     transcript_tail_chars: int = 8000,
+    think_budget_tokens: int = 1024,
 ) -> bool:
     """Consolidate one day's transcript into consolidated/{date}.md.
+
+    ``max_tokens`` is the keeper's answer budget per call;
+    ``think_budget_tokens`` caps its thinking on top.
 
     Returns True on success (file written + indexed), False otherwise.
     Raises CancelledError through (caller treats as cancel → no write).
@@ -62,7 +66,7 @@ async def run_consolidation(
     report = await run_agent(
         task=_KEEPER_TASK.format(transcript=transcript),
         system=system,
-        adapter=adapter,
+        model=model,
         renderer=renderer,
         memory_root=memory_root,
         memsearch=memsearch,
@@ -70,6 +74,8 @@ async def run_consolidation(
         tool_output_store=tool_output_store,
         tools=KEEPER_TOOLS,
         max_tokens=max_tokens,
+        think_budget=think_budget_tokens,
+        purpose="consolidation",
         shell_runner=None,
         monitor_runner=None,
     )
@@ -112,7 +118,7 @@ class ConsolidationTrigger:
         *,
         state,
         persist_path,
-        adapter,
+        model,
         renderer,
         memsearch,
         memory_root: Path,
@@ -129,10 +135,11 @@ class ConsolidationTrigger:
         restore_per_tick: float = 0.05,
         energy_idle_threshold_s: int = 600,
         energy_restore_debounce_s: int = 300,
+        think_budget_tokens: int = 1024,
     ) -> None:
         self._state = state
         self._persist_path = persist_path
-        self._adapter = adapter
+        self._model = model
         self._renderer = renderer
         self._memsearch = memsearch
         self._memory_root = memory_root
@@ -143,6 +150,8 @@ class ConsolidationTrigger:
         self._idle_threshold_s = idle_threshold_s
         self._min_interval_s = min_interval_s
         self._max_tokens = max_tokens
+        # [llm].think_budget_tokens: caps the keeper's thinking per call.
+        self._think_budget_tokens = think_budget_tokens
         self._agent_timeout_s = agent_timeout_s
         self._transcript_tail_chars = transcript_tail_chars
         self._shutdown = False
@@ -245,7 +254,7 @@ class ConsolidationTrigger:
             asyncio.wait_for(
                 run_consolidation(
                     target_date=target,
-                    adapter=self._adapter,
+                    model=self._model,
                     renderer=self._renderer,
                     memsearch=self._memsearch,
                     memory_root=self._memory_root,
@@ -254,6 +263,7 @@ class ConsolidationTrigger:
                     consolidated_dir=self._consolidated_dir,
                     max_tokens=self._max_tokens,
                     transcript_tail_chars=self._transcript_tail_chars,
+                    think_budget_tokens=self._think_budget_tokens,
                 ),
                 timeout=self._agent_timeout_s,
             )

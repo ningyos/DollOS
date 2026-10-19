@@ -1,9 +1,8 @@
-"""Shared LLM tool cascade loop.
+"""Shared tool dispatch + the agent tool cascade.
 
-Both EventDispatcher._respond and agent_engine.run_agent implement
-the same parser-feed + tool-dispatch + tool_response + stuck-tool 3-strike
-loop. This module lifts that shared logic into run_tool_cascade and
-dispatch_tool_call.
+``dispatch_one`` validates and runs one call and ``run_tool_calls`` runs one
+reply's native tool calls in order; both MindLoop and ``run_tool_cascade``
+(the agent loop under ``agent_engine.run_agent``) use them.
 """
 
 from __future__ import annotations
@@ -13,20 +12,24 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from dollos.ipc.messages import ErrorMsg, ServerMessage
-from dollos.llm.model import ToolCall, tool_message
-from dollos.tool_parser import ToolStreamParser
+from dollos.llm.model import End, SpeechDelta, ThinkDelta, ToolCall, ToolCalls, tool_message
+from dollos.llm.tool_schema import tool_schemas
 
 if TYPE_CHECKING:
-    from dollos.llm.adapter import LLMAdapter
+    from dollos.llm.model import ModelAdapter
     from dollos.mind.mind_ctx import MindCtx
 
 logger = logging.getLogger(__name__)
+
+# An agent that keeps calling tools without ever ending stops here.
+MAX_CASCADE_PASSES = 16
 
 
 @dataclass
@@ -160,114 +163,108 @@ async def run_tool_calls(
     return outcomes
 
 
-async def dispatch_tool_call(
-    call: dict,
-    ctx: "MindCtx",
-    tools_by_name: dict[str, type],
-) -> ToolResult | None:
-    """Thin wrapper over dispatch_one for the run_tool_cascade call path."""
-    name = call.get("name")
-    if not isinstance(name, str):
-        return ToolResult(
-            tool_name=str(name),
-            success=False,
-            detail="missing or non-string 'name' field in tool_call",
-        )
-    return await dispatch_one(
-        name, call.get("arguments", {}) or {}, ctx, tools_by_name,
-    )
-
-
 async def run_tool_cascade(
     *,
-    adapter: "LLMAdapter",
+    model: "ModelAdapter",
     system: str,
     messages: list[dict],
     tools: list[type],
     tools_by_name: dict[str, type],
     ctx: "MindCtx",
-    grammar: str,
     sink: "asyncio.Queue[ServerMessage | None] | None",
     max_tokens: int,
-    on_iter_start: Callable[[int, list[dict]], None] | None = None,
-    on_iter_end: Callable[[int, str, list[dict], list[ToolResult], int], None] | None = None,
+    think_budget: int,
+    purpose: str,
+    max_passes: int = MAX_CASCADE_PASSES,
+    on_iter_end: Callable[[int, str, str, list[dict], list[ToolResult], int], None] | None = None,
     check_early_exit: Callable[[int, "MindCtx"], bool] | None = None,
 ) -> list[dict]:
-    """Run an LLM tool cascade. Mutates `messages` in place; also returns it.
+    """Run an agent tool cascade on ``model``. Mutates `messages` in place
+    (``system`` goes in as the first message); also returns it.
 
-    on_iter_start fires before each iter — receives (iter_num, messages).
-        Caller can append [Pending events] / [Active monitors] blocks
-        here for iter > 1.
-    on_iter_end fires after each iter — receives (iter_num, assistant_text,
-        parsed_tool_calls, results, duration_ms). Caller logs to
-        CascadeLogger here.
-    check_early_exit fires after the assistant message is appended but before
-        result processing. If it returns True, the cascade exits immediately
-        (used by subagent to detect Report side-effect).
-    Returns the final messages list (same object, in-place mutated, returned
-    for ergonomics).
+    Each pass streams one reply, runs its tool calls in order
+    (``run_tool_calls``), and appends the assistant message verbatim plus one
+    ``tool`` message per call, so the conversation only grows at the end.
+    A pass with tool calls is followed by another; a pass without any ends
+    the cascade, as do the 3-strike stuck-tool rule and ``max_passes``.
+    ``prior_tokens`` is the previous pass's prompt + completion, so the token
+    accounting charges each pass only for what it appended.
+
+    on_iter_end fires after each pass's tools ran — receives (iter_num,
+        reasoning, speech, tool_calls, results, duration_ms); tool_calls are
+        ``{"id", "name", "arguments"}`` dicts. Caller logs to CascadeLogger here.
+    check_early_exit fires after the pass's tools ran and its messages were
+        appended. If it returns True, the cascade exits (used by run_agent to
+        stop once Report ran, even next to other calls in the same reply).
     """
+    schemas = tool_schemas(tools)
+    messages.insert(0, {"role": "system", "content": system})
     consecutive_fails: dict[str, int] = {}
-    iter_num = 0
+    prior_tokens = 0
 
-    while True:
-        iter_num += 1
+    async def _dispatch(name: str, arguments: dict) -> ToolResult | None:
+        return await dispatch_one(name, arguments, ctx, tools_by_name)
+
+    for iter_num in range(1, max_passes + 1):
         iter_start = time.monotonic()
-
-        if on_iter_start is not None:
-            on_iter_start(iter_num, messages)
-
-        parser = ToolStreamParser()
-        results: list[ToolResult] = []
-        assistant_buf: list[str] = []
-        parsed_tool_calls: list[dict] = []
-
-        async for chunk in adapter.stream_messages(
-            system=system,
+        think: list[str] = []
+        speech: list[str] = []
+        calls: tuple[ToolCall, ...] = ()
+        end: End | None = None
+        stream = model.stream(
             messages=messages,
-            tools=tools,
+            tools=schemas,
             max_tokens=max_tokens,
-            grammar=grammar,
-        ):
-            if chunk.text:
-                assistant_buf.append(chunk.text)
-            for call in parser.feed(chunk.text):
-                parsed_tool_calls.append(call)
-                result = await dispatch_tool_call(call, ctx, tools_by_name)
-                if result is not None:
-                    results.append(result)
-            if chunk.done:
-                break
-        for call in parser.flush():
-            parsed_tool_calls.append(call)
-            result = await dispatch_tool_call(call, ctx, tools_by_name)
-            if result is not None:
-                results.append(result)
+            think_budget=think_budget,
+            purpose=purpose,
+            on_usage=None,
+            prior_tokens=prior_tokens,
+        )
+        # aclosing() tears the HTTP stream down on any early exit (cancel,
+        # exception) — not just on normal exhaustion.
+        async with aclosing(stream) as events:
+            async for ev in events:
+                if isinstance(ev, ThinkDelta):
+                    think.append(ev.text)
+                elif isinstance(ev, SpeechDelta):
+                    speech.append(ev.text)
+                elif isinstance(ev, ToolCalls):
+                    calls = ev.calls
+                elif isinstance(ev, End):
+                    end = ev
 
-        # Append the model's full raw emit as the assistant turn.
-        messages.append({
-            "role": "assistant",
-            "content": "".join(assistant_buf),
-        })
+        usage = end.usage
+        if usage.prompt_tokens is not None and usage.completion_tokens is not None:
+            prior_tokens = usage.prompt_tokens + usage.completion_tokens
+        if end.finish_reason == "length":
+            # The adapter already dropped this reply's tool calls.
+            logger.warning(
+                "%s agent reply hit max_tokens on pass %d (%d tool call(s) dropped)",
+                purpose, iter_num, end.dropped_tool_calls,
+            )
+
+        outcomes = await run_tool_calls(calls, _dispatch)
+        messages.append(end.assistant_message)
+        messages.extend(o.message for o in outcomes)
+        results = [o.result for o in outcomes]
 
         duration_ms = int((time.monotonic() - iter_start) * 1000)
         if on_iter_end is not None:
-            on_iter_end(iter_num, "".join(assistant_buf), parsed_tool_calls, results, duration_ms)
+            on_iter_end(
+                iter_num,
+                "".join(think),
+                "".join(speech),
+                [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in calls],
+                results,
+                duration_ms,
+            )
 
         # Allow caller to exit early (e.g. subagent Report side-effect).
         if check_early_exit is not None and check_early_exit(iter_num, ctx):
             break
 
-        if not results:
+        if not outcomes:
             break
-
-        # Append a tool_response user message for each tool result.
-        for r in results:
-            detail = r.detail if r.detail else "(no output)"
-            messages.append({
-                "role": "user",
-                "content": f"<tool_response>\n{detail}\n</tool_response>",
-            })
 
         # Update per-tool failure counts; clear all on any success.
         # Per-tool counts accumulate across tool changes so that alternating
@@ -297,5 +294,10 @@ async def run_tool_cascade(
                     "cascade stuck on %s (3x); aborting", stuck_tool
                 )
             break
+    else:
+        logger.warning(
+            "%s cascade still calling tools after %d passes; stopping",
+            purpose, max_passes,
+        )
 
     return messages

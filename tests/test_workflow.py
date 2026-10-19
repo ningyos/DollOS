@@ -7,15 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 import dollos.workflow as workflow_mod
-from dollos.llm.adapter import LLMAdapter, StreamChunk
+from dollos.llm.model import ModelAdapter
 from dollos.mind.mind_state import Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.monitor_runner import MonitorRunner
@@ -23,6 +21,8 @@ from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.tool_outputs import ToolOutputStore
 from dollos.workflow import MAX_WORKFLOW_CONCURRENCY, WorkflowRunner
+from tests._dispatcher_helpers import _HangModel
+from tests._fake_model import FakeModel
 
 
 # ---------- Fakes ----------
@@ -44,110 +44,47 @@ def _report_call(status: str, summary: str, details: str) -> str:
     return f"<tool_call>{body}</tool_call>"
 
 
-@dataclass
-class _ScriptedAdapter(LLMAdapter):
-    """Fake LLMAdapter that pops a pre-scripted chunk list per call."""
-
-    scripts: list[list[StreamChunk]] = field(default_factory=list)
-    delay_per_iter: float = 0.0
-    calls: list[dict] = field(default_factory=list)
-
-    async def stream_completion(
-        self,
-        *,
-        system: str,
-        user: str,
-        prefill: str = "",
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:  # pragma: no cover
-        yield StreamChunk(text="", done=True)
-
-    async def stream_messages(
-        self,
-        *,
-        system: str,
-        messages: list[dict],
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        self.calls.append(
-            {
-                "system": system,
-                "messages": list(messages),
-                "tools": tools,
-                "grammar": grammar,
-            }
-        )
-        chunks = [StreamChunk(text="", done=True)] if not self.scripts else self.scripts.pop(0)
-        if self.delay_per_iter:
-            await asyncio.sleep(self.delay_per_iter)
-        for c in chunks:
-            yield c
+def _task_of(call: dict) -> str:
+    """The agent's task: the user message right after the system prompt."""
+    return call["messages"][1]["content"]
 
 
-@dataclass
-class _WorkerAdapter(LLMAdapter):
-    """Task-aware fake — inspects messages[0]['content'] to shape its reply.
+class _WorkerModel(FakeModel):
+    """Task-aware fake — inspects the task message to shape its reply.
 
-    - content contains 'BOOM' → raise RuntimeError (error degraded path)
-    - content contains 'SLOW' → sleep `slow_hold` then Report (per-agent timeout)
-    - else → immediate Report(ok, summary=content[:60], details="details::...")
+    - task contains 'BOOM' → raise RuntimeError (error degraded path)
+    - task contains 'SLOW' → sleep `slow_hold` then Report (per-agent timeout)
+    - else → immediate Report(ok, summary=task[:60], details="details::...")
 
-    Tracks adapter concurrency (in_flight / peak) for the semaphore-cap test.
+    Tracks model concurrency (in_flight / peak) for the semaphore-cap test.
     """
 
-    slow_hold: float = 1.0
-    hold: float = 0.0
-    calls: list[dict] = field(default_factory=list)
-    in_flight: int = 0
-    peak: int = 0
+    def __init__(self, *, slow_hold: float = 1.0, hold: float = 0.0) -> None:
+        super().__init__()
+        self.slow_hold = slow_hold
+        self.hold = hold
+        self.in_flight = 0
+        self.peak = 0
 
-    async def stream_completion(
-        self,
-        *,
-        system: str,
-        user: str,
-        prefill: str = "",
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:  # pragma: no cover
-        yield StreamChunk(text="", done=True)
+    def _reply(self, idx, messages):
+        task = messages[1]["content"]
+        return _report_call("ok", task[:60], f"details::{task[:60]}")
 
-    async def stream_messages(
-        self,
-        *,
-        system: str,
-        messages: list[dict],
-        stop: list[str] | None = None,
-        max_tokens: int = 1024,
-        tools: list[type] | None = None,
-        grammar: str | None = None,
-    ) -> AsyncIterator[StreamChunk]:
-        content = messages[0]["content"] if messages else ""
-        self.calls.append({"system": system, "content": content})
-        if "BOOM" in content:
+    async def stream(self, **kw):
+        task = kw["messages"][1]["content"]
+        if "BOOM" in task:
             raise RuntimeError("kaboom")
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
         try:
-            if "SLOW" in content:
+            if "SLOW" in task:
                 await asyncio.sleep(self.slow_hold)
             elif self.hold:
                 await asyncio.sleep(self.hold)
         finally:
             self.in_flight -= 1
-        yield StreamChunk(
-            text=_report_call("ok", content[:60], f"details::{content[:60]}"),
-            done=False,
-        )
-        yield StreamChunk(text="", done=True)
+        async for ev in super().stream(**kw):
+            yield ev
 
 
 class _FakeMemSearch:
@@ -162,7 +99,7 @@ class _FakeMemSearch:
 
 
 def _make_runner(
-    adapter: LLMAdapter,
+    model: ModelAdapter,
     tmp_path: Path,
     queue: PerceptionQueue | None = None,
     *,
@@ -172,7 +109,7 @@ def _make_runner(
     q = queue if queue is not None else PerceptionQueue()
     store = ToolOutputStore(tmp_path / "tool_outputs")
     runner = WorkflowRunner(
-        adapter=adapter,
+        model=model,
         renderer=PromptRenderer(),
         memory_root=tmp_path / "memory",
         memsearch=_FakeMemSearch(),
@@ -214,13 +151,8 @@ async def _collect_tool_results(
 @pytest.mark.asyncio
 async def test_n1_report_fires_result_event(tmp_path: Path):
     """N=1, no synthesis: the single worker's Report becomes the result."""
-    adapter = _ScriptedAdapter(
-        scripts=[[
-            StreamChunk(text=_report_call("ok", "found 3 files", "a.md, b.md, c.md"), done=False),
-            StreamChunk(text="", done=True),
-        ]]
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel([_report_call("ok", "found 3 files", "a.md, b.md, c.md")])
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-abc123",
         tasks=["search transcripts for coffee"],
@@ -240,11 +172,8 @@ async def test_n1_report_fires_result_event(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_n1_whole_workflow_timeout(tmp_path: Path):
-    adapter = _ScriptedAdapter(
-        scripts=[[StreamChunk(text="", done=True)]],
-        delay_per_iter=10.0,
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel(delay_s=10.0)
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-t1",
         tasks=["something slow"],
@@ -260,10 +189,8 @@ async def test_n1_whole_workflow_timeout(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_n1_no_report(tmp_path: Path):
-    adapter = _ScriptedAdapter(
-        scripts=[[StreamChunk(text="(idle thinking)", done=False), StreamChunk(text="", done=True)]]
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel(["(idle thinking)"])
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-nr1", tasks=["do nothing"], synthesis=None,
         mode="map_reduce", timeout_s=10,
@@ -277,15 +204,7 @@ async def test_n1_no_report(tmp_path: Path):
 async def test_n1_runtime_error(tmp_path: Path):
     """A crashing agent degrades to a status='error' report (raw for N=1)."""
 
-    class _BoomAdapter(LLMAdapter):
-        async def stream_completion(self, **_):  # pragma: no cover
-            yield StreamChunk(text="", done=True)
-
-        async def stream_messages(self, **_):
-            raise RuntimeError("kaboom")
-            yield  # pragma: no cover
-
-    runner, queue, _ = _make_runner(_BoomAdapter(), tmp_path)
+    runner, queue, _ = _make_runner(FakeModel([RuntimeError("kaboom")]), tmp_path)
     runner.spawn(
         workflow_id="wf-err1", tasks=["anything"], synthesis=None,
         mode="map_reduce", timeout_s=10,
@@ -301,13 +220,8 @@ async def test_n1_runtime_error(tmp_path: Path):
 async def test_n1_stuck_tool_aborts_with_no_report(tmp_path: Path):
     """3 consecutive same-tool failures abort the cascade → no_report."""
     bad_call = '<tool_call>{"name":"Shell","arguments":{}}</tool_call>'
-    adapter = _ScriptedAdapter(
-        scripts=[
-            [StreamChunk(text=bad_call, done=False), StreamChunk(text="", done=True)]
-            for _ in range(3)
-        ]
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel([bad_call] * 3)
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-stuck1", tasks=["stuck"], synthesis=None,
         mode="map_reduce", timeout_s=10,
@@ -321,13 +235,8 @@ async def test_n1_stuck_tool_aborts_with_no_report(tmp_path: Path):
 async def test_n1_details_paging(tmp_path: Path):
     """Long details: result carries preview + output_id; full text in store."""
     long_details = "\n".join(f"finding {i}" for i in range(50))
-    adapter = _ScriptedAdapter(
-        scripts=[[
-            StreamChunk(text=_report_call("ok", "50 findings", long_details), done=False),
-            StreamChunk(text="", done=True),
-        ]]
-    )
-    runner, queue, store = _make_runner(adapter, tmp_path)
+    model = FakeModel([_report_call("ok", "50 findings", long_details)])
+    runner, queue, store = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-paging1", tasks=["find findings"], synthesis=None,
         mode="map_reduce", timeout_s=30,
@@ -346,25 +255,13 @@ async def test_n1_details_paging(tmp_path: Path):
 async def test_stop_cancels_inflight(tmp_path: Path):
     """stop() cancels in-flight workflows; no perception is enqueued."""
 
-    class _HangAdapter(LLMAdapter):
-        def __init__(self) -> None:
-            self.entered = asyncio.Event()
-
-        async def stream_completion(self, **_):  # pragma: no cover
-            yield StreamChunk(text="", done=True)
-
-        async def stream_messages(self, **_):
-            self.entered.set()
-            await asyncio.Event().wait()
-            yield StreamChunk(text="", done=True)  # pragma: no cover
-
-    adapter = _HangAdapter()
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _HangModel()
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-hang1", tasks=["x"], synthesis=None,
         mode="map_reduce", timeout_s=60,
     )
-    await asyncio.wait_for(adapter.entered.wait(), timeout=1.0)
+    await asyncio.wait_for(model.entered.wait(), timeout=1.0)
     await asyncio.wait_for(runner.stop(), timeout=1.0)
     assert await _collect_tool_results(queue, settle=0.2) == []
 
@@ -372,24 +269,26 @@ async def test_stop_cancels_inflight(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_worker_uses_subagent_scaffolding(tmp_path: Path):
     """Worker agent's system prompt is the subagent scaffolding (no Identity)."""
-    adapter = _ScriptedAdapter(
-        scripts=[[StreamChunk(text=_report_call("ok", "x", "y"), done=False),
-                  StreamChunk(text="", done=True)]]
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel([_report_call("ok", "x", "y")])
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-s1", tasks=["hello"], synthesis=None,
         mode="map_reduce", timeout_s=10,
     )
     await _wait_for_tool_result(queue)
 
-    assert len(adapter.calls) == 1
-    system = adapter.calls[0]["system"]
+    assert len(model.calls) == 1
+    first, task = model.calls[0]["messages"]
+    assert first["role"] == "system"
+    system = first["content"]
     assert "worker agent" in system   # subagent_scaffolding template (renamed from "subagent")
     assert "Report" in system
     assert "# Identity" not in system
     assert "[Memory context]" not in system
-    assert adapter.calls[0]["messages"][0] == {"role": "user", "content": "hello"}
+    assert task == {"role": "user", "content": "hello"}
+    assert model.calls[0]["purpose"] == "workflow"
+    assert model.calls[0]["max_tokens"] == 4096
+    assert model.calls[0]["think_budget"] == 1024
 
 
 # ---------- Fan-out / concurrency / synthesis / verify ----------
@@ -398,8 +297,8 @@ async def test_worker_uses_subagent_scaffolding(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_n_tasks_concurrent_all_collected(tmp_path: Path):
     """(a) N tasks run; no-synthesis roll-up collects every report."""
-    adapter = _WorkerAdapter(hold=0.02)
-    runner, queue, store = _make_runner(adapter, tmp_path)
+    model = _WorkerModel(hold=0.02)
+    runner, queue, store = _make_runner(model, tmp_path)
     tasks = ["t-alpha", "t-beta", "t-gamma"]
     runner.spawn(
         workflow_id="wf-fan", tasks=tasks, synthesis=None,
@@ -417,9 +316,9 @@ async def test_n_tasks_concurrent_all_collected(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_semaphore_caps_in_flight(tmp_path: Path):
-    """(b) 12 tasks, Semaphore(8): peak concurrent adapter calls never > 8."""
-    adapter = _WorkerAdapter(hold=0.1)
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    """(b) 12 tasks, Semaphore(8): peak concurrent model calls never > 8."""
+    model = _WorkerModel(hold=0.1)
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-sem",
         tasks=[f"task-{i}" for i in range(12)],
@@ -430,14 +329,14 @@ async def test_semaphore_caps_in_flight(tmp_path: Path):
 
     p = await _wait_for_tool_result(queue, timeout=5.0)
     assert p.data["summary"] == "12 tasks: 12 ok, 0 not ok"
-    assert 2 <= adapter.peak <= MAX_WORKFLOW_CONCURRENCY
+    assert 2 <= model.peak <= MAX_WORKFLOW_CONCURRENCY
 
 
 @pytest.mark.asyncio
 async def test_synthesis_combines(tmp_path: Path):
     """(c) Synthesis task text contains each worker summary; exactly one result."""
-    adapter = _WorkerAdapter()
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel()
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-syn",
         tasks=["task-AAA", "task-BBB"],
@@ -452,9 +351,9 @@ async def test_synthesis_combines(tmp_path: Path):
     extra = await _collect_tool_results(queue, settle=0.2)
     assert extra == []
 
-    synth_calls = [c for c in adapter.calls if "MERGE_THEM" in c["content"]]
+    synth_calls = [c for c in model.calls if "MERGE_THEM" in _task_of(c)]
     assert len(synth_calls) == 1
-    synth_text = synth_calls[0]["content"]
+    synth_text = _task_of(synth_calls[0])
     assert "task-AAA" in synth_text
     assert "task-BBB" in synth_text
 
@@ -462,8 +361,8 @@ async def test_synthesis_combines(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_verify_mode_invocation_count(tmp_path: Path):
     """(d) mode=verify with synthesis → N task + N verify + 1 synthesis agents."""
-    adapter = _WorkerAdapter()
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel()
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-verify",
         tasks=["v-1", "v-2"],
@@ -474,8 +373,8 @@ async def test_verify_mode_invocation_count(tmp_path: Path):
 
     await _wait_for_tool_result(queue)
     # 2 task agents + 2 verify skeptics + 1 synthesis agent.
-    assert len(adapter.calls) == 2 + 2 + 1
-    assert any("adversarial skeptic" in c["content"] for c in adapter.calls)
+    assert len(model.calls) == 2 + 2 + 1
+    assert any("adversarial skeptic" in _task_of(c) for c in model.calls)
 
 
 @pytest.mark.asyncio
@@ -488,13 +387,8 @@ async def test_n1_verify_skeptic_verdict_surfaces(tmp_path: Path):
     """
     worker_report = _report_call("ok", "task done", "task output")
     skeptic_report = _report_call("incomplete", "refutation found", "evidence against claim")
-    adapter = _ScriptedAdapter(
-        scripts=[
-            [StreamChunk(text=worker_report, done=False), StreamChunk(text="", done=True)],
-            [StreamChunk(text=skeptic_report, done=False), StreamChunk(text="", done=True)],
-        ]
-    )
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = FakeModel([worker_report, skeptic_report])
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-verify-n1",
         tasks=["check something"],
@@ -517,8 +411,8 @@ async def test_n1_verify_skeptic_verdict_surfaces(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_n1_no_synthesis_raw(tmp_path: Path):
     """(e) N=1, no synthesis → that worker's report returned raw."""
-    adapter = _WorkerAdapter()
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel()
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-raw", tasks=["only-task"], synthesis=None,
         mode="map_reduce", timeout_s=30,
@@ -532,8 +426,8 @@ async def test_n1_no_synthesis_raw(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_partial_failure_rollup_with_synthesis(tmp_path: Path):
     """(f) A degraded task feeds synthesis; any task error → workflow incomplete."""
-    adapter = _WorkerAdapter()
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel()
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-partial",
         tasks=["ok-1", "BOOM-2", "ok-3"],
@@ -545,9 +439,9 @@ async def test_partial_failure_rollup_with_synthesis(tmp_path: Path):
     p = await _wait_for_tool_result(queue)
     # Synthesis ran (returns ok) but a task errored → workflow downgraded.
     assert p.data["status"] == "incomplete"
-    synth_calls = [c for c in adapter.calls if "SYNTH" in c["content"]]
+    synth_calls = [c for c in model.calls if "SYNTH" in _task_of(c)]
     assert len(synth_calls) == 1
-    synth_text = synth_calls[0]["content"]
+    synth_text = _task_of(synth_calls[0])
     assert "ok-1" in synth_text
     assert "status=error" in synth_text
 
@@ -571,16 +465,10 @@ async def test_no_nesting_worker_ctx_workflow_runner_is_none(tmp_path: Path):
     SUB_TOOLS.clear()
     SUB_TOOLS.extend([_CaptureTool])
     try:
-        adapter = _ScriptedAdapter(
-            scripts=[[
-                StreamChunk(
-                    text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
-                    done=False,
-                ),
-                StreamChunk(text="", done=True),
-            ]]
+        model = FakeModel(
+            ['<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>']
         )
-        runner, queue, _ = _make_runner(adapter, tmp_path)
+        runner, queue, _ = _make_runner(model, tmp_path)
         runner.spawn(
             workflow_id="wf-nest", tasks=["capture ctx"], synthesis=None,
             mode="map_reduce", timeout_s=10,
@@ -597,8 +485,8 @@ async def test_no_nesting_worker_ctx_workflow_runner_is_none(tmp_path: Path):
 async def test_per_agent_timeout_degrades_one_task(tmp_path: Path, monkeypatch):
     """(h) Per-agent timeout degrades the slow task only; others complete."""
     monkeypatch.setattr(workflow_mod, "MAX_AGENT_TIMEOUT_S", 0.2)
-    adapter = _WorkerAdapter(slow_hold=1.0)
-    runner, queue, store = _make_runner(adapter, tmp_path)
+    model = _WorkerModel(slow_hold=1.0)
+    runner, queue, store = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-pat",
         tasks=["fast-1", "fast-2", "SLOW-3"],
@@ -620,8 +508,8 @@ async def test_per_agent_timeout_degrades_one_task(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_exactly_one_perception_per_workflow(tmp_path: Path):
     """(i) A multi-task workflow emits exactly one ToolResultArrived."""
-    adapter = _WorkerAdapter(hold=0.01)
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel(hold=0.01)
+    runner, queue, _ = _make_runner(model, tmp_path)
     runner.spawn(
         workflow_id="wf-one", tasks=["a", "b", "c"], synthesis=None,
         mode="map_reduce", timeout_s=30,
@@ -634,8 +522,8 @@ async def test_exactly_one_perception_per_workflow(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_multiple_workflows_distinct_perceptions(tmp_path: Path):
     """Concurrent workflows each fire their own distinct result perception."""
-    adapter = _WorkerAdapter(hold=0.02)
-    runner, queue, _ = _make_runner(adapter, tmp_path)
+    model = _WorkerModel(hold=0.02)
+    runner, queue, _ = _make_runner(model, tmp_path)
     for i in range(3):
         runner.spawn(
             workflow_id=f"wf-{i}", tasks=[f"task-{i}"], synthesis=None,
@@ -674,14 +562,8 @@ async def test_worker_ctx_has_shell_runner(tmp_path: Path):
     SUB_TOOLS.clear()
     SUB_TOOLS.extend([_CaptureTool])
     try:
-        adapter = _ScriptedAdapter(
-            scripts=[[
-                StreamChunk(
-                    text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
-                    done=False,
-                ),
-                StreamChunk(text="", done=True),
-            ]]
+        model = FakeModel(
+            ['<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>']
         )
         queue = PerceptionQueue()
         shell_runner = ShellRunner(
@@ -689,7 +571,7 @@ async def test_worker_ctx_has_shell_runner(tmp_path: Path):
             perception_queue=queue,
             tool_output_store=ToolOutputStore(tmp_path / "shell_outputs"),
         )
-        runner, _, _ = _make_runner(adapter, tmp_path, queue, shell_runner=shell_runner)
+        runner, _, _ = _make_runner(model, tmp_path, queue, shell_runner=shell_runner)
         runner.spawn(
             workflow_id="wf-shell", tasks=["capture ctx"], synthesis=None,
             mode="map_reduce", timeout_s=10,
@@ -721,18 +603,12 @@ async def test_worker_ctx_has_monitor_runner(tmp_path: Path):
     SUB_TOOLS.clear()
     SUB_TOOLS.extend([_CaptureTool])
     try:
-        adapter = _ScriptedAdapter(
-            scripts=[[
-                StreamChunk(
-                    text='<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>',
-                    done=False,
-                ),
-                StreamChunk(text="", done=True),
-            ]]
+        model = FakeModel(
+            ['<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>']
         )
         queue = PerceptionQueue()
         monitor_runner = MonitorRunner(cwd=tmp_path, perception_queue=queue)
-        runner, _, _ = _make_runner(adapter, tmp_path, queue, monitor_runner=monitor_runner)
+        runner, _, _ = _make_runner(model, tmp_path, queue, monitor_runner=monitor_runner)
         runner.spawn(
             workflow_id="wf-mon", tasks=["capture ctx"], synthesis=None,
             mode="map_reduce", timeout_s=10,
@@ -788,22 +664,14 @@ async def test_eager_dispatch_queue_empty_after_spawn(tmp_path: Path):
     """spawn() returns immediately (fire-and-forget); the queue is still empty
     right after the call — the workflow runs entirely in the background."""
 
-    class _HangAdapter(LLMAdapter):
-        async def stream_completion(self, **_):  # pragma: no cover
-            yield StreamChunk(text="", done=True)
-
-        async def stream_messages(self, **_):
-            await asyncio.Event().wait()  # hang until cancelled
-            yield StreamChunk(text="", done=True)  # pragma: no cover
-
-    runner, queue, _ = _make_runner(_HangAdapter(), tmp_path)
+    runner, queue, _ = _make_runner(_HangModel(), tmp_path)
     runner.spawn(
         workflow_id="wf-eager", tasks=["slow-task"], synthesis=None,
         mode="map_reduce", timeout_s=60,
     )
     # No await — check synchronously that nothing arrived yet.
     # drain(timeout_s=0.0) fires after one event-loop tick; the workflow
-    # is still blocked on the hanging adapter at that point.
+    # is still blocked on the hanging model at that point.
     drained = await queue.drain(timeout_s=0.0)
     assert [p for p in drained if p.kind == "ToolResultArrived"] == [], (
         "spawn() must be fire-and-forget; result must not appear before workflow completes"
@@ -814,24 +682,26 @@ async def test_eager_dispatch_queue_empty_after_spawn(tmp_path: Path):
 # ---------- cascade_log callback ----------
 
 
-def test_cascade_log_callback_splits_reasoning_and_speech(tmp_path: Path):
-    """The agent path still emits raw "<think>…</think> speech"; the callback
-    hands cascade_log the two parts as reasoning / speech."""
+@pytest.mark.asyncio
+async def test_cascade_log_gets_agent_reasoning_and_speech(tmp_path: Path):
+    """Each agent pass reaches cascade_log with its raw reasoning and speech
+    as streamed, and its native tool calls with ids."""
     from tests._dispatcher_helpers import _FakeCascadeLogger
 
-    class _Unused(LLMAdapter):  # pragma: no cover - never streamed
-        async def stream_completion(self, **_):
-            yield StreamChunk(text="", done=True)
-
-        async def stream_messages(self, **_):
-            yield StreamChunk(text="", done=True)
-
-    runner, _, _ = _make_runner(_Unused(), tmp_path)
+    model = FakeModel([
+        "weighing it</think>all done" + _report_call("ok", "s", "d"),
+    ])
+    runner, queue, _ = _make_runner(model, tmp_path)
     log = _FakeCascadeLogger()
     runner._cascade_logger = log
-    cb = runner._make_on_iter_end()
-    cb(1, "<think>\nweighing it\n</think>\n\nall done", [], [], 7)
+    runner.spawn(
+        workflow_id="wf-log", tasks=["log me"], synthesis=None,
+        mode="map_reduce", timeout_s=10,
+    )
+    await _wait_for_tool_result(queue)
 
-    assert log.iters[0]["reasoning"] == "weighing it"
-    assert log.iters[0]["speech"] == "all done"
-    assert "assistant_text" not in log.iters[0]
+    [it] = log.iters
+    assert it["reasoning"] == "weighing it"
+    assert it["speech"] == "all done"
+    assert [(tc["id"], tc["name"]) for tc in it["tool_calls"]] == [("call_0", "Report")]
+    assert [r.status for r in it["results"]] == ["ok"]

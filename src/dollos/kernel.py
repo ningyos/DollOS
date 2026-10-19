@@ -510,7 +510,7 @@ class DollOS:
                 self.service_supervisor.register(self._build_mcp_spec(settings))
 
         self.workflow_runner = WorkflowRunner(
-            adapter=self.adapter,
+            model=self.model,
             renderer=self.renderer,
             memory_root=settings.data.root / "memory",
             memsearch=self.memsearch,
@@ -520,6 +520,7 @@ class DollOS:
             monitor_runner=self.monitor_runner,
             tool_output_store=self._tool_output_store,
             cascade_logger=self._cascade_logger,
+            think_budget_tokens=settings.llm.think_budget_tokens,
         )
 
         self._mind_ctx = MindCtx(
@@ -642,7 +643,7 @@ class DollOS:
         self._consolidation_trigger = ConsolidationTrigger(
             state=self._mind_state,
             persist_path=settings.data.root / "mind_state.json",
-            adapter=self.adapter,
+            model=self.model,
             renderer=self.renderer,
             memsearch=self.memsearch,
             memory_root=settings.data.root / "memory",
@@ -659,13 +660,14 @@ class DollOS:
             restore_per_tick=settings.energy.restore_per_tick,
             energy_idle_threshold_s=settings.energy.idle_threshold_s,
             energy_restore_debounce_s=settings.energy.restore_debounce_s,
+            think_budget_tokens=settings.llm.think_budget_tokens,
         )
 
         # EvolutionTrigger — 慢變演化 Mode-A keeper + Mode-B verdict-only
         # re-verdict (spec §3.3)
         self._evolution_trigger = EvolutionTrigger(
             state=self._mind_state,
-            adapter=self.adapter,
+            model=self.model,
             renderer=self.renderer,
             memsearch=self.memsearch,
             memory_root=settings.data.root / "memory",
@@ -684,6 +686,7 @@ class DollOS:
             cap=settings.evolution.current_self_max_chars,
             max_tokens=settings.evolution.max_tokens,
             agent_timeout_s=settings.evolution.agent_timeout_s,
+            think_budget_tokens=settings.llm.think_budget_tokens,
         )
         self._evolution_trigger_task: asyncio.Task[None] | None = None
 

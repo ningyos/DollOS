@@ -69,16 +69,17 @@ class EvolutionTrigger:
     # in seconds (review I3).
     ERROR_COOLDOWN_S = 3600.0
 
-    def __init__(self, *, state, adapter, renderer, memsearch, memory_root: Path,
+    def __init__(self, *, state, model, renderer, memsearch, memory_root: Path,
                  transcripts_root: Path, tool_output_store, pack_identity,
                  consolidation_trigger, persist_path: Path,
                  idle_threshold_s: int = 600,
                  base_interval_days: float = 7.0, max_interval_days: float = 28.0,
                  min_history_events: int = 8, min_diary_days: int = 14,
                  enforcement=None, floor: int = 80, cap: int = 600,
-                 max_tokens: int = 1024, agent_timeout_s: int = 120) -> None:
+                 max_tokens: int = 1024, agent_timeout_s: int = 120,
+                 think_budget_tokens: int = 1024) -> None:
         self._state = state
-        self._adapter = adapter
+        self._model = model
         self._renderer = renderer
         self._memsearch = memsearch
         self._memory_root = memory_root
@@ -96,6 +97,8 @@ class EvolutionTrigger:
         self._floor = floor
         self._cap = cap
         self._max_tokens = max_tokens
+        # [llm].think_budget_tokens: caps each keeper / skeptic call's thinking.
+        self._think_budget_tokens = think_budget_tokens
         self._agent_timeout_s = agent_timeout_s
         self._shutdown = False
         self.current_task: asyncio.Task | None = None
@@ -202,11 +205,12 @@ class EvolutionTrigger:
             proposed=proposed,
         )
         report = await run_agent(
-            task=task, system=system, adapter=self._adapter, renderer=self._renderer,
+            task=task, system=system, model=self._model, renderer=self._renderer,
             memory_root=self._memory_root, memsearch=self._memsearch,
             transcripts_root=self._transcripts_root,
             tool_output_store=self._tool_output_store, tools=KEEPER_TOOLS,
-            max_tokens=self._max_tokens, shell_runner=None, monitor_runner=None,
+            max_tokens=self._max_tokens, think_budget=self._think_budget_tokens,
+            purpose="evolution", shell_runner=None, monitor_runner=None,
         )
         if not report or not report.get("details"):
             raise RuntimeError("skeptic returned no verdict")
@@ -296,13 +300,14 @@ class EvolutionTrigger:
         self.current_task = asyncio.create_task(
             asyncio.wait_for(
                 run_evolution_pass(
-                    adapter=self._adapter, renderer=self._renderer,
+                    model=self._model, renderer=self._renderer,
                     memsearch=self._memsearch, memory_root=self._memory_root,
                     transcripts_root=self._transcripts_root,
                     tool_output_store=self._tool_output_store,
                     pack_identity=self._pack_identity, enforcement=self._enforcement,
                     floor=self._floor, cap=self._cap, max_tokens=self._max_tokens,
                     now=now, hwm=hwm, window_days=self._max_interval_days,
+                    think_budget_tokens=self._think_budget_tokens,
                 ),
                 timeout=self._agent_timeout_s,
             )

@@ -118,6 +118,21 @@ async def test_keeper_task_pins_no_restatement_rule(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pass_forwards_model_and_budgets_to_keeper(tmp_path, monkeypatch):
+    mr, _hist = _seed_root(tmp_path)
+    seen = {}
+    async def fake_keeper(**kw):
+        seen.update(kw)
+        return {"details": "NO_CHANGE 證據不足"}
+    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
+    model = object()
+    await ek.run_evolution_pass(**{**_pass_kwargs(mr), "model": model,
+                                   "think_budget_tokens": 300})
+    assert seen["model"] is model
+    assert (seen["max_tokens"], seen["think_budget_tokens"]) == (2048, 300)
+
+
+@pytest.mark.asyncio
 async def test_pass_no_change_logs_and_returns(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
@@ -418,8 +433,9 @@ async def _run_skeptic(monkeypatch, *, ident, details, capture=None):
     monkeypatch.setattr(ek, "run_agent", fake_run_agent)
     return await ek._run_full_skeptic(
         candidate="候選文字", rationale="依據 x", bundle="BUNDLE", current="舊文",
-        pack_identity=ident, adapter=None, renderer=_StubRenderer(), memsearch=None,
-        memory_root=None, transcripts_root=None, tool_output_store=None, max_tokens=2048)
+        pack_identity=ident, model=None, renderer=_StubRenderer(), memsearch=None,
+        memory_root=None, transcripts_root=None, tool_output_store=None, max_tokens=2048,
+        think_budget_tokens=1024)
 
 
 @pytest.mark.asyncio
@@ -463,10 +479,47 @@ async def test_full_skeptic_garbled_verdict_raises(monkeypatch):
         await _run_skeptic(monkeypatch, ident=_ident(), details="驗證通過,沒有問題")
 
 
+_REPORT = (
+    '<tool_call>{"name": "Report", "arguments": {"status": "ok", '
+    '"summary": "s", "details": "%s"}}</tool_call>'
+)
+
+
+def _agent_kwargs(model, root):
+    from dollos.tool_outputs import ToolOutputStore
+    return dict(model=model, renderer=_StubRenderer(), memsearch=None,
+                memory_root=root, transcripts_root=root / "tx",
+                tool_output_store=ToolOutputStore(root / "out"),
+                max_tokens=2048, think_budget_tokens=300)
+
+
+@pytest.mark.asyncio
+async def test_keeper_agent_streams_with_evolution_purpose(tmp_path):
+    from tests._fake_model import FakeModel
+    model = FakeModel([_REPORT % "NO_CHANGE 證據不足"])
+    report = await ek._run_keeper_agent(task="T", **_agent_kwargs(model, tmp_path))
+    assert report["details"] == "NO_CHANGE 證據不足"
+    [call] = model.calls
+    assert call["purpose"] == "evolution"
+    assert (call["max_tokens"], call["think_budget"]) == (2048, 300)
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_streams_with_evolution_purpose(tmp_path):
+    from tests._fake_model import FakeModel
+    model = FakeModel([_REPORT % "PASS 沒問題"])
+    verdict = await ek._run_full_skeptic(
+        candidate="候選文字", rationale="依據 x", bundle="BUNDLE", current="舊文",
+        pack_identity=_ident(), **_agent_kwargs(model, tmp_path))
+    assert verdict == "pass"
+    assert model.calls[0]["purpose"] == "evolution"
+    assert model.calls[0]["think_budget"] == 300
+
+
 def _pass_kwargs(mr):
     from dollos.character import Enforcement, Identity
     ident = Identity(self="我是測試角色", personality="安靜", taboos="不編造")
-    return dict(adapter=None, renderer=None, memsearch=None, memory_root=mr,
+    return dict(model=None, renderer=None, memsearch=None, memory_root=mr,
                 transcripts_root=mr / "tx", tool_output_store=None,
                 pack_identity=ident, enforcement=Enforcement(),
                 floor=80, cap=600, max_tokens=2048, now=1000.0)
