@@ -41,6 +41,20 @@ class LLMCallRecord:
     error: str | None = None
     context_pct: float | None = None
     call_purpose: str = "cascade"
+    # Chat-completions fields (2026-10-18). Defaults keep older lines loadable.
+    finish_reason: str | None = None
+    cache_n: int | None = None
+    prompt_n: int | None = None
+    prompt_ms: float | None = None
+    predicted_per_second: float | None = None
+    # ms to the first speech (`content`) fragment; latency_ttft_ms counts
+    # from the first fragment of any kind, thinking included.
+    first_content_ms: float | None = None
+    think_capped: bool | None = None
+    conversation: str | None = None
+    epoch: int | None = None
+    # prompt_tokens minus the previous call's total in the same conversation.
+    new_prompt_tokens: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

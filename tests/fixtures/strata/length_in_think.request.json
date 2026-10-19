@@ -1,0 +1,17 @@
+{
+  "model": "qwen3.8-flash-next-iq3_s",
+  "stream": true,
+  "presence_penalty": 1.3,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Gura, a playful shark girl. Your reply text is spoken aloud. Keep it short."
+    },
+    {
+      "role": "user",
+      "content": "Think carefully: which is larger, 9.11 or 9.9? Explain."
+    }
+  ],
+  "max_tokens": 20,
+  "reasoning_budget_tokens": 100
+}
