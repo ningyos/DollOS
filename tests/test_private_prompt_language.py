@@ -631,7 +631,7 @@ CASES = [
     _case(tool_result_pin_self),
     _case(tool_result_self_revision),
     _case(tool_result_learn_name),
-    _case(memory_transcript_and_action_log, 8, "transcript speakers, action-log phrases"),
+    _case(memory_transcript_and_action_log),
 ]
 
 

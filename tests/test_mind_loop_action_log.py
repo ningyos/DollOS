@@ -25,7 +25,7 @@ async def test_owner_shell_action_is_logged(tmp_path):
     ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
     await ml.iterate()
     log = _today_log(tmp_path)
-    assert any(is_action_log_line(l) and "我跑了指令 ls -la" in l for l in log.splitlines())
+    assert any(is_action_log_line(l) and "ran a command: ls -la" in l for l in log.splitlines())
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def test_world_events_are_logged(tmp_path):
     ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
     await ml.iterate()
     log = _today_log(tmp_path)
-    assert any(is_action_log_line(l) and "Monitor mon-2 觸發:OOM killed" in l for l in log.splitlines())
+    assert any(is_action_log_line(l) and "Monitor mon-2 fired: OOM killed" in l for l in log.splitlines())
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_mood_change_to_new_emotion_is_logged(tmp_path):
     await ml.iterate()
     assert state.mood.emotion == "happy"   # MoodTool.run did mutate state
     log = _today_log(tmp_path)
-    assert any(is_action_log_line(l) and "心情變成「happy」" in l for l in log.splitlines())
+    assert any(is_action_log_line(l) and 'mood changed to "happy"' in l for l in log.splitlines())
 
 
 @pytest.mark.asyncio
@@ -126,4 +126,4 @@ async def test_mood_unchanged_to_same_emotion_is_NOT_logged(tmp_path):
     await ml.iterate()
     assert state.mood.reason == "一如往常"   # the call was valid and did run
     log = _today_log(tmp_path)
-    assert not any(is_action_log_line(l) and "心情變成" in l for l in log.splitlines())
+    assert not any(is_action_log_line(l) and "mood changed to" in l for l in log.splitlines())

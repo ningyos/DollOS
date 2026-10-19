@@ -256,7 +256,7 @@ async def test_run_consolidation_writes_candidate_file(tmp_path, monkeypatch):
     from dollos.mind import consolidation as C
     # 準備目標日 transcript
     tdir = tmp_path / "transcripts"; tdir.mkdir()
-    (tdir / "2026-06-29.md").write_text("- 12:00 主人說：我喜歡冰美式\n- 12:01 我說：記住了\n")
+    (tdir / "2026-06-29.md").write_text("- 12:00 Owner: 我喜歡冰美式\n- 12:01 Me: 記住了\n")
     ms = _FakeMemSearch()
 
     captured = {}
@@ -296,7 +296,7 @@ async def test_run_consolidation_streams_keeper_on_the_model(tmp_path):
     from tests._fake_model import FakeModel
 
     tdir = tmp_path / "transcripts"; tdir.mkdir()
-    (tdir / "2026-06-29.md").write_text("- 12:00 主人說：我喜歡冰美式\n")
+    (tdir / "2026-06-29.md").write_text("- 12:00 Owner: 我喜歡冰美式\n")
     report = (
         '<tool_call>{"name": "Report", "arguments": {"status": "ok", '
         '"summary": "s", "details": "- 主人偏好冰美式"}}</tool_call>'
@@ -413,10 +413,10 @@ async def test_consolidation_filters_out_action_lines(tmp_path, monkeypatch):
     import dollos.mind.consolidation as C
     troot = tmp_path / "transcripts"; troot.mkdir()
     (troot / "2026-07-06.md").write_text(
-        "- 10:00:00 主人說：早\n"
-        "- 10:00:05 我說：早安\n"
-        "- 10:01:00 ▸ 我跑了指令 ls -la\n"
-        "- 10:02:00 ▸ Monitor mon-1 觸發:noise\n",
+        "- 10:00:00 Owner: 早\n"
+        "- 10:00:05 Me: 早安\n"
+        "- 10:01:00 ▸ ran a command: ls -la\n"
+        "- 10:02:00 ▸ Monitor mon-1 fired: noise\n",
         encoding="utf-8",
     )
     captured = {}
@@ -432,7 +432,7 @@ async def test_consolidation_filters_out_action_lines(tmp_path, monkeypatch):
         tool_output_store=None, consolidated_dir=tmp_path / "consolidated",
     )
     assert ok
-    assert "主人說：早" in captured["task"]
-    assert "我說：早安" in captured["task"]
-    assert "我跑了指令" not in captured["task"]     # action line filtered
+    assert "Owner: 早" in captured["task"]
+    assert "Me: 早安" in captured["task"]
+    assert "ran a command" not in captured["task"]     # action line filtered
     assert "Monitor mon-1" not in captured["task"]  # event line filtered

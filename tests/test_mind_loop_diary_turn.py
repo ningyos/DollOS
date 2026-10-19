@@ -39,7 +39,7 @@ def _seed_today_log(tmp_path, text):
 @pytest.mark.asyncio
 async def test_diary_turn_narrows_tools_and_injects_today_log(tmp_path):
     state = MindState()
-    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n- 12:00:00 ▸ 我跑了指令 ls\n")
+    _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n- 12:00:00 ▸ ran a command: ls\n")
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
     captured = {}
@@ -61,13 +61,13 @@ async def test_diary_turn_narrows_tools_and_injects_today_log(tmp_path):
     request = ml._llm.calls[0]["messages"][1]["content"]
     assert "[Today's log]" in request
     assert "12:00:00" in request
-    assert "我跑了指令 ls" in request
+    assert "ran a command: ls" in request
 
 
 @pytest.mark.asyncio
 async def test_diary_turn_suppresses_outbound_speech(tmp_path):
     state = MindState()
-    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n")
+    _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n")
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
     sink: asyncio.Queue = asyncio.Queue()
@@ -91,7 +91,7 @@ async def test_diary_turn_suppresses_outbound_speech(tmp_path):
 @pytest.mark.asyncio
 async def test_diary_miss_warns_and_reenqueues_once(tmp_path, caplog):
     state = MindState()
-    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n")
+    _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n")
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
     # she does NOT call WriteDiary (ends with TOOL: none, no tool_call at all)
@@ -140,7 +140,7 @@ async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplo
     the silent failure I1 exists to prevent. The looser `_diary_in_batch`
     flag ("a DiaryMoment is present at all") decouples the two."""
     state = MindState()
-    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n")
+    _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n")
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
     queue.put(Perception(kind="AgendaMoment", t=time.time(), data={}))
@@ -175,14 +175,14 @@ async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplo
 async def test_diary_turn_does_not_leak_into_transcript_file(tmp_path):
     """M-1: her diary-turn musings (naked text streamed AFTER </think>, the
     real speech region — NOT inside <think>, which the parser discards
-    unconditionally) must not gain a `我說：` conversation line in
+    unconditionally) must not gain a `Me:` conversation line in
     transcripts/{today}.md. test_diary_turn_suppresses_outbound_speech above
     already covers the live sink chokepoint (_emit_sentence); this covers
     the SEPARATE guard at the doll-side transcript write (mind_loop.py
     ``if doll_text and not self._is_diary:``) — the file the NEXT diary
     turn's _read_today_log reads back as the day's action log."""
     state = MindState()
-    _seed_today_log(tmp_path, "- 09:00:00 主人說：早\n")
+    _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n")
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="DiaryMoment", t=time.time(), data={}))
     # She streams naked text AFTER </think> (the actual speech region) on the
@@ -198,9 +198,9 @@ async def test_diary_turn_does_not_leak_into_transcript_file(tmp_path):
     await ml.iterate()
     transcript_path = tmp_path / "memory" / "transcripts" / f"{date.today():%Y-%m-%d}.md"
     contents = transcript_path.read_text(encoding="utf-8")
-    # the pre-seeded owner line is untouched, but no NEW `我說：` (doll
+    # the pre-seeded owner line is untouched, but no NEW `Me:` (doll
     # speech) line was appended for her diary musings.
-    assert "我說：" not in contents
+    assert " Me: " not in contents
     assert "這是我不該說出口的碎念" not in contents
 
 
