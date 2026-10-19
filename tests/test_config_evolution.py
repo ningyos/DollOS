@@ -16,8 +16,8 @@ def test_evolution_defaults():
     s = Settings.model_validate(tomllib.loads(_MIN))
     e = s.evolution
     assert e.enabled is True
-    assert e.current_self_max_chars == 600
-    assert e.current_self_min_chars == 80
+    assert e.current_self_max_chars == 2000
+    assert e.current_self_min_chars == 250
     assert e.base_interval_days == 7.0
     assert e.max_interval_days == 28.0
     assert e.idle_threshold_s == 600

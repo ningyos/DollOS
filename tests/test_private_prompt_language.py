@@ -505,7 +505,10 @@ async def tool_result_self_revision(rig: Rig) -> str:
         ctx.evolution_candidate_surfaced = surfaced
         out.append(await _run_tool(rig, "SelfRevision", args))
 
-    long_text = "x" * 90
+    # Sized from the rig's caps so each refusal below stays the one named.
+    floor, cap = ctx.current_self_min_chars, ctx.current_self_max_chars
+    long_text = "x" * (floor + 10)                      # passes the length check
+    too_long = SENTINEL * (cap // len(SENTINEL) + 1)
     _adopt(rig, SANCTIONED)
     await revise({"decision": "adopt"}, slot=keeper(), latched=True)
     await revise({"decision": "adopt"})                               # no candidate
@@ -520,7 +523,7 @@ async def tool_result_self_revision(rig: Rig) -> str:
     capped.counter_round = evo.COUNTER_ROUND_CAP
     await revise({"decision": "adopt", "text": long_text}, slot=capped)
     await revise({"decision": "adopt", "text": f"{SENTINEL} short"}, slot=keeper())
-    await revise({"decision": "adopt", "text": SENTINEL * 250}, slot=keeper())
+    await revise({"decision": "adopt", "text": too_long}, slot=keeper())
     await revise({"decision": "adopt", "text": long_text + " a~"}, slot=keeper())
     await revise({"decision": "adopt", "text": long_text}, slot=keeper())   # sent to review
 
@@ -536,7 +539,11 @@ async def tool_result_self_revision(rig: Rig) -> str:
         mp.setattr("dollos.tools._atomic_write_text", fail)
         await revise({"decision": "adopt"}, slot=keeper())
     await revise({"decision": "adopt"}, slot=keeper(candidate=f"{SENTINEL} again"))
-    return "\n".join(out)
+    text = "\n".join(out)
+    for result in ("Too short", "Too long", "Breaks the persona constraints",
+                   "gone to review", "rewrite failed"):
+        assert result in text, result
+    return text
 
 
 async def tool_result_learn_name(rig: Rig) -> str:

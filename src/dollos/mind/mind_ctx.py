@@ -49,7 +49,7 @@ class MindCtx:
     monitor_runner: "MonitorRunner"
 
     # A1 self-profile — total-char cap for self_profile.md (from Settings).
-    self_profile_max_chars: int = 1200
+    self_profile_max_chars: int = 4000
 
     # 慢變演化 evidence layer (spec 2026-07-02 §3.2): per-turn provenance,
     # set by MindLoop at drain time; Recall execution upgrades external_ctx
@@ -95,8 +95,8 @@ class MindCtx:
     # adopt text Doll never saw.
     evolution_candidate_surfaced: bool = False
     evolution_enabled: bool = False
-    current_self_min_chars: int = 80
-    current_self_max_chars: int = 600
+    current_self_min_chars: int = 250
+    current_self_max_chars: int = 2000
     enforcement: "Enforcement | None" = None
     # 慢變演化 Mode-A decision-event bookkeeping (spec §3.3, Plan 3): SelfRevision
     # reads these to reset (adopt) / double-with-cap (reject) the keeper

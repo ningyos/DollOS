@@ -142,3 +142,32 @@ async def test_wiring_no_surface_on_non_reflection_turn(tmp_path):
     await ml.iterate()
     assert evo.load_slot(sp).surfaced_count == 0
     assert ml._ctx.evolution_candidate_surfaced is False
+
+
+@pytest.mark.asyncio
+async def test_adopted_short_chinese_current_self_survives_english_caps(tmp_path):
+    """An already-adopted "Who I am now" from before the English caps (120
+    CJK chars, under today's floor) is still in_sync: the tripwire does not
+    re-validate it, nothing is logged or restored, and it renders as-is."""
+    text = "我是古拉，喜歡安靜地陪著主人。" + "字" * 105
+    assert len(text) == 120
+    hist = tmp_path / "self_history.jsonl"
+    self_history.log_event(hist, kind="evo_adopt", text=text, old_text=None,
+                           drift_score=None)
+    cs = tmp_path / "current_self.md"
+    cs.write_text(text, encoding="utf-8")
+    llm = FakeModel()
+    queue = PerceptionQueue(wal=None)
+    ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
+                       sink=asyncio.Queue(), queue=queue, llm=llm)
+    assert len(text) < ml._current_self_min_chars          # new writes this short fail
+    assert evo.mechanical_checks(
+        text, floor=ml._current_self_min_chars, cap=ml._current_self_max_chars,
+        enforcement=None) is not None
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    await ml.iterate()
+    assert cs.read_text(encoding="utf-8") == text                     # not restored
+    assert [e["kind"] for e in self_history.read_events(hist)] == ["evo_adopt"]
+    assert not (tmp_path / "self_evolution" / "pending.json").exists()
+    system = llm.calls[-1]["messages"][0]
+    assert system["role"] == "system" and text in system["content"]  # rendered

@@ -317,7 +317,7 @@ def test_self_profile_config_defaults():
         character=CharacterConfig(pack="gura"),
     )
     assert s.self_profile.enabled is True
-    assert s.self_profile.max_chars == 1200
+    assert s.self_profile.max_chars == 4000
 
 
 def test_diary_config_defaults():
