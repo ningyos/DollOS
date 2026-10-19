@@ -347,11 +347,16 @@ class WorkflowRunner:
             results: "list[ToolResult]",
             duration_ms: int,
         ) -> None:
+            # Agents still run on the grammar path (raw "<think>…</think>
+            # speech"); split it into the reasoning / speech fields until they
+            # move to the ModelAdapter.
+            reasoning, _, speech = assistant_text.partition("</think>")
             try:
                 self._cascade_logger.log_iter(
                     turn_id=turn_id,
                     iter=iter_num,
-                    assistant_text=assistant_text,
+                    reasoning=reasoning.removeprefix("<think>").strip(),
+                    speech=speech.strip(),
                     tool_calls=tool_calls,
                     results=results,
                     duration_ms=duration_ms,

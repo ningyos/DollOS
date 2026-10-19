@@ -83,6 +83,68 @@ async def test_dispatch_one_runtime_error_returns_failed_result(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# run_tool_calls: one reply's native tool calls → results + tool messages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_tool_calls_in_order_with_one_tool_message_each():
+    from dollos.cascade.tool_loop import ToolResult, run_tool_calls
+    from dollos.llm.model import ToolCall
+
+    seen: list[tuple[str, dict]] = []
+
+    async def _dispatch(name, args):
+        seen.append((name, args))
+        if name == "Quiet":
+            return None
+        if name == "Bad":
+            return ToolResult(tool_name=name, success=False, detail="it broke")
+        return ToolResult(tool_name=name, success=True, detail=f"did {args['x']}")
+
+    calls = [
+        ToolCall(id="a", name="Do", arguments='{"x": 1}'),
+        ToolCall(id="b", name="Quiet", arguments="{}"),
+        ToolCall(id="c", name="Bad", arguments="{}"),
+    ]
+    outcomes = await run_tool_calls(calls, _dispatch)
+
+    assert seen == [("Do", {"x": 1}), ("Quiet", {}), ("Bad", {})]
+    assert [o.message for o in outcomes] == [
+        {"role": "tool", "tool_call_id": "a", "content": "did 1"},
+        {"role": "tool", "tool_call_id": "b", "content": "ok"},
+        {"role": "tool", "tool_call_id": "c", "content": "it broke"},
+    ]
+    assert [o.result.status for o in outcomes] == ["ok", "ok", "failed"]
+    assert [o.call.id for o in outcomes] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_run_tool_calls_bad_arguments_fail_without_running():
+    from dollos.cascade.tool_loop import run_tool_calls
+    from dollos.llm.model import ToolCall
+
+    async def _dispatch(name, args):  # pragma: no cover - must not run
+        raise AssertionError("dispatched despite bad arguments")
+
+    outcomes = await run_tool_calls(
+        [ToolCall(id="a", name="Do", arguments='{"x": '),
+         ToolCall(id="b", name="Do", arguments='["x"]')],
+        _dispatch,
+    )
+    assert [o.result.success for o in outcomes] == [False, False]
+    assert "not valid JSON" in outcomes[0].message["content"]
+    assert "JSON object" in outcomes[1].message["content"]
+
+
+def test_unbound_result_status():
+    from dollos.cascade.tool_loop import ToolResult
+
+    r = ToolResult(tool_name="Shell", success=False, detail="no", unbound=True)
+    assert r.status == "rejected_unbound"
+
+
+# ---------------------------------------------------------------------------
 # I3 regression: consecutive_fails per-tool accumulation
 # ---------------------------------------------------------------------------
 

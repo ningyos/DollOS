@@ -2,10 +2,10 @@
 2026-07-10 §2.2, Task 2). Task 1 threaded a per-call ``on_usage`` callback
 through the LLM stream stack (Provider -> LLMAdapter -> ComposedLLMAdapter);
 this task makes MindLoop its own consumer: ``_on_turn_usage`` accumulates
-prompt/completion tokens across every cascade pass of ONE turn (a turn can
-re-feed through ``stream_messages`` multiple times — see
-tests/test_mind_loop.py::test_recall_result_refed_in_same_turn for the
-re-feed mechanics), then the SAME drain site (mind_loop.py's
+prompt/completion tokens across every model call of ONE turn (a turn makes
+another call after every reply with tool calls — see
+tests/test_mind_loop.py::test_recall_result_refed_in_same_turn), then the
+SAME drain site (mind_loop.py's
 ``_run_one_turn`` tail, gated by ``produced and consumes`` — kept verbatim
 from the flat cost_per_turn model) computes:
 
@@ -41,6 +41,7 @@ import pytest
 from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.perception.system_pulse import PulseSample
+from tests._fake_model import FakeModel
 from tests._mindloop_factory import make_mindloop
 from tests.test_mind_loop import _FakeLLM, _ScriptedLLM, _recall_pass, _speech_pass
 
@@ -68,43 +69,17 @@ class _FakePulse:
         return self._sample
 
 
-class _UsageLLM:
+class _UsageLLM(FakeModel):
     """Single-pass fake that reports (prompt_tokens, completion_tokens) via
-    ``on_usage`` exactly once — mirroring one real transport call (Task 1's
-    ``on_usage(prompt_tokens, completion_tokens)`` in transport.py's
-    ``finally`` block). Converges after pass 1 (``TOOL: none`` — never
-    triggers a ``stream_messages`` re-feed)."""
+    ``on_usage`` exactly once — mirroring one real adapter call (the
+    ``on_usage(new_prompt_tokens, completion_tokens)`` the ModelAdapter makes
+    when its call finishes). Speech only, so the turn ends after pass 1."""
 
     def __init__(self, speech: str, prompt: int | None, completion: int | None):
-        self._speech = speech
-        self._prompt = prompt
-        self._completion = completion
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None,
-        purpose="cascade", on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        if on_usage is not None:
-            on_usage(self._prompt, self._completion)
-        yield _Chunk(
-            text=f"SEEN: x\nTOOL: none\n</think>\n\n{self._speech}", done=True
+        super().__init__(
+            [f"SEEN: x\nTOOL: none\n</think>\n\n{speech}"],
+            usages=[(prompt, completion)],
         )
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
 
 
 def _user_turn_queue() -> PerceptionQueue:
@@ -220,9 +195,8 @@ async def test_missing_tokens_uses_flat_legacy(tmp_path):
 
 @pytest.mark.asyncio
 async def test_multi_pass_accumulates_before_single_drain(tmp_path):
-    """A turn with a tool-call re-feed makes TWO cascade passes (pass 1 via
-    stream_completion, pass 2 via stream_messages after the Recall result is
-    fed back — mirrors
+    """A turn with a tool call makes TWO model calls (pass 2 after the Recall
+    result is sent back — mirrors
     tests/test_mind_loop.py::test_recall_result_refed_in_same_turn).
     on_usage fires once per pass; the drain site must SUM both passes and
     drain exactly ONCE, not per-pass."""

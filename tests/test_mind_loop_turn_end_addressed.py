@@ -13,32 +13,14 @@ from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.tools import MAIN_TOOLS
 from tests._dispatcher_helpers import _make_mind_ctx
+from tests._fake_model import FakeModel
 
 
-class _Chunk:
-    def __init__(self, text, done):
-        self.text = text
-        self.done = done
+class _SeqLLM(FakeModel):
+    """One speech-only reply per call (so one call per turn), in call order."""
 
-
-class _SeqLLM:
     def __init__(self, returns: list[str]):
-        self._returns = list(returns)
-        self._i = 0
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        text = self._returns[self._i]
-        self._i += 1
-        yield _Chunk(text=text, done=True)
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+        super().__init__(returns)
 
 
 def _speech_stream(seen: str, reply: str) -> str:

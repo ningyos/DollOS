@@ -584,7 +584,7 @@ class DollOS:
             state=self._mind_state,
             queue=self._perception_queue,
             ctx=self._mind_ctx,
-            llm=_MindLLMAdapter(self.adapter),
+            llm=self.model,
             system_prompt=system_prompt_prefix,
             system_prompt_suffix=system_prompt_suffix,
             state_persist_path=settings.data.root / "mind_state.json",
@@ -612,6 +612,7 @@ class DollOS:
             diary_max_log_chars=settings.diary.max_log_chars,
             turn_latency_recorder=self.turn_latency_recorder,
             vitals_recorder=self.vitals_recorder,
+            think_budget_tokens=settings.llm.think_budget_tokens,
         )
 
         self._reflection_observer = ReflectionObserver(

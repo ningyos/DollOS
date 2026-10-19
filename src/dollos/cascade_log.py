@@ -2,13 +2,13 @@
 dev observability.
 
 Logs to data/cascade_log/{date}.jsonl via structlog. One line per
-cascade iter, captures think fields + tool call + result.
+cascade iter: the model's reasoning (raw, capped) and speech, its tool
+calls and their results.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from pathlib import Path
 
@@ -16,23 +16,8 @@ import structlog
 
 logger = logging.getLogger(__name__)
 
-
-_THINK_FIELD_RES = {
-    "seen": re.compile(r"^SEEN:\s*(.+)$", re.MULTILINE),
-    "intent": re.compile(r"^INTENT:\s*(.+)$", re.MULTILINE),
-    "review": re.compile(r"^REVIEW:\s*(.+)$", re.MULTILINE),
-    "mood": re.compile(r"^MOOD:\s*(.+)$", re.MULTILINE),
-    "tool": re.compile(r"^TOOL:\s*(.+?)$", re.MULTILINE),
-}
-
-
-def _parse_think(assistant_text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for field, regex in _THINK_FIELD_RES.items():
-        m = regex.search(assistant_text)
-        if m:
-            out[field] = m.group(1).strip()
-    return out
+# Reasoning is stored raw but capped; the trace keeps the full text.
+_REASONING_CAP = 4000
 
 
 class CascadeLogger:
@@ -49,27 +34,29 @@ class CascadeLogger:
         *,
         turn_id: str,
         iter: int,
-        assistant_text: str,
+        reasoning: str,
+        speech: str,
         tool_calls: list[dict] | None = None,
         results: list | None = None,  # list[ToolResult]
         duration_ms: int | None = None,
     ) -> None:
         try:
-            fields = _parse_think(assistant_text)
             self._log.info(
                 "cascade_iter",
                 turn_id=turn_id,
                 iter=iter,
                 duration_ms=duration_ms,
-                **fields,
+                reasoning=reasoning[:_REASONING_CAP],
+                speech=speech,
                 tool_calls=[
-                    {"name": tc.get("name"), "args": tc.get("arguments")}
+                    {"id": tc.get("id"), "name": tc.get("name"), "args": tc.get("arguments")}
                     for tc in (tool_calls or [])
                 ],
                 results=[
                     {
                         "tool_name": r.tool_name,
                         "success": r.success,
+                        "status": r.status,
                         "detail": (r.detail or "")[:500],
                     }
                     for r in (results or [])

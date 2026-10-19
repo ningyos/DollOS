@@ -26,6 +26,7 @@ from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.tools import Recall, MAIN_TOOLS
 from tests._dispatcher_helpers import _make_mind_ctx
+from tests._fake_model import FakeModel
 from tests.test_mind_loop import _FakeLLM
 
 
@@ -370,37 +371,15 @@ _HABIT_MARKER = "unique-habit-marker-555"
 _HABIT_QUERY = "greppyword"
 
 
-class _CapturingLLM:
-    """Records the ``user`` prompt of every stream_completion call. Yields a
-    single-pass ``TOOL: none`` stream so the turn converges without a re-feed
-    (mirrors tests/test_mind_loop.py::_FakeLLM's convergence contract)."""
+class _CapturingLLM(FakeModel):
+    """Records the rendered prompt (the ``user`` message) of every model call.
+    Its replies are empty, so the turn ends after one call."""
 
-    def __init__(self) -> None:
-        self.user_prompts: list[str] = []
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        self.user_prompts.append(user)
-
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        yield _Chunk(text="SEEN: x\nTOOL: none\n</think>\n\nhi", done=True)
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+    @property
+    def user_prompts(self) -> list[str]:
+        return [
+            m["content"] for c in self.calls for m in c["messages"] if m["role"] == "user"
+        ]
 
 
 def _seed_playbook(base: Path) -> None:

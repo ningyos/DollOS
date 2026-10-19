@@ -809,3 +809,29 @@ async def test_eager_dispatch_queue_empty_after_spawn(tmp_path: Path):
         "spawn() must be fire-and-forget; result must not appear before workflow completes"
     )
     await runner.stop()
+
+
+# ---------- cascade_log callback ----------
+
+
+def test_cascade_log_callback_splits_reasoning_and_speech(tmp_path: Path):
+    """The agent path still emits raw "<think>…</think> speech"; the callback
+    hands cascade_log the two parts as reasoning / speech."""
+    from tests._dispatcher_helpers import _FakeCascadeLogger
+
+    class _Unused(LLMAdapter):  # pragma: no cover - never streamed
+        async def stream_completion(self, **_):
+            yield StreamChunk(text="", done=True)
+
+        async def stream_messages(self, **_):
+            yield StreamChunk(text="", done=True)
+
+    runner, _, _ = _make_runner(_Unused(), tmp_path)
+    log = _FakeCascadeLogger()
+    runner._cascade_logger = log
+    cb = runner._make_on_iter_end()
+    cb(1, "<think>\nweighing it\n</think>\n\nall done", [], [], 7)
+
+    assert log.iters[0]["reasoning"] == "weighing it"
+    assert log.iters[0]["speech"] == "all done"
+    assert "assistant_text" not in log.iters[0]

@@ -20,44 +20,20 @@ from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.tools import MAIN_TOOLS
 from tests._dispatcher_helpers import _make_mind_ctx
+from tests._fake_model import FakeModel
 
 
-class _Chunk:
-    def __init__(self, text, done):
-        self.text = text
-        self.done = done
+class _SeqLLM(FakeModel):
+    """Plays a different fixed think+speech reply per call, in call order.
 
-
-class _SeqLLM:
-    """Yields a different fixed think+speech stream per call, in call order.
-
-    Mirrors tests/test_mind_loop.py's `_FakeLLM` wire format (voice_first:
-    think fields, `</think>`, then plain speech, `TOOL: none` so the turn
-    converges after exactly one pass — no `stream_messages` re-feed call).
-    Each bucket's `_run_one_turn` drives exactly one `stream_completion`
-    call, so passing one stream per bucket (in drain_grouped's bucket order)
-    lets the test assert per-origin content landed on the matching sink.
+    The replies are speech only (no tool calls), so each bucket's
+    `_run_one_turn` makes exactly one model call; passing one reply per
+    bucket (in drain_grouped's bucket order) lets the test assert per-origin
+    content landed on the matching sink.
     """
 
     def __init__(self, returns: list[str]):
-        self._returns = list(returns)
-        self._i = 0
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        text = self._returns[self._i]
-        self._i += 1
-        yield _Chunk(text=text, done=True)
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        # Not expected to be called (TOOL: none ⇒ single-pass turns), but
-        # provide a terminal no-op stream for safety/symmetry with _FakeLLM.
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+        super().__init__(returns)
 
 
 def _drain_queue(q: asyncio.Queue) -> list:
@@ -406,27 +382,14 @@ async def test_save_failure_in_any_bucket_skips_wal_truncation(tmp_path):
     assert len(list(wal.iter_pending())) == 2
 
 
-class _CrashOnSecondLLM:
-    """First turn streams normally; the second turn raises mid-stream. Used to
+class _CrashOnSecondLLM(FakeModel):
+    """First turn streams normally; the second turn's call raises. Used to
     simulate a crash AFTER the first bucket completes but BEFORE the second."""
 
     def __init__(self, first_stream: str):
-        self._first = first_stream
-        self._n = 0
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        self._n += 1
-        if self._n == 1:
-            yield _Chunk(text=self._first, done=True)
-        else:
-            raise RuntimeError("simulated crash during bucket B's turn")
-            yield  # pragma: no cover
-
-    async def stream_messages(self, system, messages, **kw):
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+        super().__init__([
+            first_stream, RuntimeError("simulated crash during bucket B's turn"),
+        ])
 
 
 @pytest.mark.asyncio

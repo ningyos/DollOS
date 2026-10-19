@@ -15,6 +15,9 @@ B, in the bridge) tore down the whole daemon-WS + Discord-gateway connection,
 dropping the real reply that followed. This test guards the daemon-side fix:
 `_emit_sentence` must never emit a whitespace-only sentence, so the sink
 receives exactly ONE AddressedText with the real reply text.
+
+On the chat-completions path the same shape is a reply whose ``content``
+starts with newlines in its own stream fragment, ahead of the real text.
 """
 from __future__ import annotations
 
@@ -24,47 +27,24 @@ import pytest
 
 from dollos.ipc.channel_registry import ChannelRegistry
 from dollos.ipc.messages import AddressedText, TextChunk
+from dollos.llm.model import SpeechDelta, ThinkDelta
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.tools import MAIN_TOOLS
 from tests._dispatcher_helpers import _make_mind_ctx
+from tests._fake_model import FakeModel
 
 
-class _Chunk:
-    def __init__(self, text, done):
-        self.text = text
-        self.done = done
+class _ChunkedLLM(FakeModel):
+    """Streams the reply as SEPARATE fragments, like the real server: the
+    thinking, then a newline-only speech fragment, then the reply text — the
+    newlines arrive on their own, ahead of the real reply."""
 
-
-class _ChunkedLLM:
-    """Streams `segments` as SEPARATE chunks — the last one carries
-    `done=True`. Mirrors real llama.cpp token-by-token streaming closely
-    enough to reproduce the bug: unlike `tests/test_mind_loop.py`'s
-    `_FakeLLM` / `tests/test_mind_loop_origin.py`'s `_SeqLLM` (both yield the
-    WHOLE reply as one chunk, which lets `ToolStreamParser` swallow the
-    think-close boilerplate newlines before they ever reach a SpeakChunk),
-    this one splits the think-close marker from its trailing newlines and
-    the reply into three separate `feed()` calls — reproducing the leak.
-    """
-
-    def __init__(self, segments: list[str]) -> None:
-        self._segments = list(segments)
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        n = len(self._segments)
-        for i, seg in enumerate(self._segments):
-            yield _Chunk(text=seg, done=(i == n - 1))
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        # Terminal pass: close think, emit nothing, no tool -> cascade breaks.
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+    def __init__(self, think: str, speech_fragments: list[str]) -> None:
+        super().__init__([
+            [ThinkDelta(think), *(SpeechDelta(f) for f in speech_fragments)]
+        ])
 
 
 def _drain_queue(q: asyncio.Queue) -> list:
@@ -74,19 +54,10 @@ def _drain_queue(q: asyncio.Queue) -> list:
     return items
 
 
-# The think header ends EXACTLY at "</think>" with no trailing newline in the
-# same chunk — the boilerplate "\n\n" and the reply arrive in their OWN
-# subsequent chunks, exactly like the production incident.
-_THINK_SEGMENTS = [
-    "SEEN: owner said hi\n"
-    "INTENT: greet\n"
-    "TOOL: none\n"
-    "REVIEW: ok\n"
-    "MOOD: warm\n"
-    "</think>",
-    "\n\n",
-    "主人好。",
-]
+# The boilerplate "\n\n" and the reply arrive as their OWN speech fragments,
+# exactly like the production incident.
+_THINK = "owner said hi; greet back"
+_SPEECH_FRAGMENTS = ["\n\n", "主人好。"]
 
 
 @pytest.mark.asyncio
@@ -108,7 +79,7 @@ async def test_leading_newline_speech_chunk_never_reaches_sink_as_addressed_text
     registry.register("owner-dm", locus="external", kind="discord")
     ctx.channel_registry = registry
 
-    llm = _ChunkedLLM(_THINK_SEGMENTS)
+    llm = _ChunkedLLM(_THINK, _SPEECH_FRAGMENTS)
 
     loop = MindLoop(
         state=state,

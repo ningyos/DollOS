@@ -1,5 +1,5 @@
-"""P1e Task 2 (S4/S5): conservative external tool registry + keyed grammar
-cache.
+"""P1e Task 2 (S4/S5): conservative external tool registry, and the fixed
+per-tier tool list the model is shown (plan 2026-10-18 decision 3).
 
 Any external-origin turn (external_public OR external_dm, i.e. INCLUDING the
 owner's own DM) must get a structurally reduced tool set — Shell,
@@ -119,24 +119,34 @@ def test_safe_mode_wins_over_external_too(tmp_path):
         assert name not in reg
 
 
-def test_external_grammar_is_non_none_and_differs_from_internal(tmp_path):
-    ml = make_mindloop(memory_root=tmp_path)
+def test_external_offered_tools_hide_every_internal_tool(tmp_path):
+    """The schema list an external turn is shown never names an internal
+    tool — not even on a reflection turn, with evolution and self-profile on."""
+    ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
+                        self_profile_enabled=True)
     ml._ctx.origin_tier = "internal"
-    internal_grammar = ml._active_grammar()
+    internal = set(ml._offered_tools())
+    for tier, extra in (("external_public", set()), ("external_dm", {"LearnName"})):
+        ml._ctx.origin_tier = tier
+        for reflection in (False, True):
+            ml._is_reflection = reflection
+            offered = set(ml._offered_tools())
+            assert offered == {"Recall", "NoteMemory", "WriteDiary"} | extra
+            for name in DANGEROUS:
+                assert name not in offered
+    assert set(DANGEROUS) <= internal
 
-    ml._ctx.origin_tier = "external_public"
-    external_grammar = ml._active_grammar()
 
-    assert external_grammar is not None
-    assert "root ::=" in external_grammar
-    assert external_grammar != internal_grammar
-
-
-def test_external_grammar_cache_returns_same_object_on_repeat_call(tmp_path):
-    """Keyed cache: same tier repeat call returns the SAME cached grammar
-    object, not a freshly rebuilt one."""
-    ml = make_mindloop(memory_root=tmp_path)
-    ml._ctx.origin_tier = "external_public"
-    first = ml._active_grammar()
-    second = ml._active_grammar()
-    assert first is second
+def test_offered_tools_cover_every_binding_of_the_tier(tmp_path):
+    """Every tool a turn of the tier can be bound to is in the tier's offered
+    list (so binding is only ever a refusal, never a missing schema)."""
+    ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
+                        self_profile_enabled=True)
+    ml._ctx.origin_tier = "internal"
+    offered = set(ml._offered_tools())
+    for flag in ("_is_reflection", "_is_diary", "_is_agenda", "_is_pulse", "_has_user_spoke"):
+        setattr(ml, flag, True)
+        assert set(ml._active_tool_registry()) <= offered, flag
+        setattr(ml, flag, False)
+    ml._is_reflection = ml._has_user_spoke = True
+    assert set(ml._active_tool_registry()) <= offered

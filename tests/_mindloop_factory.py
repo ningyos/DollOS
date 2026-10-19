@@ -1,6 +1,6 @@
 """Shared MindLoop test factory — minimal construction with stub deps.
 
-Mirrors tests/test_mind_loop.py's ``_FakeLLM`` + tests/_dispatcher_helpers.py's
+Mirrors tests/test_mind_loop.py's ``_FakeLLM`` (a FakeModel) + tests/_dispatcher_helpers.py's
 ``_make_mind_ctx`` (the pattern tests/test_mind_loop_self_profile.py's local
 ``_build_mind_loop`` replicated inline). Extracted here per Task 7 (composition
 seam) so per-turn-compose tests don't duplicate construction again.
@@ -44,6 +44,7 @@ def make_mindloop(
     turn_latency_recorder=None,
     vitals_recorder=None,
     cascade_logger=None,
+    think_budget_tokens: int = 1024,
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
@@ -86,4 +87,5 @@ def make_mindloop(
         turn_latency_recorder=turn_latency_recorder,
         vitals_recorder=vitals_recorder,
         cascade_logger=cascade_logger,
+        think_budget_tokens=think_budget_tokens,
     )

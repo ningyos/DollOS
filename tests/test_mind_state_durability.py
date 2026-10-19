@@ -76,10 +76,20 @@ def test_save_state_returns_false_on_failure(tmp_path):
     assert save_state(MindState(), bad / "s.json") is False
 
 
-def test_recent_reviews_round_trips(tmp_path):
+def test_old_state_file_with_recent_reviews_still_loads(tmp_path):
+    """REVIEW capture is gone (plan 2026-10-18 Task 4): a state file written
+    before still loads, the stale key is ignored and not written back."""
+    import json
+
     from dollos.mind.mind_state import MindState, load_state, save_state
-    s = MindState()
-    s.recent_reviews.append("lesson A")
     p = tmp_path / "s.json"
+    save_state(MindState(focus="kept"), p)
+    data = json.loads(p.read_text())
+    data["recent_reviews"] = ["lesson A"]
+    p.write_text(json.dumps(data))
+
+    s = load_state(p)
+    assert s.focus == "kept"
+    assert not hasattr(s, "recent_reviews")
     save_state(s, p)
-    assert "lesson A" in list(load_state(p).recent_reviews)
+    assert "recent_reviews" not in json.loads(p.read_text())

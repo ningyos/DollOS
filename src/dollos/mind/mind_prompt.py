@@ -1,6 +1,7 @@
 """Render MindState into a complete LLM prompt for one MindLoop iteration.
 
-Returns: system_prompt + the enabled dynamic blocks as a single string.
+Returns: the enabled dynamic blocks as a single string, optionally preceded
+by the system prompt.
 """
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ def energy_bucket_line(energy: float) -> str:
 def render_mind(
     state: MindState,
     memsearch_hits: list[dict],
-    system_prompt: str,
+    system_prompt: str | None = None,
     *,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
@@ -54,6 +55,10 @@ def render_mind(
     origin_tier: str = "internal",
 ) -> str:
     """Compose: system_prompt + the enabled dynamic blocks.
+
+    ``system_prompt`` — omitted (None) when the caller sends it as its own
+    system message (MindLoop does); the output then starts at the first
+    dynamic block. Block order is the same either way.
 
     ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
     ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
@@ -108,10 +113,7 @@ def render_mind(
     and ``"external_dm"`` — owner-DM is a private 1:1, not a public channel.
     """
     now = time.time()
-    blocks = [
-        system_prompt,
-        "",
-    ]
+    blocks = [system_prompt, ""] if system_prompt is not None else []
     if self_profile_text:
         blocks.extend([
             "[Self profile] (your evolving self — keep only what's still you; prune with PinSelf)",
@@ -168,12 +170,6 @@ def render_mind(
         state.scratchpad or "(empty)",
         "",
     ])
-    if state.recent_reviews:
-        blocks.extend([
-            "[Recent self-review] (your own post-hoc critiques, oldest first)",
-            _render_recent_reviews(state.recent_reviews),
-            "",
-        ])
     if tool_outcomes_block:
         blocks.extend([tool_outcomes_block, ""])
     tool_notes = render_tool_notes(state.recent_tool_failures, now)
@@ -514,21 +510,6 @@ def _percep_body(p) -> str:
     if p.kind == "PulseMoment":
         return d.get("detail", "")
     return str(d)[:120]
-
-
-def _render_recent_reviews(reviews) -> str:
-    """Render the rolling self-review buffer, oldest→newest, one terse line each.
-
-    Each line is truncated (these sit on the prompt-token budget that drives
-    latency). The deque already enforces the count cap (maxlen).
-    """
-    lines = []
-    for r in reviews:
-        line = str(r).strip().replace("\n", " ")
-        if len(line) > 160:
-            line = line[:157] + "..."
-        lines.append(f"- {line}")
-    return "\n".join(lines)
 
 
 def _render_outputs_header(outs, now: float) -> str:

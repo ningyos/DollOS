@@ -170,10 +170,9 @@ def _only_trace_envelope(traces_dir: Path) -> dict:
 
 
 def _recall_pass_with_reasoning(query: str = "X", speech: str = "查一下") -> str:
-    """A think block with free-form reasoning text OUTSIDE any of the 5
-    SEEN/INTENT/TOOL/REVIEW/MOOD fields `_parse_think` extracts — proves
-    `raw_assistant_emit` is the verbatim text, a strict superset of what
-    cascade_log's parsed-field copy retains."""
+    """Thinking with free-form reasoning text OUTSIDE any SEEN/INTENT/...
+    field line — proves the trace's `reasoning` is the verbatim thinking,
+    never a parsed extraction."""
     return (
         "SEEN: x\n"
         "lots of reasoning about digging up context and cross-checking facts\n"
@@ -189,7 +188,7 @@ def _recall_pass_with_reasoning(query: str = "X", speech: str = "查一下") -> 
 def mind_loop_real_trace(tmp_path):
     """MindLoop wired with a REAL TraceWriter(tmp_path/"traces") and a
     scripted LLM: pass 1 emits a Recall tool call (+ verbose think
-    reasoning), pass 2 (the re-feed triggered by Recall's success) emits
+    reasoning), pass 2 (after the Recall result is sent back) emits
     plain speech and no tool, ending the cascade."""
     traces_dir = tmp_path / "traces"
     tw = TraceWriter(traces_dir)
@@ -215,12 +214,20 @@ def mind_loop_real_trace(tmp_path):
 @pytest.mark.asyncio
 async def test_trace_pass_stores_raw_think_and_full_result(mind_loop_real_trace, tmp_path):
     ml, state = mind_loop_real_trace
-    # fake LLM 第一 pass 吐:<think>SEEN:...\nlots of reasoning...</think> + Recall call
+    # fake model 第一 pass:思考(含 lots of reasoning)+ 說話 + Recall call
     await ml._run_one_turn([_user_perception("dig up X")])
     env = _only_trace_envelope(tmp_path / "traces")  # helper: glob *.jsonl, assert 1 line
     p0 = env["passes"][0]
-    # think 逐字全文,非 _parse_think 的 5 行截斷
-    assert "lots of reasoning" in p0["raw_assistant_emit"]
+    # 思考逐字全文
+    assert "lots of reasoning" in p0["reasoning"]
+    assert p0["reasoning"].startswith("SEEN: x\n")
+    assert p0["speech"] == "查一下"
+    # tool calls 帶 id 和原樣的 arguments 字串
+    assert p0["tool_calls"][0]["id"]
+    assert p0["tool_calls"][0]["name"] == "Recall"
+    assert json.loads(p0["tool_calls"][0]["arguments"]) == {"query": "X"}
+    assert p0["results"][0]["tool_call_id"] == p0["tool_calls"][0]["id"]
+    assert p0["results"][0]["status"] == "ok"
     # tool result 全文,非 detail[:500]
     if p0["results"]:
         assert len(p0["results"][0]["detail"]) > 0
@@ -232,13 +239,19 @@ async def test_trace_pass_stores_raw_think_and_full_result(mind_loop_real_trace,
 
 @pytest.mark.asyncio
 async def test_trace_and_cascade_log_share_source_tuple(mind_loop_real_trace, tmp_path):
-    """兩 writer 從同一組 (raw_buf, results, tool_calls) 序列化;
-    trace 的 raw_assistant_emit 應為 cascade_log parsed think 的 superset。"""
+    """兩 writer 從同一組 (reasoning, speech, tool_calls, results) 序列化;
+    trace 存思考全文,cascade_log 存截到 4000 字的同一段。"""
+    from tests._dispatcher_helpers import _FakeCascadeLogger
+
     ml, state = mind_loop_real_trace
+    log = _FakeCascadeLogger()
+    ml._cascade_logger = log
     await ml._run_one_turn([_user_perception("hi")])
     env = _only_trace_envelope(tmp_path / "traces")
-    # trace 存 raw 全文(superset);cascade_log 只存 parsed 5 欄——trace 不 drift
-    assert env["passes"][0]["raw_assistant_emit"]  # 非空,為 raw
+    for p, it in zip(env["passes"], log.iters, strict=True):
+        assert p["reasoning"] == it["reasoning"]
+        assert p["speech"] == it["speech"]
+        assert p["tool_calls"] == it["tool_calls"]
 
 
 @pytest.mark.asyncio
@@ -305,73 +318,53 @@ async def test_no_trace_writer_no_trace_file_written(tmp_path):
 
 
 def passes_prompt(env: dict) -> str:
-    """The exact prompt string `_llm_iterate` seeded `messages[0]` with —
-    recovered from pass 0's own captured delta (env["passes"][0]
-    ["input_messages_delta"][0]["content"]). Used as the expected value when
-    reconstructing `messages` from concatenated per-pass deltas."""
-    return env["passes"][0]["input_messages_delta"][0]["content"]
+    """The exact rendered prompt `_llm_iterate` seeded the user message
+    (`messages[1]`, after the system message) with — recovered from pass 0's
+    own captured delta. Used as the expected value when reconstructing
+    `messages` from concatenated per-pass deltas."""
+    return env["passes"][0]["input_messages_delta"][1]["content"]
 
 
 @pytest.mark.asyncio
 async def test_input_messages_delta_is_byte_authority(mind_loop_real_trace, tmp_path):
-    ml, state = mind_loop_real_trace  # fake LLM: pass0 emits Recall(sync, refed); pass1 emits Say(ends)
+    ml, state = mind_loop_real_trace  # fake model: pass0 calls Recall; pass1 speaks (ends)
     await ml._run_one_turn([_user_perception("q")])
     env = _only_trace_envelope(tmp_path / "traces")
     passes = env["passes"]
-    # pass 0 delta = the initial user prompt, verbatim.
-    assert passes[0]["input_messages_delta"][0]["role"] == "user"
-    assert passes[0]["input_messages_delta"][0]["content"]  # == the prompt fed to pass0
-    if len(passes) > 1:
-        # pass 1 delta = prior pass's assistant emit + filtered <tool_response>
-        # (must NOT include a fire-and-forget ack, e.g. a Shell/SpawnWorkflow
-        # success that was never re-fed).
-        roles = [m["role"] for m in passes[1]["input_messages_delta"]]
-        assert "assistant" in roles
-        # At least one tool_response (Recall is a refed sync tool).
-        assert any("tool_response" in m.get("content", "") for m in passes[1]["input_messages_delta"])
+    # pass 0 delta = the system message + the rendered user prompt, verbatim.
+    assert [m["role"] for m in passes[0]["input_messages_delta"]] == ["system", "user"]
+    assert passes[0]["input_messages_delta"][0]["content"] == ml._system_prompt_for_turn()
+    assert passes[0]["input_messages_delta"][1]["content"]
+    # pass 1 delta = pass 0's assistant message (verbatim, with reasoning and
+    # tool calls) + one tool message per call.
+    delta = passes[1]["input_messages_delta"]
+    assert [m["role"] for m in delta] == ["assistant", "tool"]
+    assert delta[0]["reasoning_content"] == passes[0]["reasoning"]
+    assert delta[1]["tool_call_id"] == passes[0]["tool_calls"][0]["id"]
 
 
 @pytest.mark.asyncio
 async def test_delta_concatenation_reconstructs_final_messages(mind_loop_real_trace, tmp_path):
     ml, state = mind_loop_real_trace
 
-    # Independently capture the EXACT prompt string `_llm_iterate` passes to
-    # pass 0's `stream_completion(user=prompt, ...)` call, so the
-    # reconstruction assertion below checks against ground truth captured
-    # outside the trace machinery — not tautologically against the trace's
-    # own delta.
-    captured_prompt: dict[str, str] = {}
-    orig_stream_completion = ml._llm.stream_completion
-
-    def _capturing_stream_completion(*args, **kwargs):
-        captured_prompt["value"] = kwargs.get("user")
-        return orig_stream_completion(*args, **kwargs)
-
-    ml._llm.stream_completion = _capturing_stream_completion
-
     await ml._run_one_turn([_user_perception("q")])
     env = _only_trace_envelope(tmp_path / "traces")
 
-    # Concatenating every pass's delta reconstructs the final `messages`
-    # list `_llm_iterate` built internally, byte-for-byte.
+    # Concatenating every pass's delta reconstructs, byte-for-byte, the
+    # messages the LAST model call was sent — ground truth captured by the
+    # fake model itself, outside the trace machinery.
     reconstructed = [m for p in env["passes"] for m in p["input_messages_delta"]]
-    # Every delta dict is a legal message (role + content present).
-    assert all("role" in m and "content" in m for m in reconstructed)
-    assert reconstructed[0] == {"role": "user", "content": passes_prompt(env)}
-    assert reconstructed[0]["content"] == captured_prompt["value"]
+    assert json.dumps(reconstructed) == json.dumps(ml._llm.calls[-1]["messages"])
+    assert reconstructed[1] == {"role": "user", "content": passes_prompt(env)}
 
-    # Structural check on the reconstructed alternation.
     roles = [m["role"] for m in reconstructed]
-    assert roles[0] == "user"
+    assert roles[:2] == ["system", "user"]
     assert "assistant" in roles
 
 
 def _shell_and_recall_pass(query: str = "X", speech: str = "跑個指令再查一下") -> str:
     """A single pass that emits BOTH a fire-and-forget Shell tool call AND a
-    refed sync Recall tool call. The refeed filter must KEEP the Recall
-    <tool_response> and DROP the Shell dispatch ack — proving the delta is the
-    filtered append set, NOT the full tool_calls list (brief R2: delta ≠ all
-    tool_calls)."""
+    sync Recall tool call."""
     return (
         "SEEN: x\nINTENT: y\nTOOL: Shell+Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
         f"{speech}"
@@ -385,11 +378,10 @@ def _shell_and_recall_pass(query: str = "X", speech: str = "跑個指令再查�
 
 
 @pytest.mark.asyncio
-async def test_fire_and_forget_ack_excluded_from_delta(tmp_path):
-    """A fire-and-forget Shell ack must NEVER leak into a later pass's
-    input_messages_delta, while a co-emitted refed Recall result MUST — the
-    exclusion path (brief R2: refeed is a FILTERED subset) is exercised, so
-    delta ≠ all tool_calls is proven, not merely asserted structurally."""
+async def test_every_tool_call_answered_in_delta_in_call_order(tmp_path):
+    """Every call of a reply is answered by a tool message in the next pass's
+    delta, in call order — the fire-and-forget Shell's job receipt included
+    (the server template matches results to calls by order only)."""
     traces_dir = tmp_path / "traces"
     tw = TraceWriter(traces_dir)
     llm = _ScriptedLLM([
@@ -407,30 +399,13 @@ async def test_fire_and_forget_ack_excluded_from_delta(tmp_path):
     env = _only_trace_envelope(traces_dir)
     passes = env["passes"]
 
-    # pass 0 issued TWO tool calls (Shell + Recall) — so if the delta were a
-    # naive echo of tool_calls, pass 1 would carry two <tool_response>s.
-    p0_tool_names = {tc["name"] for tc in passes[0]["tool_calls"]}
-    assert p0_tool_names == {"Shell", "Recall"}
-
-    # A second pass exists (Recall's success triggered the in-turn refeed).
-    assert len(passes) > 1, "Recall refeed should have produced a second pass"
+    assert [tc["name"] for tc in passes[0]["tool_calls"]] == ["Shell", "Recall"]
     delta = passes[1]["input_messages_delta"]
-
-    # TEETH: the Shell dispatch ack ("shell dispatched (command=...)") must NOT
-    # appear in ANY delta message — inverting this (asserting it IS present)
-    # fails, because the fire-and-forget ack is genuinely filtered out.
-    assert all("shell dispatched" not in m.get("content", "") for m in delta), (
-        "fire-and-forget Shell ack leaked into input_messages_delta"
-    )
-
-    # The refed Recall result IS present: exactly one <tool_response> survives
-    # the filter (Recall kept, Shell dropped) — delta ≠ all tool_calls.
-    tool_responses = [m for m in delta if "<tool_response>" in m.get("content", "")]
-    assert len(tool_responses) == 1, (
-        f"expected exactly the Recall <tool_response>, got {len(tool_responses)}"
-    )
-    # Prior pass's assistant emit is also in the delta (full alternation).
-    assert any(m["role"] == "assistant" for m in delta)
+    assert [m["role"] for m in delta] == ["assistant", "tool", "tool"]
+    assert [m["tool_call_id"] for m in delta[1:]] == [
+        tc["id"] for tc in passes[0]["tool_calls"]
+    ]
+    assert "shell dispatched" in delta[1]["content"]
 
 
 # ── Task 5: per-pass latency_ms real measurement; tokens stays deferred ──
@@ -443,7 +418,7 @@ async def test_pass_latency_present_and_tokens_deferred(mind_loop_real_trace, tm
     env = _only_trace_envelope(tmp_path / "traces")
     for p in env["passes"]:
         assert isinstance(p["latency_ms"], int) and p["latency_ms"] >= 0
-        assert p["tokens"] is None  # per-pass usage 不從 StreamChunk 掉出來(R2 T-token)
+        assert p["tokens"] is None  # per-pass tokens 仍不存(R2 T-token)
 
 
 # ── Task 6: cancelled-pass caveat — envelope still finalizes ──

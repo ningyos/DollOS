@@ -160,18 +160,14 @@ async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplo
     ml = make_mindloop(
         memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream),
     )
-    # capture the active registry to confirm the co-batch turn was NOT
-    # narrowed to {WriteDiary, Recall} — the strict-flag behavior stays intact.
-    captured = {}
-    orig = ml._active_tool_registry
-    ml._active_tool_registry = lambda: (captured.__setitem__("reg", set(orig().keys())) or orig())
     with caplog.at_level("WARNING"):
         await ml.iterate()
     # strict flag correctly stayed False (co-batch, not a pure diary turn) —
     # so registry/speech/transcript-suppression/today-log-injection all took
-    # their normal (non-diary) path.
+    # their normal (non-diary) path. The turn's flags are still set, so the
+    # binding this turn ran under was NOT narrowed to {WriteDiary, Recall}.
     assert ml._is_diary is False
-    assert captured["reg"] != {"WriteDiary", "Recall"}
+    assert set(ml._active_tool_registry()) != {"WriteDiary", "Recall"}
     # ...yet the I1 miss-check still fired (observability preserved).
     assert any(
         "diary" in r.message.lower() and "no WriteDiary" in r.message

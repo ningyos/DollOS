@@ -9,15 +9,17 @@ dispatch_tool_call.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
 from dollos.ipc.messages import ErrorMsg, ServerMessage
+from dollos.llm.model import ToolCall, tool_message
 from dollos.tool_parser import ToolStreamParser
 
 if TYPE_CHECKING:
@@ -37,11 +39,31 @@ class ToolResult:
 
     Failures always cascade (Doll should fix). Successes cascade iff
     Tool.run() returned a str (not None) — i.e., the tool author opted in.
+
+    unbound=True: the tool is in the schema the model sees but not bound
+    this turn, so the call was refused without running. Not a failure.
     """
 
     tool_name: str
     success: bool
     detail: str
+    unbound: bool = False
+
+    @property
+    def status(self) -> str:
+        if self.unbound:
+            return "rejected_unbound"
+        return "ok" if self.success else "failed"
+
+
+@dataclass(frozen=True)
+class ToolOutcome:
+    """One executed native tool call: the call, its result, and the ``tool``
+    message that answers it."""
+
+    call: ToolCall
+    result: ToolResult
+    message: dict
 
 
 def format_unknown_tool(name: str, registry: dict[str, type]) -> str:
@@ -102,6 +124,40 @@ async def dispatch_one(
     if returned is None:
         return None
     return ToolResult(tool_name=name, success=True, detail=returned)
+
+
+async def run_tool_calls(
+    calls: Sequence[ToolCall],
+    dispatch: Callable[[str, dict], Awaitable[ToolResult | None]],
+) -> list[ToolOutcome]:
+    """Run one reply's tool calls in index order, one ``tool`` message each,
+    in the same order (the server template matches results to calls by order
+    only).
+
+    ``arguments`` is the raw JSON string from the server; it must parse to an
+    object, else the call fails without running. A tool that returns None
+    answers "ok"; a failure answers with its error text.
+    """
+    outcomes: list[ToolOutcome] = []
+    for call in calls:
+        error = None
+        try:
+            args = json.loads(call.arguments)
+        except json.JSONDecodeError as e:
+            error = f"arguments are not valid JSON ({e}): {call.arguments!r}"
+        else:
+            if not isinstance(args, dict):
+                error = f"arguments must be a JSON object, got {call.arguments!r}"
+        if error is not None:
+            result = ToolResult(tool_name=call.name, success=False, detail=error)
+        else:
+            returned = await dispatch(call.name, args)
+            result = returned if returned is not None else ToolResult(
+                tool_name=call.name, success=True, detail="ok"
+            )
+        text = result.detail if result.detail else "ok"
+        outcomes.append(ToolOutcome(call, result, tool_message(call.id, text)))
+    return outcomes
 
 
 async def dispatch_tool_call(

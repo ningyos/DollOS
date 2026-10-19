@@ -45,9 +45,11 @@ def test_envelope_written_once_with_nested_passes(tmp_path):
     tt.add_pass(
         pass_idx=0,
         input_messages_delta=[{"role": "user", "content": "PROMPT"}],
-        raw_assistant_emit="<think>SEEN: hi</think> hello",
-        tool_calls=[{"name": "Recall", "args": {"query": "x"}}],
-        results=[{"tool_name": "Recall", "success": True, "detail": "FULL DETAIL " * 100}],
+        reasoning="The user said hi; let me look something up first.",
+        speech="hello",
+        tool_calls=[{"id": "call_0", "name": "Recall", "arguments": '{"query": "x"}'}],
+        results=[{"tool_call_id": "call_0", "tool_name": "Recall", "status": "ok",
+                  "success": True, "detail": "FULL DETAIL " * 100}],
         active_tools=["Recall", "Say"],
         is_reflection=False,
         safe_mode=False,
@@ -77,7 +79,11 @@ def test_envelope_written_once_with_nested_passes(tmp_path):
     assert len(env["passes"]) == 1
     p = env["passes"][0]
     assert p["pass_idx"] == 0
-    assert p["raw_assistant_emit"] == "<think>SEEN: hi</think> hello"  # verbatim, not parsed
+    # reasoning verbatim, speech, and tool calls with id + raw arguments
+    assert p["reasoning"] == "The user said hi; let me look something up first."
+    assert p["speech"] == "hello"
+    assert p["tool_calls"] == [{"id": "call_0", "name": "Recall", "arguments": '{"query": "x"}'}]
+    assert "raw_assistant_emit" not in p
     # tool result stored FULL, not truncated to 500 (T-C2)
     assert len(p["results"][0]["detail"]) == len("FULL DETAIL " * 100)
     assert p["active_tools"] == ["Recall", "Say"]
