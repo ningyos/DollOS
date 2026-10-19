@@ -108,7 +108,7 @@ TTFT 是第一輪從送出到第一個片段（含排隊和 prefill）；「第�
 
 ## 失敗和發現
 
-1. **私人對話全講中文**（沒過）。外部那段講英文，所以不是模型不會。她看到的中文：`[Mind state]` 的標籤（`mood: 平靜`、`精力: 飽滿`）、連上時推的 ScheduledMoment（`kernel.py` 的 `_maybe_bootstrap_plan`：「今天還沒有計劃，請呼叫 WriteSchedule 安排今天的行程。」）、外部訊息的框（`[AI peer 私訊]…`）、`[Memory guideline]`（記憶用繁體中文寫）、部分工具說明。第一個回覆（Awoke，那時還沒有 ScheduledMoment）就已經是中文，之後整頁都跟著中文。這次沒有再拆是哪一個造成的。
+1. **私人對話全講中文**（沒過）。外部那段講英文，所以不是模型不會。她看到的中文：`[Mind state]` 的標籤（`mood: 平靜`、`精力: 飽滿`）、連上時推的 ScheduledMoment（`kernel.py` 的 `_maybe_bootstrap_plan`：「今天還沒有計劃，請呼叫 WriteSchedule 安排今天的行程。」）、外部訊息的框（`[AI peer 私訊]…`）、`[Memory guideline]`（記憶用繁體中文寫）、部分工具說明。第一個回覆（Awoke，那時還沒有 ScheduledMoment）就已經是中文，之後整頁都跟著中文。這次沒有再拆是哪一個造成的。**後續（2026-10-19）**：主因是工具說明的中文；daemon 自己的字全換成英文後（`feat/gura-english-speech`），離線 28 個 request 加 live 9 次呼叫，有講話的回覆 18/18 英文、0 句中文。見 `2026-10-19-gura-english-speech-results.md`。
 2. **第 3 回合整段重算**。driver 的小 request（37 token、2.6 秒）跑完之後，server 的 `parks` 沒有增加，也就是 private 那段沒被停放，直接被蓋掉；下一個 private 呼叫 `cache_n` 0，8585 token 重算 34.5 秒，連 system 結尾的存檔點都沒有。對照：外部 `ch:` 那段（3792 token）進來時 `parks` +1，第 4 回合就接回來了。只看到一次，要在 server 那邊重現才能確定是不是「短的 request 不觸發停放」。這跟 plan「就算中間跑過別的對話，也接得回來」不一致。
 3. **`[Cognition]` 讓主人回合多 1.7 秒**。13 個主人回合有 7 個的 delta 帶 `[Cognition]`（約 70 token），因為「thought weight: light/steady」照上一次呼叫的延遲在跳。帶的時候新訊息約 120 token、2.8 秒；什麼區塊都不帶時約 45 token、1.0 秒。另外「mind room」讀的是任何對話的最後一次呼叫：第 4 回合顯示「4k of 131k」，那是 `ch:` 那段的長度。
 4. **第 4、5 回合沒照 plan**。第 4 回合用不到 `Recall`（答案在同一頁裡）；第 5 回合 `WriteSchedule` 只能寫今天。她改用的 `SpawnMonitor` 是 daemon 的子行程，daemon 一重開就沒了（這次就重開了），只剩 `OpenLoop` 記著。`PinSelf` 在主人回合被呼叫一次（R7），照設計被擋下（`rejected_unbound`，不算失敗）。
