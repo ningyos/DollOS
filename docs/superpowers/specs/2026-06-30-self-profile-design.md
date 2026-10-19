@@ -39,6 +39,7 @@ research 結論:always-inject 可寫 self-profile = MemGPT/Letta **core memory b
 ## 我注意到的主人
 - [u1·2026-06-28] 主人常忘記吃午餐
 ```
+> **2026-10-19 修正**（plan `2026-10-19-doll-all-english.md` Task 3、6）：她寫英文，檔案的段落標題改成英文（`## What I've learned about myself`／`## Me and my owner`／`## What I've noticed about my owner`，跟 `[Self profile]` 區塊同一張表）；上面的中文標題只用來讀舊檔，舊檔下一次寫入就換成英文標題，舊條目都保留。`max_chars` 預設改 4000（§3.5）。
 - **bullet 行格式固定**:`- [<id>·<YYYY-MM-DD>] <text>`。id = 段字首(self→`s` / relationship→`r` / user→`u`)+ 段內序號,**由現存 bullet 推導**(該段現有 id 的最大序號 +1,無則 1)。**已釋出的 id 可重用**(移除最高序號或清空某段後,下次 add 會拿回該號)——id 只是每回合重繪的顯示標籤、block 恆顯示當前狀態,故重用對 Doll 不可見、不造成指涉混淆;刻意不持久化 high-water-mark(避免隱藏 footer 吃 always-inject 的 cap 預算)。日期 = pin/最後更新日。此格式讓讀-改-寫 parse 可靠,且讓 id 與 staleness 都直接呈現在 always-inject block(§3.3)。
 - **首寫 scaffolding(R1 S5)**:檔不存在 → run() 以三段標題模板建檔;檔存在但缺某段標題 → 補該段標題;再 append/定位到對應段。
 
@@ -96,7 +97,7 @@ class PinSelf(BaseModel):
 
 ### 3.5 config + 接線（R1 S1，完整性）
 
-新 `[self_profile]` Settings:`enabled: bool = True`、`max_chars: int = 1200`。
+新 `[self_profile]` Settings:`enabled: bool = True`、`max_chars: int = 1200`(**2026-10-19 改 4000**:她改寫英文,同樣內容約 3.3 倍字元,token 成本差不多;plan `2026-10-19-doll-all-english.md` Task 6)。
 - **`max_chars` 落地**:`PinSelf.run(ctx)` 只拿到 `MindCtx`,而 `MindCtx`(`mind_ctx.py:40-54`)有 `memory_root` 但**無 config**。→ `MindCtx` 新增 `self_profile_max_chars: int` 欄位,kernel 建 ctx 時從 Settings 帶入,run() 才讀得到。
 - **`enabled` 落地**:比照 energy wiring,`MindLoop.__init__` 新增 `self_profile_enabled: bool` 參數(kernel 注入),gate §3.2 的 :349 注入。disabled → PinSelf 不入 registry、不進 grammar、[Self profile] 不注入。
 - **`max_chars` 預設 1200 是刻意的 latency/token 取捨(R1 S4)**:[Self profile] 每回合 always-inject(含延遲敏感的 voice hot path),繁中 1200 字 ≈ 900–1200 tokens,是目前設計單一最大的 always-on 增量,與 project_latency_compression 的優先序相關。Letta 的 2000 是英文量級(≈500 tokens),不照搬。此為「薄補充層」定位;實裝後應量測 always-inject 的 token/latency 影響再定案(§7)。
