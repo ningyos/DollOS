@@ -7,7 +7,6 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from contextlib import aclosing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -33,11 +32,7 @@ from dollos.ipc.messages import (
     WebRTCOfferIn,
 )
 from dollos.ipc.server import WebSocketServer
-from dollos.llm.adapter import LLMAdapter
 from dollos.llm.chat_completions import ChatCompletionsAdapter
-from dollos.llm.composed import ComposedLLMAdapter
-from dollos.llm.templates import Qwen3ThinkingTemplate
-from dollos.llm.transport import LlamaCppProvider
 from dollos.logging_config import configure_cascade_logging
 from dollos.memory import FtsMemory
 from dollos.mind.agenda_observer import AgendaObserver
@@ -104,23 +99,6 @@ def build_model(
         recorder=recorder,
         max_context_tokens=settings.cognition.max_context_tokens,
     )
-
-
-def build_adapter(
-    settings: Settings,
-    recorder: TelemetryRecorder | None = None,
-) -> LLMAdapter:
-    """Legacy /completion + grammar adapter, kept only for callers not yet
-    moved to ``build_model`` (removed with them)."""
-    provider = LlamaCppProvider(
-        base_url=settings.llm.base_url,
-        timeout_s=settings.llm.timeout_s,
-        recorder=recorder,
-        model_alias=settings.llm.model,
-        max_context_tokens=settings.cognition.max_context_tokens,
-        max_concurrency=settings.llm.max_concurrency,
-    )
-    return ComposedLLMAdapter(provider=provider, template=Qwen3ThinkingTemplate())
 
 
 def build_memsearch(settings: Settings) -> FtsMemory:
@@ -310,74 +288,6 @@ def build_voice_engines(
     return asr, tts
 
 
-class _MindLLMAdapter:
-    """Thin adapter wrapping LLMAdapter for the MindLoop streaming cascade.
-
-    MindLoop expects an object exposing both:
-      - `stream_completion(system, user, prefill, …)` — pass 1 (single prompt);
-      - `stream_messages(system, messages, …)` — pass ≥ 2 (the in-turn sync-tool
-        re-feed cascade, spec §7.1), preserving the
-        user → assistant(think+tool_call) → user(<tool_response>) → assistant
-        alternation via the template's `render_messages`.
-
-    Both yield chunks with `.text` and `.done`; this is a transparent
-    pass-through to the underlying `LLMAdapter`.
-    """
-
-    def __init__(self, adapter: LLMAdapter) -> None:
-        self._adapter = adapter
-
-    async def stream_completion(
-        self,
-        system: str,
-        user: str,
-        prefill: str = "",
-        max_tokens: int = 1024,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-        on_usage: Callable[[int | None, int | None], None] | None = None,
-    ):
-        # aclosing() — same reasoning as ComposedLLMAdapter (composed.py):
-        # a plain `async for ... yield` does NOT propagate GeneratorExit into
-        # the inner generator on early exit, so on_usage would fire too late.
-        async with aclosing(
-            self._adapter.stream_completion(
-                system=system,
-                user=user,
-                prefill=prefill,
-                max_tokens=max_tokens,
-                grammar=grammar,
-                purpose=purpose,
-                on_usage=on_usage,
-            )
-        ) as s:
-            async for chunk in s:
-                yield chunk
-
-    async def stream_messages(
-        self,
-        system: str,
-        messages: list[dict],
-        max_tokens: int = 1024,
-        grammar: str | None = None,
-        purpose: str = "cascade",
-        on_usage: Callable[[int | None, int | None], None] | None = None,
-    ):
-        # aclosing() — see stream_completion() above for why this matters.
-        async with aclosing(
-            self._adapter.stream_messages(
-                system=system,
-                messages=messages,
-                max_tokens=max_tokens,
-                grammar=grammar,
-                purpose=purpose,
-                on_usage=on_usage,
-            )
-        ) as s:
-            async for chunk in s:
-                yield chunk
-
-
 def _derive_daemon_ws(ipc) -> str:
     """Derive the bridge's `--daemon` WS URL from the daemon's own IPC bind
     settings (svc-internalization spec §3.1). A wildcard bind address
@@ -420,7 +330,6 @@ class DollOS:
         # data/traces root — no filename collision, distinct subdir).
         self.vitals_recorder = VitalsRecorder(settings.data.root / "traces" / "vitals")
         self.model = build_model(settings, recorder=self.telemetry_recorder)
-        self.adapter = build_adapter(settings, recorder=self.telemetry_recorder)
         self.renderer = PromptRenderer()
         self.memsearch = build_memsearch(settings)
         self._doll_pack = DollPack.load(settings.character.pack)

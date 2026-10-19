@@ -1,16 +1,31 @@
-"""LLM backend adapters."""
+"""The model interface: ModelAdapter over OpenAI-compatible chat completions."""
 
-from dollos.llm.adapter import LLMAdapter, StreamChunk
-from dollos.llm.composed import ComposedLLMAdapter
-from dollos.llm.templates import PromptTemplate, Qwen3ThinkingTemplate
-from dollos.llm.transport import LlamaCppProvider, Provider
+from dollos.llm.chat_completions import ChatCompletionsAdapter
+from dollos.llm.model import (
+    End,
+    ModelAdapter,
+    ModelError,
+    ModelEvent,
+    SpeechDelta,
+    ThinkDelta,
+    ToolCall,
+    ToolCalls,
+    Usage,
+    tool_message,
+)
+from dollos.llm.tool_schema import tool_schemas
 
 __all__ = [
-    "ComposedLLMAdapter",
-    "LLMAdapter",
-    "LlamaCppProvider",
-    "PromptTemplate",
-    "Provider",
-    "Qwen3ThinkingTemplate",
-    "StreamChunk",
+    "ChatCompletionsAdapter",
+    "End",
+    "ModelAdapter",
+    "ModelError",
+    "ModelEvent",
+    "SpeechDelta",
+    "ThinkDelta",
+    "ToolCall",
+    "ToolCalls",
+    "Usage",
+    "tool_message",
+    "tool_schemas",
 ]

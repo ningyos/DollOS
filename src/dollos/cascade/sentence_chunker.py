@@ -7,7 +7,7 @@ counts as a single terminator — so "3.14" and "Wait..." don't split mid-way.
 Forced-flush after `max_chars` (cut after the last space, so English isn't
 split mid-word) so unpunctuated runs don't delay audio indefinitely.
 
-Used by mind_loop between the parser's SpeakChunk events and the IPC
+Used by mind_loop between the model's SpeechDelta events and the IPC
 TextChunk emit so each TextChunk corresponds to a TTS-friendly unit.
 """
 from __future__ import annotations
