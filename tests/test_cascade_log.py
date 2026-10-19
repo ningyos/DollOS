@@ -1,21 +1,14 @@
-"""Tests for cascade_log: think parsing + JSONL output."""
+"""Tests for cascade_log: raw reasoning + speech + JSONL output."""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
-from dollos.cascade_log import CascadeLogger, _parse_think
+from dollos.cascade.tool_loop import ToolResult
+from dollos.cascade_log import CascadeLogger
 from dollos.logging_config import configure_cascade_logging
-
-
-@dataclass
-class _FakeToolResult:
-    tool_name: str
-    success: bool
-    detail: str
 
 
 def _setup(tmp_path: Path) -> CascadeLogger:
@@ -34,40 +27,18 @@ def _read_log(tmp_path: Path) -> list[dict]:
     return []
 
 
-def test_parse_think_extracts_all_5_fields():
-    text = (
-        "<think>\n"
-        "SEEN: user said hi\n"
-        "INTENT: respond warmly\n"
-        "REVIEW: no prior context\n"
-        "MOOD: 平靜\n"
-        "TOOL: Say\n"
-        "</think>"
-    )
-    out = _parse_think(text)
-    assert out == {
-        "seen": "user said hi",
-        "intent": "respond warmly",
-        "review": "no prior context",
-        "mood": "平靜",
-        "tool": "Say",
-    }
-
-
-def test_parse_think_handles_missing_fields():
-    text = "SEEN: just this\nMOOD: 開心"
-    out = _parse_think(text)
-    assert out == {"seen": "just this", "mood": "開心"}
-
-
 def test_log_iter_writes_jsonl_line(tmp_path: Path):
     logger = _setup(tmp_path)
     logger.log_iter(
         turn_id="t1",
         iter=1,
-        assistant_text="SEEN: hi\nINTENT: greet\nMOOD: ok\nTOOL: Say",
-        tool_calls=[{"name": "Say", "arguments": {"text": "hi"}}],
-        results=[_FakeToolResult("Say", True, "")],
+        reasoning="The user said hi.\nI'll greet back and note it.",
+        speech="Hi!",
+        tool_calls=[{"id": "call_0", "name": "NoteMemory", "arguments": '{"text": "hi"}'}],
+        results=[
+            ToolResult("NoteMemory", True, "noted"),
+            ToolResult("Shell", False, "Shell is not available", unbound=True),
+        ],
         duration_ms=42,
     )
     rows = _read_log(tmp_path)
@@ -75,14 +46,27 @@ def test_log_iter_writes_jsonl_line(tmp_path: Path):
     row = rows[0]
     assert row["turn_id"] == "t1"
     assert row["iter"] == 1
-    assert row["seen"] == "hi"
-    assert row["intent"] == "greet"
-    assert row["mood"] == "ok"
-    assert row["tool"] == "Say"
-    assert row["tool_calls"] == [{"name": "Say", "args": {"text": "hi"}}]
-    assert row["results"] == [{"tool_name": "Say", "success": True, "detail": ""}]
+    assert row["reasoning"] == "The user said hi.\nI'll greet back and note it."
+    assert row["speech"] == "Hi!"
+    assert row["tool_calls"] == [
+        {"id": "call_0", "name": "NoteMemory", "args": '{"text": "hi"}'}
+    ]
+    assert row["results"] == [
+        {"tool_name": "NoteMemory", "success": True, "status": "ok", "detail": "noted"},
+        {"tool_name": "Shell", "success": False, "status": "rejected_unbound",
+         "detail": "Shell is not available"},
+    ]
     assert row["duration_ms"] == 42
     assert row["event"] == "cascade_iter"
+    # No parsed think fields any more.
+    assert not {"seen", "intent", "review", "mood", "tool"} & set(row)
+
+
+def test_log_iter_caps_reasoning_at_4000_chars(tmp_path: Path):
+    logger = _setup(tmp_path)
+    logger.log_iter(turn_id="t4", iter=0, reasoning="r" * 9000, speech="")
+    rows = _read_log(tmp_path)
+    assert rows[0]["reasoning"] == "r" * 4000
 
 
 def test_log_iter_truncates_long_tool_detail(tmp_path: Path):
@@ -91,9 +75,10 @@ def test_log_iter_truncates_long_tool_detail(tmp_path: Path):
     logger.log_iter(
         turn_id="t2",
         iter=1,
-        assistant_text="",
+        reasoning="",
+        speech="",
         tool_calls=[],
-        results=[_FakeToolResult("Shell", True, long_detail)],
+        results=[ToolResult("Shell", True, long_detail)],
         duration_ms=1,
     )
     rows = _read_log(tmp_path)
@@ -107,7 +92,8 @@ def test_log_iter_swallows_exceptions(tmp_path: Path):
     logger.log_iter(
         turn_id="t3",
         iter=1,
-        assistant_text=None,  # type: ignore[arg-type]
+        reasoning=None,  # type: ignore[arg-type]
+        speech="",
         tool_calls=12345,  # type: ignore[arg-type]
         results=None,
         duration_ms=0,

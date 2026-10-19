@@ -338,16 +338,6 @@ def test_awoke_cold_start_unchanged():
     assert "cold_start" in body
 
 
-def test_recent_self_review_block_rendered():
-    from dollos.mind.mind_state import MindState
-    from dollos.mind.mind_prompt import render_mind
-    s = MindState()
-    s.recent_reviews.append("did not check the file first")
-    out = render_mind(s, [], "SYS")
-    assert "[Recent self-review]" in out
-    assert "did not check the file first" in out
-
-
 def test_recent_self_review_block_omitted_when_empty():
     from dollos.mind.mind_state import MindState
     from dollos.mind.mind_prompt import render_mind
@@ -356,14 +346,17 @@ def test_recent_self_review_block_omitted_when_empty():
     assert "[Recent self-review]" not in out
 
 
-def test_recent_self_review_renders_oldest_to_newest():
+def test_render_mind_without_system_prompt_starts_at_first_block():
+    """MindLoop sends the system prompt as its own message: render_mind then
+    omits it and starts at the first dynamic block, same order otherwise."""
     from dollos.mind.mind_state import MindState
     from dollos.mind.mind_prompt import render_mind
     s = MindState()
-    s.recent_reviews.append("first lesson")
-    s.recent_reviews.append("second lesson")
-    out = render_mind(s, [], "SYS")
-    assert out.index("first lesson") < out.index("second lesson")
+    with_sys = render_mind(s, [], "SYS-PROMPT-MARKER")
+    without = render_mind(s, [])
+    assert "SYS-PROMPT-MARKER" not in without
+    assert without.startswith("[Memory guideline]")
+    assert with_sys == "SYS-PROMPT-MARKER\n\n" + without
 
 
 # --- P6.3 (Task 8): [Safe mode] banner ---

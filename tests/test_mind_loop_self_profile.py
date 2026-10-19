@@ -1,8 +1,9 @@
-"""Task 5 — mind_loop wiring for PinSelf (registry injection + refeed + ctor flag).
+"""Task 5 — mind_loop wiring for PinSelf (registry injection + offered list + ctor flag).
 
 Verifies the LIVE reflection-turn injection path in mind_loop.py:
-`_active_tool_registry()` / `_active_grammar()` — NOT the dead `REFLECTION_TOOLS`
-constant in tools.py, which has no runtime consumer.
+`_active_tool_registry()` (what may run) / `_offered_tools()` (what the model
+is shown) — NOT the dead `REFLECTION_TOOLS` constant in tools.py, which has
+no runtime consumer.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dollos.mind.mind_loop import IN_TURN_REFEED_TOOLS, MindLoop
+from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState
 from dollos.mind.perception_queue import PerceptionQueue
 from dollos.tools import MAIN_TOOLS, PinSelf
@@ -54,11 +55,13 @@ def make_mind_loop(tmp_path):
     return _factory
 
 
-def test_pinself_in_refeed():
-    # PinSelf is in the allowlist so a soft-failure (replace/remove target not
-    # found, over-cap) — returned as a success=True string — can retry same-turn.
-    assert "PinSelf" in IN_TURN_REFEED_TOOLS
-    assert "Recall" in IN_TURN_REFEED_TOOLS  # guard the intended final state
+def test_pinself_offered_on_internal_turns_when_enabled(make_mind_loop):
+    # PinSelf's schema is always in the internal list when self_profile is on
+    # (fixed per tier), and its result — including soft failures like "target
+    # not found", returned as success strings — goes back like every tool
+    # result, so a failed pin can be retried the same turn.
+    assert "PinSelf" in make_mind_loop(self_profile_enabled=True)._offered_tools()
+    assert "PinSelf" not in make_mind_loop(self_profile_enabled=False)._offered_tools()
 
 
 def test_reflection_registry_includes_pinself_when_enabled(make_mind_loop):
@@ -67,7 +70,6 @@ def test_reflection_registry_includes_pinself_when_enabled(make_mind_loop):
     reg = loop._active_tool_registry()
     assert "PinSelf" in reg
     assert reg["PinSelf"] is PinSelf
-    assert "PinSelf" in (loop._active_grammar() or "")
 
 
 def test_reflection_registry_excludes_pinself_when_disabled(make_mind_loop):
@@ -75,7 +77,6 @@ def test_reflection_registry_excludes_pinself_when_disabled(make_mind_loop):
     loop._is_reflection = True
     reg = loop._active_tool_registry()
     assert "PinSelf" not in reg
-    assert "PinSelf" not in (loop._active_grammar() or "")
 
 
 def test_non_reflection_never_has_pinself(make_mind_loop):

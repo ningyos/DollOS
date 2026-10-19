@@ -247,9 +247,9 @@ async def test_energy_disabled_e2e_no_energy_line_in_prompt(tmp_path, monkeypatc
     _orig_render = _ml.render_mind
     captured_energy_lines: list = []
 
-    def capturing_render(state, hits, sys_prompt, **kw):
+    def capturing_render(state, hits, *args, **kw):
         captured_energy_lines.append(kw.get("energy_line"))
-        return _orig_render(state, hits, sys_prompt, **kw)
+        return _orig_render(state, hits, *args, **kw)
 
     monkeypatch.setattr(_ml, "render_mind", capturing_render)
 
@@ -281,9 +281,9 @@ async def test_energy_enabled_e2e_energy_line_in_prompt(tmp_path, monkeypatch):
     _orig_render = _ml.render_mind
     captured_energy_lines: list = []
 
-    def capturing_render(state, hits, sys_prompt, **kw):
+    def capturing_render(state, hits, *args, **kw):
         captured_energy_lines.append(kw.get("energy_line"))
-        return _orig_render(state, hits, sys_prompt, **kw)
+        return _orig_render(state, hits, *args, **kw)
 
     monkeypatch.setattr(_ml, "render_mind", capturing_render)
 

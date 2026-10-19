@@ -1005,6 +1005,16 @@ def test_kernel_builds_chat_model_from_settings(tmp_path: Path) -> None:
     assert dollos.model._recorder is dollos.telemetry_recorder
 
 
+def test_kernel_mind_loop_runs_on_the_chat_model(tmp_path: Path) -> None:
+    """MindLoop streams through the chat ModelAdapter with the configured
+    think budget."""
+    settings = _make_settings(tmp_path)
+    settings.llm.think_budget_tokens = 512
+    dollos = DollOS(settings)
+    assert dollos._mind_loop._llm is dollos.model
+    assert dollos._mind_loop._think_budget_tokens == 512
+
+
 @pytest.mark.asyncio
 async def test_boot_check_failure_aborts_before_server_start(tmp_path, monkeypatch):
     """DollOS.run() awaits model.check() BEFORE server.start(), and lets a

@@ -39,7 +39,8 @@ class TurnTrace:
         *,
         pass_idx: int,
         input_messages_delta: list[dict],
-        raw_assistant_emit: str,
+        reasoning: str,
+        speech: str,
         tool_calls: list[dict],
         results: list[dict],
         active_tools: list[str],
@@ -48,14 +49,15 @@ class TurnTrace:
         external: bool,
         latency_ms: int | None,
     ) -> None:
-        """追加一個已完成 pass。tokens 明文 drop(存 null):per-pass usage
-        不從既有 StreamChunk 掉出來(R2 T-token),離線 retokenize
-        input_messages_delta + raw_assistant_emit 可精確還原,不新接 transport。"""
+        """追加一個已完成 pass。reasoning / speech 是模型這一輪的思考原文和說的話,
+        tool_calls 帶 id 和原樣的 arguments 字串。tokens 明文 drop(存 null),
+        離線 retokenize input_messages_delta + reasoning + speech 可還原。"""
         self._passes.append(
             {
                 "pass_idx": pass_idx,
                 "input_messages_delta": input_messages_delta,
-                "raw_assistant_emit": raw_assistant_emit,  # 逐字全文,非 _parse_think
+                "reasoning": reasoning,  # 思考逐字全文
+                "speech": speech,
                 "tool_calls": tool_calls,
                 "results": results,  # 全文,非 detail[:500]
                 "active_tools": active_tools,

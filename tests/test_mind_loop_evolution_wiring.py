@@ -1,5 +1,5 @@
-"""MindLoop wires SelfRevision into the reflection registry/grammar + the
-evolution render-path hooks (spec §3.4/§5).
+"""MindLoop wires SelfRevision into the reflection registry / offered tool
+list + the evolution render-path hooks (spec §3.4/§5).
 
 The `test_wiring_*` tests mutation-proof the dead zones the whole-branch review
 (F6) flagged: deleting the drain-time latch/flag reset, the process_tripwire
@@ -13,6 +13,7 @@ from dollos.mind import evolution as evo
 from dollos.mind import self_history
 from dollos.mind.mind_state import Perception
 from dollos.mind.perception_queue import PerceptionQueue
+from tests._fake_model import FakeModel
 from tests._mindloop_factory import make_mindloop
 
 
@@ -37,29 +38,17 @@ def test_safe_mode_excludes_self_revision(tmp_path):
     assert "SelfRevision" not in ml._active_tool_registry()
 
 
-def test_self_revision_in_refeed_allowlist():
-    from dollos.mind.mind_loop import IN_TURN_REFEED_TOOLS
-    assert "SelfRevision" in IN_TURN_REFEED_TOOLS
+def test_self_revision_offered_on_internal_turns_iff_enabled(tmp_path):
+    """Its schema is in the fixed internal list whenever evolution is on (so
+    the model can read its result the same turn, like every tool result);
+    whether it may RUN is the reflection-only registry above."""
+    assert "SelfRevision" in make_mindloop(
+        memory_root=tmp_path, evolution_enabled=True)._offered_tools()
+    assert "SelfRevision" not in make_mindloop(
+        memory_root=tmp_path, evolution_enabled=False)._offered_tools()
 
 
 # --- F6 wiring: the render-path dead zones ---
-
-
-class _CapturingLLM:
-    """Minimal terminal-stream LLM that records the rendered prompt (``user``)."""
-
-    def __init__(self):
-        self.last_user = None
-
-    async def stream_completion(self, system, user, prefill, max_tokens=1024,
-                                grammar=None, purpose="cascade", on_usage=None):
-        self.last_user = user
-
-        class _Chunk:
-            text = "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\nhi"
-            done = True
-
-        yield _Chunk()
 
 
 @pytest.mark.asyncio
@@ -127,7 +116,7 @@ async def test_wiring_iterate_calls_surface_or_expire_on_reflection(tmp_path):
     evo.save_slot(sp, evo.make_keeper_slot(
         candidate="我現在監控數字時會主動來勁。" + "細節" * 30,
         rationale="活很久的 pin", hwm_before=None, created_ts=0.0))
-    llm = _CapturingLLM()
+    llm = FakeModel()
     queue = PerceptionQueue(wal=None)
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                        sink=asyncio.Queue(), queue=queue, llm=llm)

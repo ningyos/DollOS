@@ -40,6 +40,12 @@ class TurnLatencyRecord:
     # turn_id minted by `_cascade_logger.start_turn()`). None when no
     # cascade_logger is wired.
     turn_id: str | None
+    # From the turn's first model call: the server's cache hit (cache_n) and
+    # tokens it actually prefilled (prompt_n), and how that reply ended.
+    # None when not reported (or the first call never finished).
+    cache_n: int | None = None
+    prompt_n: int | None = None
+    finish_reason: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

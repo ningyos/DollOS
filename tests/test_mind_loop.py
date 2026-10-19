@@ -1,50 +1,32 @@
-"""Tests for MindLoop.iterate — voice_first cascade tests."""
+"""Tests for MindLoop.iterate — the turn's tool loop on the ModelAdapter."""
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from dollos.ipc.messages import TextChunk
+from dollos.llm.model import SpeechDelta
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception
 from dollos.mind.perception_queue import PerceptionQueue
+from tests._fake_model import FakeModel
 
 
-class _FakeLLM:
-    """Yields the given text as a single streaming chunk on pass 1.
-
-    Any re-feed pass (`stream_messages`, pass >= 2 of the sync-tool cascade)
-    yields a terminal think-only stream with no speech and no tool call, so the
-    cascade converges after exactly one re-feed. Single-pass behaviour for
-    speech-only / fire-and-forget turns is unaffected.
+class _FakeLLM(FakeModel):
+    """Plays ``returns`` (old-style raw text, see tests/_fake_model.py) as the
+    first pass of EVERY turn. A pass that follows tool results (the last
+    message is a ``tool`` message) gets the empty reply, so a turn with tool
+    calls ends after exactly one more pass.
     """
 
     def __init__(self, returns: str):
+        super().__init__()
         self._returns = returns
 
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        yield _Chunk(text=self._returns, done=True)
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        # Terminal pass: close think, emit nothing, no tool → cascade breaks.
-        yield _Chunk(text="TOOL: none\n</think>\n\n", done=True)
+    def _reply(self, idx, messages):
+        return [] if messages[-1]["role"] == "tool" else self._returns
 
 
 def _drain_queue(q: asyncio.Queue) -> list:
@@ -440,30 +422,15 @@ async def test_cancel_when_idle_is_noop(tmp_path):
     assert loop.is_cascade_active is False
 
 
-class _SlowFakeLLM:
-    """Yields many text chunks with delay between each."""
+class _SlowFakeLLM(FakeModel):
+    """Streams each chunk as its own SpeechDelta, sleeping before each."""
 
     def __init__(self, chunks: list[str], delay: float):
-        self._chunks = chunks
-        self._delay = delay
-        self.consumed = 0
+        super().__init__([[SpeechDelta(c) for c in chunks]], delay_s=delay)
 
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        # Emit </think> first so the parser starts producing SpeakChunks
-        yield _Chunk(text="</think>\n\n", done=False)
-        self.consumed += 1
-        for i, txt in enumerate(self._chunks):
-            await asyncio.sleep(self._delay)
-            yield _Chunk(text=txt, done=(i == len(self._chunks) - 1))
-            self.consumed += 1
+    @property
+    def consumed(self) -> int:
+        return self.events_yielded
 
 
 @pytest.mark.asyncio
@@ -537,35 +504,13 @@ async def test_iterate_does_not_truncate_wal_when_save_fails(tmp_path):
     assert list(wal.iter_pending()) != []  # perceptions survive a failed save
 
 
-# --- P2-capture (Task 5): REVIEW parsed into MindState.recent_reviews ---
-
-
-@pytest.mark.asyncio
-async def test_review_captured_into_state(tmp_path):
-    """A turn whose think block carries a REVIEW line lands it in recent_reviews."""
-    state = MindState()
-    queue = PerceptionQueue()
-    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
-
-    stream = (
-        "SEEN: x\n"
-        "INTENT: y\n"
-        "TOOL: none\n"
-        "REVIEW: I should not have repeated myself\n"
-        "MOOD: 平靜\n"
-        "</think>\n\n"
-        "好的"
-    )
-    loop = _make_mind_loop(tmp_path, llm=_FakeLLM(stream), queue=queue)
-    await loop.iterate()
-
-    reviews = list(loop._state.recent_reviews)
-    assert reviews and "repeated myself" in reviews[-1]
+# --- Thinking is kept raw, never parsed into state ---
 
 
 @pytest.mark.asyncio
 async def test_mood_think_line_not_written_to_state_mood(tmp_path):
-    """The MOOD think line is parsed but MUST NOT overwrite state.mood (spec §6.2)."""
+    """Thinking is never parsed: a MOOD line in it MUST NOT overwrite
+    state.mood — only MoodTool authors mood (spec §6.2)."""
     state = MindState()
     queue = PerceptionQueue()
     queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
@@ -578,16 +523,6 @@ async def test_mood_think_line_not_written_to_state_mood(tmp_path):
     default_emotion = loop._state.mood.emotion
     await loop.iterate()
     assert loop._state.mood.emotion == default_emotion  # unchanged by MOOD line
-
-
-@pytest.mark.asyncio
-async def test_recent_reviews_bounded_by_maxlen(tmp_path):
-    """recent_reviews keeps at most maxlen entries (newest wins)."""
-    loop = _make_mind_loop(tmp_path)
-    for i in range(10):
-        loop._state.recent_reviews.append(f"lesson {i}")
-    assert len(loop._state.recent_reviews) <= 5
-    assert "lesson 9" in list(loop._state.recent_reviews)
 
 
 # --- P6.1 (Task 6): _dispatch_tool returns ToolResult incl. existence/args guard ---
@@ -669,79 +604,23 @@ async def test_dispatch_runtime_error_returns_failed_result(tmp_path):
     assert "runtime" in r.detail.lower()
 
 
-# --- P1 (Task 7): in-turn sync-tool re-feed on the streaming path + budget cap ---
+# --- Tool loop: results go back in the same turn + budget cap ---
 
 
-class _ScriptedLLM:
-    """Yields one scripted stream per LLM pass.
-
-    Pass 1 is driven through ``stream_completion`` (the existing single-prompt
-    path), passes >= 2 through ``stream_messages`` (the multi-message cascade
-    path). Records the ``messages`` list seen by each ``stream_messages`` call
-    and counts total passes so tests can assert single-pass vs multi-pass.
+class _ScriptedLLM(FakeModel):
+    """One scripted reply per model call, in call order; the last one repeats
+    (so e.g. a failing-tool script keeps failing until a rule stops the turn).
+    ``before_pass(idx)`` runs as each call starts; ``usages`` gives a per-call
+    (prompt, completion) reported via ``on_usage``.
     """
 
     def __init__(
         self, scripts: list[str], before_pass=None,
         usages: list[tuple[int | None, int | None]] | None = None,
     ):
-        self._scripts = scripts
-        self.pass_count = 0
-        self.captured_messages: list[list[dict]] = []
-        self.before_pass = before_pass
-        # Optional per-pass (prompt, completion) usage, reported via
-        # on_usage — opt-in (default None → no invocation, so every
-        # pre-existing consumer of this fake is unaffected). Lets
-        # multi-pass-accumulation tests drive on_usage through a REAL
-        # re-feed cascade instead of calling _on_turn_usage directly.
-        self._usages = usages
-
-    def _script_for(self, idx: int) -> str:
-        return self._scripts[idx] if idx < len(self._scripts) else self._scripts[-1]
-
-    def _usage_for(self, idx: int) -> tuple[int | None, int | None] | None:
-        if self._usages is None:
-            return None
-        return self._usages[idx] if idx < len(self._usages) else self._usages[-1]
-
-    async def _emit(self, text):
-        class _Chunk:
-            def __init__(self, text, done):
-                self.text = text
-                self.done = done
-
-        yield _Chunk(text=text, done=True)
-
-    async def stream_completion(
-        self, system, user, prefill="", max_tokens=1024, grammar=None,
-        purpose="cascade", on_usage=None,
-    ):
-        idx = self.pass_count
-        self.pass_count += 1
-        if self.before_pass is not None:
-            self.before_pass(idx)
-        if on_usage is not None:
-            usage = self._usage_for(idx)
-            if usage is not None:
-                on_usage(*usage)
-        async for c in self._emit(self._script_for(idx)):
-            yield c
-
-    async def stream_messages(
-        self, system, messages, max_tokens=1024, grammar=None,
-        purpose="cascade", stop=None, tools=None, on_usage=None,
-    ):
-        idx = self.pass_count
-        self.pass_count += 1
-        self.captured_messages.append(list(messages))
-        if self.before_pass is not None:
-            self.before_pass(idx)
-        if on_usage is not None:
-            usage = self._usage_for(idx)
-            if usage is not None:
-                on_usage(*usage)
-        async for c in self._emit(self._script_for(idx)):
-            yield c
+        super().__init__(
+            scripts, repeat_last=True, usages=usages, before_call=before_pass,
+        )
 
 
 def _recall_pass(query: str = "coffee", speech: str = "查一下") -> str:
@@ -806,7 +685,8 @@ def _make_scripted_loop(tmp_path, scripts, sink=None, before_pass=None):
 @pytest.mark.asyncio
 async def test_recall_result_refed_in_same_turn(tmp_path):
     """Pass 1 emits a Recall call → a 2nd pass runs whose input carries the
-    Recall result as <tool_response>; both passes' speech reach the sink in order."""
+    Recall result as a ``tool`` message; both passes' speech reach the sink in
+    order."""
     sink: asyncio.Queue = asyncio.Queue()
     loop, llm = _make_scripted_loop(
         tmp_path,
@@ -815,14 +695,11 @@ async def test_recall_result_refed_in_same_turn(tmp_path):
     )
     await loop.iterate()
 
-    # A second pass ran via stream_messages, and its message list carried the
-    # Recall result as a <tool_response> user message.
     assert llm.pass_count == 2
-    assert llm.captured_messages, "stream_messages was never called"
-    joined = "\n".join(
-        m["content"] for m in llm.captured_messages[-1] if m["role"] == "user"
-    )
-    assert "<tool_response>" in joined
+    second = llm.calls[1]["messages"]
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
+    assert second[2]["tool_calls"][0]["function"]["name"] == "Recall"
+    assert second[3]["tool_call_id"] == second[2]["tool_calls"][0]["id"]
 
     # Both passes' speech reached the sink, in order.
     chunks = _drain_queue(sink)
@@ -832,33 +709,37 @@ async def test_recall_result_refed_in_same_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fire_and_forget_tool_runs_single_pass(tmp_path):
-    """A turn whose only tool is async Shell does NOT trigger a 2nd decode."""
-    loop, llm = _make_scripted_loop(tmp_path, scripts=[_shell_pass()])
+async def test_fire_and_forget_tool_receipt_goes_back(tmp_path):
+    """A Shell call answers with its job receipt and the turn goes on to a 2nd
+    pass right away; the command's real result comes back later as a
+    perception (the turn never waits for it)."""
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_shell_pass(), _speech_pass("started")],
+    )
     await loop.iterate()
-    assert llm.pass_count == 1
+    assert llm.pass_count == 2
+    tool_msg = llm.calls[1]["messages"][-1]
+    assert tool_msg["role"] == "tool"
+    assert "shell dispatched" in tool_msg["content"]
 
 
 @pytest.mark.asyncio
-async def test_note_memory_only_turn_single_pass(tmp_path):
-    """A turn whose only tool is a SUCCESSFUL NoteMemory does NOT trigger a 2nd
-    decode pass (spec §7 P1, finding 2).
-
-    NoteMemory returns a "memory noted: …" confirmation Doll does not need to
-    read to decide — re-feeding it would cost an extra full streaming decode on
-    the project's #1-concern latency path. Only `Recall` (whose RESULT she must
-    read) re-feeds on success."""
-    loop, llm = _make_scripted_loop(tmp_path, scripts=[_note_memory_pass()])
+async def test_successful_tool_result_goes_back_too(tmp_path):
+    """Every reply with tool calls gets another pass (harness §1) — a
+    successful NoteMemory included, so a reply that only called a tool still
+    gets to speak."""
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_note_memory_pass(), _speech_pass("noted")],
+    )
     await loop.iterate()
-    assert llm.pass_count == 1
+    assert llm.pass_count == 2
+    assert "記下來" in llm.calls[1]["messages"][-1]["content"]
 
 
 @pytest.mark.asyncio
 async def test_failing_tool_turn_still_cascades(tmp_path):
-    """A tool FAILURE still re-feeds as a <tool_response> for a 2nd pass even
-    though a NoteMemory SUCCESS no longer does — the allowlist gates SUCCESS
-    only, so Doll is always told of (and can fix) her mistakes (spec §7 P1,
-    finding 2)."""
+    """A tool FAILURE goes back as a ``tool`` message for a 2nd pass, so Doll
+    is told of (and can fix) her mistake (spec §7.3)."""
     loop, llm = _make_scripted_loop(
         tmp_path,
         scripts=[_failing_tool_pass("Frobnicate"), _speech_pass("修好了")],
@@ -883,7 +764,7 @@ async def test_cancel_during_second_pass_exits_clean(tmp_path):
     holder: dict = {}
 
     def before_pass(idx):
-        # When pass 2 (stream_messages) is about to stream, cancel the cascade
+        # When pass 2 is about to stream, cancel the cascade
         # so the per-chunk cancel-check drops pass-2 speech cleanly.
         if idx >= 1 and "loop" in holder:
             holder["loop"].cancel_current_cascade()
@@ -923,8 +804,8 @@ async def test_sync_tool_budget_cap_terminates(tmp_path):
 def _failing_tool_pass(tool: str = "Frobnicate") -> str:
     """A pass that emits a tool_call to an unknown tool → a failed ToolResult.
 
-    Unknown tools are not fire-and-forget, so each one re-feeds and counts as a
-    consecutive failure.
+    An unknown name is outside the offered list, so it is a failure: each one
+    goes back as a tool message and counts as a consecutive failure.
     """
     return (
         f"SEEN: x\nINTENT: y\nTOOL: {tool}\nREVIEW: r\nMOOD: m\n</think>\n\n"
@@ -1004,38 +885,27 @@ async def test_user_turn_clears_safe_mode(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_safe_mode_uses_reduced_grammar(tmp_path):
-    """In safe mode the per-pass grammar is a non-None CONSTRAINED grammar built
-    from the reduced registry — never None (which would be an unconstrained
-    decode, a no-fallback violation; spec §8.3 / finding 1)."""
-    loop = _make_mind_loop(tmp_path)
-    full_grammar = loop._active_grammar()
-    loop._state.safe_mode = True
-    safe_grammar = loop._active_grammar()
-    assert safe_grammar is not None
-    assert "root ::=" in safe_grammar  # a real constrained GBNF, not None
-    assert safe_grammar != full_grammar
-
-
-@pytest.mark.asyncio
-async def test_safe_mode_grammar_build_failure_propagates(tmp_path, monkeypatch):
-    """A genuine safe-mode grammar build failure must SURFACE (raise), never be
-    swallowed into grammar=None — which would let safe mode decode fully
-    unconstrained (silent degradation, a no-fallback violation; spec §8.3 /
-    finding 1). The reduced-tool grammar build is deterministic and must
-    succeed; if it ever fails, that must halt loudly, not degrade silently."""
-    loop = _make_mind_loop(tmp_path)
-    loop._state.safe_mode = True
-    loop._grammar_cache.clear()  # force a cache-miss so build is actually invoked
-
-    def _boom(_tools):
-        raise RuntimeError("grammar build broke")
-
-    monkeypatch.setattr(
-        "dollos.mind.mind_loop.build_voice_first_grammar", _boom
+async def test_safe_mode_refuses_write_tools_at_execution(tmp_path):
+    """Safe mode no longer narrows what the model is shown — the tool list
+    stays fixed — it narrows what may RUN: a NoteMemory call is refused as
+    unbound, nothing is written, and the refusal names the read-only tools
+    available now (spec §8.3)."""
+    loop, llm = _make_scripted_loop(
+        tmp_path, scripts=[_note_memory_pass(text="secret"), _speech_pass("ok")],
     )
-    with pytest.raises(RuntimeError):
-        loop._active_grammar()
+    loop._state.safe_mode = True
+    loop._state.safe_mode_reason = "stuck"
+    loop._queue = PerceptionQueue()
+    loop._queue.put(Perception(kind="Awoke", t=1.0, data={}))  # not a user turn
+    await loop.iterate()
+
+    names = {t["function"]["name"] for t in llm.calls[0]["tools"]}
+    assert "NoteMemory" in names
+    refusal = llm.calls[1]["messages"][-1]["content"]
+    assert "NoteMemory is not available in this turn (safe mode)" in refusal
+    assert "GrepToolOutput, ReadToolOutput, Recall" in refusal
+    assert "NoteMemory" not in loop._state.tool_stats
+    assert all("secret" not in f.read_text() for f in tmp_path.rglob("*.md"))
 
 
 # --- P6 (spec §13.1): deterministic successful-repeat detector wiring ---
@@ -1179,32 +1049,6 @@ async def test_persona_enforcement_default_never_fires(tmp_path):
     assert not any(p.kind == "PersonaDriftDetected" for p in percs)
 
 
-class _CaptureLLM:
-    """Captures the `user` prompt of pass 1; converges immediately."""
-
-    def __init__(self) -> None:
-        self.captured_user: str | None = None
-
-    async def stream_completion(
-        self, system, user, prefill, max_tokens=1024, grammar=None, purpose="cascade",
-        on_usage=None,
-    ):
-        self.captured_user = user
-
-        class _Chunk:
-            text = "TOOL: none\n</think>\n\n"
-            done = True
-
-        yield _Chunk()
-
-    async def stream_messages(self, *a, **k):
-        class _Chunk:
-            text = ""
-            done = True
-
-        yield _Chunk()
-
-
 @pytest.mark.asyncio
 async def test_primary_language_threads_into_rendered_prompt(tmp_path):
     """MindLoop receives primary_language and threads it into render_mind, so the
@@ -1219,7 +1063,7 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
     tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
     ctx = _make_mind_ctx(tmp_path, state=state)
 
-    llm = _CaptureLLM()
+    llm = FakeModel()
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -1233,9 +1077,9 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
 
     await loop.iterate()
 
-    assert llm.captured_user is not None
-    assert "[Memory guideline]" in llm.captured_user
-    assert "English" in llm.captured_user
+    assert llm.last_user is not None
+    assert "[Memory guideline]" in llm.last_user
+    assert "English" in llm.last_user
 
 
 @pytest.mark.asyncio
@@ -1260,7 +1104,7 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     queue.put(Perception(kind="ReflectionMoment", t=1.0, data={"iters_since_last": 10}))
     queue.put(Perception(kind="UserSpoke", t=1.1, data={"text": "reflect"}))
     ctx = _make_mind_ctx(tmp_path, state=state)
-    llm = _CaptureLLM()
+    llm = FakeModel()
     loop = MindLoop(
         state=state,
         queue=queue,
@@ -1273,8 +1117,8 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     await loop.iterate()
 
     assert loop._is_reflection is True, "_is_reflection must be True for batch containing ReflectionMoment"
-    assert llm.captured_user is not None, "_CaptureLLM must have captured the user prompt"
-    assert "[Tool outcomes" in llm.captured_user, "[Tool outcomes] block must appear in reflection prompt"
+    assert llm.last_user is not None, "the model must have been called with the rendered prompt"
+    assert "[Tool outcomes" in llm.last_user, "[Tool outcomes] block must appear in reflection prompt"
 
     # --- Negative: plain UserSpoke batch leaves _is_reflection False + no block ---
     state2 = MindState()
@@ -1282,7 +1126,7 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     queue2 = PerceptionQueue()
     queue2.put(Perception(kind="UserSpoke", t=2.0, data={"text": "hello"}))
     ctx2 = _make_mind_ctx(tmp_path, state=state2)
-    llm2 = _CaptureLLM()
+    llm2 = FakeModel()
     loop2 = MindLoop(
         state=state2,
         queue=queue2,
@@ -1295,30 +1139,8 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     await loop2.iterate()
 
     assert loop2._is_reflection is False, "_is_reflection must remain False for UserSpoke-only batch"
-    assert llm2.captured_user is not None
-    assert "[Tool outcomes" not in llm2.captured_user, "[Tool outcomes] must not appear in non-reflection prompt"
-
-
-def test_mind_loop_init_raises_on_unbuildable_grammar(tmp_path):
-    """No-fallback: 一個帶未支援型別欄位的工具讓 grammar build 失敗時，
-    MindLoop 必須在啟動時 raise，而不是靜默以 grammar=None 跑無約束 decode。"""
-    from pydantic import BaseModel, Field
-    from tests._dispatcher_helpers import _make_mind_ctx
-
-    class _BadTool(BaseModel):
-        flag: bool = Field(description="unsupported type")
-
-    ctx = _make_mind_ctx(tmp_path)
-    with pytest.raises(NotImplementedError):
-        MindLoop(
-            state=MindState(),
-            queue=PerceptionQueue(),
-            ctx=ctx,
-            llm=_FakeLLM(""),
-            system_prompt="",
-            state_persist_path=tmp_path / "s.json",
-            tool_registry={"_BadTool": _BadTool},
-        )
+    assert llm2.last_user is not None
+    assert "[Tool outcomes" not in llm2.last_user, "[Tool outcomes] must not appear in non-reflection prompt"
 
 
 @pytest.mark.asyncio
@@ -1480,10 +1302,10 @@ class _RecordingCascadeLogger:
 @pytest.mark.asyncio
 async def test_cascade_logger_receives_tool_call_with_args(tmp_path):
     """CascadeLogger is called after each cascade pass with tool_calls containing
-    the tool name and arguments — proving args are captured before dispatch.
+    the call id, tool name and the raw argument string the model sent.
 
     Also verifies:
-    - assistant_text is non-empty (think block was captured)
+    - reasoning is the raw thinking, speech the spoken text
     - duration_ms is an int
     - constructing MindLoop without cascade_logger still works (param is optional)
     """
@@ -1534,16 +1356,18 @@ async def test_cascade_logger_receives_tool_call_with_args(tmp_path):
     # turn_id matches what start_turn() returned
     assert first_call["turn_id"] == _RecordingCascadeLogger.FIXED_TURN_ID
 
-    # tool_calls contains the NoteMemory entry with the correct argument
+    # tool_calls contains the NoteMemory entry with the raw argument string
     assert first_call["tool_calls"], "tool_calls must be non-empty for a tool-call pass"
     tc = first_call["tool_calls"][0]
     assert tc["name"] == "NoteMemory"
-    assert tc["arguments"].get("text") == "cascade-log-test-sentinel", (
-        f"expected sentinel arg, got: {tc['arguments']!r}"
-    )
+    assert tc["id"]
+    assert json.loads(tc["arguments"]) == {"text": "cascade-log-test-sentinel"}
+    assert first_call["results"][0].tool_name == "NoteMemory"
 
-    # assistant_text captured the think block
-    assert first_call["assistant_text"], "assistant_text must be non-empty"
+    # reasoning is the raw thinking (never parsed into fields); speech the reply
+    assert first_call["reasoning"].startswith("SEEN: user said hi\nINTENT: greet")
+    assert first_call["speech"] == "Hello"
+    assert "assistant_text" not in first_call
 
     # duration_ms is a non-negative int
     assert isinstance(first_call["duration_ms"], int)

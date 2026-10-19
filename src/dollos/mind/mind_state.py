@@ -136,10 +136,6 @@ class MindState:
     recent_perceptions: deque[Perception] = field(default_factory=lambda: deque(maxlen=20))
     recent_outputs: deque[OutputRecord] = field(default_factory=lambda: deque(maxlen=15))
 
-    # Last N post-hoc REVIEW think-lines (metacognition surfaced back into the
-    # prompt). Append-only ring buffer; see P2-capture spec §6.2.
-    recent_reviews: deque[str] = field(default_factory=lambda: deque(maxlen=5))
-
     tool_stats: dict[str, dict[str, int]] = field(default_factory=_ToolStatsDict)
     recent_tool_failures: deque[ToolFailure] = field(
         default_factory=lambda: deque(maxlen=10)
@@ -210,7 +206,6 @@ def save_state(state: MindState, path: Path) -> bool:
             "open_loops": [asdict(l) for l in state.open_loops],
             "recent_perceptions": [asdict(p) for p in state.recent_perceptions],
             "recent_outputs": [asdict(o) for o in state.recent_outputs],
-            "recent_reviews": list(state.recent_reviews),
             "tool_stats": dict(state.tool_stats),
             "recent_tool_failures": [asdict(f) for f in state.recent_tool_failures],
             "last_user_at": state.last_user_at,
@@ -299,7 +294,6 @@ def load_state(path: Path) -> MindState:
             [_coerce(OutputRecord, o) for o in data.get("recent_outputs", [])],
             maxlen=15
         )
-        recent_reviews = deque(data.get("recent_reviews", []), maxlen=5)
         recent_tool_failures = deque(
             [_coerce(ToolFailure, f) for f in data.get("recent_tool_failures", [])],
             maxlen=10,
@@ -317,7 +311,6 @@ def load_state(path: Path) -> MindState:
             open_loops=open_loops,
             recent_perceptions=recent_perceptions,
             recent_outputs=recent_outputs,
-            recent_reviews=recent_reviews,
             recent_tool_failures=recent_tool_failures,
             tool_stats=tool_stats,
             last_user_at=data.get("last_user_at", 0.0),

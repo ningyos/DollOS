@@ -56,29 +56,6 @@ def test_p10_interrupted_in_perception_kind():
     assert "Interrupted" in kinds
 
 
-# --- §6.1 P2-grammar (Task 4): voice-first think emits TOOL before REVIEW
-def test_p2_grammar_tool_precedes_review():
-    from dollos.llm.templates import build_voice_first_grammar
-    from dollos.tools import MAIN_TOOLS
-
-    g = build_voice_first_grammar(MAIN_TOOLS)
-    assert '"INTENT: " line "TOOL: " line ' in g
-    assert '"REVIEW: " line "MOOD: " line "TOOL: "' not in g
-
-
-# --- §6.2 P2-capture (Task 5): REVIEW captured + surfaced
-def test_p2_capture_recent_reviews_field_and_block():
-    from dollos.mind.mind_prompt import render_mind
-    from dollos.mind.mind_state import MindState
-
-    s = MindState()
-    assert hasattr(s, "recent_reviews")
-    s.recent_reviews.append("a lesson learned")
-    out = render_mind(s, [], "SYS")
-    assert "[Recent self-review]" in out
-    assert "a lesson learned" in out
-
-
 # --- §8.1 P6.1 (Task 6): _dispatch_tool returns a grounded ToolResult on failure
 def test_p6_1_tool_result_type_reused():
     from dollos.cascade.tool_loop import ToolResult

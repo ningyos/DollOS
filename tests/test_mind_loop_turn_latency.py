@@ -11,7 +11,9 @@ import time
 
 import pytest
 
+from dollos.llm.model import End, SpeechDelta, ToolCall, ToolCalls, Usage
 from dollos.mind.mind_state import Perception
+from tests._fake_model import FakeModel
 from tests._mindloop_factory import make_mindloop
 from tests.test_mind_loop import _ScriptedLLM, _speech_pass
 
@@ -45,13 +47,47 @@ async def test_turn_emits_latency_record_with_first_speak(tmp_path):
     assert r.n_passes >= 1
     assert r.had_tool_call is False
     assert r.total_ms is not None and r.total_ms >= 0
-    assert r.ttft_ms is None  # Part 1: not measured here yet
+    assert r.ttft_ms is None  # the fake model's End reports no TTFT
+    assert r.finish_reason == "stop"
     # Whole-branch review Finding #1: chat turns must be self-identifiable
     # so Part 2 can filter ["UserSpoke"]/["ChannelMessage"] apart from idle
     # Awoke / ReflectionMoment / AgendaMoment / DiaryMoment turns.
     assert r.perception_kinds == ["UserSpoke"]
     # No cascade_logger wired in this factory call → turn_id stays None.
     assert r.turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_ttft_and_cache_numbers_come_from_the_first_call(tmp_path):
+    """ttft_ms / cache_n / prompt_n / finish_reason are the turn's FIRST model
+    call's (the one the user waits on), not the last pass's."""
+    rec = _CapturingRecorder()
+    first = End(
+        finish_reason="tool_calls",
+        usage=Usage(prompt_tokens=900, cache_n=880, prompt_n=20),
+        assistant_message={"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function",
+             "function": {"name": "SetFocus", "arguments": '{"text": "x"}'}}]},
+        ttft_ms=312.5,
+    )
+    second = End(
+        finish_reason="stop", usage=Usage(cache_n=1, prompt_n=2),
+        assistant_message={"role": "assistant", "content": "ok"}, ttft_ms=9.0,
+    )
+    llm = FakeModel([
+        [ToolCalls((ToolCall("c1", "SetFocus", '{"text": "x"}'),)), first],
+        [SpeechDelta("ok"), second],
+    ])
+    ml = make_mindloop(memory_root=tmp_path, llm=llm, turn_latency_recorder=rec)
+
+    await ml._run_one_turn([_user_perception("hi")])
+
+    r = rec.records[0]
+    assert r.n_passes == 2
+    assert r.ttft_ms == 312.5
+    assert r.cache_n == 880
+    assert r.prompt_n == 20
+    assert r.finish_reason == "tool_calls"
 
 
 @pytest.mark.asyncio
