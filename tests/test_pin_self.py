@@ -92,21 +92,21 @@ async def test_pinself_cap_returns_friendly_error(make_mind_ctx):
 
     With max_chars=120:
     - First add of 40 chars serializes to ~96 chars → succeeds (no error)
-    - Second add of 40 chars would serialize to ~147 chars → fails (has '上限')
+    - Second add of 40 chars would serialize to ~147 chars → fails (has 'at its limit')
     This ensures we test the accumulate-then-cap path, not immediate cap-on-first."""
     ctx = make_mind_ctx(self_profile_max_chars=120)
 
     # First add should succeed
     msg1 = await PinSelf(section="self", op="add", target="", text="字" * 40).run(ctx)
-    assert "上限" not in msg1, f"First add should not hit cap, but got: {msg1}"
+    assert "at its limit" not in msg1, f"First add should not hit cap, but got: {msg1}"
     assert "s1" in msg1, f"First add should return success with id s1, but got: {msg1}"
 
     # Second add should fail due to accumulated total. Text must differ from
     # the first add (same length) — add() now dedups identical text within the
     # same section as a no-op, so an identical second add would short-circuit
-    # to "已有相同條目" before ever reaching the cap check.
+    # to "already exists" before ever reaching the cap check.
     msg2 = await PinSelf(section="self", op="add", target="", text="字" * 39 + "2").run(ctx)
-    assert "上限" in msg2, f"Second add should hit cap, but got: {msg2}"
+    assert "at its limit" in msg2, f"Second add should hit cap, but got: {msg2}"
 
 
 def test_pinself_docstring_states_subject_test_as_criterion():

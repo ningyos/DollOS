@@ -34,7 +34,7 @@ async def test_pinself_threads_turn_and_ctx_into_history(tmp_path):
     )
     tool = PinSelf(section="self", op="add", target="", text="喜歡監控數字")
     result = await tool.run(ctx)
-    assert "已 pin" in result
+    assert "Pinned to" in result
     hist = tmp_path / "self_history.jsonl"
     (ev,) = [json.loads(l) for l in hist.read_text(encoding="utf-8").splitlines()]
     assert ev["turn"] == 42 and ev["external_ctx"] is True and ev["kind"] == "pin_add"

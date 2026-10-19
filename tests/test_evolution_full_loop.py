@@ -64,7 +64,7 @@ async def test_full_loop_candidate_to_adopt(tmp_path, monkeypatch):
         mind_state=MindState(), evolution_base_interval_days=7.0,
         evolution_max_interval_days=28.0)
     result = await SelfRevision(decision="adopt", text="", reason="").run(ctx)
-    assert "採納" in result
+    assert "Adopted" in result
     assert self_history.sanctioned_text(hist) == VALID
     assert (mr / "current_self.md").read_text(encoding="utf-8") == VALID
     assert ctx.mind_state.evolution_interval_days == 7.0   # reset on adopt

@@ -80,3 +80,16 @@ def test_mechanical_checks_banned_substring():
 
 def test_mechanical_checks_clean_returns_none():
     assert evo.mechanical_checks("我" * 100, floor=80, cap=600, enforcement=Enforcement()) is None
+
+
+def test_mechanical_checks_reasons_are_english():
+    """Plan 2026-10-19 Task 7: the refusal reasons SelfRevision returns are
+    English; "Who I am now" is the shared name for 現在的我."""
+    assert evo.mechanical_checks("x" * 5, floor=80, cap=600, enforcement=Enforcement()) == (
+        "Too short (5 chars; at least 80) — who I am now needs a full description.")
+    assert evo.mechanical_checks("x" * 601, floor=80, cap=600, enforcement=Enforcement()) == (
+        "Too long (601 chars; the limit is 600) — tighten it.")
+    enf = Enforcement(banned_substrings=["LARP", "uwu"])
+    assert evo.mechanical_checks("x" * 80 + "LARP uwu", floor=80, cap=600, enforcement=enf) == (
+        "Breaks the persona constraints: banned substring found: 'LARP'; "
+        "banned substring found: 'uwu'")

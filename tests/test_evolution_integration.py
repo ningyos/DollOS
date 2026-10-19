@@ -152,7 +152,7 @@ async def test_adopt_log_failure_writes_nothing(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
 
-    assert "失敗" in result
+    assert "failed" in result
     assert self_history.sanctioned_text(hist) == old_text  # unchanged
     assert cs.read_text(encoding="utf-8") == old_text       # unchanged
     assert evo.load_slot(sp) is not None                    # slot still there

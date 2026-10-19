@@ -49,7 +49,7 @@ def test_same_turn_dedup_hit_logs_nothing(tmp_path):
     hist = tmp_path / "self_history.jsonl"
     _apply(tmp_path, hist, op="add", text="A", turn=5)
     result = _apply(tmp_path, hist, op="add", text="A", turn=5)
-    assert "已有相同條目" in result
+    assert "already exists" in result
     assert [e["kind"] for e in _events(hist)] == ["pin_add"]  # no reconfirm
 
 
@@ -74,7 +74,7 @@ def test_reconfirm_chain_is_cross_turn_per_last_event(tmp_path):
 def test_cap_rejected_add_logs_nothing(tmp_path):
     hist = tmp_path / "self_history.jsonl"
     result = _apply(tmp_path, hist, op="add", text="X" * 100, max_chars=30)
-    assert "已達上限" in result
+    assert "at its limit" in result
     assert _events(hist) == []
 
 
@@ -82,7 +82,7 @@ def test_history_path_none_is_backcompat_noop(tmp_path):
     result = self_profile.apply(
         tmp_path / "self_profile.md", section="self", op="add", target="",
         text="A", max_chars=1200, today="2026-07-02")
-    assert "已 pin" in result
+    assert "Pinned to" in result
 
 
 def test_history_read_error_swallowed_dedup_result_unchanged(tmp_path, monkeypatch):
@@ -93,7 +93,7 @@ def test_history_read_error_swallowed_dedup_result_unchanged(tmp_path, monkeypat
         raise OSError("perm denied")
     monkeypatch.setattr(self_history, "last_pin_turn", boom)
     result = _apply(tmp_path, hist, op="add", text="A", turn=35)
-    assert "已有相同條目" in result           # pin contract survives
+    assert "already exists" in result           # pin contract survives
     assert len(_events(hist)) == 1            # no reconfirm logged
 
 
@@ -103,5 +103,5 @@ def test_log_io_error_swallowed_pin_still_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(self_history, "log_event", boom)
     hist = tmp_path / "self_history.jsonl"
     result = _apply(tmp_path, hist, op="add", text="A")
-    assert "已 pin" in result  # friendly result unchanged
+    assert "Pinned to" in result  # friendly result unchanged
     assert (tmp_path / "self_profile.md").exists()  # the pin itself landed

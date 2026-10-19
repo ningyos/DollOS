@@ -49,7 +49,7 @@ async def test_adopt_empty_text_takes_candidate_verbatim(tmp_path):
     cand = _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "採納" in result or "adopt" in result.lower()
+    assert "Adopted" in result
     # log-then-write ordering: evo_adopt logged, file written to candidate.
     kinds = [e["kind"] for e in _events(tmp_path)]
     assert kinds[-1] == "evo_adopt"
@@ -91,7 +91,7 @@ async def test_adopt_text_equivalent_to_sanctioned_is_refused(tmp_path):
     _seed_awaiting_doll(tmp_path)  # default candidate ≠ sanctioned
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt", text=sanctioned).run(ctx)
-    assert "相同" in result
+    assert "same as the current text" in result
     assert _slot_path(tmp_path).exists()  # slot unchanged
     assert ctx.evolution_latched is False  # a refusal is not slot-mutating
 
@@ -103,7 +103,7 @@ async def test_adopt_genuinely_different_creates_counter(tmp_path):
     # 14 + 70 = 84 chars — above the 80 floor so the counter path engages.
     result = await SelfRevision(
         decision="adopt", text="我其實更喜歡安靜地整理系統。" + "細節" * 35).run(ctx)
-    assert "送審" in result
+    assert "gone to review" in result
     slot = evo.load_slot(_slot_path(tmp_path))
     assert slot.kind == "counter" and slot.status == "awaiting_skeptic"
     assert slot.counter_round == 1
@@ -119,7 +119,7 @@ async def test_counter_cap_refuses_third_rewrite(tmp_path):
     evo.save_slot(_slot_path(tmp_path), slot)
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt", text="又一次改寫" + "字"*80).run(ctx)
-    assert "兩次" in result
+    assert "rewritten twice" in result
     assert evo.load_slot(_slot_path(tmp_path)).counter_round == 2  # unchanged
 
 
@@ -128,7 +128,7 @@ async def test_counter_mechanical_fail_keeps_slot(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt", text="太短").run(ctx)
-    assert "太短" in result
+    assert "Too short" in result
     assert evo.load_slot(_slot_path(tmp_path)).kind == "keeper"  # unchanged
     assert ctx.evolution_latched is False
 
@@ -144,7 +144,7 @@ async def test_counter_with_factory_overlap_not_restatement_gated(tmp_path):
     counter_text = ("主人說話我才回,沒事就安靜待著。"      # verbatim factory sentence
                     "但我想自己把這句留在描述裡。" + "細節" * 30)
     result = await SelfRevision(decision="adopt", text=counter_text).run(ctx)
-    assert "送審" in result
+    assert "gone to review" in result
     slot = evo.load_slot(_slot_path(tmp_path))
     assert slot.kind == "counter" and slot.status == "awaiting_skeptic"
     assert slot.candidate == counter_text
@@ -158,7 +158,7 @@ async def test_reject_clears_slot_and_logs(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="reject", reason="還不是我").run(ctx)
-    assert "好" in result or "拒" in result or "維持" in result
+    assert "stay as they are" in result
     assert not _slot_path(tmp_path).exists()
     rej = _events(tmp_path)[-1]
     assert rej["kind"] == "evo_reject" and rej["reason"] == "還不是我"
@@ -181,7 +181,7 @@ async def test_reject_external_restores_file(tmp_path):
 async def test_no_slot_friendly(tmp_path):
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "沒有" in result
+    assert "no self revision candidate" in result
     assert ctx.evolution_latched is False
 
 
@@ -191,7 +191,7 @@ async def test_awaiting_skeptic_friendly(tmp_path):
                   evo.make_external_slot(candidate="x"*90, created_ts=1.0))
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "送審" in result
+    assert "still under review" in result
     assert _slot_path(tmp_path).exists()
 
 
@@ -200,7 +200,7 @@ async def test_per_turn_latch_second_call_is_noop(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path, latched=True)
     result = await SelfRevision(decision="reject").run(ctx)
-    assert "這一輪" in result
+    assert "already been handled this turn" in result
     assert _slot_path(tmp_path).exists()  # untouched
 
 
@@ -216,7 +216,7 @@ async def test_log_failure_aborts_reject_slot_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(self_history, "log_event", boom)
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="reject").run(ctx)
-    assert "失敗" in result
+    assert "failed" in result
     assert _slot_path(tmp_path).exists()  # slot unchanged
     assert ctx.evolution_latched is False
 
@@ -252,7 +252,7 @@ async def test_adopt_file_write_fails_twice_logs_error_clears_slot(tmp_path, mon
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
 
-    assert "系統會自動修復" in result
+    assert "repair it automatically" in result
     assert calls["n"] == 2  # initial write + exactly one retry
     kinds = [e["kind"] for e in _events(tmp_path)]
     assert "evo_adopt" in kinds and kinds[-1] == "evo_error"
@@ -300,7 +300,7 @@ async def test_unsurfaced_slot_refuses_adopt(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path, surfaced=False)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "還沒呈現給妳看" in result
+    assert "hasn't been shown to you" in result
     assert _slot_path(tmp_path).exists()
     assert _events(tmp_path) == []
     assert ctx.evolution_latched is False
@@ -312,7 +312,7 @@ async def test_unsurfaced_slot_refuses_reject(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path, surfaced=False)
     result = await SelfRevision(decision="reject").run(ctx)
-    assert "還沒呈現給妳看" in result
+    assert "hasn't been shown to you" in result
     assert _slot_path(tmp_path).exists()
     assert ctx.evolution_latched is False
 
@@ -324,7 +324,7 @@ async def test_surfaced_flag_true_acts_normally(tmp_path):
     _seed_awaiting_doll(tmp_path)
     ctx = _ctx(tmp_path, surfaced=True)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "採納" in result
+    assert "Adopted" in result
     assert not _slot_path(tmp_path).exists()
 
 
@@ -344,7 +344,7 @@ async def test_adopt_candidate_equals_sanctioned_refused(tmp_path):
                                        hwm_before=None, created_ts=1.0))
     ctx = _ctx(tmp_path)
     result = await SelfRevision(decision="adopt").run(ctx)
-    assert "候選與現在的內容相同" in result
+    assert "The candidate is the same as the current text" in result
     assert _slot_path(tmp_path).exists()             # slot unchanged
     assert ctx.evolution_latched is False
     assert self_history.generation(hist) == 1        # no second adoption

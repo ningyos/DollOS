@@ -71,7 +71,7 @@ def test_locate_miss_returns_friendly_error_no_write(tmp_path):
     sp.apply(p, section="self", op="add", target="", text="a", max_chars=1200, today="2026-06-30")
     before = p.read_text()
     msg = sp.apply(p, section="self", op="remove", target="s9", text="", max_chars=1200, today="2026-06-30")
-    assert "s9" in msg and ("找不到" in msg or "沒有" in msg)
+    assert "s9" in msg and "No entry matches" in msg
     assert p.read_text() == before  # 未寫入
 
 
@@ -87,7 +87,7 @@ def test_cap_rejects_add_over_limit_no_write(tmp_path):
     before = p.read_text()
     msg = sp.apply(p, section="self", op="add", target="", text=f"{'字' * 49}X",
                    max_chars=250, today="2026-06-30")
-    assert "上限" in msg
+    assert "at its limit" in msg
     assert p.read_text() == before  # 被拒、未寫入
 
 
@@ -97,7 +97,7 @@ def test_cap_also_guards_replace(tmp_path):
     before = p.read_text()
     msg = sp.apply(p, section="self", op="replace", target="s1", text="長" * 200,
                    max_chars=120, today="2026-06-30")
-    assert "上限" in msg
+    assert "at its limit" in msg
     assert p.read_text() == before
 
 
@@ -243,7 +243,7 @@ def test_locate_no_match_at_all_returns_friendly_error_with_entries(tmp_path):
     before = p.read_text()
     msg = sp.apply(p, section="self", op="replace", target="完全不相關的文字",
                    text="新", max_chars=1200, today="2026-07-01")
-    assert "找不到" in msg or "沒有" in msg
+    assert "No entry matches" in msg
     assert "s1" in msg and "舊內容" in msg  # 條目清單含 id 與文字
     assert p.read_text() == before  # 未寫入
 
@@ -257,7 +257,7 @@ def test_ambiguous_substring_returns_friendly_error_no_write(tmp_path):
     before = p.read_text()
     msg = sp.apply(p, section="user", op="remove", target="愛喝咖啡", text="",
                    max_chars=1200, today="2026-07-01")
-    assert "找不到" in msg or "沒有" in msg
+    assert "No entry matches" in msg
     assert p.read_text() == before  # 未寫入,歧義不動手
 
 
@@ -277,8 +277,8 @@ def test_add_identical_text_is_noop_no_duplicate(tmp_path):
     p = tmp_path / "self_profile.md"
     m1 = sp.apply(p, section="self", op="add", target="", text="我重視誠實", max_chars=1200, today="2026-07-02")
     m2 = sp.apply(p, section="self", op="add", target="", text="我重視誠實", max_chars=1200, today="2026-07-02")
-    assert m1.startswith("已 pin")
-    assert "已有相同條目" in m2
+    assert m1.startswith("Pinned to")
+    assert "already exists" in m2
     # only ONE bullet written, no duplicate
     assert p.read_text().count("我重視誠實") == 1
 
@@ -288,7 +288,7 @@ def test_add_same_text_different_section_not_deduped(tmp_path):
     p = tmp_path / "self_profile.md"
     sp.apply(p, section="self", op="add", target="", text="直話直說", max_chars=1200, today="2026-07-02")
     m = sp.apply(p, section="relationship", op="add", target="", text="直話直說", max_chars=1200, today="2026-07-02")
-    assert m.startswith("已 pin")
+    assert m.startswith("Pinned to")
     assert p.read_text().count("直話直說") == 2
 
 
@@ -327,3 +327,31 @@ def test_add_preserves_bracket_content_without_date_separator(tmp_path):
     # Text without '·' in brackets must NOT be stripped
     assert "- [s1·2026-07-01] [note] 這是正常內容" in body
     assert "s1" in msg
+
+
+def test_apply_results_are_english_with_display_titles(tmp_path):
+    """Plan 2026-10-19 Task 7: PinSelf's results are English and name the
+    section by its English display title (Task 4); the file keeps its Chinese
+    titles."""
+    p = _p(tmp_path)
+    kw = dict(max_chars=1200, today="2026-10-19")
+    assert sp.apply(p, section="relationship", op="add", target="", text="一起看海", **kw) == (
+        'Pinned to "Me and my owner": r1')
+    assert "## 我和主人" in p.read_text()
+    assert sp.apply(p, section="relationship", op="add", target="", text="一起看海", **kw) == (
+        "Same entry already exists: r1 (not added again)")
+    assert sp.apply(p, section="self", op="replace", target="s9", text="x", **kw) == (
+        'No entry matches "s9"; current entries: r1: 一起看海. '
+        "Retry with an id (like s1) or paste the entry's text.")
+    assert sp.apply(p, section="self", op="replace", target="r1", text="y", **kw) == "Updated r1"
+    assert sp.apply(p, section="self", op="remove", target="r1", text="", **kw) == "Removed r1"
+    assert sp.apply(p, section="self", op="remove", target="r1", text="", **kw) == (
+        'No entry matches "r1"; current entries: (none yet). '
+        "Retry with an id (like s1) or paste the entry's text.")
+    assert sp.apply(p, section="nope", op="add", target="", text="x", **kw) == (
+        "Unknown section: nope")
+    assert sp.apply(p, section="self", op="nope", target="", text="x", **kw) == "Unknown op: nope"
+    msg = sp.apply(p, section="self", op="add", target="", text="x" * 50,
+                   max_chars=20, today="2026-10-19")
+    assert msg.startswith("self-profile is at its limit (20 chars); with this write it would be ")
+    assert msg.endswith(" chars. Remove or replace some entries first, then pin.")

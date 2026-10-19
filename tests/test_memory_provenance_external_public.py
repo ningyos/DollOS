@@ -4,7 +4,7 @@ an explicit untrusted-provenance prefix, symmetric to consolidated/."""
 from dollos.mind.mind_prompt import _render_associative, _render_memory
 from dollos.tools import _format_hit
 
-_UNTRUSTED = "[外部AI·未驗證]"
+_UNTRUSTED = "[external AI · unverified]"
 
 
 def _ep_hit(content: str) -> dict:

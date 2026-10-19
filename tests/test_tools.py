@@ -219,7 +219,7 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
     assert kw["timeout_s"] == 30
     assert kw["response_sink"] is None  # Task 8 wires perception_queue here
     assert "shell" in out.lower()
-    assert "結果" in out  # result-will-arrive language
+    assert "comes back as a new event" in out  # result-will-arrive language
 
 
 def test_invoke_skill_in_tools_list():
@@ -260,8 +260,9 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
 
 @pytest.mark.asyncio
 async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
-    """ENOENT -> success-cascade str (no exception). Message includes
-    '(none yet)' for empty skill dir + Shell/Recall guidance."""
+    """ENOENT -> success-cascade str (no exception). Message says the skill
+    doesn't exist and lists what does ('(none yet)' for an empty skill dir);
+    it gives no advice on what to do instead (plan 2026-10-19 Task 7)."""
     memory_root = tmp_path / "memory"
     bodies_dir = memory_root / "skill_bodies"
     bodies_dir.mkdir(parents=True)  # empty dir
@@ -269,10 +270,7 @@ async def test_invoke_skill_missing_returns_corrective_message(tmp_path):
     ctx.memory_root = memory_root
 
     out = await InvokeSkill(name="nope").run(ctx)
-    assert "(none yet)" in out
-    assert "Shell" in out
-    assert "Recall" in out
-    assert "nope" in out
+    assert out == "Skill 'nope' doesn't exist. Skills available now: (none yet)"
 
 
 @pytest.mark.asyncio
@@ -598,7 +596,7 @@ async def test_spawn_workflow_invokes_runner_and_returns_dispatch_msg(tmp_path):
     assert kw["timeout_s"] == 120
     assert "workflow_id" in kw and len(kw["workflow_id"]) >= 4
     # dispatch ack string mentions something about workflow/dispatch
-    assert "結果" in out or "workflow" in out.lower() or "dispatched" in out.lower()
+    assert "dispatched" in out and "comes back as a new event" in out
 
 
 @pytest.mark.asyncio
