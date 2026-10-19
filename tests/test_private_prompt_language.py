@@ -608,8 +608,8 @@ CASES = [
     _case(system_prompt_with_current_self),
     _case(tools_internal),
     _case(tools_external_public),
-    _case(snapshot_default_state, 4, "default mood 平靜, 精力 line"),
-    _case(snapshot_filled_state, 4, "[Self profile] section titles, 精力 line"),
+    _case(snapshot_default_state),
+    _case(snapshot_filled_state),
     _case(delta_awoke),
     _case(delta_user_spoke),
     _case(delta_bootstrap_schedule, 6, "the bootstrap ScheduledMoment command"),
@@ -622,7 +622,6 @@ CASES = [
     _case(delta_other_internal_kinds),
     _case(delta_tool_habits, 5, "[Tool habits] header"),
     _case(delta_memory_hits_with_provenance, 7, "[外部AI·未驗證] prefix"),
-    # Also needs Task 4 (its snapshot part); Task 4 lands first.
     _case(diary_request, 5, "DiaryMoment body, [Today's log] header, 中段略"),
     _case(tool_result_unknown_tool, 7, "unknown-tool message"),
     _case(tool_result_bad_arguments, 7, "argument-error message"),

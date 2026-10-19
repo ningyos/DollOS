@@ -96,7 +96,7 @@ async def test_mood_change_to_new_emotion_is_logged(tmp_path):
     if a future change moved the snapshot to AFTER dispatch, this would
     silently regress to "never logs a mood change" (prior == new always)."""
     state = MindState()
-    assert state.mood.emotion == "平靜"   # default, sanity-check the premise
+    assert state.mood.emotion == "calm"   # default, sanity-check the premise
     queue = PerceptionQueue(wal=None)
     queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "你還好嗎"}))
     stream = (

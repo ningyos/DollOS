@@ -12,7 +12,7 @@ def _state():
 
 
 def test_self_profile_block_opens_the_snapshot():
-    body = "## 我學到的自己\n- [s1·2026-06-30] 我重視誠實"
+    body = "## What I've learned about myself\n- [s1·2026-06-30] 我重視誠實"
     out = render_epoch_start(_state(), Seen(), "internal", NOW, self_profile_text=body)
     assert "[Self profile]" in out
     assert body in out

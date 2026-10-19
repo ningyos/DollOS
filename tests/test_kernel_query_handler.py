@@ -98,14 +98,14 @@ async def test_query_state_returns_mood_and_current_self(tmp_path: Path) -> None
     dollos = DollOS(settings)
     sink: asyncio.Queue = asyncio.Queue()
 
-    dollos._mind_state.mood.emotion = "平靜"
+    dollos._mind_state.mood.emotion = "uneasy"
     dollos._mind_state.mood.reason = "test seed"
 
     # Before any adoption: current_self == "" (pack-only, no evo_adopt yet).
     await dollos._handle_message(QueryState(query_id="q1", token="right"), sink)
     msgs = await _drain(sink)
     assert msgs[0].ok is True
-    assert msgs[0].payload["mood"] == "平靜"  # the .emotion field, not str(Mood)
+    assert msgs[0].payload["mood"] == "uneasy"  # the .emotion field, not str(Mood)
     assert msgs[0].payload["current_self"] == ""
     assert "energy" not in msgs[0].payload
     assert set(msgs[0].payload.keys()) == {"mood", "current_self"}
@@ -119,7 +119,7 @@ async def test_query_state_returns_mood_and_current_self(tmp_path: Path) -> None
     await dollos._handle_message(QueryState(query_id="q2", token="right"), sink)
     msgs2 = await _drain(sink)
     assert msgs2[0].payload["current_self"] == "我是被批准的現在的我"
-    assert msgs2[0].payload["mood"] == "平靜"
+    assert msgs2[0].payload["mood"] == "uneasy"
 
 
 # ----- 3. get_recent tier scope — the security test -----
