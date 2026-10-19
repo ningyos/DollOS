@@ -2,12 +2,12 @@
 turns (self-directed-agenda spec §3.2, Task 4).
 
 Mirrors tests/test_mind_prompt_self_profile.py's ReflectionMoment nudge
-test pattern (_percep_body direct assertions), plus a full render_mind
-assembly check for presence-on-reflection / absence-on-non-reflection.
+test pattern (_percep_body direct assertions), plus a turn-message
+(render_turn_delta) check for presence-on-reflection / absence-on-non-reflection.
 """
 import time
 
-from dollos.mind.mind_prompt import _percep_body, render_mind
+from dollos.mind.mind_prompt import Seen, _percep_body, render_turn_delta
 from dollos.mind.mind_state import MindState, Perception
 
 
@@ -55,21 +55,19 @@ def test_non_reflection_perception_has_no_agenda_nudge():
 
 
 def test_reflection_turn_prompt_contains_agenda_nudge():
-    """Full render_mind assembly: a ReflectionMoment perception in
-    recent_perceptions makes the agenda nudge appear in the composed
-    prompt (it renders inside [Recent perceptions])."""
-    state = MindState()
-    state.recent_perceptions.append(_reflection_perception())
-    out = render_mind(state, [], "SYSTEM")
+    """The turn's message: a ReflectionMoment perception renders as its
+    full line, agenda nudge included."""
+    out = render_turn_delta(
+        MindState(), Seen(), "internal", [_reflection_perception()], time.time(),
+    )
     assert "PursueGoal" in out
     assert "自己想追下去的" in out
 
 
 def test_non_reflection_turn_prompt_has_no_agenda_nudge():
-    state = MindState()
-    state.recent_perceptions.append(
-        Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"})
+    out = render_turn_delta(
+        MindState(), Seen(), "internal",
+        [Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"})], time.time(),
     )
-    out = render_mind(state, [], "SYSTEM")
     assert "PursueGoal" not in out
     assert "自己想追下去的" not in out

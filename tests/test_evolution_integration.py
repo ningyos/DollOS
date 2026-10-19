@@ -7,8 +7,8 @@ from dollos.character import Enforcement, Identity
 from dollos.mind import current_self, self_history
 from dollos.mind import evolution as evo
 from dollos.mind.evolution_trigger import EvolutionTrigger
-from dollos.mind.mind_prompt import render_mind
-from dollos.mind.mind_state import MindState
+from dollos.mind.mind_prompt import Seen, render_turn_delta
+from dollos.mind.mind_state import MindState, Perception
 from dollos.tools import SelfRevision
 
 
@@ -159,16 +159,18 @@ async def test_adopt_log_failure_writes_nothing(tmp_path, monkeypatch):
     assert ctx.evolution_latched is False
 
 
-def test_render_mind_places_evolution_block_after_self_profile():
-    """Controller carry-item (Task 6/8 review): the [人格演化候選] block must
-    render after [Self profile] and before [Memory guideline] so it stays
-    salient on reflection turns without displacing the always-inject self
-    block (mind_prompt.render_mind docstring, spec §3.4)."""
+def test_turn_message_places_evolution_block_after_self_profile():
+    """Controller carry-item (Task 6/8 review): in a reflection turn's
+    message the [人格演化候選] block renders after a (changed) [Self profile]
+    and before the turn's perception lines, so it stays salient without
+    displacing the self block (spec §3.4)."""
     state = MindState()
     self_profile_body = "## 我學到的自己\n- [s1·2026-07-02] 我重視誠實"
     evolution_body = "[人格演化候選]\n（第 1 次提醒)\n舊：(尚無)\n新：候選文字"
-    out = render_mind(state, [], "SYSTEM", self_profile_text=self_profile_body,
-                       evolution_block=evolution_body)
+    reflection = Perception(kind="ReflectionMoment", t=0.0, data={"iters_since_last": 30})
+    out = render_turn_delta(state, Seen(), "internal", [reflection], 0.0,
+                            self_profile_text=self_profile_body,
+                            evolution_block=evolution_body)
     assert (out.index("[Self profile]")
             < out.index("[人格演化候選]")
-            < out.index("[Memory guideline]"))
+            < out.index("ReflectionMoment:"))

@@ -6,8 +6,10 @@ before ``</think>`` becomes one ``ThinkDelta``; every
 ``<tool_call>{"name": ..., "arguments": {...}}</tool_call>`` becomes a
 ``ToolCall`` (ids generated) sent as one ``ToolCalls`` after the stream; the
 rest is one ``SpeechDelta``. A reply may also be an exception, raised when
-that call starts. Once the replies run out, every further call plays the
-empty reply (no speech, no tool calls), so a turn's tool loop ends.
+that call starts; an exception inside an event list is raised at that point
+of the stream (a stream cut after some output). Once the replies run out,
+every further call plays the empty reply (no speech, no tool calls), so a
+turn's tool loop ends.
 
 Every call is recorded as a JSON snapshot taken when the call starts — not a
 reference to the caller's list, which would make any "prefix unchanged"
@@ -93,8 +95,9 @@ class FakeModel(ModelAdapter):
 
     ``replies`` play in call order. ``repeat_last`` replays the last reply
     instead of the empty one once they run out. ``usages`` gives a per-call
-    ``(prompt_tokens, completion_tokens)`` (the last one repeats) reported via
-    ``on_usage`` and in ``End.usage``. ``before_call(idx)`` runs as each call
+    ``(prompt_tokens, completion_tokens)`` (the last one repeats), reported in
+    ``End.usage`` and, like the real adapter, via ``on_usage`` with
+    ``prior_tokens`` subtracted from the prompt. ``before_call(idx)`` runs as each call
     starts; ``delay_s`` sleeps before each event (cancel tests).
     """
 
@@ -174,12 +177,17 @@ class FakeModel(ModelAdapter):
             prompt, completion = self._usages[min(idx, len(self._usages) - 1)]
             usage = Usage(prompt_tokens=prompt, completion_tokens=completion)
             if on_usage is not None:
-                on_usage(prompt, completion)
+                on_usage(
+                    max(prompt - prior_tokens, 0) if prompt is not None else None,
+                    completion,
+                )
         if not any(isinstance(e, End) for e in events):
             events.append(_end_for(events, usage))
         for ev in events:
             if self._delay_s:
                 await asyncio.sleep(self._delay_s)
+            if isinstance(ev, BaseException):
+                raise ev
             self.events_yielded += 1
             yield ev
 

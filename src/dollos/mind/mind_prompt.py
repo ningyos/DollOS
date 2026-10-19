@@ -1,13 +1,10 @@
-"""Render MindState into the user messages of a MindLoop turn.
+"""Render MindState into the user messages of a MindLoop conversation.
 
-``render_mind`` returns the enabled dynamic blocks as a single string,
-optionally preceded by the system prompt — the whole picture, re-rendered
-every turn.
-
-``render_epoch_start`` / ``render_turn_delta`` (plan 2026-10-18 Task 8) are
-for a conversation that only grows at the end: the first writes the snapshot
-that opens a page, the second each turn's new message with only what changed
+A conversation only grows at the end (plan 2026-10-18 Tasks 8-9, see
+``context_builder``): ``render_epoch_start`` writes the snapshot that opens a
+page, ``render_turn_delta`` each turn's new message with only what changed
 since that conversation last saw it (tracked in its ``Seen``).
+``render_diary_request`` is the diary's one-off request.
 """
 from __future__ import annotations
 
@@ -18,7 +15,7 @@ from dataclasses import dataclass, field
 
 from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
-from dollos.mind.tool_memory import render_tool_habits, render_tool_notes
+from dollos.mind.tool_memory import render_tool_habits
 
 # Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice).
 # Shared between the render's ⚠ STALE marker (_render_open_loops below) and
@@ -55,188 +52,6 @@ _EXTERNAL_SITUATION = (
     "[External situation]\n"
     "妳在公開場合,聽得到很多不是對妳說的話。不回應是很正常的 — 只在真的想說話時開口。"
 )
-
-
-def render_mind(
-    state: MindState,
-    memsearch_hits: list[dict],
-    system_prompt: str | None = None,
-    *,
-    pulse_block: str | None = None,
-    cognition_block: str | None = None,
-    body_signal_block: str | None = None,
-    today_log_block: str | None = None,
-    associative_hits: list[dict] | None = None,
-    primary_language: str = "繁體中文",
-    tool_outcomes_block: str | None = None,
-    tool_habits_hits: list[dict] | None = None,
-    energy_line: str | None = None,
-    self_profile_text: str | None = None,
-    evolution_block: str | None = None,
-    origin_tier: str = "internal",
-) -> str:
-    """Compose: system_prompt + the enabled dynamic blocks.
-
-    ``system_prompt`` — omitted (None) when the caller sends it as its own
-    system message (MindLoop does); the output then starts at the first
-    dynamic block. Block order is the same either way.
-
-    ``pulse_block`` — optional pre-rendered ``[Self pulse]`` block from
-    ``perception.system_pulse.SystemPulse.snapshot()``. Inserted after
-    ``[Active tasks]`` (mirrors the ``[Active monitors]`` slot).
-
-    ``cognition_block`` — optional pre-rendered ``[Cognition]`` block from
-    ``perception.cognition.CognitionWorker.snapshot()``. Inserted right
-    after ``[Self pulse]``.
-
-    ``body_signal_block`` — pre-rendered ``[Body signal]`` from
-    ``render_body_signal()``, only on pure PulseMoment turns; inserted right
-    before ``[Decision time]``.
-
-    ``today_log_block`` — optional pre-rendered ``[Today's log]`` block from
-    ``MindLoop._read_today_log()`` (spec §2.2, Task 7): the day's full
-    action-log transcript, the diary turn's source material. Inserted right
-    after ``[Cognition]``. ``None`` on every non-diary turn (the caller only
-    passes it on a dedicated DiaryMoment turn).
-
-    ``primary_language`` — the language Doll records memory in (NoteMemory /
-    diary). Rendered as a persistent ``[Memory guideline]`` block right before
-    ``[Memory context]`` so it is present EVERY turn (covers article-ingestion
-    turns, which arrive as ordinary user turns). It shapes WHAT she writes —
-    not a new tool, just a behavioral guideline (prompt engineering).
-
-    ``self_profile_text`` — optional pre-rendered body from
-    ``self_profile.render_block()`` (A1 pinned self-profile). Inserted right
-    after ``system_prompt`` and before ``[Memory guideline]`` (core self goes
-    first). Omitted entirely when ``None``/empty (no bullets pinned yet).
-
-    ``evolution_block`` — optional pre-rendered ``[人格演化候選]`` block from
-    ``evolution.surface_or_expire()`` (spec §3.4). Inserted right after
-    ``[Self profile]`` and before ``[Memory guideline]`` so it stays salient on
-    reflection turns. Omitted entirely when ``None`` (no pending slot to
-    surface, or not a reflection/safe-mode turn — gated by the caller).
-
-    ``origin_tier`` — whole-branch review C3: on ``"external_public"``
-    (stranger) turns, ``[Recent perceptions]`` is scoped to ONLY stranger
-    ChannelMessage entries (see ``_public_safe_perceptions``) and
-    ``[Recent outputs]`` is suppressed entirely — both deques are GLOBAL
-    rolling buffers appended for every turn regardless of origin, so
-    unscoped they would render prior owner UserSpoke/owner-DM text (up to
-    200 chars, verbatim) and Doll's prior private replies straight into a
-    stranger's prompt. ``"internal"`` (the default) and ``"external_dm"``
-    render both blocks in full, unchanged.
-
-    On ``"external_public"`` turns a ``[External situation]`` block is also
-    appended (P1c Task 6, L2 secondary layer — the code-side admission gate
-    is the main defense against 亂回): descriptive scaffolding narration
-    (not a command) so staying silent reads as a normal option, since she's
-    overhearing a lot that isn't addressed to her. Omitted for ``"internal"``
-    and ``"external_dm"`` — owner-DM is a private 1:1, not a public channel.
-    """
-    now = time.time()
-    blocks = [system_prompt, ""] if system_prompt is not None else []
-    if self_profile_text:
-        blocks.extend([
-            "[Self profile] (your evolving self — keep only what's still you; prune with PinSelf)",
-            self_profile_text,
-            "",
-        ])
-    if evolution_block:
-        blocks.extend([evolution_block, ""])
-    blocks.extend([
-        _render_memory_guideline(primary_language),
-        "",
-    ])
-    # Persistent [Safe mode] banner — rendered EVERY turn while safe_mode is set
-    # (not edge-triggered), so the narrowed-to-read-only state stays visible
-    # until a user turn clears it (spec §8.3).
-    if state.safe_mode:
-        reason = state.safe_mode_reason or "repeated tool failures"
-        blocks.extend([
-            f"[Safe mode] read-only — {reason}. Only Recall and read-only tools "
-            "are available right now; ask the user for help.",
-            "",
-        ])
-    blocks.extend([
-        "[Memory context]",
-        _render_memory(memsearch_hits),
-        "",
-        "[Associative memories]",
-        _render_associative(associative_hits or []),
-        "",
-        "[Mind state]",
-        _render_mindstate(state, now, energy_line=energy_line),
-        "",
-        "[Active tasks] (currently running, you cannot cancel)",
-        _render_active_tasks(state.active_tasks, now),
-        "",
-    ])
-    if pulse_block:
-        blocks.extend([pulse_block, ""])
-    if cognition_block:
-        blocks.extend([cognition_block, ""])
-    if today_log_block:
-        blocks.extend([today_log_block, ""])
-    blocks.extend([
-        "[Your agenda] (things you're pursuing because you want to)",
-        _render_your_agenda(state.open_loops, now),
-        "",
-        "[Open loops] (commitments you have made)",
-        _render_open_loops([lp for lp in state.open_loops if not lp.self_directed], now),
-        "",
-        "[Pending] (upcoming scheduled events)",
-        _render_pending(state.pending_events, now),
-        "",
-        "[Scratchpad]",
-        state.scratchpad or "(empty)",
-        "",
-    ])
-    if tool_outcomes_block:
-        blocks.extend([tool_outcomes_block, ""])
-    tool_notes = render_tool_notes(state.recent_tool_failures, now)
-    if tool_notes:
-        blocks.extend([tool_notes, ""])
-    habits = render_tool_habits(tool_habits_hits or [])
-    if habits:
-        blocks.extend([habits, ""])
-    # Whole-branch review C3: on an external_public (stranger) turn, scope
-    # the working-memory render — both deques are GLOBAL rolling buffers
-    # appended for EVERY turn regardless of origin, so left unscoped they
-    # would leak prior owner UserSpoke/owner-DM text and Doll's prior
-    # private replies straight into a stranger's prompt.
-    percs_for_render = (
-        _public_safe_perceptions(state.recent_perceptions)
-        if origin_tier == "external_public"
-        else state.recent_perceptions
-    )
-    blocks.extend([
-        "[Recent perceptions] (newest last)",
-        _render_perceptions(percs_for_render, now),
-        "",
-    ])
-    if origin_tier != "external_public":
-        blocks.extend([
-            _render_outputs_header(state.recent_outputs, now),
-            _render_outputs(state.recent_outputs, now),
-            "",
-        ])
-    if origin_tier == "external_public":
-        # P1c Task 6: L2 secondary layer — the code-side admission gate
-        # (Tasks 1-5) is the MAIN defense against 亂回; once admitted she can
-        # still choose Say or silence (cascade emits 0..N actions). This is a
-        # DESCRIPTIVE scaffolding nudge (narration, not a command) so silence
-        # reads as a normal option on a public turn — she's overhearing a lot
-        # that isn't addressed to her. Only external_public: owner-DM
-        # (external_dm) is a private 1:1 where "公開場合,不關妳的話" doesn't
-        # apply.
-        blocks.extend([_EXTERNAL_SITUATION, ""])
-    if body_signal_block:
-        blocks.extend([body_signal_block, ""])
-    blocks.extend([
-        "[Decision time]",
-        "What do you do this iteration?",
-    ])
-    return "\n".join(blocks)
 
 
 @dataclass
@@ -374,9 +189,9 @@ def render_epoch_start(
     conversation): ``[Recent perceptions]`` recaps only this conversation's
     own perceptions, oldest first, minus ``exclude`` (this turn's own batch —
     it was already appended to the deque and arrives in the first delta).
-    ``[Recent outputs]`` renders on internal and external_dm only (as
-    ``render_mind``); ``pulse_block``/``cognition_block`` (the current
-    ``[Self pulse]``/``[Cognition]``, from the caller) on internal only.
+    ``[Recent outputs]`` renders on internal and external_dm only;
+    ``pulse_block``/``cognition_block`` (the current ``[Self pulse]``/
+    ``[Cognition]``, from the caller) on internal only.
 
     external_public's opening line does not point at Recall: there Recall
     only searches ``external_public/`` and cannot find the channel's history.
@@ -489,6 +304,32 @@ def render_turn_delta(
     return "\n\n".join(parts)
 
 
+def render_diary_request(
+    state: MindState,
+    perceptions: list,
+    now: float,
+    *,
+    today_log_block: str | None,
+    self_profile_text: str | None = None,
+    energy_line: str | None = None,
+) -> str:
+    """The diary's one-off request (plan 2026-10-18 Task 9), one user
+    message: this moment's internal snapshot (``render_epoch_start`` without
+    ``[Self pulse]``/``[Cognition]`` — the diary must not consume a "changed"
+    the private conversation has not seen), the day's ``[Today's log]``, then
+    the DiaryMoment line."""
+    parts = [
+        render_epoch_start(
+            state, Seen(), "internal", now, exclude=perceptions,
+            self_profile_text=self_profile_text, energy_line=energy_line,
+        )
+    ]
+    if today_log_block:
+        parts.append(today_log_block)
+    parts.append("\n".join(_percep_line(p) for p in perceptions))
+    return "\n\n".join(parts)
+
+
 def _public_safe_perceptions(percs) -> list:
     """Whole-branch review C3: on an external_public turn, ALLOWLIST only
     stranger ChannelMessage entries for the ``[Recent perceptions]`` render.
@@ -506,7 +347,7 @@ def _public_safe_perceptions(percs) -> list:
     ]
 
 
-def _render_memory_guideline(primary_language: str) -> str:
+def render_memory_guideline(primary_language: str) -> str:
     """The persistent memory-WRITE guideline (primary language + own words).
 
     Two rules, every turn: (1) record memory in the configured primary
@@ -587,36 +428,9 @@ def _render_associative(hits: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _render_mindstate(state: MindState, now: float, *, energy_line: str | None = None) -> str:
-    mood_str = state.mood.emotion
-    if state.mood.reason:
-        mood_str = f"{state.mood.emotion} ({state.mood.reason})"
-    last_user = _human_secs(now - state.last_user_at) + " ago" if state.last_user_at else "never"
-    lines = [
-        f"focus: {state.focus}",
-        f"mood: {mood_str}",
-    ]
-    if energy_line is not None:
-        lines.append(energy_line)
-    lines.extend([
-        f"last_user: {last_user}",
-        f"iter: {state.iter_count}",
-    ])
-    return "\n".join(lines)
-
-
-def _render_active_tasks(tasks: list, now: float) -> str:
-    if not tasks:
-        return "(none)"
-    return "\n".join(
-        f"- {t.task_id}: {t.summary}, elapsed {_human_secs(now - t.started_at)}"
-        for t in tasks
-    )
-
-
 def _opened(lp, now: float, absolute: bool) -> str:
-    """When a loop opened: relative ("opened 5m ago") for ``render_mind``,
-    an absolute date for the page snapshot, whose text must not age."""
+    """When a loop opened: relative ("opened 5m ago"), or an absolute date
+    for the page snapshot, whose text must not age."""
     if absolute:
         return f"opened {time.strftime('%m-%d %H:%M', time.localtime(lp.opened_at))}"
     return f"opened {_human_secs(now - lp.opened_at)} ago"
@@ -665,15 +479,6 @@ def _render_your_agenda(loops: list, now: float, *, absolute: bool = False) -> s
         for entry in lp.progress[-AGENDA_PROGRESS_TAIL:]:
             lines.append(f"    progress: {entry}")
     return "\n".join(lines)
-
-
-def _render_pending(events: list, now: float) -> str:
-    if not events:
-        return "(none)"
-    return "\n".join(
-        f"- in {_human_secs(e.fire_at - now)}: {e.summary}"
-        for e in events
-    )
 
 
 def _render_perceptions(percs, now: float) -> str:
@@ -850,15 +655,6 @@ def _render_outputs_header(outs, now: float) -> str:
     if warnings:
         return base + "\n" + "\n".join(warnings)
     return base
-
-
-def _render_outputs(outs, now: float) -> str:
-    if not outs:
-        return "(none)"
-    return "\n".join(
-        f"[{_human_secs(now - o.t)} ago] {o.summary}"
-        for o in outs
-    )
 
 
 def _human_secs(s: float) -> str:

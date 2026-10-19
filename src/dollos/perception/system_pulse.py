@@ -6,8 +6,9 @@ in the background, buckets each into coarse categories, and only emits
 text when a bucket *changes* — so the LLM sees a `[Self pulse]` block
 only when the body actually feels different, not on every iteration.
 
-Output is a multi-line first-person body-language block consumed by
-``render_mind`` and appended after ``[Active monitors]``. Missing
+Output is a multi-line first-person body-language block that goes into
+the private conversation's next turn message (``render_turn_delta``), or
+via ``current_block()`` into a new page's snapshot. Missing
 sources (no DISPLAY, no battery on desktop, no nvidia-smi, etc.) are
 silently omitted — no fake values, no fallbacks.
 """
@@ -431,6 +432,19 @@ class SystemPulse:
         if sig == self._last_emitted_sig:
             return None
         self._last_emitted_sig = sig
+        return render_block(sample, include_active_window=self._include_active_window)
+
+    def current_block(self) -> str | None:
+        """The block for the latest sample, changed or not, counted as sent:
+        a new conversation page carries the current body, and ``snapshot()``
+        then gives a block only when it shifts again. None when disabled or
+        no sample yet."""
+        if not self._enabled:
+            return None
+        sample = self._last_sample
+        if sample is None:
+            return None
+        self._last_emitted_sig = sample.signature()
         return render_block(sample, include_active_window=self._include_active_window)
 
     def latest_idle_s(self) -> float | None:

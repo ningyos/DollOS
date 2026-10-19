@@ -18,18 +18,37 @@ from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolOutcome, ToolResult, dispatch_one, run_tool_calls
 from dollos.character import Enforcement
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
-from dollos.llm.model import End, ModelAdapter, SpeechDelta, ThinkDelta, ToolCall, ToolCalls
+from dollos.llm.model import (
+    End,
+    ModelAdapter,
+    ModelError,
+    SpeechDelta,
+    ThinkDelta,
+    ToolCall,
+    ToolCalls,
+)
 from dollos.llm.tool_schema import tool_schemas
 from dollos.memory_writer import append_transcript, append_action_log
 from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
+from dollos.mind.context_builder import (
+    PRIVATE,
+    ContextBuilder,
+    Conversation,
+    conversation_key,
+    one_off,
+    partial_reply,
+)
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import (
-    MEMORY_HITS_PER_TURN,
     OPEN_LOOP_STALE_S,
     energy_bucket_line,
+    hits_in_context,
     render_body_signal,
-    render_mind,
+    render_diary_request,
+    render_epoch_start,
+    render_memory_guideline,
+    render_turn_delta,
 )
 from dollos.mind.mind_state import (
     MindState,
@@ -121,8 +140,12 @@ class _Pass:
 
     reasoning: str
     speech: str
-    end: End | None               # None when cancelled before the stream ended
-    outcomes: list[ToolOutcome]   # executed tool calls, in index order
+    end: End | None               # None when cut (cancel / error) before the stream ended
+    outcomes: list[ToolOutcome]   # the reply's tool calls, in index order
+    # The assistant message as it goes into the conversation: the reply
+    # verbatim, or — cut short — what was actually said (None: nothing yet).
+    reply: dict | None
+    error: ModelError | None = None
 
 
 class MindLoop:
@@ -131,11 +154,12 @@ class MindLoop:
     Lifecycle: spawned once by Kernel at daemon startup. Runs forever
     until shutdown signaled. Each iteration:
       1. Drain perceptions from queue (blocks until at least one arrives)
-      2. Auto-sync external state (process_registry → active_tasks, etc.)
-      3. Render full MindState as prompt
-      4. Run the tool loop on the model: stream, run the reply's tool calls,
+      2. Append this turn's message to its place's conversation
+         (``ContextBuilder``: only what changed since that conversation last
+         saw it; a new page with a snapshot when needed)
+      3. Run the tool loop on the model: stream, run the reply's tool calls,
          send the results back, repeat until a reply has no tool calls
-      5. Persist state
+      4. Persist state
     """
 
     def __init__(
@@ -173,6 +197,7 @@ class MindLoop:
         turn_latency_recorder=None,
         vitals_recorder=None,
         think_budget_tokens: int = 1024,
+        conversation_budget_tokens: int = 24000,
     ) -> None:
         self._state = state
         self._queue = queue
@@ -180,6 +205,9 @@ class MindLoop:
         self._llm = llm
         # [llm].think_budget_tokens: caps thinking on every model call.
         self._think_budget_tokens = think_budget_tokens
+        # One append-only conversation per place (plan 2026-10-18 Task 9);
+        # [llm].conversation_budget_tokens bounds a page.
+        self._contexts = ContextBuilder(budget_tokens=conversation_budget_tokens)
         self._system_prompt = system_prompt
         self._system_prompt_suffix = system_prompt_suffix
         self._evolution_enabled = evolution_enabled
@@ -338,6 +366,17 @@ class MindLoop:
             )
             self._composed_cache = (key, composed)
         return self._composed_cache[1]
+
+    def _system_for_turn(self) -> str:
+        """The system message of every conversation: the composed prompt plus
+        ``[Memory guideline]``. The same bytes all run long until current_self
+        adopts a new version — with the tool list, the front of the server's
+        cache prefix."""
+        return (
+            self._system_prompt_for_turn()
+            + "\n\n"
+            + render_memory_guideline(self._primary_language)
+        )
 
     async def run(self) -> None:
         """Main loop. Runs until shutdown."""
@@ -573,16 +612,15 @@ class MindLoop:
         # TODO Task 8.5: ProcessRegistry → state.active_tasks
         # TODO Task 8.5: Schedule → state.pending_events
 
-        # Memsearch query from this turn's own input; at most
-        # MEMORY_HITS_PER_TURN of the candidates render (plan 2026-10-18 Task 8).
-        memsearch_hits = (await self._derive_memory_hits(perceptions))[:MEMORY_HITS_PER_TURN]
-        # Self-directed agenda (spec 2026-07-07 §3.1/§3.3): stash this turn's
-        # REAL [Memory context] hit sources read-only on ctx so PursueGoal can
+        # Memsearch query from this turn's own input. Every candidate goes to
+        # the turn's message, which gives at most MEMORY_HITS_PER_TURN not yet
+        # on the page (plan 2026-10-18 Task 8).
+        memsearch_hits = await self._derive_memory_hits(perceptions)
+        # Self-directed agenda (spec 2026-07-07 §3.1/§3.3): this turn's REAL
+        # [Memory context] hit sources, read-only on ctx so PursueGoal can
         # auto-capture non-fabricable provenance from code, not model args.
-        # Exactly the hits that render — never one the cap held back.
-        self._ctx.turn_memory_sources = [
-            h.get("source", "") for h in memsearch_hits if h.get("source")
-        ]
+        # Set once the message is rendered: exactly the hits in her context.
+        self._ctx.turn_memory_sources = []
 
         # Context-associative recall (additive side-channel). P1e Task 4 (S3):
         # on an external_public turn this side-channel must not bypass the
@@ -636,21 +674,12 @@ class MindLoop:
             logger.exception("tool_habits_search failed; continuing without")
             tool_habits_hits = []
 
-        # Pull self-pulse snapshot (None when no bucket shift since last emit)
-        pulse_block: str | None = None
-        if self._system_pulse is not None:
-            try:
-                pulse_block = self._system_pulse.snapshot()
-            except Exception:
-                logger.exception("system_pulse.snapshot raised; omitting block")
-
-        # Pull cognition snapshot (None when no mind-state shift)
-        cognition_block: str | None = None
-        if self._cognition is not None:
-            try:
-                cognition_block = self._cognition.snapshot()
-            except Exception:
-                logger.exception("cognition.snapshot raised; omitting block")
+        # The conversation of this bucket's place (plan 2026-10-18 Task 9).
+        # [Self pulse]/[Cognition] are given once per change (snapshot()), so
+        # only the private conversation reads them: a channel turn or the
+        # diary consuming a change would hide it from private for good.
+        key = conversation_key(self._ctx.current_origin)
+        reads_body = key == PRIVATE and not self._is_diary
 
         # [Body signal] framing (spec 2026-07-09 presence-tuning §3.2): only
         # on a pure PulseMoment turn (co-batched with anything else, this
@@ -669,8 +698,8 @@ class MindLoop:
 
         # The try/finally here wraps the render calls too so the turn-end None
         # sentinel is always emitted — even when render_tool_outcomes() or
-        # render_mind() raises (I1: previously those could leave IPC clients
-        # blocked waiting for a TurnEnd that never arrived).
+        # the message rendering raises (I1: previously those could leave IPC
+        # clients blocked waiting for a TurnEnd that never arrived).
         self._turn_speech.clear()
         self._turn_had_tool = False
         self._turn_wrote_diary = False
@@ -747,24 +776,62 @@ class MindLoop:
                 # actually reached Doll's eyes this turn. Refusals to adopt
                 # unsurfaced text depend on this staying False otherwise.
                 self._ctx.evolution_candidate_surfaced = evolution_block is not None
-            # The system prompt is its own message (see _llm_iterate); this
-            # is the user message.
-            prompt = render_mind(
-                self._state,
-                memsearch_hits,
-                pulse_block=pulse_block,
-                cognition_block=cognition_block,
-                body_signal_block=body_signal_block,
-                today_log_block=self._read_today_log() if self._is_diary else None,
-                associative_hits=associative_hits,
-                primary_language=self._primary_language,
-                tool_outcomes_block=tool_outcomes_block,
-                tool_habits_hits=tool_habits_hits,
-                energy_line=energy_line,
-                self_profile_text=self_profile_text,
-                evolution_block=evolution_block,
-                origin_tier=self._ctx.origin_tier,
-            )
+
+            # The tier's fixed tool list and the system message: the
+            # conversation's fixed prefix (a change opens a new page).
+            offered = self._offered_tools()
+            tools = tool_schemas(offered.values())
+            system = self._system_for_turn()
+            tier = self._ctx.origin_tier
+            now = time.time()
+            epoch_reason: str | None = None
+            given_hits: list[dict] = []
+            if self._is_diary:
+                # A pure diary turn is a one-off request (plan Task 9): this
+                # moment's snapshot + [Today's log], never stored, private
+                # untouched. Same system and tools, so the prefix resumes.
+                conv = one_off(system, tools, render_diary_request(
+                    self._state, perceptions, now,
+                    today_log_block=self._read_today_log(),
+                    self_profile_text=self_profile_text,
+                    energy_line=energy_line,
+                ))
+            else:
+                conv, epoch_reason = self._contexts.begin_turn(
+                    key, system=system, tools=tools,
+                    snapshot=lambda seen: render_epoch_start(
+                        self._state, seen, tier, now,
+                        channel_id=self._ctx.current_origin or "",
+                        exclude=perceptions,
+                        self_profile_text=self_profile_text,
+                        energy_line=energy_line,
+                        pulse_block=self._body_block(self._system_pulse, "current_block")
+                        if reads_body else None,
+                        cognition_block=self._body_block(self._cognition, "current_block")
+                        if reads_body else None,
+                    ),
+                )
+                # A new page's snapshot already carries the current body.
+                reads_change = reads_body and epoch_reason is None
+                conv.messages.append({"role": "user", "content": render_turn_delta(
+                    self._state, conv.seen, tier, perceptions, now,
+                    self_profile_text=self_profile_text,
+                    energy_line=energy_line,
+                    memory_hits=memsearch_hits,
+                    associative_hits=associative_hits,
+                    tool_habits_hits=tool_habits_hits,
+                    pulse_block=self._body_block(self._system_pulse, "snapshot")
+                    if reads_change else None,
+                    cognition_block=self._body_block(self._cognition, "snapshot")
+                    if reads_change else None,
+                    tool_outcomes_block=tool_outcomes_block,
+                    evolution_block=evolution_block,
+                    body_signal_block=body_signal_block,
+                )})
+                given_hits = hits_in_context(memsearch_hits, conv.seen)
+            self._ctx.turn_memory_sources = [
+                h.get("source", "") for h in given_hits if h.get("source")
+            ]
 
             # ── P1f trace: turn-level envelope 組裝(存實際內容非 hash;T-C2)──
             # 寫入失敗 loud 但不斷 turn(Global Constraint) — assembly itself can
@@ -792,6 +859,16 @@ class MindLoop:
                         self._ctx.memory_root / "self_history.jsonl"
                     )
                     trace_blocks = {
+                        "conversation": conv.key,
+                        "epoch": conv.epoch if conv.key is not None else None,
+                        # The page opened this turn: enough, with each pass's
+                        # input_messages_delta, to rebuild every request.
+                        "epoch_start": {
+                            "reason": epoch_reason,
+                            "tools_hash": conv.tools_hash,
+                            "system_hash": conv.system_hash,
+                            "snapshot": conv.messages[1]["content"],
+                        } if epoch_reason is not None else None,
                         "origin_channel": self._ctx.current_origin or "",
                         "situation": self._situation_tag(),
                         "model_id": self._model_id,
@@ -804,7 +881,7 @@ class MindLoop:
                             "situational_template_id": None,  # P1d
                         },
                         "dynamic_blocks": {
-                            "memsearch_hits": memsearch_hits,
+                            "memsearch_hits": given_hits,
                             "associative_hits": associative_hits,
                             "tool_habits_hits": tool_habits_hits,
                             "situational_A_products": None,  # P1c/P1d A 充實管線
@@ -829,7 +906,9 @@ class MindLoop:
                     trace_blocks = None
 
             # Call LLM (streams text → sink; dispatches tool calls inline)
-            await self._llm_iterate(prompt, trace_blocks=trace_blocks)
+            await self._llm_iterate(
+                conv, tools=tools, offered=offered, trace_blocks=trace_blocks,
+            )
         finally:
             # Signal end-of-turn to the connection pump. For an EXTERNAL origin,
             # emit a channel-addressed turn-end (TurnEndAddressed) so a
@@ -1127,9 +1206,10 @@ class MindLoop:
         file exists but is empty/whitespace-only, or when the read fails for
         ANY reason (permissions, mid-write decode error, a directory sitting
         where the file should be, ...) — best-effort only. The caller passes
-        that straight through to ``render_mind``'s ``today_log_block=None``,
-        which simply omits the block. This is deliberately broad
-        (``OSError``/``UnicodeError``, not just ``FileNotFoundError``): a
+        that straight through to ``render_diary_request``'s
+        ``today_log_block=None``, which simply omits the block. This is
+        deliberately broad (``OSError``/``UnicodeError``, not just
+        ``FileNotFoundError``): a
         read failure must never propagate out of turn composition and abort
         the diary turn BEFORE the I1 post-turn guarantee (warn + marker +
         one retry) runs — that would drop the turn with no signal at all.
@@ -1146,6 +1226,18 @@ class MindLoop:
             half = cap // 2
             raw = raw[:half] + "\n…(中段略)…\n" + raw[-half:]
         return "[Today's log](你今天的一天,寫日記的素材)\n" + raw
+
+    @staticmethod
+    def _body_block(provider, method: str) -> str | None:
+        """``provider.method()`` — a ``[Self pulse]`` / ``[Cognition]`` block
+        or None; a raising provider omits the block for this turn."""
+        if provider is None:
+            return None
+        try:
+            return getattr(provider, method)()
+        except Exception:
+            logger.exception("%s.%s raised; omitting block", type(provider).__name__, method)
+            return None
 
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass.
@@ -1339,13 +1431,23 @@ class MindLoop:
         if self._cascade_ctx is not None:
             self._cascade_ctx.cancel()
 
-    async def _llm_iterate(self, prompt: str, *, trace_blocks: dict | None = None) -> None:
+    async def _llm_iterate(
+        self,
+        conv: Conversation,
+        *,
+        tools: list[dict],
+        offered: dict[str, type[BaseModel]],
+        trace_blocks: dict | None = None,
+    ) -> None:
         """Run Doll's turn as a tool loop over the ModelAdapter (harness §1).
 
-        The model gets ``[system, user(prompt)]`` and this tier's fixed tool
-        list (``_offered_tools``). Each pass streams thinking (kept raw for
-        cascade_log / trace) and speech (sentence-chunked to the sink live,
-        so TTS starts on the first sentence); after the stream, the reply's
+        Each pass sends the whole conversation (``conv.messages``, this
+        turn's message already appended) and this tier's fixed tool list
+        (``_offered_tools``), with ``prior_tokens`` = the conversation's last
+        call total so only what was appended is charged. Each pass streams
+        thinking (kept raw for cascade_log / trace) and speech
+        (sentence-chunked to the sink live, so TTS starts on the first
+        sentence); after the stream, the reply's
         tool calls run in order. The assistant message goes back verbatim,
         plus one ``tool`` message per call, and the next pass runs — so a
         reply that only calls a tool (e.g. MoodTool) still gets to speak.
@@ -1362,14 +1464,16 @@ class MindLoop:
         ends the turn, as do a reply cut by max_tokens, the same-tool
         3-strike / consecutive-failure safe-mode rule, UNBOUND_REJECT_LIMIT
         refusals of one unbound tool, and `MAX_SYNC_REFEED_PASSES`.
+
+        The conversation stays what actually happened (plan 2026-10-18 Task
+        9). Interrupted, or a ``transport`` error after some output: the
+        reply so far goes in as said (thinking + sentences already given to
+        the sink), and every tool call of a finished reply gets its tool
+        message (``NOT_RUN`` if it never ran). A ``server`` error marks the
+        conversation so the next turn opens a new page. Errors still raise.
         """
         sink = self._ctx.sink_resolver(self._ctx.current_origin)
-        offered = self._offered_tools()
-        tools = tool_schemas(offered.values())
-        messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt_for_turn()},
-            {"role": "user", "content": prompt},
-        ]
+        messages = conv.messages
         # Same-tool consecutive-failure tracker, spanning passes — ported from
         # `tool_loop.py` so the live loop and the subagent cascade share one
         # convergence rule.
@@ -1428,31 +1532,27 @@ class MindLoop:
                 except Exception:
                     logger.exception("trace begin_turn failed; turn will have no trace")
                     turn_trace = None
-            # P1f trace: byte-verbatim authority for `input_messages_delta`
-            # (Task 4) — tracks how far into `messages` the previous pass's
-            # snapshot reached, so each pass captures exactly what was newly
-            # appended since then (the assistant message + its tool messages),
-            # never a reconstruction from tool_calls/results.
-            prev_msg_len = 0
             for pass_idx in range(MAX_SYNC_REFEED_PASSES):
                 if self._cascade_ctx.cancelled:
                     logger.info("cascade cancelled at pass boundary; exiting cleanly")
                     return
 
-                # Snapshot BEFORE this pass streams: at this point the prior
-                # pass's tail-appends are complete and this pass hasn't added
-                # anything yet, so `messages[prev_msg_len:]` is exactly the
-                # delta this pass is about to stream against. `dict(m)`
-                # shallow-copies each message so later mutation of `messages`
-                # can't retroactively alter the captured delta.
-                input_messages_delta = [dict(m) for m in messages[prev_msg_len:]]
-                prev_msg_len = len(messages)
+                # P1f trace: byte-verbatim authority for `input_messages_delta`
+                # — what the conversation appended since its last traced pass
+                # (this turn's message, an interrupted turn's leftovers, the
+                # previous pass's assistant + tool messages), captured BEFORE
+                # this pass streams. `dict(m)` shallow-copies each message so
+                # later appends can't alter the captured delta.
+                sent = len(messages)
+                msg_range = (conv.traced, sent)
+                input_messages_delta = [dict(m) for m in messages[conv.traced:sent]]
 
                 pass_start = time.monotonic()
                 p = await self._stream_one_pass(
-                    messages=messages, tools=tools, offered=offered, sink=sink,
+                    conv=conv, tools=tools, offered=offered, sink=sink,
                 )
                 pass_latency_ms = int((time.monotonic() - pass_start) * 1000)
+                conv.record_usage(p.end)
 
                 # 延遲壓縮 Part 1 Task 2: accumulate this pass's think-chars
                 # + advance the turn-scoped pass counter — `finally` below
@@ -1465,9 +1565,22 @@ class MindLoop:
                 if pass_idx == 0:
                     first_end = p.end
 
+                if p.error is not None:
+                    if p.error.kind == "server":
+                        # A bad or too-long message would stay and fail every
+                        # later call: the next turn opens a new page.
+                        conv.server_error = True
+                    elif p.reply is not None:
+                        messages.append(p.reply)  # transport: kept as said
+                    raise p.error
+
                 # A cancelled pass returns before cascade_log / trace — so it
-                # has neither (§3.6/§6.2(g) 明文取捨).
+                # has neither (§3.6/§6.2(g) 明文取捨); what it left in the
+                # conversation reaches the trace with the next traced pass.
                 if self._cascade_ctx.cancelled:
+                    if p.reply is not None:
+                        messages.append(p.reply)
+                    messages.extend(o.message for o in p.outcomes)
                     return
 
                 outcomes = p.outcomes
@@ -1519,7 +1632,9 @@ class MindLoop:
                             safe_mode=self._state.safe_mode,
                             external=self._ctx.external_ctx,
                             latency_ms=pass_latency_ms,
+                            msg_range=msg_range,
                         )
+                        conv.traced = sent
                     except Exception:
                         logger.exception(
                             "trace add_pass failed; continuing (this pass omitted from trace)"
@@ -1528,7 +1643,7 @@ class MindLoop:
                 # The assistant message goes back verbatim (reasoning, speech,
                 # tool calls with their raw argument strings), then one tool
                 # message per call, in call order.
-                messages.append(p.end.assistant_message)
+                messages.append(p.reply)
                 messages.extend(o.message for o in outcomes)
 
                 if p.end.finish_reason == "length":
@@ -1626,15 +1741,17 @@ class MindLoop:
                     cache_n=first_end.usage.cache_n if first_end is not None else None,
                     prompt_n=first_end.usage.prompt_n if first_end is not None else None,
                     finish_reason=first_end.finish_reason if first_end is not None else None,
+                    conversation=conv.key,
+                    epoch=conv.epoch if conv.key is not None else None,
                 )
                 await self._turn_latency_recorder.record(rec)
             self._cascade_ctx = None
 
     async def _stream_one_pass(
-        self, *, messages: list[dict], tools: list[dict],
+        self, *, conv: Conversation, tools: list[dict],
         offered: dict[str, type[BaseModel]], sink,
     ) -> _Pass:
-        """Stream ONE model call, then run the reply's tool calls.
+        """Stream ONE model call on ``conv``, then run the reply's tool calls.
 
         ThinkDelta → kept raw; SpeechDelta → `SentenceChunker` → sink +
         recent_outputs("Speech"), live; ToolCalls / End arrive after the
@@ -1643,43 +1760,61 @@ class MindLoop:
         (`run_tool_calls`), each checked against this turn's binding
         (`_dispatch_bound`).
 
-        Honours cancel from `self._cascade_ctx` at every event and before
-        the tools run — on cancel it returns what streamed so far, running
-        nothing.
+        Honours cancel from `self._cascade_ctx` at every event, before the
+        tools run and between them. Cut short — cancelled, or a
+        ``ModelError`` (returned in ``error``, not raised) — ``reply`` is what
+        was actually said; a finished reply's calls that never ran answer
+        ``NOT_RUN``.
         """
         chunker = SentenceChunker()
         think: list[str] = []
         speech: list[str] = []
+        spoken: list[str] = []   # sentences handed to the sink this pass
         calls: tuple[ToolCall, ...] = ()
         end: End | None = None
         stream = self._llm.stream(
-            messages=messages,
+            messages=conv.messages,
             tools=tools,
             max_tokens=MIND_MAX_TOKENS,
             think_budget=self._think_budget_tokens,
             purpose="cascade",
             on_usage=self._on_turn_usage,
+            conversation=conv.stream_key,
+            prior_tokens=conv.prior_tokens,
         )
+
+        def cut(error: ModelError | None = None) -> _Pass:
+            reply = partial_reply("".join(think), "".join(spoken))
+            return _Pass("".join(think), "".join(speech), None, [], reply, error)
+
         # aclosing() ensures the HTTP stream is torn down on any early exit
         # (cascade cancel, exception) — not just on normal exhaustion.
-        async with aclosing(stream) as events:
-            async for ev in events:
-                if self._cascade_ctx.cancelled:
-                    logger.info("cascade cancelled mid-stream; exiting cleanly")
-                    return _Pass("".join(think), "".join(speech), None, [])
-                if isinstance(ev, ThinkDelta):
-                    think.append(ev.text)
-                elif isinstance(ev, SpeechDelta):
-                    speech.append(ev.text)
-                    for sentence in chunker.feed(ev.text):
-                        self._speak_sentence(sink, sentence)
-                elif isinstance(ev, ToolCalls):
-                    calls = ev.calls
-                elif isinstance(ev, End):
-                    end = ev
+        try:
+            async with aclosing(stream) as events:
+                async for ev in events:
+                    if self._cascade_ctx.cancelled:
+                        logger.info("cascade cancelled mid-stream; exiting cleanly")
+                        return cut()
+                    if isinstance(ev, ThinkDelta):
+                        think.append(ev.text)
+                    elif isinstance(ev, SpeechDelta):
+                        speech.append(ev.text)
+                        for sentence in chunker.feed(ev.text):
+                            self._speak_sentence(sink, sentence)
+                            spoken.append(sentence)
+                    elif isinstance(ev, ToolCalls):
+                        calls = ev.calls
+                    elif isinstance(ev, End):
+                        end = ev
+        except ModelError as e:
+            return cut(e)
 
         if self._cascade_ctx.cancelled:
-            return _Pass("".join(think), "".join(speech), end, [])
+            # Interrupted right after the reply ended: none of its calls run,
+            # and the unflushed last sentence was never said.
+            outcomes = await run_tool_calls(calls, self._dispatch_tool, stop=lambda: True)
+            reply = {**end.assistant_message, "content": "".join(spoken)}
+            return _Pass("".join(think), "".join(speech), end, outcomes, reply)
         # The last (unterminated) sentence goes out before any tool runs.
         self._flush_chunker(chunker, sink)
 
@@ -1687,9 +1822,11 @@ class MindLoop:
         if calls:
             self._turn_had_tool = True
             outcomes = await run_tool_calls(
-                calls, lambda name, args: self._dispatch_bound(name, args, offered)
+                calls,
+                lambda name, args: self._dispatch_bound(name, args, offered),
+                stop=lambda: self._cascade_ctx.cancelled,
             )
-        return _Pass("".join(think), "".join(speech), end, outcomes)
+        return _Pass("".join(think), "".join(speech), end, outcomes, end.assistant_message)
 
     def _collect_turn_speech(self) -> str:
         """Full spoken text for the turn currently in flight (P1f trace).

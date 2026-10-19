@@ -48,14 +48,21 @@ class TurnTrace:
         safe_mode: bool,
         external: bool,
         latency_ms: int | None,
+        msg_range: tuple[int, int] | None = None,
     ) -> None:
         """追加一個已完成 pass。reasoning / speech 是模型這一輪的思考原文和說的話,
         tool_calls 帶 id 和原樣的 arguments 字串。tokens 明文 drop(存 null),
-        離線 retokenize input_messages_delta + reasoning + speech 可還原。"""
+        離線 retokenize input_messages_delta + reasoning + speech 可還原。
+
+        input_messages_delta 是這段對話從上次記錄的位置到這次送出為止新加的
+        messages(含被打斷那輪補上的 assistant 訊息);msg_range 是它在對話
+        messages 裡的 [start, end)。這一頁的 epoch_start(envelope)+ 每輪的
+        delta 可重建實際送出的 messages(plan 2026-10-18 Task 9)。"""
         self._passes.append(
             {
                 "pass_idx": pass_idx,
                 "input_messages_delta": input_messages_delta,
+                "msg_range": list(msg_range) if msg_range is not None else None,
                 "reasoning": reasoning,  # 思考逐字全文
                 "speech": speech,
                 "tool_calls": tool_calls,
@@ -103,7 +110,13 @@ class TraceWriter:
         perception_batch: list[dict],
         static_prefix: dict,
         dynamic_blocks: dict,
+        conversation: str | None = None,
+        epoch: int | None = None,
+        epoch_start: dict | None = None,
     ) -> TurnTrace:
+        """conversation / epoch:這回合的對話和第幾頁(日記的一次性 request 為
+        None)。epoch_start:這回合開了新的一頁時,{reason, tools_hash,
+        system_hash, snapshot 全文},涵蓋對話的前兩則 messages。"""
         envelope: dict[str, Any] = {
             "schema_version": self._schema_version,
             "turn_id": turn_id,
@@ -114,5 +127,8 @@ class TraceWriter:
             "perception_batch": perception_batch,
             "static_prefix": static_prefix,
             "dynamic_blocks": dynamic_blocks,
+            "conversation": conversation,
+            "epoch": epoch,
+            "epoch_start": epoch_start,
         }
         return TurnTrace(self._root, envelope)

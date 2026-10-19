@@ -45,6 +45,10 @@ def make_mindloop(
     vitals_recorder=None,
     cascade_logger=None,
     think_budget_tokens: int = 1024,
+    conversation_budget_tokens: int = 24000,
+    system_pulse=None,
+    cognition=None,
+    primary_language: str = "繁體中文",
 ) -> MindLoop:
     """Minimal MindLoop construction with stub queue/llm/ctx, for composition
     seam + wiring tests. ``ctx.memory_root`` is set to the passed ``memory_root``.
@@ -88,4 +92,8 @@ def make_mindloop(
         vitals_recorder=vitals_recorder,
         cascade_logger=cascade_logger,
         think_budget_tokens=think_budget_tokens,
+        conversation_budget_tokens=conversation_budget_tokens,
+        system_pulse=system_pulse,
+        cognition=cognition,
+        primary_language=primary_language,
     )

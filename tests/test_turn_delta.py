@@ -488,7 +488,7 @@ async def test_turn_memory_sources_exclude_hits_held_back_by_the_cap(tmp_path):
     await ml._run_one_turn([Perception(kind="UserSpoke", t=NOW, data={"text": "facts?"})])
 
     assert ml._ctx.turn_memory_sources == [h["source"] for h in hits[:3]]
-    user = model.calls[0]["messages"][1]["content"]
+    user = model.calls[0]["messages"][-1]["content"]  # the turn's message
     bullets = [ln for ln in user.splitlines() if ln.startswith("- fact")]
     assert [b.split()[1] for b in bullets] == ["fact1", "fact2", "fact3"]
     assert all(len(b) - len("- ") <= MEMORY_HIT_MAX_CHARS for b in bullets)

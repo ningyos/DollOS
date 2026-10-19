@@ -178,6 +178,17 @@ def test_llm_config_defaults(tmp_path: Path):
     assert llm.timeout_s == 300.0
     assert llm.max_concurrency == 1
     assert llm.think_budget_tokens == 1024
+    assert llm.conversation_budget_tokens == 24000
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_llm_conversation_budget_must_be_positive(tmp_path: Path, bad: int):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _BASE_TOML.replace("[llm]\n", f"[llm]\nconversation_budget_tokens = {bad}\n")
+    )
+    with pytest.raises(ValidationError, match="conversation_budget_tokens"):
+        load_settings(config_path)
 
 
 @pytest.mark.parametrize("legacy", ['template = "qwen3-thinking"', 'model_alias = "test-model"'])

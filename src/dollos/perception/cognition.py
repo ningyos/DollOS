@@ -84,7 +84,7 @@ class CognitionSnapshot:
     last_latency_ms: float | None = None
     trailing_avg_ms: float | None = None
     # quota
-    tokens_used_today: int | None = None   # prompt + completion summed
+    tokens_used_today: int | None = None   # new prompt + completion summed
     daily_token_quota: int | None = None
     # strain
     recent_error_count: int = 0
@@ -192,12 +192,15 @@ class CognitionWorker:
 
         last = records[-1]
 
-        # tokens used today: sum prompt + completion where present
+        # tokens used today: what each call appended (new_prompt_tokens, plan
+        # 2026-10-18 decision 7) + completion. A record from before the
+        # upgrade has no new_prompt_tokens and counts its whole prompt.
         tokens_used = 0
         any_token_seen = False
         for r in records:
-            if r.prompt_tokens is not None:
-                tokens_used += r.prompt_tokens
+            prompt = r.new_prompt_tokens if r.new_prompt_tokens is not None else r.prompt_tokens
+            if prompt is not None:
+                tokens_used += prompt
                 any_token_seen = True
             if r.completion_tokens is not None:
                 tokens_used += r.completion_tokens
@@ -248,17 +251,39 @@ class CognitionWorker:
         # Detect new-error signal: any error record newer than what we've
         # acknowledged should force an emit. Reuse records already fetched by
         # _compute() to avoid a second read_today() call.
-        newest_err_ts = 0.0
-        for r in records[-10:]:
-            if r.error and r.ts > newest_err_ts:
-                newest_err_ts = r.ts
+        newest_err_ts = _newest_error_ts(records)
         new_error_event = newest_err_ts > self._last_seen_error_ts
 
         sig = snap.signature()
         if sig == self._last_emitted_sig and not new_error_event:
             return None
 
+        self._mark_sent(sig, newest_err_ts)
+        return render_block(snap)
+
+    def current_block(self) -> str | None:
+        """The block for the latest records, shifted or not, counted as sent:
+        a new conversation page carries the current state, and ``snapshot()``
+        then gives a block only when it shifts again. None when disabled or
+        nothing recorded today."""
+        if not self._enabled:
+            return None
+        snap, records = self._compute()
+        if snap is None:
+            return None
+        self._mark_sent(snap.signature(), _newest_error_ts(records))
+        return render_block(snap)
+
+    def _mark_sent(self, sig: tuple, newest_err_ts: float) -> None:
         self._last_emitted_sig = sig
         if newest_err_ts > self._last_seen_error_ts:
             self._last_seen_error_ts = newest_err_ts
-        return render_block(snap)
+
+
+def _newest_error_ts(records: list[LLMCallRecord]) -> float:
+    """ts of the newest error among the last 10 calls; 0.0 when none."""
+    newest = 0.0
+    for r in records[-10:]:
+        if r.error and r.ts > newest:
+            newest = r.ts
+    return newest

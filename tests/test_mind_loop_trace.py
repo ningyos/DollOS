@@ -73,7 +73,7 @@ async def test_run_one_turn_builds_trace_blocks_with_actual_content(mind_loop_wi
 
     captured: dict = {}
 
-    async def _capture(prompt, *, trace_blocks=None):
+    async def _capture(conv, *, tools=None, offered=None, trace_blocks=None):
         captured["trace_blocks"] = trace_blocks
 
     ml._llm_iterate = _capture
@@ -108,6 +108,14 @@ async def test_run_one_turn_builds_trace_blocks_with_actual_content(mind_loop_wi
     assert kw["static_prefix"]["situational_template_id"] is None
     assert kw["model_id"] == "test-model"
     assert kw["situation"] == "internal"
+    # The conversation and page; the page opened this turn, so its
+    # epoch_start (plan 2026-10-18 Task 9) carries the snapshot verbatim.
+    assert (kw["conversation"], kw["epoch"]) == ("private", 1)
+    assert kw["epoch_start"]["reason"] == "not in memory"
+    assert kw["epoch_start"]["snapshot"].startswith("[New conversation page")
+    assert kw["epoch_start"]["system_hash"] == hashlib.sha256(
+        ml._system_for_turn().encode("utf-8")
+    ).hexdigest()
 
     # everything must be JSON-serializable directly (no raw dataclass/Path/
     # datetime relying on json.dumps(default=str) as a silent stringify net)
@@ -128,7 +136,7 @@ async def test_run_one_turn_no_trace_writer_stays_none(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     captured: dict = {}
 
-    async def _capture(prompt, *, trace_blocks=None):
+    async def _capture(conv, *, tools=None, offered=None, trace_blocks=None):
         captured["called"] = True
         captured["trace_blocks"] = trace_blocks
 
@@ -317,24 +325,17 @@ async def test_no_trace_writer_no_trace_file_written(tmp_path):
 # ── Task 4: input_messages_delta = byte-verbatim authority per pass ──
 
 
-def passes_prompt(env: dict) -> str:
-    """The exact rendered prompt `_llm_iterate` seeded the user message
-    (`messages[1]`, after the system message) with — recovered from pass 0's
-    own captured delta. Used as the expected value when reconstructing
-    `messages` from concatenated per-pass deltas."""
-    return env["passes"][0]["input_messages_delta"][1]["content"]
-
-
 @pytest.mark.asyncio
 async def test_input_messages_delta_is_byte_authority(mind_loop_real_trace, tmp_path):
     ml, state = mind_loop_real_trace  # fake model: pass0 calls Recall; pass1 speaks (ends)
     await ml._run_one_turn([_user_perception("q")])
     env = _only_trace_envelope(tmp_path / "traces")
     passes = env["passes"]
-    # pass 0 delta = the system message + the rendered user prompt, verbatim.
-    assert [m["role"] for m in passes[0]["input_messages_delta"]] == ["system", "user"]
-    assert passes[0]["input_messages_delta"][0]["content"] == ml._system_prompt_for_turn()
-    assert passes[0]["input_messages_delta"][1]["content"]
+    # The page's system message and snapshot are in epoch_start; pass 0
+    # delta = this turn's message, verbatim (messages[2:3]).
+    assert [m["role"] for m in passes[0]["input_messages_delta"]] == ["user"]
+    assert passes[0]["msg_range"] == [2, 3]
+    assert passes[0]["input_messages_delta"][0] == ml._llm.calls[0]["messages"][2]
     # pass 1 delta = pass 0's assistant message (verbatim, with reasoning and
     # tool calls) + one tool message per call.
     delta = passes[1]["input_messages_delta"]
@@ -350,15 +351,21 @@ async def test_delta_concatenation_reconstructs_final_messages(mind_loop_real_tr
     await ml._run_one_turn([_user_perception("q")])
     env = _only_trace_envelope(tmp_path / "traces")
 
-    # Concatenating every pass's delta reconstructs, byte-for-byte, the
-    # messages the LAST model call was sent — ground truth captured by the
-    # fake model itself, outside the trace machinery.
-    reconstructed = [m for p in env["passes"] for m in p["input_messages_delta"]]
-    assert json.dumps(reconstructed) == json.dumps(ml._llm.calls[-1]["messages"])
-    assert reconstructed[1] == {"role": "user", "content": passes_prompt(env)}
+    # The page's epoch_start (system hash + snapshot) plus every pass's delta
+    # reconstructs, byte-for-byte, the messages the LAST model call was sent
+    # — ground truth captured by the fake model itself, outside the trace.
+    sent = ml._llm.calls[-1]["messages"]
+    start = env["epoch_start"]
+    reconstructed = [{"role": "user", "content": start["snapshot"]}] + [
+        m for p in env["passes"] for m in p["input_messages_delta"]
+    ]
+    assert json.dumps(reconstructed) == json.dumps(sent[1:])
+    assert start["system_hash"] == hashlib.sha256(
+        sent[0]["content"].encode("utf-8")
+    ).hexdigest()
 
-    roles = [m["role"] for m in reconstructed]
-    assert roles[:2] == ["system", "user"]
+    roles = [m["role"] for m in sent]
+    assert roles[:3] == ["system", "user", "user"]
     assert "assistant" in roles
 
 

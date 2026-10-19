@@ -12,6 +12,7 @@ api_key = ""                               # sent as Bearer only when set
 timeout_s = 300.0         # cold prefill + queueing behind other clients
 max_concurrency = 1       # Strata has 1 compute slot, shared with every client
 think_budget_tokens = 1024   # thinking cap per call (reasoning_budget_tokens); at the cap the server cuts thinking short and she answers
+conversation_budget_tokens = 24000   # each conversation only grows at the end (server cache); past this many tokens it opens a new page with a snapshot
 
 [ipc]
 host = "127.0.0.1"

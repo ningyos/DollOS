@@ -46,6 +46,10 @@ class TurnLatencyRecord:
     cache_n: int | None = None
     prompt_n: int | None = None
     finish_reason: str | None = None
+    # The conversation and page the turn ran on (plan 2026-10-18 Task 9);
+    # None for the diary's one-off request.
+    conversation: str | None = None
+    epoch: int | None = None
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

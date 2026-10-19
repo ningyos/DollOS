@@ -57,11 +57,15 @@ async def test_messages_are_system_then_user_with_offered_tools(tmp_path):
     await ml._run_one_turn([_p("UserSpoke", text="hello")])
 
     call = model.calls[0]
-    assert [m["role"] for m in call["messages"]] == ["system", "user"]
-    assert call["messages"][0]["content"] == ml._system_prompt_for_turn()
-    # The system prompt lives only in the system message now.
-    assert "You are Doll." not in call["messages"][1]["content"]
-    assert "[Memory guideline]" in call["messages"][1]["content"]
+    # system, the page snapshot, the turn's message (plan Task 9).
+    assert [m["role"] for m in call["messages"]] == ["system", "user", "user"]
+    assert call["messages"][0]["content"] == ml._system_for_turn()
+    assert call["messages"][0]["content"].startswith(ml._system_prompt_for_turn())
+    # The system prompt and [Memory guideline] live only in the system message.
+    assert "[Memory guideline]" in call["messages"][0]["content"]
+    for m in call["messages"][1:]:
+        assert "You are Doll." not in m["content"]
+        assert "[Memory guideline]" not in m["content"]
     names = [t["function"]["name"] for t in call["tools"]]
     assert names == sorted(names) and "Shell" in names
     assert call["purpose"] == "cascade"
@@ -117,7 +121,7 @@ async def test_two_calls_run_in_order_with_matching_tool_messages(tmp_path):
     assert [m["tool_call_id"] for m in tool_msgs] == ["call_a", "call_b"]
     assert "first" in tool_msgs[0]["content"]
     assert "second" in tool_msgs[1]["content"]
-    assistant = model.calls[1]["messages"][2]
+    assistant = model.calls[1]["messages"][3]
     assert [c["id"] for c in assistant["tool_calls"]] == ["call_a", "call_b"]
 
 

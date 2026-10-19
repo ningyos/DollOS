@@ -24,6 +24,9 @@ class LLMConfig(BaseModel):
     # thinking tokens per call (reasoning_budget_tokens); max_tokens is
     # raised by this much so thinking never eats the answer budget
     think_budget_tokens: int = 1024
+    # a conversation opens a new page once a call's prompt + completion
+    # reaches this (the server has no /tokenize; the last call's numbers count)
+    conversation_budget_tokens: int = Field(default=24000, gt=0)
 
 
 class IPCConfig(BaseModel):
