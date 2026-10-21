@@ -1,6 +1,6 @@
 # macOS 移植：Doll 的 daemon 搬到你的 Mac
 
-**狀態**：DRAFT（待使用者審）
+**狀態**：APPROVED（使用者 2026-10-21「LGTM」；同時核可它依賴的兩個 redesign R1a 決定：Mac 上關掉 system pulse、每天使用前取消註冊 Shell／SpawnWorkflow／SpawnMonitor）
 **日期**：2026-10-21
 **關聯**：`2026-10-18-dollos-redesign-design.md`（DRAFT；本文是它 R1a「Mac 移植」那一項的細部設計，修正列在 §8）、`2026-07-06-bridge-internalization-design.md`（ServiceSupervisor）、`2026-07-09-system-pulse-proactive-trigger-design.md`、`2026-07-09-system-pulse-presence-tuning-design.md`、`2026-07-10-metabolic-vital-model-design.md`（熱乘數）、`plans/2026-10-18-gura-english-luxtts-mac.md`、CLAUDE.md 的「dollosctl」段
 **目標機器**：Apple M5、16 GB、macOS 27.0.1；沒有 UI；大模型在 Strata（`http://100.110.158.36:8080`，走 Tailscale）
