@@ -584,6 +584,8 @@ class DollOS:
             transcripts_root=settings.data.root / "memory" / "transcripts",
             tool_output_store=self._tool_output_store,
             pack_identity=self._doll_pack.identity,
+            base_persona=self.renderer.render(
+                f"base_persona.{self._doll_pack.meta.language}"),
             consolidation_trigger=self._consolidation_trigger,
             persist_path=settings.data.root / "mind_state.json",
             idle_threshold_s=settings.evolution.idle_threshold_s,

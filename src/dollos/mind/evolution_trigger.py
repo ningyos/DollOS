@@ -38,11 +38,14 @@ logger = logging.getLogger(__name__)
 
 _SKEPTIC_TASK = """You are an independent reviewer. Below is a proposal for a "who I am now" self-description. Your only job is to check whether it contradicts this character's unshakable core, and you look at two things only:
 (a) does it change her name, or shake her sense of self (contradicting identity.self below);
-(b) does it contradict the taboos.
+(b) does it contradict the base persona or the taboos.
 Nothing else is yours to judge: the writing, whether there is evidence, whether it reads like RP, none of that is within your remit (this is her own self-expression).
 
 [The character's core identity]
 {identity_self}
+
+[Base persona — applies to every character]
+{base_persona}
 
 [taboos]
 {taboos}
@@ -70,7 +73,7 @@ class EvolutionTrigger:
 
     def __init__(self, *, state, model, renderer, memsearch, memory_root: Path,
                  transcripts_root: Path, tool_output_store, pack_identity,
-                 consolidation_trigger, persist_path: Path,
+                 base_persona: str, consolidation_trigger, persist_path: Path,
                  idle_threshold_s: int = 600,
                  base_interval_days: float = 7.0, max_interval_days: float = 28.0,
                  min_history_events: int = 8, min_diary_days: int = 14,
@@ -85,6 +88,7 @@ class EvolutionTrigger:
         self._transcripts_root = transcripts_root
         self._tool_output_store = tool_output_store
         self._pack_identity = pack_identity
+        self._base_persona = base_persona
         self._consolidation_trigger = consolidation_trigger
         self._persist_path = persist_path
         self._idle_threshold_s = idle_threshold_s
@@ -198,6 +202,7 @@ class EvolutionTrigger:
         system = self._renderer.render("subagent_scaffolding")
         task = _SKEPTIC_TASK.format(
             identity_self=self._pack_identity.self,
+            base_persona=self._base_persona,
             taboos=self._pack_identity.taboos,
             old_sanctioned=old_sanctioned or "(none yet)",
             proposed=proposed,
@@ -302,7 +307,8 @@ class EvolutionTrigger:
                     memsearch=self._memsearch, memory_root=self._memory_root,
                     transcripts_root=self._transcripts_root,
                     tool_output_store=self._tool_output_store,
-                    pack_identity=self._pack_identity, enforcement=self._enforcement,
+                    pack_identity=self._pack_identity, base_persona=self._base_persona,
+                    enforcement=self._enforcement,
                     floor=self._floor, cap=self._cap, max_tokens=self._max_tokens,
                     now=now, hwm=hwm, window_days=self._max_interval_days,
                     think_budget_tokens=self._think_budget_tokens,

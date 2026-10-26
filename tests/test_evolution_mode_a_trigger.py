@@ -15,7 +15,8 @@ def _trigger(tmp_path, state=None, **kw):
     defaults = dict(
         state=state, model=None, renderer=None, memsearch=None,
         memory_root=tmp_path, transcripts_root=tmp_path / "tx",
-        tool_output_store=None, pack_identity=None, consolidation_trigger=None,
+        tool_output_store=None, pack_identity=None, base_persona="BP",
+        consolidation_trigger=None,
         idle_threshold_s=0, persist_path=tmp_path / "mind_state.json",
         base_interval_days=7.0, max_interval_days=28.0,
         min_history_events=2, min_diary_days=14,
