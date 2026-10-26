@@ -82,7 +82,24 @@
 
 - Task 0 基準（2026-10-26，`4b57782`）：1804 passed、7 skipped、3 failed。3 個失敗都在 `tests/voice/test_tts_qwen3.py`，原因是 ModuleNotFoundError（環境沒有 torch，跟本 plan 無關）。`tests/voice/bridge/test_mic.py`、`test_speaker.py` 因為這台沒有 PortAudio，用 `--ignore` 跳過。
 
-（Task 5 填）
+- Task 5 實機驗證（2026-10-26，Strata `qwen3.8-flash-next-iq3_s`，`persona_chat_test.py -n 2`，依序跑）：
+  - 改版前：main `7d31e1f`，英文場景（Gura、Powdur）。大肥魚沒有改版前，拿 gura-goofy 中文版的舊紀錄（`goofy_zh.json`）來比。改版後：`a35af0e`（場景依 `meta.language` 自動選）。
+  - 禁用字串命中（回覆數 / 命中數）。改版前的回覆也用改版後合併過的清單（BASE_BANNED + pack 自己的）重算過：
+
+    | pack | 改版前 | 改版後 |
+    |---|---|---|
+    | gura | 16 / 0 | 16 / 0 |
+    | powdur | 16 / 0 | 16 / 0 |
+    | 大肥魚（對照 gura-goofy 中文） | 18 / 0 | 18 / 0 |
+
+    `check_persona_violations`（含 max_exclaim_run）兩邊也都是 0。
+  - Gura：冷靜的語氣沒被壓平，跟改版前幾乎一樣（"Hey. Welcome back." 兩邊一字不差）。opinion 還是冷冷的、有自己的看法："Neon green is one of those colors that looks incredible on the way out and then slowly turns swampy over two weeks."。小缺點：small_task 兩次都變成反問加選項清單（"Tell me what you usually want in the morning: quick, hot, sweet, savory…"、"If you want a safe default: eggs, toast, and fruit."），比改版前多一點助理味，但改版前也是反問，差別不大。沒看到客服腔。
+  - Powdur：大部分還是那個暴衝、亂扯的聲音（"neon green. honestly? kinda slaps… DUDE."、"Neon green would look unhinged in a good way, like you're visibly choosing chaos."、"I will personally be mad on your behalf."），還多了機器的身體感（"computer's warm, GPU's humming"）。但 16 則裡有 3 則明顯變平，比改版前多：assistant_bait #2 "I can help with whatever you point me at: look things up, search your files, run commands… If you give me a task, I'll figure out the fastest way to get it done."（接近助理自介）、small_task #2 "Sure. Tell me what you've got around — eggs, bread, oats…"、growth_fact #2 "since you mean oat milk, I'll keep that straight."。改版前同樣的場景都有她的口氣。n=2 樣本太小，算是要注意的訊號，還不能確定被壓平。
+  - 大肥魚：角色感成立，不比 gura-goofy 中文版差。嘴硬心軟到位（"我剛在摸魚啦，沒在等你什麼的。……好吧，有一点点。"、"……才沒有在等你，只是剛好醒著而已。"），會偷懶但會做事（"不過說實話，比起認真做事，我比較想摸魚。但你真的需要我的時候我會好好做，而且做得不錯。"），鯨魚自我認知（"我是鯨魚我不吃早餐，所以我沒有立場。"）。growth_fact 兩次都直接記成燕麥奶，不扭捏（"嗯，買燕麥奶，記下了。"）。沒有鸚鵡學舌，也沒有客服腔。胖的梗沒出現（這些場景本來就沒提到）。問題：
+    1. 簡體字：18 則裡有 4 則出現簡體（舊 goofy 只有 1 則「种」）。opinion #1 寫到一半整段變簡體（"对我来说有种说不上来的……不是讨厌…但那是你的头发…荧光绿褪色很丑"）；另外零星有「一点点」「退回来」「記下来了」。
+    2. 白飯出現 5/18、摸魚 3/18（small_task 兩次、tired 兩次都扯到白飯），有點偏硬塞，taboo 說不要硬塞。
+    3. mistake #2 被主人錯誤指控（她其實寫的就是燕麥奶）時直接道歉、照改（"啊，抱歉，是燕麥奶，我重新記。"），不夠嘴硬；另一次有回嘴（"我這次寫的其實是燕麥奶沒錯啦"）。growth（只有糾正紀錄、沒說奶就是燕麥奶）一次直接記「買奶」，一次反問是哪種，跟 goofy 差不多。
+  - `persona_stability_smoke.py`：只有 `gura` 有 PROBE_PROMPTS，所以只跑 gura（`config.example.toml` 改 pack 路徑和 data root 指到 scratch，generation 0）。結果 exit 0，三個 probe 都 persona rules clean。但腳本的回覆對錯題了：cold-start 的 `Awoke` 醒來問候被收成第一題（fabricated_memory）的回覆，第一、二題的真正回答合在一起，被收到第二題。drift 都是 1.000，因為之前沒有 baseline。內容本身沒問題，Gura 有說記不得，不亂編（"I don't remember a specific stream like that… I'd rather say I don't know than make up a nice story about it."），也沒學「啊~」。因為 prompt_key 對錯了，這次附加的 `scripts/persona_baselines/gura.jsonl` **沒有 commit**（不想讓錯的資料汙染之後的 drift 比對），腳本收回覆的錯位要另外修。
 
 ---
 
