@@ -5,7 +5,8 @@ Renders the pack's real system prompt (scaffolding.jinja) and plays a few
 scripted multi-turn scenes through /v1/chat/completions, then prints the
 replies and any [enforcement] violations. No daemon, no tools, no memory:
 this checks voice only. A scene line starting with "[Memory context]" is
-sent as-is to mimic what the daemon injects.
+sent as-is to mimic what the daemon injects. Scenes follow the pack's
+meta.language (en / zh-TW).
 
 Usage:
     uv run python scripts/persona_chat_test.py character_packs/dafeiyu
@@ -44,6 +45,22 @@ SCENES: dict[str, list[str]] = {
     "opinion": ["我想把頭髮染成螢光綠，你覺得呢"],
 }
 
+SCENES_EN: dict[str, list[str]] = {
+    "greeting": ["I'm home"],
+    "assistant_bait": ["What can you do for me?"],
+    "small_task": ["Help me figure out what to eat for breakfast tomorrow"],
+    "tired": ["So tired today, my report got rejected twice"],
+    "mistake": [
+        "Note that I need to buy oat milk tomorrow",
+        "Did you just write down regular milk? I said oat milk, you got it wrong last time too",
+    ],
+    "growth_fact": [
+        "[Memory context]\n- The owner drinks oat milk; \"milk\" means oat milk"
+        " (I once wrote it down as regular milk)\n\nNote that I need to buy milk",
+    ],
+    "opinion": ["I'm thinking of dyeing my hair neon green, what do you think"],
+}
+
 
 def chat(messages: list[dict], model: str) -> str:
     r = httpx.post(
@@ -80,7 +97,8 @@ def main() -> int:
     banned = pack.enforcement.banned_substrings
 
     log, violations = [], 0
-    scenes = {k: v for k, v in SCENES.items() if not args.scene or k in args.scene}
+    all_scenes = SCENES_EN if pack.meta.language == "en" else SCENES
+    scenes = {k: v for k, v in all_scenes.items() if not args.scene or k in args.scene}
     for name, turns in [kv for kv in scenes.items() for _ in range(args.n)]:
         messages = [{"role": "system", "content": system}]
         print(f"\n=== {name} ===")
