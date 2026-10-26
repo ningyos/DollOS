@@ -17,8 +17,19 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+# 2026-10-25 base-persona-template spec §4: customer-service phrases every
+# pack bans by default, per base-persona language. Merged into the pack's own
+# ``banned_substrings`` at load (see ``DollPack.load``); a pack opts out of
+# individual entries with ``[enforcement].base_exempt``.
+BASE_BANNED: dict[str, list[str]] = {
+    "zh-TW": ["好問題", "很高興為你服務", "有什麼我可以幫", "希望這對你有幫助", "非常抱歉造成"],
+    "en": ["Great question", "How can I help", "I hope this helps", "As an AI"],
+}
 
 
 class PackMeta(BaseModel):
@@ -35,6 +46,10 @@ class PackMeta(BaseModel):
     # is dropped + logged, not silently trusted just because it's a pack
     # author's declared name).
     aliases: list[str] = Field(default_factory=list)
+    # Base-persona spec §3.1: picks the base persona template and the
+    # BASE_BANNED list, and is the language she talks in. Not the same as
+    # ``[memory].primary_language`` (what she writes notes/diary in).
+    language: Literal["zh-TW", "en"] = "en"
 
 
 class Identity(BaseModel):
@@ -50,15 +65,19 @@ class Enforcement(BaseModel):
 
     Additive and opt-in: an absent ``[enforcement]`` table in a pack's
     ``doll.toml`` produces an empty-default instance (no banned substrings,
-    no exclaim-run cap), i.e. zero behavior change for packs that don't
-    opt in. ``banned_substrings`` are literal substrings, not regex —
-    cheap, no ReDoS/injection surface.
+    no exclaim-run cap). ``banned_substrings`` are literal substrings, not
+    regex — cheap, no ReDoS/injection surface.
+
+    After ``DollPack.load``, ``banned_substrings`` is the *effective* list:
+    ``BASE_BANNED[language]`` + the pack's own entries − ``base_exempt``
+    (base-persona spec §4), so consumers need no merge logic of their own.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     banned_substrings: list[str] = Field(default_factory=list)
     max_exclaim_run: int | None = None
+    base_exempt: list[str] = Field(default_factory=list)
 
 
 class DollPack(BaseModel):
@@ -77,4 +96,21 @@ class DollPack(BaseModel):
             )
         with manifest.open("rb") as f:
             data = tomllib.load(f)
-        return cls.model_validate(data)
+        pack = cls.model_validate(data)
+        base = BASE_BANNED[pack.meta.language]
+        enf = pack.enforcement
+        # A base_exempt entry that isn't a base phrase is a typo: fail loudly
+        # rather than silently exempting nothing.
+        unknown = [s for s in enf.base_exempt if s not in base]
+        if unknown:
+            raise ValueError(
+                f"{manifest}: [enforcement].base_exempt entries not in "
+                f"BASE_BANNED[{pack.meta.language!r}]: {unknown}"
+            )
+        exempt = set(enf.base_exempt)
+        # dict.fromkeys: de-duplicate, keeping first occurrence order.
+        enf.banned_substrings = [
+            s for s in dict.fromkeys([*base, *enf.banned_substrings])
+            if s not in exempt
+        ]
+        return pack
