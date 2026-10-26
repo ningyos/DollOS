@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from dollos.character import DollPack, Enforcement
+from dollos.character import BASE_BANNED, DollPack
 
 
 _REPO_GURA_PACK = Path(__file__).resolve().parent.parent / "character_packs" / "gura"
@@ -59,11 +59,11 @@ def test_load_partial_identity(tmp_path: Path):
 
 
 def test_enforcement_defaults_when_absent():
-    """A pack whose doll.toml has no [enforcement] table loads with empty
-    defaults — zero behavior change for packs that don't opt in."""
+    """A pack whose doll.toml has no [enforcement] table loads with defaults:
+    no exclaim cap, and only the base banned list (base-persona spec §4)."""
     pack = DollPack.load(_REPO_YESMAN_PACK)
-    assert pack.enforcement == Enforcement()
-    assert pack.enforcement.banned_substrings == []
+    assert pack.enforcement.banned_substrings == BASE_BANNED["en"]
+    assert pack.enforcement.base_exempt == []
     assert pack.enforcement.max_exclaim_run is None
 
 
@@ -83,7 +83,7 @@ def test_enforcement_explicit_values_parsed(tmp_path: Path):
         'max_exclaim_run = 1\n'
     )
     pack = DollPack.load(tmp_path)
-    assert pack.enforcement.banned_substrings == ["a~", "a〜"]
+    assert pack.enforcement.banned_substrings == [*BASE_BANNED["en"], "a~", "a〜"]
     assert pack.enforcement.max_exclaim_run == 1
 
 
@@ -133,3 +133,75 @@ def test_gura_personality_says_she_talks_and_writes_in_english():
     pack = DollPack.load(_REPO_GURA_PACK)
     assert ("- I understand both Chinese and English, but I talk and write "
             "in English.") in pack.identity.personality
+
+
+# --- Base persona: language + base banned substrings (2026-10-25 spec §3.1/§4) ---
+
+
+def _write_pack(tmp_path: Path, meta_extra: str = "", enforcement: str | None = None) -> Path:
+    text = (
+        '[meta]\n'
+        'id = "x"\n'
+        'name = "Y"\n'
+        f'{meta_extra}'
+        '\n'
+        '[identity]\n'
+        'self = "a"\n'
+        'personality = "b"\n'
+        'taboos = "c"\n'
+    )
+    if enforcement is not None:
+        text += '\n[enforcement]\n' + enforcement
+    (tmp_path / "doll.toml").write_text(text)
+    return tmp_path
+
+
+def test_language_defaults_to_en(tmp_path: Path):
+    pack = DollPack.load(_write_pack(tmp_path))
+    assert pack.meta.language == "en"
+
+
+def test_language_zh_tw_parsed(tmp_path: Path):
+    pack = DollPack.load(_write_pack(tmp_path, meta_extra='language = "zh-TW"\n'))
+    assert pack.meta.language == "zh-TW"
+    assert pack.enforcement.banned_substrings == BASE_BANNED["zh-TW"]
+
+
+def test_invalid_language_fails_to_load(tmp_path: Path):
+    with pytest.raises(ValidationError):
+        DollPack.load(_write_pack(tmp_path, meta_extra='language = "ja"\n'))
+
+
+def test_pack_without_enforcement_gets_base_list(tmp_path: Path):
+    pack = DollPack.load(_write_pack(tmp_path))
+    assert pack.enforcement.banned_substrings == BASE_BANNED["en"]
+    assert pack.enforcement.max_exclaim_run is None
+
+
+def test_banned_merge_order_and_dedup(tmp_path: Path):
+    """Base entries first in their order, then the pack's own; a pack entry
+    that repeats a base one (or itself) appears once, at its first spot."""
+    pack = DollPack.load(_write_pack(
+        tmp_path,
+        enforcement='banned_substrings = ["a~", "As an AI", "a~", "uwu"]\n',
+    ))
+    assert pack.enforcement.banned_substrings == [*BASE_BANNED["en"], "a~", "uwu"]
+
+
+def test_base_exempt_removes_entry(tmp_path: Path):
+    pack = DollPack.load(_write_pack(
+        tmp_path,
+        enforcement='banned_substrings = ["a~"]\nbase_exempt = ["As an AI"]\n',
+    ))
+    assert pack.enforcement.banned_substrings == [
+        "Great question", "How can I help", "I hope this helps", "a~",
+    ]
+
+
+def test_base_exempt_not_in_base_list_fails(tmp_path: Path):
+    """A typo'd exemption fails loudly instead of silently exempting nothing.
+    A zh-TW phrase is not exemptable from an en pack either."""
+    with pytest.raises(ValueError, match="好問題"):
+        DollPack.load(_write_pack(
+            tmp_path, enforcement='base_exempt = ["好問題"]\n',
+        ))
