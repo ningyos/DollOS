@@ -80,6 +80,8 @@
 
 ## 驗證紀錄
 
+- Task 0 基準（2026-10-26，`4b57782`）：1804 passed、7 skipped、3 failed。3 個失敗都在 `tests/voice/test_tts_qwen3.py`，原因是 ModuleNotFoundError（環境沒有 torch，跟本 plan 無關）。`tests/voice/bridge/test_mic.py`、`test_speaker.py` 因為這台沒有 PortAudio，用 `--ignore` 跳過。
+
 （Task 5 填）
 
 ---
