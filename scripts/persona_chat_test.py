@@ -8,7 +8,7 @@ this checks voice only. A scene line starting with "[Memory context]" is
 sent as-is to mimic what the daemon injects.
 
 Usage:
-    uv run python scripts/persona_chat_test.py character_packs/gura-goofy
+    uv run python scripts/persona_chat_test.py character_packs/dafeiyu
 """
 
 from __future__ import annotations

@@ -9,7 +9,8 @@ from dollos.character import BASE_BANNED, DollPack
 
 
 _REPO_GURA_PACK = Path(__file__).resolve().parent.parent / "character_packs" / "gura"
-_REPO_YESMAN_PACK = Path(__file__).resolve().parent.parent / "character_packs" / "yesman"
+_REPO_PACKS = Path(__file__).resolve().parent.parent / "character_packs"
+_REPO_POWDUR_PACK = _REPO_PACKS / "powdur"
 
 
 def test_load_valid_pack():
@@ -61,7 +62,7 @@ def test_load_partial_identity(tmp_path: Path):
 def test_enforcement_defaults_when_absent():
     """A pack whose doll.toml has no [enforcement] table loads with defaults:
     no exclaim cap, and only the base banned list (base-persona spec §4)."""
-    pack = DollPack.load(_REPO_YESMAN_PACK)
+    pack = DollPack.load(_REPO_POWDUR_PACK)
     assert pack.enforcement.banned_substrings == BASE_BANNED["en"]
     assert pack.enforcement.base_exempt == []
     assert pack.enforcement.max_exclaim_run is None
@@ -127,7 +128,7 @@ def test_gura_pack_declares_chinese_alias_seed():
 
 
 def test_gura_personality_says_she_talks_and_writes_in_english():
-    """Same shape as yesman's CN-in / EN-out rule (test_yesman_pack.py): the
+    """Same shape as the old yesman pack's CN-in / EN-out rule: the
     language is one plain fact in her personality, not a command. All-English
     plan Task 2: it covers what she writes as well as what she says."""
     pack = DollPack.load(_REPO_GURA_PACK)
@@ -205,3 +206,14 @@ def test_base_exempt_not_in_base_list_fails(tmp_path: Path):
         DollPack.load(_write_pack(
             tmp_path, enforcement='base_exempt = ["好問題"]\n',
         ))
+
+
+@pytest.mark.parametrize(
+    "pack_dir",
+    sorted(p.parent for p in _REPO_PACKS.glob("*/doll.toml")),
+    ids=lambda p: p.name,
+)
+def test_every_shipped_pack_loads_with_base_banned_first(pack_dir: Path):
+    pack = DollPack.load(pack_dir)
+    base = BASE_BANNED[pack.meta.language]
+    assert pack.enforcement.banned_substrings[: len(base)] == base

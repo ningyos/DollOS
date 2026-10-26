@@ -83,7 +83,7 @@ primary_language = "English"
 max_turns = 6
 
 [character]
-pack = "character_packs/yesman"   # directory containing doll.toml manifest
+pack = "character_packs/gura"   # directory containing doll.toml manifest
 
 # ----------------------------------------------------------------------
 # Attention (name-wake). Doll primarily learns which names/nicknames she
