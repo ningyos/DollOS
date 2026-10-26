@@ -2,7 +2,7 @@
 
 **Spec**：`docs/superpowers/specs/2026-10-25-base-persona-template-design.md`（APPROVED 2026-10-25）
 **日期**：2026-10-25
-**狀態**：待使用者審
+**狀態**：完成（2026-10-26）
 **分支 / worktree**：DollOS `feat/base-persona`，`.worktrees/base-persona/`，從 `main`（`7d31e1f`）開。
 
 ---
