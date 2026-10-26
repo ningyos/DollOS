@@ -71,7 +71,11 @@ def main() -> int:
 
     pack = DollPack.load(args.pack)
     system = PromptRenderer().render(
-        "scaffolding", identity=pack.identity, current_self_seam="", evolution_enabled=False
+        "scaffolding",
+        identity=pack.identity,
+        language=pack.meta.language,
+        current_self_seam="",
+        evolution_enabled=False,
     )
     banned = pack.enforcement.banned_substrings
 
