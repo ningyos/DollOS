@@ -29,6 +29,7 @@ def _trigger(tmp_path, *, verdict, consolidation_running=False, monkeypatch=None
         memory_root=memory_root, transcripts_root=tmp_path,
         tool_output_store=object(),
         pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
+        base_persona="BP",
         consolidation_trigger=types.SimpleNamespace(
             current_task=(object() if consolidation_running else None)),
         idle_threshold_s=600,
@@ -239,6 +240,23 @@ async def test_skeptic_asks_for_english_reason_and_fills_english_placeholder(tmp
 
 
 @pytest.mark.asyncio
+async def test_skeptic_task_contains_base_persona(tmp_path, monkeypatch):
+    """Spec §5: taboos moved into the base persona, so the Mode-B skeptic must
+    see it and judge (b) against it."""
+    from dollos.mind import evolution_trigger as et_mod
+    seen = {}
+
+    async def _fake_run_agent(**kw):
+        seen["task"] = kw["task"]
+        return {"summary": "s", "details": "PASS"}
+    monkeypatch.setattr(et_mod, "run_agent", _fake_run_agent)
+    trig = _trigger(tmp_path, verdict=None, renderer=_StubRenderer())
+    await trig._skeptic(old_sanctioned=None, proposed="new proposal")
+    assert "[Base persona — applies to every character]\nBP" in seen["task"]
+    assert "contradict the base persona or the taboos" in seen["task"]
+
+
+@pytest.mark.asyncio
 async def test_skeptic_bare_kill_has_english_default_reason(tmp_path, monkeypatch):
     trig = _skeptic_trigger(tmp_path, monkeypatch, {"summary": "s", "details": "KILL"})
     assert await trig._skeptic(old_sanctioned=None, proposed="p") == \
@@ -271,6 +289,7 @@ async def test_skeptic_streams_on_the_model_with_evolution_purpose(tmp_path):
         memory_root=tmp_path, transcripts_root=tmp_path,
         tool_output_store=ToolOutputStore(tmp_path / "out"),
         pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
+        base_persona="BP",
         consolidation_trigger=None, persist_path=tmp_path / "mind_state.json",
         max_tokens=1024, think_budget_tokens=300,
     )

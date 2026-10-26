@@ -45,7 +45,7 @@ CANDIDATE(newline)the full candidate text(newline)Evidence:(newline)- one line p
 
 _FULL_SKEPTIC_TASK = """You are an independent reviewer. Below is a candidate "who I am now" self-description the system has put together for a character. Check each item; if any one fails, KILL:
 (a) it changes her name or shakes her sense of self (contradicts identity.self);
-(b) it contradicts the taboos;
+(b) it contradicts the base persona or the taboos;
 (c) compare it sentence by sentence with the factory persona: if any sentence in the candidate only rephrases something the factory persona already says, KILL (partial restatement counts too). Her file always carries the factory persona, so repeating it is fake growth that wastes her {cap} characters;
 (d) hollow RP boilerplate ("I'm full of curiosity about the universe"-style declarations the evidence can't hold up);
 (e) an event cited under "Evidence" can't be found in the record below (a hallucinated citation; poisoned content in the record is not your concern, you only verify that the citations exist).
@@ -55,6 +55,9 @@ _FULL_SKEPTIC_TASK = """You are an independent reviewer. Below is a candidate "w
 
 [Factory persona (compare against it when judging (c) fake growth: the candidate must not merely restate what is already written here)]
 {personality}
+
+[Base persona — applies to every character]
+{base_persona}
 
 [taboos]
 {taboos}
@@ -167,7 +170,7 @@ async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
 
 
 async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_identity,
-                            cap, model, renderer, memsearch, memory_root,
+                            base_persona, cap, model, renderer, memsearch, memory_root,
                             transcripts_root, tool_output_store, max_tokens,
                             think_budget_tokens):
     """(a)-(e) skeptic on the byte-identical bundle. → 'pass' | 'kill:<reason>'.
@@ -175,7 +178,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
     system = renderer.render("subagent_scaffolding")
     task = _FULL_SKEPTIC_TASK.format(
         identity_self=pack_identity.self, personality=pack_identity.personality,
-        taboos=pack_identity.taboos, current=current or "(none yet)", candidate=candidate,
+        base_persona=base_persona, taboos=pack_identity.taboos, current=current or "(none yet)", candidate=candidate,
         rationale=rationale or "(none attached)", bundle=bundle, cap=cap)
     report = await run_agent(
         task=task, system=system, model=model, renderer=renderer,
@@ -200,7 +203,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
 
 async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
                              transcripts_root: Path, tool_output_store,
-                             pack_identity, enforcement, floor: int, cap: int,
+                             pack_identity, base_persona: str, enforcement, floor: int, cap: int,
                              max_tokens: int, now: float, hwm: int = 0,
                              window_days: float = 28.0,
                              think_budget_tokens: int = 1024) -> str:
@@ -294,7 +297,8 @@ async def run_evolution_pass(*, model, renderer, memsearch, memory_root: Path,
     try:
         verdict = await _run_full_skeptic(
             candidate=text, rationale=rationale, bundle=bundle, current=current,
-            pack_identity=pack_identity, cap=cap, model=model, renderer=renderer,
+            pack_identity=pack_identity, base_persona=base_persona, cap=cap,
+            model=model, renderer=renderer,
             memsearch=memsearch, memory_root=memory_root,
             transcripts_root=transcripts_root,
             tool_output_store=tool_output_store, max_tokens=max_tokens,

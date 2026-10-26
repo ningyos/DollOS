@@ -406,7 +406,7 @@ async def _run_skeptic(monkeypatch, *, ident, details, capture=None, cap=600):
     monkeypatch.setattr(ek, "run_agent", fake_run_agent)
     return await ek._run_full_skeptic(
         candidate="候選文字", rationale="- x", bundle="BUNDLE", current="舊文",
-        pack_identity=ident, cap=cap, model=None, renderer=_StubRenderer(),
+        pack_identity=ident, base_persona="BASE_PERSONA_TEXT", cap=cap, model=None, renderer=_StubRenderer(),
         memsearch=None, memory_root=None, transcripts_root=None,
         tool_output_store=None, max_tokens=2048, think_budget_tokens=1024)
 
@@ -419,6 +419,16 @@ async def test_full_skeptic_task_contains_personality(monkeypatch):
     await _run_skeptic(monkeypatch, ident=_ident("出廠設定:安靜寡言,愛整理系統日誌"),
                        details="PASS", capture=cap)
     assert "出廠設定:安靜寡言,愛整理系統日誌" in cap["task"]
+
+
+@pytest.mark.asyncio
+async def test_full_skeptic_task_contains_base_persona(monkeypatch):
+    """Spec §5: taboos moved into the base persona, so the skeptic must see it
+    and judge (b) against it."""
+    cap = {}
+    await _run_skeptic(monkeypatch, ident=_ident(), details="PASS", capture=cap)
+    assert "[Base persona — applies to every character]\nBASE_PERSONA_TEXT" in cap["task"]
+    assert "contradicts the base persona or the taboos" in cap["task"]
 
 
 @pytest.mark.asyncio
@@ -451,7 +461,7 @@ async def test_full_skeptic_task_english_placeholders(monkeypatch):
     monkeypatch.setattr(ek, "run_agent", fake_run_agent)
     await ek._run_full_skeptic(
         candidate="c", rationale="", bundle="B", current=None, pack_identity=_ident(),
-        cap=600, model=None, renderer=_StubRenderer(), memsearch=None,
+        base_persona="BP", cap=600, model=None, renderer=_StubRenderer(), memsearch=None,
         memory_root=None, transcripts_root=None, tool_output_store=None,
         max_tokens=2048, think_budget_tokens=1024)
     assert "(none yet)" in cap["task"] and "(none attached)" in cap["task"]
@@ -515,7 +525,7 @@ async def test_full_skeptic_streams_with_evolution_purpose(tmp_path):
     model = FakeModel([_REPORT % "PASS 沒問題"])
     verdict = await ek._run_full_skeptic(
         candidate="候選文字", rationale="- x", bundle="BUNDLE", current="舊文",
-        pack_identity=_ident(), cap=600, **_agent_kwargs(model, tmp_path))
+        pack_identity=_ident(), base_persona="BP", cap=600, **_agent_kwargs(model, tmp_path))
     assert verdict == "pass"
     assert model.calls[0]["purpose"] == "evolution"
     assert model.calls[0]["think_budget"] == 300
@@ -526,5 +536,5 @@ def _pass_kwargs(mr):
     ident = Identity(self="我是測試角色", personality="安靜", taboos="不編造")
     return dict(model=None, renderer=None, memsearch=None, memory_root=mr,
                 transcripts_root=mr / "tx", tool_output_store=None,
-                pack_identity=ident, enforcement=Enforcement(),
+                pack_identity=ident, base_persona="BP", enforcement=Enforcement(),
                 floor=80, cap=600, max_tokens=2048, now=1000.0)

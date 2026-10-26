@@ -44,6 +44,7 @@ async def test_external_edit_ratification_end_to_end(tmp_path, monkeypatch):
         model=object(), renderer=object(), memsearch=object(),
         memory_root=tmp_path, transcripts_root=tmp_path, tool_output_store=object(),
         pack_identity=Identity(self="You are Gura.", personality="p", taboos="t"),
+        base_persona="BP",
         consolidation_trigger=types.SimpleNamespace(current_task=None),
         persist_path=tmp_path / "mind_state.json")
     async def _pass(**kw): return "pass"
@@ -90,6 +91,7 @@ async def test_counter_round_trip_then_adopt(tmp_path, monkeypatch):
         model=object(), renderer=object(), memsearch=object(),
         memory_root=tmp_path, transcripts_root=tmp_path, tool_output_store=object(),
         pack_identity=Identity(self="s", personality="p", taboos="t"),
+        base_persona="BP",
         consolidation_trigger=types.SimpleNamespace(current_task=None),
         persist_path=tmp_path / "mind_state.json")
     async def _pass(**kw): return "pass"

@@ -669,6 +669,7 @@ async def agent_keeper_retry(rig: Rig) -> str:
             model=None, renderer=None, memsearch=None, memory_root=rig.memory_root,
             transcripts_root=rig.ctx.transcripts_root, tool_output_store=None,
             pack_identity=Identity(self=factory, personality=factory, taboos=SENTINEL),
+            base_persona=SENTINEL,
             enforcement=rig.kernel._doll_pack.enforcement, floor=floor, cap=cap,
             max_tokens=2048, now=rig.now,
         )
