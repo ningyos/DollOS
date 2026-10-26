@@ -463,6 +463,7 @@ class DollOS:
         system_prompt_prefix, system_prompt_suffix = split_scaffolding(
             self.renderer,
             identity=self._doll_pack.identity,
+            language=self._doll_pack.meta.language,
             available_skills=available_skills,
             evolution_enabled=settings.evolution.enabled,
         )
