@@ -122,6 +122,7 @@ DollOS/
 | Roadmap step 36 — System Pulse 臨場感調校（Alert severity + `[Body signal]` 框架） | Merged |
 | Roadmap step 37 — 代謝 vital 模型 v1a+v1b（energy 由 token 驅動 × GPU 熱乘數，VitalsRecorder） | Merged 2026-07-10 |
 | 基礎人設模板（中英兩版，跟 pack 的 `[meta].language` 切換；BASE_BANNED 客服腔清單併入 enforcement；演化 skeptic 也看得到基礎人設；拿掉 Yes Man、Gura 英文、新增大肥魚〔本機自用〕；spec `2026-10-25-base-persona-template-design.md`） | Merged 2026-10-26 |
+| Harness S1–S7（principal 四值 + `TOOL_MATRIX`、TurnPolicy、ToolRegistry/ToolExecutor、單一 TurnRunner、讀外部內容後降權、MCP client；另修 `[Recent outputs]` 和 transcript 的陌生人外洩；plan `2026-10-27-harness-s2-s7.md`，live 驗收 `docs/research/2026-10-27-harness-live-acceptance.md`） | Merged 2026-10-27 |
 
 ### 已歸檔（被後續 step 取代）
 
@@ -132,10 +133,9 @@ DollOS/
 
 ### 下一個
 
-1. **Harness 收尾**：對 Strata 跑一次 live（plan `docs/superpowers/plans/2026-10-27-harness-s2-s7.md` 的驗收），然後 merge `feat/harness-s2-s7`。
-2. **記住糾正**：她記得主人給過的糾正。v1 的核心；要先寫 spec。
-3. **工具合併 plan**：25 個工具收成約 15 個（harness spec §4）。
-4. **macOS 移植**：spec `docs/superpowers/specs/2026-10-21-macos-port-design.md`，plan `docs/superpowers/plans/2026-10-21-macos-port.md`。核心能用之前凍結。
+1. **記住糾正**：她記得主人給過的糾正。v1 的核心；要先寫 spec。
+2. **工具合併 plan**：25 個工具收成約 15 個（harness spec §4）。
+3. **macOS 移植**：spec `docs/superpowers/specs/2026-10-21-macos-port-design.md`，plan `docs/superpowers/plans/2026-10-21-macos-port.md`。核心能用之前凍結。
 
 **已收的設計準則**：
 - 偏好學習 / 習慣學習不是新 subsystem，是 prompt engineering — Doll 用 NoteMemory 自記
