@@ -121,3 +121,22 @@ TOOL_MATRIX: dict[str, frozenset[Principal]] = {
 def tools_for(principal: Principal) -> frozenset[str]:
     """Every tool ``principal`` may ever be bound to."""
     return frozenset(n for n, allowed in TOOL_MATRIX.items() if principal in allowed)
+
+
+# What a turn may still run once it has read untrusted content (harness spec
+# §6.5 point 2, plan 2026-10-27 Task 6): ``ToolExecutor`` narrows the rest of
+# the turn's bound set to this after a call whose tool class says it
+# ``taints`` (Recall with include_external; Task 7's MCP tools with
+# ``untrusted_output``). The spec downgrades to the stranger-DM tier, which
+# does not exist here, so the plan downgrades to external_public's row —
+# minus NoteMemory and WriteDiary: those scope their writes by
+# ``origin_tier``, which stays the owner's on a tainted turn, so allowing
+# them would launder a stranger's text into ``shared/`` memory that later
+# owner turns auto-inject. Speaking is unaffected (it is not a tool).
+# Report is kept: it is an agent's mouth (its result goes back to Doll the
+# way speech goes to the owner), and without it a tainted worker could never
+# end with its result. No MindLoop turn kind binds Report, and
+# external_public's row does not have it, so it adds nothing there.
+TAINTED_TOOLS: frozenset[str] = (
+    tools_for("external_public") - {"NoteMemory", "WriteDiary"}
+) | {"Report"}

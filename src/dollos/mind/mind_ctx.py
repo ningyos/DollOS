@@ -71,6 +71,14 @@ class MindCtx:
     # "internal" (no authored input), or "external_public". Recomputed every
     # _run_one_turn alongside origin_tier.
     principal: str = "internal"
+    # Taint downgrade (harness spec §6.5 point 2, plan 2026-10-27 Task 6):
+    # set by ``ToolExecutor`` once a call that read untrusted content ran
+    # (a tool class's ``taints(arguments)``); from then on the turn may only
+    # run ``permissions.TAINTED_TOOLS``. Lives here, not on the executor,
+    # because MindLoop builds one executor per call and the flag must hold
+    # for the rest of the turn, every pass. MindLoop resets it every
+    # _run_one_turn alongside principal; an agent's ctx starts False.
+    tainted: bool = False
     # Per-turn origin tier (P1e spec §3.4 S1), the compatibility view of
     # ``principal`` (permissions.ORIGIN_TIER): "internal" (owner or
     # internal), "external_dm" (owner in a DM), or "external_public"

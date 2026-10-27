@@ -490,6 +490,9 @@ class MindLoop:
         self._ctx.external_ctx = batch_external(perceptions)
         self._ctx.principal = principal_of(perceptions)
         self._ctx.origin_tier = ORIGIN_TIER[self._ctx.principal]
+        # A new turn starts untainted (spec §6.5 point 2): the downgrade
+        # lasts for the rest of ONE turn, never into the next.
+        self._ctx.tainted = False
 
         # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
         # opens a fresh SelfRevision decision window. The surfaced-this-turn
@@ -1564,7 +1567,10 @@ class MindLoop:
         no action log, no safe-mode count (the Turn Runner caps repeats via
         UNBOUND_REJECT_LIMIT). Every other call, a name outside ``offered``
         included, goes to ``_dispatch_tool`` against the runnable set, where
-        an unknown tool is a failure as before."""
+        an unknown tool is a failure as before. Once the turn is tainted
+        (``ctx.tainted``, spec §6.5 point 2) the executor narrows the
+        runnable set further; the flag lives on ``ctx`` so it outlives this
+        per-call executor."""
         executor = ToolExecutor(
             self._ctx, offered=offered, bound=self._runnable_tools(offered),
             principal=self._ctx.principal, kind=self._binding_kind(),
