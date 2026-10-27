@@ -65,11 +65,17 @@ class MindCtx:
     # every turn by MindLoop alongside current_turn/origin_tier — there is no
     # cross-turn bleed.
     turn_memory_sources: list[str] = field(default_factory=list)
-    # Per-turn origin tier (P1e spec §3.4 S1): computed once at drain from this
-    # bucket's perceptions + author_is_owner — "internal" (no ChannelMessage),
-    # "external_dm" (ChannelMessage from the owner), or "external_public"
-    # (ChannelMessage from anyone else). Recomputed every _run_one_turn
-    # (P1a single-origin bucket), so there is no cross-bucket bleed.
+    # Per-turn principal (harness spec §6.3, plan 2026-10-27 Task 2):
+    # ``dollos.harness.permissions.principal_of`` over this bucket's
+    # perceptions — "owner" (live UserSpoke), "owner_dm" (owner AND in a DM),
+    # "internal" (no authored input), or "external_public". Recomputed every
+    # _run_one_turn alongside origin_tier.
+    principal: str = "internal"
+    # Per-turn origin tier (P1e spec §3.4 S1), the compatibility view of
+    # ``principal`` (permissions.ORIGIN_TIER): "internal" (owner or
+    # internal), "external_dm" (owner in a DM), or "external_public"
+    # (anyone else). Memory routing/scoping, the action log, transcripts and
+    # speech routing read this; its values did not change with Task 2.
     origin_tier: str = "internal"
     # Per-bucket origin channel_id (spec §3.1 R2-C1): set by MindLoop.iterate
     # before dispatching each drain_grouped() bucket to _run_one_turn, so

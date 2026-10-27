@@ -1312,12 +1312,17 @@ MAIN_TOOLS: list[type[BaseModel]] = [
 
 REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
 
-# P1e S4/S5: conservative tool set for any external-origin turn (Discord
-# public channel OR owner DM — "external" includes the owner's own DM; a
-# compromised Discord account must never equal home-computer RCE). PinSelf is
-# added conditionally by the registry logic (mind_loop._active_tool_registry)
-# only on reflection turns with self_profile enabled — it is NOT baked in
-# here, since a non-reflection external turn gets none of it.
+# P1e S4/S5: conservative tool set for an external_public turn — strangers,
+# non-owner DMs (MCP peers included), and the owner posting in a PUBLIC
+# channel (the reply there is public). The owner's own DM is NOT external
+# for tools: owner DM = the owner at the local keyboard, Shell included
+# (user decision 2026-10-27, harness spec §6.3; the user accepted the risk
+# that a compromised Discord account then equals the owner on the home
+# computer). PinSelf is added conditionally by the registry logic
+# (mind_loop._active_tool_registry) only on reflection turns with
+# self_profile enabled — it is NOT baked in here, since a non-reflection
+# external turn gets none of it. The per-principal table is
+# dollos.harness.permissions.TOOL_MATRIX.
 # DiscordLookup is intentionally NOT included — deferred to P2.
 EXTERNAL_TOOLS: frozenset[str] = frozenset({"Recall", "NoteMemory", "WriteDiary"})
 

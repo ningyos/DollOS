@@ -174,6 +174,8 @@ async def test_internal_tool_json_identical_across_turn_kinds(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_turns_offer_no_internal_tools(tmp_path):
+    """A public turn is offered EXTERNAL_TOOLS only; the owner's DM is
+    offered the local owner's list (owner DM = local owner, 2026-10-27)."""
     model = FakeModel()
     ml = make_mindloop(memory_root=tmp_path, llm=model,
                        self_profile_enabled=True, evolution_enabled=True)
@@ -181,11 +183,13 @@ async def test_external_turns_offer_no_internal_tools(tmp_path):
                                author_is_owner=False, content="hi")])
     await ml._run_one_turn([_p("ChannelMessage", channel_id="dm", author="me",
                                author_is_owner=True, is_dm=True, content="hi")])
+    await ml._run_one_turn([_p("UserSpoke", text="hi")])
 
     public = {t["function"]["name"] for t in model.calls[0]["tools"]}
     owner_dm = {t["function"]["name"] for t in model.calls[1]["tools"]}
+    local_owner = {t["function"]["name"] for t in model.calls[2]["tools"]}
     assert public == set(EXTERNAL_TOOLS)
-    assert owner_dm == set(EXTERNAL_TOOLS) | {"LearnName"}
+    assert owner_dm == local_owner
 
 
 @pytest.mark.asyncio

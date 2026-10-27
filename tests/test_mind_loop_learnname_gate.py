@@ -6,7 +6,8 @@ structurally ABSENT from ``_active_tool_registry()``'s returned dict on any
 turn that is not a live, owner-present turn:
 
 - present:  ``external_dm`` (owner DM — a ChannelMessage from the owner IS
-  the live first-hand utterance, no additional UserSpoke needed).
+  the live first-hand utterance, no additional UserSpoke needed; bound like
+  the local owner since 2026-10-27).
 - present:  ``internal`` turn that also carries a live ``UserSpoke``
   perception this same batch (local chat / voice — owner at the keyboard).
 - ABSENT:   ``external_public`` (any stranger, including the owner posting
@@ -58,19 +59,24 @@ def _reflection_moment() -> Perception:
 
 
 @pytest.mark.asyncio
-async def test_external_dm_owner_turn_gets_learnname_but_not_shell(tmp_path):
+async def test_external_dm_owner_turn_gets_learnname_and_owner_tools(tmp_path):
     """Owner DM is a live, first-hand, owner-present turn — LearnName is
-    added to the conservative EXTERNAL_TOOLS subset, but the P1e no-Shell
-    invariant must still hold (only LearnName is added, nothing else)."""
+    bound, and since 2026-10-27 (owner DM = local owner) so are Shell,
+    SpawnWorkflow and WriteSchedule."""
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn(
         [_channel_msg("叫我小鯊", author_is_owner=True, is_dm=True)]
     )
     reg = ml._active_tool_registry()
     assert "LearnName" in reg
-    assert "Shell" not in reg
-    assert "SpawnWorkflow" not in reg
-    assert "WriteSchedule" not in reg
+    assert "Shell" in reg
+    assert "SpawnWorkflow" in reg
+    assert "WriteSchedule" in reg
+    # The same owner in a PUBLIC channel stays external_public: no Shell.
+    await ml._run_one_turn(
+        [_channel_msg("叫我小鯊", author_is_owner=True, is_dm=False)]
+    )
+    assert "Shell" not in ml._active_tool_registry()
 
 
 @pytest.mark.asyncio
