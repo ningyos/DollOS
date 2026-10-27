@@ -56,6 +56,8 @@ async def run_agent(
     think_budget: int,
     purpose: str,
     on_iter_end: "Callable[[int, str, str, list[dict], list[ToolResult], int], None] | None" = None,
+    owner_transcript: Path | None = None,
+    self_profile_max_chars: int = 4000,
 ) -> dict | None:
     """Run one ephemeral agent cascade. Returns the ``Report`` args dict, or
     ``None`` if Report was never called.
@@ -74,7 +76,11 @@ async def run_agent(
     ``kind`` names the agent's turn kind in its tool-call log records:
     ``worker`` (workflow worker / skeptic / synthesis, ``SUB_TOOLS``) or
     ``keeper`` (consolidation and evolution keepers, the evolution skeptic,
-    ``KEEPER_TOOLS``).
+    ``KEEPER_TOOLS``; the profile keeper, ``EditOwnerProfile`` + ``Report``).
+    ``owner_transcript`` / ``self_profile_max_chars`` go onto the agent's
+    ctx for the profile keeper's ``EditOwnerProfile`` (the transcript its
+    quotes are checked against, the profile's shared cap); every other
+    agent leaves them at their defaults.
 
     The agent runs on the ``TurnRunner`` with its kind's policy (at most
     ``MAX_CASCADE_PASSES`` passes, done once Report ran, the stuck-tool
@@ -98,6 +104,8 @@ async def run_agent(
         shell_runner=shell_runner,
         workflow_runner=None,  # no recursion / no nested workflows
         monitor_runner=monitor_runner,
+        self_profile_max_chars=self_profile_max_chars,
+        owner_transcript=owner_transcript,
         # agent_report starts None; the Report tool sets it to signal exit.
     )
 

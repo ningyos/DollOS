@@ -577,6 +577,15 @@ class DollOS:
             energy_idle_threshold_s=settings.energy.idle_threshold_s,
             energy_restore_debounce_s=settings.energy.restore_debounce_s,
             think_budget_tokens=settings.llm.think_budget_tokens,
+            # Daily profile keeper, after each successful consolidation
+            # (remember-corrections plan Task 4). It writes self_profile, so
+            # it runs only where self_profile is on.
+            profile_keeper_enabled=(settings.profile_keeper.enabled
+                                    and settings.self_profile.enabled),
+            profile_keeper_max_tokens=settings.profile_keeper.max_tokens,
+            profile_keeper_think_budget_tokens=settings.profile_keeper.think_budget_tokens,
+            profile_keeper_transcript_tail_chars=settings.profile_keeper.transcript_tail_chars,
+            self_profile_max_chars=settings.self_profile.max_chars,
         )
 
         # EvolutionTrigger — 慢變演化 Mode-A keeper + Mode-B verdict-only

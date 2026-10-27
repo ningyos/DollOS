@@ -1086,6 +1086,97 @@ class PinSelf(BaseModel):
         return result
 
 
+class EditOwnerProfile(BaseModel):
+    """Add, replace or remove an entry about your owner in your self-profile:
+    the user section (what you've noticed about your owner) or the
+    relationship section (you and your owner). Every change rests on your
+    owner's own words from today's transcript, given in quote; a change
+    whose quote is not in your owner's lines is refused."""
+
+    section: Literal["user", "relationship"] = Field(
+        description=(
+            "Which section: user=what you notice about your owner / "
+            "relationship=you and your owner. Also fill it for replace/remove "
+            "(target wins)."
+        )
+    )
+    op: Literal["add", "replace", "remove"] = Field(
+        description=(
+            "add=add an entry / replace=locate by target and replace with text / "
+            "remove=locate by target and delete."
+        )
+    )
+    target: str = Field(
+        description=(
+            "For replace/remove: the id of the entry (as listed with the current "
+            "entries). Empty string for add."
+        )
+    )
+    text: str = Field(
+        description=(
+            "New content for add/replace, a plain fact about your owner or the two "
+            "of you; empty string for remove."
+        )
+    )
+    quote: str = Field(
+        description=(
+            "Your owner's words from today's transcript that this change rests on, "
+            "copied exactly (a part of one of their lines is enough). Your own "
+            "lines do not count."
+        )
+    )
+
+    def _summary(self) -> str:
+        return f"owner profile {self.op} {self.target or self.section}"
+
+    async def run(self, ctx: "MindCtx") -> str:
+        from dollos.mind import self_profile
+        from dollos.mind.profile_keeper import MIN_QUOTE_CHARS, owner_said
+        path = ctx.memory_root / "self_profile.md"
+        # Remember-corrections plan Task 4. Every refusal comes before
+        # apply: the file is unchanged and no history event is logged.
+        # The quote is checked against the day's transcript on disk
+        # (ctx.owner_transcript, decision 4) — never text from the model.
+        transcript = ctx.owner_transcript
+        if transcript is None or not transcript.exists():
+            return "No transcript for today, so no edit can be checked; nothing changed."
+        # Decision 3: only user / relationship. ``section`` is held to those
+        # by its Literal; a replace / remove target is looked up across all
+        # sections, so the entry it resolves to is checked too (as PinSelf
+        # does, Task 2). A target that resolves to nothing goes on to
+        # apply's own not-found result.
+        if self.op in ("replace", "remove"):
+            located = self_profile.section_of(path, self.target)
+            if located is not None and located not in ("user", "relationship"):
+                return (f"The {located} section is not yours to change here; only "
+                        f"the user and relationship sections are.")
+        quote = " ".join(self.quote.split())
+        if len(quote) < MIN_QUOTE_CHARS:
+            return (f"The quote must be at least {MIN_QUOTE_CHARS} characters of "
+                    f"your owner's words; nothing changed.")
+        if not owner_said(transcript, quote):
+            return ("The quote is not in your owner's lines of today's transcript; "
+                    "nothing changed. Copy your owner's words exactly.")
+        today = f"{datetime.now():%Y-%m-%d}"
+        result = self_profile.apply(
+            path,
+            section=self.section,
+            op=self.op,
+            target=self.target,
+            text=self.text,
+            max_chars=ctx.self_profile_max_chars,
+            today=today,
+            history_path=ctx.memory_root / "self_history.jsonl",
+            turn=ctx.current_turn,
+            external_ctx=ctx.external_ctx,
+            # Decision 6: the keeper's change is logged like a pin, plus who
+            # made it and the owner's words it rests on.
+            history_extra={"by": "profile_keeper", "quote": quote},
+        )
+        _record(ctx, "EditOwnerProfile", self._summary())
+        return result
+
+
 class SelfRevision(BaseModel):
     """Adopt / reject the pending revision candidate for "Who I am now" (only on
     reflection turns, and only when a candidate is pending). This is your own personality
@@ -1388,4 +1479,9 @@ SUB_TOOLS: list[type[BaseModel]] = [
 
 # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
+
+# The daily profile keeper's tools (remember-corrections plan Task 4,
+# decision 3): EditOwnerProfile is in no other list — not MAIN_TOOLS, not an
+# extra — so Doll is never offered it and her tool JSON is unchanged.
+PROFILE_KEEPER_TOOLS: list[type[BaseModel]] = [EditOwnerProfile, Report]
 

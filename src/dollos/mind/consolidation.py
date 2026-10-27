@@ -15,6 +15,7 @@ from pathlib import Path
 from dollos.agent_engine import run_agent
 from dollos.memory_writer import is_action_log_line
 from dollos.mind.mind_state import save_state
+from dollos.mind.profile_keeper import run_profile_keeper
 from dollos.tools import KEEPER_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,14 @@ class ConsolidationTrigger:
       prevent 5-second retry storms on persistent failures.
     - last_consolidation_turn / last_consolidated_date: updated only on success.
 
+    Profile keeper (remember-corrections spec §2.2, plan decision 5): after a
+    SUCCESSFUL consolidation for a date — and with consolidation's state
+    already saved — the keeper runs for the same date when
+    ``profile_keeper_enabled``. A failed consolidation (no transcript
+    included) skips it with one log line. Its errors are logged and change
+    neither consolidation's result nor its state; no retry, no schedule of
+    its own. A returning owner cancels it like consolidation.
+
     Trigger saves state itself (it runs outside mind_loop.iterate).
     """
 
@@ -134,6 +143,11 @@ class ConsolidationTrigger:
         energy_idle_threshold_s: int = 600,
         energy_restore_debounce_s: int = 300,
         think_budget_tokens: int = 1024,
+        profile_keeper_enabled: bool = False,
+        profile_keeper_max_tokens: int = 2048,
+        profile_keeper_think_budget_tokens: int = 1024,
+        profile_keeper_transcript_tail_chars: int = 8000,
+        self_profile_max_chars: int = 4000,
     ) -> None:
         self._state = state
         self._persist_path = persist_path
@@ -159,6 +173,14 @@ class ConsolidationTrigger:
         self._restore_per_tick = restore_per_tick
         self._energy_idle_threshold_s = energy_idle_threshold_s
         self._energy_restore_debounce_s = energy_restore_debounce_s
+        # [profile_keeper] (remember-corrections plan Task 4); the keeper
+        # shares consolidation's agent_timeout_s. self_profile_max_chars is
+        # the profile's shared cap ([self_profile].max_chars).
+        self._profile_keeper_enabled = profile_keeper_enabled
+        self._profile_keeper_max_tokens = profile_keeper_max_tokens
+        self._profile_keeper_think_budget_tokens = profile_keeper_think_budget_tokens
+        self._profile_keeper_transcript_tail_chars = profile_keeper_transcript_tail_chars
+        self._self_profile_max_chars = self_profile_max_chars
 
     def _maybe_restore_energy(self, now: float) -> None:
         """Restore energy if user has been idle long enough (B3 spec §3.3).
@@ -228,11 +250,7 @@ class ConsolidationTrigger:
                     # Idle + new turns but nothing sealed to do yet; persist cooldown.
                     save_state(self._state, self._persist_path)
                     continue
-                ok = await self._run_once(target)
-                if ok:
-                    self._state.last_consolidation_turn = self._state.user_turn_count
-                    self._state.last_consolidated_date = target
-                save_state(self._state, self._persist_path)
+                await self._cycle(target)
             except asyncio.CancelledError:
                 # Cancelled by a returning user (or shutdown); persist cooldown.
                 save_state(self._state, self._persist_path)
@@ -245,6 +263,54 @@ class ConsolidationTrigger:
                     save_state(self._state, self._persist_path)
                 except Exception:
                     pass
+
+    async def _cycle(self, target: str) -> bool:
+        """Consolidate ``target``, save state, then run the profile keeper
+        for it (class doc). Returns consolidation's result."""
+        ok = await self._run_once(target)
+        if ok:
+            self._state.last_consolidation_turn = self._state.user_turn_count
+            self._state.last_consolidated_date = target
+        save_state(self._state, self._persist_path)
+        if not self._profile_keeper_enabled:
+            return ok
+        if not ok:
+            logger.info("profile keeper: consolidation of %s did not succeed; skip",
+                        target)
+            return ok
+        await self._run_keeper(target)
+        return ok
+
+    async def _run_keeper(self, target: str) -> None:
+        """Run the profile keeper for ``target`` as ``current_task`` (so
+        cancel_current reaches it), under consolidation's timeout. Errors
+        are logged; CancelledError propagates like consolidation's."""
+        self.current_task = asyncio.create_task(
+            asyncio.wait_for(
+                run_profile_keeper(
+                    target_date=target,
+                    model=self._model,
+                    renderer=self._renderer,
+                    memsearch=self._memsearch,
+                    memory_root=self._memory_root,
+                    transcripts_root=self._transcripts_root,
+                    tool_output_store=self._tool_output_store,
+                    max_tokens=self._profile_keeper_max_tokens,
+                    think_budget_tokens=self._profile_keeper_think_budget_tokens,
+                    transcript_tail_chars=self._profile_keeper_transcript_tail_chars,
+                    self_profile_max_chars=self._self_profile_max_chars,
+                ),
+                timeout=self._agent_timeout_s,
+            )
+        )
+        try:
+            await self.current_task
+        except asyncio.TimeoutError:
+            logger.warning("profile keeper timed out for %s", target)
+        except Exception:
+            logger.exception("profile keeper run failed for %s", target)
+        finally:
+            self.current_task = None
 
     async def _run_once(self, target: str) -> bool:
         """Run consolidation for target date, wrapped in wait_for + create_task."""
