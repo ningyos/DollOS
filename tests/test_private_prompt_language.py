@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from dollos.cascade.tool_loop import dispatch_one
+from dollos.harness.executor import dispatch_one
 from dollos.character import Identity
 from dollos.config import (
     CharacterConfig,

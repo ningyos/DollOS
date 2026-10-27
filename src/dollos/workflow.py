@@ -38,7 +38,7 @@ from dollos.mind.mind_state import Perception
 from dollos.tools import SUB_TOOLS
 
 if TYPE_CHECKING:
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
     from dollos.cascade_log import CascadeLogger
     from dollos.llm.model import ModelAdapter
     from dollos.memory import FtsMemory
@@ -325,7 +325,7 @@ class WorkflowRunner:
             tool_output_store=self._tool_output_store,
             shell_runner=self._shell_runner,
             monitor_runner=self._monitor_runner,
-            tools=SUB_TOOLS,
+            tools=SUB_TOOLS, kind="worker",
             max_tokens=4096,  # answer budget; thinking is on top
             think_budget=self._think_budget_tokens,
             purpose="workflow",

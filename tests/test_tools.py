@@ -989,7 +989,7 @@ def test_mood_tool_rejects_anything_but_one_english_word(emotion):
 async def test_mood_tool_rejection_reaches_her_as_a_clear_tool_result(tmp_path):
     """Through dispatch_one (the live path) the rejection is a failed tool
     result that says what an emotion has to be; her mood stays as it was."""
-    from dollos.cascade.tool_loop import dispatch_one
+    from dollos.harness.executor import dispatch_one
     from dollos.tools import MoodTool
 
     state = MindState(mood=Mood(emotion="calm"))

@@ -25,7 +25,8 @@ from dollos.mind.sink_resolver import SinkResolver
 from dollos.tools import SUB_TOOLS
 
 if TYPE_CHECKING:
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
+    from dollos.harness.turn_policy import TurnKind
     from dollos.llm.model import ModelAdapter
     from dollos.memory import FtsMemory
     from dollos.monitor_runner import MonitorRunner
@@ -47,6 +48,7 @@ async def run_agent(
     shell_runner: "ShellRunner | None" = None,
     monitor_runner: "MonitorRunner | None" = None,
     tools: list[type] = SUB_TOOLS,
+    kind: "TurnKind",
     max_tokens: int = 4096,
     think_budget: int,
     purpose: str,
@@ -64,6 +66,10 @@ async def run_agent(
     worker cascades can log to the ``CascadeLogger`` (the live-loop fan-out).
     ``max_tokens`` is the answer budget per call; ``think_budget`` caps the
     thinking on top of it. ``purpose`` labels the calls in ``llm_calls``.
+    ``kind`` names the agent's turn kind in its tool-call log records:
+    ``worker`` (workflow worker / skeptic / synthesis, ``SUB_TOOLS``) or
+    ``keeper`` (consolidation and evolution keepers, the evolution skeptic,
+    ``KEEPER_TOOLS``).
     """
     tools_by_name: dict[str, type] = {cls.__name__: cls for cls in tools}
     messages: list[dict] = [{"role": "user", "content": task}]
@@ -95,6 +101,7 @@ async def run_agent(
         messages=messages,
         tools=tools,
         tools_by_name=tools_by_name,
+        kind=kind,
         ctx=ctx,
         sink=None,
         max_tokens=max_tokens,

@@ -1169,7 +1169,7 @@ async def test_subagent_dispatch_does_not_record_to_doll(tmp_path):
     """Isolation: the subagent path (dispatch_one) must NOT touch Doll's
     tool memory — recording lives only in the live wrapper."""
     from tests._dispatcher_helpers import _make_mind_ctx
-    from dollos.cascade.tool_loop import dispatch_one
+    from dollos.harness.executor import dispatch_one
     ctx = _make_mind_ctx(tmp_path)
     await dispatch_one("SetFocus", {"text": "x"}, ctx,
                        {"SetFocus": __import__("dollos.tools", fromlist=["SetFocus"]).SetFocus})

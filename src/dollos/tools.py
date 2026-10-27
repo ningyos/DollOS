@@ -18,7 +18,7 @@ import time
 import uuid
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import jieba
 from pydantic import BaseModel, Field, field_validator
@@ -269,6 +269,9 @@ class InvokeSkill(BaseModel):
     follow its instructions step by step.
     """
 
+    # Read-only (ToolRegistry, mind-loop spec §11).
+    effectful: ClassVar[bool] = False
+
     name: str = Field(
         description=(
             "Skill name (matches the entry's frontmatter `name` field "
@@ -304,6 +307,9 @@ class Recall(BaseModel):
     file-date (one day); finer-grained (minute/second) filtering is not
     supported in this version.
     """
+
+    # Read-only (ToolRegistry, mind-loop spec §11).
+    effectful: ClassVar[bool] = False
 
     query: str = Field(
         description=(
@@ -660,6 +666,9 @@ class ReadToolOutput(BaseModel):
     than the preview.
     """
 
+    # Read-only (ToolRegistry, mind-loop spec §11).
+    effectful: ClassVar[bool] = False
+
     id: str = Field(
         ...,
         description="output id from a tool result perception (e.g. 'out-abc12345')",
@@ -693,6 +702,9 @@ class GrepToolOutput(BaseModel):
     """Grep a stored tool output for a regex pattern. Returns matching lines
     with their line index, capped by max_matches.
     """
+
+    # Read-only (ToolRegistry, mind-loop spec §11).
+    effectful: ClassVar[bool] = False
 
     id: str = Field(..., description="output id from a tool result perception")
     pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")

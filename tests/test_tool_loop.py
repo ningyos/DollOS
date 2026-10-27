@@ -11,7 +11,8 @@ import respx
 from pydantic import BaseModel, ValidationError
 
 from dollos.agent_engine import run_agent
-from dollos.cascade.tool_loop import dispatch_one, format_unknown_tool, format_validation_error, run_tool_cascade
+from dollos.cascade.tool_loop import run_tool_cascade
+from dollos.harness.executor import dispatch_one, format_unknown_tool, format_validation_error
 from dollos.llm.model import End, SpeechDelta, ThinkDelta, Usage
 from dollos.llm.tool_schema import tool_schemas
 from dollos.tools import SUB_TOOLS, ReadToolOutput, Recall, SetFocus, Shell
@@ -190,6 +191,7 @@ async def _cascade(model, tmp_path, *, tools=(Shell, Recall), sink=None, **kw):
         messages=messages,
         tools=tools,
         tools_by_name={cls.__name__: cls for cls in tools},
+        kind="worker",
         ctx=_make_mind_ctx(tmp_path),
         sink=sink,
         max_tokens=512,
@@ -373,6 +375,7 @@ async def _agent(model, tmp_path, **kw):
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         think_budget=64,
         purpose=kw.pop("purpose", "workflow"),
+        kind=kw.pop("kind", "worker"),
         **kw,
     )
     return report, memsearch
