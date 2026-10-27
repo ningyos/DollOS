@@ -18,7 +18,7 @@ asks ``effective_kind`` for the binding.
 The two kinds that are not MindLoop turns, ``worker`` (a workflow worker /
 skeptic / synthesis agent) and ``keeper`` (consolidation and evolution
 keepers, the evolution skeptic), are defined here from ``SUB_TOOLS`` /
-``KEEPER_TOOLS``; the Turn Runner (plan Task 5) binds them.
+``KEEPER_TOOLS``; ``agent_engine.run_agent`` runs them on the Turn Runner.
 """
 from __future__ import annotations
 
@@ -46,6 +46,15 @@ TurnKind = Literal[
 # Config switches an extra tool can depend on, resolved at bind time.
 Condition = Literal["self_profile", "evolution"]
 
+# Budget cap on a MindLoop turn's tool loop (spec §8.2): a turn runs at most
+# this many model calls. Generous enough for legitimate multi-step plans, but
+# a rotating-invalid-call storm or a tool loop terminates deterministically.
+# This is a convergence criterion, NOT a fallback.
+MAX_SYNC_REFEED_PASSES = 8
+
+# An agent that keeps calling tools without ever ending stops here.
+MAX_CASCADE_PASSES = 16
+
 
 @dataclass(frozen=True)
 class Extra:
@@ -72,6 +81,15 @@ class TurnPolicy:
     extra_blocks: frozenset[str] = frozenset()
     # The turn's speech is written to the day's doll transcript.
     doll_transcript: bool = True
+    # The Turn Runner (harness/runner.py): at most this many passes; the turn
+    # is done once Report ran (an agent); and which tool-failure rule ends it
+    # — "safe_mode" (MindLoop: same tool 3x in a row, or
+    # SAFE_MODE_FAIL_THRESHOLD consecutive failures; she enters safe mode)
+    # or "stuck_tool" (an agent: one tool's failures reach 3, counted across
+    # other tools' failures).
+    max_passes: int = MAX_SYNC_REFEED_PASSES
+    must_report: bool = False
+    failure_rule: Literal["safe_mode", "stuck_tool"] = "safe_mode"
 
 
 _REFLECTION_EXTRAS = (
@@ -185,11 +203,13 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # Workflow worker / skeptic / synthesis agent: no sink, ends with Report.
     "worker": TurnPolicy(
         speaks=False, kind_tools=frozenset(c.__name__ for c in SUB_TOOLS),
+        max_passes=MAX_CASCADE_PASSES, must_report=True, failure_rule="stuck_tool",
     ),
     # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/
     # NoteMemory/SpawnMonitor/RemoveMonitor).
     "keeper": TurnPolicy(
         speaks=False, kind_tools=frozenset(c.__name__ for c in KEEPER_TOOLS),
+        max_passes=MAX_CASCADE_PASSES, must_report=True, failure_rule="stuck_tool",
     ),
 }
 

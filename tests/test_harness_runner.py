@@ -1,4 +1,6 @@
-"""Tests for cascade.tool_loop shared dispatch + friendly error formatting."""
+"""Tests for the Turn Runner (harness/runner.py) on the agent policy, its
+shared tool-call running, dispatch_one's friendly error formatting, and
+run_agent (moved from tests/test_tool_loop.py with plan 2026-10-27 Task 5)."""
 from __future__ import annotations
 
 import asyncio
@@ -11,8 +13,13 @@ import respx
 from pydantic import BaseModel, ValidationError
 
 from dollos.agent_engine import run_agent
-from dollos.cascade.tool_loop import run_tool_cascade
-from dollos.harness.executor import dispatch_one, format_unknown_tool, format_validation_error
+from dollos.harness.executor import (
+    ToolExecutor,
+    dispatch_one,
+    format_unknown_tool,
+    format_validation_error,
+)
+from dollos.harness.runner import AgentThread, Turn, TurnRunner
 from dollos.llm.model import End, SpeechDelta, ThinkDelta, Usage
 from dollos.llm.tool_schema import tool_schemas
 from dollos.tools import SUB_TOOLS, ReadToolOutput, Recall, SetFocus, Shell
@@ -108,7 +115,8 @@ async def test_dispatch_one_runtime_error_returns_failed_result(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_tool_calls_in_order_with_one_tool_message_each():
-    from dollos.cascade.tool_loop import ToolResult, run_tool_calls
+    from dollos.harness.executor import ToolResult
+    from dollos.harness.runner import run_tool_calls
     from dollos.llm.model import ToolCall
 
     seen: list[tuple[str, dict]] = []
@@ -140,7 +148,7 @@ async def test_run_tool_calls_in_order_with_one_tool_message_each():
 
 @pytest.mark.asyncio
 async def test_run_tool_calls_bad_arguments_fail_without_running():
-    from dollos.cascade.tool_loop import run_tool_calls
+    from dollos.harness.runner import run_tool_calls
     from dollos.llm.model import ToolCall
 
     async def _dispatch(name, args):  # pragma: no cover - must not run
@@ -157,14 +165,14 @@ async def test_run_tool_calls_bad_arguments_fail_without_running():
 
 
 def test_unbound_result_status():
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
 
     r = ToolResult(tool_name="Shell", success=False, detail="no", unbound=True)
     assert r.status == "rejected_unbound"
 
 
 # ---------------------------------------------------------------------------
-# run_tool_cascade on the ModelAdapter
+# The Turn Runner on the agent policy (``worker``), on the ModelAdapter
 # ---------------------------------------------------------------------------
 
 
@@ -181,25 +189,35 @@ class _Quiet(BaseModel):
 
 
 async def _cascade(model, tmp_path, *, tools=(Shell, Recall), sink=None, **kw):
+    """One ``worker`` turn on the runner, as ``run_agent`` builds it, plus a
+    ``sink`` (``run_agent`` has none). Returns the thread's messages."""
     from tests._dispatcher_helpers import _make_mind_ctx
 
     tools = list(tools)
-    messages = [{"role": "user", "content": "go"}]
-    await run_tool_cascade(
-        model=model,
-        system="SYS",
-        messages=messages,
-        tools=tools,
-        tools_by_name={cls.__name__: cls for cls in tools},
+    tools_by_name = {cls.__name__: cls for cls in tools}
+    ctx = _make_mind_ctx(tmp_path)
+    thread = AgentThread([
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "go"},
+    ])
+    executor = ToolExecutor(
+        ctx, offered=tools_by_name, bound=tools_by_name,
+        principal="internal", kind="worker",
+    )
+    await TurnRunner(model).run(Turn(
         kind="worker",
-        ctx=_make_mind_ctx(tmp_path),
+        principal="internal",
+        thread=thread,
+        tools=tool_schemas(tools),
+        execute=executor.run,
+        ctx=ctx,
         sink=sink,
         max_tokens=512,
         think_budget=64,
         purpose=kw.pop("purpose", "workflow"),
         **kw,
-    )
-    return messages
+    ))
+    return thread.messages
 
 
 @pytest.mark.asyncio
@@ -304,7 +322,7 @@ async def test_cascade_ends_on_a_pass_without_tool_calls(tmp_path):
 async def test_cascade_stops_at_max_passes(tmp_path, caplog):
     """An agent that keeps calling tools and never Reports stops at 16."""
     model = FakeModel([_call("_Quiet")], repeat_last=True)
-    with caplog.at_level(logging.WARNING, logger="dollos.cascade.tool_loop"):
+    with caplog.at_level(logging.WARNING, logger="dollos.harness.runner"):
         await _cascade(model, tmp_path, tools=[_Quiet])
     assert model.pass_count == 16
     assert any("16" in r.getMessage() for r in caplog.records)
@@ -320,7 +338,7 @@ async def test_cascade_length_ends_with_warning(tmp_path, caplog):
         ttft_ms=None, dropped_tool_calls=1,
     )
     model = FakeModel([[ThinkDelta("long"), cut], _call("_Quiet")])
-    with caplog.at_level(logging.WARNING, logger="dollos.cascade.tool_loop"):
+    with caplog.at_level(logging.WARNING, logger="dollos.harness.runner"):
         await _cascade(model, tmp_path, tools=[_Quiet])
     assert model.pass_count == 1
     assert any("max_tokens" in r.getMessage() for r in caplog.records)
@@ -344,7 +362,7 @@ async def test_cascade_on_iter_end_gets_reasoning_and_speech(tmp_path):
         seen.append((iter_num, reasoning, speech, tool_calls, [r.status for r in results]))
 
     model = FakeModel(["hmm</think>say" + _call("_Quiet"), "</think>end"])
-    await _cascade(model, tmp_path, tools=[_Quiet], on_iter_end=_on_iter_end)
+    await _agent(model, tmp_path, tools=[_Quiet], on_iter_end=_on_iter_end)
 
     assert seen[0][:3] == (1, "hmm", "say")
     assert [tc["name"] for tc in seen[0][3]] == ["_Quiet"]
@@ -451,3 +469,15 @@ async def test_agent_calls_are_recorded_with_purpose_and_new_tokens(tmp_path):
     r1, r2 = recorder.read_today()
     assert (r1.call_purpose, r2.call_purpose) == ("consolidation", "consolidation")
     assert (r1.new_prompt_tokens, r2.new_prompt_tokens) == (100, 30)
+
+
+def test_no_run_tool_cascade_in_src():
+    """Plan 2026-10-27 Task 5: one Turn Runner; the agent loop is gone."""
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src"
+    hits = [
+        str(p) for p in src.rglob("*.py")
+        if "run_tool_cascade" in p.read_text(encoding="utf-8")
+    ]
+    assert hits == []

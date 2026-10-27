@@ -4,7 +4,7 @@ from collections import deque
 
 import pytest
 
-from dollos.cascade.tool_loop import ToolResult
+from dollos.harness.executor import ToolResult
 from dollos.mind.mind_state import MindState
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes
 

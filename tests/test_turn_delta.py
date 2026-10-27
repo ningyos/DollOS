@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from dollos.cascade.tool_loop import ToolResult, run_tool_calls
+from dollos.harness.executor import ToolResult
+from dollos.harness.runner import run_tool_calls
 from dollos.llm.model import SpeechDelta, ToolCall
 from dollos.memory import FtsMemory
 from dollos.mind.mind_prompt import (

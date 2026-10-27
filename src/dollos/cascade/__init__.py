@@ -1,6 +1,2 @@
-"""Cascade output streaming + shared tool-cascade loop."""
-
-from dollos.cascade.tool_loop import run_tool_cascade
-from dollos.harness.executor import ToolResult
-
-__all__ = ["ToolResult", "run_tool_cascade"]
+"""Cascade output streaming: the sentence chunker and the cancel handle.
+The tool loop is the Turn Runner (``dollos.harness.runner``)."""
