@@ -533,7 +533,7 @@ async def test_mood_think_line_not_written_to_state_mood(tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_unknown_tool_returns_failed_result(tmp_path):
     """An unknown tool name produces a typed failed ToolResult, not a silent no-op."""
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
 
     loop = _make_mind_loop(tmp_path)
     r = await loop._dispatch_tool("NoSuchTool", {})
@@ -545,7 +545,7 @@ async def test_dispatch_unknown_tool_returns_failed_result(tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_bad_args_returns_failed_result(tmp_path):
     """Args that fail pydantic validation produce a typed failed ToolResult."""
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
 
     loop = _make_mind_loop(tmp_path)
     r = await loop._dispatch_tool("Recall", {})  # missing required 'query'
@@ -557,7 +557,7 @@ async def test_dispatch_bad_args_returns_failed_result(tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_sync_tool_returns_success_result(tmp_path):
     """A sync tool that returns a str (NoteMemory) yields success=True with detail."""
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
 
     loop = _make_mind_loop(tmp_path)
     r = await loop._dispatch_tool("NoteMemory", {"text": "remember this"})
@@ -587,7 +587,7 @@ async def test_dispatch_tool_returning_none_yields_none(tmp_path):
 @pytest.mark.asyncio
 async def test_dispatch_runtime_error_returns_failed_result(tmp_path):
     """A tool whose run() raises is turned into a failed ToolResult, not propagated."""
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
 
     loop = _make_mind_loop(tmp_path)
 

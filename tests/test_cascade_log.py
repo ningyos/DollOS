@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from dollos.cascade.tool_loop import ToolResult
+from dollos.harness.executor import ToolResult
 from dollos.cascade_log import CascadeLogger
 from dollos.logging_config import configure_cascade_logging
 

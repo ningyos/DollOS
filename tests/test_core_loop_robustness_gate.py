@@ -58,7 +58,7 @@ def test_p10_interrupted_in_perception_kind():
 
 # --- §8.1 P6.1 (Task 6): _dispatch_tool returns a grounded ToolResult on failure
 def test_p6_1_tool_result_type_reused():
-    from dollos.cascade.tool_loop import ToolResult
+    from dollos.harness.executor import ToolResult
     from dollos.mind.mind_loop import MindLoop
 
     assert {"tool_name", "success", "detail"} <= set(ToolResult.__dataclass_fields__)

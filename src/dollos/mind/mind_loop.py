@@ -5,8 +5,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import aclosing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -14,28 +13,20 @@ from typing import Any
 from pydantic import BaseModel
 
 from dollos.cascade.cascade_ctx import CascadeCtx
-from dollos.cascade.sentence_chunker import SentenceChunker
-from dollos.cascade.tool_loop import ToolOutcome, run_tool_calls
 from dollos.character import Enforcement
 from dollos.harness.executor import ToolExecutor, ToolResult, dispatch_one, turn_label
 from dollos.harness.permissions import ORIGIN_TIER, principal_of
 from dollos.harness.registry import Offered, ToolRegistry
+from dollos.harness.runner import PassRecord, Turn, TurnRunner
 from dollos.harness.turn_policy import (
+    MAX_SYNC_REFEED_PASSES,  # noqa: F401 — re-exported (tests import it from here)
     POLICIES,
     TurnKind,
     effective_kind,
     moment_of,
 )
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
-from dollos.llm.model import (
-    End,
-    ModelAdapter,
-    ModelError,
-    SpeechDelta,
-    ThinkDelta,
-    ToolCall,
-    ToolCalls,
-)
+from dollos.llm.model import End, ModelAdapter
 from dollos.memory_writer import append_transcript, append_action_log
 from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
@@ -45,7 +36,6 @@ from dollos.mind.context_builder import (
     Conversation,
     conversation_key,
     one_off,
-    partial_reply,
 )
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_prompt import (
@@ -75,21 +65,16 @@ from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
 
-# Budget cap on the in-turn tool loop (spec §8.2): a turn runs at most this
-# many model calls. Generous enough for legitimate multi-step plans, but a
-# rotating-invalid-call storm or a tool loop terminates deterministically.
-# This is a convergence criterion, NOT a fallback.
-MAX_SYNC_REFEED_PASSES = 8
+# The turn's pass cap, MAX_SYNC_REFEED_PASSES, is TurnPolicy.max_passes
+# (dollos.harness.turn_policy); its failure / refusal limits
+# (SAFE_MODE_FAIL_THRESHOLD, UNBOUND_REJECT_LIMIT) live in
+# dollos.harness.runner. Read-only safe mode (spec §8.3): the runner's
+# safe-mode failure rule ends the turn and _llm_iterate enters it; its
+# read-only tool set is POLICIES["safe_mode"].
 
 # Per model call: the budget for speech and tool calls. The adapter adds the
 # think budget ([llm].think_budget_tokens) on top.
 MIND_MAX_TOKENS = 1024
-
-# A tool refused this many times in one turn because it is offered but not
-# bound ends the turn. Refusals are not failures (no safe mode), but agenda /
-# diary / pulse / safe-mode turns see e.g. Shell's schema and could otherwise
-# spend every pass on refused calls.
-UNBOUND_REJECT_LIMIT = 3
 
 # Perception kinds that mean "this turn's context contains externally-sourced
 # content" (spec 2026-07-02 §3.2). [Memory context] auto-injection deliberately
@@ -104,14 +89,6 @@ def batch_external(perceptions) -> bool:
     """True when the drained batch carries external content (provenance flag)."""
     return any(p.kind in _EXTERNAL_KINDS for p in perceptions)
 
-# Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
-# within a single live turn — OR the same-tool 3-strike stuck flag — Doll
-# narrows to a read-only tool set and announces it. K=3 catches the
-# rotating-invalid-call storm the same-tool 3-strike misses. Bounded-severity,
-# announced boundary — NOT a fallback.
-SAFE_MODE_FAIL_THRESHOLD = 3
-# Its read-only tool set is POLICIES["safe_mode"] (dollos.harness.turn_policy).
-
 
 # P1f trace (spec 2026-07-03 §T-C2): serialize the dataclass sources 1:1 with
 # MindState.to_dict's asdict() usage — no invented fields, no divergence.
@@ -125,20 +102,6 @@ def _open_loop_to_dict(loop) -> dict:
 
 def _output_to_dict(output) -> dict:
     return asdict(output)
-
-
-@dataclass(frozen=True)
-class _Pass:
-    """What one model call of the turn produced."""
-
-    reasoning: str
-    speech: str
-    end: End | None               # None when cut (cancel / error) before the stream ended
-    outcomes: list[ToolOutcome]   # the reply's tool calls, in index order
-    # The assistant message as it goes into the conversation: the reply
-    # verbatim, or — cut short — what was actually said (None: nothing yet).
-    reply: dict | None
-    error: ModelError | None = None
 
 
 class MindLoop:
@@ -1286,53 +1249,33 @@ class MindLoop:
         offered: dict[str, type[BaseModel]],
         trace_blocks: dict | None = None,
     ) -> None:
-        """Run Doll's turn as a tool loop over the ModelAdapter (harness §1).
+        """Run Doll's turn on the ``TurnRunner`` (harness §1, plan 2026-10-27
+        Task 5) and apply what it did.
 
-        Each pass sends the whole conversation (``conv.messages``, this
-        turn's message already appended) and this tier's fixed tool list
-        (``_offered_tools``), with ``prior_tokens`` = the conversation's last
-        call total so only what was appended is charged. Each pass streams
-        thinking (kept raw for cascade_log / trace) and speech
-        (sentence-chunked to the sink live, so TTS starts on the first
-        sentence); after the stream, the reply's
-        tool calls run in order. The assistant message goes back verbatim,
-        plus one ``tool`` message per call, and the next pass runs — so a
-        reply that only calls a tool (e.g. MoodTool) still gets to speak.
-        Fire-and-forget tools (Shell / SpawnWorkflow / SpawnMonitor) answer
-        with a job receipt; their real result comes back later as a
-        perception, the turn never waits for it.
+        The Turn: ``conv`` (this turn's message already appended), this
+        tier's fixed tool list (``_offered_tools``), every call through
+        ``_dispatch_bound`` (this turn's binding, plus the side effects only a
+        live turn has: tool memory, the action log, the diary flag), speech
+        sentence-chunked to the sink live (``_speak_sentence``, so TTS starts
+        on the first sentence), and the interrupt handle. The runner's loop,
+        its termination rules and its partial-reply handling are documented
+        in ``dollos.harness.runner``; the policy is
+        ``POLICIES[_binding_kind()]`` (at most ``MAX_SYNC_REFEED_PASSES``
+        passes, the safe-mode failure rule). Fire-and-forget tools (Shell /
+        SpawnWorkflow / SpawnMonitor) answer with a job receipt; their real
+        result comes back later as a perception, the turn never waits for it.
 
         Cancellation spans the whole multi-pass turn: `self._cascade_ctx` is
-        set once here and cleared in `finally`, and is honoured at every
-        event, before a reply's tools run, and at every pass boundary, so an
-        external `cancel_current_cascade()` returns cleanly.
+        set once here and cleared in `finally`, so an external
+        `cancel_current_cascade()` returns cleanly.
 
-        Termination is deterministic (spec §8.2): a pass with no tool calls
-        ends the turn, as do a reply cut by max_tokens, the same-tool
-        3-strike / consecutive-failure safe-mode rule, UNBOUND_REJECT_LIMIT
-        refusals of one unbound tool, and `MAX_SYNC_REFEED_PASSES`.
-
-        The conversation stays what actually happened (plan 2026-10-18 Task
-        9). Interrupted, or a ``transport`` error after some output: the
-        reply so far goes in as said (thinking + sentences already given to
-        the sink), and every tool call of a finished reply gets its tool
-        message (``NOT_RUN`` if it never ran). A ``server`` error marks the
-        conversation so the next turn opens a new page. Errors still raise.
+        Here, per pass: cascade_log, the trace, the latency counters, and
+        Recall marking the context external. After the turn: a ``failed``
+        safe-mode rule enters safe mode; ``brain_down`` raises its error,
+        after a ``server`` error marks the conversation so the next turn
+        opens a new page.
         """
         sink = self._ctx.sink_resolver(self._ctx.current_origin)
-        messages = conv.messages
-        # Same-tool consecutive-failure tracker, spanning passes — ported from
-        # `tool_loop.py` so the live loop and the subagent cascade share one
-        # convergence rule.
-        consecutive_fails: dict[str, int] = {}
-        last_failed_tool: str | None = None
-        # Generic consecutive-failure run across passes (any tool). Catches the
-        # rotating-invalid-call storm the same-tool 3-strike above misses; trips
-        # read-only safe mode at SAFE_MODE_FAIL_THRESHOLD (spec §8.3).
-        consecutive_fail_count = 0
-        # Refusals of offered-but-unbound tools this turn, per tool. Not
-        # failures (they never feed the two counters above), but capped.
-        unbound_rejects: dict[str, int] = {}
         # P1f trace: initialized OUTSIDE the try so `finally` can always see
         # it, even if an exception fires before begin_turn() runs.
         turn_trace = None
@@ -1363,6 +1306,92 @@ class MindLoop:
         self._turn_speak_chars = 0
         self._turn_passes = 0
 
+        def on_stream_end(index: int, reasoning: str, end: End | None) -> None:
+            nonlocal first_end
+            # 延遲壓縮 Part 1 Task 2: accumulate this pass's think-chars +
+            # advance the turn-scoped pass counter, on every pass including a
+            # cancelled-mid-stream one (its partial thinking is still real
+            # streamed content, not synthesized).
+            self._turn_think_chars += len(reasoning)
+            self._turn_passes = index + 1
+            if index == 0:
+                first_end = end
+
+        def before_tools() -> None:
+            self._turn_had_tool = True
+
+        def on_pass(p: PassRecord) -> None:
+            results = [o.result for o in p.outcomes]
+            tool_calls = [
+                {"id": o.call.id, "name": o.call.name, "arguments": o.call.arguments}
+                for o in p.outcomes
+            ]
+            if self._cascade_logger is not None:
+                try:
+                    self._cascade_logger.log_iter(
+                        turn_id=turn_id,
+                        iter=p.index,
+                        reasoning=p.reasoning,
+                        speech=p.speech,
+                        tool_calls=tool_calls,
+                        results=results,
+                        duration_ms=int((time.monotonic() - p.started) * 1000),
+                    )
+                except Exception:
+                    logger.exception("cascade_logger.log_iter failed; continuing")
+
+            # P1f trace: same-site, same-tuple capture as cascade_logger
+            # above — both writers serialize from the identical locals so
+            # the two logs can never drift apart. Trace stores raw/full
+            # content (T-C2): the whole reasoning (cascade_log caps it), and
+            # result `detail` NOT truncated to [:500] like cascade_log's copy
+            # is. `input_messages_delta` is the byte-verbatim authority for
+            # what the conversation appended since its last traced pass (this
+            # turn's message, an interrupted turn's leftovers, the previous
+            # pass's assistant + tool messages): nothing is appended while a
+            # pass runs, so `messages[conv.traced:p.sent]` is what was sent.
+            # `dict(m)` shallow-copies each message so later appends can't
+            # alter the captured delta.
+            if turn_trace is not None:
+                try:
+                    turn_trace.add_pass(
+                        pass_idx=p.index,
+                        input_messages_delta=[
+                            dict(m) for m in conv.messages[conv.traced:p.sent]
+                        ],
+                        reasoning=p.reasoning,
+                        speech=p.speech,
+                        tool_calls=tool_calls,
+                        results=[
+                            {
+                                "tool_call_id": o.call.id,
+                                "tool_name": o.result.tool_name,
+                                "status": o.result.status,
+                                "success": o.result.success,
+                                "detail": o.result.detail or "",
+                            }
+                            for o in p.outcomes
+                        ],
+                        active_tools=sorted(self._runnable_tools(offered)),
+                        is_reflection=self._moment == "reflection",
+                        safe_mode=self._state.safe_mode,
+                        external=self._ctx.external_ctx,
+                        latency_ms=p.stream_ms,
+                        msg_range=(conv.traced, p.sent),
+                    )
+                    conv.traced = p.sent
+                except Exception:
+                    logger.exception(
+                        "trace add_pass failed; continuing (this pass omitted from trace)"
+                    )
+
+            # Recall output is in-context external content from here on
+            # (spec §3.2 — Recall never appears in the drained batch), so a
+            # PinSelf on a later pass sees external_ctx=True.
+            for r in results:
+                if r.tool_name == "Recall" and r.success:
+                    self._ctx.external_ctx = True
+
         try:
             self._cascade_ctx = CascadeCtx()
             turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
@@ -1379,188 +1408,31 @@ class MindLoop:
                 except Exception:
                     logger.exception("trace begin_turn failed; turn will have no trace")
                     turn_trace = None
-            for pass_idx in range(MAX_SYNC_REFEED_PASSES):
-                if self._cascade_ctx.cancelled:
-                    logger.info("cascade cancelled at pass boundary; exiting cleanly")
-                    return
-
-                # P1f trace: byte-verbatim authority for `input_messages_delta`
-                # — what the conversation appended since its last traced pass
-                # (this turn's message, an interrupted turn's leftovers, the
-                # previous pass's assistant + tool messages), captured BEFORE
-                # this pass streams. `dict(m)` shallow-copies each message so
-                # later appends can't alter the captured delta.
-                sent = len(messages)
-                msg_range = (conv.traced, sent)
-                input_messages_delta = [dict(m) for m in messages[conv.traced:sent]]
-
-                pass_start = time.monotonic()
-                p = await self._stream_one_pass(
-                    conv=conv, tools=tools, offered=offered, sink=sink,
-                )
-                pass_latency_ms = int((time.monotonic() - pass_start) * 1000)
-                conv.record_usage(p.end)
-
-                # 延遲壓縮 Part 1 Task 2: accumulate this pass's think-chars
-                # + advance the turn-scoped pass counter — `finally` below
-                # can't see the loop-local `pass_idx`, so mirror it into a
-                # turn field here, on every pass including a cancelled-mid-
-                # stream one (its partial thinking is still real streamed
-                # content, not synthesized).
-                self._turn_think_chars += len(p.reasoning)
-                self._turn_passes = pass_idx + 1
-                if pass_idx == 0:
-                    first_end = p.end
-
-                if p.error is not None:
-                    if p.error.kind == "server":
-                        # A bad or too-long message would stay and fail every
-                        # later call: the next turn opens a new page.
-                        conv.server_error = True
-                    elif p.reply is not None:
-                        messages.append(p.reply)  # transport: kept as said
-                    raise p.error
-
-                # A cancelled pass returns before cascade_log / trace — so it
-                # has neither (§3.6/§6.2(g) 明文取捨); what it left in the
-                # conversation reaches the trace with the next traced pass.
-                if self._cascade_ctx.cancelled:
-                    if p.reply is not None:
-                        messages.append(p.reply)
-                    messages.extend(o.message for o in p.outcomes)
-                    return
-
-                outcomes = p.outcomes
-                results = [o.result for o in outcomes]
-                tool_calls = [
-                    {"id": o.call.id, "name": o.call.name, "arguments": o.call.arguments}
-                    for o in outcomes
-                ]
-                if self._cascade_logger is not None:
-                    try:
-                        self._cascade_logger.log_iter(
-                            turn_id=turn_id,
-                            iter=pass_idx,
-                            reasoning=p.reasoning,
-                            speech=p.speech,
-                            tool_calls=tool_calls,
-                            results=results,
-                            duration_ms=int((time.monotonic() - pass_start) * 1000),
-                        )
-                    except Exception:
-                        logger.exception("cascade_logger.log_iter failed; continuing")
-
-                # P1f trace: same-site, same-tuple capture as cascade_logger
-                # above — both writers serialize from the identical locals so
-                # the two logs can never drift apart. Trace stores raw/full
-                # content (T-C2): the whole reasoning (cascade_log caps it),
-                # and result `detail` NOT truncated to [:500] like
-                # cascade_log's copy is.
-                if turn_trace is not None:
-                    try:
-                        turn_trace.add_pass(
-                            pass_idx=pass_idx,
-                            input_messages_delta=input_messages_delta,
-                            reasoning=p.reasoning,
-                            speech=p.speech,
-                            tool_calls=tool_calls,
-                            results=[
-                                {
-                                    "tool_call_id": o.call.id,
-                                    "tool_name": o.result.tool_name,
-                                    "status": o.result.status,
-                                    "success": o.result.success,
-                                    "detail": o.result.detail or "",
-                                }
-                                for o in outcomes
-                            ],
-                            active_tools=sorted(self._runnable_tools(offered)),
-                            is_reflection=self._moment == "reflection",
-                            safe_mode=self._state.safe_mode,
-                            external=self._ctx.external_ctx,
-                            latency_ms=pass_latency_ms,
-                            msg_range=msg_range,
-                        )
-                        conv.traced = sent
-                    except Exception:
-                        logger.exception(
-                            "trace add_pass failed; continuing (this pass omitted from trace)"
-                        )
-
-                # The assistant message goes back verbatim (reasoning, speech,
-                # tool calls with their raw argument strings), then one tool
-                # message per call, in call order.
-                messages.append(p.reply)
-                messages.extend(o.message for o in outcomes)
-
-                if p.end.finish_reason == "length":
-                    # What was said counts; the adapter already dropped the
-                    # reply's tool calls (the last one is cut mid-JSON).
-                    logger.warning(
-                        "turn %s: reply hit max_tokens (%d tool call(s) dropped); "
-                        "ending the turn", turn_id, p.end.dropped_tool_calls,
-                    )
-                    break
-                if not outcomes:
-                    break  # no tool calls → nothing to send back, turn done
-
-                # Recall output is in-context external content from here on
-                # (spec §3.2 — Recall never appears in the drained batch), so
-                # a PinSelf on a later pass sees external_ctx=True.
-                for r in results:
-                    if r.tool_name == "Recall" and r.success:
-                        self._ctx.external_ctx = True
-
-                # Same-tool 3-strike abort (ported from tool_loop.py) plus the
-                # generic consecutive-failure run across passes. A refusal of
-                # an offered-but-unbound tool counts toward neither.
-                for r in results:
-                    if r.unbound:
-                        unbound_rejects[r.tool_name] = unbound_rejects.get(r.tool_name, 0) + 1
-                    elif r.success:
-                        consecutive_fails.clear()
-                        last_failed_tool = None
-                        consecutive_fail_count = 0
-                    else:
-                        consecutive_fail_count += 1
-                        if r.tool_name == last_failed_tool:
-                            consecutive_fails[r.tool_name] = (
-                                consecutive_fails.get(r.tool_name, 1) + 1
-                            )
-                        else:
-                            last_failed_tool = r.tool_name
-                            consecutive_fails = {r.tool_name: 1}
-                stuck = next(
-                    (n for n, c in consecutive_fails.items() if c >= 3),
-                    None,
-                )
-                if stuck is not None or consecutive_fail_count >= SAFE_MODE_FAIL_THRESHOLD:
-                    reason = (
-                        f"same tool {stuck} failed 3x in a row"
-                        if stuck is not None
-                        else f"{consecutive_fail_count} consecutive tool failures"
-                    )
-                    logger.info(
-                        "live cascade entering read-only safe mode (%s); "
-                        "ending the turn", reason
-                    )
-                    self._enter_safe_mode(reason)
-                    break
-                refused = next(
-                    (n for n, c in unbound_rejects.items() if c >= UNBOUND_REJECT_LIMIT),
-                    None,
-                )
-                if refused is not None:
-                    logger.info(
-                        "live cascade: unbound tool %s refused %d times; ending the turn",
-                        refused, UNBOUND_REJECT_LIMIT,
-                    )
-                    break
-            else:
-                logger.info(
-                    "live cascade hit MAX_SYNC_REFEED_PASSES (%d); stopping",
-                    MAX_SYNC_REFEED_PASSES,
-                )
+            result = await TurnRunner(self._llm).run(Turn(
+                kind=self._binding_kind(),
+                principal=self._ctx.principal,
+                thread=conv,
+                tools=tools,
+                execute=lambda name, args: self._dispatch_bound(name, args, offered),
+                ctx=self._ctx,
+                max_tokens=MIND_MAX_TOKENS,
+                think_budget=self._think_budget_tokens,
+                purpose="cascade",
+                speak=lambda sentence: self._speak_sentence(sink, sentence),
+                cancel=self._cascade_ctx,
+                on_usage=self._on_turn_usage,
+                on_stream_end=on_stream_end,
+                before_tools=before_tools,
+                on_pass=on_pass,
+            ))
+            if result.outcome == "brain_down":
+                if result.error.kind == "server":
+                    # A bad or too-long message would stay and fail every
+                    # later call: the next turn opens a new page.
+                    conv.server_error = True
+                raise result.error
+            if result.ended_by == "safe_mode":
+                self._enter_safe_mode(result.reason)
         finally:
             if turn_trace is not None:
                 # speech = this turn's full spoken text; silence = none spoken.
@@ -1593,87 +1465,6 @@ class MindLoop:
                 )
                 await self._turn_latency_recorder.record(rec)
             self._cascade_ctx = None
-
-    async def _stream_one_pass(
-        self, *, conv: Conversation, tools: list[dict],
-        offered: dict[str, type[BaseModel]], sink,
-    ) -> _Pass:
-        """Stream ONE model call on ``conv``, then run the reply's tool calls.
-
-        ThinkDelta → kept raw; SpeechDelta → `SentenceChunker` → sink +
-        recent_outputs("Speech"), live; ToolCalls / End arrive after the
-        stream. The chunker is flushed before any tool runs, so the last
-        sentence is out first; then the calls run in index order
-        (`run_tool_calls`), each checked against this turn's binding
-        (`_dispatch_bound`).
-
-        Honours cancel from `self._cascade_ctx` at every event, before the
-        tools run and between them. Cut short — cancelled, or a
-        ``ModelError`` (returned in ``error``, not raised) — ``reply`` is what
-        was actually said; a finished reply's calls that never ran answer
-        ``NOT_RUN``.
-        """
-        chunker = SentenceChunker()
-        think: list[str] = []
-        speech: list[str] = []
-        spoken: list[str] = []   # sentences handed to the sink this pass
-        calls: tuple[ToolCall, ...] = ()
-        end: End | None = None
-        stream = self._llm.stream(
-            messages=conv.messages,
-            tools=tools,
-            max_tokens=MIND_MAX_TOKENS,
-            think_budget=self._think_budget_tokens,
-            purpose="cascade",
-            on_usage=self._on_turn_usage,
-            conversation=conv.stream_key,
-            prior_tokens=conv.prior_tokens,
-        )
-
-        def cut(error: ModelError | None = None) -> _Pass:
-            reply = partial_reply("".join(think), "".join(spoken))
-            return _Pass("".join(think), "".join(speech), None, [], reply, error)
-
-        # aclosing() ensures the HTTP stream is torn down on any early exit
-        # (cascade cancel, exception) — not just on normal exhaustion.
-        try:
-            async with aclosing(stream) as events:
-                async for ev in events:
-                    if self._cascade_ctx.cancelled:
-                        logger.info("cascade cancelled mid-stream; exiting cleanly")
-                        return cut()
-                    if isinstance(ev, ThinkDelta):
-                        think.append(ev.text)
-                    elif isinstance(ev, SpeechDelta):
-                        speech.append(ev.text)
-                        for sentence in chunker.feed(ev.text):
-                            self._speak_sentence(sink, sentence)
-                            spoken.append(sentence)
-                    elif isinstance(ev, ToolCalls):
-                        calls = ev.calls
-                    elif isinstance(ev, End):
-                        end = ev
-        except ModelError as e:
-            return cut(e)
-
-        if self._cascade_ctx.cancelled:
-            # Interrupted right after the reply ended: none of its calls run,
-            # and the unflushed last sentence was never said.
-            outcomes = await run_tool_calls(calls, self._dispatch_tool, stop=lambda: True)
-            reply = {**end.assistant_message, "content": "".join(spoken)}
-            return _Pass("".join(think), "".join(speech), end, outcomes, reply)
-        # The last (unterminated) sentence goes out before any tool runs.
-        self._flush_chunker(chunker, sink)
-
-        outcomes: list[ToolOutcome] = []
-        if calls:
-            self._turn_had_tool = True
-            outcomes = await run_tool_calls(
-                calls,
-                lambda name, args: self._dispatch_bound(name, args, offered),
-                stop=lambda: self._cascade_ctx.cancelled,
-            )
-        return _Pass("".join(think), "".join(speech), end, outcomes, end.assistant_message)
 
     def _collect_turn_speech(self) -> str:
         """Full spoken text for the turn currently in flight (P1f trace).
@@ -1751,11 +1542,6 @@ class MindLoop:
         ))
         self._turn_speech.append(sentence)
 
-    def _flush_chunker(self, chunker: SentenceChunker, sink) -> None:
-        for sentence in chunker.flush():
-            if sentence:
-                self._speak_sentence(sink, sentence)
-
     def _runnable_tools(
         self, offered: dict[str, type[BaseModel]]
     ) -> dict[str, type[BaseModel]]:
@@ -1775,7 +1561,7 @@ class MindLoop:
         shown every ``offered`` tool of this tier; only this turn's
         ``_runnable_tools(offered)`` may run. An offered-but-unbound call is
         refused with the tools available now — NOT a failure: no tool memory,
-        no action log, no safe-mode count (``_llm_iterate`` caps repeats via
+        no action log, no safe-mode count (the Turn Runner caps repeats via
         UNBOUND_REJECT_LIMIT). Every other call, a name outside ``offered``
         included, goes to ``_dispatch_tool`` against the runnable set, where
         an unknown tool is a failure as before."""

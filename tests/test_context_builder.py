@@ -16,7 +16,7 @@ from datetime import date, datetime
 
 import pytest
 
-from dollos.cascade.tool_loop import NOT_RUN
+from dollos.harness.runner import NOT_RUN
 from dollos.llm.model import ModelError, SpeechDelta, ThinkDelta, ToolCall, ToolCalls
 from dollos.mind import self_history
 from dollos.mind.context_builder import PRIVATE

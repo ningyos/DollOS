@@ -14,11 +14,14 @@ twice — workers run ``SUB_TOOLS`` (no ``SpawnWorkflow`` schema) AND
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dollos.cascade import run_tool_cascade
+from dollos.harness.executor import ToolExecutor
+from dollos.harness.runner import AgentThread, PassRecord, Turn, TurnRunner
+from dollos.llm.tool_schema import tool_schemas
 from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_state import MindState
 from dollos.mind.sink_resolver import SinkResolver
@@ -62,17 +65,25 @@ async def run_agent(
     agents. ``renderer`` is accepted for symmetry with the runner's dependency
     set. ``tools`` defaults to ``SUB_TOOLS`` and never includes
     ``SpawnWorkflow``; ``MindCtx(workflow_runner=None)`` is the second
-    no-nesting guard. ``on_iter_end`` is threaded into ``run_tool_cascade`` so
-    worker cascades can log to the ``CascadeLogger`` (the live-loop fan-out).
+    no-nesting guard. ``on_iter_end`` fires after each pass's tools ran —
+    (iter_num from 1, reasoning, speech, tool_calls as ``{"id", "name",
+    "arguments"}`` dicts, results, duration_ms) — so worker cascades can log
+    to the ``CascadeLogger`` (the live-loop fan-out).
     ``max_tokens`` is the answer budget per call; ``think_budget`` caps the
     thinking on top of it. ``purpose`` labels the calls in ``llm_calls``.
     ``kind`` names the agent's turn kind in its tool-call log records:
     ``worker`` (workflow worker / skeptic / synthesis, ``SUB_TOOLS``) or
     ``keeper`` (consolidation and evolution keepers, the evolution skeptic,
     ``KEEPER_TOOLS``).
+
+    The agent runs on the ``TurnRunner`` with its kind's policy (at most
+    ``MAX_CASCADE_PASSES`` passes, done once Report ran, the stuck-tool
+    rule), no sink and no interrupt. It is shown and bound to exactly
+    ``tools``; every call goes through a ``ToolExecutor`` for an ``internal``
+    turn of ``kind``, which writes its log record. A ``ModelError`` is
+    raised.
     """
     tools_by_name: dict[str, type] = {cls.__name__: cls for cls in tools}
-    messages: list[dict] = [{"role": "user", "content": task}]
 
     # Fresh MindState — private scratchpad, task as focus, no shared state.
     state = MindState(focus=task)
@@ -90,25 +101,37 @@ async def run_agent(
         # agent_report starts None; the Report tool sets it to signal exit.
     )
 
-    def _check_early_exit(iter_num: int, c: MindCtx) -> bool:
-        # Report stashes its args in ctx.agent_report; once it ran (alone or
-        # next to other calls in the same reply), the agent is done.
-        return c.agent_report is not None
+    def _on_pass(p: PassRecord) -> None:
+        on_iter_end(
+            p.index + 1,
+            p.reasoning,
+            p.speech,
+            [{"id": o.call.id, "name": o.call.name, "arguments": o.call.arguments}
+             for o in p.outcomes],
+            [o.result for o in p.outcomes],
+            int((time.monotonic() - p.started) * 1000),
+        )
 
-    await run_tool_cascade(
-        model=model,
-        system=system,
-        messages=messages,
-        tools=tools,
-        tools_by_name=tools_by_name,
+    executor = ToolExecutor(
+        ctx, offered=tools_by_name, bound=tools_by_name,
+        principal="internal", kind=kind,
+    )
+    result = await TurnRunner(model).run(Turn(
         kind=kind,
+        principal="internal",
+        thread=AgentThread([
+            {"role": "system", "content": system},
+            {"role": "user", "content": task},
+        ]),
+        tools=tool_schemas(tools),
+        execute=executor.run,
         ctx=ctx,
-        sink=None,
         max_tokens=max_tokens,
         think_budget=think_budget,
         purpose=purpose,
-        on_iter_end=on_iter_end,
-        check_early_exit=_check_early_exit,
-    )
+        on_pass=_on_pass if on_iter_end is not None else None,
+    ))
+    if result.outcome == "brain_down":
+        raise result.error
 
     return ctx.agent_report
