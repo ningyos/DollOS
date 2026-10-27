@@ -922,15 +922,22 @@ class MindLoop:
         # that the NEXT diary turn reads back via _read_today_log.
         doll_text = "".join(self._turn_speech).strip().replace("\n", " ")
         if doll_text and POLICIES[self._moment].doll_transcript:
-            try:
-                await append_transcript(
-                    transcripts_root=self._ctx.transcripts_root,
-                    memsearch=self._ctx.memsearch,
-                    role="doll",
-                    text=doll_text,
-                )
-            except Exception:
-                logger.exception("transcript write (doll) failed; continuing")
+            # 🔒 C1 for speech (harness §6.5): what she says in a stranger's
+            # turn is shaped by the stranger's text, and transcripts/ is the
+            # owner tier — indexed with no unverified tag (an owner Recall
+            # would surface it without tainting the turn) and read back by
+            # the diary's [Today's log]. Same gate as _dispatch_tool's action
+            # log; the stranger's own message is never written either.
+            if self._ctx.origin_tier != "external_public":
+                try:
+                    await append_transcript(
+                        transcripts_root=self._ctx.transcripts_root,
+                        memsearch=self._ctx.memsearch,
+                        role="doll",
+                        text=doll_text,
+                    )
+                except Exception:
+                    logger.exception("transcript write (doll) failed; continuing")
 
             # P8 mechanical persona enforcement (spec §2): pure "announce",
             # never blocking — the transcript write above and everything
