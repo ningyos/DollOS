@@ -1,0 +1,780 @@
+[
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a worker agent inside one of Doll's workflows. Execute one task independently, then call the Report tool to return the result.\n\n# Behavior\n\n- Think first, then act: acting means calling a tool — not writing a plan or `ACTION:` in your reply.\n- When a tool result comes back, re-evaluate, then decide the next step (another tool call, or call Report to finish).\n- The text of your replies is not shown to anyone — not the user, not Doll. To do anything, call a tool; to finish, call Report.\n- Shell results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id=\"<output_id>\", offset=N, limit=K)` for paginated reads, or `GrepToolOutput(id=\"<output_id>\", pattern=\"...\")` for regex search. The full output stays on disk; the preview is just a hint.\n- Scratchpad is your own private working memory — a 2000-char notepad scoped to this workflow task run. Doll's parent scratchpad isn't visible here; yours starts empty and disappears when your task ends. Use `Scratchpad(op=\"set\"/\"append\"/\"clear\")` to track multi-step state across tool results within your task.\n- After finishing the task you **must** call the `Report` tool to end — no Report means failure.\n- If you've used the same tool repeatedly with no progress, switch tool. If repeated attempts can't complete it, call `Report(status=\"incomplete\", ...)` to hand back current progress. Don't keep grinding.\n- You have no character, no memory context block, no one waiting for you to speak. You don't talk to the user and you can't spawn further workflows (no SpawnWorkflow tool).\n- Your task is a plain-text instruction from the first user message. Make Report's `details` specific enough that Doll can act without re-running you."
+      },
+      {
+        "role": "user",
+        "content": "find the plan"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "CloseLoop",
+          "description": "Mark a TODO commitment resolved.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "loop id to close",
+                "type": "string"
+              },
+              "outcome": {
+                "description": "how it resolved",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "GrepToolOutput",
+          "description": "Grep a stored tool output for a regex pattern. Returns matching lines\nwith their line index, capped by max_matches.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "output id from a tool result perception",
+                "type": "string"
+              },
+              "pattern": {
+                "description": "regex pattern (Python re); case-sensitive",
+                "type": "string"
+              },
+              "max_matches": {
+                "default": 20,
+                "description": "max matching lines to return",
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "pattern"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "InvokeSkill",
+          "description": "Load a skill's full instructions into context.\n\nUse this when you've seen a skill entry in the [Memory context] block\n(or via the Recall tool) and decide to follow its procedure. The skill\nbody will be returned as the next perception, after which you should\nfollow its instructions step by step.",
+          "parameters": {
+            "properties": {
+              "name": {
+                "description": "Skill name (matches the entry's frontmatter `name` field and filename basename).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "NoteMemory",
+          "description": "Record an episodic fact or event into Doll's memory (daily markdown + memsearch index).\nUse this for things that happened, or concrete facts worth recalling later — when the\nsubject is the world or an event, it goes here. NOTE: when the subject is \"you\" (your\nopinions, interests, curiosity — even just budding — your relationship with your owner,\nwhat you notice about your owner), use PinSelf (on reflection) to put it in the\nalways-in-context self-profile, not here; the same experience can be recorded in both.",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The fact to record. One sentence, declarative.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "OpenLoop",
+          "description": "Add a TODO commitment Doll will remember across iterations.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "short slug id (e.g. 'check_tmp')",
+                "type": "string"
+              },
+              "desc": {
+                "description": "what to follow up on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "desc"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "ReadToolOutput",
+          "description": "Read a slice of a stored tool output by id.\n\nTool outputs come from Shell / Subagent. The originating result perception\nshows the output_id and total line count; use this tool to page deeper\nthan the preview.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "output id from a tool result perception (e.g. 'out-abc12345')",
+                "type": "string"
+              },
+              "offset": {
+                "description": "zero-indexed start line; 0 = beginning; negative counts from end.",
+                "type": "integer"
+              },
+              "limit": {
+                "description": "max lines to return (1-500).",
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "offset",
+              "limit"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Recall",
+          "description": "Search Doll's memory for relevant facts.\n\nUse when you need deeper context than the [Memory context] block\nalready provides in this turn's perception. Returns raw memsearch\nhits (no small-model filter — you judge relevance yourself).\n\nOptional date filter via `since` / `until`. Filter granularity is\nfile-date (one day); finer-grained (minute/second) filtering is not\nsupported in this version.",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "What to search for in memory. Specific keywords work best.",
+                "type": "string"
+              },
+              "since": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional ISO YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS lower bound (inclusive). Filtering uses date portion only — same-day hits are kept regardless of time."
+              },
+              "until": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional ISO upper bound (inclusive). Same date-portion semantics as `since`."
+              },
+              "include_external": {
+                "default": false,
+                "description": "Also search notes left by strangers and external AIs (unverified).",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "RemoveMonitor",
+          "description": "Kill an active monitor by id.\n\nThe process is killed (SIGKILL on its process group). The watcher\nfires a MonitorExitedEvent with status='removed'. Active monitors\nsurface in the [Active monitors] block of every cascade iter.",
+          "parameters": {
+            "properties": {
+              "monitor_id": {
+                "description": "Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
+                "type": "string"
+              }
+            },
+            "required": [
+              "monitor_id"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Report",
+          "description": "Terminate this worker agent and report the structured outcome.\n\nWorker-agent-only tool. MUST be called exactly once before the agent ends\n— the cascade ends naturally after the call (Report.run returns None). The\nargs become the workflow result Doll sees on her next turn (or feed the\nworkflow's synthesis stage).",
+          "parameters": {
+            "properties": {
+              "status": {
+                "description": "ok = task completed as requested. incomplete = partially done (give details on why).",
+                "enum": [
+                  "ok",
+                  "incomplete"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "description": "One-sentence summary of what happened.",
+                "type": "string"
+              },
+              "details": {
+                "description": "Findings / output / data Doll asked for. Plain text. Include enough that Doll can act on it without re-running you.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "summary",
+              "details"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Scratchpad",
+          "description": "Manage your working-memory scratchpad (hard cap 2000 chars).\n\nop=\"set\": overwrite with `content`.\nop=\"append\": add `content` as a new line (newline auto-prepended if non-empty).\nop=\"clear\": wipe to empty (`content` is ignored).\n\nUse \"set\" to start fresh, \"append\" to jot a running note. To replace a\nspecific substring, just \"set\" the full new contents.",
+          "parameters": {
+            "properties": {
+              "op": {
+                "description": "\"set\" overwrite | \"append\" add a line | \"clear\" wipe",
+                "enum": [
+                  "set",
+                  "append",
+                  "clear"
+                ],
+                "type": "string"
+              },
+              "content": {
+                "description": "New content for set/append (≤2000 chars). Ignored for clear.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "content"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "SetFocus",
+          "description": "Update Doll's current focus — what she's attending to right now.",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "one-sentence current focus, ≤200 chars",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Shell",
+          "description": "Run a shell command in the background. Returns immediately.\n\nShell is fire-and-forget. The command runs as a fresh subprocess (no\ncd persistence between calls) with the daemon's user permissions and\ncwd = data/ (the parent of memory/). stdout + stderr are merged. When\nthe proc finishes, its result comes back as a NEW turn's perception\nline `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\n\nThere is no wait / monitor / cancel tool. If you start a Shell and\nkeep working in the same cascade, the result may also arrive as a\nperception inserted into your next iteration. Either way: react when\nyou see it.",
+          "parameters": {
+            "properties": {
+              "command": {
+                "description": "Shell command to run (passed to bash -c).",
+                "type": "string"
+              },
+              "timeout_s": {
+                "default": 60,
+                "description": "Wall-clock seconds before the proc is killed. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "maximum": 600,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "SpawnMonitor",
+          "description": "Spawn a background command watcher. Returns a monitor_id immediately.\n\nThe command runs as a long-lived subprocess. Each stdout line\n(optionally regex-filtered) fires a MonitorTriggeredEvent that\narrives as a new turn's perception line `MonitorFired: <monitor_id>: <line>`.\nWhen the command exits (naturally or via RemoveMonitor), a\nMonitorExitedEvent fires.\n\nRate-limit: within `rate_limit_s` seconds, at most ONE matched line\nfires an event; subsequent matches are counted as suppressed and\nsurface in the [Active monitors] block (and in the next firing\nevent's `suppressed_count`). Set `rate_limit_s=0` to disable.\n\nExamples:\n    SpawnMonitor(command=\"nvidia-smi -l 5 --query-gpu=temperature.gpu \"\n                         \"--format=csv,noheader\",\n                 match_regex=r\"^[89][0-9]$\", rate_limit_s=60)\n    SpawnMonitor(command=\"tail -F /var/log/syslog\",\n                 match_regex=r\"ERROR|CRITICAL\", rate_limit_s=60)",
+          "parameters": {
+            "properties": {
+              "command": {
+                "description": "Shell command (passed to bash -c). Run long; daemon kills on shutdown.",
+                "type": "string"
+              },
+              "match_regex": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional Python regex. None = every line fires. Use to pre-filter inside the runner (cheaper than firing events and ignoring them)."
+              },
+              "rate_limit_s": {
+                "default": 60,
+                "description": "Per-monitor seconds-between-fires window. 0 disables. Default 60s (reasonable for noisy sources).",
+                "maximum": 3600,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "think_budget": 1024,
+    "purpose": "workflow",
+    "conversation": null,
+    "prior_tokens": 0
+  },
+  {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a worker agent inside one of Doll's workflows. Execute one task independently, then call the Report tool to return the result.\n\n# Behavior\n\n- Think first, then act: acting means calling a tool — not writing a plan or `ACTION:` in your reply.\n- When a tool result comes back, re-evaluate, then decide the next step (another tool call, or call Report to finish).\n- The text of your replies is not shown to anyone — not the user, not Doll. To do anything, call a tool; to finish, call Report.\n- Shell results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id=\"<output_id>\", offset=N, limit=K)` for paginated reads, or `GrepToolOutput(id=\"<output_id>\", pattern=\"...\")` for regex search. The full output stays on disk; the preview is just a hint.\n- Scratchpad is your own private working memory — a 2000-char notepad scoped to this workflow task run. Doll's parent scratchpad isn't visible here; yours starts empty and disappears when your task ends. Use `Scratchpad(op=\"set\"/\"append\"/\"clear\")` to track multi-step state across tool results within your task.\n- After finishing the task you **must** call the `Report` tool to end — no Report means failure.\n- If you've used the same tool repeatedly with no progress, switch tool. If repeated attempts can't complete it, call `Report(status=\"incomplete\", ...)` to hand back current progress. Don't keep grinding.\n- You have no character, no memory context block, no one waiting for you to speak. You don't talk to the user and you can't spawn further workflows (no SpawnWorkflow tool).\n- Your task is a plain-text instruction from the first user message. Make Report's `details` specific enough that Doll can act without re-running you."
+      },
+      {
+        "role": "user",
+        "content": "find the plan"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "look it up",
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "Recall",
+              "arguments": "{\"query\": \"the plan\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_0",
+        "content": "[no relevant memory]"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "CloseLoop",
+          "description": "Mark a TODO commitment resolved.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "loop id to close",
+                "type": "string"
+              },
+              "outcome": {
+                "description": "how it resolved",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "GrepToolOutput",
+          "description": "Grep a stored tool output for a regex pattern. Returns matching lines\nwith their line index, capped by max_matches.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "output id from a tool result perception",
+                "type": "string"
+              },
+              "pattern": {
+                "description": "regex pattern (Python re); case-sensitive",
+                "type": "string"
+              },
+              "max_matches": {
+                "default": 20,
+                "description": "max matching lines to return",
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "pattern"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "InvokeSkill",
+          "description": "Load a skill's full instructions into context.\n\nUse this when you've seen a skill entry in the [Memory context] block\n(or via the Recall tool) and decide to follow its procedure. The skill\nbody will be returned as the next perception, after which you should\nfollow its instructions step by step.",
+          "parameters": {
+            "properties": {
+              "name": {
+                "description": "Skill name (matches the entry's frontmatter `name` field and filename basename).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "NoteMemory",
+          "description": "Record an episodic fact or event into Doll's memory (daily markdown + memsearch index).\nUse this for things that happened, or concrete facts worth recalling later — when the\nsubject is the world or an event, it goes here. NOTE: when the subject is \"you\" (your\nopinions, interests, curiosity — even just budding — your relationship with your owner,\nwhat you notice about your owner), use PinSelf (on reflection) to put it in the\nalways-in-context self-profile, not here; the same experience can be recorded in both.",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "The fact to record. One sentence, declarative.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "OpenLoop",
+          "description": "Add a TODO commitment Doll will remember across iterations.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "short slug id (e.g. 'check_tmp')",
+                "type": "string"
+              },
+              "desc": {
+                "description": "what to follow up on",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "desc"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "ReadToolOutput",
+          "description": "Read a slice of a stored tool output by id.\n\nTool outputs come from Shell / Subagent. The originating result perception\nshows the output_id and total line count; use this tool to page deeper\nthan the preview.",
+          "parameters": {
+            "properties": {
+              "id": {
+                "description": "output id from a tool result perception (e.g. 'out-abc12345')",
+                "type": "string"
+              },
+              "offset": {
+                "description": "zero-indexed start line; 0 = beginning; negative counts from end.",
+                "type": "integer"
+              },
+              "limit": {
+                "description": "max lines to return (1-500).",
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "offset",
+              "limit"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Recall",
+          "description": "Search Doll's memory for relevant facts.\n\nUse when you need deeper context than the [Memory context] block\nalready provides in this turn's perception. Returns raw memsearch\nhits (no small-model filter — you judge relevance yourself).\n\nOptional date filter via `since` / `until`. Filter granularity is\nfile-date (one day); finer-grained (minute/second) filtering is not\nsupported in this version.",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "What to search for in memory. Specific keywords work best.",
+                "type": "string"
+              },
+              "since": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional ISO YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS lower bound (inclusive). Filtering uses date portion only — same-day hits are kept regardless of time."
+              },
+              "until": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional ISO upper bound (inclusive). Same date-portion semantics as `since`."
+              },
+              "include_external": {
+                "default": false,
+                "description": "Also search notes left by strangers and external AIs (unverified).",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "query"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "RemoveMonitor",
+          "description": "Kill an active monitor by id.\n\nThe process is killed (SIGKILL on its process group). The watcher\nfires a MonitorExitedEvent with status='removed'. Active monitors\nsurface in the [Active monitors] block of every cascade iter.",
+          "parameters": {
+            "properties": {
+              "monitor_id": {
+                "description": "Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
+                "type": "string"
+              }
+            },
+            "required": [
+              "monitor_id"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Report",
+          "description": "Terminate this worker agent and report the structured outcome.\n\nWorker-agent-only tool. MUST be called exactly once before the agent ends\n— the cascade ends naturally after the call (Report.run returns None). The\nargs become the workflow result Doll sees on her next turn (or feed the\nworkflow's synthesis stage).",
+          "parameters": {
+            "properties": {
+              "status": {
+                "description": "ok = task completed as requested. incomplete = partially done (give details on why).",
+                "enum": [
+                  "ok",
+                  "incomplete"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "description": "One-sentence summary of what happened.",
+                "type": "string"
+              },
+              "details": {
+                "description": "Findings / output / data Doll asked for. Plain text. Include enough that Doll can act on it without re-running you.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "summary",
+              "details"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Scratchpad",
+          "description": "Manage your working-memory scratchpad (hard cap 2000 chars).\n\nop=\"set\": overwrite with `content`.\nop=\"append\": add `content` as a new line (newline auto-prepended if non-empty).\nop=\"clear\": wipe to empty (`content` is ignored).\n\nUse \"set\" to start fresh, \"append\" to jot a running note. To replace a\nspecific substring, just \"set\" the full new contents.",
+          "parameters": {
+            "properties": {
+              "op": {
+                "description": "\"set\" overwrite | \"append\" add a line | \"clear\" wipe",
+                "enum": [
+                  "set",
+                  "append",
+                  "clear"
+                ],
+                "type": "string"
+              },
+              "content": {
+                "description": "New content for set/append (≤2000 chars). Ignored for clear.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "content"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "SetFocus",
+          "description": "Update Doll's current focus — what she's attending to right now.",
+          "parameters": {
+            "properties": {
+              "text": {
+                "description": "one-sentence current focus, ≤200 chars",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "Shell",
+          "description": "Run a shell command in the background. Returns immediately.\n\nShell is fire-and-forget. The command runs as a fresh subprocess (no\ncd persistence between calls) with the daemon's user permissions and\ncwd = data/ (the parent of memory/). stdout + stderr are merged. When\nthe proc finishes, its result comes back as a NEW turn's perception\nline `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\n\nThere is no wait / monitor / cancel tool. If you start a Shell and\nkeep working in the same cascade, the result may also arrive as a\nperception inserted into your next iteration. Either way: react when\nyou see it.",
+          "parameters": {
+            "properties": {
+              "command": {
+                "description": "Shell command to run (passed to bash -c).",
+                "type": "string"
+              },
+              "timeout_s": {
+                "default": 60,
+                "description": "Wall-clock seconds before the proc is killed. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "maximum": 600,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "SpawnMonitor",
+          "description": "Spawn a background command watcher. Returns a monitor_id immediately.\n\nThe command runs as a long-lived subprocess. Each stdout line\n(optionally regex-filtered) fires a MonitorTriggeredEvent that\narrives as a new turn's perception line `MonitorFired: <monitor_id>: <line>`.\nWhen the command exits (naturally or via RemoveMonitor), a\nMonitorExitedEvent fires.\n\nRate-limit: within `rate_limit_s` seconds, at most ONE matched line\nfires an event; subsequent matches are counted as suppressed and\nsurface in the [Active monitors] block (and in the next firing\nevent's `suppressed_count`). Set `rate_limit_s=0` to disable.\n\nExamples:\n    SpawnMonitor(command=\"nvidia-smi -l 5 --query-gpu=temperature.gpu \"\n                         \"--format=csv,noheader\",\n                 match_regex=r\"^[89][0-9]$\", rate_limit_s=60)\n    SpawnMonitor(command=\"tail -F /var/log/syslog\",\n                 match_regex=r\"ERROR|CRITICAL\", rate_limit_s=60)",
+          "parameters": {
+            "properties": {
+              "command": {
+                "description": "Shell command (passed to bash -c). Run long; daemon kills on shutdown.",
+                "type": "string"
+              },
+              "match_regex": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Optional Python regex. None = every line fires. Use to pre-filter inside the runner (cheaper than firing events and ignoring them)."
+              },
+              "rate_limit_s": {
+                "default": 60,
+                "description": "Per-monitor seconds-between-fires window. 0 disables. Default 60s (reasonable for noisy sources).",
+                "maximum": 3600,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          }
+        }
+      }
+    ],
+    "max_tokens": 4096,
+    "think_budget": 1024,
+    "purpose": "workflow",
+    "conversation": null,
+    "prior_tokens": 320
+  }
+]
