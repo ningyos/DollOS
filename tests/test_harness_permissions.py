@@ -357,7 +357,11 @@ async def test_planted_note_never_auto_injected_into_owner_turn(tmp_path):
         owner_user = model.calls[2]["messages"][-1]["content"]
         assert "[Memory context]" in owner_user
         assert "owner-note unique-plant-616" in owner_user  # retrieval ran
-        assert planted not in owner_user
+        # Nowhere in the request either: the page snapshot's [Recent
+        # outputs] leaves out the stranger's "noted: ..." record (§6.5).
+        owner_msgs = model.calls[2]["messages"]
+        assert any("[Recent outputs]" in (m["content"] or "") for m in owner_msgs)
+        assert not any(planted in (m["content"] or "") for m in owner_msgs)
 
         await ml._run_one_turn([_owner("look harder")])
         assert any(planted in m for m in _tool_messages(model))

@@ -62,7 +62,9 @@ def test_recent_perceptions_newest_last():
 
 def test_recent_outputs_block():
     state = MindState()
-    state.recent_outputs.append(OutputRecord(t=NOW - 3, kind="Speech", summary="spoke: hi"))
+    state.recent_outputs.append(OutputRecord(
+        t=NOW - 3, kind="Speech", summary="spoke: hi", origin_tier="internal"),
+    )
     out = render_epoch_start(state, Seen(), "internal", NOW)
     assert "[Recent outputs]" in out
     assert "spoke: hi" in out
@@ -75,7 +77,7 @@ def test_recent_outputs_warns_on_recent_speech():
     state.recent_outputs.append(OutputRecord(
         kind="Speech",
         t=time.time() - 10,
-        summary="spoke: 主人晚安",
+        summary="spoke: 主人晚安", origin_tier="internal",
     ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" in out
@@ -92,7 +94,7 @@ def test_recent_outputs_no_warn_old_speech():
     state.recent_outputs.append(OutputRecord(
         kind="Speech",
         t=time.time() - 60,
-        summary="spoke: 早安",
+        summary="spoke: 早安", origin_tier="internal",
     ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" not in out
@@ -106,7 +108,7 @@ def test_recent_outputs_ignores_non_speech_recent():
     state.recent_outputs.append(OutputRecord(
         kind="NoteMemory",
         t=time.time() - 5,
-        summary="noted: x",
+        summary="noted: x", origin_tier="internal",
     ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" not in out
@@ -122,7 +124,7 @@ def test_recent_outputs_warns_on_repeat_streak():
         state.recent_outputs.append(OutputRecord(
             kind="SetFocus",
             t=time.time(),
-            summary="focus → same thing",
+            summary="focus → same thing", origin_tier="internal",
         ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" in out
@@ -139,7 +141,7 @@ def test_recent_outputs_no_repeat_warn_below_threshold():
         state.recent_outputs.append(OutputRecord(
             kind="SetFocus",
             t=time.time(),
-            summary="focus → same thing",
+            summary="focus → same thing", origin_tier="internal",
         ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" not in out
@@ -155,7 +157,7 @@ def test_recent_outputs_repeat_streak_excludes_speech():
         state.recent_outputs.append(OutputRecord(
             kind="Speech",
             t=time.time() - 60,  # outside the 30s Speech warning window
-            summary="spoke: 早安",
+            summary="spoke: 早安", origin_tier="internal",
         ))
     out = _render_outputs_header(list(state.recent_outputs), time.time())
     assert "WARNING" not in out
@@ -417,6 +419,7 @@ def _seed_mixed_state() -> MindState:
     ))
     state.recent_outputs.append(OutputRecord(
         t=time.time(), kind="Speech", summary="spoke: owner-private-reply-marker",
+        origin_tier="internal",
     ))
     return state
 

@@ -29,7 +29,7 @@ def test_batch_external_false_for_internal_kinds():
 async def test_pinself_threads_turn_and_ctx_into_history(tmp_path):
     ctx = types.SimpleNamespace(
         memory_root=tmp_path, self_profile_max_chars=1200,
-        current_turn=42, external_ctx=True,
+        current_turn=42, external_ctx=True, origin_tier="internal",
         mind_state=types.SimpleNamespace(recent_outputs=[]),
     )
     tool = PinSelf(section="self", op="add", target="", text="喜歡監控數字")

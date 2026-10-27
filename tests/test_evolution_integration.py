@@ -18,7 +18,7 @@ def _ctx(tmp_path):
         evolution_candidate_surfaced=True,  # F5: surfaced-this-turn gate
         evolution_enabled=True, current_self_min_chars=80,
         current_self_max_chars=600, enforcement=Enforcement(),
-        mind_state=MindState(),
+        mind_state=MindState(), origin_tier="internal",
         evolution_base_interval_days=7.0, evolution_max_interval_days=28.0)
 
 

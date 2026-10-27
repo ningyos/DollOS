@@ -21,7 +21,7 @@ def _ctx(tmp_path, *, latched=False, surfaced=True):
         current_self_min_chars=80,
         current_self_max_chars=600,
         enforcement=Enforcement(),
-        mind_state=MindState(),
+        mind_state=MindState(), origin_tier="internal",
         # Plan 3 decision-event bookkeeping knobs (spec §3.3) — SelfRevision
         # adopt/reject read these to reset/double the keeper interval.
         evolution_base_interval_days=7.0,

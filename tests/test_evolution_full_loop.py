@@ -62,7 +62,7 @@ async def test_full_loop_candidate_to_adopt(tmp_path, monkeypatch):
     ctx = types.SimpleNamespace(
         memory_root=mr, evolution_latched=False, evolution_candidate_surfaced=True,
         enforcement=Enforcement(), current_self_min_chars=80, current_self_max_chars=600,
-        mind_state=MindState(), evolution_base_interval_days=7.0,
+        mind_state=MindState(), origin_tier="internal", evolution_base_interval_days=7.0,
         evolution_max_interval_days=28.0)
     result = await SelfRevision(decision="adopt", text="", reason="").run(ctx)
     assert "Adopted" in result

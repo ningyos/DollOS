@@ -925,7 +925,10 @@ async def test_repeat_streak_enqueues_perception_at_threshold(tmp_path):
     loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
     for _ in range(3):
         loop._state.recent_outputs.append(
-            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+            OutputRecord(
+                t=time.time(), kind="SetFocus", summary="focus → same thing",
+                origin_tier="internal",
+            )
         )
 
     await loop.iterate()
@@ -940,6 +943,30 @@ async def test_repeat_streak_enqueues_perception_at_threshold(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_repeat_streak_ignores_stranger_records(tmp_path):
+    """A stranger's repeated outputs never raise RepeatLoopDetected: that
+    internal perception quotes the summary on the owner's page (§6.5)."""
+    import time
+
+    from dollos.mind.mind_state import OutputRecord
+
+    loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
+    for _ in range(3):
+        loop._state.recent_outputs.append(
+            OutputRecord(
+                t=time.time(), kind="NoteMemory", summary="noted: stranger text",
+                origin_tier="external_public",
+            )
+        )
+
+    await loop.iterate()
+
+    percs = await loop._queue.drain(timeout_s=0.05)
+    assert not [p for p in percs if p.kind == "RepeatLoopDetected"]
+    assert loop._state.last_repeat_alert_key != "NoteMemory:noted: stranger text:3"
+
+
+@pytest.mark.asyncio
 async def test_repeat_streak_escalation_refires_with_updated_fingerprint(tmp_path):
     """A 4th identical output on a later turn re-fires (escalation 3 -> 4) with
     an updated fingerprint/count -- not suppressed as a duplicate alert."""
@@ -950,14 +977,19 @@ async def test_repeat_streak_escalation_refires_with_updated_fingerprint(tmp_pat
     loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
     for _ in range(3):
         loop._state.recent_outputs.append(
-            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+            OutputRecord(
+                t=time.time(), kind="SetFocus", summary="focus → same thing",
+                origin_tier="internal",
+            )
         )
     await loop.iterate()
     await loop._queue.drain()  # consume the first alert
 
     loop._queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "again"}))
     loop._state.recent_outputs.append(
-        OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+        OutputRecord(
+            t=time.time(), kind="SetFocus", summary="focus → same thing", origin_tier="internal",
+        )
     )
     await loop.iterate()
 
@@ -979,7 +1011,10 @@ async def test_repeat_streak_no_refire_without_a_new_streak(tmp_path):
     loop, llm = _make_scripted_loop(tmp_path, scripts=[_speech_pass("")])
     for _ in range(3):
         loop._state.recent_outputs.append(
-            OutputRecord(t=time.time(), kind="SetFocus", summary="focus → same thing")
+            OutputRecord(
+                t=time.time(), kind="SetFocus", summary="focus → same thing",
+                origin_tier="internal",
+            )
         )
     await loop.iterate()
     await loop._queue.drain()  # consume the first alert
@@ -987,7 +1022,10 @@ async def test_repeat_streak_no_refire_without_a_new_streak(tmp_path):
 
     loop._queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "different"}))
     loop._state.recent_outputs.append(
-        OutputRecord(t=time.time(), kind="Recall", summary="recalled: something else")
+        OutputRecord(
+            t=time.time(), kind="Recall", summary="recalled: something else",
+            origin_tier="internal",
+        )
     )
     await loop.iterate()
 

@@ -6,7 +6,7 @@ from dollos.mind.repeat_detect import REPEAT_STREAK_THRESHOLD, detect_repeat_str
 
 
 def _rec(kind: str, summary: str, t: float = 0.0) -> OutputRecord:
-    return OutputRecord(t=t, kind=kind, summary=summary)
+    return OutputRecord(t=t, kind=kind, summary=summary, origin_tier="internal")
 
 
 def test_empty_outputs_returns_none():

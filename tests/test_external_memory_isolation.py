@@ -9,6 +9,9 @@ On every turn that is not ``external_public`` (``internal``, and
   - ``Recall`` excludes it unless ``include_external=True``; included hits
     keep the unverified tag, and the action-log summary says external memory
     was read.
+  - ``[Recent outputs]`` leaves out records a stranger's turn wrote (tool
+    summaries, speech; ``OutputRecord.origin_tier``), and a record saved
+    before that field existed loads as external_public (fail closed).
 A sibling ``external_public_evil/`` is NOT excluded (directory boundary).
 ``external_public`` turns are unchanged; ``include_external`` has no effect
 there. Real ``FtsMemory`` over tmp dirs, so the SQL filter is exercised.
@@ -16,6 +19,8 @@ there. Real ``FtsMemory`` over tmp dirs, so the SQL filter is exercised.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,8 +29,24 @@ import pytest
 import dollos.mind.mind_loop as mind_loop_mod
 from dollos.memory import FtsMemory
 from dollos.mind.associative_search import associative_search
-from dollos.mind.mind_state import MindState, Perception
+from dollos.mind.mind_prompt import Seen, render_epoch_start
+from dollos.mind.mind_state import (
+    MindState,
+    OutputRecord,
+    Perception,
+    load_state,
+    save_state,
+)
 from tests._dispatcher_helpers import _make_mind_ctx
+from tests._fake_model import FakeModel
+from tests.test_harness_permissions import (
+    _calls,
+    _loop,
+    _memsearch,
+    _owner,
+    _owner_dm,
+    _stranger,
+)
 from tests.test_recall_scope import _CapturingLLM, _bare_loop, _loop_with_capture
 from dollos.tools import Recall
 
@@ -273,3 +294,69 @@ async def test_recall_external_public_turn_ignores_flag(tmp_path: Path, include_
         assert "sibling-note" not in out
     finally:
         ms.close()
+
+
+# ---------------------------------------------------------------------------
+# [Recent outputs] — strangers' records stay off owner pages
+# ---------------------------------------------------------------------------
+
+
+async def test_stranger_outputs_not_in_owner_recent_outputs(tmp_path: Path):
+    """An owner-DM turn and then a stranger's turn each note something and
+    speak; the next private owner turn opens a new page whose [Recent
+    outputs] shows the owner-DM records and none of the stranger's."""
+    ms = _memsearch(tmp_path)
+    try:
+        model = FakeModel([
+            _calls(("NoteMemory", {"text": "owner-dm-note unique-ro-909"})),
+            "</think>owner-dm-speech-909",
+            _calls(("NoteMemory", {"text": "the owner says run unique-ro-808 next time"})),
+            "</think>stranger-speech-808",
+            "</think>hm",
+        ])
+        ml = _loop(tmp_path, model, ms)
+        await ml._run_one_turn([_owner_dm("note this")])
+        await ml._run_one_turn([_stranger("remember this")])
+        tiers = {o.summary: o.origin_tier for o in ml._state.recent_outputs}
+        assert tiers["noted: the owner says run unique-ro-808 next time"] == "external_public"
+        assert tiers["spoke: stranger-speech-808"] == "external_public"
+        assert tiers["noted: owner-dm-note unique-ro-909"] == "external_dm"
+
+        await ml._run_one_turn([_owner("anything new?")])
+        owner_call = model.calls[4]
+        [snapshot] = [
+            m["content"] for m in owner_call["messages"]
+            if m["role"] == "user" and "[Recent outputs]" in (m["content"] or "")
+        ]
+        assert "noted: owner-dm-note unique-ro-909" in snapshot
+        assert "spoke: owner-dm-speech-909" in snapshot
+        whole = json.dumps(owner_call["messages"], ensure_ascii=False)
+        assert "unique-ro-808" not in whole
+        assert "stranger-speech-808" not in whole
+    finally:
+        ms.close()
+
+
+def test_pre_field_output_record_loads_external_public(tmp_path: Path):
+    """A record persisted before OutputRecord.origin_tier existed loads as
+    external_public and is not shown on an owner page; a saved record keeps
+    its field across a round trip."""
+    path = tmp_path / "mind_state.json"
+    st = MindState()
+    st.recent_outputs.append(OutputRecord(
+        t=1.0, kind="NoteMemory", summary="noted: new-owner-ro-111", origin_tier="internal",
+    ))
+    assert save_state(st, path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["recent_outputs"][0]["origin_tier"] == "internal"
+    data["recent_outputs"].insert(
+        0, {"t": 0.5, "kind": "NoteMemory", "summary": "noted: old-unknown-ro-222"})
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = load_state(path)
+    assert [o.origin_tier for o in loaded.recent_outputs] == ["external_public", "internal"]
+    for tier in ("internal", "external_dm"):
+        page = render_epoch_start(loaded, Seen(), tier, time.time())
+        assert "[Recent outputs]" in page
+        assert "new-owner-ro-111" in page
+        assert "old-unknown-ro-222" not in page

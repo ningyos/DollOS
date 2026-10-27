@@ -97,6 +97,12 @@ class OutputRecord:
     t: float
     kind: str
     summary: str
+    # The tier of the turn that produced this record (harness spec §6.5).
+    # A stranger's turn writes here too (its tool summaries, its speech), so
+    # an owner/internal page must be able to leave those out of
+    # [Recent outputs]. Deliberately no default: every writer states the
+    # turn's tier; load_state fills "external_public" for pre-field records.
+    origin_tier: str
 
 
 @dataclass
@@ -291,8 +297,15 @@ def load_state(path: Path) -> MindState:
             [_coerce(Perception, p) for p in data.get("recent_perceptions", [])],
             maxlen=20
         )
+        # A record saved before OutputRecord.origin_tier existed has no
+        # origin: load it as "external_public" (harness §6.5, fail closed).
+        # Owner pages may lose up to maxlen old lines once after upgrade;
+        # treating an unknown line as the owner's could leak a stranger's.
         recent_outputs = deque(
-            [_coerce(OutputRecord, o) for o in data.get("recent_outputs", [])],
+            [
+                _coerce(OutputRecord, {"origin_tier": "external_public", **o})
+                for o in data.get("recent_outputs", [])
+            ],
             maxlen=15
         )
         recent_tool_failures = deque(
