@@ -434,7 +434,15 @@ class MindLoop:
             ):
                 self._state.last_user_at = p.t
                 self._state.user_turn_count += 1
-                user_text = p.data.get("text", "")
+                # Each kind keys its body differently: UserSpoke → "text",
+                # ChannelMessage → "content" (the Discord bridge payload,
+                # discord_bridge/client.py). Reading "text" for both kept the
+                # owner's Discord words out of transcripts/ (plan 2026-10-27
+                # remember-corrections Task 1).
+                if p.kind == "UserSpoke":
+                    user_text = p.data.get("text", "")
+                else:
+                    user_text = p.data.get("content", "")
                 if user_text:
                     try:
                         await append_transcript(

@@ -192,7 +192,7 @@ async def _run_turn(tmp_path, ms, perception, *, channel_id=None):
 @pytest.mark.parametrize(("tier", "perception", "channel_id"), [
     ("internal", Perception(kind="UserSpoke", t=2.0, data={"text": "unique-as-404"}), None),
     ("external_dm", Perception(kind="ChannelMessage", t=2.0, data={
-        "channel_id": "dm-1", "text": "unique-as-404",
+        "channel_id": "dm-1", "content": "unique-as-404",
         "author_is_owner": True, "is_dm": True}), "dm-1"),
 ])
 async def test_associative_excludes_external_public_on_owner_turns(
@@ -224,7 +224,7 @@ async def test_associative_external_public_turn_unchanged(tmp_path: Path, monkey
         _seed(base, "unique-as-404")
         await ms.index()
         ctx = await _run_turn(tmp_path, ms, Perception(kind="ChannelMessage", t=2.0, data={
-            "channel_id": "pub", "text": "unique-as-404", "author_is_owner": False}),
+            "channel_id": "pub", "content": "unique-as-404", "author_is_owner": False}),
             channel_id="pub")
 
         assert ctx.origin_tier == "external_public"
@@ -402,5 +402,63 @@ async def test_owner_turn_speech_still_in_transcripts(tmp_path: Path, perception
         assert "Me: owner-speech-tx606" in content
         hits = await ms.search("owner-speech-tx606", top_k=5)
         assert any("transcripts" in h.get("source", "") for h in hits), hits
+    finally:
+        ms.close()
+
+
+# ---------------------------------------------------------------------------
+# transcripts/ — the owner's own Discord words (plan 2026-10-27
+# remember-corrections Task 1, spec §3). A ChannelMessage carries its body
+# as ``content`` (the bridge payload), not ``text`` (UserSpoke's key).
+# ---------------------------------------------------------------------------
+
+
+def _bridge_message(content: str, *, is_dm: bool, author_is_owner: bool) -> Perception:
+    """A ChannelMessage with the real bridge payload shape: the keys of
+    ``discord_bridge.client._event_from_message``, plus ``author_is_owner``
+    (stamped by the bridge controller). The kernel passes it through as
+    ``Perception.data`` unchanged."""
+    ts = time.time()
+    return Perception(kind="ChannelMessage", t=ts, data={
+        "author_id": "111" if author_is_owner else "222",
+        "is_dm": is_dm,
+        "mentioned": False,
+        "reply_to_bot": False,
+        "content": content,
+        "channel_id": "dm-1" if is_dm else "pub-1",
+        "guild": None if is_dm else "999",
+        "channel": None if is_dm else "general",
+        "author": "owner" if author_is_owner else "stranger",
+        "msg_id": "1",
+        "ts": ts,
+        "date": datetime.now().date().isoformat(),
+        "author_is_owner": author_is_owner,
+    })
+
+
+@pytest.mark.parametrize("is_dm", [True, False], ids=["dm", "public"])
+async def test_owner_discord_words_reach_transcripts(tmp_path: Path, is_dm):
+    """The owner's DM — and the owner's own line in a public channel — is
+    written as an ``Owner:`` line and is searchable."""
+    ms = _memsearch(tmp_path)
+    try:
+        ml = _loop(tmp_path, FakeModel(["</think>ok"]), ms)
+        await ml._run_one_turn([
+            _bridge_message("owner-said-tx808", is_dm=is_dm, author_is_owner=True)])
+        assert "Owner: owner-said-tx808" in _today_transcript(tmp_path)
+        hits = await ms.search("owner-said-tx808", top_k=5)
+        assert any("transcripts" in h.get("source", "") for h in hits), hits
+    finally:
+        ms.close()
+
+
+async def test_stranger_discord_words_not_in_transcripts(tmp_path: Path):
+    ms = _memsearch(tmp_path)
+    try:
+        ml = _loop(tmp_path, FakeModel(["</think>ok"]), ms)
+        await ml._run_one_turn([
+            _bridge_message("stranger-said-tx909", is_dm=False, author_is_owner=False)])
+        assert "stranger-said-tx909" not in _today_transcript(tmp_path)
+        assert await ms.search("stranger-said-tx909", top_k=5) == []
     finally:
         ms.close()

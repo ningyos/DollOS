@@ -215,14 +215,14 @@ def _owner(text: str = "hi") -> Perception:
 
 def _stranger(text: str = "hi") -> Perception:
     return Perception(kind="ChannelMessage", t=time.time(), data={
-        "channel_id": "pub-1", "text": text,
+        "channel_id": "pub-1", "content": text,
         "author_is_owner": False, "is_dm": False,
     })
 
 
 def _owner_dm(text: str = "hi") -> Perception:
     return Perception(kind="ChannelMessage", t=time.time(), data={
-        "channel_id": "dm-1", "text": text,
+        "channel_id": "dm-1", "content": text,
         "author_is_owner": True, "is_dm": True,
     })
 
