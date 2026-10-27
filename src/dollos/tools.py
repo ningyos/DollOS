@@ -339,6 +339,15 @@ class Recall(BaseModel):
         ),
     )
 
+    @classmethod
+    def taints(cls, arguments: dict) -> bool:
+        """Whether this call reads untrusted content, so ``ToolExecutor``
+        downgrades the rest of the turn (harness spec §6.5 point 2, plan
+        2026-10-27 Task 6): only with ``include_external``. Decided from the
+        arguments, not the hits — asking for strangers' notes is enough, the
+        same way a tool that fetches a web page taints whatever it returned."""
+        return bool(arguments.get("include_external"))
+
     def _summary(self, read_external: bool = False) -> str:
         # S1: whether external_public/ hits came back, so a later harness
         # step can downgrade the turn after untrusted memory entered it.

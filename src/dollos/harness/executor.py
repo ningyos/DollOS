@@ -11,7 +11,18 @@ run. ``ToolExecutor.run`` has three paths:
 
 Each call writes one ``tool_call`` record to the cascade JSONL log
 (``logging_config.configure_cascade_logging``): principal, kind, tool, a
-short argument summary, and the decision.
+short argument summary, the decision, and whether the turn was tainted.
+
+Taint downgrade (spec §6.5 point 2, plan Task 6): once an allowed call that
+read untrusted content has run (its tool class's ``taints(arguments)`` is
+true), the rest of the turn may only run ``permissions.TAINTED_TOOLS``. The
+flag lives on ``ctx.tainted`` (MindLoop resets it every turn; an agent's ctx
+is fresh), so it holds across the per-call executors MindLoop builds and
+across passes. The offered list does not change (plan decision 4: the tool
+JSON stays byte-identical for the server cache); a tool that was bound but
+no longer is gets the same "not available in this turn" refusal as any
+unbound one. An external_public turn is never tainted: its row is already
+the floor, and tainting would strip NoteMemory from strangers.
 
 ``dispatch_one`` (validate + run one call against a registry) is shared by
 the MindLoop turn and the agents (``agent_engine.run_agent``).
@@ -26,6 +37,8 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 from pydantic import ValidationError
+
+from dollos.harness.permissions import TAINTED_TOOLS
 
 if TYPE_CHECKING:
     from dollos.harness.permissions import Principal
@@ -131,10 +144,14 @@ async def dispatch_one(
     return ToolResult(tool_name=name, success=True, detail=returned)
 
 
-def turn_label(kind: "TurnKind", principal: "Principal") -> str:
+def turn_label(
+    kind: "TurnKind", principal: "Principal", *, tainted: bool = False,
+) -> str:
     """The turn as named in the refusal of an offered-but-unbound tool:
-    safe mode, then a stranger's turn, then the kind (a conversation is
-    "owner" when the owner is present, else "normal")."""
+    a tainted turn, then safe mode, then a stranger's turn, then the kind (a
+    conversation is "owner" when the owner is present, else "normal")."""
+    if tainted:
+        return "after reading external content"
     if kind == "safe_mode":
         return "safe mode"
     if principal == "external_public":
@@ -194,33 +211,72 @@ class ToolExecutor:
         self._kind = kind
         self._dispatch = dispatch
 
+    def _tainted(self) -> bool:
+        # external_public is never tainted (module docstring); the check is
+        # here too so a flag set some other way cannot narrow its row.
+        return self._ctx.tainted and self._principal != "external_public"
+
+    def _effective_bound(self) -> Mapping[str, type]:
+        """``bound``, narrowed to ``TAINTED_TOOLS`` once the turn is tainted."""
+        if not self._tainted():
+            return self._bound
+        return {n: c for n, c in self._bound.items() if n in TAINTED_TOOLS}
+
     def decide(self, name: str) -> Decision:
         if name not in self._offered:
             return "deny"
-        if name not in self._bound:
+        if name not in self._effective_bound():
             return "unbound"
         return "allow"
 
     async def run(self, name: str, arguments: dict) -> ToolResult | None:
         decision = self.decide(name)
-        self._log(name, arguments, decision)
+        tainted = self._tainted()
+        self._log(name, arguments, decision, tainted)
+        bound = self._effective_bound()
         if decision == "unbound":
-            available = ", ".join(sorted(self._bound)) or "(none)"
+            available = ", ".join(sorted(bound)) or "(none)"
+            label = turn_label(self._kind, self._principal, tainted=tainted)
             return ToolResult(
                 tool_name=name,
                 success=False,
                 detail=(
-                    f"{name} is not available in this turn "
-                    f"({turn_label(self._kind, self._principal)}); "
+                    f"{name} is not available in this turn ({label}); "
                     f"available now: {available}"
                 ),
                 unbound=True,
             )
         if self._dispatch is not None:
-            return await self._dispatch(name, arguments, self._bound)
-        return await dispatch_one(name, arguments, self._ctx, self._bound)
+            result = await self._dispatch(name, arguments, bound)
+        else:
+            result = await dispatch_one(name, arguments, self._ctx, bound)
+        if decision == "allow" and (result is None or result.success):
+            self._maybe_taint(name, arguments)
+        return result
 
-    def _log(self, name: str, arguments: dict, decision: Decision) -> None:
+    def _maybe_taint(self, name: str, arguments: dict) -> None:
+        """Taint the turn after a clean call that read untrusted content.
+        Most tools define no ``taints``; Recall's is ``include_external``;
+        Task 7's MCP tools with ``untrusted_output`` will return True."""
+        if self._principal == "external_public" or self._ctx.tainted:
+            return
+        taints = getattr(self._bound[name], "taints", None)
+        if taints is None or not taints(arguments):
+            return
+        self._ctx.tainted = True
+        try:
+            _log.info(
+                "turn_tainted",
+                principal=self._principal,
+                kind=self._kind,
+                tool=name,
+            )
+        except Exception:
+            logger.exception("turn_tainted log failed; continuing")
+
+    def _log(
+        self, name: str, arguments: dict, decision: Decision, tainted: bool,
+    ) -> None:
         try:
             _log.info(
                 "tool_call",
@@ -229,6 +285,7 @@ class ToolExecutor:
                 tool=name,
                 args=summarize_arguments(name, arguments),
                 decision=decision,
+                tainted=tainted,
             )
         except Exception:
             logger.exception("tool_call log failed; continuing")
