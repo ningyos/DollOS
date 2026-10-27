@@ -313,7 +313,7 @@ class _SearchableMemSearch:
         self.last_query: str | None = None
         self.last_top_k: int | None = None
 
-    async def search(self, query, top_k=5):
+    async def search(self, query, top_k=5, **_kw):
         self.last_query = query
         self.last_top_k = top_k
         return self._hits

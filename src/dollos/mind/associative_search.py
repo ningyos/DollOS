@@ -80,6 +80,7 @@ async def associative_search(
     top_k: int = 3,
     now: datetime | None = None,
     source_prefix: str | Path | None = None,
+    exclude_prefixes: list[str | Path] | None = None,
 ) -> list[dict]:
     """Per-axis associative recall. Returns up to ``top_k`` unique hits.
 
@@ -99,6 +100,10 @@ async def associative_search(
     trying to enumerate every private tier to exclude (a denylist silently
     misses any tier not enumerated in it, e.g. ``transcripts/``). ``None``
     (the default) is fully unchanged behavior — full unscoped recall.
+
+    ``exclude_prefixes`` (S1): threaded straight into ``memsearch.search``'s
+    SQL-level exclusion — MindLoop passes the ``external_public/`` dir on
+    every other turn so strangers' notes never auto-surface here.
     """
     if now is None:
         now = datetime.now()
@@ -119,14 +124,16 @@ async def associative_search(
     # One shared semantic pool — memsearch query is identical across axes,
     # only the post-filter differs. Saves N round-trips.
     #
-    # source_prefix is only added to the call when set (not None) so the
-    # unscoped (internal/external_dm) call shape is byte-for-byte identical
-    # to before this feature — test/production memsearch stand-ins that
-    # don't declare a `source_prefix` parameter (and have no **kwargs
-    # passthrough) keep working unchanged.
+    # source_prefix / exclude_prefixes are only added to the call when set
+    # (not None) so the unscoped call shape is byte-for-byte identical to
+    # before these features — test/production memsearch stand-ins that don't
+    # declare those parameters (and have no **kwargs passthrough) keep
+    # working unchanged.
     search_kwargs: dict = {"top_k": _AXIS_POOL}
     if source_prefix is not None:
         search_kwargs["source_prefix"] = source_prefix
+    if exclude_prefixes is not None:
+        search_kwargs["exclude_prefixes"] = exclude_prefixes
     try:
         pool = await memsearch.search(query, **search_kwargs)
     except Exception:

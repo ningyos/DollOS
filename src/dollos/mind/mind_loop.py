@@ -638,6 +638,10 @@ class MindLoop:
         # DIRECTORY boundary so it can't also match a sibling like
         # external_public_evil/ (LIKE '<prefix>%' with no boundary would) —
         # mirrors the exclude_prefixes '/%' boundary. See Recall.run.
+        # S1 (harness spec §6.5): every other turn (internal, and external_dm
+        # = the owner's DM) excludes external_public/ instead, so strangers'
+        # notes never surface here unasked.
+        is_public = self._ctx.origin_tier == "external_public"
         try:
             associative_hits = await associative_search(
                 self._ctx.memsearch,
@@ -645,8 +649,12 @@ class MindLoop:
                 top_k=3,
                 source_prefix=(
                     str(self._ctx.memory_root / "external_public") + "/"
-                    if self._ctx.origin_tier == "external_public"
+                    if is_public
                     else None
+                ),
+                exclude_prefixes=(
+                    None if is_public
+                    else [self._ctx.memory_root / "external_public"]
                 ),
             )
         except Exception:
@@ -1137,6 +1145,11 @@ class MindLoop:
         scoped — so a stranger's turn never gets an unsolicited dump of
         Doll's memory. Explicit ``Recall`` is the only retrieval path on
         such turns, and it scopes out the private tier (tools.py).
+
+        S1 (harness spec §6.5): on every other turn ``external_public/`` is
+        excluded too, so a stranger's note never reaches the owner's or
+        Doll's own turn unasked; ``Recall(include_external=True)`` is the
+        only way to read it there.
         """
         if self._ctx.origin_tier == "external_public":
             return []
@@ -1165,7 +1178,10 @@ class MindLoop:
             return []
         try:
             hits = await self._ctx.memsearch.search(
-                query, top_k=10, exclude_prefixes=[self._ctx.transcripts_root]
+                query, top_k=10, exclude_prefixes=[
+                    self._ctx.transcripts_root,
+                    self._ctx.memory_root / "external_public",
+                ],
             )
             # B2 candidate pull-only: consolidated/ sources are never auto-injected
             # into [Memory context] — they are only surfaced via Recall (with

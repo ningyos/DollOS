@@ -367,6 +367,11 @@
               ],
               "default": null,
               "description": "Optional ISO upper bound (inclusive). Same date-portion semantics as `since`."
+            },
+            "include_external": {
+              "default": false,
+              "description": "Also search notes left by strangers and external AIs (unverified).",
+              "type": "boolean"
             }
           },
           "required": [

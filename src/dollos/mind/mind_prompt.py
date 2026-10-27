@@ -379,6 +379,9 @@ def _render_memory(hits: list[dict]) -> str:
         # can't masquerade as Doll's own trusted memory — symmetric to
         # consolidated/'s prefix. Trailing slash = directory boundary, so a
         # sibling like external_public_evil/ never matches.
+        # S1: _derive_memory_hits now excludes external_public/ on owner and
+        # internal turns, so this tag is defense in depth here; it shows up
+        # in practice only on Recall(include_external=True).
         prefix = (
             "[external AI · unverified] "
             if "external_public/" in (h.get("source") or "")
@@ -409,6 +412,10 @@ def _render_associative(hits: list[dict]) -> str:
     as Doll's own trusted memory through this third read path. Same
     trailing-slash directory-boundary check as ``_render_memory`` /
     ``_format_hit``, so external_public_evil/ never matches.
+
+    S1: MindLoop now passes ``exclude_prefixes=[external_public/]`` on owner
+    and internal turns, so this tag is defense in depth here; it shows up in
+    practice only on ``Recall(include_external=True)``.
     """
     if not hits:
         return "(none)"
