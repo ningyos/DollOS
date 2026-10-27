@@ -3,6 +3,7 @@
 **狀態**：APPROVED（使用者 2026-10-17 審閱通過）
 **版本紀錄**：v1 用 Python REPL（Monty）當動作介面；v2 改成 shell 優先並併入權限模型；v3（本版）依使用者決定改成**原生 tool calling + MCP 擴充**。shell 和 Python REPL 為什麼不用，見 §11。
 **日期**：2026-10-17
+**修訂（2026-10-27）**：S1–S5、S7、§9.1 已由 plan `2026-10-27-harness-s2-s7.md` 實作（branch `feat/harness-s2-s7`）。這次把該 plan 文末的「Spec 修正」和實作時的決定寫回本文：§2 圖、§5（MCP client 實際做法）、§6.3（四個 principal）、§6.5（降權實際做法、已知缺口）、§9（各步驟狀態）。§4 的工具合併還沒做，另寫 plan。
 **關聯**：`2026-10-17-think-ab-qwen38-design.md`（評分工具共用）、`2026-07-03-dollos-mvp-discord-presence-design.md`（origin_tier 的來源）、`2026-07-06-mcp-server-design.md`（DollOS 已經是 MCP server；本文讓它也成為 MCP client）
 
 ---
@@ -33,10 +34,11 @@
                           ▼
 ┌─────────────────────── Turn Runner ────────────────────────┐
 │ 1. 算出 principal 和 TurnPolicy        這回合是誰的、能做什麼  │
-│ 2. ToolRegistry 綁定這回合的工具        內建工具 + MCP 工具     │
+│ 2. ToolRegistry：offered = 每個 principal 一份固定清單（給模型看）│
+│    bound = 這回合能跑的（回合種類 ∩ 權限表）  內建 + MCP 工具   │
 │ 3. ContextBuilder 組 messages           模型要看的內容          │
 │ 4. ModelAdapter 串流                    思考 / 說話 / 工具呼叫  │
-│ 5. ToolExecutor 執行（只接受已綁定的）  結果變成 tool message   │
+│ 5. ToolExecutor 執行（只跑 bound 的）    結果變成 tool message   │
 │ 6. 結果送回 4，直到沒有工具呼叫、到達上限，或被打斷           │
 └──────────────────────────────────────────────────────────────┘
         │說話 → sink / TTS        │每次呼叫 → action log / trace
@@ -45,10 +47,10 @@
 | 元件 | 職責 | 取代現在的 |
 |---|---|---|
 | **TurnPolicy** | 每種回合一份宣告式設定：能不能說話、think 額度、最多幾輪；工具集合由 §6 的矩陣加上回合種類算出 | `_is_xxx` 旗標、7 份工具清單、`_active_tool_registry` |
-| **ToolRegistry** | 收集內建工具和 MCP 工具，依 TurnPolicy 綁定這回合可用的子集，產生給模型的 tool schema | `tools.py` 的工具清單與 grammar 規則產生 |
+| **ToolRegistry** | 收集內建工具和 MCP 工具。`offered`：每個 principal 一份固定清單和它的 tool schema，整個 run 不變（server 的 cache 才不會壞）。`bound`：這回合真的能跑的子集（回合種類 ∩ §6.3 的表） | `tools.py` 的工具清單與 grammar 規則產生 |
 | **ContextBuilder** | 組 chat messages：身份、記憶提示、最近的對話與觀察、身體與 vital 狀態 | `render_mind` 與散落在 MindLoop 的組裝邏輯 |
 | **ModelAdapter** | 呼叫模型 API，把串流統一成事件：`ThinkDelta`、`SpeechDelta`、`ToolCalls`、`End`；在這層落實 think 上限 | `ComposedLLMAdapter` + 樣板 + grammar + `ToolStreamParser` |
-| **ToolExecutor** | 執行工具呼叫；只接受這回合已綁定的工具，其他一律明確拒絕；處理 fire-and-forget | `dispatch_one` + 各工具的 `run()` |
+| **ToolExecutor** | 執行工具呼叫；只跑 `bound` 的工具。不在 `offered` 裡 → 拒絕；在 `offered` 但不在 `bound` → 回「這個回合不能用」；處理 fire-and-forget | `dispatch_one` + 各工具的 `run()` |
 
 **Turn Runner 只有一套。** 主回合、日記、agenda、pulse、workflow 的 worker、演化，全部是同一個迴圈搭配不同的 TurnPolicy。
 
@@ -117,9 +119,17 @@
 
 DollOS 已經是 MCP server（讓外部 AI 跟她說話）；本文讓它**同時成為 MCP client**，用 MCP server 擴充她的能力，不需要管理 Python 套件。
 
-- **設定**：`mcp_clients.toml` 列出要接的 MCP server（stdio 或 HTTP）。每個 server 由 `ServiceSupervisor` 管理生命週期（沿用 bridge 和 dollos-mcp 的作法）。
-- **命名**：MCP 工具在註冊表裡加上 server 前綴（例：`calendar__list_events`），避免撞名。
-- **權限**：每個 server 在設定裡標明 `min_principal`（預設 `owner`），只有符合的回合才會綁定它的工具。
+實作在 `src/dollos/harness/mcp_client.py`，設定範例 `mcp_clients.example.toml`。
+
+- **設定**：`mcp_clients.toml` 列出要接的 MCP server（`[[server]]`：`name`、`command`、`min_principal`、`untrusted_output`、`tools` 白名單）。daemon 從 `config.toml` 的 `[mcp_clients].config` 找它（預設 `mcp_clients.toml`）。沒有這個檔 = 沒有 MCP 工具；檔案寫錯 = 開不了機，錯誤訊息寫出是哪個 server。
+- **只支援 stdio。** HTTP 之後再說。
+- **行程**：用 mcp SDK 的 `stdio_client` 啟動，**不用 `ServiceSupervisor`**。原因：supervisor 讓子行程共用 daemon 的 stdout（SDK 需要自己的 pipe）、會重啟掛掉的子行程（這裡不要），而且用了只有 Linux 有的 `prctl`。
+- **工具清單**：開機時抓一次，整個 run 不變。server 送 `tools/list_changed` 只記 log，下次開機才生效。
+- **連不上、掛掉**：開機時連不上 → 它的工具不出現，記一行 log，daemon 照常開機，不重試。執行中掛掉 → 那次呼叫回失敗，不重啟，回合繼續。
+- **命名**：MCP 工具在註冊表裡加上 server 前綴（例：`calendar__list_events`），避免撞名。server 名稱不能含 `__`。
+- **權限**：每個 server 都要寫 `min_principal`，**必填，沒有預設值**，少了就開不了機。可以填 `owner`（= `owner` + `owner_dm`）、`internal`（再加上 internal）、`external_public`（所有人）；其他值一樣開不了機，訊息寫出 server 名稱。
+- **回合種類**：只有 `conversation` 回合綁定 MCP 工具（TurnPolicy 的 `mcp_tools`）。日記、agenda、pulse、reflection、agent 都沒有。
+- **輸出長度**：結果超過一則 tool message 的上限時，完整內容存進 ToolOutputStore，模型拿到前幾行和 output id（同 §8）。
 - **外部內容**：會讀進外部內容的 server（例如網頁擷取、信箱）在設定裡標 `untrusted_output = true`。這類工具被呼叫後，這回合依 §6.5 降權。
 - **相依套件**：已經有 `mcp>=1.27`（dollos-mcp 用的），client 端沿用同一個 SDK。
 
@@ -140,45 +150,49 @@ DollOS 已經是 MCP server（讓外部 AI 跟她說話）；本文讓它**同�
 ### §6.2 原則
 
 1. **權限屬於回合的觸發者，不屬於 Doll。** 她在誰的回合裡，就只有那個人的權限。
-2. **由 daemon 執行，不靠 prompt。** 沒綁定的工具不會出現在給模型的工具清單裡；就算模型幻想出一個沒給它的工具名稱，ToolExecutor 也會明確拒絕。
+2. **由 daemon 執行，不靠 prompt。** principal 那一列以外的工具不會出現在給模型的工具清單裡；清單裡有、但這回合沒綁定的工具，ToolExecutor 在呼叫時拒絕；模型幻想出一個沒給它的工具名稱，也會明確拒絕。
 3. **預設拒絕。** 新工具、新 MCP server、新觸發來源，沒有明確列入就不准。
 4. **汙染只會降權，不會升權。**
 5. **拒絕要講清楚。** 被拒絕的呼叫回傳「這個回合不能做這件事」並寫進紀錄，沒有靜默降級（No-fallback 規則）。
 
 ### §6.3 Principal 與工具矩陣
 
-沿用現有的 `origin_tier`，依信任程度由高到低：
+程式裡有四個 principal（`harness/permissions.py` 的 `Principal`），依信任程度由高到低：
 
 | Principal | 誰 |
 |---|---|
-| `owner` | 主人：本機 IPC、配對過的身體裝置、Discord **私訊**中的主人 |
-| `internal` | Doll 自己：agenda、日記、system pulse、idle 醒來、reflection |
-| `external_dm` | 私訊她的非主人 |
-| `external_public` | 公開頻道的所有人（包括主人在公開頻道說的話，見 §12 Q3）、MCP 對端 |
+| `owner` | 主人：本機 IPC、語音 |
+| `owner_dm` | Discord **私訊**中的主人。工具跟 `owner` 一樣（使用者 2026-10-27 決定，接受 Discord 帳號被盜 = 主機權限的風險） |
+| `internal` | Doll 自己：agenda、日記、system pulse、idle 醒來、reflection、工具結果 |
+| `external_public` | 其他所有人：公開頻道（包括主人在公開頻道說的話，見 §12 Q3）、陌生人的私訊、MCP 對端 |
 
-**一個回合的 principal = 它所有輸入裡信任最低的那一個**（§6.5）。
+陌生人私訊那一級（原本的 `external_dm`）不存在，陌生人私訊算 `external_public`。`ctx.origin_tier` 留著當相容的看法（`ORIGIN_TIER`：owner → `internal`、owner_dm → `external_dm`、其他不變），記憶的目錄、紀錄和說話的去向還是看它。
 
-| 工具 | owner | internal | external_dm | external_public |
-|---|---|---|---|---|
-| 說話 | ✅ | 依回合種類（日記、agenda 不對外說話） | ✅ | ✅ |
-| `recall` | ✅（外部記憶見 §6.5） | ✅（同左） | 範圍：同一個人的 `external_dm/` + `external_public/` | 範圍：只有 `external_public/` |
-| `remember` | ✅ 寫到 `shared/` | ✅ 寫到 `shared/` | 範圍：`external_dm/<人>/` | 範圍：`external_public/` |
-| `mood` | ✅ | ✅ | ✅ | ✅ |
-| `focus` | ✅ | ✅ | ❌ | ❌ |
-| `self_note` | ✅ | ✅ | ❌ | ❌ |
-| `learn_name` | ✅ | ❌ | ❌ | ❌ |
-| `agenda` / `schedule` | ✅ | ✅ | ❌ | ❌ |
-| `write_diary` | ❌ | 範圍：只在日記回合 | ❌ | ❌ |
-| `skill` / `scratchpad` | ✅ | ✅ | ❌ | ❌ |
-| `read_output` | ✅ | ✅ | 範圍：本回合的輸出 | 範圍：本回合的輸出 |
-| `run_command` / `monitor` / `workflow` | ✅ | 依回合種類（日記、agenda、pulse、reflection 不給） | ❌ | ❌ |
-| MCP 工具 | 依該 server 的 `min_principal` | 同左 | 同左 | 同左 |
+**一個回合的 principal = 它所有輸入裡信任最低的那一個**（§6.5，`principal_of`）。
+
+下表用的是 §4 合併後的工具名稱；程式裡的表是 `permissions.TOOL_MATRIX`，用的是現在的工具名稱。
+
+| 工具 | owner / owner_dm | internal | external_public |
+|---|---|---|---|
+| 說話 | ✅ | 依回合種類（日記、agenda 不對外說話） | ✅ |
+| `recall` | ✅（外部記憶見 §6.5） | ✅（同左） | 範圍：只有 `external_public/` |
+| `remember` | ✅ 寫到 `shared/`（owner_dm 依 `origin_tier` 寫到 `external_dm/`） | ✅ 寫到 `shared/` | 範圍：`external_public/` |
+| `mood` | ✅ | ✅ | ✅ |
+| `focus` | ✅ | ✅ | ❌ |
+| `self_note` | ✅ | ✅ | ❌ |
+| `learn_name` | ✅ | ❌ | ❌ |
+| `agenda` / `schedule` | ✅ | ✅ | ❌ |
+| `write_diary` | ❌ | 範圍：只在日記回合 | ❌ |
+| `skill` / `scratchpad` | ✅ | ✅ | ❌ |
+| `read_output` | ✅ | ✅ | 範圍：本回合的輸出 |
+| `run_command` / `monitor` / `workflow` | ✅ | 依回合種類（日記、agenda、pulse、reflection 不給） | ❌ |
+| MCP 工具 | 依該 server 的 `min_principal` | 同左 | 同左 |
 
 這張表是**唯一的權限來源**。TurnPolicy 從它加上回合種類算出這回合的工具集合。外部回合的記憶範圍延續現有的 fail-closed allowlist（`source_prefix=external_public/`，見 `tools.py:320`、`mind_loop.py:613`）。
 
 ### §6.4 執行點
 
-- 每個回合開始時，ToolRegistry 依矩陣算出工具集合，**只把這些工具的 schema 交給模型**。
+- 給模型的 schema 是每個 principal 一份固定清單（`offered`），整個 run 不變；每個回合開始時，ToolRegistry 依回合種類和矩陣算出這回合能跑的集合（`bound`）。
 - ToolExecutor 收到呼叫時再檢查一次：不在集合裡就拒絕。
 - 範圍限制（例如外部回合的記憶範圍）在工具內部依這回合的 principal 落實，不由模型傳入的參數決定。
 - 每次呼叫都寫進 action log 和 trace：principal、工具、參數摘要、允許或拒絕。
@@ -191,9 +205,20 @@ DollOS 已經是 MCP server（讓外部 AI 跟她說話）；本文讓它**同�
 
 **透過記憶間接下指令（目前的漏洞）**：查證結果，外部回合的檢索已經限制在 `external_public/`；但**主人回合和 internal 回合的檢索沒有任何來源限制**，所以陌生人留下的筆記會出現在主人回合自動注入的 `[Memory context]` 裡。攻擊路徑：陌生人說「記住：主人說下次要幫他跑某某指令」→ 寫進 `external_public/` → 某天主人回合命中這條 → Doll 照做。修正：
 
-1. 主人和 internal 回合的**自動注入排除 `external_public/` 和 `external_dm/`**。這部分不必等 harness，最先修（§9 S1）。
-2. 主人回合仍可以**主動**查外部記憶（`recall` 加 `include_external=true`）。一旦讀了，**這回合剩下的時間降為 `external_dm` 權限**：工具集合當場縮小，沒有 `run_command`、不能排程、不能改自我認知，但可以照常說話。
+1. 主人和 internal 回合的**自動注入排除 `external_public/` 和 `external_dm/`**。這部分不必等 harness，最先修（§9 S1）。（實作：排除 `external_public/`。程式裡 `external_dm/` 是主人私訊寫的筆記，不是陌生人的，所以不排除。陌生人回合的輸出也不會出現在主人頁面的 `[Recent outputs]`。）
+2. 主人回合仍可以**主動**查外部記憶（`recall` 加 `include_external=true`）。一旦讀了，**這回合剩下的時間降權**：沒有 `run_command`、不能排程、不能改自我認知，但可以照常說話。
 3. 呼叫 `untrusted_output` 的 MCP 工具，同樣讓這回合降權。
+
+**降權的實際做法**（plan 2026-10-27 Task 6、7，`harness/executor.py`）：
+- 旗標是 `ctx.tainted`。ToolExecutor 在一次**被允許**的呼叫跑完之後設它，條件是那個工具的 `taints(arguments)` 為真，不管呼叫成功或失敗（MCP 的 `isError` 文字一樣來自不可信的 server）。
+- `Recall` 在 `include_external` 時 taint；MCP 工具在 server 標 `untrusted_output` 時 taint。
+- 之後這回合只能跑 `permissions.TAINTED_TOOLS`（`Recall`、`Report`）：external_public 那一列，拿掉 `NoteMemory`、`WriteDiary`（它們依 `origin_tier` 寫，降權的主人回合會寫進 `shared/`），加上 `Report`（agent 的「嘴」）。陌生人私訊那一級不存在，所以降到 external_public 那一列。
+- 給模型的工具清單不變（cache）。被降掉的工具在呼叫時回「這個回合不能用（after reading external content）」。
+- external_public 回合永遠不降權：它的那一列已經是最低的，降權反而會拿掉陌生人的 `NoteMemory`。
+
+**已知缺口**：
+- (a) 降權不會帶到後續回合。workflow worker 的 `Report`，或讀了外部內容的 `Shell` 輸出，會以 `ToolResultArrived` 回來；下一個回合是 internal，沒有降權。
+- (b) 降權之後所有 MCP 工具都被拒絕，包括再呼叫同一個不可信的工具。`ReadToolOutput` 不在 `TAINTED_TOOLS` 裡，所以很長的不可信結果在那個回合只能看到預覽。
 4. 外部記憶在顯示時一律標明來源（「某人在公開頻道說：……」）。
 
 **延遲觸發**：
@@ -225,29 +250,31 @@ DollOS 已經是 MCP server（讓外部 AI 跟她說話）；本文讓它**同�
 
 一次只換一塊，每一步測試都要全綠。
 
+**狀態（2026-10-27）**：S1–S5、S7 和 §9.1 由 plan `2026-10-27-harness-s2-s7.md` 實作（branch `feat/harness-s2-s7`；S4 和 S5 的 ContextBuilder 先由 plan `2026-10-18-model-adapter-chat-api.md` 做掉）。S6、S8 的 A/B、S9 的刪路徑由 10-18 plan 完成或取消：Strata 只跑得動 chat 路徑，所以 `model_api` 開關和兩種路徑的 A/B 沒有意義，舊路徑已由 10-18 plan 的 Task 7 刪掉。§4 的工具合併還沒做。排程與 agenda 記錄建立者 principal 移到 mind-loop M1。
+
 | 步驟 | 內容 | 行為改變 |
 |---|---|---|
-| **S1** | 修 §6.5 的記憶漏洞：主人和 internal 回合的自動注入排除外部記憶，外部記憶標明來源 | 是（安全修正），不需要 harness，**最先做** |
-| **S2** | 「principal = 輸入中信任最低者」寫成明確的函式並加測試；工具矩陣做成單一資料表，現有工具清單從它推導 | 無 |
-| **S3** | 抽出 `TurnPolicy`，取代旗標 | 無（純重構） |
-| **S4** | 抽出 `ModelAdapter`，先包住現有的 `/completion` + grammar 路徑，輸出統一事件；同時實測 Qwen3.8 在 `/v1/chat/completions` 上的工具呼叫、平行呼叫、reasoning 分離和 think 上限的兩種做法 | 無（純重構 + 實測） |
-| **S5** | 抽出 `ContextBuilder`、`ToolRegistry`、`ToolExecutor` 和單一的 Turn Runner；workflow / 演化改用同一個迴圈 | 無（純重構，刪掉重複的 cascade） |
-| **S6** | 新增 chat-tools 的 ModelAdapter 和收斂後的工具組；用設定 `[harness].model_api = "completion_grammar" \| "chat_tools"` 明確切換 | chat_tools 是新的 |
-| **S7** | MCP client：`mcp_clients.toml`、ServiceSupervisor 管理、`min_principal`、`untrusted_output` | 新功能 |
-| **S8** | 在 think A/B 的情境集上比較兩種 `model_api`（機械檢查 + Claude 成對盲評 + 使用者抽查 20 組，加上延遲），另加權限測試（§9.1） | — |
-| **S9** | 依結果移除其中一條路徑，拿掉 `model_api` 開關；排程與 agenda 記錄建立者 principal | — |
+| **S1** | 修 §6.5 的記憶漏洞：主人和 internal 回合的自動注入排除外部記憶，外部記憶標明來源 | 是（安全修正），不需要 harness，**最先做**。✅ 已實作（10-27 plan） |
+| **S2** | 「principal = 輸入中信任最低者」寫成明確的函式並加測試；工具矩陣做成單一資料表，現有工具清單從它推導 | 無（主人私訊比照 owner 除外）。✅ 已實作（10-27 plan） |
+| **S3** | 抽出 `TurnPolicy`，取代旗標 | 無（純重構）。✅ 已實作（10-27 plan） |
+| **S4** | 抽出 `ModelAdapter`，先包住現有的 `/completion` + grammar 路徑，輸出統一事件；同時實測 Qwen3.8 在 `/v1/chat/completions` 上的工具呼叫、平行呼叫、reasoning 分離和 think 上限的兩種做法 | 無（純重構 + 實測）。✅ 已完成（10-18 plan，直接做 chat 版） |
+| **S5** | 抽出 `ContextBuilder`、`ToolRegistry`、`ToolExecutor` 和單一的 Turn Runner；workflow / 演化改用同一個迴圈 | 無（純重構，刪掉重複的 cascade）。✅ 已實作（ContextBuilder 由 10-18 plan，其餘由 10-27 plan） |
+| **S6** | 新增 chat-tools 的 ModelAdapter 和收斂後的工具組；用設定 `[harness].model_api = "completion_grammar" \| "chat_tools"` 明確切換 | chat_tools 是新的。chat_tools 由 10-18 plan 完成，是唯一的路徑；開關取消；工具組收斂（§4）還沒做 |
+| **S7** | MCP client：`mcp_clients.toml`、`stdio_client` 啟動（不用 ServiceSupervisor，見 §5）、`min_principal`、`untrusted_output` | 新功能。✅ 已實作（10-27 plan） |
+| **S8** | 在 think A/B 的情境集上比較兩種 `model_api`（機械檢查 + Claude 成對盲評 + 使用者抽查 20 組，加上延遲），另加權限測試（§9.1） | A/B 取消（只剩一條路徑）。§9.1 ✅ 已實作（10-27 plan Task 6） |
+| **S9** | 依結果移除其中一條路徑，拿掉 `model_api` 開關；排程與 agenda 記錄建立者 principal | 刪路徑由 10-18 plan Task 7 完成。記錄建立者 principal 移到 mind-loop M1 |
 
 `model_api` 是實驗期間的明確開關，不是 fallback：不會在執行中自動切換，S9 之後就刪掉。
 
 **跟 think A/B 的關係**：原本的 think A/B 比較「格式化 think」和「自由 think + 上限」，兩組都還有 grammar。改用原生 tool calling 後 grammar 整個不需要，所以 S8 的比較其實就是「現在的作法（grammar + 格式化 think + JSON 工具）」對「新作法（原生工具 + 自由 think + 上限）」。think A/B spec 的 Arm A 仍然是基準，要先量；它的 B 組要不要跑，等 S4 實測後再決定。
 
-### §9.1 權限測試（S8 必須全部通過）
+### §9.1 權限測試（S8 必須全部通過；由 10-27 plan Task 6 實作）
 
 - 外部回合的工具清單裡沒有 §6.3 不允許的工具。
 - 模型呼叫沒交給它的工具名稱 → 明確拒絕，紀錄裡有拒絕事件。
 - 外部回合的 `recall` 只會回傳允許範圍內的記憶，不管參數怎麼寫。
 - 陌生人在記憶裡埋指令，之後主人回合的自動注入**不會**出現這條。
-- 主人回合主動讀外部記憶，或呼叫 `untrusted_output` 的 MCP 工具之後，`run_command` 從工具清單消失，呼叫也會被拒絕。
+- 主人回合主動讀外部記憶，或呼叫 `untrusted_output` 的 MCP 工具之後，呼叫 `run_command` 會被拒絕（工具清單不變，見 §6.5）。
 - 外部內容觸發的後續回合，principal 不高於原本的外部 principal。
 
 ---
