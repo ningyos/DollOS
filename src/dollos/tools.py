@@ -124,8 +124,10 @@ def _format_hit(hit: dict) -> str:
     d = _hit_date(hit)
     content = hit.get("content", "")
     source = hit.get("source") or ""
-    # Provenance prefixes (both surface via Recall; consolidated/ is auto-
-    # inject-filtered upstream, external_public/ is not — R-DECISION-5):
+    # Provenance prefixes (both surface via Recall; both are auto-inject-
+    # filtered upstream — external_public/ since S1, so on an owner/internal
+    # turn this tag only appears when Recall asks with include_external —
+    # R-DECISION-5):
     #   consolidated/    → system-merged, unconfirmed candidate
     #   external_public/ → written under an external (peer/stranger) turn; an
     #                      unverified AI over MCP can NoteMemory here, so on an
@@ -323,9 +325,19 @@ class Recall(BaseModel):
             "semantics as `since`."
         ),
     )
+    include_external: bool = Field(
+        default=False,
+        description=(
+            "Also search notes left by strangers and external AIs "
+            "(unverified)."
+        ),
+    )
 
-    def _summary(self) -> str:
-        return f"recalled: {self.query[:72]}"
+    def _summary(self, read_external: bool = False) -> str:
+        # S1: whether external_public/ hits came back, so a later harness
+        # step can downgrade the turn after untrusted memory entered it.
+        suffix = " [read external memory]" if read_external else ""
+        return f"recalled: {self.query[:72]}{suffix}"
 
     async def run(self, ctx: "MindCtx") -> str:
         search_kwargs: dict = {}
@@ -336,7 +348,7 @@ class Recall(BaseModel):
         # known-private dirs — a denylist silently misses any tier not
         # enumerated (e.g. transcripts/, the owner+Doll verbatim convo log,
         # was never on the old denylist and leaked). internal and external_dm
-        # (owner) turns are unrestricted (owner sees own memory), so this only
+        # (owner) turns see all of their own memory, so this allowlist only
         # activates for external_public.
         #
         # Whole-branch verify (Important): the prefix MUST carry a trailing
@@ -347,10 +359,18 @@ class Recall(BaseModel):
         # This codebase DOES add sibling-named dirs (skills/ + skill_bodies/,
         # self_history + self_evolution/), so the boundary is load-bearing, not
         # theoretical. Mirrors the ``/%`` boundary on exclude_prefixes.
+        #
+        # S1 (harness spec §6.5): every other turn (internal, and external_dm
+        # = the owner's DM) leaves external_public/ out at the SQL layer
+        # unless she asks for it with include_external; hits that do come
+        # back still carry the unverified tag (_format_hit). On an
+        # external_public turn include_external has no effect.
         if getattr(ctx, "origin_tier", "internal") == "external_public":
             search_kwargs["source_prefix"] = (
                 str(ctx.memory_root / "external_public") + "/"
             )
+        elif not self.include_external:
+            search_kwargs["exclude_prefixes"] = [ctx.memory_root / "external_public"]
         hits = await ctx.memsearch.search(self.query, top_k=5, **search_kwargs)
         if self.since is not None or self.until is not None:
             hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]
@@ -361,7 +381,10 @@ class Recall(BaseModel):
                 _format_hit({**h, "content": _snippet(h.get("content", ""), self.query)})
                 for h in hits
             )
-        _record(ctx, "Recall", self._summary())
+        read_external = any(
+            "external_public/" in (h.get("source") or "") for h in hits
+        )
+        _record(ctx, "Recall", self._summary(read_external))
         return result
 
 
