@@ -1,12 +1,15 @@
 """P1e Task 2 (S4/S5): conservative external tool registry, and the fixed
 per-tier tool list the model is shown (plan 2026-10-18 decision 3).
 
-Any external-origin turn (external_public OR external_dm, i.e. INCLUDING the
-owner's own DM) must get a structurally reduced tool set — Shell,
+An external_public turn (strangers, non-owner DMs, the owner posting in a
+PUBLIC channel) must get a structurally reduced tool set — Shell,
 SpawnWorkflow, SpawnMonitor, RemoveMonitor, InvokeSkill, WriteSchedule, and
 SelfRevision must never appear, no matter what safe_mode/reflection/evolution
-flags are set. This is the hard security boundary: Discord account theft must
-never equal home-computer RCE.
+flags are set. This is the hard security boundary.
+
+The owner's own DM (external_dm) is NOT reduced any more: owner DM = the
+owner at the local keyboard (user decision 2026-10-27, plan 2026-10-27
+Task 2; the compromised-Discord-account risk was accepted by the user).
 
 S5: the external reduction must WIN OVER reflection expansion — an external
 turn that is also a ReflectionMoment gets PinSelf (safe, self-profile) but
@@ -16,9 +19,9 @@ from __future__ import annotations
 
 from tests._mindloop_factory import make_mindloop
 
-# Full set that must NEVER appear on any external-origin turn — including the
-# owner's own DM (brief: "owner 也砍"). SelfRevision (慢變演化 self-rewrite) is
-# in here too: an external reflection turn must not regain it.
+# Full set that must NEVER appear on an external_public turn. SelfRevision
+# (慢變演化 self-rewrite) is in here too: an external reflection turn must not
+# regain it. (The owner's DM gets them since 2026-10-27, like the local owner.)
 DANGEROUS = ("Shell", "SpawnWorkflow", "SpawnMonitor", "RemoveMonitor",
              "InvokeSkill", "WriteSchedule", "SelfRevision")
 
@@ -32,19 +35,23 @@ def test_external_public_registry_is_conservative(tmp_path):
         assert name not in reg
 
 
-def test_external_dm_owner_registry_is_conservative_too(tmp_path):
-    """Owner's own DM is still external — no home-computer RCE via a
-    compromised Discord account, even the owner's.
-
-    Part A / A2 (2026-07-06): external_dm now also intentionally grants
-    LearnName (owner DM is a live, first-hand, owner-present turn — spec
-    §3.3) — that is the ONE addition; everything else about the
-    conservative-subset invariant (no Shell/SpawnWorkflow/etc) is unchanged."""
+def test_external_dm_owner_registry_equals_local_owner(tmp_path):
+    """Owner's own DM = the owner at the local keyboard (user decision
+    2026-10-27): the same registry as an internal turn with a live UserSpoke,
+    LearnName and Shell included. The owner in a PUBLIC channel stays
+    external_public and conservative."""
     ml = make_mindloop(memory_root=tmp_path)
+    ml._ctx.origin_tier = "internal"
+    ml._has_user_spoke = True
+    local_owner = set(ml._active_tool_registry())
+    ml._has_user_spoke = False
     ml._ctx.origin_tier = "external_dm"
     reg = ml._active_tool_registry()
-    assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf", "LearnName"}
+    assert set(reg.keys()) == local_owner
     assert "LearnName" in reg
+    assert "Shell" in reg
+    ml._ctx.origin_tier = "external_public"
+    reg = ml._active_tool_registry()
     for name in DANGEROUS:
         assert name not in reg
 
@@ -70,17 +77,26 @@ def test_external_reflection_excludes_selfrevision_and_shell(tmp_path):
         assert name not in reg
 
 
-def test_external_dm_reflection_excludes_selfrevision_and_shell(tmp_path):
-    """Owner-DM reflection turn (brief: "owner 也砍"): same teeth as the
-    external_public sibling — the FULL dangerous set stays out, only PinSelf
-    is regained."""
+def test_external_dm_reflection_equals_owner_reflection(tmp_path):
+    """Owner-DM reflection turn (user decision 2026-10-27): bound like the
+    local owner's reflection turn — SelfRevision and Shell included — while
+    the external_public sibling keeps the FULL dangerous set out."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._ctx.origin_tier = "external_dm"
     ml._is_reflection = True
+    ml._ctx.origin_tier = "internal"
+    ml._has_user_spoke = True
+    owner_reflection = set(ml._active_tool_registry())
+    ml._has_user_spoke = False
+    ml._ctx.origin_tier = "external_dm"
     reg = ml._active_tool_registry()
+    assert set(reg) == owner_reflection
     assert "PinSelf" in reg
-    for name in DANGEROUS:                # S5 parity: full dangerous set out
+    for name in DANGEROUS:
+        assert name in reg
+    ml._ctx.origin_tier = "external_public"
+    reg = ml._active_tool_registry()
+    for name in DANGEROUS:                # S5: full dangerous set out
         assert name not in reg
 
 
@@ -120,20 +136,22 @@ def test_safe_mode_wins_over_external_too(tmp_path):
 
 
 def test_external_offered_tools_hide_every_internal_tool(tmp_path):
-    """The schema list an external turn is shown never names an internal
-    tool — not even on a reflection turn, with evolution and self-profile on."""
+    """The schema list an external_public turn is shown never names an
+    internal tool — not even on a reflection turn, with evolution and
+    self-profile on. The owner's DM is shown the internal list (2026-10-27)."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
     ml._ctx.origin_tier = "internal"
     internal = set(ml._offered_tools())
-    for tier, extra in (("external_public", set()), ("external_dm", {"LearnName"})):
-        ml._ctx.origin_tier = tier
-        for reflection in (False, True):
-            ml._is_reflection = reflection
-            offered = set(ml._offered_tools())
-            assert offered == {"Recall", "NoteMemory", "WriteDiary"} | extra
-            for name in DANGEROUS:
-                assert name not in offered
+    for reflection in (False, True):
+        ml._is_reflection = reflection
+        ml._ctx.origin_tier = "external_public"
+        offered = set(ml._offered_tools())
+        assert offered == {"Recall", "NoteMemory", "WriteDiary"}
+        for name in DANGEROUS:
+            assert name not in offered
+        ml._ctx.origin_tier = "external_dm"
+        assert set(ml._offered_tools()) == internal
     assert set(DANGEROUS) <= internal
 
 

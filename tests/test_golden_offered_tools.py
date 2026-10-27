@@ -12,7 +12,9 @@ pretty-JSON file under ``tests/golden/``:
   (``make_mindloop`` with ``self_profile_enabled`` and ``evolution_enabled``
   on, so PinSelf and SelfRevision are offered on ``internal``). The tier comes
   from the perception: ``UserSpoke`` → internal; owner ``ChannelMessage`` in a
-  DM → external_dm; non-owner ``ChannelMessage`` → external_public.
+  DM → external_dm; non-owner ``ChannelMessage`` → external_public. Since
+  plan Task 2 (owner DM = local owner, 2026-10-27) external_dm's tools equal
+  internal's.
 - ``agent_tools_worker.json`` / ``agent_tools_keeper.json``: one ``run_agent``
   with ``SUB_TOOLS`` (workflow worker) and ``KEEPER_TOOLS`` (consolidation /
   evolution keeper), system = ``PromptRenderer().render("subagent_scaffolding")``

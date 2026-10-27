@@ -11,7 +11,8 @@ future change that regresses any single gate breaks here even if it doesn't
 break that gate's own dedicated test file.
 
 Split table (internal | external_dm=owner DM | external_public=stranger):
-  - tool registry:      full        | conservative (no Shell) | conservative (no Shell)
+  - tool registry:      full        | full (= local owner,    | conservative (no Shell)
+                                      2026-10-27)
   - energy consumption: drains      | drains (upgraded)       | does NOT drain
   - last_user_at:       advances    | advances (upgraded)     | does NOT advance
   - memory write dir:   shared/     | external_dm/            | external_public/
@@ -154,12 +155,12 @@ async def test_external_dm_owner_turn_4way_split(tmp_path: Path):
             [_channel_msg("hi", author_is_owner=True, is_dm=True, t=t)]
         )
 
-        # (a) conservative tool registry — no Shell (owner-DM is not RCE).
-        # Part A / A2 (2026-07-06): external_dm now also intentionally
-        # grants LearnName (spec §3.3) — the one addition to this subset.
+        # (a) owner DM = the owner at the local keyboard (user decision
+        # 2026-10-27): full registry + LearnName, Shell included. The
+        # owner-in-public-channel and stranger tests below keep no Shell.
         reg = loop._active_tool_registry()
-        assert "Shell" not in reg
-        assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf", "LearnName"}
+        assert "Shell" in reg
+        assert set(reg.keys()) == {c.__name__ for c in MAIN_TOOLS} | {"LearnName"}
         assert "LearnName" in reg
 
         # (b) energy DRAINED (upgraded)
@@ -177,6 +178,13 @@ async def test_external_dm_owner_turn_4way_split(tmp_path: Path):
         # (d) retrieval NOT scoped — owner sees her own private shared/ note
         out = await Recall(query="owner-private-fact-dm-check").run(ctx)
         assert "owner-private-fact" in out
+
+        # (a') the same owner in a PUBLIC channel is external_public: no Shell.
+        await loop._run_one_turn(
+            [_channel_msg("hi", author_is_owner=True, is_dm=False, t=t + 1)]
+        )
+        assert ctx.origin_tier == "external_public"
+        assert "Shell" not in loop._active_tool_registry()
     finally:
         ms.close()
 

@@ -17,6 +17,7 @@ from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolOutcome, ToolResult, dispatch_one, run_tool_calls
 from dollos.character import Enforcement
+from dollos.harness.permissions import ORIGIN_TIER, principal_of
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.model import (
     End,
@@ -430,12 +431,13 @@ class MindLoop:
 
     @staticmethod
     def _derive_origin_tier(perceptions: list[Perception]) -> str:
-        """Per-turn origin tier (P1e spec §3.4 S1), computed once at drain from
-        this bucket's perceptions: no ChannelMessage → "internal"; a
-        ChannelMessage from the owner AND in a DM (``is_dm``) → "external_dm";
-        anyone else, INCLUDING the owner posting in a PUBLIC channel →
-        "external_public". P1a single-origin bucket, so a straight scan over
-        this batch is authoritative — no cross-bucket bleed.
+        """Per-turn origin tier (P1e spec §3.4 S1), the compatibility view of
+        ``principal_of`` (plan 2026-10-27 Task 2): no ChannelMessage →
+        "internal"; a ChannelMessage from the owner AND in a DM (``is_dm``) →
+        "external_dm"; anyone else, INCLUDING the owner posting in a PUBLIC
+        channel → "external_public". Mixed ChannelMessages → the lowest-trust
+        one (harness spec §6.5). P1a single-origin bucket, so a straight scan
+        over this batch is authoritative — no cross-bucket bleed.
 
         Whole-branch review C1: ``author_is_owner`` alone used to be enough
         for "external_dm" (full private retrieval). But the owner can also
@@ -446,12 +448,7 @@ class MindLoop:
         "external_public" same as a stranger. A missing/falsy ``is_dm`` fails
         CLOSED (over-scopes to the safer tier), it never fails open.
         """
-        for p in perceptions:
-            if p.kind == "ChannelMessage":
-                if p.data.get("author_is_owner") and p.data.get("is_dm"):
-                    return "external_dm"
-                return "external_public"
-        return "internal"
+        return ORIGIN_TIER[principal_of(perceptions)]
 
     def _on_turn_usage(self, prompt: int | None, completion: int | None) -> None:
         """Accumulate this turn's own token usage (one call per cascade pass,
@@ -591,7 +588,8 @@ class MindLoop:
         # cascade/refeed passes of this iteration.
         self._ctx.current_turn = self._state.iter_count
         self._ctx.external_ctx = batch_external(perceptions)
-        self._ctx.origin_tier = self._derive_origin_tier(perceptions)
+        self._ctx.principal = principal_of(perceptions)
+        self._ctx.origin_tier = ORIGIN_TIER[self._ctx.principal]
 
         # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
         # opens a fresh SelfRevision decision window. The surfaced-this-turn
@@ -1258,18 +1256,24 @@ class MindLoop:
         """The tool registry in force for this pass.
 
         safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has TOP
-        priority (checked first, wins over everything below).
-        external-origin turn (origin_tier != "internal" — public channel OR
-        owner DM; P1e spec §3.4 S4/S5) → conservative subset (EXTERNAL_TOOLS),
-        + PinSelf on reflection turns when self_profile_enabled. This reduction
-        WINS OVER reflection expansion: an external turn that is also a
-        ReflectionMoment never gets SelfRevision, NoteToolLesson, or any
-        MAIN_TOOLS entry outside EXTERNAL_TOOLS — a compromised Discord
-        account (including the owner's own DM) must never reach Shell /
+        priority (checked first, wins over everything below, on every tier).
+        external_public turn (any stranger, a non-owner DM, an MCP peer, or
+        the owner posting in a PUBLIC channel; P1e spec §3.4 S4/S5) →
+        conservative subset (EXTERNAL_TOOLS), + PinSelf on reflection turns
+        when self_profile_enabled. This reduction WINS OVER reflection
+        expansion: an external_public turn that is also a ReflectionMoment
+        never gets SelfRevision, NoteToolLesson, or any MAIN_TOOLS entry
+        outside EXTERNAL_TOOLS — a stranger must never reach Shell /
         SpawnWorkflow / SpawnMonitor / RemoveMonitor / InvokeSkill /
         WriteSchedule / SelfRevision.
-        reflection turn (internal) → full registry + NoteToolLesson, + PinSelf
-        when self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision
+        owner DM (``origin_tier == "external_dm"``, principal owner_dm) is
+        bound exactly like the owner at the local keyboard (user decision
+        2026-10-27, harness spec §6.3; the compromised-Discord-account risk
+        was accepted by the user that day): it falls through to the owner
+        branches below, Shell included. Only its memory scoping (keyed on
+        origin_tier) still differs.
+        reflection turn → full registry + NoteToolLesson, + PinSelf when
+        self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision
         when evolution_enabled (慢變演化; spec §3.4).
         otherwise → base registry.
 
@@ -1288,17 +1292,14 @@ class MindLoop:
         earlier utterance get written as an owner-taught alias after the
         fact). Trust here is enforced by REGISTRY AVAILABILITY, not by a
         post-hoc read of ``ctx.origin_tier`` inside the tool — a stranger's
-        turn never has LearnName in its dict, full stop. On external_dm this
-        is added to the conservative EXTERNAL_TOOLS subset (like PinSelf
-        above) — nothing else is widened; the P1e no-Shell invariant still
-        holds for external_dm turns.
+        turn never has LearnName in its dict, full stop.
         """
         if self._state.safe_mode:
             return {
                 n: c for n, c in self._tool_registry.items()
                 if n in SAFE_MODE_TOOLS
             }
-        if self._ctx.origin_tier != "internal":
+        if self._ctx.origin_tier == "external_public":
             # PinSelf (like NoteToolLesson/SelfRevision below) is never a
             # member of self._tool_registry itself — it's added explicitly
             # here, not filtered in, or it would silently never appear.
@@ -1308,16 +1309,15 @@ class MindLoop:
             }
             if self._is_reflection and self._self_profile_enabled:
                 reg["PinSelf"] = PinSelf
-            if self._ctx.origin_tier == "external_dm":
-                reg["LearnName"] = LearnName
             return reg
+        owner_present = self._has_user_spoke or self._ctx.origin_tier == "external_dm"
         if self._is_reflection:
             extra = {"NoteToolLesson": NoteToolLesson}
             if self._self_profile_enabled:
                 extra["PinSelf"] = PinSelf
             if self._evolution_enabled:
                 extra["SelfRevision"] = SelfRevision
-            if self._has_user_spoke:
+            if owner_present:
                 extra["LearnName"] = LearnName
             return {**self._tool_registry, **extra}
         if self._is_diary:
@@ -1338,7 +1338,8 @@ class MindLoop:
         if self._is_agenda:
             # Pure agenda turn (self-directed agenda spec §5.2, R1-C1,
             # SECURITY-LOAD-BEARING): reached only when origin_tier ==
-            # "internal" (the non-internal branch above already returned)
+            # "internal" (a pure AgendaMoment batch has no ChannelMessage, and
+            # the external_public branch above already returned)
             # AND self._is_reflection is False (that branch above already
             # returned too) AND self._is_agenda is True, which by its own
             # construction already means "no live UserSpoke this batch" (see
@@ -1360,7 +1361,7 @@ class MindLoop:
             return {
                 n: c for n, c in self._tool_registry.items() if n in PULSE_TOOLS
             }
-        if self._has_user_spoke:
+        if owner_present:
             return {**self._tool_registry, "LearnName": LearnName}
         return self._tool_registry
 
@@ -1375,20 +1376,17 @@ class MindLoop:
         cache prefix. What this turn may actually run is still
         ``_active_tool_registry()``, enforced per call in ``_dispatch_bound``.
 
-        internal → the base registry + NoteToolLesson + LearnName, + PinSelf
-        when self_profile_enabled, + SelfRevision when evolution_enabled.
-        external_dm (owner DM) → EXTERNAL_TOOLS + LearnName.
-        external_public → EXTERNAL_TOOLS. External tiers never see an
+        internal and external_dm (owner DM = the owner at the keyboard, user
+        decision 2026-10-27) → the base registry + NoteToolLesson + LearnName,
+        + PinSelf when self_profile_enabled, + SelfRevision when
+        evolution_enabled.
+        external_public → EXTERNAL_TOOLS. external_public never sees an
         internal tool's schema, so a stranger doesn't even learn Shell exists.
         """
-        tier = self._ctx.origin_tier
-        if tier != "internal":
-            offered = {
+        if self._ctx.origin_tier == "external_public":
+            return {
                 n: c for n, c in self._tool_registry.items() if n in EXTERNAL_TOOLS
             }
-            if tier == "external_dm":
-                offered["LearnName"] = LearnName
-            return offered
         offered = {
             **self._tool_registry,
             "NoteToolLesson": NoteToolLesson,
@@ -1405,8 +1403,8 @@ class MindLoop:
         named in the refusal of an offered-but-unbound tool."""
         if self._state.safe_mode:
             return "safe mode"
-        if self._ctx.origin_tier != "internal":
-            return self._ctx.origin_tier
+        if self._ctx.origin_tier == "external_public":
+            return "external_public"
         if self._is_reflection:
             return "reflection"
         if self._is_diary:
@@ -1415,7 +1413,8 @@ class MindLoop:
             return "agenda"
         if self._is_pulse:
             return "pulse"
-        return "owner" if self._has_user_spoke else "normal"
+        owner_present = self._has_user_spoke or self._ctx.origin_tier == "external_dm"
+        return "owner" if owner_present else "normal"
 
     def _enter_safe_mode(self, reason: str) -> None:
         """Enter read-only safe mode (idempotent within a turn).
