@@ -70,7 +70,7 @@ def test_external_reflection_excludes_selfrevision_and_shell(tmp_path):
     ml._ctx.principal = "external_public"
     ml._moment = "reflection"
     reg = ml._active_tool_registry()
-    assert "PinSelf" in reg              # reflection expansion kept (safe)
+    assert "PinSelf" not in reg          # owner / internal only (TOOL_MATRIX)
     for name in DANGEROUS:                # S5: full dangerous set stays out
         assert name not in reg
 

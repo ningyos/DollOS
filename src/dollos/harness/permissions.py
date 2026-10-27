@@ -83,15 +83,12 @@ _TRUSTED: frozenset[Principal] = frozenset({"owner", "owner_dm", "internal"})
 # MindLoop._active_tool_registry / _offered_tools, with owner_dm = owner.
 # - Recall / NoteMemory / WriteDiary: every principal (the external_public
 #   row); memory scoping by origin_tier happens inside the tools.
-# - PinSelf: owner / internal (reflection turns only, turn_policy). An
-#   external_public reflection turn lists it in _active_tool_registry, but
-#   external_public is never offered PinSelf, so it never runs there
-#   (_runnable_tools); the table records what can run.
+# - PinSelf: owner / internal (reflection turns only, turn_policy).
 # - LearnName: the owner only — never internal (a pure reflection turn must
 #   not write a stranger's earlier words as an owner-taught alias, R1 C1),
 #   never external_public.
-# - ReadToolOutput / GrepToolOutput: not offered to external_public, so
-#   not runnable there even in safe mode (same _runnable_tools cut).
+# - ReadToolOutput / GrepToolOutput: never external_public, safe mode
+#   included.
 # - Report: bound only by agent turns (workflow worker, keepers), which are
 #   spawned from owner / internal turns; no MindLoop turn kind includes it.
 TOOL_MATRIX: dict[str, frozenset[Principal]] = {

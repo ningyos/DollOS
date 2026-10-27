@@ -52,11 +52,9 @@ class Extra:
     """A tool a kind adds on top of the registry (it is never a member of
     MindLoop's tool registry itself — added explicitly, not filtered in, or it
     would silently never appear). ``when`` names the config switch it needs.
-    It is bound only where ``TOOL_MATRIX`` allows the principal, unless
-    ``any_principal`` (PinSelf, see POLICIES)."""
+    It is bound only where ``TOOL_MATRIX`` allows the principal."""
     tool: str
     when: Condition | None = None
-    any_principal: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,9 +64,6 @@ class TurnPolicy:
     # The registry tools this kind may run, or "all" for the whole registry.
     kind_tools: frozenset[str] | Literal["all"]
     extra_tools: tuple[Extra, ...] = ()
-    # False only for safe mode: its read-only set is bound on every principal
-    # and cut to the tier's list by MindLoop._runnable_tools.
-    principal_cut: bool = True
     # Prompt blocks this kind adds: "tool_outcomes" ([Tool outcomes]),
     # "evolution_candidate" (the slow-evolution candidate surfacing),
     # "body_signal" ([Body signal]), "today_log" (a one-off diary request
@@ -82,12 +77,10 @@ class TurnPolicy:
 _REFLECTION_EXTRAS = (
     # NoteToolLesson: reflection turns only (Spec B §5).
     Extra("NoteToolLesson"),
-    # PinSelf: A1 self-profile (spec Task 5), when self_profile_enabled. The
-    # external_public reflection turn has always listed it too (P1e S5:
-    # reflection expansion kept — safe, self-profile); external_public is
-    # never offered PinSelf, so it never runs there (_runnable_tools), and
-    # TOOL_MATRIX records what can run.
-    Extra("PinSelf", when="self_profile", any_principal=True),
+    # PinSelf: A1 self-profile (spec Task 5), when self_profile_enabled.
+    # Owner / internal only (TOOL_MATRIX): external_public is never offered
+    # PinSelf, so its reflection turn does not bind it either.
+    Extra("PinSelf", when="self_profile"),
     # SelfRevision: 慢變演化 (spec §3.4), when evolution_enabled — the
     # registry is authoritative, so no separate EVOLUTION_TOOLS list is kept.
     Extra("SelfRevision", when="evolution"),
@@ -182,13 +175,12 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # schedule/scratchpad or spawns an external action is excluded so a
     # failure storm cannot do irreversible damage while the loop is wedged.
     # Safe mode has TOP priority (wins over every other kind, on every tier).
-    # ReadToolOutput / GrepToolOutput are not in an external tier's list, so
-    # a stranger's turn in safe mode does not run them (_runnable_tools).
+    # ReadToolOutput / GrepToolOutput are not in external_public's row, so a
+    # stranger's turn in safe mode binds Recall only.
     # Only the tools: speech and blocks follow the batch's kind (module doc).
     "safe_mode": TurnPolicy(
         speaks=True,
         kind_tools=frozenset({"Recall", "ReadToolOutput", "GrepToolOutput"}),
-        principal_cut=False,
     ),
     # Workflow worker / skeptic / synthesis agent: no sink, ends with Report.
     "worker": TurnPolicy(
@@ -273,12 +265,11 @@ def bound_tools(
     names = frozenset(registry)
     if policy.kind_tools != "all":
         names &= policy.kind_tools
-    if policy.principal_cut:
-        names &= tools_for(principal)
+    names &= tools_for(principal)
     extras = {
         e.tool for e in policy.extra_tools
         if _holds(e, self_profile=self_profile, evolution=evolution)
-        and (e.any_principal or principal in TOOL_MATRIX[e.tool])
+        and principal in TOOL_MATRIX[e.tool]
     }
     return names | extras
 
