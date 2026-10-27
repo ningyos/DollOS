@@ -1778,9 +1778,7 @@ class MindLoop:
         """What this turn may run: ``_active_tool_registry()`` ∩ ``offered``.
 
         Never more than the tier offers (harness §6.2 as amended by plan
-        2026-10-18): safe mode binds its read-only set on any tier, and
-        ReadToolOutput / GrepToolOutput are not in an external tier's list,
-        so a stranger's turn in safe mode must not run them."""
+        2026-10-18)."""
         return {
             n: c for n, c in self._active_tool_registry().items() if n in offered
         }

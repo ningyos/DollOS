@@ -120,8 +120,6 @@ _EXTERNAL = {"NoteMemory", "Recall", "WriteDiary"}
 # (kind, principal) → (bound = _active_tool_registry, runnable =
 # _runnable_tools(_offered_tools()), refusal label = _turn_kind()).
 # Diary / agenda / pulse are pure-batch kinds, so only internal reaches them.
-# The two bound ≠ runnable rows are tools bound but never offered to
-# external_public (PinSelf on a reflection turn, the read tools in safe mode).
 _EVERYTHING_ON = [
     (("conversation", "owner"), _MAIN | {"LearnName"}, _MAIN | {"LearnName"}, "owner"),
     (("reflection", "owner"),
@@ -144,9 +142,8 @@ _EVERYTHING_ON = [
      {"MoodTool", "NoteMemory", "Recall"}, "pulse"),
     (("safe_mode", "internal"), _SAFE, _SAFE, "safe mode"),
     (("conversation", "external_public"), _EXTERNAL, _EXTERNAL, "external_public"),
-    (("reflection", "external_public"), _EXTERNAL | {"PinSelf"}, _EXTERNAL,
-     "external_public"),
-    (("safe_mode", "external_public"), _SAFE, {"Recall"}, "safe mode"),
+    (("reflection", "external_public"), _EXTERNAL, _EXTERNAL, "external_public"),
+    (("safe_mode", "external_public"), {"Recall"}, {"Recall"}, "safe mode"),
 ]
 _EVERYTHING_OFF = [
     (("conversation", "owner"), _MAIN | {"LearnName"}, _MAIN | {"LearnName"}, "owner"),
@@ -168,7 +165,7 @@ _EVERYTHING_OFF = [
     (("safe_mode", "internal"), _SAFE, _SAFE, "safe mode"),
     (("conversation", "external_public"), _EXTERNAL, _EXTERNAL, "external_public"),
     (("reflection", "external_public"), _EXTERNAL, _EXTERNAL, "external_public"),
-    (("safe_mode", "external_public"), _SAFE, {"Recall"}, "safe mode"),
+    (("safe_mode", "external_public"), {"Recall"}, {"Recall"}, "safe mode"),
 ]
 
 # principal → offered (the tier's fixed list), with (self_profile, evolution).
