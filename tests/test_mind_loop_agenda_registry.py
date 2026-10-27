@@ -23,7 +23,9 @@ import time
 import pytest
 
 from dollos.mind.mind_state import Perception
-from dollos.tools import AGENDA_TOOLS
+from dollos.harness.turn_policy import POLICIES
+
+AGENDA_TOOLS = POLICIES["agenda"].kind_tools
 from tests._mindloop_factory import make_mindloop
 
 
@@ -48,7 +50,7 @@ async def test_pure_agenda_turn_gets_exactly_agenda_tools(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_agenda_moment()])
 
-    assert ml._is_agenda is True
+    assert ml._moment == "agenda"
     reg = ml._active_tool_registry()
     assert set(reg.keys()) == set(AGENDA_TOOLS)
     for forbidden in ("Shell", "SpawnWorkflow", "SelfRevision", "NoteMemory", "PursueGoal"):
@@ -62,8 +64,8 @@ async def test_agenda_and_userspoke_cobatch_keeps_full_registry(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_agenda_moment(), _user_perception("hi")])
 
-    assert ml._is_agenda is False, (
-        "_is_agenda must be False when a live UserSpoke is co-batched — "
+    assert ml._moment != "agenda", (
+        "the kind must not be agenda when a live UserSpoke is co-batched — "
         "this is the C1 safety, not incidental"
     )
     reg = ml._active_tool_registry()
@@ -76,7 +78,7 @@ async def test_agenda_and_userspoke_cobatch_keeps_full_registry(tmp_path):
 async def test_userspoke_only_turn_is_not_agenda(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_user_perception("hi")])
-    assert ml._is_agenda is False
+    assert ml._moment != "agenda"
     reg = ml._active_tool_registry()
     assert "Shell" in reg
 
@@ -135,8 +137,8 @@ async def test_agenda_cobatched_with_other_internal_perception_keeps_full_regist
 
     await ml._run_one_turn([_agenda_moment(), _monitor_fired_perception()])
 
-    assert ml._is_agenda is False, (
-        "_is_agenda must be False when co-batched with ANY other origin-less "
+    assert ml._moment != "agenda", (
+        "the kind must not be agenda when co-batched with ANY other origin-less "
         "internal perception, not just UserSpoke"
     )
     reg = ml._active_tool_registry()

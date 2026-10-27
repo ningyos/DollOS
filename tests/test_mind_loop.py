@@ -1090,12 +1090,12 @@ async def test_primary_language_threads_into_rendered_prompt(tmp_path):
 @pytest.mark.asyncio
 async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_path):
     """MF-2: A batch drained through iterate() that contains a ReflectionMoment
-    sets _is_reflection=True and injects [Tool outcomes] into the rendered prompt
+    makes the turn kind "reflection" and injects [Tool outcomes] into the rendered prompt
     when tool_stats is non-empty.  A mixed [ReflectionMoment, UserSpoke] batch
     must also yield True (spec §6 requirement).
 
-    Contrasting assertion: a plain UserSpoke-only batch leaves _is_reflection
-    False and emits no [Tool outcomes] block.
+    Contrasting assertion: a plain UserSpoke-only batch is not a reflection
+    and emits no [Tool outcomes] block.
     """
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
@@ -1121,11 +1121,11 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     )
     await loop.iterate()
 
-    assert loop._is_reflection is True, "_is_reflection must be True for batch containing ReflectionMoment"
+    assert loop._moment == "reflection", "the kind must be reflection for a batch containing ReflectionMoment"
     assert llm.last_user is not None, "the model must have been called with the rendered prompt"
     assert "[Tool outcomes" in llm.last_user, "[Tool outcomes] block must appear in reflection prompt"
 
-    # --- Negative: plain UserSpoke batch leaves _is_reflection False + no block ---
+    # --- Negative: plain UserSpoke batch is not a reflection + no block ---
     state2 = MindState()
     state2.tool_stats = {"Recall": {"ok": 5, "fail": 0}}
     queue2 = PerceptionQueue()
@@ -1143,7 +1143,7 @@ async def test_iterate_reflection_batch_sets_flag_and_injects_tool_outcomes(tmp_
     )
     await loop2.iterate()
 
-    assert loop2._is_reflection is False, "_is_reflection must remain False for UserSpoke-only batch"
+    assert loop2._moment != "reflection", "the kind must not be reflection for a UserSpoke-only batch"
     assert llm2.last_user is not None
     assert "[Tool outcomes" not in llm2.last_user, "[Tool outcomes] must not appear in non-reflection prompt"
 
@@ -1278,9 +1278,9 @@ def test_active_registry_reflection_includes_note_tool_lesson(tmp_path):
     loop = MindLoop(state=state, queue=PerceptionQueue(), ctx=_make_mind_ctx(tmp_path, state=state),
                     llm=_FakeLLM(""), system_prompt="", state_persist_path=tmp_path / "s.json",
                     tool_registry={c.__name__: c for c in MAIN_TOOLS})
-    loop._is_reflection = False
+    loop._moment = "conversation"
     assert "NoteToolLesson" not in loop._active_tool_registry()
-    loop._is_reflection = True
+    loop._moment = "reflection"
     assert "NoteToolLesson" in loop._active_tool_registry()
     # safe_mode wins over reflection
     state.safe_mode = True

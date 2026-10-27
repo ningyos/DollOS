@@ -1,6 +1,6 @@
 """AgendaMoment pursuit-turn semantics + energy verification (Task 6, spec
 2026-07-07 §4.3). Most of the wiring landed in Task 5 (AgendaObserver,
-``_is_agenda`` flag, ``AGENDA_TOOLS`` registry, speech suppression,
+agenda turn kind, ``POLICIES["agenda"]`` registry, speech suppression,
 kernel observer — tests/test_agenda_observer.py,
 tests/test_mind_loop_agenda_registry.py). This file drives a FULL
 ``AgendaMoment`` turn end-to-end through ``iterate()`` → ``_run_one_turn`` →

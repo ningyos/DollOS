@@ -4,7 +4,8 @@ plan 2026-10-27 Task 2 / S2).
 ``principal_of`` names who a turn acts for; ``TOOL_MATRIX`` says which tools
 each principal may EVER be bound to. Turn-kind narrowing (diary, agenda,
 pulse, reflection, safe mode) is not in this table — that is TurnPolicy
-(plan Task 3). A turn's tools = its kind's tools ∩ its principal's row.
+(``dollos.harness.turn_policy``). A turn's tools = its kind's tools ∩ its
+principal's row.
 
 Owner DM = owner (user decision 2026-10-27): the owner in a Discord DM gets
 the same row as the owner at the local keyboard, Shell included. The risk
@@ -78,11 +79,11 @@ _ALL: frozenset[Principal] = frozenset(TRUST_ORDER)
 _OWNER: frozenset[Principal] = frozenset({"owner", "owner_dm"})
 _TRUSTED: frozenset[Principal] = frozenset({"owner", "owner_dm", "internal"})
 
-# One row per tool: the principals that may ever be bound to it. Copied from
+# One row per tool: the principals that may ever run it. Copied from
 # MindLoop._active_tool_registry / _offered_tools, with owner_dm = owner.
-# - Recall / NoteMemory / WriteDiary: every principal (EXTERNAL_TOOLS);
-#   memory scoping by origin_tier happens inside the tools.
-# - PinSelf: owner / internal (reflection turns only, Task 3). An
+# - Recall / NoteMemory / WriteDiary: every principal (the external_public
+#   row); memory scoping by origin_tier happens inside the tools.
+# - PinSelf: owner / internal (reflection turns only, turn_policy). An
 #   external_public reflection turn lists it in _active_tool_registry, but
 #   external_public is never offered PinSelf, so it never runs there
 #   (_runnable_tools); the table records what can run.

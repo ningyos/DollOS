@@ -1,4 +1,4 @@
-"""Task 2 (self-directed agenda): PursueGoal / AdvanceGoal tools + AGENDA_TOOLS.
+"""Task 2 (self-directed agenda): PursueGoal / AdvanceGoal tools + the agenda kind's tools.
 
 See docs/superpowers/specs/2026-07-07-self-directed-agenda-design.md §3.1/§3.3/§5.1.
 
@@ -17,7 +17,18 @@ from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_state import MindState, OpenLoop, _MAX_PROGRESS, _MAX_SELF_LOOPS
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import AGENDA_TOOLS, AdvanceGoal, PursueGoal
+from dollos.harness.turn_policy import POLICIES
+from dollos.tools import MAIN_TOOLS, AdvanceGoal, PursueGoal
+
+AGENDA_TOOLS = POLICIES["agenda"].kind_tools
+
+
+def _reflection_tools() -> set[str]:
+    """What a reflection turn may run: turn_policy's reflection kind is the
+    whole registry (kind_tools "all") + its extra tools."""
+    policy = POLICIES["reflection"]
+    assert policy.kind_tools == "all"
+    return {c.__name__ for c in MAIN_TOOLS} | {e.tool for e in policy.extra_tools}
 
 
 class _FakeMemSearch:
@@ -181,10 +192,10 @@ def test_agenda_tools_excludes_dangerous_and_genesis():
 
 
 def test_pursuegoal_registered_but_not_in_agenda_tools():
-    from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, PursueGoal as PG
+    from dollos.tools import MAIN_TOOLS, PursueGoal as PG
 
     assert PG in MAIN_TOOLS
-    assert PG in REFLECTION_TOOLS
+    assert PG.__name__ in _reflection_tools()
     assert "PursueGoal" not in AGENDA_TOOLS
 
 

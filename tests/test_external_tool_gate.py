@@ -28,7 +28,7 @@ DANGEROUS = ("Shell", "SpawnWorkflow", "SpawnMonitor", "RemoveMonitor",
 
 def test_external_public_registry_is_conservative(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
-    ml._ctx.origin_tier = "external_public"
+    ml._ctx.principal = "external_public"
     reg = ml._active_tool_registry()
     assert set(reg.keys()) <= {"Recall", "NoteMemory", "WriteDiary", "PinSelf"}
     for name in DANGEROUS:
@@ -41,16 +41,14 @@ def test_external_dm_owner_registry_equals_local_owner(tmp_path):
     LearnName and Shell included. The owner in a PUBLIC channel stays
     external_public and conservative."""
     ml = make_mindloop(memory_root=tmp_path)
-    ml._ctx.origin_tier = "internal"
-    ml._has_user_spoke = True
+    ml._ctx.principal = "owner"
     local_owner = set(ml._active_tool_registry())
-    ml._has_user_spoke = False
-    ml._ctx.origin_tier = "external_dm"
+    ml._ctx.principal = "owner_dm"
     reg = ml._active_tool_registry()
     assert set(reg.keys()) == local_owner
     assert "LearnName" in reg
     assert "Shell" in reg
-    ml._ctx.origin_tier = "external_public"
+    ml._ctx.principal = "external_public"
     reg = ml._active_tool_registry()
     for name in DANGEROUS:
         assert name not in reg
@@ -58,7 +56,7 @@ def test_external_dm_owner_registry_equals_local_owner(tmp_path):
 
 def test_internal_turn_keeps_full_registry(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
-    ml._ctx.origin_tier = "internal"
+    ml._ctx.principal = "internal"
     reg = ml._active_tool_registry()
     assert "Shell" in reg
     assert "SpawnWorkflow" in reg
@@ -69,8 +67,8 @@ def test_external_reflection_excludes_selfrevision_and_shell(tmp_path):
     """S5 critical: reduction wins over reflection expansion."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._ctx.origin_tier = "external_public"
-    ml._is_reflection = True
+    ml._ctx.principal = "external_public"
+    ml._moment = "reflection"
     reg = ml._active_tool_registry()
     assert "PinSelf" in reg              # reflection expansion kept (safe)
     for name in DANGEROUS:                # S5: full dangerous set stays out
@@ -83,18 +81,16 @@ def test_external_dm_reflection_equals_owner_reflection(tmp_path):
     the external_public sibling keeps the FULL dangerous set out."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._is_reflection = True
-    ml._ctx.origin_tier = "internal"
-    ml._has_user_spoke = True
+    ml._moment = "reflection"
+    ml._ctx.principal = "owner"
     owner_reflection = set(ml._active_tool_registry())
-    ml._has_user_spoke = False
-    ml._ctx.origin_tier = "external_dm"
+    ml._ctx.principal = "owner_dm"
     reg = ml._active_tool_registry()
     assert set(reg) == owner_reflection
     assert "PinSelf" in reg
     for name in DANGEROUS:
         assert name in reg
-    ml._ctx.origin_tier = "external_public"
+    ml._ctx.principal = "external_public"
     reg = ml._active_tool_registry()
     for name in DANGEROUS:                # S5: full dangerous set out
         assert name not in reg
@@ -103,8 +99,8 @@ def test_external_dm_reflection_equals_owner_reflection(tmp_path):
 def test_external_reflection_without_self_profile_has_no_pinself(tmp_path):
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=False)
-    ml._ctx.origin_tier = "external_public"
-    ml._is_reflection = True
+    ml._ctx.principal = "external_public"
+    ml._moment = "reflection"
     reg = ml._active_tool_registry()
     assert "PinSelf" not in reg
     assert "SelfRevision" not in reg
@@ -116,8 +112,8 @@ def test_internal_reflection_turn_keeps_selfrevision_control(tmp_path):
     change, is what suppresses it."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._ctx.origin_tier = "internal"
-    ml._is_reflection = True
+    ml._ctx.principal = "internal"
+    ml._moment = "reflection"
     reg = ml._active_tool_registry()
     assert "SelfRevision" in reg
     assert "PinSelf" in reg
@@ -127,7 +123,7 @@ def test_safe_mode_wins_over_external_too(tmp_path):
     """safe_mode still has top priority (checked first) — combining safe_mode
     with an external origin must not somehow re-add tools."""
     ml = make_mindloop(memory_root=tmp_path)
-    ml._ctx.origin_tier = "external_public"
+    ml._ctx.principal = "external_public"
     ml._state.safe_mode = True
     reg = ml._active_tool_registry()
     assert set(reg.keys()) <= {"Recall", "ReadToolOutput", "GrepToolOutput"}
@@ -141,16 +137,16 @@ def test_external_offered_tools_hide_every_internal_tool(tmp_path):
     self-profile on. The owner's DM is shown the internal list (2026-10-27)."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._ctx.origin_tier = "internal"
+    ml._ctx.principal = "internal"
     internal = set(ml._offered_tools())
     for reflection in (False, True):
-        ml._is_reflection = reflection
-        ml._ctx.origin_tier = "external_public"
+        ml._moment = "reflection" if reflection else "conversation"
+        ml._ctx.principal = "external_public"
         offered = set(ml._offered_tools())
         assert offered == {"Recall", "NoteMemory", "WriteDiary"}
         for name in DANGEROUS:
             assert name not in offered
-        ml._ctx.origin_tier = "external_dm"
+        ml._ctx.principal = "owner_dm"
         assert set(ml._offered_tools()) == internal
     assert set(DANGEROUS) <= internal
 
@@ -160,11 +156,14 @@ def test_offered_tools_cover_every_binding_of_the_tier(tmp_path):
     list (so binding is only ever a refusal, never a missing schema)."""
     ml = make_mindloop(memory_root=tmp_path, evolution_enabled=True,
                         self_profile_enabled=True)
-    ml._ctx.origin_tier = "internal"
+    ml._ctx.principal = "internal"
     offered = set(ml._offered_tools())
-    for flag in ("_is_reflection", "_is_diary", "_is_agenda", "_is_pulse", "_has_user_spoke"):
-        setattr(ml, flag, True)
+    for flag in ("reflection", "diary", "agenda", "pulse", "owner"):
+        if flag == "owner":
+            ml._ctx.principal = "owner"
+        else:
+            ml._moment = flag
         assert set(ml._active_tool_registry()) <= offered, flag
-        setattr(ml, flag, False)
-    ml._is_reflection = ml._has_user_spoke = True
+        ml._moment, ml._ctx.principal = "conversation", "internal"
+    ml._moment, ml._ctx.principal = "reflection", "owner"
     assert set(ml._active_tool_registry()) <= offered

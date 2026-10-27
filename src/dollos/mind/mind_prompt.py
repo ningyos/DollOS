@@ -372,7 +372,7 @@ def _render_memory(hits: list[dict]) -> str:
     lines: list[str] = []
     for h in hits:
         content = h.get("content", str(h))
-        # R-DECISION-5: a peer's NoteMemory (∈ EXTERNAL_TOOLS) writes under
+        # R-DECISION-5: a peer's NoteMemory (TOOL_MATRIX: every principal) writes under
         # external_public/; on a later OWNER turn that hit is retrieved
         # UNFILTERED (_derive_memory_hits only suppresses on external_public
         # turns, mind_loop.py:747). Flag it untrusted so a fabricated "fact"
@@ -581,7 +581,7 @@ def _percep_body(p) -> str:
                 # P2 Task 3 (spec §C.2): soft, best-effort nudge for a debug
                 # connection — a description of the situation, text only; it
                 # does NOT change origin_tier or the tool registry (still
-                # external_public / EXTERNAL_TOOLS).
+                # external_public and its TOOL_MATRIX row).
                 body += (
                     " (This is a debug channel; the peer is checking whether "
                     "you give a real reply.)"

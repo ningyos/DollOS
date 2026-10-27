@@ -106,7 +106,7 @@ def _agenda_moment() -> Perception:
 @pytest.mark.asyncio
 async def test_suppressed_agenda_turn_records_no_first_speak(tmp_path):
     """A pure AgendaMoment turn is speech-suppressed at the ``_emit_sentence``
-    chokepoint (``self._is_agenda`` guard, mind_loop.py ~L1571) — the model
+    chokepoint (``TurnPolicy.speaks`` guard, mind_loop.py ~L1571) — the model
     DOES produce a spoken sentence, but it never reaches the sink because the
     guard returns before the first-speak/speak_chars measurement below it.
     Regression guard: if that measurement is ever hoisted above the

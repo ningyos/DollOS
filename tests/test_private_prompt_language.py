@@ -214,6 +214,7 @@ async def system_prompt_with_current_self(rig: Rig) -> str:
 
 def _tools_json(rig: Rig, tier: str) -> str:
     rig.ctx.origin_tier = tier
+    rig.ctx.principal = tier  # "internal" / "external_public": same name
     return json.dumps(tool_schemas(rig.ml._offered_tools().values()), ensure_ascii=False)
 
 

@@ -17,7 +17,7 @@ turn that is not a live, owner-present turn:
   the R1 review killed; a reflection-only batch must never regain it.
 
 Driven via ``MindLoop._run_one_turn`` (real perception batch → real
-``_derive_origin_tier``/``_has_user_spoke`` derivation), not by poking
+``principal_of``/``moment_of`` derivation), not by poking
 ``ml._ctx.origin_tier`` directly, so the test also exercises the actual
 per-turn derivation wiring.
 """
@@ -125,7 +125,7 @@ async def test_pure_reflection_turn_never_gets_learnname(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_reflection_moment()])
     assert ml._ctx.origin_tier == "internal"
-    assert ml._is_reflection is True
+    assert ml._moment == "reflection"
     reg = ml._active_tool_registry()
     assert "LearnName" not in reg
 

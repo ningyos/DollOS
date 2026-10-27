@@ -15,7 +15,7 @@ draft assertions used APIs that don't exist on the real objects:
     mode discards ALL think-block content unconditionally (IN_THINK state) —
     that placement would pass even with zero suppression logic implemented.
     Moved the sentence to AFTER ``</think>`` (the actual "speech" region) so
-    the test genuinely exercises ``_emit_sentence``'s ``_is_diary`` gate.
+    the test genuinely exercises ``_emit_sentence``'s diary-kind gate.
 """
 import asyncio
 import time
@@ -54,7 +54,7 @@ async def test_diary_turn_narrows_tools_and_injects_today_log(tmp_path):
     orig = ml._active_tool_registry
     ml._active_tool_registry = lambda: (captured.__setitem__("reg", set(orig().keys())) or orig())
     await ml.iterate()
-    assert ml._is_diary is True
+    assert ml._moment == "diary"
     assert captured["reg"] == {"WriteDiary", "Recall"}     # narrowed
     # the day's full action log made it into the one-off request (the whole
     # point of the dedicated turn — spec §2.2).
@@ -132,7 +132,7 @@ async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplo
     co-batches with another origin-less internal perception (AgendaMoment
     fires ~every 7 min, ReflectionMoment polls ~every 5 s — both peak
     exactly when the system is idle at diary time). On co-batch the STRICT
-    `_is_diary` ("is the ENTIRE batch DiaryMoment") is False, so the turn
+    the diary kind ("is the ENTIRE batch DiaryMoment") does not apply, so the turn
     correctly falls through to normal (non-narrowed, non-suppressed)
     behavior — verified below via the registry spy. But the I1 post-turn
     miss-check must NOT ride on that same strict flag, or a co-batched
@@ -155,7 +155,7 @@ async def test_diary_comatched_with_agenda_still_gets_miss_check(tmp_path, caplo
     # so registry/speech/transcript-suppression/today-log-injection all took
     # their normal (non-diary) path. The turn's flags are still set, so the
     # binding this turn ran under was NOT narrowed to {WriteDiary, Recall}.
-    assert ml._is_diary is False
+    assert ml._moment != "diary"
     assert set(ml._active_tool_registry()) != {"WriteDiary", "Recall"}
     # ...yet the I1 miss-check still fired (observability preserved).
     assert any(
@@ -179,7 +179,7 @@ async def test_diary_turn_does_not_leak_into_transcript_file(tmp_path):
     transcripts/{today}.md. test_diary_turn_suppresses_outbound_speech above
     already covers the live sink chokepoint (_emit_sentence); this covers
     the SEPARATE guard at the doll-side transcript write (mind_loop.py
-    ``if doll_text and not self._is_diary:``) — the file the NEXT diary
+    ``if doll_text and POLICIES[self._moment].doll_transcript:``) — the file the NEXT diary
     turn's _read_today_log reads back as the day's action log."""
     state = MindState()
     _seed_today_log(tmp_path, "- 09:00:00 Owner: 早\n")
