@@ -2,7 +2,7 @@
 
 **Spec**：`docs/superpowers/specs/2026-10-27-remember-corrections-design.md`（APPROVED，使用者 2026-10-27「spec LGTM」；開放問題 Q1–Q3 照 spec 的建議：不限每回合改幾條、兩區不另切字數上限、每天整理只看當天）
 **日期**：2026-10-27
-**狀態**：DRAFT（等使用者審）
+**狀態**：APPROVED（使用者 2026-10-27「plan 核可」）
 **分支 / worktree**：`feat/remember-corrections`，`.worktrees/remember-corrections/`（從 `main` `8fc1ab4` 開）
 
 ---
