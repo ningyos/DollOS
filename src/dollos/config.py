@@ -210,6 +210,24 @@ class McpConfig(BaseModel):
         return self
 
 
+class McpClientsPointer(BaseModel):
+    """Where ``mcp_clients.toml`` is (harness plan 2026-10-27 Task 7): the
+    outside MCP servers whose tools Doll may use. A pointer, the way
+    ``[mcp].config`` points at mcp.toml, resolved against the daemon's
+    working directory like it. No file there = no MCP tools (opt-in), not
+    an error; an invalid file fails boot (``harness.mcp_client``)."""
+    model_config = ConfigDict(extra="forbid")
+
+    config: Path = Path("mcp_clients.toml")
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def _expand_user(cls, v: object) -> object:
+        if isinstance(v, (str, Path)):
+            return Path(v).expanduser()
+        return v
+
+
 class CognitionConfig(BaseModel):
     """Mind-state vitals — surfaces LLM consumption as a [Cognition] block.
 
@@ -366,6 +384,7 @@ class Settings(BaseModel):
     attention: AttentionSettings = Field(default_factory=lambda: AttentionSettings())
     bridge: BridgeConfig = Field(default_factory=lambda: BridgeConfig())
     mcp: McpConfig = Field(default_factory=lambda: McpConfig())
+    mcp_clients: McpClientsPointer = Field(default_factory=lambda: McpClientsPointer())
 
 
 def load_settings(path: Path) -> Settings:

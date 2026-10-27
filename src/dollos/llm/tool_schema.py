@@ -28,6 +28,12 @@ def tool_schemas(tool_classes: Iterable[type[BaseModel]]) -> list[dict]:
 
 
 def _tool_schema(cls: type[BaseModel]) -> dict:
+    # An MCP tool (harness/mcp_client.py) brings its server's name,
+    # description and inputSchema, passed through as given: the server owns
+    # that schema and validates the arguments itself.
+    given = getattr(cls, "tool_json", None)
+    if given is not None:
+        return given()
     raw = cls.model_json_schema()
     parameters = _clean(raw, raw.get("$defs", {}))
     # pydantic repeats the docstring here; it is already the function description.

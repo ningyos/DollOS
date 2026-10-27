@@ -22,7 +22,7 @@ keepers, the evolution skeptic), are defined here from ``SUB_TOOLS`` /
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -90,6 +90,11 @@ class TurnPolicy:
     max_passes: int = MAX_SYNC_REFEED_PASSES
     must_report: bool = False
     failure_rule: Literal["safe_mode", "stuck_tool"] = "safe_mode"
+    # MCP tools (harness spec §5, plan 2026-10-27 Task 7) are bound on this
+    # kind, each where its server's ``min_principal`` row allows the
+    # principal. Only a conversation: a self-wake (diary, agenda, pulse,
+    # reflection), safe mode or an agent never reaches an outside server.
+    mcp_tools: bool = False
 
 
 _REFLECTION_EXTRAS = (
@@ -127,6 +132,7 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # LearnName in its dict, full stop (TOOL_MATRIX row: owner, owner_dm).
     "conversation": TurnPolicy(
         speaks=True, kind_tools="all", extra_tools=(Extra("LearnName"),),
+        mcp_tools=True,
     ),
     # Reflection turn → full registry + NoteToolLesson, + PinSelf when
     # self_profile_enabled, + SelfRevision when evolution_enabled, +
@@ -278,9 +284,12 @@ def _holds(extra: Extra, *, self_profile: bool, evolution: bool) -> bool:
 def bound_tools(
     kind: TurnKind, principal: Principal, registry: Iterable[str], *,
     self_profile: bool, evolution: bool,
+    mcp: Mapping[str, frozenset[Principal]] = {},
 ) -> frozenset[str]:
     """What a ``kind`` turn of ``principal`` is bound to: the kind's registry
-    tools ∩ the principal's TOOL_MATRIX row, + the kind's extras."""
+    tools ∩ the principal's TOOL_MATRIX row, + the kind's extras, + on a
+    ``mcp_tools`` kind the MCP tools whose row (``mcp``: name → the
+    principals its server's ``min_principal`` allows) has the principal."""
     policy = POLICIES[kind]
     names = frozenset(registry)
     if policy.kind_tools != "all":
@@ -291,25 +300,30 @@ def bound_tools(
         if _holds(e, self_profile=self_profile, evolution=evolution)
         and principal in TOOL_MATRIX[e.tool]
     }
-    return names | extras
+    remote = {
+        n for n, row in mcp.items() if policy.mcp_tools and principal in row
+    }
+    return names | extras | remote
 
 
 def offered_tools(
     principal: Principal, registry: Iterable[str], *,
     self_profile: bool, evolution: bool,
+    mcp: Mapping[str, frozenset[Principal]] = {},
 ) -> frozenset[str]:
     """The fixed tool list a principal's turns are shown (plan 2026-10-18
     decision 3): one list per origin tier, so the registry plus every extra
     whose config switch is on, kept where TOOL_MATRIX allows any principal of
     the same origin tier. Owner and internal turns share the private
     conversation (origin_tier "internal"), so its list is the union of both
-    rows — the owner's LearnName included."""
+    rows — the owner's LearnName included. MCP tools (``mcp``: name → row)
+    join the same way, by their own row; the list is fixed for the run
+    because the MCP tools are listed once at boot (plan Task 7)."""
     tier = ORIGIN_TIER[principal]
     same_tier = {q for q in TRUST_ORDER if ORIGIN_TIER[q] == tier}
     candidates = set(registry) | {
         e.tool for policy in POLICIES.values() for e in policy.extra_tools
         if _holds(e, self_profile=self_profile, evolution=evolution)
     }
-    return frozenset(
-        n for n in candidates if same_tier & TOOL_MATRIX[n]
-    )
+    builtin = {n for n in candidates if same_tier & TOOL_MATRIX[n]}
+    return frozenset(builtin | {n for n, row in mcp.items() if same_tier & row})
