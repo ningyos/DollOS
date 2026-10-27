@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
@@ -1163,6 +1163,14 @@ class MindLoop:
         except Exception:
             logger.exception("%s.%s raised; omitting block", type(provider).__name__, method)
             return None
+
+    def register_mcp_tools(self, classes: Iterable[type[BaseModel]]) -> None:
+        """Add the MCP tools listed at boot (``harness.mcp_client``; kernel
+        calls this once, before the first turn, so the offered list is fixed
+        for the run). Each is bound on conversation turns where its server's
+        ``min_principal`` row allows the principal."""
+        for cls in classes:
+            self._tools.register_mcp(cls)
 
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass: this turn's kind (safe

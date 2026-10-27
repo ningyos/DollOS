@@ -28,6 +28,9 @@ bridge.toml
 # Local mcp-server config — holds bind config (+ P2 debug secret), on-device
 # only, never commit (copy of mcp.example.toml).
 mcp.toml
+# Local MCP client config — the outside MCP servers Doll uses (copy of
+# mcp_clients.example.toml).
+mcp_clients.toml
 *.local.toml
 config.*.toml
 !config.example.toml

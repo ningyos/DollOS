@@ -1,0 +1,23 @@
+# Outside MCP servers whose tools Doll may use (harness spec §5, plan
+# 2026-10-27 Task 7). Copy to mcp_clients.toml next to config.toml (the
+# daemon reads [mcp_clients].config, default "mcp_clients.toml"). No file =
+# no MCP tools.
+#
+# Each server is spawned over stdio at daemon start and listed once; its
+# tools appear as <name>__<tool>, offered on conversation turns only. A
+# server that cannot be reached at boot is logged and left out; one that
+# dies later is not restarted (its calls fail). A changed tool list takes
+# effect at the next daemon start.
+
+[[server]]
+name = "calendar"                      # tool name prefix: calendar__list_events (no "__")
+command = ["uvx", "some-mcp-server"]   # stdio only for now
+# REQUIRED, no default — boot fails without it. Who may run these tools:
+#   "owner"           the owner (local, or in a Discord DM)
+#   "internal"        + Doll's own turns (tool results, schedules, ...)
+#   "external_public" + anyone, strangers included
+min_principal = "owner"
+# true = what the server returns may carry injected instructions: after a
+# call, the rest of that turn loses Shell and the other owner tools.
+untrusted_output = false
+tools = ["list_events"]                # allowlist; omit = all of the server's tools

@@ -14,15 +14,16 @@ Each call writes one ``tool_call`` record to the cascade JSONL log
 short argument summary, the decision, and whether the turn was tainted.
 
 Taint downgrade (spec §6.5 point 2, plan Task 6): once an allowed call that
-read untrusted content has run (its tool class's ``taints(arguments)`` is
-true), the rest of the turn may only run ``permissions.TAINTED_TOOLS``. The
-flag lives on ``ctx.tainted`` (MindLoop resets it every turn; an agent's ctx
-is fresh), so it holds across the per-call executors MindLoop builds and
-across passes. The offered list does not change (plan decision 4: the tool
-JSON stays byte-identical for the server cache); a tool that was bound but
-no longer is gets the same "not available in this turn" refusal as any
-unbound one. An external_public turn is never tainted: its row is already
-the floor, and tainting would strip NoteMemory from strangers.
+asked for untrusted content has run, failed or not (its tool class's
+``taints(arguments)`` is true), the rest of the turn may only run
+``permissions.TAINTED_TOOLS``. The flag lives on ``ctx.tainted`` (MindLoop
+resets it every turn; an agent's ctx is fresh), so it holds across the
+per-call executors MindLoop builds and across passes. The offered list
+does not change (plan decision 4: the tool JSON stays byte-identical for
+the server cache); a tool that was bound but no longer is gets the same
+"not available in this turn" refusal as any unbound one. An
+external_public turn is never tainted: its row is already the floor, and
+tainting would strip NoteMemory from strangers.
 
 ``dispatch_one`` (validate + run one call against a registry) is shared by
 the MindLoop turn and the agents (``agent_engine.run_agent``).
@@ -141,6 +142,10 @@ async def dispatch_one(
         )
     if returned is None:
         return None
+    # A tool may answer with its own ToolResult to report a failure that is
+    # not an exception: an MCP tool's ``isError`` result (harness/mcp_client.py).
+    if isinstance(returned, ToolResult):
+        return returned
     return ToolResult(tool_name=name, success=True, detail=returned)
 
 
@@ -250,14 +255,18 @@ class ToolExecutor:
             result = await self._dispatch(name, arguments, bound)
         else:
             result = await dispatch_one(name, arguments, self._ctx, bound)
-        if decision == "allow" and (result is None or result.success):
+        # Any allowed call, failed or not: an MCP tool's ``isError`` text
+        # comes from the untrusted server too (plan Task 7), and a failure
+        # that read nothing only narrows the turn further.
+        if decision == "allow":
             self._maybe_taint(name, arguments)
         return result
 
     def _maybe_taint(self, name: str, arguments: dict) -> None:
-        """Taint the turn after a clean call that read untrusted content.
-        Most tools define no ``taints``; Recall's is ``include_external``;
-        Task 7's MCP tools with ``untrusted_output`` will return True."""
+        """Taint the turn after an allowed call that asked for untrusted
+        content. Most tools define no ``taints``; Recall's is
+        ``include_external``; an MCP tool's is its server's
+        ``untrusted_output`` (plan Task 7)."""
         if self._principal == "external_public" or self._ctx.tainted:
             return
         taints = getattr(self._bound[name], "taints", None)

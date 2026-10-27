@@ -13,6 +13,7 @@ from pathlib import Path
 from dollos.cascade_log import CascadeLogger
 from dollos.character import DollPack
 from dollos.config import Settings
+from dollos.harness.mcp_client import McpClients, load_mcp_clients
 from dollos.ipc.batch_accumulator import BatchAccumulator
 from dollos.ipc.channel_registry import ChannelRegistry
 from dollos.ipc.messages import (
@@ -417,6 +418,11 @@ class DollOS:
                 )
             else:
                 self.service_supervisor.register(self._build_mcp_spec(settings))
+
+        # MCP client (harness plan 2026-10-27 Task 7): the outside servers in
+        # mcp_clients.toml. Loaded here so an invalid file fails boot before
+        # anything starts; connected in run(), before the first turn.
+        self._mcp_clients = McpClients(load_mcp_clients(settings.mcp_clients.config))
 
         self.workflow_runner = WorkflowRunner(
             model=self.model,
@@ -1172,6 +1178,11 @@ class DollOS:
             # No generation request: it would evict the server's cache.
             await self.model.check()
 
+            # MCP tools are listed once, before MindLoop starts, so every
+            # turn is offered the same list (plan decision 4). A server that
+            # does not answer is logged and left out (decision 7).
+            self._mind_loop.register_mcp_tools(await self._mcp_clients.start())
+
             await self.server.start()
 
             # Replay any pending WAL entries from a previous (possibly crashed) run
@@ -1326,6 +1337,8 @@ class DollOS:
                 if self._mind_task is not None:
                     self._mind_loop.shutdown()
                     await asyncio.gather(self._mind_task, return_exceptions=True)
+                # After MindLoop: no turn is calling an MCP tool any more.
+                await self._mcp_clients.stop()
                 self._tool_output_store.cleanup()
                 self.memsearch.close()
         finally:
@@ -1338,4 +1351,8 @@ class DollOS:
             _svc = getattr(self, "service_supervisor", None)
             if _svc is not None:
                 await _svc.stop()
+            # Same backstop for the MCP servers' children (idempotent).
+            _mcp = getattr(self, "_mcp_clients", None)
+            if _mcp is not None:
+                await _mcp.stop()
             self._pidfile.release()

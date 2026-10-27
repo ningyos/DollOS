@@ -52,6 +52,15 @@ config  = "mcp.toml"
                               # = query surface disabled, fail-closed — the daemon rejects every
                               # QueryState/QueryRecent regardless of what token a caller sends.
 
+# ----------------------------------------------------------------------
+# MCP client (harness plan 2026-10-27 Task 7): outside MCP servers whose
+# tools Doll may use are listed in a separate mcp_clients.toml (see
+# mcp_clients.example.toml). No file there = no MCP tools.
+# ----------------------------------------------------------------------
+
+# [mcp_clients]
+# config = "mcp_clients.toml"
+
 [log]
 level = "INFO"
 
