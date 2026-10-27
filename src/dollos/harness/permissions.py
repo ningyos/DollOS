@@ -83,7 +83,8 @@ _TRUSTED: frozenset[Principal] = frozenset({"owner", "owner_dm", "internal"})
 # MindLoop._active_tool_registry / _offered_tools, with owner_dm = owner.
 # - Recall / NoteMemory / WriteDiary: every principal (the external_public
 #   row); memory scoping by origin_tier happens inside the tools.
-# - PinSelf: owner / internal (reflection turns only, turn_policy).
+# - PinSelf: owner / internal; bound on reflection, and on a conversation
+#   only with the owner present (turn_policy, remember-corrections Task 2).
 # - LearnName: the owner only — never internal (a pure reflection turn must
 #   not write a stranger's earlier words as an owner-taught alias, R1 C1),
 #   never external_public.

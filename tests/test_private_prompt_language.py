@@ -474,6 +474,8 @@ async def tool_result_pin_self(rig: Rig) -> str:
         return _run_tool(rig, "PinSelf",
                          {"section": section, "op": op, "target": target, "text": text})
 
+    # A reflection turn's sections (MindLoop sets them per turn).
+    rig.ctx.pin_sections = frozenset({"self", "relationship", "user"})
     out = [
         await pin("add"),                       # pinned
         await pin("add"),                       # duplicate
@@ -484,6 +486,9 @@ async def tool_result_pin_self(rig: Rig) -> str:
     ]
     rig.ctx.self_profile_max_chars = 10
     out.append(await pin("add", section="user"))  # over the cap
+    # A conversation turn's sections: the self section is refused.
+    rig.ctx.pin_sections = frozenset({"user", "relationship"})
+    out.append(await pin("add"))
     path = rig.memory_root / "self_profile.md"
     for section, op in (("nope", "add"), ("self", "nope")):
         out.append(self_profile.apply(path, section=section, op=op, target="",
@@ -610,6 +615,8 @@ async def _write_her_files(rig: Rig) -> None:
     await _run_tool(rig, "WriteDiary", {"content": SENTINEL})
     await _run_tool(rig, "WriteSchedule",
                     {"entries": [{"time": "09:00:00", "intent": SENTINEL}]})
+    # Pinned as on a reflection turn (MindLoop sets the sections per turn).
+    rig.ctx.pin_sections = frozenset({"self", "relationship", "user"})
     for section in ("self", "relationship", "user"):
         await _run_tool(rig, "PinSelf", {"section": section, "op": "add", "target": "",
                                          "text": f"{SENTINEL} {section}"})

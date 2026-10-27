@@ -139,6 +139,18 @@ def _find(sections: dict[str, list[Bullet]], target: str) -> tuple[str, int] | N
     return None
 
 
+def section_of(path: Path, target: str) -> str | None:
+    """The section the entry ``target`` resolves to (the same lookup
+    replace / remove use, across all sections), or None when it resolves to
+    nothing. PinSelf checks it before a replace / remove (remember-
+    corrections plan Task 2, decision 2): checking the ``section`` argument
+    alone would let a call that says "user" revise a self-section entry."""
+    if not path.exists():
+        return None
+    found = _find(_parse(path.read_text()), target)
+    return found[0] if found is not None else None
+
+
 def _entries_listing(sections: dict[str, list[Bullet]]) -> str:
     """Richer than a bare id list — shows `id: text` so the model can retry
     either by id or by pasting the exact line."""

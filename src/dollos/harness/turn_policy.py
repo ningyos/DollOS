@@ -43,8 +43,13 @@ TurnKind = Literal[
     "worker", "keeper",
 ]
 
-# Config switches an extra tool can depend on, resolved at bind time.
-Condition = Literal["self_profile", "evolution"]
+# What an extra tool can depend on, resolved at bind time: a config switch
+# (self_profile, evolution), or "owner_present" — the turn's principal is
+# owner or owner_dm (remember-corrections plan Task 2, decision 1). The
+# latter is needed where TOOL_MATRIX alone does not say it: PinSelf's row
+# includes internal, but a conversation binds it only with the owner there.
+Condition = Literal["self_profile", "evolution", "owner_present"]
+_OWNER_PRESENT: frozenset[Principal] = frozenset({"owner", "owner_dm"})
 
 # Budget cap on a MindLoop turn's tool loop (spec §8.2): a turn runs at most
 # this many model calls. Generous enough for legitimate multi-step plans, but
@@ -60,10 +65,11 @@ MAX_CASCADE_PASSES = 16
 class Extra:
     """A tool a kind adds on top of the registry (it is never a member of
     MindLoop's tool registry itself — added explicitly, not filtered in, or it
-    would silently never appear). ``when`` names the config switch it needs.
-    It is bound only where ``TOOL_MATRIX`` allows the principal."""
+    would silently never appear). ``when`` names the condition it needs, or a
+    tuple of conditions that must all hold. It is bound only where
+    ``TOOL_MATRIX`` allows the principal."""
     tool: str
-    when: Condition | None = None
+    when: Condition | tuple[Condition, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -130,8 +136,19 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # Trust here is enforced by REGISTRY AVAILABILITY, not by a post-hoc read
     # of ``ctx.origin_tier`` inside the tool — a stranger's turn never has
     # LearnName in its dict, full stop (TOOL_MATRIX row: owner, owner_dm).
+    #
+    # PinSelf (remember-corrections spec §2.1, plan Task 2 decision 1): bound
+    # only while the owner is present, so a correction is written when it is
+    # given. Not on an internal conversation (tool results, schedules — no
+    # owner there); a stranger's turn never has it (TOOL_MATRIX). On this
+    # kind PinSelf.run writes only the user / relationship sections
+    # (ctx.pin_sections, decision 2): the self section stays reflection's.
     "conversation": TurnPolicy(
-        speaks=True, kind_tools="all", extra_tools=(Extra("LearnName"),),
+        speaks=True, kind_tools="all",
+        extra_tools=(
+            Extra("LearnName"),
+            Extra("PinSelf", when=("self_profile", "owner_present")),
+        ),
         mcp_tools=True,
     ),
     # Reflection turn → full registry + NoteToolLesson, + PinSelf when
@@ -273,12 +290,19 @@ def kind_of(perceptions: Iterable["Perception"], *, safe_mode: bool) -> TurnKind
     return effective_kind(moment_of(perceptions), safe_mode=safe_mode)
 
 
-def _holds(extra: Extra, *, self_profile: bool, evolution: bool) -> bool:
-    if extra.when == "self_profile":
-        return self_profile
-    if extra.when == "evolution":
-        return evolution
-    return True
+def _holds(
+    extra: Extra, *, principal: Principal, self_profile: bool, evolution: bool,
+) -> bool:
+    """Every condition in ``extra.when`` holds for this principal / config."""
+    if extra.when is None:
+        return True
+    conditions = (extra.when,) if isinstance(extra.when, str) else extra.when
+    state = {
+        "self_profile": self_profile,
+        "evolution": evolution,
+        "owner_present": principal in _OWNER_PRESENT,
+    }
+    return all(state[c] for c in conditions)
 
 
 def bound_tools(
@@ -297,7 +321,8 @@ def bound_tools(
     names &= tools_for(principal)
     extras = {
         e.tool for e in policy.extra_tools
-        if _holds(e, self_profile=self_profile, evolution=evolution)
+        if _holds(e, principal=principal, self_profile=self_profile,
+                  evolution=evolution)
         and principal in TOOL_MATRIX[e.tool]
     }
     remote = {
@@ -316,14 +341,18 @@ def offered_tools(
     whose config switch is on, kept where TOOL_MATRIX allows any principal of
     the same origin tier. Owner and internal turns share the private
     conversation (origin_tier "internal"), so its list is the union of both
-    rows — the owner's LearnName included. MCP tools (``mcp``: name → row)
+    rows — the owner's LearnName included. An extra counts when it holds
+    for some principal of the tier that its TOOL_MATRIX row allows. MCP
+    tools (``mcp``: name → row)
     join the same way, by their own row; the list is fixed for the run
     because the MCP tools are listed once at boot (plan Task 7)."""
     tier = ORIGIN_TIER[principal]
     same_tier = {q for q in TRUST_ORDER if ORIGIN_TIER[q] == tier}
-    candidates = set(registry) | {
+    extras = {
         e.tool for policy in POLICIES.values() for e in policy.extra_tools
-        if _holds(e, self_profile=self_profile, evolution=evolution)
+        for q in same_tier
+        if q in TOOL_MATRIX[e.tool]
+        and _holds(e, principal=q, self_profile=self_profile, evolution=evolution)
     }
-    builtin = {n for n in candidates if same_tier & TOOL_MATRIX[n]}
+    builtin = {n for n in registry if same_tier & TOOL_MATRIX[n]} | extras
     return frozenset(builtin | {n for n, row in mcp.items() if same_tier & row})
