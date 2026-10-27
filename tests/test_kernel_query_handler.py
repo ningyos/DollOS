@@ -184,7 +184,9 @@ async def test_query_recent_excludes_outputs(tmp_path: Path) -> None:
     )
     dollos._mind_state.recent_perceptions.append(peer_msg)
     dollos._mind_state.recent_outputs.append(
-        OutputRecord(t=1.0, kind="Speech", summary="OWNER-REPLY-SUMMARY-do-not-leak")
+        OutputRecord(
+            t=1.0, kind="Speech", summary="OWNER-REPLY-SUMMARY-do-not-leak", origin_tier="internal",
+        )
     )
 
     await dollos._handle_message(QueryRecent(query_id="q1", token="right", n=20), sink)

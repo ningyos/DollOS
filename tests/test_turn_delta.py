@@ -207,7 +207,9 @@ def test_recap_oldest_first_and_outputs_by_tier():
     state = _state()
     for t, text in ((NOW - 50, "first"), (NOW - 40, "second")):
         state.recent_perceptions.append(Perception(kind="UserSpoke", t=t, data={"text": text}))
-    state.recent_outputs.append(OutputRecord(t=NOW - 45, kind="Speech", summary="spoke: hello"))
+    state.recent_outputs.append(OutputRecord(
+        t=NOW - 45, kind="Speech", summary="spoke: hello", origin_tier="internal"),
+    )
     out = render_epoch_start(state, Seen(), "internal", NOW)
     assert out.index("first") < out.index("second")
     assert f"{_clock(NOW - 45)} spoke: hello" in out
@@ -228,9 +230,13 @@ def test_no_relative_time_iter_or_retired_blocks():
     state.iter_count = 42
     state.last_user_at = NOW - 40
     state.safe_mode, state.safe_mode_reason = True, "3 failures"
-    state.recent_outputs.append(OutputRecord(t=NOW - 5, kind="Speech", summary="spoke: hi"))
+    state.recent_outputs.append(OutputRecord(
+        t=NOW - 5, kind="Speech", summary="spoke: hi", origin_tier="internal"),
+    )
     for _ in range(3):
-        state.recent_outputs.append(OutputRecord(t=NOW - 4, kind="SetFocus", summary="focus → x"))
+        state.recent_outputs.append(OutputRecord(
+            t=NOW - 4, kind="SetFocus", summary="focus → x", origin_tier="internal"),
+        )
     state.recent_tool_failures = deque(
         [ToolFailure(t=NOW - 3, tool="Shell", detail="boom")], maxlen=10
     )
@@ -271,7 +277,9 @@ def test_no_relative_time_iter_or_retired_blocks():
 def test_external_public_renders_only_allowed_blocks():
     state = _state()
     state.recent_outputs.append(
-        OutputRecord(t=NOW - 5, kind="Speech", summary="spoke: private-reply")
+        OutputRecord(
+            t=NOW - 5, kind="Speech", summary="spoke: private-reply", origin_tier="internal",
+        )
     )
     state.recent_perceptions.append(Perception(kind="ChannelMessage", t=NOW - 9, data={
         "channel_id": "pub", "content": "earlier in pub", "channel": "general",

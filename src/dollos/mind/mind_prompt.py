@@ -187,7 +187,8 @@ def render_epoch_start(
     conversation): ``[Recent perceptions]`` recaps only this conversation's
     own perceptions, oldest first, minus ``exclude`` (this turn's own batch —
     it was already appended to the deque and arrives in the first delta).
-    ``[Recent outputs]`` renders on internal and external_dm only;
+    ``[Recent outputs]`` renders on internal and external_dm only, and only
+    records whose origin_tier is not external_public;
     ``pulse_block``/``cognition_block`` (the current ``[Self pulse]``/
     ``[Cognition]``, from the caller) on internal only.
 
@@ -224,7 +225,13 @@ def render_epoch_start(
     ]
     parts.append("[Recent perceptions] (newest last)\n" + ("\n".join(recap) or "(none)"))
     if tier != "external_public":
-        outputs = [f"{_clock(o.t)} {o.summary}" for o in state.recent_outputs]
+        # Only non-stranger outputs (harness §6.5): a stranger turn's tool
+        # summaries and speech share this deque, and on an owner page they
+        # would read as her own record ("noted: the owner says ...").
+        outputs = [
+            f"{_clock(o.t)} {o.summary}" for o in state.recent_outputs
+            if o.origin_tier != "external_public"
+        ]
         parts.append(
             "[Recent outputs] (what you did recently — avoid repeating the same content)\n"
             + ("\n".join(outputs) or "(none)")

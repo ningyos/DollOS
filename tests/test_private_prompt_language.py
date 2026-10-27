@@ -159,9 +159,15 @@ class Rig:
         st.recent_perceptions.append(
             Perception(kind="UserSpoke", t=self.now - 60, data={"text": SENTINEL}))
         st.recent_outputs.append(
-            OutputRecord(t=self.now - 30, kind="Speech", summary=f"spoke: {SENTINEL}"))
+            OutputRecord(
+                t=self.now - 30, kind="Speech", summary=f"spoke: {SENTINEL}",
+                origin_tier="internal",
+            ))
         st.recent_outputs.append(
-            OutputRecord(t=self.now - 20, kind="NoteMemory", summary=f"noted: {SENTINEL}"))
+            OutputRecord(
+                t=self.now - 20, kind="NoteMemory", summary=f"noted: {SENTINEL}",
+                origin_tier="internal",
+            ))
         path = self.memory_root / "self_profile.md"
         for section in ("self", "relationship", "user"):
             self_profile.apply(path, section=section, op="add", target="", text=SENTINEL,

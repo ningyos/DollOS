@@ -32,9 +32,12 @@ if TYPE_CHECKING:
 
 
 def _record(ctx: "MindCtx", kind: str, summary: str) -> None:
-    """Append an OutputRecord to ctx.mind_state.recent_outputs."""
+    """Append an OutputRecord to ctx.mind_state.recent_outputs, tagged with
+    this turn's origin_tier so owner pages can drop a stranger's (§6.5)."""
     ctx.mind_state.recent_outputs.append(
-        OutputRecord(t=time.time(), kind=kind, summary=summary)
+        OutputRecord(
+            t=time.time(), kind=kind, summary=summary, origin_tier=ctx.origin_tier,
+        )
     )
 
 

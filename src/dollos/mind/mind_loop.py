@@ -966,6 +966,7 @@ class MindLoop:
                 t=time.time(),
                 kind="DiaryMissed",
                 summary=f"no diary @ {today}",
+                origin_tier=self._ctx.origin_tier,
             ))
             if self._diary_retry_date != today:
                 self._diary_retry_date = today
@@ -983,7 +984,13 @@ class MindLoop:
         # streak breaks, the field is deliberately left as-is — the next
         # genuine streak naturally produces a different (lower) count, so its
         # fingerprint differs and it re-alerts with no extra bookkeeping.
-        streak = detect_repeat_streak(self._state.recent_outputs)
+        # Strangers' records are left out (harness §6.5): the alert is an
+        # internal perception that quotes the summary on the owner's page,
+        # so a stranger repeating a tool would put their text there. On a
+        # stranger turn the filtered tail is unchanged, so nothing re-fires.
+        streak = detect_repeat_streak(
+            [o for o in self._state.recent_outputs if o.origin_tier != "external_public"]
+        )
         if streak is not None:
             kind, summary, count = streak
             fingerprint = f"{kind}:{summary}:{count}"
@@ -1542,6 +1549,7 @@ class MindLoop:
             kind="Speech",
             t=time.time(),
             summary=f"spoke: {sentence[:60]}",
+            origin_tier=self._ctx.origin_tier,
         ))
         self._turn_speech.append(sentence)
 
