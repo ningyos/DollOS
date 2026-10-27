@@ -12,6 +12,8 @@ On every turn that is not ``external_public`` (``internal``, and
   - ``[Recent outputs]`` leaves out records a stranger's turn wrote (tool
     summaries, speech; ``OutputRecord.origin_tier``), and a record saved
     before that field existed loads as external_public (fail closed).
+  - ``transcripts/`` (owner tier, indexed untagged) gets no line from a
+    stranger's turn: not their message, not what she says back.
 A sibling ``external_public_evil/`` is NOT excluded (directory boundary).
 ``external_public`` turns are unchanged; ``include_external`` has no effect
 there. Real ``FtsMemory`` over tmp dirs, so the SQL filter is exercised.
@@ -360,3 +362,45 @@ def test_pre_field_output_record_loads_external_public(tmp_path: Path):
         assert "[Recent outputs]" in page
         assert "new-owner-ro-111" in page
         assert "old-unknown-ro-222" not in page
+
+
+# ---------------------------------------------------------------------------
+# transcripts/ — her speech in a stranger's turn stays out (C1 for speech)
+# ---------------------------------------------------------------------------
+
+
+def _today_transcript(tmp_path: Path) -> str:
+    f = tmp_path / "transcripts" / f"{datetime.now():%Y-%m-%d}.md"
+    return f.read_text(encoding="utf-8") if f.exists() else ""
+
+
+async def test_stranger_turn_speech_not_in_owner_transcripts(tmp_path: Path):
+    """What she says in a stranger's turn is not appended to transcripts/
+    (the owner tier, indexed untagged) — neither the file nor the index."""
+    ms = _memsearch(tmp_path)
+    try:
+        ml = _loop(tmp_path, FakeModel(["</think>stranger-speech-tx707"]), ms)
+        await ml._run_one_turn([_stranger("say something")])
+        # She did speak — the gate, not silence, keeps the line out.
+        assert any(o.summary == "spoke: stranger-speech-tx707"
+                   for o in ml._state.recent_outputs)
+        assert "stranger-speech-tx707" not in _today_transcript(tmp_path)
+        assert await ms.search("stranger-speech-tx707", top_k=5) == []
+    finally:
+        ms.close()
+
+
+@pytest.mark.parametrize("perception", [_owner, _owner_dm], ids=["owner", "owner_dm"])
+async def test_owner_turn_speech_still_in_transcripts(tmp_path: Path, perception):
+    """Owner (local) and owner-DM turns keep writing both lines, as before."""
+    ms = _memsearch(tmp_path)
+    try:
+        ml = _loop(tmp_path, FakeModel(["</think>owner-speech-tx606"]), ms)
+        await ml._run_one_turn([perception("owner-asks-tx505")])
+        content = _today_transcript(tmp_path)
+        assert "Owner: owner-asks-tx505" in content
+        assert "Me: owner-speech-tx606" in content
+        hits = await ms.search("owner-speech-tx606", top_k=5)
+        assert any("transcripts" in h.get("source", "") for h in hits), hits
+    finally:
+        ms.close()
