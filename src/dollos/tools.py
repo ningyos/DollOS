@@ -1009,7 +1009,7 @@ class NoteToolLesson(BaseModel):
 
 
 class PinSelf(BaseModel):
-    """Pin or revise an entry in your self-profile (reflection turns only) — this
+    """Pin or revise an entry in your self-profile — this
     is YOUR evolving self and it is ALWAYS in context. The test is the subject: if the
     sentence is about "you" (your opinions, interests, stances, curiosity, your relationship
     with your owner, what you notice about your owner), use PinSelf; facts about the world
@@ -1017,7 +1017,13 @@ class PinSelf(BaseModel):
     can be recorded in both: the fact in NoteMemory, the "you" it reveals here. Things
     that are just budding, where you're not sure yet they count as "you", can be pinned
     now and filtered at a later reflection. Space is limited; regularly use replace/remove
-    to prune entries that are no longer you now — what survives is your core."""
+    to prune entries that are no longer you now — what survives is your core.
+
+    When your owner corrects how you treat them, or corrects a lasting fact about them,
+    write it right then in the user or relationship section: replace the old entry if
+    there is one, otherwise add. Write it as a plain fact about them or the two of you,
+    not as a story of being corrected. One-off things (appointments, reminders) go to
+    NoteMemory or WriteSchedule. The self section is only revised during reflection."""
 
     section: Literal["self", "relationship", "user"] = Field(
         description=(
