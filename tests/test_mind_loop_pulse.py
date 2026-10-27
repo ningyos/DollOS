@@ -3,7 +3,7 @@
 
 Mirrors tests/test_mind_loop_agenda_registry.py's pattern exactly: drive a
 real ``_run_one_turn`` with a pure PulseMoment batch (not a hand-poked
-attribute), then assert the resulting ``_is_pulse`` flag + the narrowed
+attribute), then assert the resulting pulse kind + the narrowed
 ``_active_tool_registry()`` + — the entire point of this feature, unlike
 AgendaMoment/DiaryMoment — that speech is NOT suppressed.
 """
@@ -15,7 +15,9 @@ import time
 import pytest
 
 from dollos.mind.mind_state import Perception
-from dollos.tools import PULSE_TOOLS
+from dollos.harness.turn_policy import POLICIES
+
+PULSE_TOOLS = POLICIES["pulse"].kind_tools
 from tests._mindloop_factory import make_mindloop
 
 
@@ -32,7 +34,7 @@ async def test_pure_pulse_turn_narrows_to_pulse_tools(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_pulse_moment()])
 
-    assert ml._is_pulse is True
+    assert ml._moment == "pulse"
     reg = ml._active_tool_registry()
     assert set(reg.keys()) == set(PULSE_TOOLS)
     assert "Shell" not in reg
@@ -46,8 +48,8 @@ async def test_pulse_cobatched_with_userspoke_keeps_full_registry(tmp_path):
     ml = make_mindloop(memory_root=tmp_path)
     await ml._run_one_turn([_pulse_moment(), _user_perception("hi")])
 
-    assert ml._is_pulse is False, (
-        "_is_pulse must be False when a live UserSpoke is co-batched — "
+    assert ml._moment != "pulse", (
+        "the kind must not be pulse when a live UserSpoke is co-batched — "
         "the user's request must never be silently restricted to PULSE_TOOLS"
     )
     reg = ml._active_tool_registry()
@@ -108,7 +110,7 @@ async def test_pure_pulse_turn_has_body_signal_block(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cobatch_userspoke_has_no_body_signal_block(tmp_path, monkeypatch):
-    """PulseMoment + UserSpoke co-batch -> _is_pulse False -> body_signal_block
+    """PulseMoment + UserSpoke co-batch -> not a pulse kind -> body_signal_block
     must be None (same pure-batch guard as the tool-registry narrowing)."""
     ml = make_mindloop(memory_root=tmp_path)
     critical_pulse = _pulse_moment_with_data({
@@ -121,7 +123,7 @@ async def test_cobatch_userspoke_has_no_body_signal_block(tmp_path, monkeypatch)
         ml, [critical_pulse, _user_perception("hi")], monkeypatch
     )
 
-    assert ml._is_pulse is False
+    assert ml._moment != "pulse"
     assert captured.get("body_signal_block") is None
 
 

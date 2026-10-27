@@ -1310,21 +1310,20 @@ MAIN_TOOLS: list[type[BaseModel]] = [
     PursueGoal, AdvanceGoal,
 ]
 
-REFLECTION_TOOLS: list[type[BaseModel]] = MAIN_TOOLS + [NoteToolLesson, PinSelf]
-
-# P1e S4/S5: conservative tool set for an external_public turn — strangers,
-# non-owner DMs (MCP peers included), and the owner posting in a PUBLIC
-# channel (the reply there is public). The owner's own DM is NOT external
-# for tools: owner DM = the owner at the local keyboard, Shell included
-# (user decision 2026-10-27, harness spec §6.3; the user accepted the risk
-# that a compromised Discord account then equals the owner on the home
-# computer). PinSelf is added conditionally by the registry logic
-# (mind_loop._active_tool_registry) only on reflection turns with
-# self_profile enabled — it is NOT baked in here, since a non-reflection
-# external turn gets none of it. The per-principal table is
-# dollos.harness.permissions.TOOL_MATRIX.
-# DiscordLookup is intentionally NOT included — deferred to P2.
-EXTERNAL_TOOLS: frozenset[str] = frozenset({"Recall", "NoteMemory", "WriteDiary"})
+# What each turn may run is not a list here: the per-principal table is
+# dollos.harness.permissions.TOOL_MATRIX and the per-turn-kind table
+# (reflection / diary / agenda / pulse / safe mode, and the extras PinSelf,
+# NoteToolLesson, SelfRevision, LearnName) is
+# dollos.harness.turn_policy.POLICIES. MAIN_TOOLS is MindLoop's registry;
+# SUB_TOOLS / KEEPER_TOOLS below are the agents' registries (their kinds are
+# POLICIES["worker"] / POLICIES["keeper"]).
+# P1e S4/S5 external_public (strangers, non-owner DMs, MCP peers, the owner
+# posting in a PUBLIC channel) → TOOL_MATRIX's external_public row. The
+# owner's own DM is NOT external for tools: owner DM = the owner at the local
+# keyboard, Shell included (user decision 2026-10-27, harness spec §6.3; the
+# user accepted the risk that a compromised Discord account then equals the
+# owner on the home computer). DiscordLookup is intentionally NOT included —
+# deferred to P2.
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
@@ -1336,33 +1335,3 @@ SUB_TOOLS: list[type[BaseModel]] = [
 # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 
-# 慢變演化 (spec §3.4): SelfRevision is added directly to the reflection
-# registry by MindLoop._active_tool_registry when evolution.enabled — the
-# registry is authoritative, so no separate EVOLUTION_TOOLS list is kept.
-
-# Self-directed agenda (spec 2026-07-07 §5.1): v1 tool scope for a pure
-# AgendaMoment turn (no user present — mind_loop._is_agenda registry branch,
-# Task 5). Deliberately excludes: Shell/SpawnWorkflow/SpawnMonitor/
-# WriteSchedule (no autonomous external action), SelfRevision/PinSelf (no
-# autonomous core-self edits), NoteMemory (R1-I1 — blocks a self-directed
-# turn from bootstrapping its own "grounding" for a future PursueGoal), and
-# PursueGoal itself (R1-I3 — genesis only happens on reflection/reactive
-# turns; letting an autonomous turn open new agenda items would make the
-# agenda gate self-perpetuating). MoodTool stays in (v1 decision, spec §11.6
-# — her mood can drift on its own while she's alone).
-AGENDA_TOOLS: frozenset[str] = frozenset({"Recall", "AdvanceGoal", "CloseLoop", "MoodTool"})
-
-# Dedicated diary turn (spec 2026-07-07 §2.3, Task 7): the ONLY tools
-# available on a pure DiaryMoment turn. WriteDiary is the point of the turn;
-# Recall lets her look up earlier-in-the-day context if the injected
-# [Today's log] isn't enough. Everything else (Shell/SpawnWorkflow/NoteMemory/
-# etc.) is excluded so the turn cannot do anything BUT write (or research
-# toward) the diary entry.
-DIARY_TOOLS: frozenset[str] = frozenset({"WriteDiary", "Recall"})
-
-# Pure PulseMoment turn (spec 2026-07-09 §5.3): cognition-only + speech ON.
-# She can Recall/NoteMemory/adjust Mood and SPEAK UP, but no autonomous
-# external action (no Shell/Workflow) on a self-wake. Speech is NOT gated by
-# this set — it stays on because _is_pulse is deliberately absent from
-# _emit_sentence's suppression (unlike AGENDA/DIARY).
-PULSE_TOOLS: frozenset[str] = frozenset({"Recall", "NoteMemory", "MoodTool"})

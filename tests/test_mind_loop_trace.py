@@ -153,14 +153,14 @@ async def test_situation_tag_coarse(mind_loop_with_trace):
     ml, tw, state = mind_loop_with_trace
     # external turn → "external"
     ml._ctx.external_ctx = True
-    ml._is_reflection = False
+    ml._moment = "conversation"
     assert ml._situation_tag() == "external"
     # internal reflection → "internal_reflection"
     ml._ctx.external_ctx = False
-    ml._is_reflection = True
+    ml._moment = "reflection"
     assert ml._situation_tag() == "internal_reflection"
     # plain internal
-    ml._is_reflection = False
+    ml._moment = "conversation"
     assert ml._situation_tag() == "internal"
 
 

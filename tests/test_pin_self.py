@@ -8,7 +8,8 @@ from dollos.mind.mind_ctx import MindCtx
 from dollos.mind.mind_state import MindState
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
-from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, NoteMemory, PinSelf
+from dollos.harness.turn_policy import POLICIES
+from dollos.tools import MAIN_TOOLS, NoteMemory, PinSelf
 
 
 class _FakeShellRunner:
@@ -68,7 +69,7 @@ def make_mind_ctx(tmp_path):
 
 
 def test_pinself_in_reflection_not_main():
-    assert PinSelf in REFLECTION_TOOLS
+    assert PinSelf.__name__ in {e.tool for e in POLICIES["reflection"].extra_tools}
     assert PinSelf not in MAIN_TOOLS
 
 

@@ -18,9 +18,12 @@ from dollos.ipc.messages import TextChunk
 from dollos.llm.model import End, SpeechDelta, ThinkDelta, ToolCall, ToolCalls, Usage
 from dollos.mind.mind_loop import MAX_SYNC_REFEED_PASSES
 from dollos.mind.mind_state import Perception
-from dollos.tools import EXTERNAL_TOOLS
+from dollos.harness.permissions import tools_for
 from tests._fake_model import FakeModel
 from tests._mindloop_factory import make_mindloop
+
+# The external_public tool list (was tools.EXTERNAL_TOOLS).
+EXTERNAL_TOOLS = tools_for("external_public")
 
 
 def _p(kind: str, **data) -> Perception:
@@ -246,7 +249,7 @@ async def test_unknown_tool_name_is_rejected_and_counts_as_failure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_turn_in_safe_mode_cannot_run_a_tool_it_is_not_offered(tmp_path):
-    """Safe mode binds SAFE_MODE_TOOLS on any tier, but a stranger's turn is
+    """Safe mode binds its read-only set on any tier, but a stranger's turn is
     offered only EXTERNAL_TOOLS: ReadToolOutput (not offered there) must not
     run — it is an unknown tool, a failure — and the reply names no internal
     tool."""

@@ -18,6 +18,14 @@ from dollos.cascade.sentence_chunker import SentenceChunker
 from dollos.cascade.tool_loop import ToolOutcome, ToolResult, dispatch_one, run_tool_calls
 from dollos.character import Enforcement
 from dollos.harness.permissions import ORIGIN_TIER, principal_of
+from dollos.harness.turn_policy import (
+    POLICIES,
+    TurnKind,
+    bound_tools,
+    effective_kind,
+    moment_of,
+    offered_tools,
+)
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.model import (
     End,
@@ -65,13 +73,9 @@ from dollos.perception.system_pulse import thermal_multiplier
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
 from dollos.tools import (
-    AGENDA_TOOLS,
-    DIARY_TOOLS,
-    EXTERNAL_TOOLS,
     LearnName,
     NoteToolLesson,
     PinSelf,
-    PULSE_TOOLS,
     SelfRevision,
 )
 from dollos.wal.perception_log import PerceptionWAL
@@ -113,12 +117,13 @@ def batch_external(perceptions) -> bool:
 # rotating-invalid-call storm the same-tool 3-strike misses. Bounded-severity,
 # announced boundary — NOT a fallback.
 SAFE_MODE_FAIL_THRESHOLD = 3
+# Its read-only tool set is POLICIES["safe_mode"] (dollos.harness.turn_policy).
 
-# The only tools available while safe_mode is set: read-only / reversible reads
-# plus naked-text speech (always available, not a tool). Everything that writes
-# memory/diary/schedule/scratchpad or spawns an external action is excluded so a
-# failure storm cannot do irreversible damage while the loop is wedged.
-SAFE_MODE_TOOLS = frozenset({"Recall", "ReadToolOutput", "GrepToolOutput"})
+# The extra tools a turn kind adds (turn_policy.Extra) are never members of
+# the tool registry itself; these are their classes.
+_EXTRA_TOOL_CLASSES: dict[str, type[BaseModel]] = {
+    c.__name__: c for c in (NoteToolLesson, PinSelf, SelfRevision, LearnName)
+}
 
 
 # P1f trace (spec 2026-07-03 §T-C2): serialize the dataclass sources 1:1 with
@@ -241,48 +246,31 @@ class MindLoop:
         # Turn-local buffer of FULL spoken sentences (recent_outputs only keeps
         # a truncated summary, so transcript capture needs the complete text).
         self._turn_speech: list[str] = []
-        # Reflection-turn flag.
-        self._is_reflection: bool = False
-        # Part A / A2 (self-learned-aliases spec §3.3): per-turn "does this
-        # batch carry a live, first-hand UserSpoke perception" flag — the
-        # owner-present half of LearnName's trust boundary. Mirrors
-        # _is_reflection: computed once per _run_one_turn from THIS batch's
-        # perceptions, never re-derived later from stale/replayed state.
-        self._has_user_spoke: bool = False
-        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1, SECURITY-LOAD-
-        # BEARING): "is this a PURE agenda turn" flag. Set alongside
-        # _has_user_spoke in _run_one_turn — see that assignment for the
-        # `and not _has_user_spoke` rationale (a live user request co-batched
-        # with an AgendaMoment must never be downgraded to AGENDA_TOOLS).
-        self._is_agenda: bool = False
-        # Dedicated diary turn (spec 2026-07-07 §2.3, Task 7, LOAD-BEARING):
-        # mirrors _is_agenda exactly — "is the ENTIRE batch DiaryMoment",
-        # never merely "a DiaryMoment is present" (same co-batch rationale as
-        # _is_agenda above: a DiaryMoment riding along with a live UserSpoke
-        # must fall through to a normal, non-narrowed turn). Gates registry
-        # narrowing (_active_tool_registry), outbound speech suppression
-        # (_emit_sentence), doll-transcript suppression, and the I1
-        # no-fabrication post-turn check — all four read this SAME flag.
-        self._is_diary: bool = False
+        # This batch's turn kind (dollos.harness.turn_policy.moment_of, plan
+        # 2026-10-27 Task 3): computed once per _run_one_turn from THIS
+        # batch's perceptions, never re-derived later from stale/replayed
+        # state. Safe mode is layered on top per pass (effective_kind) for the
+        # tool binding only. With ctx.principal it decides the binding
+        # (_active_tool_registry), speech suppression (_emit_sentence),
+        # doll-transcript suppression, the kind's prompt blocks, and the
+        # refusal label (_turn_kind).
+        self._moment: TurnKind = "conversation"
         # Whole-branch review WB-1 (LOAD-BEARING, decoupled from the strict
-        # pure-batch flag above): "does THIS batch carry a DiaryMoment at
+        # pure-batch diary kind): "does THIS batch carry a DiaryMoment at
         # all", regardless of what else co-batched with it. The 23:00
         # DiaryMoment often co-batches with another origin-less internal
         # perception (AgendaMoment fires ~every 7 min, ReflectionMoment polls
         # ~every 5 s — both peak exactly when the system is idle at diary
-        # time), which makes the strict `_is_diary` False. Gating the I1
-        # post-turn miss-check on strict `_is_diary` alone means a co-batched
+        # time), which makes the strict diary kind not apply. Gating the I1
+        # post-turn miss-check on the strict kind alone means a co-batched
         # diary turn that misses gets ZERO signal — no marker, no retry — the
         # exact silent failure I1 exists to prevent. This flag is used
-        # SOLELY for that one post-turn check; every other `_is_diary`
+        # SOLELY for that one post-turn check; every other diary-kind
         # consumer (registry narrowing, speech suppression, doll-transcript
-        # suppression, [Today's log] injection) stays on the strict flag —
+        # suppression, [Today's log] injection) stays on the strict kind —
         # those must stay conservative so a co-batched live UserSpoke is
         # never silenced/whitewashed.
         self._diary_in_batch: bool = False
-        # Pure PulseMoment turn flag (spec 2026-07-09 §5.2). Same "entire batch"
-        # guard as _is_agenda/_is_diary. Unlike them, does NOT suppress speech.
-        self._is_pulse: bool = False
         # I1 per-day retry flag (spec §2.3): sentinel date-string, "" until
         # the first missed diary turn. Prevents an infinite re-enqueue loop —
         # only ONE retry per calendar day, regardless of how many more times
@@ -510,9 +498,10 @@ class MindLoop:
 
             # World events (things that happened to her) → action log (Task
             # 4). Structurally owner/internal-only: strangers cannot produce
-            # Shell/Workflow/Monitor results (those tools aren't in
-            # EXTERNAL_TOOLS), so ToolResult/Monitor/service-down perceptions
-            # never carry a stranger origin — no origin gate needed here.
+            # Shell/Workflow/Monitor results (those tools aren't in the
+            # external_public TOOL_MATRIX row), so ToolResult/Monitor/
+            # service-down perceptions never carry a stranger origin — no
+            # origin gate needed here.
             # (Also: origin_tier is only derived AFTER this loop below, so it
             # would be stale if we tried to gate on it here.)
             wphrase = action_phrase_for_perception(p.kind, p.data or {})
@@ -526,57 +515,16 @@ class MindLoop:
                 except Exception:
                     logger.exception("action-log write (event) failed; continuing")
 
-        # Gate NoteToolLesson to reflection turns only (Spec B §5).
-        self._is_reflection = any(p.kind == "ReflectionMoment" for p in perceptions)
-
-        # Gate LearnName's internal-turn branch to live owner-present turns
-        # (Part A / A2 spec §3.3): a batch can legitimately contain BOTH a
-        # ReflectionMoment and a UserSpoke (both are origin-less and land in
-        # the same internal bucket — see test_mind_loop.py's MF-2), so this
-        # is independent of _is_reflection, not mutually exclusive with it.
-        self._has_user_spoke = any(p.kind == "UserSpoke" for p in perceptions)
-
-        # Self-directed agenda (spec 2026-07-07 §5.2, R1-C1, hardened by the
-        # whole-branch review's Finding 1): "is this a PURE agenda turn" —
-        # mirrors _is_reflection above, but "pure" means the ENTIRE batch is
-        # AgendaMoment, not merely "no UserSpoke". `drain_grouped`
-        # (perception_queue.py:85) batches ALL origin-less internal
-        # perceptions into ONE bucket — UserSpoke, MonitorFired,
-        # ToolResultArrived, ScheduledMoment, Awoke, BridgeDown, McpDown,
-        # SafeModeEntered, etc. — not just AgendaMoment+UserSpoke (the same
-        # MF-2 shape as the ReflectionMoment+UserSpoke co-batch above). If
-        # ANY other perception rides along with an AgendaMoment, this is NOT
-        # a pure-agenda turn, full stop: an `and not _has_user_spoke` check
-        # alone would still whitewash a co-batched MonitorFired/
-        # ToolResultArrived/ScheduledMoment into AGENDA_TOOLS and silently
-        # swallow its speech (an operational regression, not a security
-        # widening — the restriction only ever narrows availability). Getting
-        # this wrong for UserSpoke specifically would restrict a REAL user
-        # request to AGENDA_TOOLS (no Shell/Workflow) — the exact whitewash
-        # shape the LearnName-C1 finding killed; this generalizes that same
-        # guard to every other origin-less internal perception kind too.
-        self._is_agenda = bool(perceptions) and all(
-            p.kind == "AgendaMoment" for p in perceptions
-        )
-
-        # Dedicated diary turn (spec §2.3, Task 7): same "pure batch" shape
-        # as _is_agenda above, so a DiaryMoment co-batched with anything else
-        # (e.g. a live UserSpoke) falls through to a normal, non-narrowed,
-        # non-suppressed turn instead of being whitewashed into DIARY_TOOLS.
-        self._is_diary = bool(perceptions) and all(
-            p.kind == "DiaryMoment" for p in perceptions
-        )
+        # This batch's kind (turn_policy.moment_of): reflection when any
+        # ReflectionMoment is present; diary / agenda / pulse only when the
+        # ENTIRE batch is that moment, so a moment co-batched with anything
+        # else (e.g. a live UserSpoke) runs as a normal, non-narrowed,
+        # non-suppressed turn — see moment_of for the whitewash rationale.
+        self._moment = moment_of(perceptions)
         # WB-1: looser co-batch signal for the I1 post-turn miss-check ONLY
         # (see the `_diary_in_batch` field comment in `__init__`). Recomputed
-        # every turn like `_is_diary` above — this assignment IS the reset.
+        # every turn like `_moment` above — this assignment IS the reset.
         self._diary_in_batch = any(p.kind == "DiaryMoment" for p in perceptions)
-
-        # Pure PulseMoment turn (spec 2026-07-09 §5.2): same pure-batch guard —
-        # a PulseMoment co-batched with a live UserSpoke (or any other kind)
-        # falls through to a normal turn, never narrowed.
-        self._is_pulse = bool(perceptions) and all(
-            p.kind == "PulseMoment" for p in perceptions
-        )
 
         # Whole-branch review Finding #1: stash THIS batch's triggering
         # perception kinds for `_llm_iterate`'s `TurnLatencyRecord` (see the
@@ -685,13 +633,14 @@ class MindLoop:
         # only the private conversation reads them: a channel turn or the
         # diary consuming a change would hide it from private for good.
         key = conversation_key(self._ctx.current_origin)
-        reads_body = key == PRIVATE and not self._is_diary
+        policy = POLICIES[self._moment]
+        reads_body = key == PRIVATE and "today_log" not in policy.extra_blocks
 
         # [Body signal] framing (spec 2026-07-09 presence-tuning §3.2): only
         # on a pure PulseMoment turn (co-batched with anything else, this
-        # stays None — same pure-batch guard as `_is_pulse` itself).
+        # stays None — same pure-batch guard as the pulse kind itself).
         body_signal_block: str | None = None
-        if self._is_pulse:
+        if "body_signal" in policy.extra_blocks:
             wakes = [
                 (
                     (p.data or {}).get("severity", "critical"),
@@ -737,7 +686,7 @@ class MindLoop:
 
             # Pre-render [Tool outcomes] block for reflection turns (Spec B Task 6).
             tool_outcomes_block = None
-            if self._is_reflection:
+            if "tool_outcomes" in policy.extra_blocks:
                 tool_outcomes_block = render_tool_outcomes(
                     self._state.tool_stats, self._state.recent_tool_failures
                 )
@@ -763,7 +712,8 @@ class MindLoop:
                     self._ctx.memory_root / "self_profile.md"
                 )
             evolution_block = None
-            if (self._evolution_enabled and self._is_reflection
+            if (self._evolution_enabled
+                    and "evolution_candidate" in policy.extra_blocks
                     and not self._state.safe_mode):
                 from dollos.mind import evolution as _evo
                 from dollos.mind import self_history as _sh
@@ -792,7 +742,7 @@ class MindLoop:
             now = time.time()
             epoch_reason: str | None = None
             given_hits: list[dict] = []
-            if self._is_diary:
+            if "today_log" in policy.extra_blocks:
                 # A pure diary turn is a one-off request (plan Task 9): this
                 # moment's snapshot + [Today's log], never stored, private
                 # untouched. Same system and tools, so the prefix resumes.
@@ -1016,7 +966,7 @@ class MindLoop:
         # trace/audit) must not also land in the day's action-log transcript
         # that the NEXT diary turn reads back via _read_today_log.
         doll_text = "".join(self._turn_speech).strip().replace("\n", " ")
-        if doll_text and not self._is_diary:
+        if doll_text and POLICIES[self._moment].doll_transcript:
             try:
                 await append_transcript(
                     transcripts_root=self._ctx.transcripts_root,
@@ -1047,7 +997,7 @@ class MindLoop:
         # is the per-day flag that caps this at one retry — without it, a
         # model that keeps declining to write would re-enqueue forever.
         # Whole-branch review WB-1: gated on `_diary_in_batch` (co-batch-
-        # tolerant), NOT the strict `_is_diary` — a DiaryMoment riding along
+        # tolerant), NOT the strict diary kind — a DiaryMoment riding along
         # with e.g. an AgendaMoment/ReflectionMoment must still get this
         # guarantee even though the turn itself ran non-narrowed (see the
         # `_diary_in_batch` field comment in `__init__`).
@@ -1193,7 +1143,7 @@ class MindLoop:
     def _situation_tag(self) -> str:
         """P1f 粗粒度 situation。P1d 情境渲染會細緻化(dm_owner/external_public/…),
         屆時靠 schema_version 遷移。"""
-        if self._is_reflection:
+        if self._moment == "reflection":
             return "internal_reflection"
         if self._ctx.external_ctx:
             return "external"
@@ -1252,123 +1202,36 @@ class MindLoop:
             logger.exception("%s.%s raised; omitting block", type(provider).__name__, method)
             return None
 
+    def _tool_classes(self, names) -> dict[str, type[BaseModel]]:
+        """``names`` as registry entries; an extra tool (never a registry
+        member) wins over a same-named registry entry, as it always has."""
+        classes = {**self._tool_registry, **_EXTRA_TOOL_CLASSES}
+        return {n: classes[n] for n in names}
+
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
-        """The tool registry in force for this pass.
+        """The tool registry in force for this pass: this turn's kind (safe
+        mode on top, ``effective_kind``) and principal looked up in
+        ``turn_policy.bound_tools`` = the kind's tools ∩ the principal's
+        ``TOOL_MATRIX`` row + the kind's extras. The per-kind rules and their
+        safety rationale live in ``turn_policy.POLICIES``; the per-principal
+        rows in ``permissions.TOOL_MATRIX``.
 
-        safe_mode → read-only subset (SAFE_MODE_TOOLS); safe_mode has TOP
-        priority (checked first, wins over everything below, on every tier).
-        external_public turn (any stranger, a non-owner DM, an MCP peer, or
-        the owner posting in a PUBLIC channel; P1e spec §3.4 S4/S5) →
-        conservative subset (EXTERNAL_TOOLS), + PinSelf on reflection turns
-        when self_profile_enabled. This reduction WINS OVER reflection
-        expansion: an external_public turn that is also a ReflectionMoment
-        never gets SelfRevision, NoteToolLesson, or any MAIN_TOOLS entry
-        outside EXTERNAL_TOOLS — a stranger must never reach Shell /
-        SpawnWorkflow / SpawnMonitor / RemoveMonitor / InvokeSkill /
-        WriteSchedule / SelfRevision.
-        owner DM (``origin_tier == "external_dm"``, principal owner_dm) is
-        bound exactly like the owner at the local keyboard (user decision
-        2026-10-27, harness spec §6.3; the compromised-Discord-account risk
-        was accepted by the user that day): it falls through to the owner
-        branches below, Shell included. Only its memory scoping (keyed on
-        origin_tier) still differs.
-        reflection turn → full registry + NoteToolLesson, + PinSelf when
-        self_profile_enabled (A1 self-profile; spec Task 5), + SelfRevision
-        when evolution_enabled (慢變演化; spec §3.4).
-        otherwise → base registry.
-
-        LearnName (Part A / A2, self-learned-aliases spec §3.3 — R1-hardened
-        SECURITY BOUNDARY): added ONLY on live, owner-present turns —
-        ``origin_tier == "external_dm"`` (the ChannelMessage from the owner
-        IS the live first-hand utterance, no additional signal needed) OR
-        ``origin_tier == "internal"`` AND this batch carries a live
-        ``UserSpoke`` perception (``self._has_user_spoke``; local chat/voice
-        = owner at the keyboard). It is NEVER added on ``external_public``
-        (any stranger, including the owner posting in a public channel) or on
-        a pure-reflection turn (``ReflectionMoment`` with no ``UserSpoke`` —
-        the exact whitewash path the R1 review's C1 finding killed: reflection
-        turns are always ``origin_tier == "internal"`` regardless of who was
-        actually heard, so gating on origin_tier alone would let a stranger's
-        earlier utterance get written as an owner-taught alias after the
-        fact). Trust here is enforced by REGISTRY AVAILABILITY, not by a
-        post-hoc read of ``ctx.origin_tier`` inside the tool — a stranger's
-        turn never has LearnName in its dict, full stop.
-        """
-        if self._state.safe_mode:
-            return {
-                n: c for n, c in self._tool_registry.items()
-                if n in SAFE_MODE_TOOLS
-            }
-        if self._ctx.origin_tier == "external_public":
-            # PinSelf (like NoteToolLesson/SelfRevision below) is never a
-            # member of self._tool_registry itself — it's added explicitly
-            # here, not filtered in, or it would silently never appear.
-            reg = {
-                n: c for n, c in self._tool_registry.items()
-                if n in EXTERNAL_TOOLS
-            }
-            if self._is_reflection and self._self_profile_enabled:
-                reg["PinSelf"] = PinSelf
-            return reg
-        owner_present = self._has_user_spoke or self._ctx.origin_tier == "external_dm"
-        if self._is_reflection:
-            extra = {"NoteToolLesson": NoteToolLesson}
-            if self._self_profile_enabled:
-                extra["PinSelf"] = PinSelf
-            if self._evolution_enabled:
-                extra["SelfRevision"] = SelfRevision
-            if owner_present:
-                extra["LearnName"] = LearnName
-            return {**self._tool_registry, **extra}
-        if self._is_diary:
-            # Dedicated diary turn (spec §2.3, Task 7, LOAD-BEARING): reached
-            # only when origin_tier == "internal" and not a reflection turn
-            # (both branches above already returned) AND self._is_diary is
-            # True, which by construction already means "no live UserSpoke
-            # this batch" (see the `all(p.kind == "DiaryMoment" ...)` guard
-            # above) — a batch that co-bundles a DiaryMoment with a real
-            # UserSpoke has _is_diary == False and falls through to the
-            # normal branches below instead, same as the agenda case.
-            # Narrowed to {WriteDiary, Recall} — she cannot Shell, spawn a
-            # workflow, or do anything else on this turn but write (or
-            # research toward) today's diary entry.
-            return {
-                n: c for n, c in self._tool_registry.items() if n in DIARY_TOOLS
-            }
-        if self._is_agenda:
-            # Pure agenda turn (self-directed agenda spec §5.2, R1-C1,
-            # SECURITY-LOAD-BEARING): reached only when origin_tier ==
-            # "internal" (a pure AgendaMoment batch has no ChannelMessage, and
-            # the external_public branch above already returned)
-            # AND self._is_reflection is False (that branch above already
-            # returned too) AND self._is_agenda is True, which by its own
-            # construction already means "no live UserSpoke this batch" (see
-            # the `and not self._has_user_spoke` in _run_one_turn). A batch
-            # that co-bundles an AgendaMoment with a real UserSpoke has
-            # _is_agenda == False and falls through to the _has_user_spoke
-            # branch below instead — full registry, the user's request is
-            # never silently restricted.
-            return {
-                n: c for n, c in self._tool_registry.items() if n in AGENDA_TOOLS
-            }
-        if self._is_pulse:
-            # Pure pulse turn (spec §5.3): narrow to PULSE_TOOLS (cognition +
-            # speech). Reached only when origin_tier == "internal" and not
-            # reflection/diary/agenda (all returned above) and the whole batch
-            # is PulseMoment — a co-batched UserSpoke makes _is_pulse False and
-            # falls through to the full-registry branch below. Speech is NOT
-            # suppressed for this turn (see _emit_sentence — _is_pulse absent).
-            return {
-                n: c for n, c in self._tool_registry.items() if n in PULSE_TOOLS
-            }
-        if owner_present:
-            return {**self._tool_registry, "LearnName": LearnName}
-        return self._tool_registry
+        The owner DM (principal owner_dm) is bound exactly like the owner at
+        the local keyboard (user decision 2026-10-27, harness spec §6.3; the
+        compromised-Discord-account risk was accepted by the user that day).
+        Only its memory scoping (keyed on origin_tier) still differs."""
+        kind = effective_kind(self._moment, safe_mode=self._state.safe_mode)
+        return self._tool_classes(sorted(bound_tools(
+            kind, self._ctx.principal, self._tool_registry,
+            self_profile=self._self_profile_enabled,
+            evolution=self._evolution_enabled,
+        )))
 
     def _offered_tools(self) -> dict[str, type[BaseModel]]:
         """The tools the model is shown: one fixed list per origin tier
         (plan 2026-10-18 decision 3, amends harness §6.2/§6.4) — the union of
-        what any turn kind of that tier can be bound to.
+        what any turn kind of that tier can be bound to
+        (``turn_policy.offered_tools``).
 
         It never depends on the turn kind or safe mode: the tool JSON sits at
         the very front of the prompt, so a list that changed with the turn
@@ -1380,41 +1243,27 @@ class MindLoop:
         decision 2026-10-27) → the base registry + NoteToolLesson + LearnName,
         + PinSelf when self_profile_enabled, + SelfRevision when
         evolution_enabled.
-        external_public → EXTERNAL_TOOLS. external_public never sees an
-        internal tool's schema, so a stranger doesn't even learn Shell exists.
+        external_public → its TOOL_MATRIX row (Recall, NoteMemory,
+        WriteDiary). external_public never sees an internal tool's schema, so
+        a stranger doesn't even learn Shell exists.
         """
-        if self._ctx.origin_tier == "external_public":
-            return {
-                n: c for n, c in self._tool_registry.items() if n in EXTERNAL_TOOLS
-            }
-        offered = {
-            **self._tool_registry,
-            "NoteToolLesson": NoteToolLesson,
-            "LearnName": LearnName,
-        }
-        if self._self_profile_enabled:
-            offered["PinSelf"] = PinSelf
-        if self._evolution_enabled:
-            offered["SelfRevision"] = SelfRevision
-        return offered
+        return self._tool_classes(sorted(offered_tools(
+            self._ctx.principal, self._tool_registry,
+            self_profile=self._self_profile_enabled,
+            evolution=self._evolution_enabled,
+        )))
 
     def _turn_kind(self) -> str:
-        """This turn's kind, in ``_active_tool_registry``'s precedence order —
-        named in the refusal of an offered-but-unbound tool."""
+        """This turn's kind as named in the refusal of an offered-but-unbound
+        tool: safe mode, then a stranger's turn, then the batch's kind (a
+        conversation is "owner" when the owner is present)."""
         if self._state.safe_mode:
             return "safe mode"
-        if self._ctx.origin_tier == "external_public":
+        if self._ctx.principal == "external_public":
             return "external_public"
-        if self._is_reflection:
-            return "reflection"
-        if self._is_diary:
-            return "diary"
-        if self._is_agenda:
-            return "agenda"
-        if self._is_pulse:
-            return "pulse"
-        owner_present = self._has_user_spoke or self._ctx.origin_tier == "external_dm"
-        return "owner" if owner_present else "normal"
+        if self._moment == "conversation":
+            return "owner" if self._ctx.principal in ("owner", "owner_dm") else "normal"
+        return self._moment
 
     def _enter_safe_mode(self, reason: str) -> None:
         """Enter read-only safe mode (idempotent within a turn).
@@ -1642,7 +1491,7 @@ class MindLoop:
                                 for o in outcomes
                             ],
                             active_tools=sorted(self._runnable_tools(offered)),
-                            is_reflection=self._is_reflection,
+                            is_reflection=self._moment == "reflection",
                             safe_mode=self._state.safe_mode,
                             external=self._ctx.external_ctx,
                             latency_ms=pass_latency_ms,
@@ -1881,7 +1730,7 @@ class MindLoop:
         recent_outputs/_turn_speech bookkeeping in the callers still records
         it for trace/audit; only the outbound sink write is suppressed here,
         at this single chokepoint, so reflection/reactive/every other turn
-        kind is unaffected.
+        kind is unaffected (``TurnPolicy.speaks``, turn_policy.POLICIES).
 
         Dedicated diary turn (spec 2026-07-07 §2.3, Task 7): same
         chokepoint, same rationale — a pure DiaryMoment turn is private
@@ -1895,7 +1744,7 @@ class MindLoop:
         """
         if not sentence.strip():
             return
-        if self._is_agenda or self._is_diary:
+        if not POLICIES[self._moment].speaks:
             return
         if self._turn_first_speak_ms is None and self._turn_t0 is not None:
             self._turn_first_speak_ms = (time.time() - self._turn_t0) * 1000.0
@@ -1929,7 +1778,7 @@ class MindLoop:
         """What this turn may run: ``_active_tool_registry()`` ∩ ``offered``.
 
         Never more than the tier offers (harness §6.2 as amended by plan
-        2026-10-18): safe mode binds SAFE_MODE_TOOLS on any tier, and
+        2026-10-18): safe mode binds its read-only set on any tier, and
         ReadToolOutput / GrepToolOutput are not in an external tier's list,
         so a stranger's turn in safe mode must not run them."""
         return {

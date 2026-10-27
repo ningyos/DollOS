@@ -947,10 +947,12 @@ async def test_note_tool_lesson_appends_and_indexes(tmp_path):
 
 
 def test_note_tool_lesson_not_in_main_tools_but_in_reflection_tools():
-    from dollos.tools import MAIN_TOOLS, REFLECTION_TOOLS, NoteToolLesson
+    from dollos.harness.turn_policy import POLICIES
+    from dollos.tools import MAIN_TOOLS, NoteToolLesson
+    reflection = POLICIES["reflection"]
     assert NoteToolLesson not in MAIN_TOOLS
-    assert NoteToolLesson in REFLECTION_TOOLS
-    assert all(t in REFLECTION_TOOLS for t in MAIN_TOOLS)
+    assert NoteToolLesson.__name__ in {e.tool for e in reflection.extra_tools}
+    assert reflection.kind_tools == "all"  # every MAIN_TOOLS entry
 
 
 

@@ -2,8 +2,7 @@
 
 Verifies the LIVE reflection-turn injection path in mind_loop.py:
 `_active_tool_registry()` (what may run) / `_offered_tools()` (what the model
-is shown) — NOT the dead `REFLECTION_TOOLS` constant in tools.py, which has
-no runtime consumer.
+is shown), driven by dollos.harness.turn_policy.POLICIES["reflection"].
 """
 from __future__ import annotations
 
@@ -66,7 +65,7 @@ def test_pinself_offered_on_internal_turns_when_enabled(make_mind_loop):
 
 def test_reflection_registry_includes_pinself_when_enabled(make_mind_loop):
     loop = make_mind_loop(self_profile_enabled=True)
-    loop._is_reflection = True
+    loop._moment = "reflection"
     reg = loop._active_tool_registry()
     assert "PinSelf" in reg
     assert reg["PinSelf"] is PinSelf
@@ -74,12 +73,12 @@ def test_reflection_registry_includes_pinself_when_enabled(make_mind_loop):
 
 def test_reflection_registry_excludes_pinself_when_disabled(make_mind_loop):
     loop = make_mind_loop(self_profile_enabled=False)
-    loop._is_reflection = True
+    loop._moment = "reflection"
     reg = loop._active_tool_registry()
     assert "PinSelf" not in reg
 
 
 def test_non_reflection_never_has_pinself(make_mind_loop):
     loop = make_mind_loop(self_profile_enabled=True)
-    loop._is_reflection = False
+    loop._moment = "conversation"
     assert "PinSelf" not in loop._active_tool_registry()
