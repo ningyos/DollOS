@@ -121,12 +121,16 @@ _EXTERNAL = {"NoteMemory", "Recall", "WriteDiary"}
 # _runnable_tools(_offered_tools()), refusal label = _turn_kind()).
 # Diary / agenda / pulse are pure-batch kinds, so only internal reaches them.
 _EVERYTHING_ON = [
-    (("conversation", "owner"), _MAIN | {"LearnName"}, _MAIN | {"LearnName"}, "owner"),
+    # PinSelf on an owner-present conversation (remember-corrections plan
+    # Task 2, decision 1): owner and owner_dm, never internal.
+    (("conversation", "owner"), _MAIN | {"LearnName", "PinSelf"},
+     _MAIN | {"LearnName", "PinSelf"}, "owner"),
     (("reflection", "owner"),
      _MAIN | {"LearnName", "NoteToolLesson", "PinSelf", "SelfRevision"},
      _MAIN | {"LearnName", "NoteToolLesson", "PinSelf", "SelfRevision"}, "reflection"),
     (("safe_mode", "owner"), _SAFE, _SAFE, "safe mode"),
-    (("conversation", "owner_dm"), _MAIN | {"LearnName"}, _MAIN | {"LearnName"}, "owner"),
+    (("conversation", "owner_dm"), _MAIN | {"LearnName", "PinSelf"},
+     _MAIN | {"LearnName", "PinSelf"}, "owner"),
     (("reflection", "owner_dm"),
      _MAIN | {"LearnName", "NoteToolLesson", "PinSelf", "SelfRevision"},
      _MAIN | {"LearnName", "NoteToolLesson", "PinSelf", "SelfRevision"}, "reflection"),
@@ -230,6 +234,28 @@ def test_extras_follow_their_own_switch(tmp_path, self_profile, evolution):
     assert ("PinSelf" in reg) is self_profile
     assert ("SelfRevision" in reg) is evolution
     assert "NoteToolLesson" in reg
+
+
+_ALL_KINDS = tuple(POLICIES)
+_PRINCIPALS = ("owner", "owner_dm", "internal", "external_public")
+_PINSELF_BOUND = {
+    ("conversation", "owner"), ("conversation", "owner_dm"),
+    ("reflection", "owner"), ("reflection", "owner_dm"), ("reflection", "internal"),
+}
+
+
+@pytest.mark.parametrize("kind", _ALL_KINDS)
+@pytest.mark.parametrize("principal", _PRINCIPALS)
+def test_pinself_binds_only_on_owner_conversation_and_reflection(kind, principal):
+    """Remember-corrections plan Task 2 (spec §2.1, decision 1): PinSelf is
+    bound on a conversation only while the owner is present, and on
+    reflection as before; never on an internal conversation, a stranger's
+    turn, a diary / agenda / pulse / safe-mode turn or an agent. With
+    self_profile off it is bound nowhere."""
+    on = bound_tools(kind, principal, _MAIN, self_profile=True, evolution=True)
+    assert ("PinSelf" in on) is ((kind, principal) in _PINSELF_BOUND)
+    off = bound_tools(kind, principal, _MAIN, self_profile=False, evolution=True)
+    assert "PinSelf" not in off
 
 
 def test_agent_kinds_come_from_the_agent_registries():

@@ -76,6 +76,12 @@ logger = logging.getLogger(__name__)
 # think budget ([llm].think_budget_tokens) on top.
 MIND_MAX_TOKENS = 1024
 
+# ctx.pin_sections per turn kind (remember-corrections plan Task 2, decision
+# 2): her self section is revised in reflection; what the owner tells her
+# (user / relationship) is written when he says it.
+_REFLECTION_PIN_SECTIONS = frozenset({"self", "relationship", "user"})
+_CONVERSATION_PIN_SECTIONS = frozenset({"user", "relationship"})
+
 # Perception kinds that mean "this turn's context contains externally-sourced
 # content" (spec 2026-07-02 §3.2). [Memory context] auto-injection deliberately
 # does NOT count — it is present on almost every turn and would saturate the flag.
@@ -501,6 +507,13 @@ class MindLoop:
         # A new turn starts untainted (spec §6.5 point 2): the downgrade
         # lasts for the rest of ONE turn, never into the next.
         self._ctx.tainted = False
+        # Which self_profile sections PinSelf may write (remember-corrections
+        # plan Task 2, decision 2), from the batch's kind: in safe mode
+        # PinSelf is not bound at all, so the batch's kind is enough.
+        self._ctx.pin_sections = (
+            _REFLECTION_PIN_SECTIONS if self._moment == "reflection"
+            else _CONVERSATION_PIN_SECTIONS
+        )
 
         # 慢變演化 per-turn latch reset (spec §3.4): a new perception batch
         # opens a fresh SelfRevision decision window. The surfaced-this-turn

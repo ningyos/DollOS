@@ -79,6 +79,13 @@ class MindCtx:
     # for the rest of the turn, every pass. MindLoop resets it every
     # _run_one_turn alongside principal; an agent's ctx starts False.
     tainted: bool = False
+    # The self_profile sections PinSelf may write this turn (remember-
+    # corrections plan Task 2, decision 2): set by MindLoop every
+    # _run_one_turn alongside principal — reflection → self / relationship /
+    # user, any other kind → user / relationship (the self section grows
+    # only in reflection). Empty by default, so a ctx nobody set (an agent's)
+    # writes no section at all rather than every one.
+    pin_sections: frozenset[str] = frozenset()
     # Per-turn origin tier (P1e spec §3.4 S1), the compatibility view of
     # ``principal`` (permissions.ORIGIN_TIER): "internal" (owner or
     # internal), "external_dm" (owner in a DM), or "external_public"

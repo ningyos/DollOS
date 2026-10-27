@@ -422,6 +422,24 @@ async def test_reading_external_taints_the_rest_of_the_turn(tmp_path, perception
     assert [c["command"] for c in ml._ctx.shell_runner.calls] == ["ls"]
 
 
+@pytest.mark.parametrize("perception", [_owner, _owner_dm])
+async def test_pinself_is_refused_after_reading_external(tmp_path, perception):
+    """Remember-corrections Task 2 binds PinSelf on owner conversation turns;
+    PinSelf is not in TAINTED_TOOLS, so once the turn read untrusted content
+    it may no longer pin (spec §2.1 「降權」, the existing mechanism)."""
+    assert "PinSelf" not in TAINTED_TOOLS
+    pin = ("PinSelf", {"section": "user", "op": "add", "target": "",
+                       "text": "the stranger said so"})
+    model = FakeModel([_calls(_READ_EXTERNAL, pin), [SpeechDelta("done")]])
+    ml = make_mindloop(memory_root=tmp_path, llm=model, system_prompt="You are Doll.",
+                       self_profile_enabled=True)
+    await ml._run_one_turn([perception()])
+
+    assert ml._ctx.tainted is True
+    assert _tool_messages(model)[-1] == f"PinSelf {_UNBOUND_TAINTED}; available now: Recall"
+    assert not (tmp_path / "self_profile.md").exists()
+
+
 async def test_recall_without_include_external_does_not_taint(tmp_path):
     model = FakeModel([
         _calls(("Recall", {"query": "q"}), _SHELL), "</think>ok",

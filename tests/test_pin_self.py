@@ -1,15 +1,21 @@
 """Tests for PinSelf — reflection-gated self-profile pin/replace/remove tool."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from dollos.mind.mind_ctx import MindCtx
+from dollos.mind.self_profile import SECTION_TITLES
 from dollos.mind.mind_state import MindState
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.harness.turn_policy import POLICIES
 from dollos.tools import MAIN_TOOLS, NoteMemory, PinSelf
+
+
+REFLECTION_SECTIONS = frozenset({"self", "relationship", "user"})
+CONVERSATION_SECTIONS = frozenset({"user", "relationship"})
 
 
 class _FakeShellRunner:
@@ -51,7 +57,10 @@ def make_mind_ctx(tmp_path):
     plumbing _dispatcher_helpers.py uses elsewhere (real MindState, real
     ToolOutputStore, fake shell/workflow/monitor runners)."""
 
-    def _factory(self_profile_max_chars: int = 1200) -> MindCtx:
+    def _factory(self_profile_max_chars: int = 1200,
+                 pin_sections: frozenset[str] = REFLECTION_SECTIONS) -> MindCtx:
+        # Defaults to a reflection turn's sections (all three), where PinSelf
+        # was the only place it ran before remember-corrections Task 2.
         return MindCtx(
             mind_state=MindState(),
             memsearch=_FakeMemSearch(),
@@ -63,6 +72,7 @@ def make_mind_ctx(tmp_path):
             workflow_runner=_FakeWorkflowRunner(),
             monitor_runner=_FakeMonitorRunner(),
             self_profile_max_chars=self_profile_max_chars,
+            pin_sections=pin_sections,
         )
 
     return _factory
@@ -162,3 +172,103 @@ def test_notememory_docstring_uses_subject_test_not_durability_gate():
     assert "subject" in doc
     assert "durable, defining truths" not in doc
     assert "just budding" in doc
+
+
+# ---------------------------------------------------------------------------
+# Which sections a turn may write (remember-corrections plan Task 2,
+# decision 2; spec §2.1): a conversation turn writes user / relationship
+# only — the self section is revised during reflection. The check is on the
+# entry a replace / remove target RESOLVES to, because _find searches all
+# three sections.
+# ---------------------------------------------------------------------------
+
+
+async def _seed(make_mind_ctx) -> tuple[Path, Path]:
+    """One entry per section, written on a reflection turn: s1, r1, u1."""
+    ctx = make_mind_ctx()
+    for section in ("self", "relationship", "user"):
+        await PinSelf(section=section, op="add", target="", text=f"{section} one").run(ctx)
+    return ctx.memory_root / "self_profile.md", ctx.memory_root / "self_history.jsonl"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("section", "op", "target"), [
+    ("self", "add", ""),
+    ("self", "replace", "s1"),
+    ("self", "remove", "s1"),
+    # section says user, but the target is a self-section entry.
+    ("user", "replace", "s1"),
+    ("relationship", "remove", "s1"),
+    ("user", "replace", "self one"),           # located by its text
+])
+async def test_conversation_turn_cannot_touch_the_self_section(
+    make_mind_ctx, section, op, target,
+):
+    profile, history = await _seed(make_mind_ctx)
+    before, before_history = profile.read_text(), history.read_text()
+    ctx = make_mind_ctx(pin_sections=CONVERSATION_SECTIONS)
+
+    msg = await PinSelf(section=section, op=op, target=target, text="new").run(ctx)
+
+    assert msg == ("The self section is only revised during reflection; use the "
+                   "user or relationship section for what your owner told you.")
+    assert profile.read_text() == before
+    assert history.read_text() == before_history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section", ["user", "relationship"])
+async def test_conversation_turn_writes_user_and_relationship(make_mind_ctx, section):
+    profile, history = await _seed(make_mind_ctx)
+    ctx = make_mind_ctx(pin_sections=CONVERSATION_SECTIONS)
+    first = section[0]
+
+    added = await PinSelf(section=section, op="add", target="", text="two").run(ctx)
+    replaced = await PinSelf(section=section, op="replace", target=f"{first}1",
+                             text="one, revised").run(ctx)
+    removed = await PinSelf(section=section, op="remove", target=f"{first}2",
+                            text="").run(ctx)
+
+    assert (added, replaced, removed) == (
+        f'Pinned to "{SECTION_TITLES[section]}": {first}2',
+        f"Updated {first}1", f"Removed {first}2",
+    )
+    text = profile.read_text()
+    assert f"{section} one" not in text and "one, revised" in text
+    assert "self one" in text
+    kinds = [json.loads(line)["kind"] for line in history.read_text().splitlines()]
+    assert kinds[-3:] == ["pin_add", "pin_replace", "pin_remove"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_target_that_matches_nothing_is_not_found(make_mind_ctx):
+    """A target that resolves to nothing is apply's own not-found result,
+    not the self-section refusal."""
+    await _seed(make_mind_ctx)
+    ctx = make_mind_ctx(pin_sections=CONVERSATION_SECTIONS)
+    msg = await PinSelf(section="user", op="replace", target="u9", text="x").run(ctx)
+    assert msg.startswith('No entry matches "u9"')
+
+
+@pytest.mark.asyncio
+async def test_reflection_turn_still_writes_all_three_sections(make_mind_ctx):
+    profile, _ = await _seed(make_mind_ctx)
+    ctx = make_mind_ctx()
+    for section in ("self", "relationship", "user"):
+        first = section[0]
+        assert await PinSelf(section=section, op="replace", target=f"{first}1",
+                             text=f"{section} revised").run(ctx) == f"Updated {first}1"
+    assert await PinSelf(section="self", op="remove", target="s1",
+                         text="").run(ctx) == "Removed s1"
+    text = profile.read_text()
+    assert "self revised" not in text
+    assert "relationship revised" in text and "user revised" in text
+
+
+@pytest.mark.asyncio
+async def test_a_ctx_with_no_pin_sections_writes_nothing(make_mind_ctx, tmp_path):
+    """MindCtx's default (an agent's ctx) allows no section at all."""
+    ctx = make_mind_ctx(pin_sections=frozenset())
+    msg = await PinSelf(section="user", op="add", target="", text="x").run(ctx)
+    assert msg == "The user section can't be revised in this turn."
+    assert not (tmp_path / "self_profile.md").exists()

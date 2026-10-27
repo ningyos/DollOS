@@ -41,6 +41,16 @@ def _record(ctx: "MindCtx", kind: str, summary: str) -> None:
     )
 
 
+def _pin_refusal(section: str) -> str:
+    """PinSelf's refusal for a section this turn may not write (remember-
+    corrections plan Task 2). A string result like its cap / not-found
+    messages, so the model reads it and can retry in an allowed section."""
+    if section == "self":
+        return ("The self section is only revised during reflection; use the "
+                "user or relationship section for what your owner told you.")
+    return f"The {section} section can't be revised in this turn."
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     """Atomic tmp+rename write (sanctioned-writer discipline, spec §3.1)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,6 +1048,20 @@ class PinSelf(BaseModel):
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind import self_profile
         path = ctx.memory_root / "self_profile.md"
+        # Remember-corrections plan Task 2, decision 2: only the sections
+        # this turn allows (ctx.pin_sections) — for replace / remove, the
+        # section of the entry the target resolves to, since the lookup
+        # spans all sections. Refused before apply: nothing written, nothing
+        # logged. A target that resolves to nothing goes on to apply's own
+        # not-found result.
+        sections = [self.section]
+        if self.op in ("replace", "remove"):
+            located = self_profile.section_of(path, self.target)
+            if located is not None:
+                sections.append(located)
+        for section in sections:
+            if section not in ctx.pin_sections:
+                return _pin_refusal(section)
         today = f"{datetime.now():%Y-%m-%d}"
         result = self_profile.apply(
             path,

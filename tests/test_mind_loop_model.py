@@ -224,6 +224,57 @@ async def test_offered_but_unbound_call_is_rejected_not_failed(tmp_path):
     assert result["tool_call_id"] == "c1"
 
 
+_OWNER_TURNS = [
+    pytest.param(_p("UserSpoke", text="call me Alex"), id="owner"),
+    pytest.param(_p("ChannelMessage", channel_id="dm", author="me", author_is_owner=True,
+                    is_dm=True, content="call me Alex"), id="owner_dm"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("perception", _OWNER_TURNS)
+async def test_owner_conversation_turn_pins_what_the_owner_told_her(tmp_path, perception):
+    """Remember-corrections plan Task 2 (spec §2.1): with the owner present,
+    a conversation turn runs PinSelf for the user / relationship sections;
+    the self section is refused in the same turn and left untouched."""
+    model = FakeModel([
+        [_calls(("c1", "PinSelf", {"section": "user", "op": "add", "target": "",
+                                   "text": "Wants to be called Alex"}),
+                ("c2", "PinSelf", {"section": "self", "op": "add", "target": "",
+                                   "text": "I like Alex"}))],
+        [SpeechDelta("ok Alex")],
+    ])
+    ml = make_mindloop(memory_root=tmp_path, llm=model, self_profile_enabled=True)
+    await ml._run_one_turn([perception])
+
+    assert ml._ctx.pin_sections == {"user", "relationship"}
+    added, refused = (m["content"] for m in _tool_messages(model.calls[1]))
+    assert added.startswith('Pinned to "What I\'ve noticed about my owner": u1')
+    assert "only revised during reflection" in refused
+    profile = (tmp_path / "self_profile.md").read_text()
+    assert "Wants to be called Alex" in profile
+    assert "I like Alex" not in profile
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("batch", "sections"), [
+    ([_p("UserSpoke", text="hi")], {"user", "relationship"}),
+    ([_p("Awoke")], {"user", "relationship"}),
+    ([_p("ReflectionMoment", iters_since_last=5)], {"self", "relationship", "user"}),
+    ([_p("UserSpoke", text="hi"), _p("ReflectionMoment", iters_since_last=5)],
+     {"self", "relationship", "user"}),
+    ([_p("DiaryMoment")], {"user", "relationship"}),
+])
+async def test_each_turn_sets_its_pin_sections(tmp_path, batch, sections):
+    """MindLoop sets ctx.pin_sections from the batch's kind each turn, next
+    to ctx.principal: reflection → all three, anything else → user and
+    relationship (whether PinSelf is bound at all is turn_policy's call)."""
+    ml = make_mindloop(memory_root=tmp_path, llm=FakeModel(), self_profile_enabled=True)
+    ml._ctx.pin_sections = frozenset({"bogus"})
+    await ml._run_one_turn(batch)
+    assert ml._ctx.pin_sections == sections
+
+
 @pytest.mark.asyncio
 async def test_same_unbound_tool_rejected_three_times_ends_turn(tmp_path):
     shell = _calls(("c", "Shell", {"command": "ls"}))
