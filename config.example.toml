@@ -180,6 +180,21 @@ thermal_multiplier_warm = 1.15   # GPU 55-75°C
 thermal_multiplier_hot = 1.4     # GPU >75°C
 
 # ----------------------------------------------------------------------
+# Profile keeper — after each day's sleep-time consolidation, one keeper
+# agent reads that day's transcript and writes the owner's corrections
+# (lasting facts about them, how they want to be treated) into the user /
+# relationship sections of self_profile. Every change must quote the
+# owner's own words from that transcript. Runs only with [self_profile] on.
+# Defaults shown; uncomment to change.
+# ----------------------------------------------------------------------
+
+# [profile_keeper]
+# enabled = true
+# max_tokens = 2048               # answer budget per keeper call
+# think_budget_tokens = 1024      # thinking cap per keeper call
+# transcript_tail_chars = 8000    # how much of the day's conversation it reads (the end)
+
+# ----------------------------------------------------------------------
 # Self pulse — Doll's proprioception of her host (CPU / mem / GPU /
 # battery / focused window / network). Surfaces as a [Self pulse] block
 # only when a bucket changes, not every iteration.

@@ -86,6 +86,13 @@ class MindCtx:
     # only in reflection). Empty by default, so a ctx nobody set (an agent's)
     # writes no section at all rather than every one.
     pin_sections: frozenset[str] = frozenset()
+    # The day's transcript the profile keeper works from (remember-
+    # corrections plan Task 4, decision 4): EditOwnerProfile checks each
+    # change's quote against the owner lines of THIS file, read from disk,
+    # never against text the model supplies. Set only by run_profile_keeper
+    # (through run_agent); None everywhere else, and the tool then refuses —
+    # no transcript, no edit.
+    owner_transcript: Path | None = None
     # Per-turn origin tier (P1e spec §3.4 S1), the compatibility view of
     # ``principal`` (permissions.ORIGIN_TIER): "internal" (owner or
     # internal), "external_dm" (owner in a DM), or "external_public"

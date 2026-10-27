@@ -143,6 +143,8 @@ def test_matrix_has_a_row_for_every_tool():
     for kind in ("agenda", "diary", "pulse", "safe_mode"):
         listed |= POLICIES[kind].kind_tools
     listed |= {"PinSelf", "NoteToolLesson", "SelfRevision", "LearnName", "Report"}
+    # The profile keeper's own tool (remember-corrections plan Task 4).
+    listed |= {"EditOwnerProfile"}
     assert set(TOOL_MATRIX) == listed
 
 

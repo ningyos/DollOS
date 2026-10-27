@@ -92,6 +92,10 @@ _TRUSTED: frozenset[Principal] = frozenset({"owner", "owner_dm", "internal"})
 #   included.
 # - Report: bound only by agent turns (workflow worker, keepers), which are
 #   spawned from owner / internal turns; no MindLoop turn kind includes it.
+# - EditOwnerProfile: the daily profile keeper's tool (remember-corrections
+#   plan Task 4). Only the keeper's tool list carries it (tools.
+#   PROFILE_KEEPER_TOOLS); it is in no MindLoop registry and no extra, so no
+#   principal is ever offered it. The keeper runs as internal.
 TOOL_MATRIX: dict[str, frozenset[Principal]] = {
     "Recall": _ALL,
     "NoteMemory": _ALL,
@@ -116,6 +120,7 @@ TOOL_MATRIX: dict[str, frozenset[Principal]] = {
     "NoteToolLesson": _TRUSTED,
     "SelfRevision": _TRUSTED,
     "Report": _TRUSTED,
+    "EditOwnerProfile": _TRUSTED,
 }
 
 

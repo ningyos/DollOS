@@ -151,6 +151,13 @@ def section_of(path: Path, target: str) -> str | None:
     return found[0] if found is not None else None
 
 
+def read_sections(path: Path) -> dict[str, list[Bullet]]:
+    """The profile's bullets by section (empty sections when there is no
+    file). The profile keeper lists the user / relationship entries with
+    their ids from this (remember-corrections plan Task 4)."""
+    return _parse(path.read_text()) if path.exists() else _empty_sections()
+
+
 def _entries_listing(sections: dict[str, list[Bullet]]) -> str:
     """Richer than a bare id list — shows `id: text` so the model can retry
     either by id or by pasting the exact line."""
@@ -163,25 +170,30 @@ def _not_found(target: str, sections: dict[str, list[Bullet]]) -> str:
             f"Retry with an id (like s1) or paste the entry's text.")
 
 
-def _log_pin(history_path: Path | None, **fields) -> None:
+def _log_pin(history_path: Path | None, extra: dict | None = None, **fields) -> None:
     """Pin-event logging is best-effort: an IO error must never break the pin
-    itself (spec §3.2 — swallow rule is pins-only). Logged loudly."""
+    itself (spec §3.2 — swallow rule is pins-only). Logged loudly.
+    ``extra`` is merged into the event (the profile keeper's ``by`` /
+    ``quote``, remember-corrections decision 6); None logs it as before."""
     if history_path is None:
         return
     try:
-        self_history.log_event(history_path, **fields)
+        self_history.log_event(history_path, **fields, **(extra or {}))
     except OSError:
         logger.exception("self_history write failed (pin already applied)")
 
 
 def apply(path: Path, *, section: str, op: str, target: str, text: str,
           max_chars: int, today: str, history_path: Path | None = None,
-          turn: int = 0, external_ctx: bool = False) -> str:
+          turn: int = 0, external_ctx: bool = False,
+          history_extra: dict | None = None) -> str:
     """Read-modify-write self_profile.md. Returns a human-readable result or a
     friendly-error string (never raises for cap/locate misses). When
     ``history_path`` is set, successful mutations append evidence events
     (spec 2026-07-02 §3.2): tombstones on replace/remove, cross-turn-only
-    reconfirm on the idempotent-add dedup hit."""
+    reconfirm on the idempotent-add dedup hit. ``history_extra`` adds fields
+    to each of those events (remember-corrections decision 6: the profile
+    keeper's ``by`` and ``quote``); PinSelf passes none."""
     raw = path.read_text() if path.exists() else ""
     sections = _parse(raw)
     pending_log: dict | None = None  # logged only AFTER a successful write
@@ -210,7 +222,8 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
                         "self_history read failed (skipping reconfirm)")
                 else:
                     if prev is None or prev != turn:
-                        _log_pin(history_path, kind="pin_reconfirm", turn=turn,
+                        _log_pin(history_path, history_extra,
+                                 kind="pin_reconfirm", turn=turn,
                                  external_ctx=external_ctx, section=section,
                                  id=existing.id, text=clean_text)
             return f"Same entry already exists: {existing.id} (not added again)"
@@ -251,7 +264,7 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(serialized)
     if pending_log is not None:
-        _log_pin(history_path, **pending_log)
+        _log_pin(history_path, history_extra, **pending_log)
     return result
 
 

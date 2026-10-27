@@ -229,7 +229,10 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
         max_passes=MAX_CASCADE_PASSES, must_report=True, failure_rule="stuck_tool",
     ),
     # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/
-    # NoteMemory/SpawnMonitor/RemoveMonitor).
+    # NoteMemory/SpawnMonitor/RemoveMonitor). The profile keeper (remember-
+    # corrections Task 4) is a keeper too, but run_agent offers and binds an
+    # agent exactly the tools it is given (PROFILE_KEEPER_TOOLS), so it does
+    # not widen this set.
     "keeper": TurnPolicy(
         speaks=False, kind_tools=frozenset(c.__name__ for c in KEEPER_TOOLS),
         max_passes=MAX_CASCADE_PASSES, must_report=True, failure_rule="stuck_tool",

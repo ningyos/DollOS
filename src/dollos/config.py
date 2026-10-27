@@ -256,6 +256,21 @@ class ConsolidationConfig(BaseModel):
     transcript_tail_chars: int = 8000
 
 
+class ProfileKeeperConfig(BaseModel):
+    """Daily profile keeper (remember-corrections spec §2.2, plan decision 5):
+    runs after each successful consolidation, over the same day's transcript,
+    and writes the owner's corrections into self_profile's user /
+    relationship sections. Same shape as consolidation's settings; the
+    defaults mirror the consolidation keeper's (``think_budget_tokens`` =
+    ``[llm].think_budget_tokens``'s default)."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_tokens: int = 2048
+    think_budget_tokens: int = 1024
+    transcript_tail_chars: int = 8000
+
+
 class EnergyConfig(BaseModel):
     """B3 energy system — active-consumes, idle-restores, prompt-injects."""
     model_config = ConfigDict(extra="forbid")
@@ -376,6 +391,7 @@ class Settings(BaseModel):
     system_pulse: SystemPulseConfig = Field(default_factory=lambda: SystemPulseConfig())
     cognition: CognitionConfig = Field(default_factory=lambda: CognitionConfig())
     consolidation: ConsolidationConfig = Field(default_factory=lambda: ConsolidationConfig())
+    profile_keeper: ProfileKeeperConfig = Field(default_factory=lambda: ProfileKeeperConfig())
     diary: DiaryConfig = Field(default_factory=lambda: DiaryConfig())
     energy: EnergyConfig = Field(default_factory=lambda: EnergyConfig())
     self_profile: SelfProfileConfig = Field(default_factory=lambda: SelfProfileConfig())
