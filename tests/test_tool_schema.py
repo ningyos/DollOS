@@ -6,7 +6,7 @@ import json
 from pydantic import BaseModel, Field
 
 import dollos.tools as tools_mod
-from dollos.cascade.tool_loop import dispatch_one
+from dollos.harness.executor import dispatch_one
 from dollos.llm.tool_schema import tool_schemas
 from dollos.tools import (
     MAIN_TOOLS,

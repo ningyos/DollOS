@@ -126,6 +126,7 @@ async def test_agent_tools_and_system(tmp_path, role, tools):
         transcripts_root=tmp_path / "transcripts",
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         tools=tools,
+        kind=role,
         think_budget=1024,
         purpose=role,
     )

@@ -164,7 +164,7 @@ async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
         task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
-        tools=KEEPER_TOOLS, max_tokens=max_tokens,
+        tools=KEEPER_TOOLS, kind="keeper", max_tokens=max_tokens,
         think_budget=think_budget_tokens, purpose="evolution",
         shell_runner=None, monitor_runner=None)
 
@@ -184,7 +184,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
         task=task, system=system, model=model, renderer=renderer,
         memory_root=memory_root, memsearch=memsearch,
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
-        tools=KEEPER_TOOLS, max_tokens=max_tokens,
+        tools=KEEPER_TOOLS, kind="keeper", max_tokens=max_tokens,
         think_budget=think_budget_tokens, purpose="evolution",
         shell_runner=None, monitor_runner=None)
     if not report or not report.get("details"):

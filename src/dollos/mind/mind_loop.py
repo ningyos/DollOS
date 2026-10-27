@@ -15,16 +15,16 @@ from pydantic import BaseModel
 
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.cascade.sentence_chunker import SentenceChunker
-from dollos.cascade.tool_loop import ToolOutcome, ToolResult, dispatch_one, run_tool_calls
+from dollos.cascade.tool_loop import ToolOutcome, run_tool_calls
 from dollos.character import Enforcement
+from dollos.harness.executor import ToolExecutor, ToolResult, dispatch_one, turn_label
 from dollos.harness.permissions import ORIGIN_TIER, principal_of
+from dollos.harness.registry import Offered, ToolRegistry
 from dollos.harness.turn_policy import (
     POLICIES,
     TurnKind,
-    bound_tools,
     effective_kind,
     moment_of,
-    offered_tools,
 )
 from dollos.ipc.messages import AddressedText, TextChunk, TurnEndAddressed
 from dollos.llm.model import (
@@ -36,7 +36,6 @@ from dollos.llm.model import (
     ToolCall,
     ToolCalls,
 )
-from dollos.llm.tool_schema import tool_schemas
 from dollos.memory_writer import append_transcript, append_action_log
 from dollos.mind.action_log import action_phrase_for_tool, action_phrase_for_perception
 from dollos.mind.associative_search import associative_search
@@ -72,12 +71,6 @@ from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, t
 from dollos.perception.system_pulse import thermal_multiplier
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
-from dollos.tools import (
-    LearnName,
-    NoteToolLesson,
-    PinSelf,
-    SelfRevision,
-)
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -118,12 +111,6 @@ def batch_external(perceptions) -> bool:
 # announced boundary — NOT a fallback.
 SAFE_MODE_FAIL_THRESHOLD = 3
 # Its read-only tool set is POLICIES["safe_mode"] (dollos.harness.turn_policy).
-
-# The extra tools a turn kind adds (turn_policy.Extra) are never members of
-# the tool registry itself; these are their classes.
-_EXTRA_TOOL_CLASSES: dict[str, type[BaseModel]] = {
-    c.__name__: c for c in (NoteToolLesson, PinSelf, SelfRevision, LearnName)
-}
 
 
 # P1f trace (spec 2026-07-03 §T-C2): serialize the dataclass sources 1:1 with
@@ -228,6 +215,8 @@ class MindLoop:
         self._primary_language = primary_language
         self._persist_path = state_persist_path
         self._tool_registry = tool_registry or {}
+        # Offered / bound sets over that registry (+ the kinds' extras).
+        self._tools = ToolRegistry(self._tool_registry)
         self._system_pulse = system_pulse
         self._cognition = cognition
         self._wal = wal
@@ -735,8 +724,8 @@ class MindLoop:
 
             # The tier's fixed tool list and the system message: the
             # conversation's fixed prefix (a change opens a new page).
-            offered = self._offered_tools()
-            tools = tool_schemas(offered.values())
+            offer = self._offer()
+            offered, tools = offer.tools, offer.schemas
             system = self._system_for_turn()
             tier = self._ctx.origin_tier
             now = time.time()
@@ -1202,12 +1191,6 @@ class MindLoop:
             logger.exception("%s.%s raised; omitting block", type(provider).__name__, method)
             return None
 
-    def _tool_classes(self, names) -> dict[str, type[BaseModel]]:
-        """``names`` as registry entries; an extra tool (never a registry
-        member) wins over a same-named registry entry, as it always has."""
-        classes = {**self._tool_registry, **_EXTRA_TOOL_CLASSES}
-        return {n: classes[n] for n in names}
-
     def _active_tool_registry(self) -> dict[str, type[BaseModel]]:
         """The tool registry in force for this pass: this turn's kind (safe
         mode on top, ``effective_kind``) and principal looked up in
@@ -1220,12 +1203,15 @@ class MindLoop:
         the local keyboard (user decision 2026-10-27, harness spec §6.3; the
         compromised-Discord-account risk was accepted by the user that day).
         Only its memory scoping (keyed on origin_tier) still differs."""
-        kind = effective_kind(self._moment, safe_mode=self._state.safe_mode)
-        return self._tool_classes(sorted(bound_tools(
-            kind, self._ctx.principal, self._tool_registry,
+        return self._tools.bound(
+            self._binding_kind(), self._ctx.principal,
             self_profile=self._self_profile_enabled,
             evolution=self._evolution_enabled,
-        )))
+        )
+
+    def _binding_kind(self) -> TurnKind:
+        """This pass's kind for the tools: safe mode on top of the batch's."""
+        return effective_kind(self._moment, safe_mode=self._state.safe_mode)
 
     def _offered_tools(self) -> dict[str, type[BaseModel]]:
         """The tools the model is shown: one fixed list per origin tier
@@ -1247,23 +1233,21 @@ class MindLoop:
         WriteDiary). external_public never sees an internal tool's schema, so
         a stranger doesn't even learn Shell exists.
         """
-        return self._tool_classes(sorted(offered_tools(
-            self._ctx.principal, self._tool_registry,
+        return self._offer().tools
+
+    def _offer(self) -> Offered:
+        """``_offered_tools`` with its tool JSON (``ToolRegistry.offered``)."""
+        return self._tools.offered(
+            self._ctx.principal,
             self_profile=self._self_profile_enabled,
             evolution=self._evolution_enabled,
-        )))
+        )
 
     def _turn_kind(self) -> str:
         """This turn's kind as named in the refusal of an offered-but-unbound
         tool: safe mode, then a stranger's turn, then the batch's kind (a
         conversation is "owner" when the owner is present)."""
-        if self._state.safe_mode:
-            return "safe mode"
-        if self._ctx.principal == "external_public":
-            return "external_public"
-        if self._moment == "conversation":
-            return "owner" if self._ctx.principal in ("owner", "owner_dm") else "normal"
-        return self._moment
+        return turn_label(self._binding_kind(), self._ctx.principal)
 
     def _enter_safe_mode(self, reason: str) -> None:
         """Enter read-only safe mode (idempotent within a turn).
@@ -1786,27 +1770,21 @@ class MindLoop:
     async def _dispatch_bound(
         self, name: str, arguments: dict, offered: dict[str, type[BaseModel]]
     ) -> ToolResult | None:
-        """Execution-time binding (plan 2026-10-18 decision 3). The model is
+        """Execution-time binding (plan 2026-10-18 decision 3), through the
+        ``ToolExecutor`` (which writes the call's log record). The model is
         shown every ``offered`` tool of this tier; only this turn's
         ``_runnable_tools(offered)`` may run. An offered-but-unbound call is
         refused with the tools available now — NOT a failure: no tool memory,
         no action log, no safe-mode count (``_llm_iterate`` caps repeats via
-        UNBOUND_REJECT_LIMIT). A name outside ``offered`` goes to
-        ``_dispatch_tool`` against the runnable set, where it is an unknown
-        tool and a failure as before."""
-        bound = self._runnable_tools(offered)
-        if name in offered and name not in bound:
-            available = ", ".join(sorted(bound)) or "(none)"
-            return ToolResult(
-                tool_name=name,
-                success=False,
-                detail=(
-                    f"{name} is not available in this turn ({self._turn_kind()}); "
-                    f"available now: {available}"
-                ),
-                unbound=True,
-            )
-        return await self._dispatch_tool(name, arguments, bound)
+        UNBOUND_REJECT_LIMIT). Every other call, a name outside ``offered``
+        included, goes to ``_dispatch_tool`` against the runnable set, where
+        an unknown tool is a failure as before."""
+        executor = ToolExecutor(
+            self._ctx, offered=offered, bound=self._runnable_tools(offered),
+            principal=self._ctx.principal, kind=self._binding_kind(),
+            dispatch=self._dispatch_tool,
+        )
+        return await executor.run(name, arguments)
 
     async def _dispatch_tool(
         self, name: str, arguments: dict,

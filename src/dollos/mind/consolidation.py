@@ -70,7 +70,7 @@ async def run_consolidation(
         memsearch=memsearch,
         transcripts_root=transcripts_root,
         tool_output_store=tool_output_store,
-        tools=KEEPER_TOOLS,
+        tools=KEEPER_TOOLS, kind="keeper",
         max_tokens=max_tokens,
         think_budget=think_budget_tokens,
         purpose="consolidation",

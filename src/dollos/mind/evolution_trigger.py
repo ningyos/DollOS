@@ -212,6 +212,7 @@ class EvolutionTrigger:
             memory_root=self._memory_root, memsearch=self._memsearch,
             transcripts_root=self._transcripts_root,
             tool_output_store=self._tool_output_store, tools=KEEPER_TOOLS,
+            kind="keeper",
             max_tokens=self._max_tokens, think_budget=self._think_budget_tokens,
             purpose="evolution", shell_runner=None, monitor_runner=None,
         )

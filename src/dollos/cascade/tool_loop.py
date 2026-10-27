@@ -1,8 +1,8 @@
-"""Shared tool dispatch + the agent tool cascade.
+"""Shared tool-call running + the agent tool cascade.
 
-``dispatch_one`` validates and runs one call and ``run_tool_calls`` runs one
-reply's native tool calls in order; both MindLoop and ``run_tool_cascade``
-(the agent loop under ``agent_engine.run_agent``) use them.
+``run_tool_calls`` runs one reply's native tool calls in order; both MindLoop
+and ``run_tool_cascade`` (the agent loop under ``agent_engine.run_agent``)
+use it. Each call goes through ``dollos.harness.executor.ToolExecutor``.
 """
 
 from __future__ import annotations
@@ -16,13 +16,13 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
-
+from dollos.harness.executor import ToolExecutor, ToolResult
 from dollos.ipc.messages import ErrorMsg, ServerMessage
 from dollos.llm.model import End, SpeechDelta, ThinkDelta, ToolCall, ToolCalls, tool_message
 from dollos.llm.tool_schema import tool_schemas
 
 if TYPE_CHECKING:
+    from dollos.harness.turn_policy import TurnKind
     from dollos.llm.model import ModelAdapter
     from dollos.mind.mind_ctx import MindCtx
 
@@ -42,33 +42,6 @@ UNCUT_TOOLS = frozenset({"InvokeSkill"})
 NOT_RUN = "not run: turn interrupted"
 
 
-@dataclass
-class ToolResult:
-    """Tool execution result. Internal cascade primitive (not a RawEvent).
-
-    success=False: mechanical fail (validation / unknown / runtime exception).
-    success=True:  ran cleanly. detail = the str returned by Tool.run().
-                   May be empty string (Tool ran but had no content to return).
-
-    Failures always cascade (Doll should fix). Successes cascade iff
-    Tool.run() returned a str (not None) — i.e., the tool author opted in.
-
-    unbound=True: the tool is in the schema the model sees but not bound
-    this turn, so the call was refused without running. Not a failure.
-    """
-
-    tool_name: str
-    success: bool
-    detail: str
-    unbound: bool = False
-
-    @property
-    def status(self) -> str:
-        if self.unbound:
-            return "rejected_unbound"
-        return "ok" if self.success else "failed"
-
-
 @dataclass(frozen=True)
 class ToolOutcome:
     """One executed native tool call: the call, its result, and the ``tool``
@@ -77,66 +50,6 @@ class ToolOutcome:
     call: ToolCall
     result: ToolResult
     message: dict
-
-
-def format_unknown_tool(name: str, registry: dict[str, type]) -> str:
-    """LLM-friendly unknown-tool message listing the valid tool names."""
-    available = ", ".join(sorted(registry)) if registry else "(none)"
-    return f"Unknown tool {name!r}. Available tools: {available}"
-
-
-def format_validation_error(exc: ValidationError, tool_name: str) -> str:
-    """Flatten a pydantic ValidationError into a terse, actionable message.
-
-    One line per bad field: ``<field>: <msg> (you gave <value>)``. Avoids the raw
-    pydantic error wall (URLs / 'N validation errors for ...') which costs
-    tokens and reads as noise to the model.
-    """
-    lines: list[str] = []
-    for err in exc.errors():
-        loc = ".".join(str(p) for p in err.get("loc", ())) or "(root)"
-        msg = err.get("msg", "invalid")
-        given = err.get("input", None)
-        lines.append(f"{loc}: {msg} (you gave {given!r})")
-    body = "; ".join(lines)
-    return f"Tool {tool_name} got bad arguments: {body}"
-
-
-async def dispatch_one(
-    name: str,
-    arguments: dict,
-    ctx: "MindCtx",
-    registry: dict[str, type],
-) -> ToolResult | None:
-    """Validate + run one tool call. Single source of truth for both the live
-    MindLoop and the subagent cascade (spec §3.6).
-
-    Returns None for side-effect tools (run() -> None); ToolResult otherwise.
-    Friendly messages via format_unknown_tool / format_validation_error.
-    """
-    tool_cls = registry.get(name)
-    if tool_cls is None:
-        logger.warning("unknown tool: %r", name)
-        return ToolResult(
-            tool_name=name, success=False, detail=format_unknown_tool(name, registry)
-        )
-    try:
-        tool = tool_cls.model_validate(arguments)
-    except ValidationError as e:
-        logger.warning("tool args validation failed for %s: %s", name, e)
-        return ToolResult(
-            tool_name=name, success=False, detail=format_validation_error(e, name)
-        )
-    try:
-        returned = await tool.run(ctx)
-    except Exception as e:
-        logger.exception("tool %s raised", name)
-        return ToolResult(
-            tool_name=name, success=False, detail=f"runtime error: {e}"
-        )
-    if returned is None:
-        return None
-    return ToolResult(tool_name=name, success=True, detail=returned)
 
 
 async def run_tool_calls(
@@ -192,6 +105,7 @@ async def run_tool_cascade(
     messages: list[dict],
     tools: list[type],
     tools_by_name: dict[str, type],
+    kind: "TurnKind",
     ctx: "MindCtx",
     sink: "asyncio.Queue[ServerMessage | None] | None",
     max_tokens: int,
@@ -212,6 +126,11 @@ async def run_tool_cascade(
     ``prior_tokens`` is the previous pass's prompt + completion, so the token
     accounting charges each pass only for what it appended.
 
+    Every call goes through a ``ToolExecutor`` for an ``internal`` turn of
+    ``kind`` (``worker`` or ``keeper``), which writes its log record. The
+    agent is shown and bound to exactly ``tools_by_name``, as before; binding
+    agent kinds through TurnPolicy is the Turn Runner's (plan Task 5).
+
     on_iter_end fires after each pass's tools ran — receives (iter_num,
         reasoning, speech, tool_calls, results, duration_ms); tool_calls are
         ``{"id", "name", "arguments"}`` dicts. Caller logs to CascadeLogger here.
@@ -224,8 +143,10 @@ async def run_tool_cascade(
     consecutive_fails: dict[str, int] = {}
     prior_tokens = 0
 
-    async def _dispatch(name: str, arguments: dict) -> ToolResult | None:
-        return await dispatch_one(name, arguments, ctx, tools_by_name)
+    executor = ToolExecutor(
+        ctx, offered=tools_by_name, bound=tools_by_name,
+        principal="internal", kind=kind,
+    )
 
     for iter_num in range(1, max_passes + 1):
         iter_start = time.monotonic()
@@ -265,7 +186,7 @@ async def run_tool_cascade(
                 purpose, iter_num, end.dropped_tool_calls,
             )
 
-        outcomes = await run_tool_calls(calls, _dispatch)
+        outcomes = await run_tool_calls(calls, executor.run)
         messages.append(end.assistant_message)
         messages.extend(o.message for o in outcomes)
         results = [o.result for o in outcomes]
