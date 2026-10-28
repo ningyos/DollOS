@@ -705,3 +705,52 @@ async def test_cascade_log_gets_agent_reasoning_and_speech(tmp_path: Path):
     assert it["speech"] == "all done"
     assert [(tc["id"], tc["name"]) for tc in it["tool_calls"]] == [("call_0", "Report")]
     assert [r.status for r in it["results"]] == ["ok"]
+
+
+# ---------- A worker's Shell waits for its own result (plan 2026-10-28 decision 2) ----------
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_result_reaches_the_worker_not_doll(tmp_path: Path):
+    """Shell then Report through the real WorkflowRunner / run_agent / Shell /
+    ShellRunner: the worker's second model call sees the command's output as
+    the Shell tool message, and Doll's queue gets only the one Workflow
+    result (3.7f in docs/research/2026-10-28-v1-tool-use-acceptance.md)."""
+    shell_call = json.dumps({
+        "name": "Shell",
+        "arguments": {
+            "command": "printf 'only_in_a.log\\nconfig.yaml differs\\n'",
+            "timeout_s": 10,
+        },
+    })
+    model = FakeModel([
+        f"<tool_call>{shell_call}</tool_call>",
+        _report_call("ok", "2 differences", "only_in_a.log; config.yaml"),
+    ])
+    queue = PerceptionQueue()
+    shell_runner = ShellRunner(
+        cwd=tmp_path,
+        perception_queue=queue,
+        # The same store the workflow's agents read (kernel wires one store).
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+    )
+    runner, _, _ = _make_runner(model, tmp_path, queue, shell_runner=shell_runner)
+    runner.spawn(
+        workflow_id="wf-diff", tasks=["diff a/ and b/"], synthesis=None,
+        mode="map_reduce", timeout_s=30,
+    )
+
+    p = await _wait_for_tool_result(queue, timeout=5.0)
+    assert p.data["tool"] == "Workflow"
+    assert p.data["status"] == "ok"
+    assert p.data["summary"] == "2 differences"
+    assert await _collect_tool_results(queue, settle=0.3) == []
+
+    assert len(model.calls) == 2
+    shell_message = model.calls[1]["messages"][-1]
+    assert shell_message["role"] == "tool"
+    assert shell_message["content"].startswith("Shell done [ok]: exit 0")
+    assert shell_message["content"].splitlines()[-2:] == [
+        "only_in_a.log", "config.yaml differs",
+    ]
+    await shell_runner.stop()

@@ -29,6 +29,7 @@ from dollos.mind.mind_state import OutputRecord
 
 if TYPE_CHECKING:
 
+    from dollos.harness.executor import ToolResult
     from dollos.mind.mind_ctx import MindCtx
 
 
@@ -260,7 +261,12 @@ class Shell(BaseModel):
         cmd = self.command[:60]
         return f"shell: {cmd}"
 
-    async def run(self, ctx: "MindCtx") -> str:
+    async def run(self, ctx: "MindCtx") -> "str | ToolResult":
+        # Only run_agent builds a ctx without a workflow runner (the
+        # no-nesting guard), and an agent's loop never sees perceptions: a
+        # workflow worker waits for its own result (plan 2026-10-28 decision 2).
+        if ctx.workflow_runner is None:
+            return await self._run_and_wait(ctx)
         ctx.shell_runner.spawn(
             command=self.command,
             timeout_s=self.timeout_s,
@@ -272,6 +278,57 @@ class Shell(BaseModel):
         )
         _record(ctx, "Shell", self._summary())
         return result
+
+    async def _run_and_wait(self, ctx: "MindCtx") -> "str | ToolResult":
+        """A workflow worker's Shell: the result is the tool message. The
+        docstring above is shared with Doll's tool JSON, so the result itself
+        says that it came straight back.
+
+        A nonzero exit or a timeout is the command's answer — Doll gets the
+        same as a [nonzero] / [timeout] perception — so the text says it
+        failed but the call succeeded: under the worker's stuck_tool rule,
+        three greps that found nothing or diffs that found differences would
+        otherwise end the worker without a Report. A runner error (the
+        command never ran) fails the call, like a tool's runtime error."""
+        from dollos.harness.executor import ToolResult
+        from dollos.shell_runner import SHELL_PREVIEW_LINES
+
+        data = await ctx.shell_runner.run_and_wait(
+            command=self.command, timeout_s=self.timeout_s,
+        )
+        _record(ctx, "Shell", self._summary())
+        status = data["status"]
+        if status == "ok":
+            head = "Shell done [ok]: exit 0"
+        elif status == "nonzero":
+            head = f"Shell failed [nonzero]: exit {data['exit_code']}"
+        elif status == "timeout":
+            head = f"Shell failed [timeout]: killed after {self.timeout_s}s"
+        else:
+            head = f"Shell failed [error]: {data['summary']}"
+        lines = [
+            f"{head} (command={self.command!r})",
+            "Inside a workflow the result comes straight back here; no "
+            "ToolResultArrived event will follow.",
+        ]
+        if status == "error":
+            return ToolResult(tool_name="Shell", success=False, detail="\n".join(lines))
+        # The output_id line goes before the preview: a long preview line can
+        # push the message past the runner's cut, and the id must survive it.
+        output_id, n = data["output_id"], data["line_count"]
+        if n > SHELL_PREVIEW_LINES:
+            lines.append(
+                f"output_id {output_id}, line count {n}; the first "
+                f"{SHELL_PREVIEW_LINES} below, ReadToolOutput / GrepToolOutput "
+                f"for the rest:"
+            )
+        else:
+            lines.append(f"output_id {output_id}, line count {n}:")
+        preview = ctx.tool_output_store.read(
+            output_id, offset=0, limit=SHELL_PREVIEW_LINES,
+        )
+        lines.extend(preview.lines)
+        return "\n".join(lines)
 
 
 class InvokeSkill(BaseModel):

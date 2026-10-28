@@ -5,7 +5,11 @@ parallel worker agents (reusing ``agent_engine.run_agent``), optionally runs an
 adversarial verify pass per task, then either rolls them up or runs a synthesis
 agent. Exactly ONE ``ToolResultArrived(tool="Workflow")`` perception re-enters
 the ``PerceptionQueue`` with the combined result — the intermediate worker noise
-never reaches Doll's context.
+never reaches Doll's context. A worker's Shell waits for its own result
+(``ShellRunner.run_and_wait``, plan 2026-10-28 decision 2): the output comes
+back as that call's tool message, not as a ToolResultArrived on Doll's queue.
+SpawnMonitor does not: a worker's monitor still fires its events onto Doll's
+queue, since the MonitorRunner is shared.
 
 Modes (v1):
     map_reduce — parallel fan-out + optional synthesis.

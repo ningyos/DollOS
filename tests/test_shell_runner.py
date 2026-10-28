@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -144,3 +145,139 @@ async def test_shell_runner_task_id_preserved_in_nonzero_perception(tmp_path: Pa
         f"task_id not in uuid form: {task_id!r}"
     )
     await runner.stop()
+
+
+# ----- run_and_wait: a workflow worker's Shell (plan 2026-10-28 decision 2) -----
+
+
+def _gone(pid: int) -> bool:
+    """True once ``pid`` no longer runs. A killed orphan can linger as a
+    zombie until its new parent reaps it; on Linux that counts as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    stat = Path(f"/proc/{pid}/stat")
+    return stat.exists() and stat.read_text().rsplit(") ", 1)[-1].startswith("Z")
+
+
+async def _wait_gone(pid: int, timeout: float = 2.0) -> bool:
+    for _ in range(int(timeout / 0.05)):
+        if _gone(pid):
+            return True
+        await asyncio.sleep(0.05)
+    return _gone(pid)
+
+
+async def _child_pid(pid_file: Path, timeout: float = 3.0) -> int:
+    """The pid the command wrote to ``pid_file`` (its backgrounded child)."""
+    for _ in range(int(timeout / 0.05)):
+        if pid_file.exists() and pid_file.read_text().strip():
+            return int(pid_file.read_text())
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{pid_file} never written")
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_returns_result_without_enqueueing(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    queue = PerceptionQueue()
+    runner = ShellRunner(cwd=tmp_path, perception_queue=queue, tool_output_store=store)
+    data = await runner.run_and_wait(
+        command="for i in $(seq 1 25); do echo line $i; done", timeout_s=10,
+    )
+    assert data["tool"] == "Shell"
+    assert data["status"] == "ok"
+    assert data["exit_code"] == 0
+    assert data["line_count"] == 25
+    assert data["command"].startswith("for i in")
+    assert data["task_id"].startswith("shell-")
+    full = store.read(data["output_id"], offset=0, limit=100)
+    assert full.lines[0] == "line 1" and full.lines[24] == "line 25"
+    # The result is returned, never enqueued for Doll.
+    assert await _wait_for_tool_result(queue, timeout=0.3) == []
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_nonzero_exit(tmp_path: Path) -> None:
+    runner, queue = _make_runner(tmp_path)
+    data = await runner.run_and_wait(command="echo oops; exit 7", timeout_s=10)
+    assert data["status"] == "nonzero"
+    assert data["exit_code"] == 7
+    assert data["line_count"] == 1
+    assert await _wait_for_tool_result(queue, timeout=0.2) == []
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_timeout_kills_process_group(tmp_path: Path) -> None:
+    runner, queue = _make_runner(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    data = await runner.run_and_wait(
+        command=f"sleep 30 & echo $! > {pid_file}; wait", timeout_s=1,
+    )
+    assert data["status"] == "timeout"
+    assert "timed out after 1s" in data["summary"]
+    assert await _wait_gone(int(pid_file.read_text()))
+    assert await _wait_for_tool_result(queue, timeout=0.2) == []
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_cancel_kills_process_group(tmp_path: Path) -> None:
+    """Cancelling the caller (the workflow's per-agent timeout, its stop())
+    kills the command's whole process group."""
+    runner, queue = _make_runner(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    waiting = asyncio.create_task(runner.run_and_wait(
+        command=f"sleep 30 & echo $! > {pid_file}; wait", timeout_s=60,
+    ))
+    pid = await _child_pid(pid_file)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert await _wait_gone(pid)
+    assert await _wait_for_tool_result(queue, timeout=0.2) == []
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_stop_kills_running_command(tmp_path: Path) -> None:
+    """stop() (daemon shutdown) kills a command a worker is waiting on, as it
+    does a spawned one."""
+    runner, _queue = _make_runner(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    waiting = asyncio.create_task(runner.run_and_wait(
+        command=f"sleep 30 & echo $! > {pid_file}; wait", timeout_s=60,
+    ))
+    pid = await _child_pid(pid_file)
+    await asyncio.wait_for(runner.stop(), timeout=2.0)
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert await _wait_gone(pid)
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_refused_while_stopping(tmp_path: Path) -> None:
+    runner, _queue = _make_runner(tmp_path)
+    await runner.stop()
+    marker = tmp_path / "ran"
+    data = await runner.run_and_wait(command=f"touch {marker}", timeout_s=10)
+    assert data["status"] == "error"
+    assert "stopping" in data["summary"]
+    assert data["output_id"] is None
+    await asyncio.sleep(0.2)
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_and_wait_runner_error(tmp_path: Path) -> None:
+    """A subprocess that cannot start (cwd gone) is a runner error."""
+    runner = ShellRunner(
+        cwd=tmp_path / "missing",
+        perception_queue=PerceptionQueue(),
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+    )
+    data = await runner.run_and_wait(command="echo hi", timeout_s=10)
+    assert data["status"] == "error"
+    assert data["summary"].startswith("runner error:")
+    assert data["output_id"] is None

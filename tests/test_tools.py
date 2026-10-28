@@ -222,6 +222,131 @@ async def test_shell_tool_delegates_to_runner(tmp_path):
     assert "comes back as a new event" in out  # result-will-arrive language
 
 
+# ----- Shell in a workflow worker waits for its result (plan 2026-10-28 decision 2) -----
+
+
+def _shell_ctx(tmp_path: Path, *, worker: bool, cwd: Path | None = None):
+    """A ctx with a real ShellRunner wired to its own queue: a worker agent's
+    (``workflow_runner=None``, as run_agent builds it) or Doll's."""
+    from dollos.mind.perception_queue import PerceptionQueue
+    from dollos.shell_runner import ShellRunner
+
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    queue = PerceptionQueue()
+    runner = ShellRunner(
+        cwd=cwd or tmp_path, perception_queue=queue, tool_output_store=store,
+    )
+    ctx = MindCtx(
+        mind_state=MindState(),
+        memsearch=_FakeMemSearch(),
+        memory_root=tmp_path,
+        transcripts_root=tmp_path / "transcripts",
+        sink_resolver=_fake_sink_resolver(),
+        tool_output_store=store,
+        shell_runner=runner,
+        workflow_runner=None if worker else _FakeWorkflowRunner(),
+        monitor_runner=_FakeMonitorRunner(),
+    )
+    return ctx, queue
+
+
+async def _shell_results(queue, settle: float = 0.3) -> list:
+    found = []
+    for _ in range(int(settle / 0.05)):
+        found.extend(
+            p for p in await queue.drain(timeout_s=0.05) if p.kind == "ToolResultArrived"
+        )
+    return found
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_returns_output_and_doll_queue_stays_empty(tmp_path):
+    ctx, queue = _shell_ctx(tmp_path, worker=True)
+    out = await Shell(command="printf 'alpha\\nbeta\\n'", timeout_s=10).run(ctx)
+    assert isinstance(out, str)
+    assert out.startswith("Shell done [ok]: exit 0")
+    assert "printf" in out  # the command, so parallel results stay apart
+    assert "straight back" in out and "no ToolResultArrived" in out
+    assert out.splitlines()[-2:] == ["alpha", "beta"]
+    assert re.search(r"output_id out-[0-9a-f]{8}, line count 2", out)
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_long_output_previews_and_pages_by_id(tmp_path):
+    ctx, queue = _shell_ctx(tmp_path, worker=True)
+    out = await Shell(command="seq 1 25", timeout_s=10).run(ctx)
+    lines = out.splitlines()
+    assert lines[-10:] == [str(i) for i in range(1, 11)]
+    assert "11" not in lines
+    assert "line count 25" in out and "ReadToolOutput" in out
+    out_id = re.search(r"output_id (out-[0-9a-f]{8})", out).group(1)
+    # The worker pages past the preview with its own SUB_TOOLS.
+    assert ReadToolOutput in SUB_TOOLS and GrepToolOutput in SUB_TOOLS
+    more = await ReadToolOutput(id=out_id, offset=10, limit=5).run(ctx)
+    assert more.splitlines()[1:] == ["11", "12", "13", "14", "15"]
+    hits = await GrepToolOutput(id=out_id, pattern=r"^2\d$").run(ctx)
+    assert "20" in hits and "25" in hits
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_nonzero_reads_as_failure_but_is_not_a_failed_call(tmp_path):
+    """A nonzero exit is the command's answer (diff found differences, grep
+    found nothing): the text says it failed, the call itself succeeded, so
+    the worker's stuck_tool rule does not count it."""
+    from dollos.harness.executor import dispatch_one
+
+    ctx, queue = _shell_ctx(tmp_path, worker=True)
+    result = await dispatch_one(
+        "Shell", {"command": "echo nope; exit 3", "timeout_s": 10}, ctx,
+        {"Shell": Shell},
+    )
+    assert result.success is True
+    assert result.detail.startswith("Shell failed [nonzero]: exit 3")
+    assert result.detail.splitlines()[-1] == "nope"
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_timeout_reads_as_failure(tmp_path):
+    from dollos.harness.executor import dispatch_one
+
+    ctx, queue = _shell_ctx(tmp_path, worker=True)
+    result = await dispatch_one(
+        "Shell", {"command": "sleep 5", "timeout_s": 1}, ctx, {"Shell": Shell},
+    )
+    assert result.success is True
+    assert result.detail.startswith("Shell failed [timeout]: killed after 1s")
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_runner_error_is_a_failed_call(tmp_path):
+    from dollos.harness.executor import dispatch_one
+
+    ctx, queue = _shell_ctx(tmp_path, worker=True, cwd=tmp_path / "missing")
+    result = await dispatch_one(
+        "Shell", {"command": "echo hi", "timeout_s": 10}, ctx, {"Shell": Shell},
+    )
+    assert result.success is False
+    assert result.detail.startswith("Shell failed [error]: runner error:")
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_doll_shell_still_enqueues_the_result(tmp_path):
+    ctx, queue = _shell_ctx(tmp_path, worker=False)
+    out = await Shell(command="printf hello", timeout_s=10).run(ctx)
+    assert "comes back as a new event" in out
+    results = await _shell_results(queue, settle=1.0)
+    assert len(results) == 1
+    assert results[0].data["tool"] == "Shell"
+    assert results[0].data["status"] == "ok"
+    assert "hello" in results[0].data["summary"]
+    await ctx.shell_runner.stop()
+
+
 def test_invoke_skill_in_tools_list():
     assert InvokeSkill in MAIN_TOOLS
 
