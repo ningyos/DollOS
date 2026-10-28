@@ -754,3 +754,50 @@ async def test_worker_shell_result_reaches_the_worker_not_doll(tmp_path: Path):
         "only_in_a.log", "config.yaml differs",
     ]
     await shell_runner.stop()
+
+
+def test_worker_system_prompt_states_the_per_agent_cap(tmp_path: Path):
+    """The workers' scaffolding carries the cap their Shell timeouts must stay
+    under (a timeout_s at the cap is refused, see test_tools)."""
+    runner, _, _ = _make_runner(FakeModel([]), tmp_path)
+    cap = workflow_mod.MAX_AGENT_TIMEOUT_S
+    assert f"cut off after {cap} s" in runner._system
+    assert f"`timeout_s` of {cap} or more is refused" in runner._system
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_past_the_cap_is_refused_and_the_worker_reports(
+    tmp_path: Path, monkeypatch,
+):
+    """A Shell timeout_s at or past the per-agent cap would have the worker
+    cancelled mid-command with nothing kept; refused instead, the worker sees
+    why and still Reports."""
+    monkeypatch.setattr(workflow_mod, "MAX_AGENT_TIMEOUT_S", 2)
+    marker = tmp_path / "ran"
+    shell_call = json.dumps({
+        "name": "Shell",
+        "arguments": {"command": f"sleep 4; touch {marker}", "timeout_s": 10},
+    })
+    model = FakeModel([
+        f"<tool_call>{shell_call}</tool_call>",
+        _report_call("incomplete", "needs a longer build", "Shell refused"),
+    ])
+    queue = PerceptionQueue()
+    shell_runner = ShellRunner(
+        cwd=tmp_path, perception_queue=queue,
+        tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
+    )
+    runner, _, _ = _make_runner(model, tmp_path, queue, shell_runner=shell_runner)
+    runner.spawn(
+        workflow_id="wf-build", tasks=["run the build"], synthesis=None,
+        mode="map_reduce", timeout_s=30,
+    )
+
+    p = await _wait_for_tool_result(queue, timeout=5.0)
+    assert p.data["tool"] == "Workflow"
+    assert p.data["summary"] == "needs a longer build"
+    assert len(model.calls) == 2
+    shell_message = model.calls[1]["messages"][-1]
+    assert shell_message["content"].startswith("Shell refused: timeout_s=10")
+    assert not marker.exists()
+    await shell_runner.stop()

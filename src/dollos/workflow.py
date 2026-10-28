@@ -100,8 +100,11 @@ class WorkflowRunner:
         self._cascade_logger = cascade_logger
         # [llm].think_budget_tokens: caps each agent call's thinking.
         self._think_budget_tokens = think_budget_tokens
-        # Rendered once and reused across task / verify / synthesis agents.
-        self._system = self._renderer.render("subagent_scaffolding")
+        # Rendered once and reused across task / verify / synthesis agents,
+        # with the per-agent cap their Shell timeouts must stay under.
+        self._system = self._renderer.render(
+            "subagent_scaffolding", agent_timeout_s=MAX_AGENT_TIMEOUT_S,
+        )
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = False
 

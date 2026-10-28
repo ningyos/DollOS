@@ -152,13 +152,15 @@ async def test_shell_runner_task_id_preserved_in_nonzero_perception(tmp_path: Pa
 
 def _gone(pid: int) -> bool:
     """True once ``pid`` no longer runs. A killed orphan can linger as a
-    zombie until its new parent reaps it; on Linux that counts as gone."""
+    zombie until its new parent reaps it; on Linux that counts as gone. The
+    reap can land between the two checks, so a vanished /proc entry is gone
+    too."""
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[-1]
+    except (ProcessLookupError, FileNotFoundError):
         return True
-    stat = Path(f"/proc/{pid}/stat")
-    return stat.exists() and stat.read_text().rsplit(") ", 1)[-1].startswith("Z")
+    return state.startswith("Z")
 
 
 async def _wait_gone(pid: int, timeout: float = 2.0) -> bool:
@@ -237,6 +239,36 @@ async def test_run_and_wait_cancel_kills_process_group(tmp_path: Path) -> None:
         await waiting
     assert await _wait_gone(pid)
     assert await _wait_for_tool_result(queue, timeout=0.2) == []
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_timeout_kills_background_child_after_shell_exited(tmp_path: Path) -> None:
+    """No ``wait``: bash exits at once and is reaped, while its backgrounded
+    child keeps the output pipe open, so the call runs to its timeout. The
+    group is gone by then only if the kill does not need the leader alive."""
+    runner, _queue = _make_runner(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    data = await runner.run_and_wait(
+        command=f"sleep 30 & echo $! > {pid_file}", timeout_s=1,
+    )
+    assert data["status"] == "timeout"
+    assert await _wait_gone(int(pid_file.read_text()))
+
+
+@pytest.mark.asyncio
+async def test_cancel_kills_background_child_after_shell_exited(tmp_path: Path) -> None:
+    runner, _queue = _make_runner(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    waiting = asyncio.create_task(runner.run_and_wait(
+        command=f"sleep 30 & echo $! > {pid_file}", timeout_s=60,
+    ))
+    pid = await _child_pid(pid_file)
+    await asyncio.sleep(0.3)  # bash exits right after the echo and is reaped
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert await _wait_gone(pid)
     await runner.stop()
 
 

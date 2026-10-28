@@ -114,7 +114,13 @@ class ShellRunner:
     async def _execute(self, command: str, timeout_s: int, task_id: str) -> dict:
         """Run ``command`` to its end and store its output: the result data,
         status ok / nonzero / timeout / error. A cancel kills the process
-        group and propagates."""
+        group and propagates.
+
+        The kill targets group ``proc.pid``: start_new_session makes the
+        command its own group leader, and the group outlives it. bash can
+        exit and be reaped while a backgrounded child still holds the pipe
+        (``server &`` with no ``wait``), and getpgid on the reaped leader
+        would fail and leave that child running."""
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -130,7 +136,7 @@ class ShellRunner:
                 )
             except asyncio.TimeoutError:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 try:
@@ -168,9 +174,9 @@ class ShellRunner:
                 "exit_code": proc.returncode,
             }
         except asyncio.CancelledError:
-            if proc is not None and proc.returncode is None:
+            if proc is not None:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGKILL)
                     await proc.wait()
                 except Exception:
                     pass
