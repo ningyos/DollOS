@@ -291,6 +291,22 @@ async def test_worker_shell_long_output_previews_and_pages_by_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_shell_long_command_keeps_output_id_inside_the_cut(tmp_path):
+    """The head line echoes only the start of the command: a long inline
+    script must not push the output_id and the preview past the runner's
+    TOOL_MESSAGE_MAX_CHARS cut."""
+    from dollos.harness.runner import TOOL_MESSAGE_MAX_CHARS
+
+    ctx, _queue = _shell_ctx(tmp_path, worker=True)
+    command = "echo RESULT_LINE; : '" + "x\n" * TOOL_MESSAGE_MAX_CHARS + "'"
+    out = await Shell(command=command, timeout_s=10).run(ctx)
+    kept = out[:TOOL_MESSAGE_MAX_CHARS]
+    assert "echo RESULT_LINE" in kept.splitlines()[0]
+    assert re.search(r"output_id out-[0-9a-f]{8}, line count 1:", kept)
+    assert kept.splitlines()[-1] == "RESULT_LINE"
+
+
+@pytest.mark.asyncio
 async def test_worker_shell_nonzero_reads_as_failure_but_is_not_a_failed_call(tmp_path):
     """A nonzero exit is the command's answer (diff found differences, grep
     found nothing): the text says it failed, the call itself succeeded, so
@@ -319,6 +335,47 @@ async def test_worker_shell_timeout_reads_as_failure(tmp_path):
     assert result.success is True
     assert result.detail.startswith("Shell failed [timeout]: killed after 1s")
     assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_worker_shell_refuses_a_timeout_at_the_per_agent_cap(tmp_path):
+    """A worker's whole run is cut off at MAX_AGENT_TIMEOUT_S, and then
+    nothing it found is kept: a Shell whose timeout_s reaches the cap could
+    never come back [timeout]. It is refused without running."""
+    from dollos.harness.executor import dispatch_one
+    from dollos.workflow import MAX_AGENT_TIMEOUT_S
+
+    ctx, queue = _shell_ctx(tmp_path, worker=True)
+    marker = tmp_path / "ran"
+    result = await dispatch_one(
+        "Shell", {"command": f"touch {marker}", "timeout_s": MAX_AGENT_TIMEOUT_S},
+        ctx, {"Shell": Shell},
+    )
+    assert result.success is False
+    assert result.detail.startswith(f"Shell refused: timeout_s={MAX_AGENT_TIMEOUT_S}")
+    assert f"cut off after {MAX_AGENT_TIMEOUT_S}s" in result.detail
+    await asyncio.sleep(0.2)
+    assert not marker.exists()
+    assert await _shell_results(queue) == []
+
+    result = await dispatch_one(
+        "Shell", {"command": f"touch {marker}", "timeout_s": MAX_AGENT_TIMEOUT_S - 1},
+        ctx, {"Shell": Shell},
+    )
+    assert result.success is True
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_doll_shell_keeps_timeouts_past_the_per_agent_cap(tmp_path):
+    """The cap is a worker's: Doll's Shell is not inside a workflow."""
+    from dollos.workflow import MAX_AGENT_TIMEOUT_S
+
+    ctx, queue = _shell_ctx(tmp_path, worker=False)
+    out = await Shell(command="printf hello", timeout_s=MAX_AGENT_TIMEOUT_S * 2).run(ctx)
+    assert "comes back as a new event" in out
+    assert len(await _shell_results(queue, settle=1.0)) == 1
+    await ctx.shell_runner.stop()
 
 
 @pytest.mark.asyncio

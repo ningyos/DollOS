@@ -289,10 +289,25 @@ class Shell(BaseModel):
         failed but the call succeeded: under the worker's stuck_tool rule,
         three greps that found nothing or diffs that found differences would
         otherwise end the worker without a Report. A runner error (the
-        command never ran) fails the call, like a tool's runtime error."""
+        command never ran) fails the call, like a tool's runtime error.
+
+        The worker's whole run is cut off after MAX_AGENT_TIMEOUT_S and keeps
+        nothing, so a timeout_s that reaches the cap could never come back
+        [timeout]: it is refused, a failed call, and nothing runs. The field
+        allows up to 600 because the schema is Doll's too."""
         from dollos.harness.executor import ToolResult
         from dollos.shell_runner import SHELL_PREVIEW_LINES
+        from dollos.workflow import MAX_AGENT_TIMEOUT_S
 
+        if self.timeout_s >= MAX_AGENT_TIMEOUT_S:
+            return ToolResult(tool_name="Shell", success=False, detail=(
+                f"Shell refused: timeout_s={self.timeout_s} does not fit. "
+                f"Inside a workflow a worker's whole run, model calls "
+                f"included, is cut off after {MAX_AGENT_TIMEOUT_S}s and "
+                f"nothing it found is kept. Give a timeout_s well under "
+                f"{MAX_AGENT_TIMEOUT_S}, or Report that the task needs a "
+                f"longer command."
+            ))
         data = await ctx.shell_runner.run_and_wait(
             command=self.command, timeout_s=self.timeout_s,
         )
@@ -306,8 +321,13 @@ class Shell(BaseModel):
             head = f"Shell failed [timeout]: killed after {self.timeout_s}s"
         else:
             head = f"Shell failed [error]: {data['summary']}"
+        # Only the start of the command, as in _summary: enough to tell
+        # parallel results apart (the model has the whole command in its own
+        # call), and a long inline script cannot push the output_id past the
+        # runner's cut.
+        cmd = self.command if len(self.command) <= 60 else f"{self.command[:60]}…"
         lines = [
-            f"{head} (command={self.command!r})",
+            f"{head} (command={cmd!r})",
             "Inside a workflow the result comes straight back here; no "
             "ToolResultArrived event will follow.",
         ]

@@ -331,6 +331,16 @@ def test_subagent_scaffolding_documents_scratchpad():
     assert "your own private" in out.lower()
 
 
+def test_subagent_scaffolding_states_the_per_agent_cap():
+    """A workflow worker learns its run's wall-clock cap before a Shell is
+    refused for it (plan 2026-10-28 decision 2: a worker's Shell waits inside
+    the cap). Keepers render it without one: no Shell, their own caps."""
+    out = PromptRenderer().render("subagent_scaffolding", agent_timeout_s=300)
+    assert "cut off after 300 s" in out
+    assert "`timeout_s` of 300 or more is refused" in out
+    assert "cut off after" not in PromptRenderer().render("subagent_scaffolding")
+
+
 def test_scaffolding_has_interrupts_section():
     renderer = PromptRenderer()
     out = renderer.render("scaffolding")
