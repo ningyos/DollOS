@@ -125,6 +125,7 @@ DollOS/
 | 基礎人設模板（中英兩版，跟 pack 的 `[meta].language` 切換；BASE_BANNED 客服腔清單併入 enforcement；演化 skeptic 也看得到基礎人設；拿掉 Yes Man、Gura 英文、新增大肥魚〔本機自用〕；spec `2026-10-25-base-persona-template-design.md`） | Merged 2026-10-26 |
 | Harness S1–S7（principal 四值 + `TOOL_MATRIX`、TurnPolicy、ToolRegistry/ToolExecutor、單一 TurnRunner、讀外部內容後降權、MCP client；另修 `[Recent outputs]` 和 transcript 的陌生人外洩；plan `2026-10-27-harness-s2-s7.md`，live 驗收 `docs/research/2026-10-27-harness-live-acceptance.md`） | Merged 2026-10-27 |
 | 記住糾正（當下 PinSelf〔主人在場的對話回合，只寫 user／relationship〕＋每天 profile keeper〔`EditOwnerProfile`，要引用主人原話〕；陌生人只看得到 self 區；plan `2026-10-27-remember-corrections.md`，live 驗收 `docs/research/2026-10-27-remember-corrections-live.md`） | Merged 2026-10-28 |
+| 工具驗收擋路的 4 個 bug（`WriteSchedule` 改成加／刪＋`[Today's schedule]`；worker 的 Shell 直接等結果；同一輪的拒絕只算 1 次；降權跟著頁走，降權時的筆記進 `external_owner/`；plan `2026-10-28-tool-use-blockers.md`，重跑結果在 `docs/research/2026-10-28-v1-tool-use-acceptance.md`「修補後重跑」：擋路情境 4/4 過，3.4 是 2/3） | Merged 2026-10-28 |
 
 ### 已歸檔（被後續 step 取代）
 

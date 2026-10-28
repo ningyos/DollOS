@@ -2,7 +2,7 @@
 
 **依據**：`docs/research/2026-10-28-v1-tool-use-acceptance.md`（基準 FAIL，main `414b621`）、spec `docs/superpowers/specs/2026-10-28-v1-tool-use-acceptance-design.md`
 **日期**：2026-10-28
-**狀態**：APPROVED（使用者 2026-10-28「plan 核可」）
+**狀態**：MERGED 2026-10-28（使用者「合併（不推）」；fast-forward 到 `526160e`，沒推）。重跑結果：擋路的 4 個情境都過，3.4 是 2/3（第 1 次沒過，加跑 2 次都過）
 **分支 / worktree**：`fix/tool-use-blockers`，`.worktrees/tool-use-blockers/`（從本機 `main` 開）
 
 ---
