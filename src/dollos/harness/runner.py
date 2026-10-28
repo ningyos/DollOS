@@ -29,9 +29,10 @@ How a turn ends (``TurnResult.outcome``):
 - ``failed``: ``failure_rule`` tripped (``safe_mode``: the same tool failed
   3x in a row or ``SAFE_MODE_FAIL_THRESHOLD`` consecutive failures —
   ``reason`` says which, MindLoop enters safe mode; ``stuck_tool``: one
-  tool's failures reached 3, counted across other tools' failures);
-  ``UNBOUND_REJECT_LIMIT`` refusals of one offered-but-unbound tool; or
-  ``max_passes`` passes that all called tools.
+  tool's failures reached 3, counted across other tools' failures); one
+  offered-but-unbound tool refused in ``UNBOUND_REJECT_LIMIT`` passes
+  (parallel refusals in one pass count once); or ``max_passes`` passes that
+  all called tools.
 - ``brain_down``: a ``ModelError`` (``error``); the caller raises it.
 """
 from __future__ import annotations
@@ -82,10 +83,13 @@ UNCUT_TOOLS = frozenset({"InvokeSkill"})
 # (plan 2026-10-18 Task 9): every call in a reply must have its tool message.
 NOT_RUN = "not run: turn interrupted"
 
-# A tool refused this many times in one turn because it is offered but not
-# bound ends the turn. Refusals are not failures (no safe mode), but agenda /
-# diary / pulse / safe-mode turns see e.g. Shell's schema and could otherwise
-# spend every pass on refused calls.
+# A tool refused in this many passes of one turn because it is offered but
+# not bound ends the turn. Refusals are not failures (no safe mode), but
+# agenda / diary / pulse / safe-mode turns see e.g. Shell's schema and could
+# otherwise spend every pass on refused calls. Several refusals of one tool
+# in the same pass (parallel calls) count once, so she still gets the next
+# pass to see them and say so (plan 2026-10-28 decision 3). The count runs
+# for the whole turn; passes without a refusal do not reset it.
 UNBOUND_REJECT_LIMIT = 3
 
 # Read-only safe mode (spec §8.3). After this many CONSECUTIVE tool failures
@@ -289,7 +293,8 @@ class _Pass:
 class _Failures:
     """The turn's tool-failure counters (``TurnPolicy.failure_rule``). A
     refusal of an offered-but-unbound tool counts toward neither rule, only
-    toward ``UNBOUND_REJECT_LIMIT``."""
+    toward ``UNBOUND_REJECT_LIMIT``: ``unbound`` is, per tool, how many
+    passes of the turn refused it."""
 
     def __init__(self, rule: str) -> None:
         self._rule = rule
@@ -299,9 +304,14 @@ class _Failures:
         self.unbound: dict[str, int] = {}
 
     def add(self, results: list[ToolResult]) -> None:
+        """One pass's results, in call order."""
+        refused: set[str] = set()
         for r in results:
             if r.unbound:
-                self.unbound[r.tool_name] = self.unbound.get(r.tool_name, 0) + 1
+                # Parallel refusals of one tool in a pass count once.
+                if r.tool_name not in refused:
+                    refused.add(r.tool_name)
+                    self.unbound[r.tool_name] = self.unbound.get(r.tool_name, 0) + 1
             elif r.success:
                 self._per_tool.clear()
                 self._last_failed = None
@@ -448,12 +458,12 @@ class TurnRunner:
             refused = failures.refused()
             if refused is not None:
                 logger.info(
-                    "%s: unbound tool %s refused %d times; ending the turn",
+                    "%s: unbound tool %s refused in %d passes; ending the turn",
                     turn.purpose, refused, UNBOUND_REJECT_LIMIT,
                 )
                 return finish(
                     "failed", "unbound_limit",
-                    reason=f"{refused} refused {UNBOUND_REJECT_LIMIT}x",
+                    reason=f"{refused} refused in {UNBOUND_REJECT_LIMIT} passes",
                 )
 
         logger.warning(
