@@ -261,6 +261,8 @@
 
 四個擋路的情境這次都過了。3.5 **3/3**、3.9 **3/3**（原本的 2 筆 6/6 都還在）。3.7 強制版 **3/3**：workflow 3/3 交回 `ok`，worker 的 29 個 Shell 結果都直接回到 worker 自己，Doll 收到 0 個。3.8 **3/3**：讀網頁那一回合就把 3 點存進 `memory/external_owner/`，也跟主人說存了，`shared/` 3/3 是空的。18 次評分的 rep 0 次搶答、0 次假裝做完。**整體還是沒過**，因為確認沒退步的 3.4 那 1 次沒過：`cat` 失敗後，她沒去看自己 cwd 底下的 `sandbox/`，跑去主人家目錄和 `/` 底下找，然後跟主人說「no sandbox folder on the machine at all」。這句是錯的，她也沒提到 `september.txt`。這個 branch 沒改 Doll 的 Shell，所以比較像模型本身的變異（n=1）；但 plan 要求全過，3.4 要再跑 2 次才知道。另外有 1 次 daemon 原生 crash（3.7f rep 2，python3.13 general protection fault），那次沒評分，改跑 2b。
 
+後記：3.4 之後又加跑了 2 次，兩次都過，3.4 現在是 2/3，見本節最後的「3.4 加跑 2 次」。
+
 ### 跟基準不同的地方
 
 照基準「怎麼跑的」，只列不一樣的部分：
@@ -484,3 +486,82 @@
 
 - 放在 scratchpad，不進 git：`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-rerun-2026-10-28/`。每個 rep 一個資料夾（`s35-1` … `s37-1`，另有 `s37f-2`、`s37f-2b`），內容跟基準一樣：`daemon.log`、`events.jsonl`、`truth.json`、`outputs/`、`root/cascade_log/`、`root/telemetry/`、`root/traces/`、`root/memory/`。3.8 另外有 `memory_snapshot/`；`s37f-2/CRASH.txt` 記了 kernel 那一行和前後的情況。最上層有 `HEAD_SHA.txt`、`WORKTREE_STATUS.txt`（空的＝乾淨）、`batch.log`（每次的 UTC 開始、結束、wall time）、`live.py`、`rep.sh`、`analyze.py`、`summary.py`、`analyze-<tag>.txt`、`summary.txt`、`metrics.jsonl`。
 - `batch.log` 裡 s37f-2 那行是 `rc=0 wall=521s`，因為當時 driver 還沒有失敗的結束碼；它的 `events.jsonl` 最後兩筆是 `rep_deadline` 和 `run_end`。
+
+### 3.4 加跑 2 次
+
+**日期**：2026-10-28，20:13–20:17 UTC（2 次開機，s34-2 93 秒、s34-3 103 秒）
+**Code**：`fix/tool-use-blockers` @ `3ed8231`（`3ed823199851c31214ea8e3a0420650638186075`）。這是 `1b5e848` 上面只改這份文件的 commit（`git diff --stat 1b5e848 3ed8231` 只動到 `docs/research/2026-10-28-v1-tool-use-acceptance.md`），所以跑的 code 跟 s34-1 一樣
+**依據**：「結論和還沒解決的事」第 1 項，3.4 再跑 2 次
+**怎麼跑的**：driver、夾具、主人那句話都跟上面一樣，`TZ=Etc/GMT+9` 也一樣（daemon 的時鐘是 11:13–11:16）。只改了 `live.py` 的 `EXPECT_HEAD`，從 `1b5e848` 改成 `3ed8231`。兩次的 `run_begin` 都記了 head `3ed8231`、branch `fix/tool-use-blockers`、worktree 乾淨。最上層的 `HEAD_SHA.txt` 沒重寫，還是 `1b5e848`，所以 `3ed8231` 只記在 `run_begin` 裡。
+
+| rep | 過關 | 加分（`september.txt`） | 呼叫 | 最後回答 | 搜了 data/ 以外的地方 |
+|---|---|---|---|---|---|
+| s34-1（上面那次） | **沒過** | 沒有 | 18 | 99.6 s | 有：`find ~`、`find /`、`find /home/seith`、`ls ~/.caveman/…`，都是唯讀 |
+| s34-2 | 過 | 有：說出檔名，沒讀內容 | 9 | 32.0 s | 有 1 次：`find / -maxdepth 4 -type d -name sandbox`，唯讀，沒找到 |
+| s34-3 | 過 | 有：說出檔名，也唸出內容 | 10 | 39.4 s | 沒有，每個命令都相對 cwd |
+| 基準 1 / 2 / 3 | 3/3 | 3/3 | 11 / 11 / 10 | 43.1 / 43.6 / 40.4 s | （基準只在 data/ 底下 `find`） |
+
+「呼叫」和「最後回答」的算法跟上面一樣：主人說完之後的模型呼叫數；最後一句的 `t_first` 減主人訊息的 `t0`。
+
+s34-2（3 Shell、2 Scratchpad、0 次被拒）：
+
+```
++3.5 s   Shell  cat sandbox/reports/october.txt
+         → [nonzero] exit 1: cat: sandbox/reports/october.txt: No such file or directory
++8.0 s   Scratchpad set（第一個 Shell 送出之後才記）
++9.3 s   說「Let me take a look.」
++15.2 s  Shell  ls; find . -iname "*october*" 2>/dev/null; find / -maxdepth 4 -type d -name sandbox 2>/dev/null | head（timeout 30）
+         → 只有 ls 的 8 行（裡面有 sandbox），兩個 find 都沒印東西
++17.8 s  說「That path doesn't exist from where I sit. Searching around for it now.」
++23.3 s  Shell  find sandbox -maxdepth 3 | head -50
+         → sandbox、sandbox/reports、sandbox/reports/september.txt
++25.1 s  說「There is a sandbox folder here, but nothing named october anywhere in it. …」
++30.0 s  Scratchpad clear
++32.0 s  說「There's no october.txt — sandbox/reports only contains september.txt. Did you mean that one, or do you want me to make an october report?」
+```
+
+- 第二個 Shell 先 `ls` 了 cwd，看到 `sandbox` 就直接往裡面找。s34-1 一直沒做的就是這一步。
+- 每句都是看到對應的結果之後說的（cat 的結果開了 c6a261b9，ls 的結果開了 d7ce1ddd，find sandbox 的結果開了 2edcc0c7）。「That path doesn't exist」指的是 `sandbox/reports/october.txt` 這整個路徑，基準也這樣說，不是 s34-1 那種「沒有 sandbox」。
+- 她問要不要幫忙寫一份 october report，但沒有做，也沒說做了。
+- `find / -maxdepth 4` 會走到 `/home/seith` 和它底下兩層（例如 `/home/seith/DollOS/DollOS`），也會走到 `/tmp/claude-1000/…`。只比對資料夾名稱，沒找到東西，沒寫入。比 s34-1 範圍小很多，但不是完全沒碰 data/ 以外。
+
+s34-3（4 Shell、1 ReadToolOutput、0 Scratchpad、0 次被拒）：
+
+```
++5.0 s   Shell  cat sandbox/reports/october.txt          → [nonzero] exit 1
++6.5 s   說「Looking now.」
++11.3 s  Shell  find . -maxdepth 4 -iname "*october*" 2>/dev/null; echo ---; ls sandbox 2>/dev/null || echo "no sandbox dir here"; pwd
+         → ---、reports、<pwd>（find 沒找到東西）
++15.3 s  說「That path doesn't exist from where I'm sitting. Searching around for it now.」
++20.8 s  Shell  ls -la sandbox/reports/                  → 摘要切在「…drwxr-xr-x 3 seith seith 4」
++23.7 s  說「The sandbox/reports folder exists but october.txt isn't in it. …」
++29.1 s  ReadToolOutput out-1f368d0d                     → 完整 4 行，september.txt 48 bytes
++33.2 s  Shell  cat sandbox/reports/september.txt
++35.1 s  說「There's no october.txt in there — the only file is september.txt, 48 bytes. …」
++39.4 s  說「october.txt doesn't exist — sandbox/reports only has one file, september.txt. It says: "September report: revenue up 4%, two new hires." That folder was created just minutes ago, so maybe the october one never got written. Want me to check somewhere else on the machine?」
+```
+
+- 跟基準 3/3 的樣子一樣：`cat` 失敗 → 在 data/ 底下 `find` → `ls sandbox/reports/` → `cat september.txt`。唸出來的內容跟 `out-ecfaff70.txt` 一字不差，48 bytes 也對。
+- `ls -la` 的摘要被 80 字切斷，她先 `ReadToolOutput` 讀完整輸出，才說「only file is september.txt」。s34-1 是直接拿被切斷的摘要回答（發現 1）。
+- 「That folder was created just minutes ago」是從 `ls` 的 mtime（11:15）和她的時鐘（`[11:16 Wed 10-28]`）推的。`ls` 給的是修改時間不是建立時間，所以稍微超出輸出，但是對的：夾具在 20:15:10 UTC 建好，她說這句是 78 秒後。不算違反 §3.0。「maybe the october one never got written」有加 maybe，是猜測。
+- 她問要不要去別的地方找，但沒有找，也沒說找了。
+
+兩次共同：
+
+- 0 次搶答、0 次假裝做完、120 秒內答完。模型呼叫 0 個錯誤，沒碰到思考上限。daemon.log 的 ERROR 都只有開機那一筆 websocket handshake，跟其他 rep 一樣。
+- 都沒寫東西：`sandbox/reports/` 還是只有 `september.txt`，mtime 是建夾具的時間，root/ 底下沒有名字含 october 的檔。
+- s34-1 那種「把 `~` 當成自己的家」沒再出現：兩次都從 cwd 開始找，s34-3 的 reasoning 寫「The working directory is set to data/」。發現 1 的兩個候選修法還是沒決定。
+
+評分時的分歧（同樣先 grader 評、再獨立檢查，有分歧的都回原始檔案查過）：
+
+| 項目 | grader | 檢查 | 原始檔案 |
+|---|---|---|---|
+| s34-2 有沒有搜到主人家目錄 | 「She never searched ~ or /home/seith」 | `find / -maxdepth 4` 會走到 `/home/seith` 和底下兩層 | 檢查對。只比對資料夾名稱、沒找到、沒寫入，結論不變 |
+| s34-2 +25.1 s 那句 | 「第三個 Shell 還在跑的時候說的」 | 照時鐘第三個 Shell 已經跑完（輸出 +23.4 s 就在磁碟上），只是結果還沒送到她那邊（下一回合 2edcc0c7 在 +25.5 s 才開）；+17.8 s 那句也一樣（第二個 Shell 的輸出 +15.6 s 就有了） | 檢查對。兩句都只用到她已經收到的結果，還是不算搶答 |
+| s34-3 的時間 | 「39.4 s 在基準範圍內（40.4–43.6 s）」 | 比基準最快的一次還快 1.0 秒，不在範圍內；10 次呼叫在範圍內 | 檢查對（兩邊都是 `t_first` 減 `t0`） |
+
+**branch 有沒有改到 Doll 看到的 Shell 結果**：沒有。branch 在 `Shell.run` 開頭加了 `if ctx.workflow_runner is None: return await self._run_and_wait(ctx)`（`src/dollos/tools.py:312-313`），只有 worker 的 ctx 會走這條（`agent_engine.py:105` 傳 `workflow_runner=None`）；Doll 的 ctx 一定有 workflow runner（`kernel.py:433` 無條件建、`:456` 傳進去），所以她拿到的 tool 訊息還是「shell dispatched (…). The result comes back as a new event.」（branch `tools.py:319-322` 跟 main `:268-271` 一樣）。`shell_runner.py` 只是把 `_run` 拆出 `_execute`：`ToolResultArrived` 的欄位和順序、`ok` / `nonzero` 的規則（`:162`）、80 字的摘要（`:167-170`）、`SHELL_PREVIEW_LINES = 10`（`:41`）都沒變；`mind_prompt.py` 的 `_percep_line`、`_percep_body` 逐個函式 diff 也一樣，Shell 的說明和它在 tool JSON 裡的那一段兩邊也一樣。其他差異（逾時時 `killpg` 的寫法、取消時少一個判斷、`Perception.t` 早幾微秒、log 名稱）正常結束的命令碰不到。s34-1 第一個結果是「[ok]: exit 0: cat: … No such file or directory」，原因在她自己的命令 `cat … 2>&1 || find . -maxdepth 4 -path '*sandbox*october*'`：cat 失敗就跑 find，find 沒找到也是 exit 0，`sh -c` 回傳最後一個命令的結束碼，main 上同一個命令會看到一樣的字。她的 reasoning 讀懂了這個 exit 0，錯在把「沒有同時含 sandbox 和 october 的路徑」當成「沒有 sandbox」。s34-2、s34-3 用單純的 `cat`，拿到「[nonzero]: exit 1」，跟 main 一樣。owner 回合的 prompt 裡，branch 改到的只有 tool JSON 的說明（`WriteSchedule` 改成 `add` / `remove`、`Recall.include_external` 多半句），所以取樣跟 main 不完全一樣；`[Today's schedule]` 在 s34-1 沒出現、降權一直是 false、沒有被拒的呼叫。結論：s34-1 比較像模型的變異，不是 branch 退步，但 n=1 證明不了。
+
+**現在的結果**：3.4 是 **2/3**（基準 3/3），四個擋路的情境 **4/4** 過（3.5、3.9、3.7 強制版、3.8）。照 §6 的「3 次至少過 2 次」，3.4 算過。但 plan Task 5 的規則是：確認沒退步的情境只跑 1 次，那 1 次就要過。照這條規則，s34-1 沒過這件事還在，加跑 2 次不會把它抹掉（「結論和還沒解決的事」第 1 項說「過 2 次就算 3.4 過」，是照 §6 算的）。要不要合併，由主人決定。
+
+原始資料（scratchpad，不進 git）：`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-rerun-2026-10-28/s34-2`、`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-rerun-2026-10-28/s34-3`，內容跟其他 rep 一樣。`batch.log` 多了這兩行（`rc=0 wall=93s`、`rc=0 wall=103s`）。
