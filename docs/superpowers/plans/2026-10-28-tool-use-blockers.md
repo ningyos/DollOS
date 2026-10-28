@@ -2,7 +2,7 @@
 
 **依據**：`docs/research/2026-10-28-v1-tool-use-acceptance.md`（基準 FAIL，main `414b621`）、spec `docs/superpowers/specs/2026-10-28-v1-tool-use-acceptance-design.md`
 **日期**：2026-10-28
-**狀態**：DRAFT（等使用者核可）
+**狀態**：APPROVED（使用者 2026-10-28「plan 核可」）
 **分支 / worktree**：`fix/tool-use-blockers`，`.worktrees/tool-use-blockers/`（從本機 `main` 開）
 
 ---
