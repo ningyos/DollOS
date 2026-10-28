@@ -18,6 +18,7 @@ from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import render_tool_habits
 from dollos.schedule import Schedule
+from dollos.tools import external_memory_tag
 
 # Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice):
 # mind_loop.py's _derive_memory_hits adds a loop older than this (strict `>`)
@@ -410,12 +411,9 @@ def _render_memory(hits: list[dict]) -> str:
         # sibling like external_public_evil/ never matches.
         # S1: _derive_memory_hits now excludes external_public/ on owner and
         # internal turns, so this tag is defense in depth here; it shows up
-        # in practice only on Recall(include_external=True).
-        prefix = (
-            "[external AI · unverified] "
-            if "external_public/" in (h.get("source") or "")
-            else ""
-        )
+        # in practice only on Recall(include_external=True). external_owner/
+        # (plan 2026-10-28 decision 4) is excluded and tagged the same way.
+        prefix = external_memory_tag(h.get("source") or "")
         lines.append(f"- {prefix}{_clip(content, MEMORY_HIT_MAX_CHARS)}")
     return "\n".join(lines)
 
@@ -444,7 +442,8 @@ def _render_associative(hits: list[dict]) -> str:
 
     S1: MindLoop now passes ``exclude_prefixes=[external_public/]`` on owner
     and internal turns, so this tag is defense in depth here; it shows up in
-    practice only on ``Recall(include_external=True)``.
+    practice only on ``Recall(include_external=True)``. ``external_owner/``
+    (plan 2026-10-28 decision 4) is excluded and tagged the same way.
     """
     if not hits:
         return "(none)"
@@ -456,11 +455,7 @@ def _render_associative(hits: list[dict]) -> str:
         if len(snippet) > 100:
             snippet = snippet[:97] + "..."
         tag = f"{axis}={value}" if axis else "?"
-        prefix = (
-            "[external AI · unverified] "
-            if "external_public/" in (h.get("source") or "")
-            else ""
-        )
+        prefix = external_memory_tag(h.get("source") or "")
         lines.append(f"- [{tag}] {prefix}{snippet}")
     return "\n".join(lines)
 

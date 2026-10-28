@@ -16,14 +16,18 @@ short argument summary, the decision, and whether the turn was tainted.
 Taint downgrade (spec §6.5 point 2, plan Task 6): once an allowed call that
 asked for untrusted content has run, failed or not (its tool class's
 ``taints(arguments)`` is true), the rest of the turn may only run
-``permissions.TAINTED_TOOLS``. The flag lives on ``ctx.tainted`` (MindLoop
-resets it every turn; an agent's ctx is fresh), so it holds across the
-per-call executors MindLoop builds and across passes. The offered list
-does not change (plan decision 4: the tool JSON stays byte-identical for
-the server cache); a tool that was bound but no longer is gets the same
-"not available in this turn" refusal as any unbound one. An
-external_public turn is never tainted: its row is already the floor, and
-tainting would strip NoteMemory from strangers.
+``permissions.TAINTED_TOOLS``. The flag lives on ``ctx.tainted``, so it holds
+across the per-call executors MindLoop builds and across passes. MindLoop
+starts each turn with its conversation page's taint (plan 2026-10-28
+decision 4: the untrusted text stays on the page) and writes it back after
+the turn; an agent's ctx is fresh. The refusal says which: "after reading
+external content" when this turn read it, "this conversation has external
+content in it" when the page already had it (``ctx.tainted_by_page``). The
+offered list does not change (2026-10-27 plan decision 4: the tool JSON
+stays byte-identical for the server cache); a tool that was bound but no
+longer is gets the same "not available in this turn" refusal as any
+unbound one. An external_public turn is never tainted: its row is already
+the floor, and tainting would send strangers' notes to ``external_owner/``.
 
 ``dispatch_one`` (validate + run one call against a registry) is shared by
 the MindLoop turn and the agents (``agent_engine.run_agent``).
@@ -50,6 +54,9 @@ logger = logging.getLogger(__name__)
 _log = structlog.get_logger("cascade")
 
 Decision = Literal["allow", "deny", "unbound"]
+# Why a turn is tainted: one of its own calls read untrusted content
+# ("turn"), or its conversation page already had some on it ("page").
+Taint = Literal["turn", "page"]
 
 # The argument summary in the log record is cut here; a Shell command is cut
 # much sooner, so the log never holds a whole command line (it can carry a
@@ -150,12 +157,15 @@ async def dispatch_one(
 
 
 def turn_label(
-    kind: "TurnKind", principal: "Principal", *, tainted: bool = False,
+    kind: "TurnKind", principal: "Principal", *, taint: Taint | None = None,
 ) -> str:
     """The turn as named in the refusal of an offered-but-unbound tool:
-    a tainted turn, then safe mode, then a stranger's turn, then the kind (a
-    conversation is "owner" when the owner is present, else "normal")."""
-    if tainted:
+    a tainted turn (why: its page, or its own read), then safe mode, then a
+    stranger's turn, then the kind (a conversation is "owner" when the owner
+    is present, else "normal")."""
+    if taint == "page":
+        return "this conversation has external content in it"
+    if taint == "turn":
         return "after reading external content"
     if kind == "safe_mode":
         return "safe mode"
@@ -216,14 +226,17 @@ class ToolExecutor:
         self._kind = kind
         self._dispatch = dispatch
 
-    def _tainted(self) -> bool:
-        # external_public is never tainted (module docstring); the check is
-        # here too so a flag set some other way cannot narrow its row.
-        return self._ctx.tainted and self._principal != "external_public"
+    def _taint(self) -> Taint | None:
+        """Why this turn is tainted, or None. external_public is never
+        tainted (module docstring); the check is here too so a flag set some
+        other way cannot narrow its row."""
+        if not self._ctx.tainted or self._principal == "external_public":
+            return None
+        return "page" if self._ctx.tainted_by_page else "turn"
 
     def _effective_bound(self) -> Mapping[str, type]:
         """``bound``, narrowed to ``TAINTED_TOOLS`` once the turn is tainted."""
-        if not self._tainted():
+        if self._taint() is None:
             return self._bound
         return {n: c for n, c in self._bound.items() if n in TAINTED_TOOLS}
 
@@ -236,12 +249,12 @@ class ToolExecutor:
 
     async def run(self, name: str, arguments: dict) -> ToolResult | None:
         decision = self.decide(name)
-        tainted = self._tainted()
-        self._log(name, arguments, decision, tainted)
+        taint = self._taint()
+        self._log(name, arguments, decision, taint is not None)
         bound = self._effective_bound()
         if decision == "unbound":
             available = ", ".join(sorted(bound)) or "(none)"
-            label = turn_label(self._kind, self._principal, tainted=tainted)
+            label = turn_label(self._kind, self._principal, taint=taint)
             return ToolResult(
                 tool_name=name,
                 success=False,

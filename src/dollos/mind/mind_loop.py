@@ -62,6 +62,7 @@ from dollos.perception.system_pulse import thermal_multiplier
 from dollos.schedule import Schedule, load_schedule
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
+from dollos.tools import EXTERNAL_MEMORY_DIRS
 from dollos.wal.perception_log import PerceptionWAL
 
 logger = logging.getLogger(__name__)
@@ -505,9 +506,9 @@ class MindLoop:
         self._ctx.external_ctx = batch_external(perceptions)
         self._ctx.principal = principal_of(perceptions)
         self._ctx.origin_tier = ORIGIN_TIER[self._ctx.principal]
-        # A new turn starts untainted (spec §6.5 point 2): the downgrade
-        # lasts for the rest of ONE turn, never into the next.
-        self._ctx.tainted = False
+        # The turn's taint (spec §6.5 point 2) is its page's: _llm_iterate
+        # sets ctx.tainted from this turn's conversation, once it is known
+        # whether the turn opened a new page.
         # Which self_profile sections PinSelf may write (remember-corrections
         # plan Task 2, decision 2), from the batch's kind: in safe mode
         # PinSelf is not bound at all, so the batch's kind is enough.
@@ -562,8 +563,10 @@ class MindLoop:
         # external_public_evil/ (LIKE '<prefix>%' with no boundary would) —
         # mirrors the exclude_prefixes '/%' boundary. See Recall.run.
         # S1 (harness spec §6.5): every other turn (internal, and external_dm
-        # = the owner's DM) excludes external_public/ instead, so strangers'
-        # notes never surface here unasked.
+        # = the owner's DM) excludes EXTERNAL_MEMORY_DIRS instead, so
+        # strangers' notes, and notes taken on a tainted turn
+        # (external_owner/, plan 2026-10-28 decision 4), never surface here
+        # unasked.
         is_public = self._ctx.origin_tier == "external_public"
         try:
             associative_hits = await associative_search(
@@ -577,7 +580,7 @@ class MindLoop:
                 ),
                 exclude_prefixes=(
                     None if is_public
-                    else [self._ctx.memory_root / "external_public"]
+                    else [self._ctx.memory_root / d for d in EXTERNAL_MEMORY_DIRS]
                 ),
             )
         except Exception:
@@ -1100,10 +1103,11 @@ class MindLoop:
         Doll's memory. Explicit ``Recall`` is the only retrieval path on
         such turns, and it scopes out the private tier (tools.py).
 
-        S1 (harness spec §6.5): on every other turn ``external_public/`` is
-        excluded too, so a stranger's note never reaches the owner's or
-        Doll's own turn unasked; ``Recall(include_external=True)`` is the
-        only way to read it there.
+        S1 (harness spec §6.5): on every other turn ``EXTERNAL_MEMORY_DIRS``
+        are excluded too, so a stranger's note, or one taken on a tainted
+        turn (``external_owner/``, plan 2026-10-28 decision 4), never reaches
+        the owner's or Doll's own turn unasked;
+        ``Recall(include_external=True)`` is the only way to read them there.
         """
         if self._ctx.origin_tier == "external_public":
             return []
@@ -1134,7 +1138,7 @@ class MindLoop:
             hits = await self._ctx.memsearch.search(
                 query, top_k=10, exclude_prefixes=[
                     self._ctx.transcripts_root,
-                    self._ctx.memory_root / "external_public",
+                    *(self._ctx.memory_root / d for d in EXTERNAL_MEMORY_DIRS),
                 ],
             )
             # B2 candidate pull-only: consolidated/ sources are never auto-injected
@@ -1454,6 +1458,18 @@ class MindLoop:
                 if r.tool_name == "Recall" and r.success:
                     self._ctx.external_ctx = True
 
+        # Taint follows the page (spec §6.5, plan 2026-10-28 decision 4): the
+        # untrusted text an earlier turn read is still in ``conv.messages``,
+        # so a tainted page starts the turn tainted; a new page, and a
+        # one-off (never stored), start clean. external_public is never
+        # tainted (harness.executor). Written back in ``finally`` below, so a
+        # turn that read untrusted content and then raised or was cancelled
+        # still leaves its page tainted; only ever set there, so a turn that
+        # is not tainted (external_public) cannot clear it.
+        self._ctx.tainted_by_page = (
+            conv.tainted and self._ctx.principal != "external_public"
+        )
+        self._ctx.tainted = self._ctx.tainted_by_page
         try:
             self._cascade_ctx = CascadeCtx()
             turn_id = self._cascade_logger.start_turn() if self._cascade_logger is not None else None
@@ -1496,6 +1512,8 @@ class MindLoop:
             if result.ended_by == "safe_mode":
                 self._enter_safe_mode(result.reason)
         finally:
+            if self._ctx.tainted:
+                conv.tainted = True
             if turn_trace is not None:
                 # speech = this turn's full spoken text; silence = none spoken.
                 speech = self._collect_turn_speech()
@@ -1659,7 +1677,14 @@ class MindLoop:
         # English word, or a raise) did nothing, so it is not logged either.
         failed = r is not None and not r.success
         if self._ctx.origin_tier != "external_public" and not failed:
-            phrase = action_phrase_for_tool(name, arguments, prior_mood)
+            # A note on a tainted turn went to external_owner/ (plan
+            # 2026-10-28 decision 4); its text stays out of transcripts/
+            # too, which the diary's [Today's log] and an owner Recall read
+            # as hers.
+            if name == "NoteMemory" and self._ctx.tainted:
+                phrase = "noted external content"
+            else:
+                phrase = action_phrase_for_tool(name, arguments, prior_mood)
             if phrase:
                 try:
                     await append_action_log(

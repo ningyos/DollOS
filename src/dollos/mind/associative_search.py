@@ -102,8 +102,10 @@ async def associative_search(
     (the default) is fully unchanged behavior — full unscoped recall.
 
     ``exclude_prefixes`` (S1): threaded straight into ``memsearch.search``'s
-    SQL-level exclusion — MindLoop passes the ``external_public/`` dir on
-    every other turn so strangers' notes never auto-surface here.
+    SQL-level exclusion — MindLoop passes the ``tools.EXTERNAL_MEMORY_DIRS``
+    dirs (``external_public/``, ``external_owner/``) on every other turn so
+    strangers' notes, and notes taken on a tainted turn, never auto-surface
+    here.
     """
     if now is None:
         now = datetime.now()
