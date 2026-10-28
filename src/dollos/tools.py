@@ -12,6 +12,7 @@ streamable / fast metadata — YAGNI.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -26,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dollos.mind import scratchpad_helpers
 from dollos.mind.mind_state import OutputRecord
+from dollos.tool_outputs import UNTRUSTED_OUTPUT_PREFIX
 
 if TYPE_CHECKING:
 
@@ -211,6 +213,9 @@ class NoteMemory(BaseModel):
         # it goes to external_owner/ (plan 2026-10-28 decision 4), and its
         # [Recent outputs] record leaves the text out: a later page's
         # snapshot and the diary request would show it as her own record.
+        # A short digest of the text stands in for it, so different notes
+        # are different records and the repeat detector only sees the same
+        # note written again as a repeat.
         if ctx.tainted:
             subdir = _TAINTED_DIR
         else:
@@ -224,7 +229,8 @@ class NoteMemory(BaseModel):
             f.write(f"\n## {heading}\n\n{self.text}\n")
         await ctx.memsearch.index_file(path)
         if ctx.tainted:
-            _record(ctx, "NoteMemory", "noted external content")
+            digest = hashlib.sha1(self.text.encode("utf-8")).hexdigest()[:6]
+            _record(ctx, "NoteMemory", f"noted external content #{digest}")
             return (
                 "memory noted as external content (Recall finds it only with "
                 f"include_external): {self.text[:60]}"
@@ -861,6 +867,12 @@ class WriteSchedule(BaseModel):
         return result
 
 
+def _reads_untrusted_output(arguments: dict) -> bool:
+    """Whether a ReadToolOutput / GrepToolOutput call names an output that an
+    untrusted MCP server returned (``tool_outputs.UNTRUSTED_OUTPUT_PREFIX``)."""
+    return str(arguments.get("id", "")).startswith(UNTRUSTED_OUTPUT_PREFIX)
+
+
 class ReadToolOutput(BaseModel):
     """Read a slice of a stored tool output by id.
 
@@ -887,6 +899,14 @@ class ReadToolOutput(BaseModel):
         description="max lines to return (1-500).",
     )
 
+    @classmethod
+    def taints(cls, arguments: dict) -> bool:
+        """Whether this call reads untrusted content (harness spec §6.5): an
+        ``ext-`` id is an untrusted MCP server's result. The store outlives
+        the page that fetched it, so reading it on another page taints that
+        turn the way the fetch did."""
+        return _reads_untrusted_output(arguments)
+
     def _summary(self) -> str:
         return f"read tool output {self.id} offset={self.offset} limit={self.limit}"
 
@@ -912,6 +932,11 @@ class GrepToolOutput(BaseModel):
     id: str = Field(..., description="output id from a tool result perception")
     pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")
     max_matches: int = Field(20, ge=1, le=200, description="max matching lines to return")
+
+    @classmethod
+    def taints(cls, arguments: dict) -> bool:
+        """As ``ReadToolOutput.taints``: grepping an ``ext-`` output reads it."""
+        return _reads_untrusted_output(arguments)
 
     def _summary(self) -> str:
         return f"grep tool output {self.id} pattern={self.pattern[:40]!r}"

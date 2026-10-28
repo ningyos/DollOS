@@ -12,12 +12,20 @@ from dollos.mind.mind_state import MindState, ToolFailure
 logger = logging.getLogger(__name__)
 
 
-def record_tool_outcome(state: MindState, name: str, result) -> None:
+# What a failure's detail reads as when it may carry untrusted content.
+UNTRUSTED_FAILURE_DETAIL = "error text from external content (not shown)"
+
+
+def record_tool_outcome(state: MindState, name: str, result, *, untrusted: bool = False) -> None:
     """Record one tool dispatch outcome. Observability only — never raises.
 
     result: None (side-effect tool ran cleanly) or a ToolResult.
     setdefault is intentionally placed AFTER result.success is accessed so a
     malformed result that raises AttributeError leaves no zombie entry in tool_stats.
+    untrusted: the failure's detail may carry untrusted content (harness spec
+    §6.5: an untrusted MCP server's isError text, or any failure on a tainted
+    turn). Tool memory is Doll's, not the page's, and reflection shows it on
+    untainted turns, so only the failure itself is kept.
     """
     try:
         ok = result is None or result.success
@@ -26,8 +34,9 @@ def record_tool_outcome(state: MindState, name: str, result) -> None:
             stat["ok"] += 1
         else:
             stat["fail"] += 1
+            detail = UNTRUSTED_FAILURE_DETAIL if untrusted else (result.detail or "")[:200]
             state.recent_tool_failures.append(
-                ToolFailure(t=time.time(), tool=name, detail=(result.detail or "")[:200])
+                ToolFailure(t=time.time(), tool=name, detail=detail)
             )
     except Exception:
         logger.exception("record_tool_outcome failed for %s; continuing", name)

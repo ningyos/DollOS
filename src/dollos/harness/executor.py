@@ -156,6 +156,15 @@ async def dispatch_one(
     return ToolResult(tool_name=name, success=True, detail=returned)
 
 
+def call_taints(tool: type | None, arguments: dict) -> bool:
+    """Whether a call of ``tool`` asks for untrusted content. Most tools
+    define no ``taints``; Recall's is ``include_external``; an MCP tool's is
+    its server's ``untrusted_output`` (plan Task 7); ReadToolOutput's and
+    GrepToolOutput's is an ``ext-`` id (a stored untrusted result)."""
+    taints = getattr(tool, "taints", None)
+    return taints is not None and bool(taints(arguments))
+
+
 def turn_label(
     kind: "TurnKind", principal: "Principal", *, taint: Taint | None = None,
 ) -> str:
@@ -277,13 +286,10 @@ class ToolExecutor:
 
     def _maybe_taint(self, name: str, arguments: dict) -> None:
         """Taint the turn after an allowed call that asked for untrusted
-        content. Most tools define no ``taints``; Recall's is
-        ``include_external``; an MCP tool's is its server's
-        ``untrusted_output`` (plan Task 7)."""
+        content (``call_taints``)."""
         if self._principal == "external_public" or self._ctx.tainted:
             return
-        taints = getattr(self._bound[name], "taints", None)
-        if taints is None or not taints(arguments):
+        if not call_taints(self._bound[name], arguments):
             return
         self._ctx.tainted = True
         try:

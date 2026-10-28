@@ -14,7 +14,10 @@ and binds like built-ins (``ToolRegistry.register_mcp``).
   tools' permission row. Turn kinds: only a conversation binds MCP tools
   (``TurnPolicy.mcp_tools``).
 - ``untrusted_output = true``: calling one of its tools taints the turn
-  (``taints``; ToolExecutor narrows the rest of the turn, spec §6.5 point 2).
+  (``taints``; ToolExecutor narrows the rest of the turn, spec §6.5 point 2,
+  and MindLoop every later turn on the same conversation page). A result
+  too long for the tool message is stored under an ``ext-`` id, and reading
+  it back taints the reading turn the same way.
 - The tool list is fixed for the run (plan decision 4: the offered tool JSON
   must not change, or the server cache is recomputed). A server's
   ``tools/list_changed`` is logged and ignored until the next boot.
@@ -314,7 +317,9 @@ class McpTool(BaseModel):
         if result.isError:
             return ToolResult(tool_name=name, success=False, detail=text or "error (no text)")
         if len(text) > TOOL_MESSAGE_MAX_CHARS:
-            output_id = ctx.tool_output_store.write(text)
+            # An untrusted server's text gets an ext- id, so reading it back
+            # later, on any page, taints that turn too (ReadToolOutput.taints).
+            output_id = ctx.tool_output_store.write(text, untrusted=self.untrusted_output)
             lines = text.splitlines()
             preview = "\n".join(lines[:PREVIEW_LINES])[:TOOL_MESSAGE_MAX_CHARS]
             return (

@@ -14,7 +14,13 @@ from pydantic import BaseModel
 
 from dollos.cascade.cascade_ctx import CascadeCtx
 from dollos.character import Enforcement
-from dollos.harness.executor import ToolExecutor, ToolResult, dispatch_one, turn_label
+from dollos.harness.executor import (
+    ToolExecutor,
+    ToolResult,
+    call_taints,
+    dispatch_one,
+    turn_label,
+)
 from dollos.harness.permissions import ORIGIN_TIER, principal_of
 from dollos.harness.registry import Offered, ToolRegistry
 from dollos.harness.runner import PassRecord, Turn, TurnRunner
@@ -1669,7 +1675,12 @@ class MindLoop:
         if registry is None:
             registry = self._active_tool_registry()
         r = await dispatch_one(name, arguments, self._ctx, registry)
-        record_tool_outcome(self._ctx.mind_state, name, r)
+        # A failure on a tainted turn, or of a call that taints (the executor
+        # taints the turn only after this returns), may carry untrusted text:
+        # an untrusted server's isError, arguments the page led her to write.
+        # Tool memory outlives the page, so it keeps only the failure.
+        untrusted = self._ctx.tainted or call_taints(registry.get(name), arguments)
+        record_tool_outcome(self._ctx.mind_state, name, r, untrusted=untrusted)
         if name == "WriteDiary":
             self._turn_wrote_diary = True
         # 🔒 C1: never log a stranger turn's action into the owner-tier transcript.
