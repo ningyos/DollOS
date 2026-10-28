@@ -620,51 +620,166 @@ async def test_report_stashes_args_into_ctx_and_returns_none(tmp_path):
     }
 
 
-# ----- WriteSchedule (Phase 1 schedule) -----
+# ----- WriteSchedule (Phase 1 schedule; add / remove, plan 2026-10-28 Task 1) -----
+
+
+def _schedule_path(tmp_path: Path) -> Path:
+    return tmp_path / "schedule" / f"{date.today():%Y-%m-%d}.toml"
+
+
+def _seed_schedule(tmp_path: Path, *entries: tuple[str, str]) -> None:
+    from datetime import time as _time
+
+    from dollos.schedule import ScheduleEntry, write_schedule
+
+    write_schedule(_schedule_path(tmp_path), [
+        ScheduleEntry(time=_time.fromisoformat(t), intent=intent) for t, intent in entries
+    ])
+
+
+def _day(tmp_path: Path) -> list[tuple[str, str]]:
+    from dollos.schedule import load_schedule
+
+    sched = load_schedule(_schedule_path(tmp_path))
+    assert sched is not None
+    return [(f"{e.time:%H:%M:%S}", e.intent) for e in sched.entries]
 
 
 @pytest.mark.asyncio
 async def test_write_schedule_writes_toml_file(tmp_path):
-    from datetime import time as _time
-
-    from dollos.schedule import load_schedule
     from dollos.tools import ScheduleEntryArg, WriteSchedule
 
     ctx, _ms, _sink = _make_ctx(tmp_path)
-    tool = WriteSchedule(entries=[
-        ScheduleEntryArg(time="07:30:00", intent="morning"),
+    out = await WriteSchedule(add=[
         ScheduleEntryArg(time="11:30:00", intent="lunch"),
-    ])
-    out = await tool.run(ctx)
+        ScheduleEntryArg(time="07:30:00", intent="morning"),
+    ]).run(ctx)
     assert "2 entries" in out
-
-    today_str = f"{date.today():%Y-%m-%d}"
-    path = tmp_path / "schedule" / f"{today_str}.toml"
-    assert path.exists()
-    sched = load_schedule(path)
-    assert sched is not None
-    assert sched.entries[0].time == _time(7, 30)
-    assert sched.entries[1].intent == "lunch"
+    # Written sorted by time.
+    assert _day(tmp_path) == [("07:30:00", "morning"), ("11:30:00", "lunch")]
 
 
 @pytest.mark.asyncio
-async def test_write_schedule_overwrites_existing(tmp_path):
+async def test_write_schedule_add_keeps_existing_entries(tmp_path):
+    """Live acceptance 2026-10-28 (3.5): adding a reminder wiped the day's two
+    entries. add merges into today's file."""
     from dollos.tools import ScheduleEntryArg, WriteSchedule
 
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
     ctx, _ms, _sink = _make_ctx(tmp_path)
-    await WriteSchedule(entries=[
-        ScheduleEntryArg(time="07:00:00", intent="old1"),
-        ScheduleEntryArg(time="08:00:00", intent="old2"),
-    ]).run(ctx)
-    await WriteSchedule(entries=[
-        ScheduleEntryArg(time="09:00:00", intent="new"),
-    ]).run(ctx)
+    await WriteSchedule(add=[ScheduleEntryArg(time="15:00:00", intent="tea")]).run(ctx)
+    assert _day(tmp_path) == [
+        ("09:26:00", "stretch"), ("15:00:00", "tea"), ("20:00:00", "dinner"),
+    ]
 
-    today_str = f"{date.today():%Y-%m-%d}"
-    path = tmp_path / "schedule" / f"{today_str}.toml"
-    text = path.read_text()
-    assert "old1" not in text and "old2" not in text
-    assert "new" in text
+
+@pytest.mark.asyncio
+async def test_write_schedule_add_at_existing_time_replaces_that_entry(tmp_path):
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await WriteSchedule(add=[ScheduleEntryArg(time="20:00", intent="late dinner")]).run(ctx)
+    assert _day(tmp_path) == [("09:26:00", "stretch"), ("20:00:00", "late dinner")]
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_remove_deletes_by_time(tmp_path):
+    from dollos.tools import WriteSchedule
+
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    out = await WriteSchedule(remove=["09:26:00"]).run(ctx)
+    assert _day(tmp_path) == [("20:00:00", "dinner")]
+    assert out == "Schedule now (1 entry): 20:00:00 — dinner"
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_remove_then_add_reschedules(tmp_path):
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    await WriteSchedule(
+        remove=["20:00:00"], add=[ScheduleEntryArg(time="21:00:00", intent="dinner")],
+    ).run(ctx)
+    assert _day(tmp_path) == [("09:26:00", "stretch"), ("21:00:00", "dinner")]
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_remove_of_missing_time_says_so_and_does_the_rest(tmp_path):
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    out = await WriteSchedule(
+        remove=["10:00:00", "09:26:00"],
+        add=[ScheduleEntryArg(time="15:00:00", intent="tea")],
+    ).run(ctx)
+    assert _day(tmp_path) == [("15:00:00", "tea"), ("20:00:00", "dinner")]
+    assert out == (
+        "No entry at 10:00:00, so nothing removed there. "
+        "Schedule now (2 entries): 15:00:00 — tea; 20:00:00 — dinner"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_result_lists_the_whole_day(tmp_path):
+    """She sees her schedule in the result, past entries included."""
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    _seed_schedule(tmp_path, ("00:00:01", "past"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    out = await WriteSchedule(add=[ScheduleEntryArg(time="09:26:00", intent="stretch")]).run(ctx)
+    assert out == (
+        "Schedule now (3 entries): 00:00:01 — past; 09:26:00 — stretch; 20:00:00 — dinner"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_removing_the_last_entry_leaves_an_empty_day(tmp_path):
+    from dollos.tools import WriteSchedule
+
+    _seed_schedule(tmp_path, ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    out = await WriteSchedule(remove=["20:00:00"]).run(ctx)
+    assert out == "Schedule now (0 entries)"
+    assert _day(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_write_schedule_with_nothing_to_change_is_an_error(tmp_path):
+    from dollos.harness.executor import dispatch_one
+    from dollos.tools import WriteSchedule
+
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    r = await dispatch_one("WriteSchedule", {}, ctx, {"WriteSchedule": WriteSchedule})
+    assert r is not None and not r.success
+    assert "add" in r.detail and "remove" in r.detail
+    r = await dispatch_one("WriteSchedule", {"add": [], "remove": []}, ctx,
+                           {"WriteSchedule": WriteSchedule})
+    assert r is not None and not r.success
+    assert not _schedule_path(tmp_path).exists()
+    assert not ctx.mind_state.recent_outputs
+
+
+def test_write_schedule_rejects_two_adds_at_one_time():
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    with pytest.raises(ValidationError, match="09:00:00"):
+        WriteSchedule(add=[
+            ScheduleEntryArg(time="09:00:00", intent="a"),
+            ScheduleEntryArg(time="09:00", intent="b"),
+        ])
+
+
+def test_write_schedule_validates_remove_times():
+    from dollos.tools import WriteSchedule
+
+    with pytest.raises(ValidationError):
+        WriteSchedule(remove=["not a time"])
+    with pytest.raises(ValidationError):
+        WriteSchedule(remove=["25:00:00"])
 
 
 @pytest.mark.asyncio
@@ -673,7 +788,7 @@ async def test_write_schedule_writes_markdown_summary(tmp_path):
     from dollos.tools import ScheduleEntryArg, WriteSchedule
 
     ctx, _ms, _sink = _make_ctx(tmp_path)
-    await WriteSchedule(entries=[
+    await WriteSchedule(add=[
         ScheduleEntryArg(time="07:30:00", intent="morning"),
     ]).run(ctx)
 
@@ -687,12 +802,30 @@ async def test_write_schedule_writes_markdown_summary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_write_schedule_markdown_has_only_this_calls_additions(tmp_path):
+    """The Plan block lists what this call added — not the entries already
+    there, and no block at all for a call that only removes."""
+    from dollos.tools import ScheduleEntryArg, WriteSchedule
+
+    _seed_schedule(tmp_path, ("09:26:00", "stretch"), ("20:00:00", "dinner"))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    md_path = tmp_path / "shared" / f"{date.today():%Y-%m-%d}.md"
+    await WriteSchedule(add=[ScheduleEntryArg(time="15:00:00", intent="tea")]).run(ctx)
+    body = md_path.read_text()
+    assert "15:00:00 — tea" in body
+    assert "stretch" not in body and "dinner" not in body
+
+    await WriteSchedule(remove=["15:00:00"]).run(ctx)
+    assert md_path.read_text() == body
+
+
+@pytest.mark.asyncio
 async def test_write_schedule_indexes_markdown_with_memsearch(tmp_path):
     """gap #3 — markdown summary is indexed in memsearch so Recall surfaces it."""
     from dollos.tools import ScheduleEntryArg, WriteSchedule
 
     ctx, ms, _sink = _make_ctx(tmp_path)
-    await WriteSchedule(entries=[
+    await WriteSchedule(add=[
         ScheduleEntryArg(time="07:30:00", intent="morning"),
     ]).run(ctx)
 

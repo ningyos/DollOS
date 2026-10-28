@@ -17,11 +17,12 @@ import re
 import time
 import uuid
 from datetime import date, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 import jieba
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from dollos.mind import scratchpad_helpers
 from dollos.mind.mind_state import OutputRecord
@@ -614,6 +615,14 @@ class Report(BaseModel):
         return None
 
 
+def _schedule_time(v: str) -> dt_time:
+    """A schedule time as WriteSchedule takes it: ISO HH:MM:SS, 24-hour."""
+    try:
+        return datetime.fromisoformat(f"1970-01-01T{v}").time()
+    except ValueError as e:
+        raise ValueError(f"time must be HH:MM:SS, got {v!r}") from e
+
+
 class ScheduleEntryArg(BaseModel):
     """One entry in a daily schedule — see ``WriteSchedule``."""
 
@@ -628,54 +637,100 @@ class ScheduleEntryArg(BaseModel):
     @field_validator("time")
     @classmethod
     def parse_time(cls, v: str) -> str:
-        try:
-            datetime.fromisoformat(f"1970-01-01T{v}")
-        except ValueError as e:
-            raise ValueError(f"time must be HH:MM:SS, got {v!r}") from e
+        _schedule_time(v)
         return v
 
 
 class WriteSchedule(BaseModel):
-    """Write today's schedule. Replaces any existing schedule for today.
+    """Change today's schedule: add entries, remove entries by time, or both
+    in one call. Entries you don't name stay as they are.
 
-    Each entry has a time (HH:MM:SS, 24-hour) and intent (short sentence).
-    Past times are NOT fired retroactively — they're skipped by the
-    scheduler. Use this once at the start of the day (or to replan).
+    Each entry has a time (HH:MM:SS, 24-hour) and an intent (short sentence);
+    when its time comes, the intent comes back to you as a ScheduledMoment.
+    Past times are NOT fired. To move an entry, remove its old time and add
+    the new one. The result lists the whole day after the change.
     """
 
-    entries: list[ScheduleEntryArg]
+    add: list[ScheduleEntryArg] = Field(
+        default=[],
+        description=(
+            "Entries to add. An entry at a time that already has one replaces it."
+        ),
+    )
+    remove: list[str] = Field(
+        default=[],
+        description="Times (HH:MM:SS) of the entries to delete, e.g. '09:26:00'.",
+    )
+
+    @field_validator("add")
+    @classmethod
+    def one_entry_per_time(cls, v: list[ScheduleEntryArg]) -> list[ScheduleEntryArg]:
+        times = [_schedule_time(e.time) for e in v]
+        twice = sorted({t for t in times if times.count(t) > 1})
+        if twice:
+            listed = ", ".join(f"{t:%H:%M:%S}" for t in twice)
+            raise ValueError(f"add has more than one entry at {listed}")
+        return v
+
+    @field_validator("remove")
+    @classmethod
+    def parse_times(cls, v: list[str]) -> list[str]:
+        for t in v:
+            _schedule_time(t)
+        return v
+
+    @model_validator(mode="after")
+    def changes_something(self) -> WriteSchedule:
+        if not self.add and not self.remove:
+            raise ValueError("nothing to change: give entries in add, times in remove, or both")
+        return self
 
     def _summary(self) -> str:
-        return f"schedule: {len(self.entries)} entries"
+        return f"schedule: {len(self.add)} added, {len(self.remove)} removed"
 
     async def run(self, ctx: "MindCtx") -> str:
-        from dollos.schedule import ScheduleEntry, write_schedule
+        from dollos.schedule import ScheduleEntry, load_schedule, write_schedule
 
         today = date.today()
         path = ctx.memory_root / "schedule" / f"{today:%Y-%m-%d}.toml"
-        parsed = [
-            ScheduleEntry(
-                time=datetime.fromisoformat(f"1970-01-01T{e.time}").time(),
-                intent=e.intent,
-            )
-            for e in self.entries
+        current = load_schedule(path)
+        before = current.entries if current is not None else []
+        added = [
+            ScheduleEntry(time=_schedule_time(e.time), intent=e.intent) for e in self.add
         ]
-        write_schedule(path, parsed)
+        removed = {_schedule_time(t) for t in self.remove}
+        missing = sorted(removed - {e.time for e in before})
+        # Plan 2026-10-28 Task 1: the day is edited, never overwritten. The
+        # removed times go, and an added entry takes the place of the one at
+        # its time.
+        replaced = removed | {e.time for e in added}
+        entries = sorted(
+            [e for e in before if e.time not in replaced] + added, key=lambda e: e.time,
+        )
+        if entries != before:
+            write_schedule(path, entries)
 
         # Markdown summary into shared memory so Recall surfaces today's
-        # plan (gap #3).
-        md_path = ctx.memory_root / "shared" / f"{today:%Y-%m-%d}.md"
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        from dollos.mind.context_tags import build_heading
+        # plan (gap #3): only what this call added.
+        if added:
+            md_path = ctx.memory_root / "shared" / f"{today:%Y-%m-%d}.md"
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            from dollos.mind.context_tags import build_heading
 
-        heading = build_heading(ctx.mind_state)
-        with md_path.open("a") as f:
-            f.write(f"\n## {heading} Plan\n\n")
-            for e in parsed:
-                f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
-        await ctx.memsearch.index_file(md_path)
+            heading = build_heading(ctx.mind_state)
+            with md_path.open("a") as f:
+                f.write(f"\n## {heading} Plan\n\n")
+                for e in added:
+                    f.write(f"- {e.time:%H:%M:%S} — {e.intent}\n")
+            await ctx.memsearch.index_file(md_path)
 
-        result = f"Schedule written: {len(parsed)} entries"
+        n = len(entries)
+        result = f"Schedule now ({n} {'entry' if n == 1 else 'entries'})"
+        if entries:
+            result += ": " + "; ".join(f"{e.time:%H:%M:%S} — {e.intent}" for e in entries)
+        if missing:
+            listed = ", ".join(f"{t:%H:%M:%S}" for t in missing)
+            result = f"No entry at {listed}, so nothing removed there. {result}"
         _record(ctx, "WriteSchedule", self._summary())
         return result
 

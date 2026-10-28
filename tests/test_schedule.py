@@ -71,6 +71,18 @@ def test_write_schedule_atomic_via_temp_rename(tmp_path: Path):
     assert sched.entries[0].intent == "hi"
 
 
+def test_write_schedule_round_trips_any_control_character(tmp_path: Path):
+    """Every turn's snapshot reads today's file now (plan 2026-10-28 Task 1),
+    so an intent the writer cannot round-trip would fail every turn. TOML
+    basic strings take no raw control characters at all."""
+    p = tmp_path / "sched.toml"
+    intent = 'a\x00b\x0bc\x1bd\x7fe "q" \\ \n\t\r'
+    write_schedule(p, [ScheduleEntry(time=time(7, 30), intent=intent)])
+    sched = load_schedule(p)
+    assert sched is not None
+    assert sched.entries[0].intent == intent
+
+
 def test_due_entries_filters_past_outside_window():
     """gap #7: an entry from earlier in the day (more than 1 minute ago)
     is NOT fired retroactively — only entries within the last minute fire."""

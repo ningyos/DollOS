@@ -59,6 +59,7 @@ from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.perception.system_pulse import thermal_multiplier
+from dollos.schedule import load_schedule
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
 from dollos.wal.perception_log import PerceptionWAL
@@ -685,6 +686,11 @@ class MindLoop:
                     sections=(("self",) if self._ctx.origin_tier == "external_public"
                               else None),
                 )
+            # Today's schedule for [Today's schedule] (plan 2026-10-28 Task 1);
+            # the snapshot leaves it out on stranger pages.
+            schedule = load_schedule(
+                self._ctx.memory_root / "schedule" / f"{date.today():%Y-%m-%d}.toml"
+            )
             evolution_block = None
             if (self._evolution_enabled
                     and "evolution_candidate" in policy.extra_blocks
@@ -725,6 +731,7 @@ class MindLoop:
                     today_log_block=self._read_today_log(),
                     self_profile_text=self_profile_text,
                     energy_line=energy_line,
+                    schedule=schedule,
                 ))
             else:
                 conv, epoch_reason = self._contexts.begin_turn(
@@ -735,6 +742,7 @@ class MindLoop:
                         exclude=perceptions,
                         self_profile_text=self_profile_text,
                         energy_line=energy_line,
+                        schedule=schedule,
                         pulse_block=self._body_block(self._system_pulse, "current_block")
                         if reads_body else None,
                         cognition_block=self._body_block(self._cognition, "current_block")
@@ -747,6 +755,7 @@ class MindLoop:
                     self._state, conv.seen, tier, perceptions, now,
                     self_profile_text=self_profile_text,
                     energy_line=energy_line,
+                    schedule=schedule,
                     memory_hits=memsearch_hits,
                     associative_hits=associative_hits,
                     tool_habits_hits=tool_habits_hits,

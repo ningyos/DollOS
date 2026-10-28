@@ -556,10 +556,12 @@
         "type": "function",
         "function": {
           "name": "WriteSchedule",
-          "description": "Write today's schedule. Replaces any existing schedule for today.\n\nEach entry has a time (HH:MM:SS, 24-hour) and intent (short sentence).\nPast times are NOT fired retroactively — they're skipped by the\nscheduler. Use this once at the start of the day (or to replan).",
+          "description": "Change today's schedule: add entries, remove entries by time, or both\nin one call. Entries you don't name stay as they are.\n\nEach entry has a time (HH:MM:SS, 24-hour) and an intent (short sentence);\nwhen its time comes, the intent comes back to you as a ScheduledMoment.\nPast times are NOT fired. To move an entry, remove its old time and add\nthe new one. The result lists the whole day after the change.",
           "parameters": {
             "properties": {
-              "entries": {
+              "add": {
+                "default": [],
+                "description": "Entries to add. An entry at a time that already has one replaces it.",
                 "items": {
                   "description": "One entry in a daily schedule — see ``WriteSchedule``.",
                   "properties": {
@@ -579,11 +581,16 @@
                   "type": "object"
                 },
                 "type": "array"
+              },
+              "remove": {
+                "default": [],
+                "description": "Times (HH:MM:SS) of the entries to delete, e.g. '09:26:00'.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
-            "required": [
-              "entries"
-            ],
             "type": "object"
           }
         }
@@ -1163,10 +1170,12 @@
         "type": "function",
         "function": {
           "name": "WriteSchedule",
-          "description": "Write today's schedule. Replaces any existing schedule for today.\n\nEach entry has a time (HH:MM:SS, 24-hour) and intent (short sentence).\nPast times are NOT fired retroactively — they're skipped by the\nscheduler. Use this once at the start of the day (or to replan).",
+          "description": "Change today's schedule: add entries, remove entries by time, or both\nin one call. Entries you don't name stay as they are.\n\nEach entry has a time (HH:MM:SS, 24-hour) and an intent (short sentence);\nwhen its time comes, the intent comes back to you as a ScheduledMoment.\nPast times are NOT fired. To move an entry, remove its old time and add\nthe new one. The result lists the whole day after the change.",
           "parameters": {
             "properties": {
-              "entries": {
+              "add": {
+                "default": [],
+                "description": "Entries to add. An entry at a time that already has one replaces it.",
                 "items": {
                   "description": "One entry in a daily schedule — see ``WriteSchedule``.",
                   "properties": {
@@ -1186,11 +1195,16 @@
                   "type": "object"
                 },
                 "type": "array"
+              },
+              "remove": {
+                "default": [],
+                "description": "Times (HH:MM:SS) of the entries to delete, e.g. '09:26:00'.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
-            "required": [
-              "entries"
-            ],
             "type": "object"
           }
         }

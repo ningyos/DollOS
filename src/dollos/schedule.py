@@ -3,7 +3,8 @@
 Phase 1 schedule foundation: Doll plans her day via the WriteSchedule tool,
 which persists into ``data/memory/schedule/{YYYY-MM-DD}.toml``. The kernel's
 ``_schedule_runner`` polls this file every 30s and fires ``ScheduledEvent``
-entries via the dispatcher when their time arrives.
+entries via the dispatcher when their time arrives; MindLoop reads it for
+the ``[Today's schedule]`` snapshot block.
 
 This module deliberately stays small + pure — ``due_entries`` is a plain
 function that takes ``now`` + ``fired`` so unit tests do not need to mock
@@ -12,10 +13,14 @@ the clock.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+
+# Control characters a TOML basic string may not hold raw.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 @dataclass
@@ -67,7 +72,8 @@ def write_schedule(path: Path, entries: list[ScheduleEntry]) -> None:
             f.write(f'time = "{e.time:%H:%M:%S}"\n')
             # Single-line basic TOML string with backslash + double-quote
             # escaping. Embedded newlines become \n escape sequences so the
-            # value round-trips cleanly through tomllib.
+            # value round-trips cleanly through tomllib; any other control
+            # character (TOML takes none raw) becomes a \uXXXX escape.
             escaped = (
                 e.intent.replace("\\", "\\\\")
                 .replace('"', '\\"')
@@ -75,6 +81,7 @@ def write_schedule(path: Path, entries: list[ScheduleEntry]) -> None:
                 .replace("\r", "\\r")
                 .replace("\t", "\\t")
             )
+            escaped = _CONTROL_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", escaped)
             f.write(f'intent = "{escaped}"\n\n')
     tmp.rename(path)
 

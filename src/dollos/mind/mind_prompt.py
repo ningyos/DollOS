@@ -12,10 +12,12 @@ import hashlib
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from dollos.mind.mind_state import MindState
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import render_tool_habits
+from dollos.schedule import Schedule
 
 # Staleness threshold (seconds) for open loops (spec §13.2, P7 cheap slice):
 # mind_loop.py's _derive_memory_hits adds a loop older than this (strict `>`)
@@ -106,17 +108,20 @@ def _snapshot_blocks(
     *,
     self_profile_text: str | None,
     energy_line: str | None,
+    schedule: Schedule | None,
 ) -> list[tuple[str, str]]:
     """``(name, full block text)`` of every snapshot block ``tier`` may see,
     in render order. None of them carries a relative time, so the text only
-    changes when the state does.
+    changes when the state does — and ``[Today's schedule]``, which lists
+    only the entries not yet due, when one comes due.
 
     external_public (mind-loop §10, the external-place row) sees only
     ``[Self profile]`` (its self section only — the caller renders it that
     way, since user / relationship hold the owner's facts) and
     ``[Mind state]`` with the bare emotion: no reason, no focus, no
-    agenda/open loops/scratchpad.
-    ``[Self profile]`` reads "(empty)" while nothing is pinned.
+    agenda/open loops/schedule/scratchpad.
+    ``[Self profile]`` reads "(empty)" while nothing is pinned,
+    ``[Today's schedule]`` "(none)" while nothing is still to come.
     """
     mind = []
     if tier == "external_public":
@@ -150,6 +155,11 @@ def _snapshot_blocks(
                     [lp for lp in state.open_loops if not lp.self_directed], now, absolute=True
                 ),
             ),
+            (
+                "schedule",
+                "[Today's schedule] (still to come; change it with WriteSchedule)\n"
+                + (_render_schedule(schedule, now) or "(none)"),
+            ),
             ("scratchpad", "[Scratchpad]\n" + (state.scratchpad or "(empty)")),
         ])
     return blocks
@@ -178,6 +188,7 @@ def render_epoch_start(
     exclude=(),
     self_profile_text: str | None = None,
     energy_line: str | None = None,
+    schedule: Schedule | None = None,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
 ) -> str:
@@ -192,7 +203,9 @@ def render_epoch_start(
     ``[Recent outputs]`` renders on internal and external_dm only, and only
     records whose origin_tier is not external_public;
     ``pulse_block``/``cognition_block`` (the current ``[Self pulse]``/
-    ``[Cognition]``, from the caller) on internal only.
+    ``[Cognition]``, from the caller) on internal only. ``schedule`` is
+    today's (the caller loads it); ``[Today's schedule]`` is left out while
+    none of its entries is still to come.
 
     external_public's opening line does not point at Recall: there Recall
     only searches ``external_public/`` and cannot find the channel's history.
@@ -210,10 +223,13 @@ def render_epoch_start(
     if state.safe_mode:
         parts.append(_safe_mode_line(*seen.safe_mode))
     for name, text in _snapshot_blocks(
-        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line
+        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line,
+        schedule=schedule,
     ):
         seen.blocks[name] = _digest(text)
         if name == "self_profile" and not self_profile_text:
+            continue
+        if name == "schedule" and not _render_schedule(schedule, now):
             continue
         parts.append(text)
         if name == "mind_state" and tier == "internal":
@@ -250,6 +266,7 @@ def render_turn_delta(
     *,
     self_profile_text: str | None = None,
     energy_line: str | None = None,
+    schedule: Schedule | None = None,
     memory_hits: Sequence[dict] = (),
     associative_hits: Sequence[dict] = (),
     tool_habits_hits: Sequence[dict] = (),
@@ -277,7 +294,8 @@ def render_turn_delta(
     """
     parts = [f"[{_stamp(now)}]"]
     for name, text in _snapshot_blocks(
-        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line
+        state, tier, now, self_profile_text=self_profile_text, energy_line=energy_line,
+        schedule=schedule,
     ):
         digest = _digest(text)
         if seen.blocks.get(name) != digest:
@@ -319,6 +337,7 @@ def render_diary_request(
     today_log_block: str | None,
     self_profile_text: str | None = None,
     energy_line: str | None = None,
+    schedule: Schedule | None = None,
 ) -> str:
     """The diary's one-off request (plan 2026-10-18 Task 9), one user
     message: this moment's internal snapshot (``render_epoch_start`` without
@@ -328,7 +347,7 @@ def render_diary_request(
     parts = [
         render_epoch_start(
             state, Seen(), "internal", now, exclude=perceptions,
-            self_profile_text=self_profile_text, energy_line=energy_line,
+            self_profile_text=self_profile_text, energy_line=energy_line, schedule=schedule,
         )
     ]
     if today_log_block:
@@ -489,6 +508,18 @@ def _render_your_agenda(loops: list, now: float, *, absolute: bool = False) -> s
         for entry in lp.progress[-AGENDA_PROGRESS_TAIL:]:
             lines.append(f"    progress: {entry}")
     return "\n".join(lines)
+
+
+def _render_schedule(schedule: Schedule | None, now: float) -> str:
+    """Today's entries not yet due (time after ``now``), by time; "" when
+    there are none. HH:MM:SS, as WriteSchedule's ``remove`` takes it."""
+    if schedule is None:
+        return ""
+    clock = datetime.fromtimestamp(now).time()
+    return "\n".join(
+        f"- {e.time:%H:%M:%S} — {e.intent}"
+        for e in sorted(schedule.entries, key=lambda e: e.time) if e.time > clock
+    )
 
 
 def _render_perceptions(percs, now: float) -> str:

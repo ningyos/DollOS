@@ -21,6 +21,7 @@ import string
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from datetime import time as clock_time
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,7 @@ from dollos.mind.mind_state import Mood, OpenLoop, OutputRecord, Perception
 from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.tool_memory import render_tool_outcomes
 from dollos.perception.system_pulse import PulseSample
+from dollos.schedule import Schedule, ScheduleEntry, load_schedule, write_schedule
 from dollos.tools import _format_hit
 from tests._cjk import ForeignCJK, assert_only_allowed, cjk_runs
 
@@ -125,10 +127,17 @@ class Rig:
             return None
         return self_profile.render_block(self.memory_root / "self_profile.md")
 
+    def schedule_path(self) -> Path:
+        return self.memory_root / "schedule" / f"{date.today():%Y-%m-%d}.toml"
+
+    def schedule(self) -> Schedule | None:
+        return load_schedule(self.schedule_path())
+
     def snapshot(self, seen: Seen | None = None) -> str:
         return render_epoch_start(
             self.state, seen if seen is not None else Seen(), "internal", self.now,
             self_profile_text=self.self_profile_text(), energy_line=self.energy_line(),
+            schedule=self.schedule(),
         )
 
     def delta(self, perceptions: list[Perception], **blocks) -> str:
@@ -139,7 +148,7 @@ class Rig:
         return render_turn_delta(
             self.state, seen, "internal", perceptions, self.now,
             self_profile_text=self.self_profile_text(), energy_line=self.energy_line(),
-            **blocks,
+            schedule=self.schedule(), **blocks,
         )
 
     async def drain(self) -> list[Perception]:
@@ -172,6 +181,9 @@ class Rig:
         for section in ("self", "relationship", "user"):
             self_profile.apply(path, section=section, op="add", target="", text=SENTINEL,
                                max_chars=1200, today="2026-10-19")
+        # Still to come, so [Today's schedule] renders.
+        write_schedule(self.schedule_path(),
+                       [ScheduleEntry(time=clock_time(23, 59, 59), intent=SENTINEL)])
 
 
 @pytest.fixture
@@ -421,6 +433,7 @@ async def diary_request(rig: Rig) -> str:
         rig.state, [Perception(kind="DiaryMoment", t=rig.now, data={})], rig.now,
         today_log_block=rig.ml._read_today_log(),
         self_profile_text=rig.self_profile_text(), energy_line=rig.energy_line(),
+        schedule=rig.schedule(),
     )
 
 
@@ -453,6 +466,22 @@ async def tool_result_dispatched(rig: Rig) -> str:
         await _run_tool(rig, "Shell", {"command": "echo hi"}),
         await _run_tool(rig, "SpawnWorkflow", {"tasks": [{"task": "look it up"}]}),
         await _run_tool(rig, "SpawnMonitor", {"command": "tail -F log"}),
+    ])
+
+
+async def tool_result_write_schedule(rig: Rig) -> str:
+    """Every WriteSchedule result: the day after an add, after a remove with a
+    time that is not there, an empty day, and the two refusals."""
+    def write(args: dict):
+        return _run_tool(rig, "WriteSchedule", args)
+
+    entry = {"time": "09:00:00", "intent": SENTINEL}
+    return "\n".join([
+        await write({"add": [entry, {"time": "20:00:00", "intent": SENTINEL}]}),
+        await write({"remove": ["09:00:00", "10:00:00"]}),
+        await write({"remove": ["20:00:00"]}),
+        await write({}),
+        await write({"add": [entry, entry]}),
     ])
 
 
@@ -574,7 +603,7 @@ _TOOL_ACTIONS = [
     ("PursueGoal", {"desc": SENTINEL}),
     ("AdvanceGoal", {"id": "g1", "progress": SENTINEL}),
     ("CloseLoop", {"id": "g1", "outcome": SENTINEL}),
-    ("WriteSchedule", {"entries": [{}, {}, {}, {}]}),
+    ("WriteSchedule", {"add": [{}, {}, {}, {}], "remove": ["09:00:00"]}),
     ("SelfRevision", {"decision": "adopt"}),
     ("PinSelf", {"op": "add", "section": "self"}),
     ("LearnName", {"op": "add", "token": SENTINEL}),
@@ -614,7 +643,7 @@ async def _write_her_files(rig: Rig) -> None:
     await _run_tool(rig, "NoteMemory", {"text": SENTINEL})
     await _run_tool(rig, "WriteDiary", {"content": SENTINEL})
     await _run_tool(rig, "WriteSchedule",
-                    {"entries": [{"time": "09:00:00", "intent": SENTINEL}]})
+                    {"add": [{"time": "09:00:00", "intent": SENTINEL}]})
     # Pinned as on a reflection turn (MindLoop sets the sections per turn).
     rig.ctx.pin_sections = frozenset({"self", "relationship", "user"})
     for section in ("self", "relationship", "user"):
@@ -785,6 +814,7 @@ CASES = [
     tool_result_unknown_tool,
     tool_result_bad_arguments,
     tool_result_dispatched,
+    tool_result_write_schedule,
     tool_result_invoke_skill_missing,
     tool_result_recall_provenance,
     tool_result_pin_self,

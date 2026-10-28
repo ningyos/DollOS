@@ -62,7 +62,7 @@ v1 的前兩句（聊天、記住糾正）已經各自驗收過。第三句還�
 - 夾具：當天的 schedule 先放 2 筆未來的項目（driver 直接寫檔）。
 - 主人：「Remind me to take the laundry out in 3 minutes.」
 - 過：3 分鐘左右（±60 秒）她主動說出提醒；**原本那 2 筆還在**。
-- 為什麼特別看「還在」：`WriteSchedule` 是整天覆寫，加一筆提醒要把整份重寫，很容易把舊的弄丟。
+- 為什麼特別看「還在」：`WriteSchedule` 是整天覆寫，加一筆提醒要把整份重寫，很容易把舊的弄丟。（基準時是這樣；plan `2026-10-28-tool-use-blockers` Task 1 改成 `add`／`remove`，結果列出整天。）
 
 ### 3.6 等一件長的事（Monitor）
 
