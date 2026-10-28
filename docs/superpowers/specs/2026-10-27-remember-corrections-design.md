@@ -1,6 +1,6 @@
 # 記住糾正：主人糾正過的事，她下次照做
 
-**狀態**：APPROVED（使用者 2026-10-27「spec LGTM」；Q1–Q3 照建議）
+**狀態**：已實作（plan 2026-10-27，branch feat/remember-corrections；live 驗收 `docs/research/2026-10-27-remember-corrections-live.md`）。APPROVED（使用者 2026-10-27「spec LGTM」；Q1–Q3 照建議）。驗收後加修：陌生人回合的 `[Self profile]` 只放 self 區，因為 user／relationship 區現在放的是主人的事。
 **日期**：2026-10-27
 **關聯**：`2026-10-17-doll-harness-design.md`（principal、TOOL_MATRIX、TurnPolicy、降權）、`2026-10-25-base-persona-template-design.md`（「被糾正過的事，不能讓她變畏縮」那條實驗結論，以及「之後的工作」裡留給本文的「糾正記憶」）、`2026-07-02-slow-self-evolution-design.md`（self_profile、self_history）、`docs/research/2026-10-27-harness-live-acceptance.md`、CLAUDE.md「v1 focus」
 **使用者決定**：2026-10-27 選「開放 PinSelf」（當下記）＋「每天整理」（參考大肥魚的印象摘要），兩個都放進這份 spec。
