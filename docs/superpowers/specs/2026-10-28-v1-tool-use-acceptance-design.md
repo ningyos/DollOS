@@ -1,6 +1,6 @@
 # v1 驗收：她能用工具把事做完
 
-**狀態**：DRAFT（等使用者核可）
+**狀態**：APPROVED（使用者 2026-10-28「開做」）
 **日期**：2026-10-28
 **關聯**：CLAUDE.md「v1 focus」的第三句（「can use tools to get things done」）、`2026-10-17-doll-harness-design.md` §4（工具合併）、`docs/research/2026-10-27-harness-live-acceptance.md`（那次驗的是權限與邊界，不是把事做完）
 
