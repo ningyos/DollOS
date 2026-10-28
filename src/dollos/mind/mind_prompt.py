@@ -112,8 +112,10 @@ def _snapshot_blocks(
     changes when the state does.
 
     external_public (mind-loop §10, the external-place row) sees only
-    ``[Self profile]`` (P1e accepted) and ``[Mind state]`` with the bare
-    emotion: no reason, no focus, no agenda/open loops/scratchpad.
+    ``[Self profile]`` (its self section only — the caller renders it that
+    way, since user / relationship hold the owner's facts) and
+    ``[Mind state]`` with the bare emotion: no reason, no focus, no
+    agenda/open loops/scratchpad.
     ``[Self profile]`` reads "(empty)" while nothing is pinned.
     """
     mind = []
