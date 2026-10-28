@@ -18,6 +18,8 @@ command = ["uvx", "some-mcp-server"]   # stdio only for now
 #   "external_public" + anyone, strangers included
 min_principal = "owner"
 # true = what the server returns may carry injected instructions: after a
-# call, the rest of that turn loses Shell and the other owner tools.
+# call, the rest of that turn, and every later turn on the same conversation
+# page until a new page opens (Doll's own turns on the private page
+# included), loses Shell and the other owner tools (harness spec §6.5).
 untrusted_output = false
 tools = ["list_events"]                # allowlist; omit = all of the server's tools

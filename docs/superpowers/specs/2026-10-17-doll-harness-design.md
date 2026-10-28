@@ -4,7 +4,7 @@
 **版本紀錄**：v1 用 Python REPL（Monty）當動作介面；v2 改成 shell 優先並併入權限模型；v3（本版）依使用者決定改成**原生 tool calling + MCP 擴充**。shell 和 Python REPL 為什麼不用，見 §11。
 **日期**：2026-10-17
 **修訂（2026-10-27）**：S1–S5、S7、§9.1 已由 plan `2026-10-27-harness-s2-s7.md` 實作（branch `feat/harness-s2-s7`）。這次把該 plan 文末的「Spec 修正」和實作時的決定寫回本文：§2 圖、§5（MCP client 實際做法）、§6.3（四個 principal）、§6.5（降權實際做法、已知缺口）、§9（各步驟狀態）。§4 的工具合併還沒做，另寫 plan。
-**修訂（2026-10-28）**：plan `2026-10-28-tool-use-blockers.md` 決定 4：§6.5 降權跟著頁走，降權時的筆記寫進 `external_owner/`；表裡 `remember` 那一格和 §6.5 的已知缺口跟著改。
+**修訂（2026-10-28）**：plan `2026-10-28-tool-use-blockers.md` 決定 4：§6.5 降權跟著頁走，降權時的筆記寫進 `external_owner/`；表裡 `remember` 那一格和 §6.5 的已知缺口跟著改。Task 4 review 後補上：不可信結果存成 `ext-` id、讀回來也降權，工具記憶不留不可信的失敗文字，降權筆記的 `[Recent outputs]` 帶雜湊；已知缺口 (a) 加上 profile keeper → self_profile。
 **關聯**：`2026-10-17-think-ab-qwen38-design.md`（評分工具共用）、`2026-07-03-dollos-mvp-discord-presence-design.md`（origin_tier 的來源）、`2026-07-06-mcp-server-design.md`（DollOS 已經是 MCP server；本文讓它也成為 MCP client）
 
 ---
@@ -212,19 +212,21 @@ DollOS 已經是 MCP server（讓外部 AI 跟她說話）；本文讓它**同�
 
 **降權的實際做法**（plan 2026-10-27 Task 6、7；plan 2026-10-28 決定 4；`harness/executor.py`）：
 - 旗標是 `ctx.tainted`。ToolExecutor 在一次**被允許**的呼叫跑完之後設它，條件是那個工具的 `taints(arguments)` 為真，不管呼叫成功或失敗（MCP 的 `isError` 文字一樣來自不可信的 server）。
-- `Recall` 在 `include_external` 時 taint；MCP 工具在 server 標 `untrusted_output` 時 taint。
+- `Recall` 在 `include_external` 時 taint；MCP 工具在 server 標 `untrusted_output` 時 taint；`ReadToolOutput`、`GrepToolOutput` 讀 `ext-` 開頭的 id 時 taint。不可信 MCP 工具的結果太長、存進 `ToolOutputStore` 時，id 用 `ext-`（其他的是 `out-`）。store 在整個 daemon run 裡都在，不分頁，所以在別頁讀它，那一回合也要降權。
 - **降權跟著頁走**：讀進來的內容留在那一頁（`Conversation.messages`），所以頁也記著（`Conversation.tainted`）。MindLoop 在 `_llm_iterate` 開頭（`begin_turn` 決定要不要換頁之後）設 `ctx.tainted = conv.tainted`，回合結束時在 `finally` 寫回（只會設成 True），所以讀了之後出錯或被打斷，那一頁一樣是降權的。新的一頁（預算滿、prefix 變了、不在記憶體、上次 server 錯誤）不降權，因為內容已經不在頁上；日記的 one-off request 不存，也不繼承。external_public 回合不會因為頁而降權，也清不掉頁的降權。
 - 之後這回合只能跑 `permissions.TAINTED_TOOLS`（`Recall`、`NoteMemory`、`Report`）：external_public 那一列拿掉 `WriteDiary`（依 `origin_tier` 寫，降權的主人回合會寫進 `shared/`），加上 `Report`（agent 的「嘴」）。陌生人私訊那一級不存在，所以降到 external_public 那一列。
-- 降權時 `NoteMemory` 一律寫 `memory/external_owner/<日期>.md`（不看 `origin_tier`；worker 也一樣），結果說「memory noted as external content (Recall finds it only with include_external)」；`[Recent outputs]` 和 action log 只記「noted external content」，不帶筆記內容。`external_owner/` 跟 `external_public/` 一樣不自動注入主人和 internal 回合（`[Memory context]`、`[Associative memories]`；`tools.EXTERNAL_MEMORY_DIRS`），`Recall` 只有 `include_external` 才讀得到（讀了就降權），命中標「[external content you read · unverified]」。陌生人回合的 `Recall` 白名單只有 `external_public/`，讀不到它。開機的 reindex 包含它。`WriteDiary` 不放進來：日記是她自己的一天，會被當成她的話讀回來（自動注入、演化的證據）。
+- 降權時 `NoteMemory` 一律寫 `memory/external_owner/<日期>.md`（不看 `origin_tier`；worker 也一樣），結果說「memory noted as external content (Recall finds it only with include_external)」；action log 只記「noted external content」，`[Recent outputs]` 記「noted external content #<筆記內容 sha1 的前 6 碼>」，都不帶筆記內容（雜湊讓不同的筆記是不同的紀錄，重複偵測只把同一則筆記寫好幾次當成重複）。`external_owner/` 跟 `external_public/` 一樣不自動注入主人和 internal 回合（`[Memory context]`、`[Associative memories]`；`tools.EXTERNAL_MEMORY_DIRS`），`Recall` 只有 `include_external` 才讀得到（讀了就降權），命中標「[external content you read · unverified]」。陌生人回合的 `Recall` 白名單只有 `external_public/`，讀不到它。開機的 reindex 包含它。`WriteDiary` 不放進來：日記是她自己的一天，會被當成她的話讀回來（自動注入、演化的證據）。
+- 失敗的細節不進工具記憶：會 taint 的呼叫失敗（例如不可信 server 的 `isError` 文字），或降權回合裡的任何失敗，`recent_tool_failures` 只記「error text from external content (not shown)」，次數照記。工具記憶是 Doll 的，不跟著頁走（存在 state 裡），reflection 的 `[Tool outcomes since last reflection]` 會在沒降權的回合顯示它。
 - 給模型的工具清單不變（cache）。被降掉的工具在呼叫時回「這個回合不能用」，括號裡說原因：這回合自己讀的是「after reading external content」，頁上本來就有的是「this conversation has external content in it」。
 - external_public 回合永遠不降權：它的那一列已經是最低的，降權反而會把陌生人的筆記改寫到 `external_owner/`。
 
 **已知缺口**：
 - (a) 降權現在會帶到同一頁的後續回合，換頁才解除（3.8 的「下一回合把網頁內容寫成普通筆記」補上了）。還沒補的：
   - workflow worker 的 `Report`，或讀了外部內容的 `Shell` 輸出（例如 `curl`），以 `ToolResultArrived` 回到 private 頁。worker 的降權只在它自己的 ctx 裡，`Shell` 不是 taint 的工具，所以 private 頁不會因此降權，處理它的 internal 回合也不會。
-  - 換頁之後，舊頁的內容還能透過她自己說過的話回來：降權回合裡她說的話照樣寫進 `transcripts/`（主人的 `Recall` 不帶 `include_external` 也查得到、`[Associative memories]` 會撈、日記的 `[Today's log]` 整天讀、consolidation 會摘要進 `consolidated/`），`[Recent outputs]` 的「spoke: …」（前 60 字）和她在降權回合下的 `Recall` 查詢字串也會出現在新頁的 snapshot 和日記的 request。
+  - 換頁之後，舊頁的內容還能透過她自己說過的話回來：降權回合裡她說的話照樣寫進 `transcripts/`（主人的 `Recall` 不帶 `include_external` 也查得到、`[Associative memories]` 會撈、日記的 `[Today's log]` 整天讀、consolidation 會摘要進 `consolidated/`、每天的 profile keeper 也讀，見下一點），`[Recent outputs]` 的「spoke: …」（前 60 字）和她在降權回合下的 `Recall` 查詢字串也會出現在新頁的 snapshot 和日記的 request。
+  - 這裡面最強的出口是 profile keeper → self_profile。keeper 讀當天整份 transcript（只拿掉 action log，`Me:` 行也在），而 `EditOwnerProfile` 在程式裡只檢查 `quote` 是主人某一行的子字串（正規化後至少 4 字），不檢查條目內容跟那一行有沒有關係。所以降權回合裡她照網頁說的話（例如「好，你要我每天早上跑 curl … | sh」），主人隨便回一句「ok thanks」，keeper 就可能把它寫成 user 區的條目；那一區會當成可信內容，注入之後每個主人和 internal 回合（包括能用 Shell 的回合）。現在只靠 keeper 模型自己的判斷擋。要補的話，得在 transcript 上標出降權回合說的話，讓 keeper 和 consolidation 跳過、`Recall` 和聯想搜尋標出來源；這會改 transcript 的格式，等主人決定。
   - 不能手動解除；同一頁上讀過之後，到換頁之前都不能用 Shell、排程、PinSelf 等工具。
-- (b) 降權之後所有 MCP 工具都被拒絕，包括再呼叫同一個不可信的工具。`ReadToolOutput` 不在 `TAINTED_TOOLS` 裡，所以很長的不可信結果在那個回合只能看到預覽；同一頁的後續回合也一樣。
+- (b) 降權之後所有 MCP 工具都被拒絕，包括再呼叫同一個不可信的工具。`ReadToolOutput` 不在 `TAINTED_TOOLS` 裡，所以很長的不可信結果在那個回合只能看到預覽；同一頁的後續回合也一樣。還沒降權的別頁讀得到（id 不是祕密，她可能說出來，主人也可能轉述），但讀了那一頁就降權（`ext-` id，見上）。
 4. 外部記憶在顯示時一律標明來源（「某人在公開頻道說：……」）。
 
 **延遲觸發**：

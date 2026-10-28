@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from dollos.tool_outputs import ToolOutputStore
+from dollos.tool_outputs import UNTRUSTED_OUTPUT_PREFIX, ToolOutputStore
 
 
 def test_write_then_read_full(tmp_path: Path) -> None:
@@ -53,6 +53,21 @@ def test_invalid_id_raises(tmp_path: Path) -> None:
         store.read("../etc/passwd", offset=0, limit=10)
     with pytest.raises(FileNotFoundError):
         store.read("out-deadbeef", offset=0, limit=10)
+
+
+def test_untrusted_output_gets_an_ext_id(tmp_path: Path) -> None:
+    """Harness spec §6.5: an untrusted MCP result is stored under ``ext-``,
+    so reading it back can taint the turn (ReadToolOutput.taints)."""
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("error: foo\nok\n", untrusted=True)
+    assert output_id.startswith(UNTRUSTED_OUTPUT_PREFIX)
+    assert store.read(output_id, offset=0, limit=10).lines == ["error: foo", "ok"]
+    assert [m.line for m in store.grep(output_id, pattern="error")] == ["error: foo"]
+    assert store.write("x").startswith("out-")
+    with pytest.raises(ValueError):
+        store.read("ext-../x", offset=0, limit=10)
+    with pytest.raises(ValueError):
+        store.read("ex-deadbeef", offset=0, limit=10)
 
 
 def test_cleanup_idempotent(tmp_path: Path) -> None:

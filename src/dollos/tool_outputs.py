@@ -4,6 +4,12 @@ Lifecycle: created at daemon startup with a tempdir, every tool runner
 calls `write()` with the full output and gets back an ID. Doll's
 `ReadToolOutput` / `GrepToolOutput` tools call `read()` / `grep()`
 against the same store. `cleanup()` runs at daemon shutdown.
+
+An output that may carry untrusted content (an ``untrusted_output`` MCP
+server's result, harness spec §6.5) is written with ``untrusted=True`` and
+gets an ``ext-`` id instead of ``out-``. The store is shared by every page
+for the whole run, so the id is what tells a later read where the text
+came from: reading an ``ext-`` id taints the turn (``ReadToolOutput.taints``).
 """
 from __future__ import annotations
 
@@ -12,6 +18,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+_TRUSTED_PREFIX = "out-"
+UNTRUSTED_OUTPUT_PREFIX = "ext-"
 
 
 @dataclass
@@ -44,8 +53,9 @@ class ToolOutputStore:
         self._root = root
         self._root.mkdir(parents=True, exist_ok=True)
 
-    def write(self, content: str) -> str:
-        output_id = f"out-{uuid.uuid4().hex[:8]}"
+    def write(self, content: str, *, untrusted: bool = False) -> str:
+        prefix = UNTRUSTED_OUTPUT_PREFIX if untrusted else _TRUSTED_PREFIX
+        output_id = f"{prefix}{uuid.uuid4().hex[:8]}"
         path = self._root / f"{output_id}.txt"
         path.write_text(content, encoding="utf-8")
         return output_id
@@ -97,7 +107,8 @@ class ToolOutputStore:
 
     def _path(self, output_id: str) -> Path:
         # Strict allowlist: prevent path traversal via id.
-        if not output_id.startswith("out-") or not output_id[4:].isalnum():
+        prefix, rest = output_id[:4], output_id[4:]
+        if prefix not in (_TRUSTED_PREFIX, UNTRUSTED_OUTPUT_PREFIX) or not rest.isalnum():
             raise ValueError(f"invalid tool output id: {output_id!r}")
         p = self._root / f"{output_id}.txt"
         if not p.exists():
