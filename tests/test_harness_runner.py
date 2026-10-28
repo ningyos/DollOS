@@ -442,12 +442,13 @@ async def test_refusals_in_three_passes_end_the_turn(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("again", ["NoteMemory", "Shell"])
 async def test_mixed_pass_counts_one_refusal_per_tool(tmp_path, again):
-    """Two refused NoteMemory and one refused Shell in one reply count 1 for
-    each: two more passes refusing either one end the turn on it after
-    pass 3, not sooner and not later."""
+    """Two refused NoteMemory with a refused Shell between them in one reply
+    count 1 for each, not only when the repeats are next to each other: two
+    more passes refusing either one end the turn on it after pass 3, not
+    sooner and not later."""
     model = FakeModel([
-        _call("NoteMemory", text="a") + _call("NoteMemory", text="b")
-        + _call("Shell", command="ls"),
+        _call("NoteMemory", text="a") + _call("Shell", command="ls")
+        + _call("NoteMemory", text="b"),
         _call(again), _call(again),
         "</think>never",
     ])
