@@ -41,16 +41,31 @@ def load_schedule(path: Path) -> Schedule | None:
     ``datetime.time``) and string ISO ``HH:MM:SS`` values for the ``time``
     field (gap #6 — WriteSchedule writes its values as quoted strings inside
     the TOML so we round-trip through string form on read).
+
+    The file is hand-editable (the owner, or Doll through Shell), so anything
+    else in it raises ValueError saying what is wrong (tomllib's own
+    TOMLDecodeError is one): a loaded Schedule only ever holds times and
+    string intents.
     """
     if not path.exists():
         return None
     with path.open("rb") as f:
         data = tomllib.load(f)
+    raw_entries = data.get("entry", [])
+    if not isinstance(raw_entries, list):
+        raise ValueError("entries must be [[entry]] tables")
     entries: list[ScheduleEntry] = []
-    for raw in data.get("entry", []):
-        t = raw["time"]
+    for n, raw in enumerate(raw_entries, 1):
+        if not isinstance(raw, dict) or not isinstance(raw.get("intent"), str):
+            raise ValueError(f"entry {n} has no intent string")
+        given = t = raw.get("time")
         if isinstance(t, str):
-            t = datetime.fromisoformat(f"1970-01-01T{t}").time()
+            try:
+                t = datetime.fromisoformat(f"1970-01-01T{t}").time()
+            except ValueError:
+                t = None
+        if not isinstance(t, time):
+            raise ValueError(f"entry {n}: time must be HH:MM:SS, got {given!r}")
         entries.append(ScheduleEntry(time=t, intent=raw["intent"]))
     return Schedule(entries=entries)
 

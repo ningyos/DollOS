@@ -763,6 +763,28 @@ async def test_write_schedule_with_nothing_to_change_is_an_error(tmp_path):
     assert not ctx.mind_state.recent_outputs
 
 
+@pytest.mark.asyncio
+async def test_write_schedule_on_a_file_it_cannot_read_names_it_and_changes_nothing(tmp_path):
+    """A hand-edited file tomllib cannot read: writing over it would lose what
+    the owner put there, so the call fails, saying which file and why."""
+    from dollos.harness.executor import dispatch_one
+    from dollos.tools import WriteSchedule
+
+    path = _schedule_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text('[[entry]]\ntime = 09:00\nintent = "dentist"\n')
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    r = await dispatch_one("WriteSchedule", {
+        "add": [{"time": "15:00:00", "intent": "tea"}],
+    }, ctx, {"WriteSchedule": WriteSchedule})
+    assert r is not None and not r.success
+    assert f"cannot read memory/schedule/{path.name}" in r.detail
+    assert "line 2" in r.detail  # tomllib's own reason
+    assert "nothing was changed" in r.detail
+    assert path.read_text() == '[[entry]]\ntime = 09:00\nintent = "dentist"\n'
+    assert not (tmp_path / "shared").exists()
+
+
 def test_write_schedule_rejects_two_adds_at_one_time():
     from dollos.tools import ScheduleEntryArg, WriteSchedule
 

@@ -108,7 +108,7 @@ def _snapshot_blocks(
     *,
     self_profile_text: str | None,
     energy_line: str | None,
-    schedule: Schedule | None,
+    schedule: Schedule | str | None,
 ) -> list[tuple[str, str]]:
     """``(name, full block text)`` of every snapshot block ``tier`` may see,
     in render order. None of them carries a relative time, so the text only
@@ -188,7 +188,7 @@ def render_epoch_start(
     exclude=(),
     self_profile_text: str | None = None,
     energy_line: str | None = None,
-    schedule: Schedule | None = None,
+    schedule: Schedule | str | None = None,
     pulse_block: str | None = None,
     cognition_block: str | None = None,
 ) -> str:
@@ -204,7 +204,8 @@ def render_epoch_start(
     records whose origin_tier is not external_public;
     ``pulse_block``/``cognition_block`` (the current ``[Self pulse]``/
     ``[Cognition]``, from the caller) on internal only. ``schedule`` is
-    today's (the caller loads it); ``[Today's schedule]`` is left out while
+    today's (the caller loads it), or a str saying why the file could not be
+    read, which the block shows; ``[Today's schedule]`` is left out while
     none of its entries is still to come.
 
     external_public's opening line does not point at Recall: there Recall
@@ -266,7 +267,7 @@ def render_turn_delta(
     *,
     self_profile_text: str | None = None,
     energy_line: str | None = None,
-    schedule: Schedule | None = None,
+    schedule: Schedule | str | None = None,
     memory_hits: Sequence[dict] = (),
     associative_hits: Sequence[dict] = (),
     tool_habits_hits: Sequence[dict] = (),
@@ -337,7 +338,7 @@ def render_diary_request(
     today_log_block: str | None,
     self_profile_text: str | None = None,
     energy_line: str | None = None,
-    schedule: Schedule | None = None,
+    schedule: Schedule | str | None = None,
 ) -> str:
     """The diary's one-off request (plan 2026-10-18 Task 9), one user
     message: this moment's internal snapshot (``render_epoch_start`` without
@@ -510,11 +511,14 @@ def _render_your_agenda(loops: list, now: float, *, absolute: bool = False) -> s
     return "\n".join(lines)
 
 
-def _render_schedule(schedule: Schedule | None, now: float) -> str:
+def _render_schedule(schedule: Schedule | str | None, now: float) -> str:
     """Today's entries not yet due (time after ``now``), by time; "" when
-    there are none. HH:MM:SS, as WriteSchedule's ``remove`` takes it."""
+    there are none. HH:MM:SS, as WriteSchedule's ``remove`` takes it. A str
+    (why today's file could not be read) is shown as it is."""
     if schedule is None:
         return ""
+    if isinstance(schedule, str):
+        return f"({schedule})"
     clock = datetime.fromtimestamp(now).time()
     return "\n".join(
         f"- {e.time:%H:%M:%S} — {e.intent}"

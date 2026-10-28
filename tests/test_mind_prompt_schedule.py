@@ -107,6 +107,8 @@ def test_mindloop_snapshot_carries_todays_file_on_owner_pages_only(tmp_path: Pat
     )]))
     text = _prompt_text(owner)
     assert "- 23:59:59 — still-to-come-marker" in text
+    # The turn's message does not add a second, out-of-date "(none)" block.
+    assert text.count("[Today's schedule]") == 1
     assert "already-past-marker" not in text
 
     stranger = make_mindloop(memory_root=tmp_path)
@@ -117,3 +119,96 @@ def test_mindloop_snapshot_carries_todays_file_on_owner_pages_only(tmp_path: Pat
     )]))
     assert stranger._ctx.origin_tier == "external_public"
     assert "still-to-come-marker" not in _prompt_text(stranger)
+
+
+def _todays_file(memory_root: Path) -> Path:
+    return memory_root / "schedule" / f"{date.today():%Y-%m-%d}.toml"
+
+
+def _owner_says(text: str) -> list[Perception]:
+    import time as clock
+
+    return [Perception(kind="UserSpoke", t=clock.time(), data={"text": text})]
+
+
+@pytest.mark.asyncio
+async def test_mindloop_turn_message_carries_a_change_to_todays_file(tmp_path: Path):
+    """The block a page opened with goes out of date when the file changes (an
+    entry WriteSchedule added, say); the next turn's message on that page
+    carries it again."""
+    from tests._mindloop_factory import make_mindloop
+
+    if datetime.now().time() >= time(23, 59):
+        pytest.skip("too close to midnight for an entry still to come today")
+    entry = ScheduleEntry(time=time(23, 59, 59), intent="still-to-come-marker")
+    write_schedule(_todays_file(tmp_path), [entry])
+    owner = make_mindloop(memory_root=tmp_path)
+    await owner._run_one_turn(_owner_says("hi"))
+
+    write_schedule(_todays_file(tmp_path), [
+        ScheduleEntry(time=time(23, 59, 58), intent="added-later-marker"), entry,
+    ])
+    await owner._run_one_turn(_owner_says("and now?"))
+    first, second = (c["messages"] for c in owner._llm.calls)
+    assert second[1] == first[1]  # the same page
+    assert _block(second[-1]["content"]).splitlines()[1:] == [
+        "- 23:59:58 — added-later-marker", "- 23:59:59 — still-to-come-marker",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mindloop_diary_request_carries_todays_file(tmp_path: Path):
+    import time as clock
+
+    from tests._mindloop_factory import make_mindloop
+
+    if datetime.now().time() >= time(23, 59):
+        pytest.skip("too close to midnight for an entry still to come today")
+    write_schedule(_todays_file(tmp_path), [
+        ScheduleEntry(time=time(23, 59, 59), intent="still-to-come-marker"),
+    ])
+    ml = make_mindloop(memory_root=tmp_path)
+    await ml._run_one_turn([Perception(kind="DiaryMoment", t=clock.time(), data={})])
+    assert ml._moment == "diary"
+    request = ml._llm.calls[0]["messages"][1]["content"]
+    assert _block(request).splitlines()[1:] == ["- 23:59:59 — still-to-come-marker"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    '[[entry]]\ntime = "8:00:00"\nintent = "one-digit hour"\n',
+    '[[entry]]\ntime = "08:00:00"\n',
+    '[[entry]]\ntime = "08:00:00"\nintent = "unclosed\n',
+])
+async def test_mindloop_turn_goes_on_when_todays_file_cannot_be_read(
+    tmp_path: Path, body: str, caplog,
+):
+    """The file is hand-editable (the owner, or Doll through Shell). One that
+    cannot be read must not stop every turn until midnight: an owner page
+    shows why in the block (and the log has it), a stranger's turn never
+    reads the file."""
+    import logging
+
+    from tests._mindloop_factory import make_mindloop
+
+    _todays_file(tmp_path).parent.mkdir(parents=True)
+    _todays_file(tmp_path).write_text(body)
+
+    owner = make_mindloop(memory_root=tmp_path)
+    with caplog.at_level(logging.ERROR, logger="dollos.mind.mind_loop"):
+        await owner._run_one_turn(_owner_says("hi"))
+    assert len(owner._llm.calls) == 1
+    lines = _block(_prompt_text(owner)).splitlines()
+    assert len(lines) == 2
+    assert lines[1].startswith(f"(cannot read memory/schedule/{_todays_file(tmp_path).name}: ")
+    assert any("cannot read" in r.getMessage() for r in caplog.records)
+
+    stranger = make_mindloop(memory_root=tmp_path)
+    await stranger._run_one_turn([Perception(
+        kind="ChannelMessage", t=datetime.now().timestamp(),
+        data={"content": "hi", "channel_id": "disc:g1:c1",
+              "author_is_owner": False, "is_dm": False},
+    )])
+    assert stranger._ctx.origin_tier == "external_public"
+    assert len(stranger._llm.calls) == 1
+    assert "[Today's schedule]" not in _prompt_text(stranger)

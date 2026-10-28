@@ -59,7 +59,7 @@ from dollos.mind.persona_guard import check_persona_violations
 from dollos.mind.repeat_detect import detect_repeat_streak
 from dollos.mind.tool_memory import record_tool_outcome, render_tool_outcomes, tool_habits_search
 from dollos.perception.system_pulse import thermal_multiplier
-from dollos.schedule import load_schedule
+from dollos.schedule import Schedule, load_schedule
 from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
 from dollos.wal.perception_log import PerceptionWAL
@@ -686,11 +686,20 @@ class MindLoop:
                     sections=(("self",) if self._ctx.origin_tier == "external_public"
                               else None),
                 )
-            # Today's schedule for [Today's schedule] (plan 2026-10-28 Task 1);
-            # the snapshot leaves it out on stranger pages.
-            schedule = load_schedule(
-                self._ctx.memory_root / "schedule" / f"{date.today():%Y-%m-%d}.toml"
-            )
+            # Today's schedule for [Today's schedule] (plan 2026-10-28 Task 1),
+            # which stranger pages never show. The file is hand-editable (the
+            # owner, or she through Shell): one that cannot be read is logged
+            # and the block says so, instead of every turn failing on it.
+            schedule: Schedule | str | None = None
+            if self._ctx.origin_tier != "external_public":
+                schedule_path = (
+                    self._ctx.memory_root / "schedule" / f"{date.today():%Y-%m-%d}.toml"
+                )
+                try:
+                    schedule = load_schedule(schedule_path)
+                except (OSError, ValueError) as e:
+                    logger.exception("cannot read %s", schedule_path)
+                    schedule = f"cannot read memory/schedule/{schedule_path.name}: {e}"
             evolution_block = None
             if (self._evolution_enabled
                     and "evolution_candidate" in policy.extra_blocks
