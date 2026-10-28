@@ -105,8 +105,8 @@ def build_model(
 def build_memsearch(settings: Settings) -> FtsMemory:
     """Construct the embedder-free FtsMemory rooted at data.root / memory.
 
-    Indexes shared/, transcripts/, skills/, external_public/, and
-    external_dm/ markdown into an FTS5 + jieba index at
+    Indexes shared/, transcripts/, skills/, external_public/,
+    external_owner/ and external_dm/ markdown into an FTS5 + jieba index at
     data.root/memory/fts.db (derived, disposable).
 
     skills/ holds skill entry files (frontmatter + short description); they ARE indexed
@@ -123,18 +123,23 @@ def build_memsearch(settings: Settings) -> FtsMemory:
     reindex. Safe to add BECAUSE C2 turned external_public retrieval into a
     fail-closed ALLOWLIST (source_prefix=external_public/ only) — indexing
     external_dm/ here can no longer leak to a stranger's turn regardless of
-    reindex timing.
+    reindex timing. external_owner/ (notes taken on a tainted turn, plan
+    2026-10-28 decision 4) is indexed for the same reason: the allowlist
+    keeps it from strangers, and owner/internal turns read it only through
+    Recall(include_external).
     """
     memory_root = settings.data.root / "memory"
     shared_path = memory_root / "shared"
     transcripts_path = memory_root / "transcripts"
     skills_path = memory_root / "skills"
     external_public_path = memory_root / "external_public"
+    external_owner_path = memory_root / "external_owner"
     external_dm_path = memory_root / "external_dm"
     shared_path.mkdir(parents=True, exist_ok=True)
     transcripts_path.mkdir(parents=True, exist_ok=True)
     skills_path.mkdir(parents=True, exist_ok=True)
     external_public_path.mkdir(parents=True, exist_ok=True)
+    external_owner_path.mkdir(parents=True, exist_ok=True)
     external_dm_path.mkdir(parents=True, exist_ok=True)
     return FtsMemory(
         paths=[
@@ -142,6 +147,7 @@ def build_memsearch(settings: Settings) -> FtsMemory:
             str(transcripts_path),
             str(skills_path),
             str(external_public_path),
+            str(external_owner_path),
             str(external_dm_path),
         ],
         db_path=memory_root / "fts.db",

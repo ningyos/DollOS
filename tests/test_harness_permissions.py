@@ -19,9 +19,10 @@ and ``run_agent`` — with ``FakeModel`` scripting the model:
   ``[Memory context]`` / ``[Associative memories]`` (S1, integration form);
 - taint downgrade (spec §6.5 point 2, new in Task 6): after
   ``Recall(include_external=True)`` the rest of an owner / owner_dm / agent
-  turn may only run ``TAINTED_TOOLS`` — Shell and NoteMemory are refused as
-  unbound, in the same reply and in later passes; the next turn is clean.
-  An external_public turn is never tainted;
+  turn may only run ``TAINTED_TOOLS`` — Shell is refused as unbound, in the
+  same reply and in later passes, and NoteMemory writes ``external_owner/``
+  (plan 2026-10-28 decision 4; the page keeping the taint is in
+  ``test_harness_taint_page.py``). An external_public turn is never tainted;
 - no follow-up turn can come from a stranger with a higher principal.
 
 Real ``FtsMemory`` over tmp dirs where memory scoping is asserted.
@@ -258,8 +259,8 @@ def _offered_names(call: dict) -> set[str]:
 
 
 def _memsearch(tmp_path: Path) -> FtsMemory:
-    dirs = [tmp_path / n for n in ("shared", "external_public", "external_dm",
-                                   "transcripts")]
+    dirs = [tmp_path / n for n in ("shared", "external_public", "external_owner",
+                                   "external_dm", "transcripts")]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     return FtsMemory(paths=[str(d) for d in dirs], db_path=tmp_path / "fts.db")
@@ -390,8 +391,6 @@ async def test_reading_external_taints_the_rest_of_the_turn(tmp_path, perception
         _calls(_READ_EXTERNAL, _SHELL),          # same reply
         _calls(_SHELL, _NOTE),                   # a later pass
         [SpeechDelta("done")],
-        _calls(_SHELL),                          # the next turn
-        "</think>ok",
     ])
     ml = _loop(tmp_path, model)
     principal = principal_of([perception()])
@@ -399,12 +398,15 @@ async def test_reading_external_taints_the_rest_of_the_turn(tmp_path, perception
 
     assert ml._ctx.tainted is True
     assert ml._ctx.shell_runner.calls == []
-    assert not list((tmp_path / "shared").glob("*.md"))
     first_pass = [m for m in model.calls[1]["messages"] if m["role"] == "tool"]
     assert first_pass[-1]["content"].startswith(f"Shell {_UNBOUND_TAINTED}")
     shell2, note2 = _tool_messages(model)[-2:]
-    assert shell2 == f"Shell {_UNBOUND_TAINTED}; available now: Recall"
-    assert note2 == f"NoteMemory {_UNBOUND_TAINTED}; available now: Recall"
+    assert shell2 == f"Shell {_UNBOUND_TAINTED}; available now: NoteMemory, Recall"
+    # The note is kept, as external content (plan 2026-10-28 decision 4).
+    assert note2.startswith("memory noted as external content")
+    assert not list((tmp_path / "shared").glob("*.md"))
+    [note] = (tmp_path / "external_owner").glob("*.md")
+    assert "the stranger said so" in note.read_text(encoding="utf-8")
     # The offered list stays byte-identical (server cache).
     assert model.calls[1]["tools"] == model.calls[0]["tools"]
 
@@ -417,26 +419,22 @@ async def test_reading_external_taints_the_rest_of_the_turn(tmp_path, perception
         ("Recall", "allow", False),
         ("Shell", "unbound", True),
         ("Shell", "unbound", True),
-        ("NoteMemory", "unbound", True),
+        ("NoteMemory", "allow", True),
     ]
-
-    # The next turn starts clean: Shell runs.
-    await ml._run_one_turn([perception()])
-    assert ml._ctx.tainted is False
-    assert [c["command"] for c in ml._ctx.shell_runner.calls] == ["ls"]
 
 
 async def test_parallel_refusals_after_reading_external_leave_her_a_pass(tmp_path):
     """Live 3.8 (plan 2026-10-28 decision 3): after a tainting read she sends
-    three NoteMemory calls in one reply. All three are refused, but that is
-    one refusal toward UNBOUND_REJECT_LIMIT, so she gets the next pass, sees
-    that nothing was saved, and says so."""
+    three calls the turn may no longer run in one reply (NoteMemory in the
+    live run; it is allowed since decision 4, so Shell here). All three are
+    refused, but that is one refusal toward UNBOUND_REJECT_LIMIT, so she gets
+    the next pass, sees that nothing ran, and says so."""
     sink: asyncio.Queue = asyncio.Queue()
-    notes = [("NoteMemory", {"text": t}) for t in ("a", "b", "c")]
+    shells = [("Shell", {"command": c}) for c in ("ls a", "ls b", "ls c")]
     model = FakeModel([
         _calls(_READ_EXTERNAL),
-        _calls(*notes),
-        [SpeechDelta("Couldn't save those, the page was external.")],
+        _calls(*shells),
+        [SpeechDelta("Couldn't run those, the page was external.")],
     ])
     ml = make_mindloop(memory_root=tmp_path, llm=model, system_prompt="You are Doll.",
                        sink=sink)
@@ -444,15 +442,15 @@ async def test_parallel_refusals_after_reading_external_leave_her_a_pass(tmp_pat
 
     assert model.pass_count == 3
     assert _tool_messages(model)[-3:] == [
-        f"NoteMemory {_UNBOUND_TAINTED}; available now: Recall",
+        f"Shell {_UNBOUND_TAINTED}; available now: NoteMemory, Recall",
     ] * 3
-    assert not list((tmp_path / "shared").glob("*.md"))
+    assert ml._ctx.shell_runner.calls == []
     spoken = []
     while not sink.empty():
         item = sink.get_nowait()
         if isinstance(item, TextChunk):
             spoken.append(item.text)
-    assert "".join(spoken) == "Couldn't save those, the page was external."
+    assert "".join(spoken) == "Couldn't run those, the page was external."
 
 
 @pytest.mark.parametrize("perception", [_owner, _owner_dm])
@@ -469,7 +467,9 @@ async def test_pinself_is_refused_after_reading_external(tmp_path, perception):
     await ml._run_one_turn([perception()])
 
     assert ml._ctx.tainted is True
-    assert _tool_messages(model)[-1] == f"PinSelf {_UNBOUND_TAINTED}; available now: Recall"
+    assert _tool_messages(model)[-1] == (
+        f"PinSelf {_UNBOUND_TAINTED}; available now: NoteMemory, Recall"
+    )
     assert not (tmp_path / "self_profile.md").exists()
 
 
@@ -505,7 +505,7 @@ async def test_agent_worker_taints_the_same_way(tmp_path):
     configure_cascade_logging(tmp_path / "log")
     shell = _FakeShellRunner()
     model = FakeModel([
-        _calls(_READ_EXTERNAL, _SHELL),
+        _calls(_READ_EXTERNAL, _SHELL, _NOTE),
         _calls(("Report", {"status": "ok", "summary": "s", "details": "d"})),
     ])
     report = await run_agent(
@@ -519,8 +519,11 @@ async def test_agent_worker_taints_the_same_way(tmp_path):
 
     assert shell.spawned == []
     assert _tool_messages(model)[1] == (
-        f"Shell {_UNBOUND_TAINTED}; available now: Recall, Report"
+        f"Shell {_UNBOUND_TAINTED}; available now: NoteMemory, Recall, Report"
     )
+    # Its note is kept as external content, as on a MindLoop turn.
+    [note] = (tmp_path / "memory" / "external_owner").glob("*.md")
+    assert "the stranger said so" in note.read_text(encoding="utf-8")
     # A tainted worker can still end with its result (Report ∈ TAINTED_TOOLS).
     assert report == {"status": "ok", "summary": "s", "details": "d"}
     [tainted] = _records(tmp_path / "log", "turn_tainted")
@@ -550,4 +553,4 @@ def test_no_stranger_or_tainted_turn_can_cause_a_follow_up():
                 assert not bound & _FOLLOW_UP_TOOLS, kind
     assert not tools_for("external_public") & _FOLLOW_UP_TOOLS
     assert not TAINTED_TOOLS & _FOLLOW_UP_TOOLS
-    assert TAINTED_TOOLS == {"Recall", "Report"}
+    assert TAINTED_TOOLS == {"Recall", "NoteMemory", "Report"}

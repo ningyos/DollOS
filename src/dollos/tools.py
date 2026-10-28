@@ -75,6 +75,32 @@ _ORIGIN_DIR = {
     "external_dm": "external_dm",
 }
 
+# Plan 2026-10-28 decision 4: a note written on a tainted turn (it, or an
+# earlier turn on its conversation page, read untrusted content — a web
+# page, strangers' notes) goes here whatever the origin_tier. It may carry
+# that content, so it must not land in shared/ as her own.
+_TAINTED_DIR = "external_owner"
+
+# The memory dirs that hold untrusted text (harness spec §6.5): an owner or
+# internal turn never gets them auto-injected ([Memory context],
+# [Associative memories]), and its Recall reads them only with
+# include_external, which taints the turn. external_public/: notes written
+# on a stranger's turn; external_owner/: notes written on a tainted turn.
+# A stranger's turn reads external_public/ only (an allowlist, see Recall).
+EXTERNAL_MEMORY_DIRS = ("external_public", _TAINTED_DIR)
+
+
+def external_memory_tag(source: str) -> str:
+    """The provenance prefix of a hit from an ``EXTERNAL_MEMORY_DIRS`` dir,
+    "" for any other source (R-DECISION-5). The trailing slash makes each
+    check a directory boundary, so a sibling like external_public_evil/
+    never matches."""
+    if "external_public/" in source:
+        return "[external AI · unverified] "
+    if f"{_TAINTED_DIR}/" in source:
+        return "[external content you read · unverified] "
+    return ""
+
 
 def _hit_date(hit: dict) -> date | None:
     """Extract YYYY-MM-DD from a memsearch hit's source filename, if any."""
@@ -139,20 +165,20 @@ def _format_hit(hit: dict) -> str:
     d = _hit_date(hit)
     content = hit.get("content", "")
     source = hit.get("source") or ""
-    # Provenance prefixes (both surface via Recall; both are auto-inject-
-    # filtered upstream — external_public/ since S1, so on an owner/internal
-    # turn this tag only appears when Recall asks with include_external —
-    # R-DECISION-5):
+    # Provenance prefixes (all surface via Recall; all are auto-inject-
+    # filtered upstream — the external dirs since S1 / plan 2026-10-28
+    # decision 4, so on an owner/internal turn their tag only appears when
+    # Recall asks with include_external — R-DECISION-5):
     #   consolidated/    → system-merged, unconfirmed candidate
     #   external_public/ → written under an external (peer/stranger) turn; an
     #                      unverified AI over MCP can NoteMemory here, so on an
     #                      owner Recall it must read as untrusted, never trusted.
+    #   external_owner/  → written on a tainted turn: what she took from
+    #                      content she read (a web page), not her own words.
     if "consolidated/" in source:
         prefix = "[consolidated · unconfirmed] "
-    elif "external_public/" in source:
-        prefix = "[external AI · unverified] "
     else:
-        prefix = ""
+        prefix = external_memory_tag(source)
     if d is not None:
         return f"- {prefix}{d.isoformat()} {content}"
     return f"- {prefix}{content}"
@@ -181,7 +207,14 @@ class NoteMemory(BaseModel):
     async def run(self, ctx: "MindCtx") -> str:
         from dollos.mind.context_tags import build_heading
 
-        subdir = _ORIGIN_DIR.get(getattr(ctx, "origin_tier", "internal"), "shared")
+        # A tainted turn's note may carry the untrusted content it read, so
+        # it goes to external_owner/ (plan 2026-10-28 decision 4), and its
+        # [Recent outputs] record leaves the text out: a later page's
+        # snapshot and the diary request would show it as her own record.
+        if ctx.tainted:
+            subdir = _TAINTED_DIR
+        else:
+            subdir = _ORIGIN_DIR.get(getattr(ctx, "origin_tier", "internal"), "shared")
         path = ctx.memory_root / subdir / f"{date.today():%Y-%m-%d}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         heading = build_heading(ctx.mind_state)
@@ -190,9 +223,14 @@ class NoteMemory(BaseModel):
         with path.open("a") as f:
             f.write(f"\n## {heading}\n\n{self.text}\n")
         await ctx.memsearch.index_file(path)
-        result = f"memory noted: {self.text[:60]}"
+        if ctx.tainted:
+            _record(ctx, "NoteMemory", "noted external content")
+            return (
+                "memory noted as external content (Recall finds it only with "
+                f"include_external): {self.text[:60]}"
+            )
         _record(ctx, "NoteMemory", self._summary())
-        return result
+        return f"memory noted: {self.text[:60]}"
 
 
 class WriteDiary(BaseModel):
@@ -425,8 +463,8 @@ class Recall(BaseModel):
     include_external: bool = Field(
         default=False,
         description=(
-            "Also search notes left by strangers and external AIs "
-            "(unverified)."
+            "Also search notes left by strangers and external AIs, and "
+            "notes you took from external content you read (unverified)."
         ),
     )
 
@@ -440,8 +478,8 @@ class Recall(BaseModel):
         return bool(arguments.get("include_external"))
 
     def _summary(self, read_external: bool = False) -> str:
-        # S1: whether external_public/ hits came back, so a later harness
-        # step can downgrade the turn after untrusted memory entered it.
+        # S1: whether hits from EXTERNAL_MEMORY_DIRS came back, so a later
+        # harness step can downgrade the turn after untrusted memory entered it.
         suffix = " [read external memory]" if read_external else ""
         return f"recalled: {self.query[:72]}{suffix}"
 
@@ -467,16 +505,20 @@ class Recall(BaseModel):
         # theoretical. Mirrors the ``/%`` boundary on exclude_prefixes.
         #
         # S1 (harness spec §6.5): every other turn (internal, and external_dm
-        # = the owner's DM) leaves external_public/ out at the SQL layer
-        # unless she asks for it with include_external; hits that do come
-        # back still carry the unverified tag (_format_hit). On an
-        # external_public turn include_external has no effect.
+        # = the owner's DM) leaves EXTERNAL_MEMORY_DIRS out at the SQL layer
+        # (external_owner/ since plan 2026-10-28 decision 4) unless she asks
+        # for them with include_external; hits that do come back still carry
+        # their tag (_format_hit). On an external_public turn
+        # include_external has no effect, and the external_public/ allowlist
+        # keeps external_owner/ out too.
         if getattr(ctx, "origin_tier", "internal") == "external_public":
             search_kwargs["source_prefix"] = (
                 str(ctx.memory_root / "external_public") + "/"
             )
         elif not self.include_external:
-            search_kwargs["exclude_prefixes"] = [ctx.memory_root / "external_public"]
+            search_kwargs["exclude_prefixes"] = [
+                ctx.memory_root / d for d in EXTERNAL_MEMORY_DIRS
+            ]
         hits = await ctx.memsearch.search(self.query, top_k=5, **search_kwargs)
         if self.since is not None or self.until is not None:
             hits = [h for h in hits if _hit_in_range(h, self.since, self.until)]
@@ -488,7 +530,7 @@ class Recall(BaseModel):
                 for h in hits
             )
         read_external = any(
-            "external_public/" in (h.get("source") or "") for h in hits
+            external_memory_tag(h.get("source") or "") for h in hits
         )
         _record(ctx, "Recall", self._summary(read_external))
         return result

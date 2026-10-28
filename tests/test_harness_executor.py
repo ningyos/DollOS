@@ -119,6 +119,18 @@ def test_turn_label(kind, principal, label):
     assert turn_label(kind, principal) == label
 
 
+@pytest.mark.parametrize(("taint", "label"), [
+    ("turn", "after reading external content"),
+    ("page", "this conversation has external content in it"),
+])
+def test_turn_label_names_why_the_turn_is_tainted(taint, label):
+    """A tainted turn says why first, whatever its kind (plan 2026-10-28
+    decision 4): it read untrusted content itself, or its page already had
+    some on it."""
+    for kind in ("conversation", "safe_mode", "reflection"):
+        assert turn_label(kind, "owner", taint=taint) == label
+
+
 # ---------------------------------------------------------------------------
 # One log record per call
 # ---------------------------------------------------------------------------

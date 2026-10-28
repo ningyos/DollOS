@@ -340,7 +340,7 @@
               },
               "include_external": {
                 "default": false,
-                "description": "Also search notes left by strangers and external AIs (unverified).",
+                "description": "Also search notes left by strangers and external AIs, and notes you took from external content you read (unverified).",
                 "type": "boolean"
               }
             },
@@ -954,7 +954,7 @@
               },
               "include_external": {
                 "default": false,
-                "description": "Also search notes left by strangers and external AIs (unverified).",
+                "description": "Also search notes left by strangers and external AIs, and notes you took from external content you read (unverified).",
                 "type": "boolean"
               }
             },

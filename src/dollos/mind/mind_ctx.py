@@ -76,11 +76,19 @@ class MindCtx:
     # Taint downgrade (harness spec §6.5 point 2, plan 2026-10-27 Task 6):
     # set by ``ToolExecutor`` once a call that read untrusted content ran
     # (a tool class's ``taints(arguments)``); from then on the turn may only
-    # run ``permissions.TAINTED_TOOLS``. Lives here, not on the executor,
-    # because MindLoop builds one executor per call and the flag must hold
-    # for the rest of the turn, every pass. MindLoop resets it every
-    # _run_one_turn alongside principal; an agent's ctx starts False.
+    # run ``permissions.TAINTED_TOOLS``, and NoteMemory writes
+    # ``external_owner/``. Lives here, not on the executor, because MindLoop
+    # builds one executor per call and the flag must hold for the rest of
+    # the turn, every pass. MindLoop sets it at the start of every turn from
+    # the turn's conversation page (plan 2026-10-28 decision 4,
+    # ``Conversation.tainted``) and writes it back to the page after the
+    # turn; an agent's ctx starts False.
     tainted: bool = False
+    # Whether ``tainted`` came from the page (an earlier turn on it read
+    # untrusted content) rather than from a call of this turn: set with it
+    # by MindLoop at the start of every turn. Only the refusal wording reads
+    # it ("this conversation has external content in it").
+    tainted_by_page: bool = False
     # The self_profile sections PinSelf may write this turn (remember-
     # corrections plan Task 2, decision 2): set by MindLoop every
     # _run_one_turn alongside principal — reflection → self / relationship /

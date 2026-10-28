@@ -67,6 +67,10 @@ class Conversation:
     reports no usage (error, interrupt) leaves it as it was.
     ``messages[:traced]`` are already in the trace (a page's ``epoch_start``
     covers the system message and the snapshot).
+    ``tainted``: a turn on this page read untrusted content (harness spec
+    §6.5, plan 2026-10-28 decision 4). The text is still in ``messages``, so
+    every later turn on the page starts tainted (MindLoop copies it to
+    ``ctx.tainted``); a new page starts clean, since the text is not on it.
     """
 
     key: str | None
@@ -78,6 +82,7 @@ class Conversation:
     prior_tokens: int = 0
     server_error: bool = False
     traced: int = 0
+    tainted: bool = False
 
     @property
     def stream_key(self) -> tuple[str, int] | None:
