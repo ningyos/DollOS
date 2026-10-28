@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
@@ -54,6 +55,29 @@ def test_load_schedule_accepts_native_time_and_string(tmp_path: Path):
     assert s1 is not None and s2 is not None
     assert s1.entries[0].time == time(8, 15)
     assert s2.entries[0].time == time(8, 15)
+
+
+@pytest.mark.parametrize(("body", "said"), [
+    ('[[entry]]\ntime = "08:00:00"\n', "entry 1"),
+    ('[[entry]]\ntime = "08:00:00"\nintent = 5\n', "entry 1"),
+    ('[[entry]]\ntime = "08:00:00"\nintent = "a"\n[[entry]]\ntime = "8:00:00"\nintent = "b"\n',
+     "entry 2: time must be HH:MM:SS, got '8:00:00'"),
+    ('[[entry]]\ntime = 2026-10-28T09:00:00\nintent = "x"\n', "entry 1: time"),
+    ('[[entry]]\nintent = "x"\n', "entry 1: time"),
+    ("entry = 5\n", "[[entry]]"),
+    ('[[entry]]\ntime = 09:00\nintent = "x"\n', "line 2"),  # TOML 1.0 needs the seconds
+])
+def test_load_schedule_says_what_is_wrong_with_a_hand_edited_file(
+    tmp_path: Path, body: str, said: str,
+):
+    """The file is hand-editable (the owner, or Doll through Shell), and
+    every turn reads it (plan 2026-10-28 Task 1). Whatever is wrong with it
+    comes out as one ValueError saying what, never a KeyError or a value
+    the snapshot cannot sort."""
+    p = tmp_path / "sched.toml"
+    p.write_text(body)
+    with pytest.raises(ValueError, match=re.escape(said)):
+        load_schedule(p)
 
 
 def test_write_schedule_atomic_via_temp_rename(tmp_path: Path):

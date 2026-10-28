@@ -693,7 +693,14 @@ class WriteSchedule(BaseModel):
 
         today = date.today()
         path = ctx.memory_root / "schedule" / f"{today:%Y-%m-%d}.toml"
-        current = load_schedule(path)
+        try:
+            current = load_schedule(path)
+        except (OSError, ValueError) as e:
+            # A hand-edited file that cannot be read: writing over it would
+            # lose what is in it.
+            raise ValueError(
+                f"cannot read memory/schedule/{path.name} ({e}), so nothing was changed"
+            ) from e
         before = current.entries if current is not None else []
         added = [
             ScheduleEntry(time=_schedule_time(e.time), intent=e.intent) for e in self.add
