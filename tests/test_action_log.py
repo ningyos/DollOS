@@ -33,11 +33,17 @@ def test_tool_phrase_whitelist_and_summaries():
     ) == 'someone started calling me "Sharky"'
     assert action_phrase_for_tool("LearnName", {"op": "remove", "token": "Sharky"}, "") is None
     assert action_phrase_for_tool(
-        "WriteSchedule", {"entries": [{}, {}, {}, {}]}, ""
+        "WriteSchedule", {"add": [{}, {}, {}, {}]}, ""
     ) == "scheduled 4 things"
     assert action_phrase_for_tool(
-        "WriteSchedule", {"entries": [{}]}, ""
+        "WriteSchedule", {"add": [{}]}, ""
     ) == "scheduled 1 thing"
+    assert action_phrase_for_tool(
+        "WriteSchedule", {"remove": ["09:00:00"]}, ""
+    ) == "took 1 thing off the schedule"
+    assert action_phrase_for_tool(
+        "WriteSchedule", {"add": [{}], "remove": ["09:00:00", "10:00:00"]}, ""
+    ) == "scheduled 1 thing and took 2 things off the schedule"
     assert action_phrase_for_tool(
         "SpawnWorkflow", {"tasks": [{}, {}]}, ""
     ) == "dispatched a workflow (2 tasks)"
@@ -117,7 +123,8 @@ def test_phrases_carry_no_daemon_chinese():
         ("Shell", {"command": "ls"}), ("SpawnWorkflow", {"tasks": [{}]}),
         ("SpawnMonitor", {"command": "x"}), ("RemoveMonitor", {"monitor_id": "m"}),
         ("PursueGoal", {"desc": "d"}), ("AdvanceGoal", {"id": "g", "progress": "p"}),
-        ("CloseLoop", {"id": "g", "outcome": "o"}), ("WriteSchedule", {"entries": []}),
+        ("CloseLoop", {"id": "g", "outcome": "o"}),
+        ("WriteSchedule", {"add": [{}], "remove": ["09:00:00"]}),
         ("SelfRevision", {"decision": "adopt"}), ("PinSelf", {"op": "add", "section": "self"}),
         ("LearnName", {"op": "add", "token": "t"}), ("NoteMemory", {"text": "n"}),
         ("MoodTool", {"emotion": "happy", "reason": "r"}),

@@ -51,7 +51,12 @@ def action_phrase_for_tool(name: str, arguments: dict, prior_mood_emotion: str) 
     if name == "CloseLoop":
         return f'closed "{a.get("id", "?")}": {_clip(a.get("outcome", ""), 40)}'
     if name == "WriteSchedule":
-        return f"scheduled {_count(a.get('entries'), 'thing')}"
+        done = []
+        if a.get("add"):
+            done.append(f"scheduled {_count(a.get('add'), 'thing')}")
+        if a.get("remove"):
+            done.append(f"took {_count(a.get('remove'), 'thing')} off the schedule")
+        return " and ".join(done) or None
     if name == "SelfRevision":
         return "adopted a revision of who I am now" if a.get("decision") == "adopt" else None
     if name == "PinSelf":

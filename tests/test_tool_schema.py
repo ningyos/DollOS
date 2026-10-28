@@ -70,10 +70,16 @@ def test_every_tool_class_generates_a_clean_schema():
 
 
 def test_nested_list_items_keep_their_properties():
-    entries = _params(WriteSchedule)["properties"]["entries"]
-    assert entries["type"] == "array"
-    assert set(entries["items"]["properties"]) == {"time", "intent"}
-    assert entries["items"]["required"] == ["time", "intent"]
+    schedule = _params(WriteSchedule)["properties"]
+    assert schedule["add"]["type"] == "array"
+    assert set(schedule["add"]["items"]["properties"]) == {"time", "intent"}
+    assert schedule["add"]["items"]["required"] == ["time", "intent"]
+    assert schedule["add"]["default"] == []
+    assert schedule["remove"] == {
+        "default": [], "description": schedule["remove"]["description"],
+        "items": {"type": "string"}, "type": "array",
+    }
+    assert "required" not in _params(WriteSchedule)
 
     tasks = _params(SpawnWorkflow)["properties"]["tasks"]
     assert tasks["type"] == "array"
