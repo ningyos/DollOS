@@ -22,7 +22,7 @@ from dollos.harness.executor import (
 from dollos.harness.runner import AgentThread, Turn, TurnRunner
 from dollos.llm.model import End, SpeechDelta, ThinkDelta, Usage
 from dollos.llm.tool_schema import tool_schemas
-from dollos.tools import SUB_TOOLS, ReadToolOutput, Recall, SetFocus, Shell
+from dollos.tools import SUB_TOOLS, NoteMemory, ReadToolOutput, Recall, SetFocus, Shell
 from tests._fake_model import FakeModel
 
 
@@ -369,6 +369,110 @@ async def test_cascade_on_iter_end_gets_reasoning_and_speech(tmp_path):
     assert seen[0][3][0]["arguments"] == "{}"
     assert seen[0][4] == ["ok"]
     assert seen[1][:3] == (2, "", "end")
+
+
+# ---------------------------------------------------------------------------
+# Refusals of an offered-but-unbound tool (UNBOUND_REJECT_LIMIT)
+# ---------------------------------------------------------------------------
+
+
+_REFUSED_NOTE = "NoteMemory is not available in this turn (owner); available now: Recall"
+
+
+async def _refusing(model, tmp_path):
+    """One owner ``conversation`` turn on the runner where NoteMemory and
+    Shell are offered but only Recall is bound. Returns the TurnResult."""
+    from tests._dispatcher_helpers import _make_mind_ctx
+
+    offered = {cls.__name__: cls for cls in (NoteMemory, Recall, Shell)}
+    ctx = _make_mind_ctx(tmp_path)
+    executor = ToolExecutor(
+        ctx, offered=offered, bound={"Recall": Recall},
+        principal="owner", kind="conversation",
+    )
+    return await TurnRunner(model).run(Turn(
+        kind="conversation",
+        principal="owner",
+        thread=AgentThread([
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "save these"},
+        ]),
+        tools=tool_schemas(list(offered.values())),
+        execute=executor.run,
+        ctx=ctx,
+        speak=lambda sentence: None,
+        max_tokens=512,
+        think_budget=64,
+        purpose="cascade",
+    ))
+
+
+@pytest.mark.asyncio
+async def test_parallel_refusals_in_one_pass_count_once(tmp_path):
+    """Live 3.8 (plan 2026-10-28 decision 3): three NoteMemory calls in one
+    reply, all refused, are one refusal, not three. The turn goes on, the
+    next call sees the three refusals, and she can say it was not saved."""
+    model = FakeModel([
+        _call("NoteMemory", text="a") + _call("NoteMemory", text="b")
+        + _call("NoteMemory", text="c"),
+        "</think>Couldn't save those.",
+    ])
+    result = await _refusing(model, tmp_path)
+
+    assert model.pass_count == 2
+    tool_messages = [m["content"] for m in model.calls[1]["messages"] if m["role"] == "tool"]
+    assert tool_messages == [_REFUSED_NOTE] * 3
+    assert (result.outcome, result.ended_by) == ("done", "no_tool_calls")
+    assert result.said == "Couldn't save those."
+
+
+@pytest.mark.asyncio
+async def test_refusals_in_three_passes_end_the_turn(tmp_path):
+    """She keeps retrying: a tool refused in 3 passes ends the turn, and the
+    4th reply is never asked for."""
+    model = FakeModel([_call("Shell", command="ls")] * 3 + ["</think>never"])
+    result = await _refusing(model, tmp_path)
+
+    assert model.pass_count == 3
+    assert (result.outcome, result.ended_by, result.reason) == (
+        "failed", "unbound_limit", "Shell refused in 3 passes",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("again", ["NoteMemory", "Shell"])
+async def test_mixed_pass_counts_one_refusal_per_tool(tmp_path, again):
+    """Two refused NoteMemory and one refused Shell in one reply count 1 for
+    each: two more passes refusing either one end the turn on it after
+    pass 3, not sooner and not later."""
+    model = FakeModel([
+        _call("NoteMemory", text="a") + _call("NoteMemory", text="b")
+        + _call("Shell", command="ls"),
+        _call(again), _call(again),
+        "</think>never",
+    ])
+    result = await _refusing(model, tmp_path)
+
+    assert model.pass_count == 3
+    assert (result.ended_by, result.reason) == (
+        "unbound_limit", f"{again} refused in 3 passes",
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusals_count_for_the_whole_turn(tmp_path):
+    """A pass in between that runs a bound tool does not reset the count, so
+    refused calls cannot alternate with other calls up to max_passes."""
+    model = FakeModel([
+        _call("Shell"), _call("Recall", query="q"), _call("Shell"), _call("Shell"),
+        "</think>never",
+    ])
+    result = await _refusing(model, tmp_path)
+
+    assert model.pass_count == 4
+    assert (result.ended_by, result.reason) == (
+        "unbound_limit", "Shell refused in 3 passes",
+    )
 
 
 # ---------------------------------------------------------------------------

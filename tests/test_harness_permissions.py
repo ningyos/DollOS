@@ -28,6 +28,7 @@ Real ``FtsMemory`` over tmp dirs where memory scoping is asserted.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -45,6 +46,7 @@ from dollos.harness.permissions import (
     tools_for,
 )
 from dollos.harness.turn_policy import POLICIES, bound_tools
+from dollos.ipc.messages import TextChunk
 from dollos.llm.model import SpeechDelta, ToolCall, ToolCalls
 from dollos.logging_config import configure_cascade_logging
 from dollos.memory import FtsMemory
@@ -422,6 +424,35 @@ async def test_reading_external_taints_the_rest_of_the_turn(tmp_path, perception
     await ml._run_one_turn([perception()])
     assert ml._ctx.tainted is False
     assert [c["command"] for c in ml._ctx.shell_runner.calls] == ["ls"]
+
+
+async def test_parallel_refusals_after_reading_external_leave_her_a_pass(tmp_path):
+    """Live 3.8 (plan 2026-10-28 decision 3): after a tainting read she sends
+    three NoteMemory calls in one reply. All three are refused, but that is
+    one refusal toward UNBOUND_REJECT_LIMIT, so she gets the next pass, sees
+    that nothing was saved, and says so."""
+    sink: asyncio.Queue = asyncio.Queue()
+    notes = [("NoteMemory", {"text": t}) for t in ("a", "b", "c")]
+    model = FakeModel([
+        _calls(_READ_EXTERNAL),
+        _calls(*notes),
+        [SpeechDelta("Couldn't save those, the page was external.")],
+    ])
+    ml = make_mindloop(memory_root=tmp_path, llm=model, system_prompt="You are Doll.",
+                       sink=sink)
+    await ml._run_one_turn([_owner()])
+
+    assert model.pass_count == 3
+    assert _tool_messages(model)[-3:] == [
+        f"NoteMemory {_UNBOUND_TAINTED}; available now: Recall",
+    ] * 3
+    assert not list((tmp_path / "shared").glob("*.md"))
+    spoken = []
+    while not sink.empty():
+        item = sink.get_nowait()
+        if isinstance(item, TextChunk):
+            spoken.append(item.text)
+    assert "".join(spoken) == "Couldn't save those, the page was external."
 
 
 @pytest.mark.parametrize("perception", [_owner, _owner_dm])
