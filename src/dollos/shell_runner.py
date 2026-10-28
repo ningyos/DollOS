@@ -6,11 +6,18 @@ into the PerceptionQueue when the proc exits, times out, or errors.
 There is no Doll-callable wait/cancel — "wait" is just Doll keeping her
 cascade alive, "cancel" only happens on daemon shutdown.
 
+A workflow worker's `Shell` waits instead (plan 2026-10-28 decision 2): an
+agent's loop never sees perceptions, so ``run_and_wait`` runs the command
+the same way and returns the result data rather than enqueueing it.
+
 Lifecycle:
     Shell.run → ctx.shell_runner.spawn(command, timeout_s)
                 → asyncio.create_task(_run(...))
-                       → spawn proc, await communicate() with timeout
+                       → _execute: spawn proc, await communicate() with timeout,
+                         store the output → the result data
                        → perception_queue.put(Perception("ToolResultArrived", ...))
+    worker Shell.run → await ctx.shell_runner.run_and_wait(command, timeout_s)
+                → asyncio.create_task(_execute(...)) → the result data
 """
 from __future__ import annotations
 
@@ -50,7 +57,7 @@ class ShellRunner:
         self._cwd = cwd
         self._perception_queue = perception_queue
         self._tool_output_store = tool_output_store
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks: set[asyncio.Task] = set()
         self._stopping = False
 
     def set_perception_queue(self, queue: "PerceptionQueue") -> None:
@@ -68,11 +75,28 @@ class ShellRunner:
             logger.warning("shell spawn ignored: runner stopping")
             return
         task_id = f"shell-{uuid.uuid4().hex[:8]}"
-        coro = self._run(command, timeout_s, task_id)
+        self._track(self._run(command, timeout_s, task_id), task_id)
+
+    async def run_and_wait(self, *, command: str, timeout_s: int) -> dict:
+        """Run a shell subprocess and return its result data — the same dict
+        ``spawn`` enqueues as a ToolResultArrived perception — instead of
+        enqueueing it. For a workflow worker's Shell, whose loop never sees
+        perceptions.
+
+        Tracked like a spawned command, so ``stop()`` kills it too; so does
+        cancelling the caller (the workflow's per-agent timeout). Once the
+        runner is stopping it runs nothing and returns an error result."""
+        task_id = f"shell-{uuid.uuid4().hex[:8]}"
+        if self._stopping:
+            logger.warning("shell run_and_wait refused: runner stopping")
+            return _error(task_id, command, "runner stopping: daemon shutting down")
+        return await self._track(self._execute(command, timeout_s, task_id), task_id)
+
+    def _track(self, coro, task_id: str) -> asyncio.Task:
         t = asyncio.create_task(coro, name=task_id)
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
-
+        return t
 
     async def stop(self) -> None:
         self._stopping = True
@@ -84,6 +108,13 @@ class ShellRunner:
 
     async def _run(self, command: str, timeout_s: int, task_id: str) -> None:
         from dollos.mind.mind_state import Perception
+        data = await self._execute(command, timeout_s, task_id)
+        self._enqueue(Perception(kind="ToolResultArrived", t=time.time(), data=data))
+
+    async def _execute(self, command: str, timeout_s: int, task_id: str) -> dict:
+        """Run ``command`` to its end and store its output: the result data,
+        status ok / nonzero / timeout / error. A cancel kills the process
+        group and propagates."""
         proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -108,43 +139,34 @@ class ShellRunner:
                     pass
                 timeout_msg = f"[timed out after {timeout_s}s]"
                 output_id: str = self._tool_output_store.write(timeout_msg)
-                self._enqueue(Perception(
-                    kind="ToolResultArrived",
-                    t=time.time(),
-                    data={
-                        "tool": "Shell",
-                        "task_id": task_id,
-                        "status": "timeout",
-                        "summary": f"shell timed out after {timeout_s}s",
-                        "output_id": output_id,
-                        "line_count": 1,
-                        "command": command,
-                    },
-                ))
-                return
+                return {
+                    "tool": "Shell",
+                    "task_id": task_id,
+                    "status": "timeout",
+                    "summary": f"shell timed out after {timeout_s}s",
+                    "output_id": output_id,
+                    "line_count": 1,
+                    "command": command,
+                }
             full_output = (stdout or b"").decode("utf-8", errors="replace")
             all_lines = full_output.splitlines()
             line_count = len(all_lines)
             preview = "\n".join(all_lines[:SHELL_PREVIEW_LINES])
             output_id = self._tool_output_store.write(full_output)
             status = "ok" if proc.returncode == 0 else "nonzero"
-            self._enqueue(Perception(
-                kind="ToolResultArrived",
-                t=time.time(),
-                data={
-                    "tool": "Shell",
-                    "task_id": task_id,
-                    "status": status,
-                    "summary": (
-                        f"exit {proc.returncode}: {preview[:80]}"
-                        if all_lines else f"exit {proc.returncode}: (empty)"
-                    ),
-                    "output_id": output_id,
-                    "line_count": line_count,
-                    "command": command,
-                    "exit_code": proc.returncode,
-                },
-            ))
+            return {
+                "tool": "Shell",
+                "task_id": task_id,
+                "status": status,
+                "summary": (
+                    f"exit {proc.returncode}: {preview[:80]}"
+                    if all_lines else f"exit {proc.returncode}: (empty)"
+                ),
+                "output_id": output_id,
+                "line_count": line_count,
+                "command": command,
+                "exit_code": proc.returncode,
+            }
         except asyncio.CancelledError:
             if proc is not None and proc.returncode is None:
                 try:
@@ -154,20 +176,8 @@ class ShellRunner:
                     pass
             raise
         except Exception as e:
-            logger.exception("ShellRunner._run unexpected error")
-            self._enqueue(Perception(
-                kind="ToolResultArrived",
-                t=time.time(),
-                data={
-                    "tool": "Shell",
-                    "task_id": task_id,
-                    "status": "error",
-                    "summary": f"runner error: {e}",
-                    "output_id": None,
-                    "line_count": 1,
-                    "command": command,
-                },
-            ))
+            logger.exception("ShellRunner._execute unexpected error")
+            return _error(task_id, command, f"runner error: {e}")
 
     def _enqueue(self, perception: "Perception") -> None:
         if self._perception_queue is None:
@@ -180,3 +190,16 @@ class ShellRunner:
             self._perception_queue.put(perception)
         except Exception:
             logger.exception("perception_queue.put raised on shell result")
+
+
+def _error(task_id: str, command: str, summary: str) -> dict:
+    """The result data of a command the runner could not run."""
+    return {
+        "tool": "Shell",
+        "task_id": task_id,
+        "status": "error",
+        "summary": summary,
+        "output_id": None,
+        "line_count": 1,
+        "command": command,
+    }
