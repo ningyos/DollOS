@@ -115,3 +115,51 @@ def test_pinned_self_appears_in_next_prompt(tmp_path: Path):
     out = render_epoch_start(MindState(), Seen(), "internal", 0.0, self_profile_text=body)
     assert "我們可以直話直說" in out
     assert "[Self profile]" in out
+
+
+def _profile_with_all_sections(memory_root: Path) -> None:
+    profile = memory_root / "self_profile.md"
+    for section, text in (("self", "self-marker-ok"),
+                          ("user", "user-marker-owner-name"),
+                          ("relationship", "rel-marker-dont-call-me-master")):
+        sp.apply(profile, section=section, op="add", target="", text=text,
+                 max_chars=1200, today="2026-10-27")
+
+
+def _prompt_text(ml) -> str:
+    return "\n".join(m["content"] or "" for m in ml._llm.calls[0]["messages"]
+                     if isinstance(m.get("content"), str))
+
+
+def test_external_public_turn_sees_only_self_section(tmp_path: Path):
+    """Live acceptance 2026-10-27: Doll repeated the owner's facts (user /
+    relationship sections) to strangers in a public channel. A stranger turn's
+    prompt carries the self bullet only; an owner turn carries all three."""
+    import time
+
+    from dollos.mind.mind_state import Perception
+    from tests._mindloop_factory import make_mindloop
+
+    _profile_with_all_sections(tmp_path)
+
+    stranger = make_mindloop(memory_root=tmp_path, self_profile_enabled=True)
+    asyncio.run(stranger._run_one_turn([Perception(
+        kind="ChannelMessage", t=time.time(),
+        data={"content": "hi", "channel_id": "disc:g1:c1",
+              "author_is_owner": False, "is_dm": False},
+    )]))
+    assert stranger._ctx.origin_tier == "external_public"
+    text = _prompt_text(stranger)
+    assert "self-marker-ok" in text
+    assert "user-marker-owner-name" not in text
+    assert "rel-marker-dont-call-me-master" not in text
+
+    owner = make_mindloop(memory_root=tmp_path, self_profile_enabled=True)
+    asyncio.run(owner._run_one_turn([Perception(
+        kind="UserSpoke", t=time.time(), data={"text": "hi"},
+    )]))
+    assert owner._ctx.origin_tier == "internal"
+    text = _prompt_text(owner)
+    assert "self-marker-ok" in text
+    assert "user-marker-owner-name" in text
+    assert "rel-marker-dont-call-me-master" in text

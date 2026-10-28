@@ -268,20 +268,25 @@ def apply(path: Path, *, section: str, op: str, target: str, text: str,
     return result
 
 
-def render_block(path: Path) -> str | None:
+def render_block(path: Path, *, sections: tuple[str, ...] | None = None) -> str | None:
     """Body for the [Self profile] block; None if no bullets anywhere.
     Empty sections (no bullets) are skipped. Sections carry their English
-    titles (an old Chinese-titled file too); the bullets are hers, as written."""
+    titles (an old Chinese-titled file too); the bullets are hers, as written.
+
+    ``sections`` limits the block to those keys (still in SECTION_ORDER
+    order); None renders all of them. None comes back when none of the
+    chosen sections has a bullet."""
     if not path.exists():
         return None
-    sections = _parse(path.read_text())
-    if not any(sections[k] for k in SECTION_ORDER):
+    keys = [k for k in SECTION_ORDER if sections is None or k in sections]
+    parsed = _parse(path.read_text())
+    if not any(parsed[k] for k in keys):
         return None
     out: list[str] = []
-    for key in SECTION_ORDER:
-        if not sections[key]:
+    for key in keys:
+        if not parsed[key]:
             continue
         out.append(f"## {SECTION_TITLES[key]}")
-        for b in sections[key]:
+        for b in parsed[key]:
             out.append(_format_bullet(b))
     return "\n".join(out)

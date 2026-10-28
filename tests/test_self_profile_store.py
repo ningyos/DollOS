@@ -363,3 +363,30 @@ def test_apply_results_are_english_with_display_titles(tmp_path):
                    max_chars=20, today="2026-10-19")
     assert msg.startswith("self-profile is at its limit (20 chars); with this write it would be ")
     assert msg.endswith(" chars. Remove or replace some entries first, then pin.")
+
+
+def test_render_block_sections_limits_to_given_keys(tmp_path):
+    """Stranger turns render only the self section (2026-10-27 leak fix)."""
+    p = _p(tmp_path)
+    for section in ("user", "relationship", "self"):
+        sp.apply(p, section=section, op="add", target="", text=f"{section} 條目",
+                 max_chars=1200, today="2026-10-27")
+    assert sp.render_block(p, sections=("self",)) == (
+        "## What I've learned about myself\n"
+        "- [s1·2026-10-27] self 條目"
+    )
+    # Order follows SECTION_ORDER, not the order the keys are given in.
+    assert sp.render_block(p, sections=("user", "self")) == (
+        "## What I've learned about myself\n"
+        "- [s1·2026-10-27] self 條目\n"
+        "## What I've noticed about my owner\n"
+        "- [u1·2026-10-27] user 條目"
+    )
+
+
+def test_render_block_sections_none_when_chosen_sections_empty(tmp_path):
+    p = _p(tmp_path)
+    sp.apply(p, section="user", op="add", target="", text="主人叫 Eddy",
+             max_chars=1200, today="2026-10-27")
+    assert sp.render_block(p, sections=("self",)) is None
+    assert sp.render_block(p) is not None

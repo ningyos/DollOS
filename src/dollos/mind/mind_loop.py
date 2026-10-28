@@ -675,17 +675,15 @@ class MindLoop:
             )
             self_profile_text = None
             if self._self_profile_enabled:
-                # Whole-branch review I1 (accepted P1e residual, NOT scoped):
-                # self_profile.md renders on EVERY turn including
-                # external_public, and MAY reference owner patterns Doll
-                # noted about herself/the relationship. Scoping it out would
-                # undermine "self always present" (Self-First design), and
-                # the risk is lower than a raw-memory dump (curated, capped
-                # content, not a search result) — accepted for P1e. Revisit
-                # if this proves to leak in practice.
+                # Strangers (external_public) see only the self section: the
+                # user / relationship sections hold the owner's facts, and the
+                # live acceptance run on 2026-10-27 showed Doll repeating them
+                # in a public channel.
                 from dollos.mind import self_profile as _sp
                 self_profile_text = _sp.render_block(
-                    self._ctx.memory_root / "self_profile.md"
+                    self._ctx.memory_root / "self_profile.md",
+                    sections=(("self",) if self._ctx.origin_tier == "external_public"
+                              else None),
                 )
             evolution_block = None
             if (self._evolution_enabled
