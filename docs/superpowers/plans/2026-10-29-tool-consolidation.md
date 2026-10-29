@@ -2,7 +2,7 @@
 
 **依據**：`docs/research/2026-10-28-v1-tool-use-acceptance.md`（發現 4、5，和「修補後重跑」）、`docs/superpowers/plans/2026-10-28-tool-use-blockers.md`「不在範圍內」
 **日期**：2026-10-29
-**狀態**：主人 2026-10-29 LGTM；Task 1–3 完成；Task 4 完成（2026-10-29 重跑，加上修 Shell preview〔`74b0ffc`、`6915eeb`〕後重跑 3.1×3、3.7×1，全過），見 `docs/research/2026-10-29-tool-consolidation-rerun.md`。等主人 OK 再合併
+**狀態**：MERGED 2026-10-29（主人「好」；fast-forward 到 `2397105`，沒推）。重跑全過，見 `docs/research/2026-10-29-tool-consolidation-rerun.md`
 **分支 / worktree**：`feat/tool-consolidation`，`.worktrees/tool-consolidation/`（從本機 `main` `0380e9f` 開）
 
 ---
