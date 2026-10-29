@@ -297,15 +297,17 @@ class Shell(BaseModel):
     command: str = Field(
         description="Shell command to run (passed to bash -c).",
     )
+    # The default waits: a Shell with no timeout_s returns in the same
+    # iteration (rerun report 2026-10-29 發現 2).
     timeout_s: int = Field(
-        60,
+        DOLL_WAIT_MAX_S,
         ge=1,
         le=600,
         description=(
-            "Wall-clock seconds before the proc is killed. <= 30: you wait "
-            "for the result; > 30: it comes back as a new event. Estimate "
-            "from the command (5 short, 60 medium, 300 long; max 600). "
-            "Default 60s."
+            f"Wall-clock seconds before the proc is killed. <= {DOLL_WAIT_MAX_S}: "
+            f"you wait for the result; > {DOLL_WAIT_MAX_S}: it comes back as a "
+            f"new event. Estimate from the command (5 short, {DOLL_WAIT_MAX_S} "
+            f"medium, 300 long; max 600). Default {DOLL_WAIT_MAX_S}s."
         ),
     )
 

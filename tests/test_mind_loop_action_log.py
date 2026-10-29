@@ -20,7 +20,8 @@ async def test_owner_shell_action_is_logged(tmp_path):
     queue.put(Perception(kind="UserSpoke", t=time.time(), data={"text": "跑個 ls"}))
     stream = (
         'SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: Shell\n</think>\n\n'
-        '<tool_call>\n{"name":"Shell","arguments":{"command":"ls -la"}}\n</tool_call>'
+        '<tool_call>\n{"name":"Shell",'
+        '"arguments":{"command":"ls -la","timeout_s":60}}\n</tool_call>'
     )
     ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
     await ml.iterate()

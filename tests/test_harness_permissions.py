@@ -174,7 +174,7 @@ async def _shell_after(tmp_path, message: Perception):
     ml._ctx.shell_runner = runner
     await ml._run_one_turn([message])
     r = await ml._dispatch_bound(
-        "Shell", {"command": "echo hi"}, ml._offered_tools()
+        "Shell", {"command": "echo hi", "timeout_s": 60}, ml._offered_tools()
     )
     return r, runner.spawned
 
@@ -380,7 +380,7 @@ async def test_planted_note_never_auto_injected_into_owner_turn(tmp_path):
 
 
 _READ_EXTERNAL = ("Recall", {"query": "q", "include_external": True})
-_SHELL = ("Shell", {"command": "ls"})
+_SHELL = ("Shell", {"command": "ls", "timeout_s": 60})
 _NOTE = ("NoteMemory", {"text": "the stranger said so"})
 
 

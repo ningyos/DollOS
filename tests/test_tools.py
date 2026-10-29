@@ -142,9 +142,14 @@ async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
 
 
 def test_shell_timeout_s_has_default():
-    # timeout_s now has a default (60); omitting it should succeed
+    # Omitted timeout_s waits: the default is DOLL_WAIT_MAX_S, so Doll's
+    # Shell returns in the same iteration instead of going fire-and-forget
+    # (rerun report 2026-10-29 發現 2).
+    from dollos.tools import DOLL_WAIT_MAX_S
     s = Shell(command="echo hi")
-    assert s.timeout_s == 60
+    assert s.timeout_s == DOLL_WAIT_MAX_S == 30
+    desc = Shell.model_fields["timeout_s"].description
+    assert "Default 30s" in desc and "Default 60s" not in desc
 
 
 def test_shell_timeout_s_validation_lower_bound():
