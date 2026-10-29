@@ -1050,7 +1050,75 @@ async def test_read_tool_output_returns_slice(tmp_path: Path) -> None:
     assert "row 10" in result
     assert "row 14" in result
     assert "row 15" not in result
-    assert "lines 10–15 of 50" in result
+    assert result.startswith("lines 11–15 of 50 (1-based; offset=10):\n")
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_header_is_one_based_inclusive(tmp_path: Path) -> None:
+    """offset 88 limit 3 on 91 lines is the last three lines, 89–91 counted
+    from 1 (rerun report 2026-10-29 發現 6 printed "lines 88–91")."""
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"line {i}" for i in range(1, 92)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+
+    result = await ReadToolOutput(id=output_id, offset=88, limit=3).run(ctx)
+    assert result == "lines 89–91 of 91 (1-based; offset=88):\nline 89\nline 90\nline 91"
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_negative_offset_header(tmp_path: Path) -> None:
+    """A negative offset counts from the end; the header shows where it
+    landed, as 1-based lines and as the 0-based offset to page from."""
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"line {i}" for i in range(1, 92)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+
+    result = await ReadToolOutput(id=output_id, offset=-3, limit=10).run(ctx)
+    assert result == "lines 89–91 of 91 (1-based; offset=88):\nline 89\nline 90\nline 91"
+    # Past the start: clamps to the first line.
+    result = await ReadToolOutput(id=output_id, offset=-500, limit=2).run(ctx)
+    assert result == "lines 1–2 of 91 (1-based; offset=0):\nline 1\nline 2"
+
+
+@pytest.mark.asyncio
+async def test_read_tool_output_past_end_says_so(tmp_path: Path) -> None:
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"line {i}" for i in range(1, 92)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+
+    result = await ReadToolOutput(id=output_id, offset=91, limit=5).run(ctx)
+    assert result == "no lines at offset=91: the output has 91 lines (offsets 0–90)."
+    empty_id = store.write("")
+    result = await ReadToolOutput(id=empty_id, offset=0, limit=5).run(ctx)
+    assert result == "no lines: the output is empty."
+
+
+@pytest.mark.asyncio
+async def test_shell_preview_hint_reads_exactly_the_hidden_lines(tmp_path: Path) -> None:
+    """The preview marker's offset/limit, passed as given, return the hidden
+    lines and nothing the preview already showed."""
+    import re
+
+    from dollos.shell_runner import shell_preview
+
+    store = ToolOutputStore(tmp_path)
+    output_id = store.write("\n".join(f"line {i}" for i in range(1, 43)))
+    ctx, _ms, _sink = _make_ctx(tmp_path)
+    ctx.tool_output_store = store
+
+    marker = shell_preview(store, output_id)[6]
+    m = re.search(r"offset=(\d+) limit=(\d+)", marker)
+    assert m is not None
+    result = await ReadToolOutput(
+        id=output_id, offset=int(m[1]), limit=int(m[2]),
+    ).run(ctx)
+    assert result.splitlines() == [
+        "lines 7–38 of 42 (1-based; offset=6):",
+        *(f"line {i}" for i in range(7, 39)),
+    ]
 
 
 @pytest.mark.asyncio
