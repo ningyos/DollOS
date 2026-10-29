@@ -10,7 +10,12 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from dollos.voice.bridge.mic import MicrophoneTrack
+try:
+    import sounddevice  # noqa: F401  (loads PortAudio)
+except OSError as exc:  # no PortAudio on this machine (zenith); runs on the Mac
+    pytest.skip(f"sounddevice cannot load PortAudio: {exc}", allow_module_level=True)
+
+from dollos.voice.bridge.mic import MicrophoneTrack  # noqa: E402
 
 
 @pytest.mark.asyncio

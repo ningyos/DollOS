@@ -157,6 +157,7 @@ cp config.example.toml config.toml
 # edit [llm] base_url / model to point at your OpenAI-compatible server (Strata)
 uv run python -m dollos --config config.toml
 uv run pytest                   # tests
+uv run pytest -m voice_integration  # real-model tests (slow, downloads models)
 ```
 
 To also run the Discord bridge in dev, in a second terminal:
