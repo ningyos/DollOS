@@ -834,11 +834,23 @@ class ReadToolOutput(BaseModel):
 
     async def run(self, ctx: "MindCtx") -> str:
         slice_ = ctx.tool_output_store.read(self.id, offset=self.offset, limit=self.limit)
-        header = (
-            f"lines {slice_.start_offset}–{slice_.end_offset} of {slice_.total_lines}:"
-        )
-        body = "\n".join(slice_.lines) if slice_.lines else "(empty slice)"
-        result = f"{header}\n{body}"
+        total = slice_.total_lines
+        # The offset parameter is 0-based (the Shell preview's "offset=6"
+        # skips the 6 lines shown); the header counts lines from 1, inclusive,
+        # and echoes the 0-based offset it resolved to (rerun report
+        # 2026-10-29 發現 6: "lines 88–91" for lines 89–91).
+        if not slice_.lines:
+            result = (
+                "no lines: the output is empty." if total == 0 else
+                f"no lines at offset={slice_.start_offset}: the output has "
+                f"{total} lines (offsets 0–{total - 1})."
+            )
+        else:
+            header = (
+                f"lines {slice_.start_offset + 1}–{slice_.end_offset} of {total} "
+                f"(1-based; offset={slice_.start_offset}):"
+            )
+            result = header + "\n" + "\n".join(slice_.lines)
         _record(ctx, "ReadToolOutput", self._summary())
         return result
 
