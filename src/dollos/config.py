@@ -252,8 +252,15 @@ class ConsolidationConfig(BaseModel):
     idle_threshold_s: int = 300
     min_interval_s: int = 3600
     max_tokens: int = 2048
-    agent_timeout_s: int = 120
-    transcript_tail_chars: int = 8000
+    # One keeper run (consolidation, then the profile keeper, each gets it).
+    # 40k chars of transcript ≈ 21k tokens ≈ 70 s cold prefill on Strata
+    # (~310 tok/s, measured 2026-10-29), plus decode (~35 tok/s) over a few
+    # tool calls and a possible re-prefill if the shared slot was taken.
+    agent_timeout_s: int = 300
+    # How much of the day's conversation (the end) the keepers read. A
+    # normal day (~50 owner messages) is 15–20k chars; the tail must cover a
+    # whole day or an early correction never reaches the profile keeper.
+    transcript_tail_chars: int = 40_000
 
 
 class ProfileKeeperConfig(BaseModel):
@@ -268,7 +275,7 @@ class ProfileKeeperConfig(BaseModel):
     enabled: bool = True
     max_tokens: int = 2048
     think_budget_tokens: int = 1024
-    transcript_tail_chars: int = 8000
+    transcript_tail_chars: int = 40_000
 
 
 class EnergyConfig(BaseModel):

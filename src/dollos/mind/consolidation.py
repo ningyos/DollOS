@@ -38,7 +38,7 @@ async def run_consolidation(
     tool_output_store,
     consolidated_dir: Path,
     max_tokens: int = 2048,
-    transcript_tail_chars: int = 8000,
+    transcript_tail_chars: int = 40_000,
     think_budget_tokens: int = 1024,
 ) -> bool:
     """Consolidate one day's transcript into consolidated/{date}.md.
@@ -135,8 +135,8 @@ class ConsolidationTrigger:
         idle_threshold_s: int = 300,
         min_interval_s: int = 3600,
         max_tokens: int = 2048,
-        agent_timeout_s: int = 120,
-        transcript_tail_chars: int = 8000,
+        agent_timeout_s: int = 300,
+        transcript_tail_chars: int = 40_000,
         energy_enabled: bool = False,
         restore_per_tick: float = 0.05,
         energy_idle_threshold_s: int = 600,
@@ -145,7 +145,7 @@ class ConsolidationTrigger:
         profile_keeper_enabled: bool = False,
         profile_keeper_max_tokens: int = 2048,
         profile_keeper_think_budget_tokens: int = 1024,
-        profile_keeper_transcript_tail_chars: int = 8000,
+        profile_keeper_transcript_tail_chars: int = 40_000,
         self_profile_max_chars: int = 4000,
     ) -> None:
         self._state = state
