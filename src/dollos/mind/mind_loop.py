@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -70,6 +71,20 @@ from dollos.telemetry.turn_latency import TurnLatencyRecord
 from dollos.telemetry.vitals import VitalsRecord
 from dollos.tools import EXTERNAL_MEMORY_DIRS
 from dollos.wal.perception_log import PerceptionWAL
+
+# A whole "sentence" that is one bracketed aside — "(nothing to say)",
+# "(silence)", "[no reply]", "（沉默）" — is a stage direction, not speech
+# (v1 tool-use acceptance 2026-10-28 發現 7). Only a single bracket pair
+# wrapping the entire sentence counts; "(laughs) Okay." is speech.
+_STAGE_DIRECTION = re.compile(
+    r"\s*(?:\([^()]*\S[^()]*\)|\[[^\[\]]*\S[^\[\]]*\]"
+    r"|（[^（）]*\S[^（）]*）|【[^【】]*\S[^【】]*】)\s*"
+)
+
+
+def is_stage_direction(sentence: str) -> bool:
+    """Whether ``sentence`` is entirely one bracketed stage direction."""
+    return _STAGE_DIRECTION.fullmatch(sentence) is not None
 
 logger = logging.getLogger(__name__)
 
@@ -1621,7 +1636,13 @@ class MindLoop:
 
     def _speak_sentence(self, sink, sentence: str) -> None:
         """One chunked sentence: out through `_emit_sentence`, plus the
-        turn's speech bookkeeping (recent_outputs + full-text `_turn_speech`)."""
+        turn's speech bookkeeping (recent_outputs + full-text `_turn_speech`).
+
+        A sentence that is only a stage direction ("(nothing to say)") is
+        dropped here, before both: it is not spoken, and it stays out of the
+        transcript, the trace and [Recent outputs]."""
+        if is_stage_direction(sentence):
+            return
         self._emit_sentence(sink, sentence)
         self._state.recent_outputs.append(OutputRecord(
             kind="Speech",
