@@ -40,7 +40,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# A Shell result shows at most SHELL_PREVIEW_LINES of its output: all of it
+# when it fits, else the first HEAD and the last TAIL lines with a marker
+# naming what is hidden and how to read it. The tail matters: a command's
+# answer is often its last line (`...; find ... | wc -l`, rerun 2026-10-29).
 SHELL_PREVIEW_LINES = 10
+SHELL_PREVIEW_HEAD_LINES = 6
+SHELL_PREVIEW_TAIL_LINES = SHELL_PREVIEW_LINES - SHELL_PREVIEW_HEAD_LINES
+
+
+def shell_preview(store: ToolOutputStore, output_id: str) -> list[str]:
+    """The preview lines of a stored Shell output: the whole output when it
+    has at most SHELL_PREVIEW_LINES lines, else head, marker, tail. Used by
+    the inline result (Shell._run_and_wait) and the ToolResultArrived
+    perception alike."""
+    head = store.read(output_id, offset=0, limit=SHELL_PREVIEW_LINES)
+    if head.total_lines <= SHELL_PREVIEW_LINES:
+        return head.lines
+    hidden = head.total_lines - SHELL_PREVIEW_LINES
+    tail = store.read(
+        output_id, offset=-SHELL_PREVIEW_TAIL_LINES, limit=SHELL_PREVIEW_TAIL_LINES,
+    )
+    return [
+        *head.lines[:SHELL_PREVIEW_HEAD_LINES],
+        f"… {hidden} lines not shown (ReadToolOutput id={output_id} "
+        f"offset={SHELL_PREVIEW_HEAD_LINES} limit={hidden}) …",
+        *tail.lines,
+    ]
 
 
 class ShellRunner:
@@ -159,8 +185,8 @@ class ShellRunner:
             full_output = (stdout or b"").decode("utf-8", errors="replace")
             all_lines = full_output.splitlines()
             line_count = len(all_lines)
-            preview = "\n".join(all_lines[:SHELL_PREVIEW_LINES])
             output_id = self._tool_output_store.write(full_output)
+            preview = "\n".join(shell_preview(self._tool_output_store, output_id))
             status = "ok" if proc.returncode == 0 else "nonzero"
             return {
                 "tool": "Shell",
@@ -172,6 +198,7 @@ class ShellRunner:
                 ),
                 "output_id": output_id,
                 "line_count": line_count,
+                "preview": preview,
                 "command": command,
                 "exit_code": proc.returncode,
             }

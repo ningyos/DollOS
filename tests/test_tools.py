@@ -228,10 +228,14 @@ async def test_worker_shell_long_output_previews_and_pages_by_id(tmp_path):
     ctx, queue = _shell_ctx(tmp_path, worker=True)
     out = await Shell(command="seq 1 25", timeout_s=10).run(ctx)
     lines = out.splitlines()
-    assert lines[-10:] == [str(i) for i in range(1, 11)]
+    out_id = re.search(r"output_id (out-[0-9a-f]{8})", out).group(1)
+    assert lines[-11:] == [
+        *[str(i) for i in range(1, 7)],
+        f"… 15 lines not shown (ReadToolOutput id={out_id} offset=6 limit=15) …",
+        *[str(i) for i in range(22, 26)],
+    ]
     assert "11" not in lines
     assert "line count 25" in out and "ReadToolOutput" in out
-    out_id = re.search(r"output_id (out-[0-9a-f]{8})", out).group(1)
     # The worker pages past the preview with its own SUB_TOOLS.
     assert ReadToolOutput in SUB_TOOLS
     more = await ReadToolOutput(id=out_id, offset=10, limit=5).run(ctx)
@@ -362,6 +366,34 @@ async def test_doll_short_shell_returns_result_and_queue_stays_empty(tmp_path, t
     assert out.splitlines()[-2:] == ["alpha", "beta"]
     assert re.search(r"output_id out-[0-9a-f]{8}, line count 2", out)
     assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_doll_short_shell_long_output_shows_head_and_tail(tmp_path):
+    """Rerun 2026-10-29 3.1 rep 3: the answer was on the last of 42 lines
+    and only the first 10 were shown."""
+    ctx, _queue = _shell_ctx(tmp_path, worker=False)
+    out = await Shell(command="seq 1 42", timeout_s=10).run(ctx)
+    lines = out.splitlines()
+    out_id = re.search(r"output_id (out-[0-9a-f]{8})", out).group(1)
+    assert lines[2] == (
+        f"output_id {out_id}, line count 42; the first 6 and last 4 lines "
+        f"below, ReadToolOutput for the rest:"
+    )
+    assert lines[3:] == [
+        *[str(i) for i in range(1, 7)],
+        f"… 32 lines not shown (ReadToolOutput id={out_id} offset=6 limit=32) …",
+        *[str(i) for i in range(39, 43)],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_doll_short_shell_ten_lines_shown_whole(tmp_path):
+    ctx, _queue = _shell_ctx(tmp_path, worker=False)
+    out = await Shell(command="seq 1 10", timeout_s=10).run(ctx)
+    lines = out.splitlines()
+    assert re.fullmatch(r"output_id out-[0-9a-f]{8}, line count 10:", lines[2])
+    assert lines[3:] == [str(i) for i in range(1, 11)]
 
 
 @pytest.mark.asyncio
