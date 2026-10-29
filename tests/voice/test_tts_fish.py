@@ -50,6 +50,8 @@ async def test_fish_engine_aclose_releases(fake_fish_tts, tmp_path):
     voice_path.write_bytes(b"fake")
     eng = FishTTSEngine(voice_profile_path=voice_path, transcript="hi")
     await eng.aclose()
+    assert eng._synth is None
+    assert eng._profiles is None
 
 
 # ----- multi-ref -----

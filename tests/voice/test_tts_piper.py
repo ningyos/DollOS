@@ -35,3 +35,4 @@ async def test_piper_aclose_releases(fake_piper, tmp_path):
     onnx_path.write_bytes(b"fake"); config_path.write_text("{}")
     eng = PiperVITSEngine(voice_onnx_path=onnx_path, voice_config_path=config_path)
     await eng.aclose()
+    assert eng._voice is None
