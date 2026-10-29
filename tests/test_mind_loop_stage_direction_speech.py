@@ -27,6 +27,12 @@ from tests._fake_model import FakeModel
     "[no reply]",
     "（沉默）",
     "【不說話】",
+    "(nothing to say).",
+    "(沉默)。",
+    "(silence)!",
+    "（沉默）。 ",
+    "[no reply]…",
+    "(thinking)?!",
 ])
 def test_stage_direction_detected(text):
     assert is_stage_direction(text)
@@ -37,6 +43,10 @@ def test_stage_direction_detected(text):
     "(laughs) Okay, fine.",
     "Sure, 3 (three) of them.",
     "(a) first, (b) second",
+    "Fine (for now).",
+    "(laughs) Okay.",
+    "(a). (b).",
+    ".(silence)",
     "()",
     "",
     "主人好。",
