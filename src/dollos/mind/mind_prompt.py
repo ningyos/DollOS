@@ -176,8 +176,8 @@ def _safe_mode_line(on: bool, reason: str) -> str:
     return "[Safe mode] off — all your tools are back."
 
 
-def _percep_line(p) -> str:
-    return f"{_clock(p.t)} {p.kind}: {_percep_body(p)}"
+def _percep_line(p, *, recap: bool = False) -> str:
+    return f"{_clock(p.t)} {p.kind}: {_percep_body(p, recap=recap)}"
 
 
 def render_epoch_start(
@@ -241,7 +241,7 @@ def render_epoch_start(
         parts.append(_EXTERNAL_SITUATION)
     skip = {id(p) for p in exclude}
     recap = [
-        _percep_line(p) for p in state.recent_perceptions
+        _percep_line(p, recap=True) for p in state.recent_perceptions
         if (p.data or {}).get("channel_id", "") == channel_id and id(p) not in skip
     ]
     parts.append("[Recent perceptions] (newest last)\n" + ("\n".join(recap) or "(none)"))
@@ -533,7 +533,16 @@ def _render_perceptions(percs, now: float) -> str:
     return "\n".join(out)
 
 
-def _percep_body(p) -> str:
+# A Shell preview line in a perception is indented, so output text cannot
+# read as a perception line of its own.
+_PREVIEW_INDENT = "    "
+
+
+def _percep_body(p, *, recap: bool = False) -> str:
+    """One perception's text. ``recap`` (the ``[Recent perceptions]`` block
+    of a page snapshot) renders a Shell result without its preview lines:
+    the turn's own delta already showed them, and the recap repeats on
+    every page."""
     d = p.data or {}
     if p.kind == "UserSpoke":
         return f"'{d.get('text', '')}'"
@@ -549,11 +558,16 @@ def _percep_body(p) -> str:
             # A Shell result carries its head + tail preview (shell_runner.
             # shell_preview): the id line first, then the preview lines.
             if d.get("preview"):
-                return (
+                head = (
                     f"{d.get('tool', '?')} {d.get('task_id', '?')} "
-                    f"[{d.get('status', '?')}]: exit {d.get('exit_code', '?')} "
-                    f"{ids}:\n{d['preview']}"
+                    f"[{d.get('status', '?')}]: exit {d.get('exit_code', '?')} {ids}"
                 )
+                if recap:
+                    return head
+                preview = "\n".join(
+                    _PREVIEW_INDENT + line for line in d["preview"].splitlines()
+                )
+                return f"{head}:\n{preview}"
             body += f" {ids}"
         elif d.get("details_output_id"):
             body += (

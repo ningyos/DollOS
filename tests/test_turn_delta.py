@@ -403,6 +403,67 @@ def test_tool_result_shows_its_output_id():
     assert "out-def456" in body and "9 lines" in body
 
 
+def _long_shell_perception():
+    preview = "\n".join([
+        *[f"l{i}" for i in range(1, 7)],
+        "… 32 lines not shown (ReadToolOutput id=out-abc123 offset=6 limit=32) …",
+        *[f"l{i}" for i in range(39, 43)],
+    ])
+    return Perception(kind="ToolResultArrived", t=NOW, data={
+        "tool": "Shell", "task_id": "sh-1", "status": "ok", "summary": "exit 0: l1",
+        "output_id": "out-abc123", "line_count": 42, "preview": preview,
+        "command": "seq", "exit_code": 0,
+    })
+
+
+def test_shell_result_delta_shows_indented_preview():
+    body = _percep_body(_long_shell_perception()).splitlines()
+    assert body[0] == "Shell sh-1 [ok]: exit 0 (output_id out-abc123, 42 lines):"
+    assert body[1] == "    l1"
+    assert body[-1] == "    l42"
+    assert all(line.startswith("    ") for line in body[1:])
+
+
+def test_shell_result_recap_is_one_line():
+    """[Recent perceptions] recaps a Shell result without its preview, so
+    the preview is not repeated on every page snapshot."""
+    p = _long_shell_perception()
+    assert _percep_body(p, recap=True) == (
+        "Shell sh-1 [ok]: exit 0 (output_id out-abc123, 42 lines)"
+    )
+    state = MindState()
+    state.recent_perceptions.append(p)
+    snap = render_epoch_start(state, Seen(), "internal", NOW)
+    recap = snap.split("[Recent perceptions] (newest last)\n", 1)[1]
+    assert "Shell sh-1 [ok]: exit 0 (output_id out-abc123, 42 lines)" in recap
+    assert "l42" not in recap and "l1\n" not in recap
+    # The turn's own delta still carries the preview.
+    delta = render_turn_delta(state, Seen(), "internal", [p], NOW)
+    assert "    l42" in delta
+
+
+@pytest.mark.parametrize("data", [
+    # persisted before the preview existed
+    {"tool": "Shell", "task_id": "sh-1", "status": "ok", "summary": "exit 0: hello",
+     "output_id": "out-abc123", "line_count": 1, "command": "ls", "exit_code": 0},
+    # empty output: preview is ""
+    {"tool": "Shell", "task_id": "sh-1", "status": "ok", "summary": "exit 0: (empty)",
+     "output_id": "out-abc123", "line_count": 0, "preview": "", "command": "true",
+     "exit_code": 0},
+    # timeout: no preview
+    {"tool": "Shell", "task_id": "sh-1", "status": "timeout",
+     "summary": "shell timed out after 5s", "output_id": "out-abc123",
+     "line_count": 1, "command": "sleep 9"},
+])
+@pytest.mark.parametrize("recap", [False, True])
+def test_shell_result_without_preview_keeps_the_one_line_form(data, recap):
+    p = Perception(kind="ToolResultArrived", t=NOW, data=data)
+    assert _percep_body(p, recap=recap) == (
+        f"Shell sh-1 [{data['status']}]: {data['summary']} "
+        f"(output_id out-abc123, {data['line_count']} lines)"
+    )
+
+
 def test_user_spoke_is_not_cut_at_200_chars():
     text = "word " * 120 + "the-end-marker"
     body = _percep_body(Perception(kind="UserSpoke", t=NOW, data={"text": text}))

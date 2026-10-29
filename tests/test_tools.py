@@ -388,6 +388,24 @@ async def test_doll_short_shell_long_output_shows_head_and_tail(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_doll_short_shell_long_lines_keep_the_tail_inside_the_cut(tmp_path):
+    """Long head lines must not push the tail past the runner's
+    TOOL_MESSAGE_MAX_CHARS cut: each preview line is capped."""
+    from dollos.harness.runner import TOOL_MESSAGE_MAX_CHARS
+
+    ctx, _queue = _shell_ctx(tmp_path, worker=False)
+    command = (
+        "for i in $(seq 1 41); do printf 'x%.0s' $(seq 1 3000); echo; done; "
+        "echo ANSWER_37"
+    )
+    out = await Shell(command=command, timeout_s=10).run(ctx)
+    assert len(out) < TOOL_MESSAGE_MAX_CHARS // 2
+    kept = out[:TOOL_MESSAGE_MAX_CHARS]
+    assert kept.splitlines()[-1] == "ANSWER_37"
+    assert "… (line cut, 3000 chars)" in kept
+
+
+@pytest.mark.asyncio
 async def test_doll_short_shell_ten_lines_shown_whole(tmp_path):
     ctx, _queue = _shell_ctx(tmp_path, worker=False)
     out = await Shell(command="seq 1 10", timeout_s=10).run(ctx)
