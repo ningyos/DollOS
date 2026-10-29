@@ -176,14 +176,15 @@ def test_shell_timeout_s_validation_upper_bound():
 
 @pytest.mark.asyncio
 async def test_shell_tool_delegates_to_runner(tmp_path):
-    """Shell.run dispatches via ShellRunner.spawn and returns immediate ack."""
+    """Doll's long Shell (timeout_s > DOLL_WAIT_MAX_S) dispatches via
+    ShellRunner.spawn and returns an immediate ack."""
     runner = _FakeShellRunner()
     ctx, _ms, _sink = _make_ctx(tmp_path, shell_runner=runner)
-    out = await Shell(command="echo hi", timeout_s=30).run(ctx)
+    out = await Shell(command="echo hi", timeout_s=31).run(ctx)
     assert len(runner.calls) == 1
     kw = runner.calls[0]
     assert kw["command"] == "echo hi"
-    assert kw["timeout_s"] == 30
+    assert kw["timeout_s"] == 31
     assert kw["response_sink"] is None  # Task 8 wires perception_queue here
     assert "shell" in out.lower()
     assert "comes back as a new event" in out  # result-will-arrive language
@@ -233,7 +234,8 @@ async def test_worker_shell_returns_output_and_doll_queue_stays_empty(tmp_path):
     assert isinstance(out, str)
     assert out.startswith("Shell done [ok]: exit 0")
     assert "printf" in out  # the command, so parallel results stay apart
-    assert "straight back" in out and "no ToolResultArrived" in out
+    assert "Inside a workflow the result comes straight back" in out
+    assert "no ToolResultArrived" in out
     assert out.splitlines()[-2:] == ["alpha", "beta"]
     assert re.search(r"output_id out-[0-9a-f]{8}, line count 2", out)
     assert await _shell_results(queue) == []
@@ -358,10 +360,50 @@ async def test_worker_shell_runner_error_is_a_failed_call(tmp_path):
     assert await _shell_results(queue) == []
 
 
+# ----- Doll's short Shell waits too (plan 2026-10-29 decision 1) -----
+
+
+def test_doll_wait_limit_is_30s():
+    from dollos.tools import DOLL_WAIT_MAX_S
+
+    assert DOLL_WAIT_MAX_S == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_s", [5, 30])
+async def test_doll_short_shell_returns_result_and_queue_stays_empty(tmp_path, timeout_s):
+    ctx, queue = _shell_ctx(tmp_path, worker=False)
+    out = await Shell(command="printf 'alpha\\nbeta\\n'", timeout_s=timeout_s).run(ctx)
+    assert isinstance(out, str)
+    assert out.startswith("Shell done [ok]: exit 0")
+    assert "printf" in out
+    assert "workflow" not in out.lower()
+    assert "The result is here; no ToolResultArrived event will follow." in out
+    assert out.splitlines()[-2:] == ["alpha", "beta"]
+    assert re.search(r"output_id out-[0-9a-f]{8}, line count 2", out)
+    assert await _shell_results(queue) == []
+
+
+@pytest.mark.asyncio
+async def test_doll_short_shell_timeout_reads_as_failure(tmp_path):
+    """Like a worker's: a [timeout] is the command's answer, not a failed call."""
+    from dollos.harness.executor import dispatch_one
+
+    ctx, queue = _shell_ctx(tmp_path, worker=False)
+    result = await dispatch_one(
+        "Shell", {"command": "sleep 5", "timeout_s": 1}, ctx, {"Shell": Shell},
+    )
+    assert result.success is True
+    assert result.detail.startswith("Shell failed [timeout]: killed after 1s")
+    assert "workflow" not in result.detail.lower()
+    assert await _shell_results(queue) == []
+
+
 @pytest.mark.asyncio
 async def test_doll_shell_still_enqueues_the_result(tmp_path):
+    """A Shell longer than DOLL_WAIT_MAX_S stays fire-and-forget for Doll."""
     ctx, queue = _shell_ctx(tmp_path, worker=False)
-    out = await Shell(command="printf hello", timeout_s=10).run(ctx)
+    out = await Shell(command="printf hello", timeout_s=60).run(ctx)
     assert "comes back as a new event" in out
     results = await _shell_results(queue, settle=1.0)
     assert len(results) == 1

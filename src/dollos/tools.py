@@ -272,19 +272,25 @@ class WriteDiary(BaseModel):
         return "diary written"
 
 
+# Doll waits for a Shell whose timeout_s is at most this; a longer one is
+# dispatched and its result comes back as a new turn (plan 2026-10-29
+# decision 1). The split sits between the tool-use acceptance's short
+# commands (0.1–0.3 s) and its long one (~60 s).
+DOLL_WAIT_MAX_S = 30
+
+
 class Shell(BaseModel):
-    """Run a shell command in the background. Returns immediately.
+    """Run a shell command.
 
-    Shell is fire-and-forget. The command runs as a fresh subprocess (no
-    cd persistence between calls) with the daemon's user permissions and
-    cwd = data/ (the parent of memory/). stdout + stderr are merged. When
-    the proc finishes, its result comes back as a NEW turn's perception
-    line `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.
+    The command runs as a fresh subprocess (no cd persistence between
+    calls) with the daemon's user permissions and cwd = data/ (the parent
+    of memory/). stdout + stderr are merged.
 
-    There is no wait / monitor / cancel tool. If you start a Shell and
-    keep working in the same cascade, the result may also arrive as a
-    perception inserted into your next iteration. Either way: react when
-    you see it.
+    With timeout_s <= 30 you wait: the result (status, exit code, output_id,
+    first lines) is this call's answer. With timeout_s > 30 the call returns
+    at once and the result comes back as a NEW turn's perception
+    `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.
+    There is no wait / cancel tool.
     """
 
     command: str = Field(
@@ -295,7 +301,8 @@ class Shell(BaseModel):
         ge=1,
         le=600,
         description=(
-            "Wall-clock seconds before the proc is killed. Estimate "
+            "Wall-clock seconds before the proc is killed. <= 30: you wait "
+            "for the result; > 30: it comes back as a new event. Estimate "
             "from the command (5 short, 60 medium, 300 long; max 600). "
             "Default 60s."
         ),
@@ -309,7 +316,8 @@ class Shell(BaseModel):
         # Only run_agent builds a ctx without a workflow runner (the
         # no-nesting guard), and an agent's loop never sees perceptions: a
         # workflow worker waits for its own result (plan 2026-10-28 decision 2).
-        if ctx.workflow_runner is None:
+        # Doll waits for a short one (plan 2026-10-29 decision 1).
+        if ctx.workflow_runner is None or self.timeout_s <= DOLL_WAIT_MAX_S:
             return await self._run_and_wait(ctx)
         ctx.shell_runner.spawn(
             command=self.command,
@@ -324,9 +332,9 @@ class Shell(BaseModel):
         return result
 
     async def _run_and_wait(self, ctx: "MindCtx") -> "str | ToolResult":
-        """A workflow worker's Shell: the result is the tool message. The
-        docstring above is shared with Doll's tool JSON, so the result itself
-        says that it came straight back.
+        """A workflow worker's Shell, or Doll's with timeout_s <=
+        DOLL_WAIT_MAX_S: the result is the tool message, and the text says no
+        ToolResultArrived will follow.
 
         A nonzero exit or a timeout is the command's answer — Doll gets the
         same as a [nonzero] / [timeout] perception — so the text says it
@@ -338,12 +346,14 @@ class Shell(BaseModel):
         The worker's whole run is cut off after MAX_AGENT_TIMEOUT_S and keeps
         nothing, so a timeout_s that reaches the cap could never come back
         [timeout]: it is refused, a failed call, and nothing runs. The field
-        allows up to 600 because the schema is Doll's too."""
+        allows up to 600 because the schema is Doll's too. Doll's ctx (a
+        workflow runner) is not inside a workflow and gets no such cap."""
         from dollos.harness.executor import ToolResult
         from dollos.shell_runner import SHELL_PREVIEW_LINES
         from dollos.workflow import MAX_AGENT_TIMEOUT_S
 
-        if self.timeout_s >= MAX_AGENT_TIMEOUT_S:
+        worker = ctx.workflow_runner is None
+        if worker and self.timeout_s >= MAX_AGENT_TIMEOUT_S:
             return ToolResult(tool_name="Shell", success=False, detail=(
                 f"Shell refused: timeout_s={self.timeout_s} does not fit. "
                 f"Inside a workflow a worker's whole run, model calls "
@@ -373,7 +383,8 @@ class Shell(BaseModel):
         lines = [
             f"{head} (command={cmd!r})",
             "Inside a workflow the result comes straight back here; no "
-            "ToolResultArrived event will follow.",
+            "ToolResultArrived event will follow." if worker else
+            "The result is here; no ToolResultArrived event will follow.",
         ]
         if status == "error":
             return ToolResult(tool_name="Shell", success=False, detail="\n".join(lines))
