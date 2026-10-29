@@ -23,7 +23,3 @@ class CascadeCtx:
 
     def cancel(self) -> None:
         self._cancel_event.set()
-
-    async def wait_cancelled(self) -> None:
-        # Not used by Plan 3; reserved for future cancel-aware awaits inside cascade.
-        await self._cancel_event.wait()
