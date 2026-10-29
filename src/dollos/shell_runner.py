@@ -47,6 +47,17 @@ logger = logging.getLogger(__name__)
 SHELL_PREVIEW_LINES = 10
 SHELL_PREVIEW_HEAD_LINES = 6
 SHELL_PREVIEW_TAIL_LINES = SHELL_PREVIEW_LINES - SHELL_PREVIEW_HEAD_LINES
+# Each preview line is cut at this many chars (a visible "… (line cut, N
+# chars)" follows). The preview is stored in the perception (WAL,
+# mind_state.json) and must keep header + preview well under the runner's
+# TOOL_MESSAGE_MAX_CHARS cut, so long head lines cannot push the tail out.
+SHELL_PREVIEW_LINE_MAX_CHARS = 200
+
+
+def _cap(line: str) -> str:
+    if len(line) <= SHELL_PREVIEW_LINE_MAX_CHARS:
+        return line
+    return f"{line[:SHELL_PREVIEW_LINE_MAX_CHARS]}… (line cut, {len(line)} chars)"
 
 
 def shell_preview(store: ToolOutputStore, output_id: str) -> list[str]:
@@ -56,16 +67,17 @@ def shell_preview(store: ToolOutputStore, output_id: str) -> list[str]:
     perception alike."""
     head = store.read(output_id, offset=0, limit=SHELL_PREVIEW_LINES)
     if head.total_lines <= SHELL_PREVIEW_LINES:
-        return head.lines
+        return [_cap(line) for line in head.lines]
     hidden = head.total_lines - SHELL_PREVIEW_LINES
     tail = store.read(
         output_id, offset=-SHELL_PREVIEW_TAIL_LINES, limit=SHELL_PREVIEW_TAIL_LINES,
     )
     return [
-        *head.lines[:SHELL_PREVIEW_HEAD_LINES],
-        f"… {hidden} lines not shown (ReadToolOutput id={output_id} "
+        *(_cap(line) for line in head.lines[:SHELL_PREVIEW_HEAD_LINES]),
+        f"… {hidden} line{'' if hidden == 1 else 's'} not shown "
+        f"(ReadToolOutput id={output_id} "
         f"offset={SHELL_PREVIEW_HEAD_LINES} limit={hidden}) …",
-        *tail.lines,
+        *(_cap(line) for line in tail.lines),
     ]
 
 

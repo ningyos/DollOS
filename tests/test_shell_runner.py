@@ -358,7 +358,7 @@ def test_shell_preview_eleven_lines_hides_one(tmp_path: Path) -> None:
     lines = shell_preview(store, out_id)
     assert lines[:6] == [f"line {i}" for i in range(1, 7)]
     assert lines[6] == (
-        f"… 1 lines not shown (ReadToolOutput id={out_id} offset=6 limit=1) …"
+        f"… 1 line not shown (ReadToolOutput id={out_id} offset=6 limit=1) …"
     )
     assert lines[7:] == [f"line {i}" for i in range(8, 12)]
 
@@ -375,10 +375,13 @@ async def test_long_shell_perception_shows_the_tail(tmp_path: Path) -> None:
     out_id = p.data["output_id"]
     body = _percep_body(p).splitlines()
     assert f"output_id {out_id}, 42 lines" in body[0]
-    assert body[1] == "1"
-    assert body[-1] == "42"
-    assert f"… 32 lines not shown (ReadToolOutput id={out_id} offset=6 limit=32) …" in body
-    assert "37" not in body  # hidden middle line
+    assert body[1] == "    1"
+    assert body[-1] == "    42"
+    assert (
+        f"    … 32 lines not shown (ReadToolOutput id={out_id} offset=6 limit=32) …"
+        in body
+    )
+    assert "    37" not in body  # hidden middle line
     await runner.stop()
 
 
@@ -390,6 +393,41 @@ async def test_short_output_perception_shown_whole(tmp_path: Path) -> None:
     runner.spawn(command="seq 1 10", timeout_s=10)
     (p,) = await _wait_for_tool_result(queue)
     body = _percep_body(p).splitlines()
-    assert body[1:] == [str(i) for i in range(1, 11)]
+    assert body[1:] == [f"    {i}" for i in range(1, 11)]
     assert not any("not shown" in line for line in body)
+    await runner.stop()
+
+
+def test_shell_preview_caps_each_line(tmp_path: Path) -> None:
+    """A preview line longer than the cap is cut with a visible marker, so
+    one minified-JSON line cannot fill the perception, WAL or delta."""
+    from dollos.shell_runner import SHELL_PREVIEW_LINE_MAX_CHARS, shell_preview
+
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    long = "x" * 5000
+    out_id = store.write(f"{long}\nshort\n")
+    lines = shell_preview(store, out_id)
+    assert lines[0] == f"{'x' * SHELL_PREVIEW_LINE_MAX_CHARS}… (line cut, 5000 chars)"
+    assert lines[1] == "short"
+
+
+def test_shell_preview_marker_singular(tmp_path: Path) -> None:
+    from dollos.shell_runner import shell_preview
+
+    store, out_id = _stored(tmp_path, 11)
+    assert shell_preview(store, out_id)[6] == (
+        f"… 1 line not shown (ReadToolOutput id={out_id} offset=6 limit=1) …"
+    )
+
+
+@pytest.mark.asyncio
+async def test_long_shell_perception_preview_lines_are_capped(tmp_path: Path) -> None:
+    from dollos.shell_runner import SHELL_PREVIEW_LINE_MAX_CHARS
+
+    runner, queue = _make_runner(tmp_path)
+    runner.spawn(command="for i in $(seq 1 20); do printf '%05000d\\n' $i; done", timeout_s=10)
+    (p,) = await _wait_for_tool_result(queue)
+    preview = p.data["preview"].splitlines()
+    assert len(preview) == 11
+    assert all(len(line) <= SHELL_PREVIEW_LINE_MAX_CHARS + 40 for line in preview)
     await runner.stop()

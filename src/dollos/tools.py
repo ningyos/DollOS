@@ -287,8 +287,9 @@ class Shell(BaseModel):
     of memory/). stdout + stderr are merged.
 
     With timeout_s <= 30 you wait: the result (status, exit code, output_id,
-    the output, or its first and last lines if long) is this call's answer. With timeout_s > 30 the call returns
-    at once and the result comes back as a NEW turn's perception
+    the output, or its first and last lines if long) is this call's answer.
+    With timeout_s > 30 the call returns at once and the result comes back
+    as a NEW turn's perception
     `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.
     There is no wait / cancel tool.
     """
