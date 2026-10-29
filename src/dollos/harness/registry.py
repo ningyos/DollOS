@@ -17,7 +17,7 @@ before (plan decision 4: the tool JSON byte-identical).
 
 Each tool declares ``effectful`` (mind-loop spec §11): true unless the class
 sets ``effectful: ClassVar[bool] = False`` (read-only tools: Recall,
-ReadToolOutput, GrepToolOutput, InvokeSkill). Recorded only; nothing reads
+ReadToolOutput, InvokeSkill). Recorded only; nothing reads
 it yet.
 """
 from __future__ import annotations

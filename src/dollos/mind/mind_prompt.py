@@ -120,7 +120,9 @@ def _snapshot_blocks(
     ``[Self profile]`` (its self section only — the caller renders it that
     way, since user / relationship hold the owner's facts) and
     ``[Mind state]`` with the bare emotion: no reason, no focus, no
-    agenda/open loops/schedule/scratchpad.
+    agenda/open loops/schedule.
+    ``MindState.scratchpad`` is never rendered: only keepers have the
+    Scratchpad tool now (plan 2026-10-29 decision 4).
     ``[Self profile]`` reads "(empty)" while nothing is pinned,
     ``[Today's schedule]`` "(none)" while nothing is still to come.
     """
@@ -161,7 +163,6 @@ def _snapshot_blocks(
                 "[Today's schedule] (still to come; change it with WriteSchedule)\n"
                 + (_render_schedule(schedule, now) or "(none)"),
             ),
-            ("scratchpad", "[Scratchpad]\n" + (state.scratchpad or "(empty)")),
         ])
     return blocks
 

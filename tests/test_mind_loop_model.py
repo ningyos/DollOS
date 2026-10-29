@@ -317,7 +317,7 @@ async def test_external_turn_in_safe_mode_cannot_run_a_tool_it_is_not_offered(tm
     assert {t["function"]["name"] for t in model.calls[0]["tools"]} == set(EXTERNAL_TOOLS)
     msg = _tool_messages(model.calls[1])[0]["content"]
     assert "ReadToolOutput" in msg and "secret" not in msg
-    assert "GrepToolOutput" not in msg
+    assert "Shell" not in msg
     assert store_calls == []
     assert ml._state.tool_stats["ReadToolOutput"]["fail"] == 1
 

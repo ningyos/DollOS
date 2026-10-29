@@ -109,12 +109,12 @@ def test_safe_mode_has_top_priority(batch):
 # ---------------------------------------------------------------------------
 
 _MAIN = frozenset({
-    "AdvanceGoal", "CloseLoop", "GrepToolOutput", "InvokeSkill", "MoodTool",
+    "AdvanceGoal", "CloseLoop", "InvokeSkill", "MoodTool",
     "NoteMemory", "OpenLoop", "PursueGoal", "ReadToolOutput", "Recall",
-    "RemoveMonitor", "Scratchpad", "SetFocus", "Shell", "SpawnMonitor",
+    "RemoveMonitor", "SetFocus", "Shell", "SpawnMonitor",
     "SpawnWorkflow", "WriteDiary", "WriteSchedule",
 })
-_SAFE = {"GrepToolOutput", "ReadToolOutput", "Recall"}
+_SAFE = {"ReadToolOutput", "Recall"}
 _EXTERNAL = {"NoteMemory", "Recall", "WriteDiary"}
 
 # (kind, principal) → (bound = _active_tool_registry, runnable =

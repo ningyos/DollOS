@@ -159,8 +159,8 @@ async def dispatch_one(
 def call_taints(tool: type | None, arguments: dict) -> bool:
     """Whether a call of ``tool`` asks for untrusted content. Most tools
     define no ``taints``; Recall's is ``include_external``; an MCP tool's is
-    its server's ``untrusted_output`` (plan Task 7); ReadToolOutput's and
-    GrepToolOutput's is an ``ext-`` id (a stored untrusted result)."""
+    its server's ``untrusted_output`` (plan Task 7); ReadToolOutput's is an
+    ``ext-`` id (a stored untrusted result)."""
     taints = getattr(tool, "taints", None)
     return taints is not None and bool(taints(arguments))
 

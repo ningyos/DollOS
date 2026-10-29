@@ -106,3 +106,17 @@ def test_last_repeat_alert_key_defaults_when_absent_in_old_state(tmp_path):
     loaded = load_state(p)
     assert loaded.last_repeat_alert_key == ""
     assert loaded.scratchpad == "keep me"
+
+
+def test_old_state_file_with_scratchpad_still_loads(tmp_path):
+    """A state file saved while Doll still had Scratchpad keeps its text."""
+    import json
+
+    from dollos.mind.mind_state import load_state, save_state
+    p = tmp_path / "s.json"
+    assert save_state(MindState(focus="old", scratchpad="waiting for ls"), p)
+    data = json.loads(p.read_text())
+    assert data["scratchpad"] == "waiting for ls"
+    loaded = load_state(p)
+    assert loaded.scratchpad == "waiting for ls"
+    assert loaded.focus == "old"

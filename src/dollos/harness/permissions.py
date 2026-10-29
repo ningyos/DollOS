@@ -88,7 +88,7 @@ _TRUSTED: frozenset[Principal] = frozenset({"owner", "owner_dm", "internal"})
 # - LearnName: the owner only — never internal (a pure reflection turn must
 #   not write a stranger's earlier words as an owner-taught alias, R1 C1),
 #   never external_public.
-# - ReadToolOutput / GrepToolOutput: never external_public, safe mode
+# - ReadToolOutput: never external_public, safe mode
 #   included.
 # - Report: bound only by agent turns (workflow worker, keepers), which are
 #   spawned from owner / internal turns; no MindLoop turn kind includes it.
@@ -109,8 +109,7 @@ TOOL_MATRIX: dict[str, frozenset[Principal]] = {
     "SpawnMonitor": _TRUSTED,
     "RemoveMonitor": _TRUSTED,
     "ReadToolOutput": _TRUSTED,
-    "GrepToolOutput": _TRUSTED,
-    "Scratchpad": _TRUSTED,
+    "Scratchpad": _TRUSTED,  # keepers only (KEEPER_TOOLS)
     "SetFocus": _TRUSTED,
     "OpenLoop": _TRUSTED,
     "CloseLoop": _TRUSTED,
@@ -133,8 +132,8 @@ def tools_for(principal: Principal) -> frozenset[str]:
 # §6.5 point 2, plan 2026-10-27 Task 6): ``ToolExecutor`` narrows the rest of
 # the turn's bound set to this after a call whose tool class says it
 # ``taints`` (Recall with include_external; Task 7's MCP tools with
-# ``untrusted_output``; ReadToolOutput / GrepToolOutput of an ``ext-`` id,
-# such a tool's stored result), and for every later turn on the same
+# ``untrusted_output``; ReadToolOutput of an ``ext-`` id, such a tool's
+# stored result), and for every later turn on the same
 # conversation page (plan 2026-10-28 decision 4: the untrusted text is still
 # on it). The spec downgrades to the stranger-DM tier, which does not exist
 # here, so the plan downgrades to external_public's row — minus WriteDiary: it

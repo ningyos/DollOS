@@ -2,8 +2,7 @@
 
 Lifecycle: created at daemon startup with a tempdir, every tool runner
 calls `write()` with the full output and gets back an ID. Doll's
-`ReadToolOutput` / `GrepToolOutput` tools call `read()` / `grep()`
-against the same store. `cleanup()` runs at daemon shutdown.
+`ReadToolOutput` tool calls `read()` against the same store. `cleanup()` runs at daemon shutdown.
 
 An output that may carry untrusted content (an ``untrusted_output`` MCP
 server's result, harness spec §6.5) is written with ``untrusted=True`` and
@@ -13,7 +12,6 @@ came from: reading an ``ext-`` id taints the turn (``ReadToolOutput.taints``).
 """
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,14 +30,6 @@ class ToolOutputSlice:
     start_offset: int
     end_offset: int
     total_lines: int
-
-
-@dataclass
-class ToolOutputMatch:
-    """A grep match: line index + the matched line text."""
-
-    line_index: int
-    line: str
 
 
 class ToolOutputStore:
@@ -79,25 +69,6 @@ class ToolOutputStore:
             end_offset=end,
             total_lines=len(all_lines),
         )
-
-    def grep(
-        self,
-        output_id: str,
-        *,
-        pattern: str,
-        max_matches: int = 20,
-    ) -> list[ToolOutputMatch]:
-        regex = re.compile(pattern)
-        path = self._path(output_id)
-        text = path.read_text(encoding="utf-8")
-        all_lines = _split_lines(text)
-        out: list[ToolOutputMatch] = []
-        for i, line in enumerate(all_lines):
-            if regex.search(line):
-                out.append(ToolOutputMatch(line_index=i, line=line))
-                if len(out) >= max_matches:
-                    break
-        return out
 
     def cleanup(self) -> None:
         """Delete the entire root dir. Idempotent."""

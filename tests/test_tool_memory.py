@@ -73,8 +73,8 @@ def test_render_tool_outcomes_has_counts_and_failure_snippet():
 
 def test_parse_playbook_chunk():
     from dollos.mind.tool_memory import _parse_playbook_chunk
-    chunk = "## 2026-06-27 10:00:00\n\n[situation] grepping output\nuse GrepToolOutput\n"
-    assert _parse_playbook_chunk(chunk) == ("grepping output", "use GrepToolOutput")
+    chunk = "## 2026-06-27 10:00:00\n\n[situation] grepping output\nuse ReadToolOutput\n"
+    assert _parse_playbook_chunk(chunk) == ("grepping output", "use ReadToolOutput")
     assert _parse_playbook_chunk("garbage with no situation") is None
 
 

@@ -66,7 +66,7 @@ def _state() -> MindState:
 # ---------------------------------------------------------------------------
 
 
-_HEADERS = ("[Self profile]", "[Mind state]", "[Your agenda]", "[Open loops]", "[Scratchpad]")
+_HEADERS = ("[Self profile]", "[Mind state]", "[Your agenda]", "[Open loops]")
 _PROFILE = "- s1: likes tea"
 
 
@@ -82,15 +82,13 @@ def test_snapshot_block_resent_only_when_its_text_changed():
 
     # Changed by anyone (another conversation, a background job): resent whole, once.
     state.mood = Mood(emotion="煩", reason="rain again")
-    state.scratchpad = "ferry at 9"
     changed = render_turn_delta(state, seen, "internal", [], NOW + 120, self_profile_text=_PROFILE)
     assert "[Mind state]" in changed and "煩 (rain again)" in changed
     assert "focus: sorting photos" in changed  # the whole block, not a diff
-    assert "[Scratchpad]\nferry at 9" in changed
     assert "[Your agenda]" not in changed and "[Self profile]" not in changed
 
     again = render_turn_delta(state, seen, "internal", [], NOW + 180, self_profile_text=_PROFILE)
-    assert "[Mind state]" not in again and "[Scratchpad]" not in again
+    assert "[Mind state]" not in again
 
 
 def test_each_conversation_tracks_its_own_seen():
@@ -136,15 +134,15 @@ def test_associative_and_habit_hits_also_appear_once_per_page():
     state, seen = _state(), Seen()
     render_epoch_start(state, seen, "internal", NOW)
     assoc = [{**_hit(7, content="assoc-fact"), "_axis": "tod", "_axis_value": "evening"}]
-    habit = [{"content": "## h\n\n[situation] grep logs\nuse GrepToolOutput\n", "chunk_hash": "hb"}]
+    habit = [{"content": "## h\n\n[situation] grep logs\nuse ReadToolOutput\n", "chunk_hash": "hb"}]
     first = render_turn_delta(
         state, seen, "internal", [], NOW + 1, associative_hits=assoc, tool_habits_hits=habit
     )
-    assert "assoc-fact" in first and "use GrepToolOutput" in first
+    assert "assoc-fact" in first and "use ReadToolOutput" in first
     second = render_turn_delta(
         state, seen, "internal", [], NOW + 2, associative_hits=assoc, tool_habits_hits=habit
     )
-    assert "assoc-fact" not in second and "GrepToolOutput" not in second
+    assert "assoc-fact" not in second and "ReadToolOutput" not in second
 
 
 def test_at_most_three_new_hits_per_turn_each_capped():
@@ -559,3 +557,15 @@ async def test_tool_message_over_8000_chars_is_cut_except_invoke_skill():
     assert cut.message["content"] == "a" * 8000 + "\n(cut; 10000 chars total)"
     assert skill.message["content"] == big
     assert cut.result.detail == big  # only the message is cut
+
+
+def test_scratchpad_is_never_rendered_for_doll():
+    """Doll has no Scratchpad tool any more (plan 2026-10-29 decision 4): the
+    field stays in MindState (state files keep it) but no page shows it."""
+    state, seen = _state(), Seen()
+    assert state.scratchpad
+    start = render_epoch_start(state, seen, "internal", NOW)
+    assert "[Scratchpad]" not in start and "ferry times" not in start
+    state.scratchpad = "ferry at 9"
+    delta = render_turn_delta(state, seen, "internal", [], NOW + 60)
+    assert "[Scratchpad]" not in delta and "ferry at 9" not in delta

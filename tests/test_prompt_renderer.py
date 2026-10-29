@@ -219,23 +219,21 @@ def test_scaffolding_explains_the_append_only_conversation():
 
 
 def test_scaffolding_documents_tool_output_paging():
-    """Scaffolding teaches Doll how to use ReadToolOutput / GrepToolOutput
-    for paginated reads of Shell and Subagent results."""
+    """Scaffolding teaches Doll how to page Shell and Workflow results with
+    ReadToolOutput (GrepToolOutput is gone, plan 2026-10-29 decision 2)."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity(), language="en")
     assert "ReadToolOutput" in out
-    assert "GrepToolOutput" in out
+    assert "GrepToolOutput" not in out
     assert "output_id" in out
 
 
-def test_scaffolding_documents_scratchpad():
-    """Scaffolding teaches Doll about the Scratchpad working memory."""
+def test_scaffolding_has_no_scratchpad():
+    """Doll has no Scratchpad tool or block any more (plan 2026-10-29
+    decision 4), so her scaffolding never mentions it."""
     renderer = PromptRenderer()
     out = renderer.render("scaffolding", identity=_identity(), language="en", available_skills=[])
-    assert 'Scratchpad(op="set"' in out
-    assert 'Scratchpad(op="append"' in out
-    assert 'Scratchpad(op="clear"' in out
-    assert "working memory" in out.lower()
+    assert "scratchpad" not in out.lower()
 
 
 def test_scaffolding_voice_framing_present():
@@ -252,12 +250,14 @@ def test_scaffolding_voice_framing_present():
     assert "Nothing to say?" in output_section
 
 
-def test_subagent_scaffolding_documents_scratchpad():
-    """Subagent scaffolding documents Scratchpad as independent memory."""
+def test_subagent_scaffolding_has_no_scratchpad_and_shell_always_returns():
+    """Workers have no Scratchpad or GrepToolOutput (plan 2026-10-29
+    decisions 2, 4), and every Shell of theirs returns its result directly."""
     renderer = PromptRenderer()
     out = renderer.render("subagent_scaffolding")
-    assert "Scratchpad" in out
-    assert "your own private" in out.lower()
+    assert "scratchpad" not in out.lower()
+    assert "GrepToolOutput" not in out
+    assert "Every Shell returns its result directly here, whatever its `timeout_s`" in out
 
 
 def test_subagent_scaffolding_states_the_per_agent_cap():

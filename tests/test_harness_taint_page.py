@@ -32,7 +32,7 @@ And what else could carry the untrusted text past the page (Task 4 review):
   out of tool memory (reflection's ``[Tool outcomes]`` shows it on
   untainted turns);
 - a long untrusted result is stored under an ``ext-`` id, and reading it
-  back with ReadToolOutput / GrepToolOutput on another page taints that one;
+  back with ReadToolOutput on another page taints that one;
 - distinct tainted notes get distinct ``[Recent outputs]`` records, so the
   repeat detector does not take them for one repeated action.
 
@@ -55,7 +55,6 @@ from dollos.mind.mind_prompt import _render_associative, _render_memory
 from dollos.mind.mind_state import Perception
 from dollos.mind.tool_memory import UNTRUSTED_FAILURE_DETAIL, render_tool_outcomes
 from dollos.tools import (
-    GrepToolOutput,
     NoteMemory,
     ReadToolOutput,
     Recall,
@@ -447,12 +446,8 @@ async def test_untrusted_failure_text_stays_out_of_tool_memory(tmp_path, web):
     assert "evil.sh" not in outcomes
 
 
-@pytest.mark.parametrize("read", [
-    ("ReadToolOutput", {"offset": 0, "limit": 50}),
-    ("GrepToolOutput", {"pattern": "unique-lh-818"}),
-])
 async def test_reading_a_stored_untrusted_output_taints_the_other_page(
-    tmp_path, web, monkeypatch, read,
+    tmp_path, web, monkeypatch,
 ):
     """A long untrusted result is stored (the page shows a preview and the
     id); the store lives for the daemon's run, so the id can be read on a
@@ -466,7 +461,7 @@ async def test_reading_a_stored_untrusted_output_taints_the_other_page(
         uuid4=lambda: uuid.UUID("ab12cd34" + "0" * 24),
     ))
     long_page = {"text": PAGE_TEXT, "repeat": TOOL_MESSAGE_MAX_CHARS // len(PAGE_TEXT) + 5}
-    name, arguments = read
+    name, arguments = "ReadToolOutput", {"offset": 0, "limit": 50}
     model = FakeModel([
         _calls(("web__echo", long_page)), [SpeechDelta("It's long; the rest is saved.")],
         _calls((name, {**arguments, "id": output_id}), _SHELL), [SpeechDelta("ok")],
@@ -553,13 +548,10 @@ async def test_executor_names_the_page_as_the_reason(tmp_path):
     assert r.detail == f"Shell {_PAGE}; available now: NoteMemory, Recall"
 
 
-@pytest.mark.parametrize(("tool", "arguments"), [
-    (ReadToolOutput, {"offset": 0, "limit": 10}),
-    (GrepToolOutput, {"pattern": "x"}),
-])
-def test_reading_a_stored_output_taints_only_when_it_is_untrusted(tool, arguments):
-    assert tool.taints({**arguments, "id": "ext-ab12cd34"}) is True
-    assert tool.taints({**arguments, "id": "out-ab12cd34"}) is False
+def test_reading_a_stored_output_taints_only_when_it_is_untrusted():
+    arguments = {"offset": 0, "limit": 10}
+    assert ReadToolOutput.taints({**arguments, "id": "ext-ab12cd34"}) is True
+    assert ReadToolOutput.taints({**arguments, "id": "out-ab12cd34"}) is False
 
 
 def test_boot_reindex_covers_external_owner(tmp_path):
