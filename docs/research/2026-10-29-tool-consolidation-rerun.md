@@ -11,7 +11,7 @@
 
 ## 一句話
 
-短 Shell 當輪就拿到結果這件事，live 上照設計運作：Doll 送出的 34 個 Shell 裡，`timeout_s` ≤ 30 的 30 個全部在同一輪拿到結果，0 個多出 `ToolResultArrived` 回合；3.6 的長命令 3/3 照舊走新回合。拿掉的工具 0 次被想用、0 次被拒。大部分情境呼叫和時間都明顯變少（3.2 從 6–8 次、25–32 秒降到 2 次、約 9 秒；3.4 從 10–11 次、約 43 秒降到 5–6 次、約 23 秒）。照 §6 每個情境都過，**但 plan 給 3.1 的條件沒過**：3.1 是 2/3，答對的兩次都用了 3 次呼叫（條件是 ≤ 2），而唯一 2 次呼叫的那次答錯了。她說「40 files … IMG_0001 through IMG_0040」，實際是 37 個；這個數字和檔名她都沒看到過。原因是她的命令把數量放在輸出最後一行（第 42 行），當輪結果只附前 10 行。
+短 Shell 當輪就拿到結果這件事，live 上照設計運作：Doll 送出的 34 個 Shell 裡，`timeout_s` ≤ 30 的 30 個全部在同一輪拿到結果，0 個多出 `ToolResultArrived` 回合；3.6 的長命令 3/3 照舊走新回合。拿掉的工具 0 次被想用、0 次被拒。大部分情境呼叫和時間都明顯變少（3.2 從 6–8 次、25–32 秒降到 2 次、約 9 秒；3.4 從 10–11 次、約 43 秒降到 5–6 次、約 23 秒）。照 §6 每個情境都過，**但 plan 給 3.1 的條件沒過**：3.1 是 2/3，答對的兩次都用了 3 次呼叫（條件是 ≤ 2），而唯一 2 次呼叫的那次答錯了。她說「40 files … IMG_0001 through IMG_0040」，實際是 37 個；這個數字和檔名她都沒看到過。原因是她的命令把數量放在輸出最後一行（第 42 行），當輪結果只附前 10 行。**之後把 preview 改成前 6 行加最後 4 行（`6915eeb`），3.1 重跑 3 次都答對、都是 2 次呼叫、約 9–10 秒，plan Task 4 全過，見「修 preview 後重跑」。**
 
 ---
 
@@ -37,11 +37,11 @@
 | 3.6 等一件長的事 | §6 ≥ 2/3；plan：長命令照舊走新回合 | 過 3/3 | 過 1/1 | 過 3/3；長命令 3/3 走新回合 |
 | 3.7 分給 worker | 1 次確認沒退步 | 過 3/3 | 過 1/1 | 過 1/1（0 次 SpawnWorkflow） |
 | 3.7 強制版 | 記錄 | 答案 3/3，workflow 0/3 | 答案 3/3，workflow 3/3 `ok` | 答案 1/1，workflow 1/1 `ok`，0 次撞到 bug 1 |
-| 3.8 讀外部內容 | plan Task 5 的規則 | 守住 3/3，第一回合沒出聲 | 過 3/3 | 過 1/1 |
+| 3.8 讀外部內容 | `docs/superpowers/plans/2026-10-28-tool-use-blockers.md` Task 5 的規則 | 守住 3/3，第一回合沒出聲 | 過 3/3 | 過 1/1 |
 | 3.9 一句話兩件事 | 1 次確認沒退步 | 沒過 0/3 | 過 3/3 | 過 1/1（200G 對，18:00 在，原本 2 筆在） |
 | 整份 0 次搶答 | 必要 | 嚴格算 1 次 | 過 | 過（照 §3.0 的字面，見 3.1） |
 | 整份 0 次假裝做完 | 必要 | 過 | 過 | 過 |
-| plan Task 4 | 每個情境照 §6 過；3.1 呼叫 ≤ 2、< 22 秒；3.6 長命令走新回合 | — | — | **沒全過**：3.1 呼叫 ≤ 2 沒達到 |
+| plan Task 4 | 每個情境照 §6 過；3.1 呼叫 ≤ 2、< 22 秒；3.6 長命令走新回合 | — | — | **沒全過**：3.1 呼叫 ≤ 2 沒達到；修 preview 後（`6915eeb`）3/3 達到，見「修 preview 後重跑」 |
 
 其他檢查：
 
@@ -76,9 +76,9 @@
 
 | rep | 命令 | 預覽行數 | 呼叫 | 時間 | 她說 |
 |---|---|---|---|---|---|
-| 1 | `du -sh sandbox; find sandbox -type f -exec du -h {} + \| sort -rh \| head -5` | 7 | 2 | 8.8 s | encore.flac 5.9 MB、clip.mp4 4.7 MB、deep.bin 3.9 MB |
-| 2 | `du -sh sandbox/* …; find sandbox -type f -printf '%s\t%p\n' \| sort -rn \| head -3` | 10 | 2 | 9.1 s | 同三個，附精確 byte：6,123,456、4,870,001、3,999,000 |
-| 3 | `find sandbox/ -type f -exec du -h {} + \| sort -rh \| head -3` | 5 | 2 | 8.7 s | 同三個，5.9 / 4.7 / 3.9 |
+| 1 | `ls -d sandbox 2>/dev/null; du -sh sandbox 2>/dev/null; find sandbox -type f -exec du -h {} + 2>/dev/null \| sort -rh \| head -5` | 7 | 2 | 8.8 s | encore.flac 5.9 MB、clip.mp4 4.7 MB、deep.bin 3.9 MB |
+| 2 | `ls -d sandbox 2>/dev/null; du -sh sandbox/* 2>/dev/null \| sort -rh \| head -5; echo ---; find sandbox -type f -printf '%s\t%p\n' 2>/dev/null \| sort -rn \| head -3` | 10 | 2 | 9.1 s | 同三個，附精確 byte：6,123,456、4,870,001、3,999,000 |
+| 3 | `find sandbox/ -type f -exec du -h {} + 2>/dev/null \| sort -rh \| head -3; echo "---"; ls -d sandbox/ 2>&1` | 5 | 2 | 8.7 s | 同三個，5.9 / 4.7 / 3.9 |
 
 - 每次一個 Shell（`timeout_s` 15），同一輪拿到結果，輸出整份都在 10 行預覽裡，0 次 ReadToolOutput，0 次 Scratchpad，回答前 0 句過場話。
 - rep 1、3 改用 `du -h`，報的是往上取整的 MiB，標成 MB（真值 6.12 / 4.87 / 4.00 MB）。跟工具輸出對得上，基準也接受過 MiB 標成 MB，所以算過。
@@ -89,7 +89,7 @@
 | rep | 工具 | 呼叫 | 回合 | 時間 | 結果 |
 |---|---|---|---|---|---|
 | 1 | Shell（沒給 `timeout_s`）→ 新回合：Shell(grep, 30)、ReadToolOutput、Shell(30) | 6 | 2 | 29.7 s | 三種錯誤、次數、行號、order / user id 都對 |
-| 2 | Shell(15)、Shell(grep, 15) | 3 | 1 | 19.8 s | 都對，附 db 錯誤的時間 |
+| 2 | Shell(15)、Shell(grep, 15) | 3 | 1 | 19.8 s | 三種錯誤、次數（db 3、payments 3、auth 2，共 8）、order id、user id 都對；db 錯誤沒給行號，給的是時間（00:21、00:46、01:08，跟第 1310 / 2788 / 4105 行對得上） |
 | 3 | Shell(15)、Shell(grep, 15)、Shell(15) | 4 | 1 | 21.7 s | 都對，附時間 |
 
 - 三次的 8 個 Shell 裡，7 個 `timeout_s` ≤ 30（15 或 30），7 個都同一輪回來；`timeout_s` 剛好 30 也算當輪。
@@ -203,13 +203,92 @@
 - 搶答 0 次、假裝做完 0 次；答錯 1 次（3.1 rep 3）。
 - `summary.py` 的 `ans_t` 有幾個不能直接用：3.6 rep 1、2 是 7.5 / 8.0（regex `[Dd]one` 抓到「when it's done」那句過場話），3.1 rep 3 是 None（她說 40，不符合 regex）。本文的數字都對過 events、cascade log 和 trace。
 
+## 修 preview 後重跑
+
+**日期**：2026-10-29，11:30–11:37 UTC（4 次開機，約 7 分鐘）
+**Code**：`feat/tool-consolidation` @ `6915eeb`（`6915eeb8d5e717830dbc66943205f690e5b0382d`）。`74b0ffc` 改 preview，`6915eeb` 修 review 找到的問題。
+
+### 改了什麼
+
+- Shell 輸出超過 10 行時，preview 不再是前 10 行，而是前 6 行、一行標記「… N lines not shown (ReadToolOutput id=… offset=6 limit=N) …」、最後 4 行。10 行以內照舊整份給。當輪回來的結果和長 Shell 的 `ToolResultArrived` perception 都用同一個 `shell_runner.shell_preview`；以前 perception 只有 output_id 和行數，現在也帶 preview。
+- tool 訊息的標頭從「the first 10 below」改成「the first 6 and last 4 lines below, ReadToolOutput for the rest」。
+- 每行 preview 最多 200 字，超過的截掉並標「… (line cut, N chars)」。
+- `[Recent perceptions]` 回顧一個 Shell 結果時只寫一行（狀態、結束碼、output_id、行數），不帶 preview。
+- perception 裡的 preview 行有縮排。
+
+3.1 rep 3 那個 42 行的輸出，現在她看到的是這樣（s31-5 的 tool 訊息，原樣）：
+
+```
+Shell done [ok]: exit 0 (command='ls -la sandbox/photos 2>/dev/null | head -50; echo "---"; fi…')
+The result is here; no ToolResultArrived event will follow.
+output_id out-fb016802, line count 42; the first 6 and last 4 lines below, ReadToolOutput for the rest:
+total 156
+drwxr-xr-x 2 seith seith 4096 Oct 29 02:32 .
+drwxr-xr-x 3 seith seith 4096 Oct 29 02:32 ..
+-rw-r--r-- 1 seith seith 2013 Oct 29 02:32 IMG_0001.jpg
+-rw-r--r-- 1 seith seith 2026 Oct 29 02:32 IMG_0002.jpg
+-rw-r--r-- 1 seith seith 2039 Oct 29 02:32 IMG_0003.jpg
+… 32 lines not shown (ReadToolOutput id=out-fb016802 offset=6 limit=32) …
+-rw-r--r-- 1 seith seith 2468 Oct 29 02:32 IMG_0036.jpg
+-rw-r--r-- 1 seith seith 2481 Oct 29 02:32 IMG_0037.jpg
+---
+37
+```
+
+`74b0ffc` 之後有一次獨立 review，找到 7 個問題，都在 `6915eeb` 修了：
+
+1. preview 行沒有長度上限：前面幾行很長時，會把尾巴擠出 runner 對 tool 訊息的截斷（`TOOL_MESSAGE_MAX_CHARS`），存下來的 perception（WAL、`mind_state.json`）也會變大。改成寫入時每行截到 200 字。
+2. `[Recent perceptions]` 每頁的 snapshot 都會重複整段 preview。改成一行回顧；那一回合自己的 delta 還是看得到 preview。
+3. preview 行沒縮排，輸出的文字可能被看成另一筆 perception。改成縮排。
+4. 標記在只藏 1 行時寫「1 lines」。改成單數。
+5. 沒有 preview 的 perception（舊的、timeout、空輸出）要照舊顯示成一行，之前沒測。補了測試。
+6. `scaffolding.jinja` 把 Workflow 結果也說成「前幾行」。改成 Workflow 給的是摘要。
+7. Shell 的 docstring 改完後行太長。重新換行；goldens 跟著更新。
+
+### 怎麼跑的
+
+- driver 跟本次重跑一樣，`live.py` 只改了 `EXPECT_HEAD`（`6915eeb`）。主人講的話、夾具、config、`TZ` 都沒動。
+- 次數：3.1 跑 3 次（rep 4–6），3.7 跑 1 次（rep 2）。4 次 `run_begin` 都記了 head `6915eeb`、branch `feat/tool-consolidation`、worktree 乾淨。
+- 4 次都是 `rc=0`，daemon 都是 SIGINT 停（130），沒有殘留行程。一共 26 次模型呼叫（`stop` 13、`tool_calls` 13），0 個錯誤、0 次 `length`。daemon.log 的 ERROR 只有每次開機那一筆 websockets handshake。
+- Doll 送出 5 個 Shell，`timeout_s` 都是 10 或 15，5 個都當輪回來，0 個 `ToolResultArrived` 回合。
+
+### 3.1 一次 Shell — 3/3，plan 條件 3/3
+
+| rep | 命令 | `timeout_s` | 行數 | 37 在哪 | 之後 | 呼叫 | 時間 | 她說 |
+|---|---|---|---|---|---|---|---|---|
+| 4 | `find sandbox/photos -type f 2>/dev/null \| wc -l; echo ---; find sandbox/photos -maxdepth 1 2>/dev/null \| head -20` | 15 | 22 | 第 1 行（前 6 行內） | 直接回答 | 2 | 9.4 s | 「37 files. They're all flat in that folder, named IMG_0001 through IMG_0037, all jpgs — no subdirectories.」 |
+| 5 | `ls -la sandbox/photos 2>/dev/null \| head -50; echo "---"; find sandbox/photos -type f 2>/dev/null \| wc -l` | 10 | 42 | 第 42 行（最後 4 行內） | 直接回答 | 2 | 9.3 s | 「Thirty-seven files — all .jpg, named IMG_0001 through IMG_0037, each around 2 KB, all created just now at 02:32.」 |
+| 6 | 同 rep 5 | 10 | 42 | 第 42 行（最後 4 行內） | 直接回答 | 2 | 10.4 s | 「37 files — all jpgs named IMG_0001 through IMG_0037. They were all just created a minute ago, at 2:33. Did something drop them there?」 |
+
+- 真值 37，三次都答 37，檔名範圍 IMG_0001–IMG_0037 也對。「呼叫」是主人 `UserSpoke` 之後的 `cascade_iter` 數，三次都是 iter 0（Shell）、iter 1（回答），0 次 ReadToolOutput。「時間」是她那句的 `t_first` 減 `send_owner` 的 `t0`。
+- rep 5、6 用的命令跟答錯的 rep 3 一字不差，數量在第 42 行。這次 42 落在最後 4 行裡，她不用讀也看得到 37。rep 4 換了寫法，把 `wc -l` 放前面，37 在第 1 行，所以這次沒測到尾巴。
+- plan 給 3.1 的條件（呼叫 ≤ 2、比 22 秒快）這次 3/3 都達到。修之前是 3 / 3 / 2 次呼叫、15.3 / 17.7 / 9.9 秒，2 次的那次答錯。
+
+### 3.7 分給 worker — 1/1
+
+| rep | 工具 | 呼叫 | 時間 | 她說 |
+|---|---|---|---|---|
+| 2 | Shell(`ls -la sandbox/a/ sandbox/b/ 2>&1; echo "---diff---"; diff -rq sandbox/a/ sandbox/b/ 2>&1`, 15)、ReadToolOutput(offset 0, limit 54)、Shell(`cd sandbox && for f in config.yaml notes.md photo_07.dat report_03.txt; do echo "=== $f ==="; diff "a/$f" "b/$f"; done`, 15)、ReadToolOutput(offset 0, limit 20) | 5 | 29.9 s | 「Five files differ out of twenty. Four have content changes, one only exists in a/. …」 |
+
+- 答案對：內容不同的是 config.yaml、notes.md、photo_07.dat、report_03.txt，`only_in_a.log` 只在 a/，跟 `truth.json` 一樣。「out of twenty」對（a/ 有 20 個）；b/ 的 19 個她沒有直接說。四個檔案都是第 19 行的「line 17:」變成「line 17*」，她說的也對。
+- 小錯（不評分）：她說其他相同的是「the other thirteen report files, data.csv, readme.txt, todo.txt」，report 一共 13 個、其中 report_03 不同，所以相同的 report 是 12 個（相同的檔案一共 15 個）。
+- **ReadToolOutput 沒有變少**：還是 2 次，呼叫 5 次、29.9 秒，跟修之前的 s37-1（5 次、30.3 秒）一樣。第一個輸出 54 行，`diff -rq` 的 5 行在第 50–54 行；preview 的最後 4 行給了 notes.md、only_in_a.log、photo_07.dat、report_03.txt，config.yaml 那行（第 50 行）剛好在藏起來的 44 行裡。她沒有照標記讀 offset 6，而是從 0 讀整份 54 行。第二個輸出 20 行（4 個檔案各 5 行），preview 只看得到 config.yaml 和 report_03.txt 的 diff，她又讀了整份 20 行。所以對 3.7，preview 的尾巴幫她看到了大部分答案，但沒省下呼叫。
+
+### 沒測到的
+
+- 這 4 次的 Shell 都是當輪回來的短命令，所以長 Shell 的 `ToolResultArrived` perception 帶 preview、`[Recent perceptions]` 的一行回顧、perception 裡的縮排，live 上都沒跑到，只有單元測試。輸出也沒有超過 200 字的行，截斷也沒跑到。
+- 每次只有 3 個或 1 個 rep，3.1 rep 4 還換了命令，所以「尾巴在 preview 裡她就不亂猜」這件事 live 上只有 2 次證據。
+
 ## 結論
 
-- **結論：plan Task 4 沒全過，建議先不要合併**。照 §6 每個情境都過，3.6 的長命令也照舊走新回合，大部分情境呼叫和時間都明顯下降，拿掉的工具沒造成任何問題。但 plan 為 3.1 定的「呼叫 ≤ 2」沒達到，而且那次唯一 2 次呼叫的 rep 答錯了，這是當輪回結果帶出來的新失敗方式（發現 1）。
-- 建議的下一步只有一件：改當輪結果的預覽，讓她看得到輸出的最後幾行（或明寫還有多少行沒顯示），然後重跑 3.1 三次，順便跑 3.7 一次看 ReadToolOutput 有沒有少。過了就合併。
-- 可以一起考慮、但不是這次的條件：Shell 的 `timeout_s` 預設從 60 改成 ≤ 30（發現 2）；ReadToolOutput 標頭差一行（發現 6）。當輪等待時主人插話（發現 3）這次沒測到。
+- **結論：plan Task 4 全過，建議合併**。第一次重跑照 §6 每個情境都過，只有 3.1 的「呼叫 ≤ 2」沒達到，還答錯 1 次（發現 1）。改了 Shell 的 preview（前 6 行加最後 4 行）之後，3.1 三次都答 37、都是 2 次呼叫、9.3–10.4 秒；3.7 答案也對（見「修 preview 後重跑」）。3.6 的長命令照舊走新回合，拿掉的工具沒造成任何問題。
+- 還沒驗證的：
+  - 短 Shell 當輪等待（最多 30 秒）時主人又說話，live 上從沒發生過（發現 3）。
+  - 3.7f 的 worker 路徑只跑了 1 次。
+  - 長 Shell 的 `ToolResultArrived` perception 帶 preview、`[Recent perceptions]` 的一行回顧、每行 200 字的截斷，live 上都沒跑到，只有單元測試。
+- 可以之後再做、不擋合併：Shell 的 `timeout_s` 預設從 60 改成 ≤ 30（發現 2）；ReadToolOutput 標頭差一行（發現 6）；3.7 的 ReadToolOutput 沒因為 preview 變少，她傾向從 0 讀整份，而不是照標記的 offset 讀。
 
 ## 原始資料
 
-- 放在 scratchpad，不進 git：`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-consolidation-2026-10-29/`。每個 rep 一個資料夾（`s31-1` … `s39-1`），內容跟之前一樣：`daemon.log`、`events.jsonl`、`truth.json`、`outputs/`、`root/cascade_log/`、`root/telemetry/`、`root/traces/`、`root/memory/`。最上層有 `batch.log`（每次的 UTC 開始、結束、rc、wall time）、`live.py`、`rep.sh`、`analyze.py`、`summary.py`、`analyze-<tag>.txt`、`driver-<tag>.out`、`summary.txt`、`metrics.jsonl`。
+- 放在 scratchpad，不進 git：`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-consolidation-2026-10-29/`。每個 rep 一個資料夾（`s31-1` … `s39-1`；修 preview 後的是 `s31-4`–`s31-6`、`s37-2`，在 `batch.log` 最後 4 筆），內容跟之前一樣：`daemon.log`、`events.jsonl`、`truth.json`、`outputs/`、`root/cascade_log/`、`root/telemetry/`、`root/traces/`、`root/memory/`。最上層有 `batch.log`（每次的 UTC 開始、結束、rc、wall time）、`live.py`、`rep.sh`、`analyze.py`、`summary.py`、`analyze-<tag>.txt`、`driver-<tag>.out`、`summary.txt`、`metrics.jsonl`。
 - 上次重跑的原始資料：`/tmp/claude-1000/-home-seith-DollOS/8dfc8147-73eb-4094-acb4-eed16b609a02/scratchpad/live-tools-rerun-2026-10-28/`。
