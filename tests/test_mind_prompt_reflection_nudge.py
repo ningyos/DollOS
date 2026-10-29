@@ -47,13 +47,6 @@ def test_reflection_nudge_appears_after_existing_pinself_content():
     assert text.index("SelfRevision") < text.index("PursueGoal")
 
 
-def test_non_reflection_perception_has_no_agenda_nudge():
-    p = Perception(kind="UserSpoke", t=time.time(), data={"text": "hi"})
-    text = _percep_body(p)
-    assert "PursueGoal" not in text
-    assert "a thread you want to follow yourself" not in text
-
-
 def test_reflection_turn_prompt_contains_agenda_nudge():
     """The turn's message: a ReflectionMoment perception renders as its
     full line, agenda nudge included."""

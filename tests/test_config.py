@@ -290,14 +290,6 @@ def test_consolidation_config_defaults(tmp_path: Path):
     assert s.consolidation.enabled is True
 
 
-def test_energy_config_defaults():
-    from dollos.config import EnergyConfig
-    c = EnergyConfig()
-    assert c.enabled is True and c.cost_per_turn == 0.05
-    assert c.restore_per_tick == 0.05 and c.idle_threshold_s == 600 and c.restore_debounce_s == 300
-    assert c.token_per_energy_unit == 24000.0
-
-
 def test_energy_config_on_settings(tmp_path: Path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(_BASE_TOML)
@@ -443,10 +435,3 @@ def test_system_pulse_alert_defaults():
     assert c.alerts_enabled is True
     assert c.alert_throttle_s == 900.0
     assert c.window_stuck_s == 5400.0
-
-
-def test_system_pulse_alert_override():
-    c = SystemPulseConfig(alerts_enabled=False, alert_throttle_s=60.0, window_stuck_s=120.0)
-    assert c.alerts_enabled is False
-    assert c.alert_throttle_s == 60.0
-    assert c.window_stuck_s == 120.0

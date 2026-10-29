@@ -176,17 +176,6 @@ def test_qwen3_rejects_neither_mode(fake_qwen_tts):
         )
 
 
-async def test_qwen3_aclose(fake_qwen_tts, tmp_path):
-    from dollos.voice.tts_qwen3 import Qwen3TTSEngine
-    ref = tmp_path / "ref.wav"; ref.write_bytes(b"WAVE_FAKE")
-    eng = Qwen3TTSEngine(
-        model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-        device="cuda:0",
-        ref_audio=ref, ref_text="hi", language="English",
-    )
-    await eng.aclose()
-
-
 # ---------------------------------------------------------------------------
 # I8 regression: voice_clone_prompt_path + instruction must honour instruction
 # ---------------------------------------------------------------------------

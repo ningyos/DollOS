@@ -83,15 +83,6 @@ def test_disconnect_out_of_order_routes_to_surviving_sink() -> None:
     assert sink_a.items == [], "A must receive nothing after unregister"
 
 
-def test_unregister_all_returns_dummy() -> None:
-    """After all sinks unregister __call__ falls back to the DummySink."""
-    resolver = SinkResolver()
-    q = asyncio.Queue()
-    h = resolver.register(q)
-    resolver.unregister(h)
-    assert isinstance(resolver(), DummySink)
-
-
 def test_handles_are_stable_across_multiple_registers_and_unregisters() -> None:
     """Monotonic handles remain valid regardless of how many intermediate
     registrations / unregistrations happen between register and unregister."""

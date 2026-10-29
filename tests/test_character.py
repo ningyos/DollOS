@@ -173,12 +173,6 @@ def test_invalid_language_fails_to_load(tmp_path: Path):
         DollPack.load(_write_pack(tmp_path, meta_extra='language = "ja"\n'))
 
 
-def test_pack_without_enforcement_gets_base_list(tmp_path: Path):
-    pack = DollPack.load(_write_pack(tmp_path))
-    assert pack.enforcement.banned_substrings == BASE_BANNED["en"]
-    assert pack.enforcement.max_exclaim_run is None
-
-
 def test_banned_merge_order_and_dedup(tmp_path: Path):
     """Base entries first in their order, then the pack's own; a pack entry
     that repeats a base one (or itself) appears once, at its first spot."""

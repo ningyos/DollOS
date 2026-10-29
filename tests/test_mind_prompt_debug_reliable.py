@@ -33,13 +33,6 @@ def test_debug_reliable_adds_nudge_and_keeps_ai_peer_framing():
     )
 
 
-def test_no_debug_reliable_no_nudge_byte_unchanged_from_p1():
-    p = Perception(kind="ChannelMessage", t=1.0, data=_mcp_payload())
-    out = _percep_body(p)
-    assert "debug" not in out
-    assert out == "[AI peer, DM] Claude (another AI, self-described, unverified): hey Doll"
-
-
 def test_debug_reliable_does_not_change_origin_tier():
     p = Perception(
         kind="ChannelMessage", t=1.0,

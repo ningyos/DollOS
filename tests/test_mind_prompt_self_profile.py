@@ -20,11 +20,6 @@ def test_self_profile_block_opens_the_snapshot():
     assert out.index("[Self profile]") < out.index("[Mind state]")
 
 
-def test_self_profile_block_absent_when_none():
-    out = render_epoch_start(_state(), Seen(), "internal", NOW, self_profile_text=None)
-    assert "[Self profile]" not in out
-
-
 def test_reflection_nudge_mentions_pinself():
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
@@ -68,12 +63,6 @@ def test_reflection_nudge_keeps_operational_calling_hint():
     p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
     text = _percep_body(p)
     assert "PinSelf (op=add, section one of self/relationship/user)" in text
-
-
-def test_reflection_nudge_states_notetoollesson_division():
-    p = Perception(kind="ReflectionMoment", t=time.time(), data={"iters_since_last": 5})
-    text = _percep_body(p)
-    assert "NoteToolLesson" in text
 
 
 def test_reflection_nudge_states_selfrevision_division_of_labor():

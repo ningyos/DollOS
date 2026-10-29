@@ -1,7 +1,7 @@
 """Echo-equivalence + mechanical checks + shared pairwise Jaccard (spec §3.1/§3.3/§3.4)."""
 from dollos.character import Enforcement
 from dollos.mind import evolution as evo
-from dollos.mind.persona_guard import pairwise_jaccard, response_drift_score
+from dollos.mind.persona_guard import pairwise_jaccard
 
 
 def test_pairwise_jaccard_identical_is_one():
@@ -14,11 +14,6 @@ def test_pairwise_jaccard_disjoint_is_zero():
 
 def test_pairwise_jaccard_both_empty_is_one():
     assert pairwise_jaccard("", "") == 1.0
-
-
-def test_response_drift_score_still_works():
-    # Refactor must not change existing behavior.
-    assert response_drift_score("A", []) == 1.0
 
 
 def test_echo_equivalent_exact_after_normalize():

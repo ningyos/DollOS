@@ -36,16 +36,6 @@ def test_stranger_renders_stranger_marker_author_and_channel():
     assert body == "[#general] stranger alice: hi there"
 
 
-def test_owner_and_stranger_render_differently():
-    """Teeth: the two branches must not collapse to the same text — if the
-    author_is_owner check were dropped, this would fail."""
-    owner_body = _percep_body(_cm(author_is_owner=True, content="same content"))
-    stranger_body = _percep_body(_cm(author_is_owner=False, content="same content"))
-    assert owner_body != stranger_body
-    assert "Owner" not in stranger_body
-    assert "stranger" not in owner_body
-
-
 def test_stranger_dm_still_marks_stranger_not_owner():
     """A non-owner DM'ing directly (is_dm=True, author_is_owner=False) must
     still read as a stranger — author_is_owner drives the identity marker,

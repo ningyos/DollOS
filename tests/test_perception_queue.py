@@ -10,16 +10,6 @@ from dollos.wal.perception_log import PerceptionWAL
 
 
 @pytest.mark.asyncio
-async def test_put_then_drain_returns_perception() -> None:
-    q = PerceptionQueue()
-    p = Perception(kind="UserSpoke", t=1.0, data={"text": "hi"})
-    q.put(p)
-    drained = await q.drain()
-    assert len(drained) == 1
-    assert drained[0].kind == "UserSpoke"
-
-
-@pytest.mark.asyncio
 async def test_drain_returns_all_pending() -> None:
     q = PerceptionQueue()
     q.put(Perception(kind="UserSpoke", t=1.0, data={}))

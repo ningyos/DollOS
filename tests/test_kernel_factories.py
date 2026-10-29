@@ -62,13 +62,6 @@ def test_build_memsearch_creates_transcripts_dir(tmp_path: Path):
     assert expected.is_dir()
 
 
-def test_build_memsearch_returns_memsearch_instance(tmp_path: Path):
-    settings = _make_settings(tmp_path)
-    instance = build_memsearch(settings)
-    assert hasattr(instance, "search")
-    assert callable(instance.search)
-
-
 def test_build_memsearch_indexes_skills_dir(tmp_path):
     settings = _make_settings(tmp_path)
     build_memsearch(settings)

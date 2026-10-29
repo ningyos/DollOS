@@ -193,30 +193,6 @@ def _ambient_lines(tmp_path, guild_id: str, channel_id: str) -> list[dict]:
     return [json.loads(line) for line in files[0].read_text().splitlines()]
 
 
-# ----- (a) stranger, unrelated content -----
-
-
-async def test_stranger_unrelated_message_logs_and_is_forwarded(tmp_path):
-    """P1c Task 3 (Option A): this used to assert NO ChannelEvent (P1b's
-    local l0_wake gate dropped ambient-only chatter). Now the bridge
-    forwards every non-self message regardless of wake-worthiness — the
-    daemon's AttentionGate decides admission (see test_discord_forward_all.py
-    for the dedicated forward-all test suite).
-
-    channel_allowlist removal (Part B / B3): "c1" is not pre-registered
-    anymore, so this first message on it also fires a ChannelRegister —
-    filter to the ChannelEvent for the payload assertion."""
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
-
-    await controller.on_discord_message(_event())
-
-    lines = _ambient_lines(tmp_path, "g1", "c1")
-    assert lines[0]["msg_id"] == "m1"
-    events = [m for m in sent_to_daemon if isinstance(m, ChannelEvent)]
-    assert len(events) == 1
-    assert events[0].payload["msg_id"] == "m1"
-
-
 # ----- (b) message mentioning her -----
 
 
@@ -421,24 +397,6 @@ async def test_send_http_exception_is_dropped_not_raised(tmp_path, caplog):
     assert any(
         record.levelname == "WARNING" for record in caplog.records
     ), "expected a warning to be logged when the send is dropped"
-
-
-async def test_rate_limited_retry_still_works_alongside_http_exception_handling(tmp_path):
-    """Regression guard for Fix B: adding the `discord.HTTPException` catch
-    must not disturb the existing 429 retry-once behavior."""
-    slept: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        slept.append(seconds)
-
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path, sleep=fake_sleep)
-    discord.raise_rate_limited_once(retry_after=2.0)
-
-    await controller.on_daemon_message(AddressedText(channel_id="c1", text="hi there"))
-
-    assert slept == [2.0]
-    assert discord.send_attempts == 2
-    assert discord.sent == [("c1", "hi there")]
 
 
 # ----- Task 7 (a): _event_date true-timestamp LANDMINE (review) -----

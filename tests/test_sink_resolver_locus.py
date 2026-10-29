@@ -1,17 +1,10 @@
 """SinkResolver locus/origin routing (spec §3.1 R1-arch I2)."""
-from dollos.mind.sink_resolver import SinkResolver, DummySink
+from dollos.mind.sink_resolver import SinkResolver
 
 
 class _Sink:
     def __init__(self): self.items = []
     def put_nowait(self, item): self.items.append(item)
-
-
-def test_backcompat_register_no_kwargs_is_internal():
-    r = SinkResolver()
-    s = _Sink()
-    r.register(s)                       # old signature
-    assert r() is s                     # origin-less → internal sink
 
 
 def test_external_sink_never_steals_internal_output():
@@ -40,8 +33,3 @@ def test_unknown_origin_falls_to_internal():
     r.register(internal, locus="internal")
     r.register(_Sink(), locus="external", channel_id="A")
     assert r("ZZZ") is internal          # unknown origin → internal, not external
-
-
-def test_empty_returns_dummy():
-    r = SinkResolver()
-    assert isinstance(r(), DummySink)

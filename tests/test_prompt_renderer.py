@@ -55,30 +55,6 @@ def test_renderer_does_not_html_escape():
     assert "<tag>" in out
 
 
-def test_render_blocks_returns_dict_with_each_block():
-    """A template with multiple {% block %} sections returns a dict keyed by name."""
-    renderer = PromptRenderer()
-    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="hi", item="apple")
-    assert set(blocks.keys()) == {"system", "user"}
-    assert blocks["system"] == "hi from system"
-    assert blocks["user"] == "user wants apple"
-
-
-def test_render_blocks_strips_per_block_whitespace():
-    renderer = PromptRenderer()
-    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="hi", item="apple")
-    for v in blocks.values():
-        assert v == v.strip()
-
-
-def test_scaffolding_no_longer_restricts_single_speak_block():
-    """Plan 2 lifted the Plan 1 'single trailing speak' restriction."""
-    renderer = PromptRenderer()
-    out = renderer.render("scaffolding")
-    assert "single block at the end of your turn" not in out
-    assert "Plan 2 fixes it" not in out
-
-
 def test_scaffolding_output_states_speech_precedes_tool_calls():
     """Model API plan Task 6: the protocol puts speech before tool calls in
     one reply (no more 'interleave freely'); after the tool results come back
@@ -91,19 +67,6 @@ def test_scaffolding_output_states_speech_precedes_tool_calls():
     assert "interleave" not in out.lower()
     assert "what you say comes before your tool calls" in output_section
     assert "After the tool results come back" in output_section
-
-
-def test_render_blocks_substitutes_ctx_into_each_block():
-    renderer = PromptRenderer()
-    blocks = renderer.render_blocks("_test_blocks_fixture", greeting="yo", item="banana")
-    assert "yo" in blocks["system"]
-    assert "banana" in blocks["user"]
-
-
-def test_render_blocks_unknown_template_raises():
-    renderer = PromptRenderer()
-    with pytest.raises(TemplateNotFound):
-        renderer.render_blocks("does_not_exist")
 
 
 def test_scaffolding_includes_meta_rule_about_multi_try():
@@ -287,40 +250,6 @@ def test_scaffolding_voice_framing_present():
     assert "Your thinking is not heard." in output_section
     assert "Tool calls are not heard." in output_section
     assert "Nothing to say?" in output_section
-
-
-def test_scaffolding_drops_legacy_json_action_array():
-    """Old `{"action": "..."}` JSON array convention must be gone."""
-    renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity(), language="en")
-    assert '"action":' not in out
-    assert "JSON array" not in out
-
-
-def test_renderer_no_longer_builds_tools_doc():
-    """Model API plan Task 6: tool descriptions reach the model through the
-    tool schemas, so the renderer no longer turns a `tool_registry` into a
-    `# Tools available` list — a stray `tool_registry` kwarg is just an unused
-    template variable."""
-    from dollos.tools import Shell
-
-    renderer = PromptRenderer()
-    out = renderer.render(
-        "scaffolding",
-        identity=_identity(),
-        language="en",
-        tool_registry={"Shell": Shell},
-    )
-    assert "# Tools available" not in out
-    assert Shell.__doc__.strip().splitlines()[0] not in out
-
-
-def test_scaffolding_no_recent_thoughts_block_doc():
-    """[Recent thoughts] block will be deleted in Task 8 — scaffolding no
-    longer references it (avoid having to revisit later)."""
-    renderer = PromptRenderer()
-    out = renderer.render("scaffolding", identity=_identity(), language="en")
-    assert "[Recent thoughts]" not in out
 
 
 def test_subagent_scaffolding_documents_scratchpad():

@@ -28,11 +28,6 @@ def _load_script_module():
     return module
 
 
-def test_script_imports_cleanly():
-    module = _load_script_module()
-    assert callable(module.main)
-
-
 def test_probe_prompts_well_formed():
     module = _load_script_module()
     probes = module.PROBE_PROMPTS

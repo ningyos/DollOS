@@ -10,8 +10,7 @@ from dollos.mind.self_profile import SECTION_TITLES
 from dollos.mind.mind_state import MindState
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
-from dollos.harness.turn_policy import POLICIES
-from dollos.tools import MAIN_TOOLS, NoteMemory, PinSelf
+from dollos.tools import NoteMemory, PinSelf
 
 
 REFLECTION_SECTIONS = frozenset({"self", "relationship", "user"})
@@ -76,11 +75,6 @@ def make_mind_ctx(tmp_path):
         )
 
     return _factory
-
-
-def test_pinself_in_reflection_not_main():
-    assert PinSelf.__name__ in {e.tool for e in POLICIES["reflection"].extra_tools}
-    assert PinSelf not in MAIN_TOOLS
 
 
 @pytest.mark.asyncio

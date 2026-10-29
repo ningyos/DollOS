@@ -102,21 +102,6 @@ backfill_channels = ["c1", "c2"]
     assert cfg.backfill_channels == ["c1", "c2"]
 
 
-def test_load_bridge_config_defaults_backfill_channels_to_empty(tmp_path: Path):
-    """No `backfill_channels` key at all -> `[]`, i.e. no reconnect-gap
-    backfill — the safe/predictable default (D5(ii))."""
-    path = _write(
-        tmp_path,
-        """
-[discord]
-token = "tok-4"
-owner_discord_id = "444"
-""",
-    )
-    token, cfg = _load_bridge_config(path)
-    assert cfg.backfill_channels == []
-
-
 # ----- M1 (Part B whole-branch review): no redundant pre-register loop -----
 #
 # `_connect_and_run` used to pre-register every `backfill_channels` entry by

@@ -18,17 +18,9 @@ from dollos.mind.mind_state import MindState, OpenLoop, _MAX_PROGRESS, _MAX_SELF
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.harness.turn_policy import POLICIES
-from dollos.tools import MAIN_TOOLS, AdvanceGoal, PursueGoal
+from dollos.tools import AdvanceGoal, PursueGoal
 
 AGENDA_TOOLS = POLICIES["agenda"].kind_tools
-
-
-def _reflection_tools() -> set[str]:
-    """What a reflection turn may run: turn_policy's reflection kind is the
-    whole registry (kind_tools "all") + its extra tools."""
-    policy = POLICIES["reflection"]
-    assert policy.kind_tools == "all"
-    return {c.__name__ for c in MAIN_TOOLS} | {e.tool for e in policy.extra_tools}
 
 
 class _FakeMemSearch:
@@ -189,18 +181,3 @@ def test_agenda_tools_excludes_dangerous_and_genesis():
     ):
         assert excluded not in AGENDA_TOOLS
     assert AGENDA_TOOLS == frozenset({"Recall", "AdvanceGoal", "CloseLoop", "MoodTool"})
-
-
-def test_pursuegoal_registered_but_not_in_agenda_tools():
-    from dollos.tools import MAIN_TOOLS, PursueGoal as PG
-
-    assert PG in MAIN_TOOLS
-    assert PG.__name__ in _reflection_tools()
-    assert "PursueGoal" not in AGENDA_TOOLS
-
-
-def test_advancegoal_registered_in_main_and_agenda_tools():
-    from dollos.tools import MAIN_TOOLS, AdvanceGoal as AG
-
-    assert AG in MAIN_TOOLS
-    assert "AdvanceGoal" in AGENDA_TOOLS

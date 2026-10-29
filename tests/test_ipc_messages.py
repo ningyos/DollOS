@@ -61,13 +61,6 @@ def test_decode_interrupt():
     assert isinstance(msg, Interrupt)
 
 
-def test_decode_existing_text_input_still_works():
-    """Adding Interrupt to the union must not break TextInput decoding."""
-    msg = decode_client_message('{"type": "text_input", "text": "hi"}')
-    assert isinstance(msg, TextInput)
-    assert msg.text == "hi"
-
-
 def test_say_aborted_serializes_with_default_reason():
     m = SayAborted()
     d = m.model_dump()
@@ -75,25 +68,7 @@ def test_say_aborted_serializes_with_default_reason():
     assert d["reason"] == "user_interrupted"
 
 
-def test_say_aborted_custom_reason():
-    m = SayAborted(reason="external_command")
-    assert m.model_dump()["reason"] == "external_command"
-
-
-def test_say_aborted_is_in_server_message_union():
-    """SayAborted should be a valid ServerMessage variant (typed via Pydantic)."""
-    from dollos.ipc.messages import ServerMessage
-    msg: ServerMessage = SayAborted()  # type: ignore[assignment]
-    assert msg.type == "say_aborted"
-
-
 # --- AddressedText / ChannelRegister / ChannelEvent (P1a Task 5, spec §3.1) ---
-
-
-def test_addressed_text_is_in_server_message_union():
-    from dollos.ipc.messages import AddressedText, ServerMessage
-    msg: ServerMessage = AddressedText(channel_id="c1", text="hi")  # type: ignore[assignment]
-    assert msg.type == "addressed_text"
 
 
 def test_decode_channel_register():

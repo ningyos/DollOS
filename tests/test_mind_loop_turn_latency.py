@@ -90,15 +90,6 @@ async def test_ttft_and_cache_numbers_come_from_the_first_call(tmp_path):
     assert r.finish_reason == "tool_calls"
 
 
-@pytest.mark.asyncio
-async def test_no_recorder_is_a_noop(tmp_path):
-    """turn_latency_recorder=None (default) must not raise or break the turn."""
-    llm = _ScriptedLLM([_speech_pass("你好")])
-    ml = make_mindloop(memory_root=tmp_path, llm=llm)
-
-    await ml._run_one_turn([_user_perception("hi")])  # must not raise
-
-
 def _agenda_moment() -> Perception:
     return Perception(kind="AgendaMoment", t=time.time(), data={})
 

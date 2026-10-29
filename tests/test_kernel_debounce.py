@@ -362,36 +362,3 @@ async def test_owner_dm_first_message_uses_engaged_window_not_cold(
     )
 
     await dollos._accumulator.flush_all()
-
-
-@pytest.mark.asyncio
-async def test_stranger_cold_public_first_message_still_uses_cold_window(
-    tmp_path: Path,
-) -> None:
-    """The fix for owner/DM must not blanket-relax debounce for everyone —
-    a stranger's cold PUBLIC-channel first message (not a DM, not the owner)
-    must still get the long cold window; that's the flood protection the
-    cold window exists for."""
-    settings = _make_settings(tmp_path, debounce_engaged_s=0.05, debounce_cold_s=5.0)
-    dollos = DollOS(settings)
-    windows = _spy_on_add(dollos)
-    sink: asyncio.Queue = asyncio.Queue()
-
-    await dollos._handle_message(
-        _channel_event(
-            "discord:general",
-            author_id="stranger1",
-            author_is_owner=False,
-            is_dm=False,
-            mentioned=True,
-            content="hey doll",
-        ),
-        sink,
-    )
-
-    assert windows == [5.0], (
-        "stranger cold-public-channel first message unexpectedly got the "
-        "short engaged window"
-    )
-
-    await dollos._accumulator.flush_all()

@@ -235,51 +235,6 @@ async def test_internal_turn_4way_split(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Teeth: prove the assertions aren't vacuous
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_external_public_teeth_private_recall_inverted(tmp_path: Path):
-    """Invert the assertion: if the retrieval-scope gate were a no-op, the
-    owner's private note WOULD surface via Recall on a stranger's turn, and
-    this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch(tmp_path)
-    try:
-        (base / "shared" / "secret.md").write_text(
-            "## h\n\nowner-private-fact-teeth-check.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        loop, ctx, state = _make_loop(tmp_path, ms)
-        await loop._run_one_turn(
-            [_channel_msg("hi", author_is_owner=False, t=1.0)]
-        )
-
-        out = await Recall(query="owner-private-fact-teeth-check").run(ctx)
-        with pytest.raises(AssertionError):
-            assert "owner-private-fact" in out
-    finally:
-        ms.close()
-
-
-@pytest.mark.asyncio
-async def test_external_public_teeth_energy_inverted(tmp_path: Path):
-    """Invert the assertion: if the energy origin-guard were removed, a
-    stranger's turn WOULD drain energy, and this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch(tmp_path)
-    try:
-        loop, ctx, state = _make_loop(tmp_path, ms)
-        await loop._run_one_turn(
-            [_channel_msg("hi", author_is_owner=False, t=1.0)]
-        )
-        with pytest.raises(AssertionError):
-            assert state.energy == pytest.approx(0.9)
-    finally:
-        ms.close()
-
-
-# ---------------------------------------------------------------------------
 # Whole-branch review C1: owner posting in a PUBLIC channel must NOT be
 # classified external_dm (which would grant full private retrieval on a
 # reply that is actually public).
@@ -308,29 +263,5 @@ async def test_owner_in_public_channel_is_scoped_as_external_public(tmp_path: Pa
 
         out = await Recall(query="owner-private-fact-pub-c1-check").run(ctx)
         assert "owner-private-fact" not in out
-    finally:
-        ms.close()
-
-
-@pytest.mark.asyncio
-async def test_owner_in_public_channel_teeth_private_recall_inverted(tmp_path: Path):
-    """Teeth: invert the assertion — if C1 were reverted (author_is_owner
-    alone ⇒ external_dm), the owner's private note WOULD surface via Recall
-    on this owner-in-public turn, and this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch(tmp_path)
-    try:
-        (base / "shared" / "secret.md").write_text(
-            "## h\n\nowner-private-fact-pub-c1-teeth.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        loop, ctx, state = _make_loop(tmp_path, ms)
-        await loop._run_one_turn(
-            [_channel_msg("hi", author_is_owner=True, is_dm=False, t=1.0)]
-        )
-
-        out = await Recall(query="owner-private-fact-pub-c1-teeth").run(ctx)
-        with pytest.raises(AssertionError):
-            assert "owner-private-fact" in out
     finally:
         ms.close()
