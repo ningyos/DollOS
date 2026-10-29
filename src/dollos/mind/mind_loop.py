@@ -1333,9 +1333,11 @@ class MindLoop:
         its termination rules and its partial-reply handling are documented
         in ``dollos.harness.runner``; the policy is
         ``POLICIES[_binding_kind()]`` (at most ``MAX_SYNC_REFEED_PASSES``
-        passes, the safe-mode failure rule). Fire-and-forget tools (Shell /
-        SpawnWorkflow / SpawnMonitor) answer with a job receipt; their real
-        result comes back later as a perception, the turn never waits for it.
+        passes, the safe-mode failure rule). Fire-and-forget tools (a Shell
+        longer than ``tools.DOLL_WAIT_MAX_S``, SpawnWorkflow, SpawnMonitor)
+        answer with a job receipt; their real result comes back later as a
+        perception, the turn never waits for it. A shorter Shell runs to its
+        end inside the call (plan 2026-10-29 decision 1).
 
         Cancellation spans the whole multi-pass turn: `self._cascade_ctx` is
         set once here and cleared in `finally`, so an external

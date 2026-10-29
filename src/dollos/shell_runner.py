@@ -1,14 +1,16 @@
 """ShellRunner — spawn shell subprocesses; enqueue Perception on completion.
 
-Fire-and-forget pattern. Doll's `Shell` tool calls into this runner and
-returns immediately; the runner watches the proc and enqueues a Perception
-into the PerceptionQueue when the proc exits, times out, or errors.
+Fire-and-forget pattern. Doll's long `Shell` (timeout_s over
+``tools.DOLL_WAIT_MAX_S``) calls into this runner and returns immediately;
+the runner watches the proc and enqueues a Perception into the
+PerceptionQueue when the proc exits, times out, or errors.
 There is no Doll-callable wait/cancel — "wait" is just Doll keeping her
 cascade alive, "cancel" only happens on daemon shutdown.
 
 A workflow worker's `Shell` waits instead (plan 2026-10-28 decision 2): an
 agent's loop never sees perceptions, so ``run_and_wait`` runs the command
-the same way and returns the result data rather than enqueueing it.
+the same way and returns the result data rather than enqueueing it. Doll's
+short `Shell` waits the same way (plan 2026-10-29 decision 1).
 
 Lifecycle:
     Shell.run → ctx.shell_runner.spawn(command, timeout_s)
@@ -16,7 +18,7 @@ Lifecycle:
                        → _execute: spawn proc, await communicate() with timeout,
                          store the output → the result data
                        → perception_queue.put(Perception("ToolResultArrived", ...))
-    worker Shell.run → await ctx.shell_runner.run_and_wait(command, timeout_s)
+    worker / short Shell.run → await ctx.shell_runner.run_and_wait(command, timeout_s)
                 → asyncio.create_task(_execute(...)) → the result data
 """
 from __future__ import annotations
@@ -81,7 +83,7 @@ class ShellRunner:
         """Run a shell subprocess and return its result data — the same dict
         ``spawn`` enqueues as a ToolResultArrived perception — instead of
         enqueueing it. For a workflow worker's Shell, whose loop never sees
-        perceptions.
+        perceptions, and Doll's short Shell.
 
         Tracked like a spawned command, so ``stop()`` kills it too; so does
         cancelling the caller (the workflow's per-agent timeout). Once the

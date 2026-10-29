@@ -422,7 +422,7 @@
         "type": "function",
         "function": {
           "name": "Shell",
-          "description": "Run a shell command in the background. Returns immediately.\n\nShell is fire-and-forget. The command runs as a fresh subprocess (no\ncd persistence between calls) with the daemon's user permissions and\ncwd = data/ (the parent of memory/). stdout + stderr are merged. When\nthe proc finishes, its result comes back as a NEW turn's perception\nline `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\n\nThere is no wait / monitor / cancel tool. If you start a Shell and\nkeep working in the same cascade, the result may also arrive as a\nperception inserted into your next iteration. Either way: react when\nyou see it.",
+          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nfirst lines) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
           "parameters": {
             "properties": {
               "command": {
@@ -431,7 +431,7 @@
               },
               "timeout_s": {
                 "default": 60,
-                "description": "Wall-clock seconds before the proc is killed. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
                 "maximum": 600,
                 "minimum": 1,
                 "type": "integer"
@@ -1036,7 +1036,7 @@
         "type": "function",
         "function": {
           "name": "Shell",
-          "description": "Run a shell command in the background. Returns immediately.\n\nShell is fire-and-forget. The command runs as a fresh subprocess (no\ncd persistence between calls) with the daemon's user permissions and\ncwd = data/ (the parent of memory/). stdout + stderr are merged. When\nthe proc finishes, its result comes back as a NEW turn's perception\nline `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\n\nThere is no wait / monitor / cancel tool. If you start a Shell and\nkeep working in the same cascade, the result may also arrive as a\nperception inserted into your next iteration. Either way: react when\nyou see it.",
+          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nfirst lines) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
           "parameters": {
             "properties": {
               "command": {
@@ -1045,7 +1045,7 @@
               },
               "timeout_s": {
                 "default": 60,
-                "description": "Wall-clock seconds before the proc is killed. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
                 "maximum": 600,
                 "minimum": 1,
                 "type": "integer"

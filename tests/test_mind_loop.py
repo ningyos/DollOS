@@ -1302,3 +1302,101 @@ async def test_cascade_logger_receives_tool_call_with_args(tmp_path):
     )
     await loop2.iterate()  # must not raise
     assert loop2._state.iter_count == 1
+
+
+# ----- Doll's short Shell blocks the turn; owner speech during it is kept -----
+# (plan 2026-10-29 decision 1)
+
+
+def _shell_pass(command: str, timeout_s: int, speech: str = "看一下") -> str:
+    args = json.dumps({"command": command, "timeout_s": timeout_s})
+    return (
+        "SEEN: x\nINTENT: y\nTOOL: Shell\nREVIEW: r\nMOOD: m\n</think>\n\n"
+        f"{speech}"
+        "<tool_call>\n"
+        f'{{"name":"Shell","arguments":{args}}}\n'
+        "</tool_call>"
+    )
+
+
+def _real_shell_loop(tmp_path, scripts):
+    from dollos.shell_runner import ShellRunner
+    from dollos.tool_outputs import ToolOutputStore
+    from dollos.tools import MAIN_TOOLS
+    from tests._dispatcher_helpers import _make_mind_ctx
+
+    state = MindState()
+    queue = PerceptionQueue()
+    queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    runner = ShellRunner(cwd=tmp_path, perception_queue=queue, tool_output_store=store)
+    ctx = _make_mind_ctx(
+        tmp_path, state=state, shell_runner=runner, tool_output_store=store,
+    )
+    llm = _ScriptedLLM(scripts)
+    loop = MindLoop(
+        state=state, queue=queue, ctx=ctx, llm=llm, system_prompt="SYS",
+        state_persist_path=tmp_path / "mind_state.json",
+        tool_registry={cls.__name__: cls for cls in MAIN_TOOLS},
+    )
+    return loop, llm, queue, runner
+
+
+def _tool_texts(messages) -> list[str]:
+    return [m["content"] for m in messages if m["role"] == "tool"]
+
+
+@pytest.mark.asyncio
+async def test_doll_short_shell_result_is_in_the_same_turn(tmp_path):
+    loop, llm, queue, runner = _real_shell_loop(
+        tmp_path, [_shell_pass("echo SHELL_OUT", 5), _speech_pass("好了")],
+    )
+    await loop.iterate()
+    assert llm.pass_count == 2
+    tools = _tool_texts(llm.calls[1]["messages"])
+    assert tools and tools[-1].startswith("Shell done [ok]")
+    assert "SHELL_OUT" in tools[-1]
+    assert await queue.drain(timeout_s=0.3) == []
+    await runner.stop()
+
+
+async def _owner_speaks_during_shell(loop, queue, *, preempt: bool):
+    """Start a turn whose Shell sleeps, then do what the kernel does when the
+    owner types mid-turn (``_handle_message`` TextInput): preempt the
+    cascade (cancel + Interrupted), then queue the UserSpoke."""
+    task = asyncio.create_task(loop.iterate())
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if loop._ctx.shell_runner._tasks:
+            break
+    assert loop._ctx.shell_runner._tasks, "the Shell never started"
+    if preempt:
+        loop.cancel_current_cascade()
+        queue.put(Perception(kind="Interrupted", t=2.0, data={"by": "user_text_input"}))
+    queue.put(Perception(kind="UserSpoke", t=2.1, data={"text": "還在嗎"}))
+    await asyncio.wait_for(task, timeout=5)
+
+
+@pytest.mark.parametrize("preempt", [True, False])
+@pytest.mark.asyncio
+async def test_owner_message_during_short_shell_is_seen_next_turn(tmp_path, preempt):
+    """The owner speaks while Doll's Shell (timeout_s <= 30) is running: the
+    Shell still finishes and its result stays in the conversation, and the
+    message is not lost — the next turn carries it. With the kernel's
+    preempt the turn ends right after the Shell (cut); without one it runs
+    its next pass with the Shell result first."""
+    loop, llm, queue, runner = _real_shell_loop(
+        tmp_path,
+        [_shell_pass("sleep 0.5; echo SHELL_OUT", 5), _speech_pass("嗯")],
+    )
+    await _owner_speaks_during_shell(loop, queue, preempt=preempt)
+    first_turn_calls = llm.pass_count
+    assert first_turn_calls == (1 if preempt else 2)
+
+    await loop.iterate()  # the next turn
+    assert llm.pass_count == first_turn_calls + 1
+    messages = llm.calls[-1]["messages"]
+    assert any("SHELL_OUT" in t for t in _tool_texts(messages))
+    last_user = [m for m in messages if m["role"] == "user"][-1]["content"]
+    assert "還在嗎" in last_user
+    await runner.stop()

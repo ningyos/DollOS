@@ -33,8 +33,9 @@ class MindCtx:
     workflow_runner: the WorkflowRunner Doll dispatches background workflows to;
         None inside a worker agent's ctx (the no-nesting guard — a worker
         cannot spawn further workflows). Shell reads it too: None means an
-        agent's loop, which never sees perceptions, so Shell waits for the
-        result (ShellRunner.run_and_wait) instead of dispatching it.
+        agent's loop, which never sees perceptions, so Shell always waits for
+        the result (ShellRunner.run_and_wait) instead of dispatching it; Doll
+        waits only when timeout_s <= tools.DOLL_WAIT_MAX_S.
 
     sink: always None on MindCtx. cascade.py checks `ctx.sink is not None` to
         decide whether to push ErrorMsg to a user-facing sink; workers have no
