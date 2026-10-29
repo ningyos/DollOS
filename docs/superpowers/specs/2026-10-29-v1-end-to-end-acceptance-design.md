@@ -17,7 +17,7 @@ v1 是一句話：「Doll 用 Qwen3.8（Strata）聊天，記得主人給過的�
 ## 2. 怎麼跑
 
 - 丟掉用的資料目錄、Strata、`character_packs/gura`（主人講英文）、語音和 Discord 關掉，driver 走本機 IPC，主人身分。fetch MCP 接上、每天整理和 profile keeper 開著、`[system_pulse]` 關掉。細節見 §9。
-- **兩段**：第一段是第 D 天晚上，SIGINT 停掉；同一個資料目錄再開第二段，是第 D+1 天早上。日期用 `TZ` 做出來，牆鐘其實只過幾分鐘。
+- **兩段**：第一段是第 D 天晚上，SIGINT 停掉；同一個資料目錄再開第二段，是第 D+1 天早上。日期和時間用 daemon 行程裡的虛擬時鐘做出來（§9），真的牆鐘只過幾分鐘；任何時候都能開跑。
 - 每則主人訊息都等前一個回合安靜 20 秒再送，除非另外寫。每個等待都有上限，等不到就照實記、往下走。
 
 夾具（開機前寫好在 `data/sandbox/`，真值寫進 `truth.json`）：
@@ -54,7 +54,7 @@ v1 是一句話：「Doll 用 Qwen3.8（Strata）聊天，記得主人給過的�
 
 ### 重開
 
-SIGINT 後拍一次快照，第二段一開機（還沒開始想事情）再拍一次，比對。然後用新的 `TZ` 開第二段。
+SIGINT 後拍一次快照，第二段一開機（還沒開始想事情）再拍一次，比對。然後用第二段的虛擬時鐘開第二段。
 
 ### 第二段（第 D+1 天早上）
 
@@ -130,11 +130,11 @@ SIGINT 後拍一次快照，第二段一開機（還沒開始想事情）再拍�
 1. **讀外部內容之後整頁降權**。A-fetch 之後同一頁的 Shell 會被擋，要到新頁才恢復。記：被擋幾次、她有沒有叫主人「等一下再問」。
 2. **改名的糾正只有 2/3 寫進 profile**。A5 她可能只寫 `NoteMemory`。不算 A5 沒過；結果看 A-probe、B-probe、B4 和每天整理。記：A5 用了哪個工具、keeper 有沒有補上、新條目有沒有寫成「被糾正的故事」。
 3. **19 次開機有 1 次不明 crash**（s37f-2，python3.13 GPF）。發生時存 daemon.log 最後 200 行、結束碼、`coredumpctl`，那個 session 作廢、補跑一個。全部 session 加起來出現 2 次以上，就不算已知，算 v1 沒過。
-4. **`TZ` 造成的時間錯覺**。日期跳一天、牆鐘只過幾分鐘，「昨晚」的事可能顯示成「幾分鐘前」。她講時間的方式不評。
+4. **虛擬時鐘只管 daemon 的 Python 行程**。她看到的時間從 D 19:xx 跳到 D+1 07:00，中間像過了一夜；但 Shell 跑的指令、fetch MCP、檔案 mtime 用的是真的時間。她講時間的方式不評。
 5. **反思會插進來**。每 30 個 iteration 一次，用同一頁，可以 `PinSelf`。它會佔 token（影響翻頁時機）、可能改寫 A5／A6 寫的 profile、會重設每天整理要等的閒置時間。怎麼算見 4.1「沒測到」。
 6. **每天整理會把她自己講過的網頁內容寫進 `shared/consolidated/<D>.md`**（整理只拿掉 action-log 行，她說的話留著）。記有沒有，不評。
 7. **keeper 被拒的編輯看不到**。quote 對不上時 `EditOwnerProfile` 直接拒絕，不寫任何紀錄，keeper 也沒有 trace。只評成功的編輯。
-8. **整理可能在第二段一開機就跑**。閒置時間用的是存檔的時間和牆鐘，重開花太久（≥ 240 秒）就會在 B2 之前開始整理。driver 盡量讓重開快（§9），真的發生就記，B-probe 照常算。
+8. **整理多半會在第二段一開機就跑**。閒置時間 = 現在 − 存檔的最後回合時間；虛擬時鐘下兩段之間像隔了一夜（約 11 小時），所以 Awoke 回合還沒結束時（5 秒一次的檢查）就可能開始整理 <D>，跟 Awoke／B2 搶 Strata，主人一說話就被取消，之後再等 240 秒閒置。真的發生就記，B-probe、每天整理照常算。
 
 撞到這幾條以外的 bug，照實記，**這次不修**。
 
@@ -181,9 +181,9 @@ SIGINT 後拍一次快照，第二段一開機（還沒開始想事情）再拍�
 
 **config**：跟 `live.py` 的樣板一樣，差在 `[mcp_clients]` 接 fetch（同 3.8：`mcp-server-fetch --allow-private-ips --ignore-robots-txt`、`min_principal = "owner"`、`untrusted_output = true`）；`[consolidation] enabled = true`、`idle_threshold_s = 240`、`min_interval_s = 60`；`[profile_keeper]` 預設；`[system_pulse] enabled = false`（有人在用桌面時整理會被 pulse 擋，`consolidation.py` `_should_consolidate`；這份不靠 pulse）。`run_begin` 記 HEAD 和這些值。
 
-**時區**：`Etc/GMT` 的正負號是反的（`Etc/GMT+9` = UTC−9），本地 = UTC + offset 時寫 `TZ = f"Etc/GMT{-offset:+d}"`。`TZ` 和 `TODAY` 每段各算一次，放進那一段 daemon 的 env（`live.py` 是在 import 時設一次，要改）。第一段本地 19:00–21:00 開始，第二段是隔天本地 07:00–09:00。offset 只能在 −12…+14，所以**第一段只能在 UTC 17:00–次日 08:00（台灣 01:00–16:00）之間開跑**（UTC 17:00 之前開跑，第二段到不了隔天 07:00）。每段都不能跨過本地午夜。`time.time()` 不受 `TZ` 影響。telemetry 檔名用本地日期，trace 用 UTC 日期。夾具裡的 `<D>`、`<D+1>` 在第一段開跑前算好。
+**虛擬時鐘**：daemon 用 `uv run --project <worktree> --frozen --with time-machine==3.6.0 python vclock_launch.py --config …` 開（worktree 不動）。`vclock_launch.py` 先 `time_machine.travel(..., tick=True)`，再照 console script 的樣子呼叫 `dollos.__main__:main`。兩段的 `TZ` 都是 `Asia/Taipei`；D = 開跑那天的台灣日期；第一段開機那一刻是 D 19:00:00，第二段是 D+1 07:00:00，之後跟著真的時間走（`time.monotonic`、`asyncio`、`sleep` 不受影響）。所以任何時候都能開跑，沒有 UTC 時段限制。daemon 寫的時間（telemetry／trace 的 ts、cascade_log、daemon.log、transcript、排程、prompt 裡的時鐘）都是虛擬的；driver 的 events 是真的時間。每段的差值（虛擬 − 真實）driver 開機時記在 `segment_begin`，daemon 行程裡量到的記在 `vclock`（差超過 0.5 秒就中止）；driver 和評分讀 daemon 紀錄時一律換回真的時間再比（`v1lib.VClock`）。B4 的「她看到的時間」和提醒時間都用虛擬的本地時間算。夾具裡的 `<D>`、`<D+1>` 在第一段開跑前算好。
 
-**開跑前**：沒有殘留的 `dollos --config`、`mcp-server-fetch`、`http.server`、`*.sh` 行程，port 沒人聽。`.sh` 夾具 `chmod 755`，寫進 `truth.json`。driver 在背景跑；第一段期限 90 分鐘、第二段 40 分鐘，到了就收尾。
+**開跑前**：沒有殘留的 `--config <這個目錄>`、`mcp-server-fetch`、`http.server`、`*.sh` 行程，port 沒人聽。`.sh` 夾具 `chmod 755`，寫進 `truth.json`。driver 在背景跑；第一段期限 90 分鐘、第二段 40 分鐘，到了就收尾。
 
 **每則訊息前**：看 `/health` 和 `/metrics`（Strata 一個 slot）。回合用 telemetry 的 `turn_latency` 判斷（`perception_kinds` 分出 `UserSpoke`、`ToolResultArrived`、`ReflectionMoment`），安靜用 `wait_quiet`。每個等待最多 300 秒，逾時記下來往下走。
 
