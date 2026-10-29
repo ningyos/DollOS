@@ -75,10 +75,12 @@ from dollos.wal.perception_log import PerceptionWAL
 # A whole "sentence" that is one bracketed aside — "(nothing to say)",
 # "(silence)", "[no reply]", "（沉默）" — is a stage direction, not speech
 # (v1 tool-use acceptance 2026-10-28 發現 7). Only a single bracket pair
-# wrapping the entire sentence counts; "(laughs) Okay." is speech.
+# wrapping the entire sentence counts; "(laughs) Okay." is speech. The
+# sentence chunker keeps the terminator, so "(silence)." / "(沉默)。" may
+# carry trailing sentence punctuation after the closing bracket.
 _STAGE_DIRECTION = re.compile(
     r"\s*(?:\([^()]*\S[^()]*\)|\[[^\[\]]*\S[^\[\]]*\]"
-    r"|（[^（）]*\S[^（）]*）|【[^【】]*\S[^【】]*】)\s*"
+    r"|（[^（）]*\S[^（）]*）|【[^【】]*\S[^【】]*】)[.。!！?？…]*\s*"
 )
 
 
