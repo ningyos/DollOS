@@ -287,7 +287,7 @@ class Shell(BaseModel):
     of memory/). stdout + stderr are merged.
 
     With timeout_s <= 30 you wait: the result (status, exit code, output_id,
-    first lines) is this call's answer. With timeout_s > 30 the call returns
+    the output, or its first and last lines if long) is this call's answer. With timeout_s > 30 the call returns
     at once and the result comes back as a NEW turn's perception
     `ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.
     There is no wait / cancel tool.
@@ -349,7 +349,12 @@ class Shell(BaseModel):
         allows up to 600 because the schema is Doll's too. Doll's ctx (a
         workflow runner) is not inside a workflow and gets no such cap."""
         from dollos.harness.executor import ToolResult
-        from dollos.shell_runner import SHELL_PREVIEW_LINES
+        from dollos.shell_runner import (
+            SHELL_PREVIEW_HEAD_LINES,
+            SHELL_PREVIEW_LINES,
+            SHELL_PREVIEW_TAIL_LINES,
+            shell_preview,
+        )
         from dollos.workflow import MAX_AGENT_TIMEOUT_S
 
         worker = ctx.workflow_runner is None
@@ -394,14 +399,12 @@ class Shell(BaseModel):
         if n > SHELL_PREVIEW_LINES:
             lines.append(
                 f"output_id {output_id}, line count {n}; the first "
-                f"{SHELL_PREVIEW_LINES} below, ReadToolOutput for the rest:"
+                f"{SHELL_PREVIEW_HEAD_LINES} and last {SHELL_PREVIEW_TAIL_LINES} "
+                f"lines below, ReadToolOutput for the rest:"
             )
         else:
             lines.append(f"output_id {output_id}, line count {n}:")
-        preview = ctx.tool_output_store.read(
-            output_id, offset=0, limit=SHELL_PREVIEW_LINES,
-        )
-        lines.extend(preview.lines)
+        lines.extend(shell_preview(ctx.tool_output_store, output_id))
         return "\n".join(lines)
 
 

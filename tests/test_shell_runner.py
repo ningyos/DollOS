@@ -313,3 +313,83 @@ async def test_run_and_wait_runner_error(tmp_path: Path) -> None:
     assert data["status"] == "error"
     assert data["summary"].startswith("runner error:")
     assert data["output_id"] is None
+
+
+# ----- Shell preview: head + tail with a marker (rerun 2026-10-29, 3.1 rep 3) -----
+
+
+def _stored(tmp_path: Path, n: int) -> tuple[ToolOutputStore, str]:
+    store = ToolOutputStore(tmp_path / "tool_outputs")
+    out_id = store.write("".join(f"line {i}\n" for i in range(1, n + 1)))
+    return store, out_id
+
+
+def test_shell_preview_long_output_shows_head_marker_and_tail(tmp_path: Path) -> None:
+    from dollos.shell_runner import (
+        SHELL_PREVIEW_HEAD_LINES,
+        SHELL_PREVIEW_TAIL_LINES,
+        shell_preview,
+    )
+
+    store, out_id = _stored(tmp_path, 42)
+    lines = shell_preview(store, out_id)
+    assert SHELL_PREVIEW_HEAD_LINES + SHELL_PREVIEW_TAIL_LINES == 10
+    assert lines[0] == "line 1"
+    assert lines[-1] == "line 42"
+    assert lines[:6] == [f"line {i}" for i in range(1, 7)]
+    assert lines[-4:] == [f"line {i}" for i in range(39, 43)]
+    assert lines[6] == (
+        f"… 32 lines not shown (ReadToolOutput id={out_id} offset=6 limit=32) …"
+    )
+    assert len(lines) == 11
+
+
+def test_shell_preview_ten_lines_shown_whole(tmp_path: Path) -> None:
+    from dollos.shell_runner import shell_preview
+
+    store, out_id = _stored(tmp_path, 10)
+    assert shell_preview(store, out_id) == [f"line {i}" for i in range(1, 11)]
+
+
+def test_shell_preview_eleven_lines_hides_one(tmp_path: Path) -> None:
+    from dollos.shell_runner import shell_preview
+
+    store, out_id = _stored(tmp_path, 11)
+    lines = shell_preview(store, out_id)
+    assert lines[:6] == [f"line {i}" for i in range(1, 7)]
+    assert lines[6] == (
+        f"… 1 lines not shown (ReadToolOutput id={out_id} offset=6 limit=1) …"
+    )
+    assert lines[7:] == [f"line {i}" for i in range(8, 12)]
+
+
+@pytest.mark.asyncio
+async def test_long_shell_perception_shows_the_tail(tmp_path: Path) -> None:
+    """Doll's long Shell: the ToolResultArrived perception carries the same
+    head + tail preview, and its rendered line shows the last line."""
+    from dollos.mind.mind_prompt import _percep_body
+
+    runner, queue = _make_runner(tmp_path)
+    runner.spawn(command="seq 1 42", timeout_s=10)
+    (p,) = await _wait_for_tool_result(queue)
+    out_id = p.data["output_id"]
+    body = _percep_body(p).splitlines()
+    assert f"output_id {out_id}, 42 lines" in body[0]
+    assert body[1] == "1"
+    assert body[-1] == "42"
+    assert f"… 32 lines not shown (ReadToolOutput id={out_id} offset=6 limit=32) …" in body
+    assert "37" not in body  # hidden middle line
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_short_output_perception_shown_whole(tmp_path: Path) -> None:
+    from dollos.mind.mind_prompt import _percep_body
+
+    runner, queue = _make_runner(tmp_path)
+    runner.spawn(command="seq 1 10", timeout_s=10)
+    (p,) = await _wait_for_tool_result(queue)
+    body = _percep_body(p).splitlines()
+    assert body[1:] == [str(i) for i in range(1, 11)]
+    assert not any("not shown" in line for line in body)
+    await runner.stop()

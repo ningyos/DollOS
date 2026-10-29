@@ -545,7 +545,16 @@ def _percep_body(p) -> str:
         # The id she pages with ReadToolOutput: Shell writes output_id,
         # Workflow details_output_id.
         if d.get("output_id"):
-            body += f" (output_id {d['output_id']}, {d.get('line_count', '?')} lines)"
+            ids = f"(output_id {d['output_id']}, {d.get('line_count', '?')} lines)"
+            # A Shell result carries its head + tail preview (shell_runner.
+            # shell_preview): the id line first, then the preview lines.
+            if d.get("preview"):
+                return (
+                    f"{d.get('tool', '?')} {d.get('task_id', '?')} "
+                    f"[{d.get('status', '?')}]: exit {d.get('exit_code', '?')} "
+                    f"{ids}:\n{d['preview']}"
+                )
+            body += f" {ids}"
         elif d.get("details_output_id"):
             body += (
                 f" (output_id {d['details_output_id']}, "

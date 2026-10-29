@@ -343,7 +343,7 @@
         "type": "function",
         "function": {
           "name": "Shell",
-          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nfirst lines) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
+          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nthe output, or its first and last lines if long) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
           "parameters": {
             "properties": {
               "command": {
@@ -852,7 +852,7 @@
         "type": "function",
         "function": {
           "name": "Shell",
-          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nfirst lines) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
+          "description": "Run a shell command.\n\nThe command runs as a fresh subprocess (no cd persistence between\ncalls) with the daemon's user permissions and cwd = data/ (the parent\nof memory/). stdout + stderr are merged.\n\nWith timeout_s <= 30 you wait: the result (status, exit code, output_id,\nthe output, or its first and last lines if long) is this call's answer. With timeout_s > 30 the call returns\nat once and the result comes back as a NEW turn's perception\n`ToolResultArrived: Shell <task_id> [<status>]: …` — react to it then.\nThere is no wait / cancel tool.",
           "parameters": {
             "properties": {
               "command": {
