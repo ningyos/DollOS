@@ -107,6 +107,7 @@ luxtts-onnx = { git = "https://github.com/ningyos/luxtts-onnx.git" }
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not voice_integration'"
 markers = [
     "voice_integration: tests that load real ONNX models (slow, downloads on first run)",
 ]

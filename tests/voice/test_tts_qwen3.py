@@ -115,7 +115,7 @@ async def test_qwen3_passes_instruction_prefix(fake_qwen_tts, tmp_path):
 
 async def test_qwen3_voice_clone_prompt_path(fake_qwen_tts, tmp_path):
     """Engine loads voice_clone_prompt_path .pt and uses items in synth call."""
-    import torch
+    torch = pytest.importorskip("torch")
     from dollos.voice.tts_qwen3 import Qwen3TTSEngine
 
     item = {
@@ -151,13 +151,8 @@ def test_qwen3_rejects_both_modes(fake_qwen_tts, tmp_path):
 
     ref = tmp_path / "ref.wav"; ref.write_bytes(b"X")
     pt = tmp_path / "voice_clone_prompt.pt"
-    import torch
-    torch.save({"items": [{
-        "ref_code": None,
-        "ref_spk_embedding": torch.zeros(8),
-        "x_vector_only_mode": True,
-        "icl_mode": False,
-    }]}, pt)
+    pt.write_bytes(b"X")
+    # Both modes are rejected before the .pt is read, so this needs no torch.
     with pytest.raises(ValueError, match="exactly one"):
         Qwen3TTSEngine(
             model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -183,7 +178,7 @@ def test_qwen3_rejects_neither_mode(fake_qwen_tts):
 async def test_qwen3_voice_clone_prompt_honours_instruction(fake_qwen_tts, tmp_path):
     """I8: voice_clone_prompt path must pass prefixed_text (with instruction),
     not raw text."""
-    import torch
+    torch = pytest.importorskip("torch")
     from dollos.voice.tts_qwen3 import Qwen3TTSEngine
 
     item = {
