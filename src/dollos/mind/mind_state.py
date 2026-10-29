@@ -52,10 +52,6 @@ class ActiveTask:
     summary: str
     started_at: float
 
-    @property
-    def elapsed_s(self) -> float:
-        return time.time() - self.started_at
-
 
 @dataclass
 class PendingEvent:
