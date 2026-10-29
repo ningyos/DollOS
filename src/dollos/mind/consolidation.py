@@ -76,7 +76,6 @@ async def run_consolidation(
         think_budget=think_budget_tokens,
         purpose="consolidation",
         shell_runner=None,
-        monitor_runner=None,
     )
     if not report or not report.get("details"):
         logger.warning("consolidation: keeper returned no report for %s", target_date)
@@ -187,7 +186,7 @@ class ConsolidationTrigger:
 
         Decoupled from consolidation target — runs regardless of whether there
         is a sealed transcript to process. Uses last_user_at (not last_iter_at)
-        as the idle baseline so monitor/schedule ticks don't suppress recovery.
+        as the idle baseline so tool-result/schedule ticks don't suppress recovery.
         """
         if not self._energy_enabled:
             return

@@ -169,25 +169,6 @@
     {
       "type": "function",
       "function": {
-        "name": "RemoveMonitor",
-        "description": "Kill an active monitor by id.\n\nThe process is killed (SIGKILL on its process group). The watcher\nfires a MonitorExitedEvent with status='removed'. Active monitors\nsurface in the [Active monitors] block of every cascade iter.",
-        "parameters": {
-          "properties": {
-            "monitor_id": {
-              "description": "Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
-              "type": "string"
-            }
-          },
-          "required": [
-            "monitor_id"
-          ],
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
         "name": "Report",
         "description": "Terminate this worker agent and report the structured outcome.\n\nWorker-agent-only tool. MUST be called exactly once before the agent ends\n— the cascade ends naturally after the call (Report.run returns None). The\nargs become the workflow result Doll sees on her next turn (or feed the\nworkflow's synthesis stage).",
         "parameters": {
@@ -253,44 +234,6 @@
               "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
               "maximum": 600,
               "minimum": 1,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "command"
-          ],
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "SpawnMonitor",
-        "description": "Spawn a background command watcher. Returns a monitor_id immediately.\n\nThe command runs as a long-lived subprocess. Each stdout line\n(optionally regex-filtered) fires a MonitorTriggeredEvent that\narrives as a new turn's perception line `MonitorFired: <monitor_id>: <line>`.\nWhen the command exits (naturally or via RemoveMonitor), a\nMonitorExitedEvent fires.\n\nRate-limit: within `rate_limit_s` seconds, at most ONE matched line\nfires an event; subsequent matches are counted as suppressed and\nsurface in the [Active monitors] block (and in the next firing\nevent's `suppressed_count`). Set `rate_limit_s=0` to disable.\n\nExamples:\n    SpawnMonitor(command=\"nvidia-smi -l 5 --query-gpu=temperature.gpu \"\n                         \"--format=csv,noheader\",\n                 match_regex=r\"^[89][0-9]$\", rate_limit_s=60)\n    SpawnMonitor(command=\"tail -F /var/log/syslog\",\n                 match_regex=r\"ERROR|CRITICAL\", rate_limit_s=60)",
-        "parameters": {
-          "properties": {
-            "command": {
-              "description": "Shell command (passed to bash -c). Run long; daemon kills on shutdown.",
-              "type": "string"
-            },
-            "match_regex": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "description": "Optional Python regex. None = every line fires. Use to pre-filter inside the runner (cheaper than firing events and ignoring them)."
-            },
-            "rate_limit_s": {
-              "default": 60,
-              "description": "Per-monitor seconds-between-fires window. 0 disables. Default 60s (reasonable for noisy sources).",
-              "maximum": 3600,
-              "minimum": 0,
               "type": "integer"
             }
           },

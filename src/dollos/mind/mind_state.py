@@ -48,7 +48,7 @@ class Mood:
 @dataclass
 class ActiveTask:
     task_id: str
-    kind: Literal["shell", "subagent", "monitor"]
+    kind: Literal["shell", "subagent"]
     summary: str
     started_at: float
 
@@ -77,8 +77,7 @@ class OpenLoop:
 @dataclass
 class Perception:
     kind: Literal[
-        "UserSpoke", "ToolResultArrived", "MonitorFired",
-        "MonitorEnded", "ScheduledMoment", "Awoke", "ReflectionMoment",
+        "UserSpoke", "ToolResultArrived", "ScheduledMoment", "Awoke", "ReflectionMoment",
         "Interrupted", "SafeModeEntered", "RepeatLoopDetected",
         "PersonaDriftDetected", "ChannelMessage", "BridgeDown", "McpDown",
         "AgendaMoment", "DiaryMoment", "PulseMoment",
@@ -86,6 +85,12 @@ class Perception:
     t: float
     data: dict
     seq: int | None = None  # set by PerceptionQueue when WAL is active
+
+
+# Perception kinds that no longer exist but may still sit in a state file or
+# WAL written by an older daemon: the monitor feature was removed (plan
+# 2026-10-29 decision 3). Loading drops them.
+LEGACY_PERCEPTION_KINDS = frozenset({"MonitorFired", "MonitorEnded"})
 
 
 @dataclass
@@ -290,7 +295,10 @@ def load_state(path: Path) -> MindState:
         pending_events = [_coerce(PendingEvent, e) for e in data.get("pending_events", [])]
         open_loops = [_coerce(OpenLoop, l) for l in data.get("open_loops", [])]
         recent_perceptions = deque(
-            [_coerce(Perception, p) for p in data.get("recent_perceptions", [])],
+            [
+                _coerce(Perception, p) for p in data.get("recent_perceptions", [])
+                if p.get("kind") not in LEGACY_PERCEPTION_KINDS
+            ],
             maxlen=20
         )
         # A record saved before OutputRecord.origin_tier existed has no

@@ -381,8 +381,6 @@ async def delta_other_internal_kinds(rig: Rig) -> str:
     rig.state.safe_mode = True
     rig.state.safe_mode_reason = "3 consecutive tool failures"
     return render_turn_delta(rig.state, seen, "internal", [
-        Perception(kind="MonitorFired", t=rig.now, data={"monitor_id": "mon-1", "line": SENTINEL}),
-        Perception(kind="MonitorEnded", t=rig.now, data={"monitor_id": "mon-1", "exit_status": 0}),
         Perception(kind="ScheduledMoment", t=rig.now, data={"intent": SENTINEL}),
         Perception(kind="Interrupted", t=rig.now, data={"by": "user"}),
         Perception(kind="SafeModeEntered", t=rig.now,
@@ -457,15 +455,14 @@ async def tool_result_bad_arguments(rig: Rig) -> str:
 
 class _StubRunner:
     def spawn(self, **kwargs) -> str:
-        return "mon-1"
+        return "job-1"
 
 
 async def tool_result_dispatched(rig: Rig) -> str:
-    rig.ctx.shell_runner = rig.ctx.workflow_runner = rig.ctx.monitor_runner = _StubRunner()
+    rig.ctx.shell_runner = rig.ctx.workflow_runner = _StubRunner()
     return "\n".join([
         await _run_tool(rig, "Shell", {"command": "echo hi"}),
         await _run_tool(rig, "SpawnWorkflow", {"tasks": [{"task": "look it up"}]}),
-        await _run_tool(rig, "SpawnMonitor", {"command": "tail -F log"}),
     ])
 
 
@@ -598,8 +595,6 @@ async def tool_result_learn_name(rig: Rig) -> str:
 _TOOL_ACTIONS = [
     ("Shell", {"command": "echo hi"}),
     ("SpawnWorkflow", {"tasks": [{"task": "x"}]}),
-    ("SpawnMonitor", {"command": "tail -F log"}),
-    ("RemoveMonitor", {"monitor_id": "mon-1"}),
     ("PursueGoal", {"desc": SENTINEL}),
     ("AdvanceGoal", {"id": "g1", "progress": SENTINEL}),
     ("CloseLoop", {"id": "g1", "outcome": SENTINEL}),
@@ -613,8 +608,6 @@ _TOOL_ACTIONS = [
 _EVENT_ACTIONS = [
     ("ToolResultArrived", {"tool": "Shell", "task_id": "sh-1", "status": "ok",
                            "summary": SENTINEL}),
-    ("MonitorFired", {"monitor_id": "mon-1", "line": SENTINEL}),
-    ("MonitorEnded", {"monitor_id": "mon-1", "exit_status": 0}),
     ("BridgeDown", {"service": "discord-bridge", "rc": 1}),
     ("McpDown", {"service": "mcp-server", "rc": 1}),
     ("PulseMoment", {"detail": SENTINEL}),

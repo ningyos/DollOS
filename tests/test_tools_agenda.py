@@ -41,7 +41,6 @@ def _make_ctx(tmp_path: Path, state: MindState | None = None) -> MindCtx:
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=None,
         workflow_runner=None,
-        monitor_runner=None,
     )
 
 
@@ -176,7 +175,7 @@ async def test_advancegoal_unknown_id_no_op(fake_ctx):
 
 def test_agenda_tools_excludes_dangerous_and_genesis():
     for excluded in (
-        "Shell", "SpawnWorkflow", "SpawnMonitor", "WriteSchedule",
+        "Shell", "SpawnWorkflow", "WriteSchedule",
         "SelfRevision", "NoteMemory", "PursueGoal", "PinSelf",
     ):
         assert excluded not in AGENDA_TOOLS

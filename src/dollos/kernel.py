@@ -49,7 +49,6 @@ from dollos.mind.pulse_observer import PulseObserver
 from dollos.mind.reflection_observer import ReflectionObserver
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.mind.trace import TraceWriter
-from dollos.monitor_runner import MonitorRunner
 from dollos.perception.cognition import CognitionWorker
 from dollos.perception.system_pulse import SystemPulse
 from dollos.prompts import PromptRenderer
@@ -397,10 +396,6 @@ class DollOS:
             perception_queue=self._perception_queue,
             tool_output_store=self._tool_output_store,
         )
-        self.monitor_runner = MonitorRunner(
-            cwd=settings.data.root,
-            perception_queue=self._perception_queue,
-        )
 
         # ServiceSupervisor (svc-internalization Task C): OS-level watchdog
         # for long-lived supervised services. v1 registers a single service
@@ -438,7 +433,6 @@ class DollOS:
             transcripts_root=settings.data.root / "memory" / "transcripts",
             perception_queue=self._perception_queue,
             shell_runner=self.shell_runner,
-            monitor_runner=self.monitor_runner,
             tool_output_store=self._tool_output_store,
             cascade_logger=self._cascade_logger,
             think_budget_tokens=settings.llm.think_budget_tokens,
@@ -454,7 +448,6 @@ class DollOS:
             tool_output_store=self._tool_output_store,
             shell_runner=self.shell_runner,
             workflow_runner=self.workflow_runner,
-            monitor_runner=self.monitor_runner,
             self_profile_max_chars=settings.self_profile.max_chars,
             evolution_enabled=settings.evolution.enabled,
             current_self_min_chars=settings.evolution.current_self_min_chars,
@@ -1297,7 +1290,6 @@ class DollOS:
                 # don't arrive after loop shuts down
                 await self.workflow_runner.stop()
                 await self.shell_runner.stop()
-                await self.monitor_runner.stop()
                 # Early stop (idempotent): while the daemon is still alive,
                 # let the bridge tear down its gateway connection cleanly
                 # instead of spending the graceful-shutdown window reconnecting

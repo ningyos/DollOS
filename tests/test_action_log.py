@@ -51,12 +51,6 @@ def test_tool_phrase_whitelist_and_summaries():
         "SpawnWorkflow", {"tasks": [{}]}, ""
     ) == "dispatched a workflow (1 task)"
     assert action_phrase_for_tool(
-        "SpawnMonitor", {"command": "tail -F log"}, ""
-    ) == "set up a monitor: tail -F log"
-    assert action_phrase_for_tool(
-        "RemoveMonitor", {"monitor_id": "mon-1"}, ""
-    ) == "removed monitor mon-1"
-    assert action_phrase_for_tool(
         "SelfRevision", {"decision": "adopt"}, ""
     ) == "adopted a revision of who I am now"
     assert action_phrase_for_tool("SelfRevision", {"decision": "reject"}, "") is None
@@ -88,12 +82,6 @@ def test_perception_phrase_world_events():
         "ToolResultArrived", {"tool": "Shell", "task_id": "sh-1", "status": "ok", "summary": "done"}
     ) == 'Shell "sh-1" finished [ok]: done'
     assert action_phrase_for_perception(
-        "MonitorFired", {"monitor_id": "mon-2", "line": "OOM killed"}
-    ) == "Monitor mon-2 fired: OOM killed"
-    assert action_phrase_for_perception(
-        "MonitorEnded", {"monitor_id": "mon-2", "exit_status": 0}
-    ) == "Monitor mon-2 ended (exit 0)"
-    assert action_phrase_for_perception(
         "BridgeDown", {"service": "discord-bridge", "rc": 1}
     ) == "discord-bridge went down (rc=1)"
     assert action_phrase_for_perception(
@@ -116,7 +104,6 @@ def test_phrases_carry_no_daemon_chinese():
     Task 8); only her content (here ASCII) passes through."""
     tools = [
         ("Shell", {"command": "ls"}), ("SpawnWorkflow", {"tasks": [{}]}),
-        ("SpawnMonitor", {"command": "x"}), ("RemoveMonitor", {"monitor_id": "m"}),
         ("PursueGoal", {"desc": "d"}), ("AdvanceGoal", {"id": "g", "progress": "p"}),
         ("CloseLoop", {"id": "g", "outcome": "o"}),
         ("WriteSchedule", {"add": [{}], "remove": ["09:00:00"]}),
@@ -126,8 +113,6 @@ def test_phrases_carry_no_daemon_chinese():
     ]
     events = [
         ("ToolResultArrived", {"tool": "Shell", "task_id": "s", "status": "ok", "summary": "x"}),
-        ("MonitorFired", {"monitor_id": "m", "line": "x"}),
-        ("MonitorEnded", {"monitor_id": "m", "exit_status": 0}),
         ("BridgeDown", {"service": "b", "rc": 1}), ("McpDown", {"service": "m", "rc": 1}),
         ("PulseMoment", {"detail": "x"}),
     ]

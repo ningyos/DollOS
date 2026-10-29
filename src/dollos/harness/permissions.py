@@ -106,8 +106,6 @@ TOOL_MATRIX: dict[str, frozenset[Principal]] = {
     "Shell": _TRUSTED,
     "InvokeSkill": _TRUSTED,
     "SpawnWorkflow": _TRUSTED,
-    "SpawnMonitor": _TRUSTED,
-    "RemoveMonitor": _TRUSTED,
     "ReadToolOutput": _TRUSTED,
     "Scratchpad": _TRUSTED,  # keepers only (KEEPER_TOOLS)
     "SetFocus": _TRUSTED,

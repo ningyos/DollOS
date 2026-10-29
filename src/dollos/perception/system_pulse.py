@@ -347,7 +347,7 @@ async def _none() -> None:
 class SystemPulse:
     """Background poller + snapshot provider.
 
-    Lifecycle mirrors MonitorRunner: ``start()`` kicks off the polling
+    Lifecycle: ``start()`` kicks off the polling
     task; ``stop()`` cancels it; ``snapshot()`` returns either a freshly
     rendered block (when the body has shifted bucket since the last
     emit) or None.

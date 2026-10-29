@@ -215,7 +215,6 @@ def test_scaffolding_explains_the_append_only_conversation():
     assert "each turn adds one new message" in out
     assert "once per page" in out
     assert "[Pending events]" not in out
-    assert "[Active monitors]" not in out
 
 
 def test_scaffolding_documents_tool_output_paging():

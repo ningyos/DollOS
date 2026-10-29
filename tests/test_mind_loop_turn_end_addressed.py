@@ -108,8 +108,8 @@ async def test_internal_turn_emits_global_turn_end_none(tmp_path):
 # tested discord external path. We still assert it here for the mcp payload so
 # the spec-required mcp-level invariant is not merely implied. The downstream
 # EXTERNAL_TOOLS narrowing (mind_loop.py:836-843: ChannelMessage ∈
-# _EXTERNAL_KINDS + external_public ⇒ registry hard-narrowed, Shell/Workflow/
-# Monitor structurally unreachable) is shared, tier-driven code already
+# _EXTERNAL_KINDS + external_public ⇒ registry hard-narrowed, Shell/Workflow
+# structurally unreachable) is shared, tier-driven code already
 # covered by the existing external-path tests — a peer connecting can never
 # widen the toolset because the narrowing keys on this tier, not on kind.
 def test_mcp_channel_message_is_external_public_tier():

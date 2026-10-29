@@ -184,15 +184,15 @@ async def test_kernel_creates_shell_runner(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_kernel_creates_monitor_runner(tmp_path: Path):
-    """DollOS exposes a MonitorRunner wired to the PerceptionQueue."""
-    from dollos.monitor_runner import MonitorRunner
+async def test_kernel_has_no_monitor_runner(tmp_path: Path):
+    """Plan 2026-10-29 decision 3: the daemon builds without a monitor runner."""
+    import importlib.util
 
     settings = _make_settings(tmp_path)
     dollos = DollOS(settings)
-    assert isinstance(dollos.monitor_runner, MonitorRunner)
-    assert dollos.monitor_runner._perception_queue is dollos._perception_queue
-    assert dollos._mind_ctx.monitor_runner is dollos.monitor_runner
+    assert not hasattr(dollos, "monitor_runner")
+    assert not hasattr(dollos._mind_ctx, "monitor_runner")
+    assert importlib.util.find_spec("dollos.monitor_runner") is None
 
 
 @pytest.mark.asyncio
@@ -567,7 +567,6 @@ async def test_kernel_shutdown_awaits_workflow_runner_stop(tmp_path, monkeypatch
 
     monkeypatch.setattr(dollos.workflow_runner, "stop", _spy_stop)
     monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
-    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
@@ -707,7 +706,6 @@ async def test_shutdown_consolidation_before_memsearch_close(tmp_path, monkeypat
 
     monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
-    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
@@ -827,7 +825,6 @@ async def test_shutdown_gathers_inflight_keeper(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
-    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())
@@ -954,7 +951,6 @@ async def test_shutdown_gathers_inflight_skeptic(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(dollos.workflow_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.shell_runner, "stop", lambda: _noop())
-    monkeypatch.setattr(dollos.monitor_runner, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "stop", lambda: _noop())
     monkeypatch.setattr(dollos.system_pulse, "start", lambda: None)
     monkeypatch.setattr(dollos.memsearch, "index", lambda: _noop())

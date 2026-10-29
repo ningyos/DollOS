@@ -620,100 +620,6 @@ class SpawnWorkflow(BaseModel):
         return result
 
 
-class SpawnMonitor(BaseModel):
-    """Spawn a background command watcher. Returns a monitor_id immediately.
-
-    The command runs as a long-lived subprocess. Each stdout line
-    (optionally regex-filtered) fires a MonitorTriggeredEvent that
-    arrives as a new turn's perception line `MonitorFired: <monitor_id>: <line>`.
-    When the command exits (naturally or via RemoveMonitor), a
-    MonitorExitedEvent fires.
-
-    Rate-limit: within `rate_limit_s` seconds, at most ONE matched line
-    fires an event; subsequent matches are counted as suppressed and
-    surface in the [Active monitors] block (and in the next firing
-    event's `suppressed_count`). Set `rate_limit_s=0` to disable.
-
-    Examples:
-        SpawnMonitor(command="nvidia-smi -l 5 --query-gpu=temperature.gpu "
-                             "--format=csv,noheader",
-                     match_regex=r"^[89][0-9]$", rate_limit_s=60)
-        SpawnMonitor(command="tail -F /var/log/syslog",
-                     match_regex=r"ERROR|CRITICAL", rate_limit_s=60)
-    """
-
-    command: str = Field(
-        description="Shell command (passed to bash -c). Run long; daemon kills on shutdown.",
-    )
-    match_regex: str | None = Field(
-        default=None,
-        description=(
-            "Optional Python regex. None = every line fires. Use to "
-            "pre-filter inside the runner (cheaper than firing events "
-            "and ignoring them)."
-        ),
-    )
-    rate_limit_s: int = Field(
-        60,
-        ge=0,
-        le=3600,
-        description=(
-            "Per-monitor seconds-between-fires window. 0 disables. "
-            "Default 60s (reasonable for noisy sources)."
-        ),
-    )
-
-    def _summary(self) -> str:
-        return f"monitor: {self.command[:68]}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        try:
-            monitor_id = ctx.monitor_runner.spawn(
-                command=self.command,
-                match_regex=self.match_regex,
-                rate_limit_s=self.rate_limit_s,
-                response_sink=None,
-            )
-        except re.error as e:
-            return f"[SpawnMonitor regex error: {e}]"
-        if not monitor_id:
-            return "[SpawnMonitor failed: runner is stopping]"
-        result = (
-            f"monitor {monitor_id} dispatched "
-            f"(command={self.command!r}, "
-            f"match={self.match_regex!r}, "
-            f"rate_limit_s={self.rate_limit_s}). "
-            f"Each trigger and the exit come back as new events."
-        )
-        _record(ctx, "SpawnMonitor", self._summary())
-        return result
-
-
-class RemoveMonitor(BaseModel):
-    """Kill an active monitor by id.
-
-    The process is killed (SIGKILL on its process group). The watcher
-    fires a MonitorExitedEvent with status='removed'. Active monitors
-    surface in the [Active monitors] block of every cascade iter.
-    """
-
-    monitor_id: str = Field(
-        description="Monitor id returned by SpawnMonitor (e.g. 'mon-3').",
-    )
-
-    def _summary(self) -> str:
-        return f"remove monitor: {self.monitor_id}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        ok = await ctx.monitor_runner.remove(self.monitor_id)
-        if ok:
-            result = f"monitor {self.monitor_id} kill requested."
-        else:
-            result = f"monitor {self.monitor_id} unknown (already gone or not found)."
-        _record(ctx, "RemoveMonitor", self._summary())
-        return result
-
-
 class Report(BaseModel):
     """Terminate this worker agent and report the structured outcome.
 
@@ -1626,7 +1532,7 @@ class LearnName(BaseModel):
 
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
-    InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,
+    InvokeSkill, Recall, SpawnWorkflow,
     ReadToolOutput,
     SetFocus, OpenLoop, CloseLoop,
     MoodTool,
@@ -1650,11 +1556,11 @@ MAIN_TOOLS: list[type[BaseModel]] = [
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
-    SpawnMonitor, RemoveMonitor, ReadToolOutput,
+    ReadToolOutput,
     SetFocus, OpenLoop, CloseLoop,
 ]
 
-# B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
+# B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory).
 # Only keepers have Scratchpad: Doll and workers lost it (plan 2026-10-29 decision 4).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 

@@ -95,3 +95,23 @@ def test_wal_truncate_is_atomic_via_tmpfile(tmp_path: Path):
     assert not (path.with_suffix(".tmp")).exists()
     pending = [s for s, _ in wal.iter_pending()]
     assert pending == [s2]
+
+
+def test_wal_skips_legacy_monitor_perceptions(tmp_path: Path):
+    """A WAL written before the monitor feature was removed (plan 2026-10-29
+    decision 3) may hold MonitorFired / MonitorEnded lines. Replay drops them
+    and keeps the rest."""
+    path = tmp_path / "wal" / "perceptions.jsonl"
+    path.parent.mkdir(parents=True)
+    lines = [
+        {"seq": 1, "kind": "MonitorFired", "t": 1.0, "data": {"monitor_id": "mon-1", "line": "x"}},
+        {"seq": 2, "kind": "UserSpoke", "t": 2.0, "data": {"text": "hi"}},
+        {"seq": 3, "kind": "MonitorEnded", "t": 3.0,
+         "data": {"monitor_id": "mon-1", "exit_status": 0}},
+    ]
+    path.write_text("".join(json.dumps(o) + "\n" for o in lines), encoding="utf-8")
+
+    wal = PerceptionWAL(path)
+    pending = list(wal.iter_pending())
+    assert [(s, p.kind) for s, p in pending] == [(2, "UserSpoke")]
+    assert wal.append(Perception(kind="UserSpoke", t=4.0, data={})) == 4

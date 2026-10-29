@@ -16,8 +16,7 @@ def _p(kind):
 
 def test_batch_external_true_for_tool_results():
     assert batch_external([_p("UserSpoke"), _p("ToolResultArrived")]) is True
-    assert batch_external([_p("MonitorFired")]) is True
-    assert batch_external([_p("MonitorEnded")]) is True
+    assert batch_external([_p("ToolResultArrived")]) is True
 
 
 def test_batch_external_false_for_internal_kinds():

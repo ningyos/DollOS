@@ -120,7 +120,7 @@ _REFLECTION_EXTRAS = (
 POLICIES: dict[TurnKind, TurnPolicy] = {
     # Every batch that is not one of the moments below: the owner talking
     # (local chat/voice, or a DM), a stranger, or an event (tool result,
-    # monitor, schedule, ...). The principal decides the tools.
+    # schedule, ...). The principal decides the tools.
     #
     # LearnName (Part A / A2, self-learned-aliases spec §3.3 — R1-hardened
     # SECURITY BOUNDARY): bound ONLY on live, owner-present turns — principal
@@ -157,7 +157,7 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # OVER reflection expansion (P1e S5): an external_public turn that is also
     # a ReflectionMoment never gets SelfRevision, NoteToolLesson, or any
     # registry tool outside the external_public row — a stranger must never
-    # reach Shell / SpawnWorkflow / SpawnMonitor / RemoveMonitor /
+    # reach Shell / SpawnWorkflow /
     # InvokeSkill / WriteSchedule / SelfRevision.
     "reflection": TurnPolicy(
         speaks=True, kind_tools="all", extra_tools=_REFLECTION_EXTRAS,
@@ -186,7 +186,7 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     ),
     # Self-directed agenda (spec 2026-07-07 §5.1, §5.2, R1-C1, SECURITY-
     # LOAD-BEARING): v1 tool scope for a pure AgendaMoment turn (no user
-    # present). Deliberately excludes: Shell/SpawnWorkflow/SpawnMonitor/
+    # present). Deliberately excludes: Shell/SpawnWorkflow/
     # WriteSchedule (no autonomous external action), SelfRevision/PinSelf (no
     # autonomous core-self edits), NoteMemory (R1-I1 — blocks a self-directed
     # turn from bootstrapping its own "grounding" for a future PursueGoal),
@@ -229,7 +229,7 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
         max_passes=MAX_CASCADE_PASSES, must_report=True, failure_rule="stuck_tool",
     ),
     # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/
-    # NoteMemory/SpawnMonitor/RemoveMonitor). The profile keeper (remember-
+    # NoteMemory). The profile keeper (remember-
     # corrections Task 4) is a keeper too, but run_agent offers and binds an
     # agent exactly the tools it is given (PROFILE_KEEPER_TOOLS), so it does
     # not widen this set.
@@ -256,11 +256,11 @@ def moment_of(perceptions: Iterable["Perception"]) -> TurnKind:
     moment, not merely "no UserSpoke" (self-directed agenda spec 2026-07-07
     §5.2, R1-C1, hardened by the whole-branch review's Finding 1).
     ``drain_grouped`` (perception_queue.py) batches ALL origin-less internal
-    perceptions into ONE bucket — UserSpoke, MonitorFired,
+    perceptions into ONE bucket — UserSpoke,
     ToolResultArrived, ScheduledMoment, Awoke, BridgeDown, McpDown,
     SafeModeEntered, etc. If ANY other perception rides along with an
     AgendaMoment, this is NOT a pure-agenda turn, full stop: a "no
-    UserSpoke" check alone would still whitewash a co-batched MonitorFired/
+    UserSpoke" check alone would still whitewash a co-batched
     ToolResultArrived/ScheduledMoment into the agenda tools and silently
     swallow its speech (an operational regression, not a security widening
     — the restriction only ever narrows availability). Getting this wrong

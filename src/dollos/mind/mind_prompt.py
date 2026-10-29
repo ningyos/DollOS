@@ -364,7 +364,7 @@ def _public_safe_perceptions(percs) -> list:
     stranger ChannelMessage entries for the ``[Recent perceptions]`` render.
 
     Everything else — owner UserSpoke, owner ChannelMessage (DM or public),
-    and internal-event kinds (ToolResultArrived / MonitorFired / MonitorEnded
+    and internal-event kinds (ToolResultArrived
     / ReflectionMoment / Awoke / SafeModeEntered / etc.) — is excluded. This
     is deliberately an ALLOWLIST (not a denylist of "owner" kinds) so a
     future perception kind that carries sensitive content is excluded by
@@ -552,10 +552,6 @@ def _percep_body(p) -> str:
                 f"{d.get('details_line_count', '?')} lines)"
             )
         return body
-    if p.kind == "MonitorFired":
-        return f"{d.get('monitor_id', '?')}: {d.get('line', '')[:120]}"
-    if p.kind == "MonitorEnded":
-        return f"{d.get('monitor_id', '?')} (exit {d.get('exit_status', '?')})"
     if p.kind == "ScheduledMoment":
         return d.get("intent", "")[:200]
     if p.kind == "Awoke":

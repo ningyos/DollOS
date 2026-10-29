@@ -60,7 +60,6 @@ def _make_mind_ctx(
     state=None,
     shell_runner=None,
     workflow_runner=None,
-    monitor_runner=None,
     tool_output_store=None,
 ):
     """Factory for MindCtx — for use in tool tests and future MindLoop tests."""
@@ -84,16 +83,6 @@ def _make_mind_ctx(
         def spawn(self, *, workflow_id, tasks, synthesis=None, mode="map_reduce", timeout_s=600, response_sink=None):
             self.calls.append(dict(workflow_id=workflow_id, tasks=tasks, synthesis=synthesis, mode=mode, timeout_s=timeout_s))
 
-    class _FakeMonitorRunner:
-        def __init__(self):
-            self.calls = []
-            self._monitor_id = "mon-1"
-        def spawn(self, **kwargs):
-            self.calls.append(kwargs)
-            return self._monitor_id
-        async def remove(self, monitor_id):
-            return True
-
     return MindCtx(
         mind_state=state or MindState(),
         memsearch=memsearch or _FakeMemSearch(),
@@ -103,7 +92,6 @@ def _make_mind_ctx(
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=shell_runner or _FakeShellRunner(),
         workflow_runner=workflow_runner or _FakeWorkflowRunner(),
-        monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
 
 

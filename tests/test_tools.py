@@ -52,20 +52,6 @@ class _FakeWorkflowRunner:
         self.calls.append(dict(workflow_id=workflow_id, tasks=tasks, synthesis=synthesis, mode=mode, timeout_s=timeout_s))
 
 
-class _FakeMonitorRunner:
-    def __init__(self, monitor_id="mon-1"):
-        self.calls: list[dict] = []
-        self._monitor_id = monitor_id
-        self._remove_result = True
-
-    def spawn(self, **kwargs):
-        self.calls.append(kwargs)
-        return self._monitor_id
-
-    async def remove(self, monitor_id: str) -> bool:
-        return self._remove_result
-
-
 def _fake_sink_resolver(sink=None):
     """Returns a SinkResolver pre-registered with the given sink (or a fresh queue)."""
     r = SinkResolver()
@@ -81,7 +67,6 @@ def _make_ctx(
     sink: asyncio.Queue | None = None,
     shell_runner=None,
     workflow_runner=None,
-    monitor_runner=None,
 ) -> tuple[MindCtx, _FakeMemSearch, asyncio.Queue]:
     if sink is None:
         sink = asyncio.Queue()
@@ -96,7 +81,6 @@ def _make_ctx(
         tool_output_store=tool_output_store or ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=shell_runner or _FakeShellRunner(),
         workflow_runner=workflow_runner or _FakeWorkflowRunner(),
-        monitor_runner=monitor_runner or _FakeMonitorRunner(),
     )
     return ctx, ms, sink
 
@@ -212,7 +196,6 @@ def _shell_ctx(tmp_path: Path, *, worker: bool, cwd: Path | None = None):
         tool_output_store=store,
         shell_runner=runner,
         workflow_runner=None if worker else _FakeWorkflowRunner(),
-        monitor_runner=_FakeMonitorRunner(),
     )
     return ctx, queue
 
@@ -428,7 +411,6 @@ async def test_invoke_skill_run_returns_body_content(tmp_path):
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=_FakeShellRunner(),
         workflow_runner=_FakeWorkflowRunner(),
-        monitor_runner=_FakeMonitorRunner(),
     )
 
     out = await InvokeSkill(name="my_skill").run(ctx)
@@ -512,7 +494,6 @@ def _ctx_with_search(tmp_path, hits):
         tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
         shell_runner=_FakeShellRunner(),
         workflow_runner=_FakeWorkflowRunner(),
-        monitor_runner=_FakeMonitorRunner(),
     )
     return ctx
 
@@ -998,50 +979,6 @@ def test_write_schedule_validates_time_format():
         ScheduleEntryArg(time="25:00:00", intent="x")
 
 
-@pytest.mark.asyncio
-async def test_spawn_monitor_delegates_to_runner(tmp_path):
-    from dollos.tools import SpawnMonitor
-
-    runner = _FakeMonitorRunner(monitor_id="mon-1")
-    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
-    out = await SpawnMonitor(
-        command="tail -F /var/log/x",
-        match_regex=r"ERROR",
-        rate_limit_s=60,
-    ).run(ctx)
-    assert len(runner.calls) == 1
-    kw = runner.calls[0]
-    assert kw["command"] == "tail -F /var/log/x"
-    assert kw["match_regex"] == r"ERROR"
-    assert kw["rate_limit_s"] == 60
-    assert kw["response_sink"] is None  # Task 8 wires perception_queue here
-    assert "mon-1" in out
-
-
-@pytest.mark.asyncio
-async def test_remove_monitor_delegates(tmp_path):
-    from dollos.tools import RemoveMonitor
-
-    runner = _FakeMonitorRunner()
-    runner._remove_result = True
-    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
-    out = await RemoveMonitor(monitor_id="mon-3").run(ctx)
-    assert "mon-3" in out
-    assert "removed" in out.lower() or "kill" in out.lower()
-
-
-@pytest.mark.asyncio
-async def test_remove_monitor_unknown_id(tmp_path):
-    from dollos.tools import RemoveMonitor
-
-    runner = _FakeMonitorRunner()
-    runner._remove_result = False
-    ctx, _ms, _sink = _make_ctx(tmp_path, monitor_runner=runner)
-    out = await RemoveMonitor(monitor_id="mon-999").run(ctx)
-    assert "mon-999" in out
-    assert "unknown" in out.lower() or "not found" in out.lower()
-
-
 # ---------- ReadToolOutput ----------
 
 
@@ -1232,3 +1169,13 @@ def test_doll_and_workers_have_no_grep_tool_output_or_scratchpad():
         assert "Scratchpad" not in names
         assert "ReadToolOutput" in names
     assert "Scratchpad" in {t.__name__ for t in KEEPER_TOOLS}
+
+
+def test_monitor_tools_removed():
+    """Plan 2026-10-29 decision 3: the monitor feature is gone."""
+    import dollos.tools as tools_mod
+
+    names = {t.__name__ for t in tools_mod.MAIN_TOOLS} | {t.__name__ for t in tools_mod.SUB_TOOLS}
+    assert not names & {"SpawnMonitor", "RemoveMonitor"}
+    assert not hasattr(tools_mod, "SpawnMonitor")
+    assert not hasattr(tools_mod, "RemoveMonitor")

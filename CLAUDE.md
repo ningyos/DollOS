@@ -19,7 +19,7 @@ DollOS is a personal AI ecosystem. **Doll lives in the DollOS daemon** (her brai
 - **Self-First Design** — killer feature: Doll has a self (mood / preferences / habits / relations). Self emerges from architecture (Memory's self-history + character description), not from prompt commands. See main spec §8.
 
 **Two-layer intelligence:**
-1. **Doll** — user's chosen large model, deliberative. Handles all events (conversation, schedule, monitors, workflow results).
+1. **Doll** — user's chosen large model, deliberative. Handles all events (conversation, schedule, workflow results).
 2. **Workflow** (ephemeral — replaces the old "Subagent" name, 2026-06-27) and **Subagent** (persistent — replaces the old "Drone" name; decision recorded in `agent-service` branch `docs/superpowers/specs/2026-06-25-A2-agent-execution-model-design.md`, "Drop the name Drone entirely") — task-specific agents Doll dispatches.
 
 ## Repo Map
@@ -54,11 +54,10 @@ DollOS/
 
 ## Key Architecture Decisions
 
-- **External actions are fire-and-forget** (except short Shells): Doll's Shell with `timeout_s` ≤ 30 returns its result in the same iteration (a workflow worker's Shell always does; plan `2026-10-29-tool-consolidation.md` decision 1). A longer Shell, SpawnWorkflow, and SpawnMonitor spawn background workers and return immediately; results re-enter the event queue as `{Tool}ResultEvent` (or `MonitorTriggeredEvent` / `MonitorExitedEvent`). There is no Doll-callable wait tool. "Wait" is implicit — Doll's cascade either keeps going or ends; results come back as new perceptions. Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
-- **Monitor vs Shell vs Workflow vs Subagent**: All four are external actions.
+- **External actions are fire-and-forget** (except short Shells): Doll's Shell with `timeout_s` ≤ 30 returns its result in the same iteration (a workflow worker's Shell always does; plan `2026-10-29-tool-consolidation.md` decision 1). A longer Shell and SpawnWorkflow spawn background workers and return immediately; results re-enter the event queue as a `ToolResultArrived` perception. There is no Doll-callable wait tool. "Wait" is implicit — Doll's cascade either keeps going or ends; results come back as new perceptions. Internal capabilities (Say / NoteMemory / Recall / Mood) are sync inline — Doll cannot await her own mouth.
+- **Shell vs Workflow vs Subagent**: All three are external actions. (The Monitor watcher — SpawnMonitor / RemoveMonitor — was removed in plan `2026-10-29-tool-consolidation.md` decision 3: never used in two acceptance runs; it is in git history.)
   - **Shell** — one-shot command, single result event.
   - **Workflow** (2026-06-27, replaces the old ephemeral "Subagent") — fire-and-forget dispatch of N parallel worker agents (each an isolated sub-LLM cascade) with an optional adversarial verify pass and an optional synthesis agent; exactly one `ToolResultArrived(tool="Workflow")` result event returns to Doll regardless of N. `mode="map_reduce"` (parallel fan-out) or `mode="verify"` (+ skeptic pass per worker). N=1 with no synthesis degrades to the old single-subagent behavior. See `docs/superpowers/plans/2026-06-27-doll-workflow.md`.
-  - **Monitor** — long-running command, per-line trigger events (regex + rate-limit) + exit event. Stateless watcher; no LLM in the loop. Active state surfaces via `[Active monitors]` perception block.
   - **Subagent** (future, replaces the old "Drone") — persistent agent with its own LLM cascade, scheduled trigger, can call tools and Report back. Authoritative design is `agent-service` branch A2 (containerized k8s Job/CronJob); the k3s side of that is deferred until this track is picked up.
 - **Computer-as-home**: Doll lives in DollOS on the user's computer. Memory SoT, personality, identity vault, decisions all on-device.
 - **Phone as body — cancelled 2026-10-27** (macOS-only target). The old design is `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md` (DRAFT).
@@ -109,7 +108,7 @@ DollOS/
 | Roadmap step 20 — Cascade decision log + structlog | Merged |
 | Roadmap step 21 — Schedule + pending awareness (Phase 1 of 4) | Merged |
 | Roadmap step 24 — External actions = fire-and-forget (Shell ≈ Subagent) | Merged |
-| Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged |
+| Roadmap step 25 — Monitor watcher (SpawnMonitor + rate-limit + [Active monitors]) | Merged; removed 2026-10-29 (tool-consolidation decision 3) |
 | Roadmap step 26 — Voice engines + pack config (Voice Phase A) | Merged |
 | Roadmap step 27 — Voice pipeline Phase B (WebRTC + VoiceSession + IPC) | Merged |
 | Roadmap step 28 — Voice pipeline Phase C (local-audio-bridge + E2E) | Merged |
