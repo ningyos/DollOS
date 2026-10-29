@@ -213,15 +213,15 @@ POLICIES: dict[TurnKind, TurnPolicy] = {
     # Read-only safe mode (spec §8.3): the only tools available while
     # safe_mode is set: read-only / reversible reads plus naked-text speech
     # (always available, not a tool). Everything that writes memory/diary/
-    # schedule/scratchpad or spawns an external action is excluded so a
+    # schedule or spawns an external action is excluded so a
     # failure storm cannot do irreversible damage while the loop is wedged.
     # Safe mode has TOP priority (wins over every other kind, on every tier).
-    # ReadToolOutput / GrepToolOutput are not in external_public's row, so a
+    # ReadToolOutput is not in external_public's row, so a
     # stranger's turn in safe mode binds Recall only.
     # Only the tools: speech and blocks follow the batch's kind (module doc).
     "safe_mode": TurnPolicy(
         speaks=True,
-        kind_tools=frozenset({"Recall", "ReadToolOutput", "GrepToolOutput"}),
+        kind_tools=frozenset({"Recall", "ReadToolOutput"}),
     ),
     # Workflow worker / skeptic / synthesis agent: no sink, ends with Report.
     "worker": TurnPolicy(

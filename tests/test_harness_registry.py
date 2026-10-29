@@ -69,7 +69,7 @@ def test_effectful_defaults_true_and_read_only_tools_say_false():
     every = {**_MAIN, **EXTRA_TOOL_CLASSES, **{c.__name__: c for c in SUB_TOOLS}}
     reg = ToolRegistry(every)
     read_only = {n for n in every if not reg.effectful(n)}
-    assert read_only == {"Recall", "ReadToolOutput", "GrepToolOutput", "InvokeSkill"}
+    assert read_only == {"Recall", "ReadToolOutput", "InvokeSkill"}
 
 
 def test_effectful_is_not_in_the_tool_json():

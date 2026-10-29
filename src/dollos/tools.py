@@ -394,8 +394,7 @@ class Shell(BaseModel):
         if n > SHELL_PREVIEW_LINES:
             lines.append(
                 f"output_id {output_id}, line count {n}; the first "
-                f"{SHELL_PREVIEW_LINES} below, ReadToolOutput / GrepToolOutput "
-                f"for the rest:"
+                f"{SHELL_PREVIEW_LINES} below, ReadToolOutput for the rest:"
             )
         else:
             lines.append(f"output_id {output_id}, line count {n}:")
@@ -879,7 +878,7 @@ class WriteSchedule(BaseModel):
 
 
 def _reads_untrusted_output(arguments: dict) -> bool:
-    """Whether a ReadToolOutput / GrepToolOutput call names an output that an
+    """Whether a ReadToolOutput call names an output that an
     untrusted MCP server returned (``tool_outputs.UNTRUSTED_OUTPUT_PREFIX``)."""
     return str(arguments.get("id", "")).startswith(UNTRUSTED_OUTPUT_PREFIX)
 
@@ -929,43 +928,6 @@ class ReadToolOutput(BaseModel):
         body = "\n".join(slice_.lines) if slice_.lines else "(empty slice)"
         result = f"{header}\n{body}"
         _record(ctx, "ReadToolOutput", self._summary())
-        return result
-
-
-class GrepToolOutput(BaseModel):
-    """Grep a stored tool output for a regex pattern. Returns matching lines
-    with their line index, capped by max_matches.
-    """
-
-    # Read-only (ToolRegistry, mind-loop spec §11).
-    effectful: ClassVar[bool] = False
-
-    id: str = Field(..., description="output id from a tool result perception")
-    pattern: str = Field(..., description="regex pattern (Python re); case-sensitive")
-    max_matches: int = Field(20, ge=1, le=200, description="max matching lines to return")
-
-    @classmethod
-    def taints(cls, arguments: dict) -> bool:
-        """As ``ReadToolOutput.taints``: grepping an ``ext-`` output reads it."""
-        return _reads_untrusted_output(arguments)
-
-    def _summary(self) -> str:
-        return f"grep tool output {self.id} pattern={self.pattern[:40]!r}"
-
-    async def run(self, ctx: "MindCtx") -> str:
-        try:
-            matches = ctx.tool_output_store.grep(
-                self.id, pattern=self.pattern, max_matches=self.max_matches
-            )
-        except re.error as exc:
-            return f"regex error: {exc} (pattern={self.pattern!r})"
-        if not matches:
-            result = f"no matches for {self.pattern!r}"
-        else:
-            header = f"{len(matches)} match(es) for {self.pattern!r}:"
-            body = "\n".join(f"line {m.line_index}: {m.line}" for m in matches)
-            result = f"{header}\n{body}"
-        _record(ctx, "GrepToolOutput", self._summary())
         return result
 
 
@@ -1665,8 +1627,7 @@ class LearnName(BaseModel):
 MAIN_TOOLS: list[type[BaseModel]] = [
     NoteMemory, WriteDiary, WriteSchedule, Shell,
     InvokeSkill, Recall, SpawnWorkflow, SpawnMonitor, RemoveMonitor,
-    ReadToolOutput, GrepToolOutput,
-    Scratchpad,
+    ReadToolOutput,
     SetFocus, OpenLoop, CloseLoop,
     MoodTool,
     PursueGoal, AdvanceGoal,
@@ -1689,12 +1650,12 @@ MAIN_TOOLS: list[type[BaseModel]] = [
 
 SUB_TOOLS: list[type[BaseModel]] = [
     Shell, NoteMemory, Recall, InvokeSkill, Report,
-    SpawnMonitor, RemoveMonitor, ReadToolOutput, GrepToolOutput,
-    Scratchpad,
+    SpawnMonitor, RemoveMonitor, ReadToolOutput,
     SetFocus, OpenLoop, CloseLoop,
 ]
 
 # B2 memory-keeper allowlist: only Report + Scratchpad (no Shell/NoteMemory/SpawnMonitor/RemoveMonitor).
+# Only keepers have Scratchpad: Doll and workers lost it (plan 2026-10-29 decision 4).
 KEEPER_TOOLS: list[type[BaseModel]] = [Report, Scratchpad]
 
 # The daily profile keeper's tools (remember-corrections plan Task 4,

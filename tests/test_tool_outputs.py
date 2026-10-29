@@ -39,14 +39,6 @@ def test_negative_offset_seeks_from_end(tmp_path: Path) -> None:
     assert s.lines == ["line 17", "line 18", "line 19"]
 
 
-def test_grep_matches(tmp_path: Path) -> None:
-    store = ToolOutputStore(tmp_path)
-    output_id = store.write("error: foo\nok\nerror: bar\nok\nerror: baz\n")
-    matches = store.grep(output_id, pattern=r"^error:", max_matches=2)
-    assert [m.line_index for m in matches] == [0, 2]
-    assert matches[0].line == "error: foo"
-
-
 def test_invalid_id_raises(tmp_path: Path) -> None:
     store = ToolOutputStore(tmp_path)
     with pytest.raises(ValueError):
@@ -62,7 +54,6 @@ def test_untrusted_output_gets_an_ext_id(tmp_path: Path) -> None:
     output_id = store.write("error: foo\nok\n", untrusted=True)
     assert output_id.startswith(UNTRUSTED_OUTPUT_PREFIX)
     assert store.read(output_id, offset=0, limit=10).lines == ["error: foo", "ok"]
-    assert [m.line for m in store.grep(output_id, pattern="error")] == ["error: foo"]
     assert store.write("x").startswith("out-")
     with pytest.raises(ValueError):
         store.read("ext-../x", offset=0, limit=10)

@@ -7,7 +7,7 @@
       },
       {
         "role": "user",
-        "content": "[New conversation page — 07:33 Mon 10-26. Earlier context is not shown; use Recall for details.]\n\n[Mind state]\nmood: calm\nfocus: idle\n\n[Your agenda] (things you're pursuing because you want to)\n(none)\n\n[Open loops] (commitments you have made)\n(none)\n\n[Scratchpad]\n(empty)\n\n[Recent perceptions] (newest last)\n(none)\n\n[Recent outputs] (what you did recently — avoid repeating the same content)\n(none)"
+        "content": "[New conversation page — 07:33 Mon 10-26. Earlier context is not shown; use Recall for details.]\n\n[Mind state]\nmood: calm\nfocus: idle\n\n[Your agenda] (things you're pursuing because you want to)\n(none)\n\n[Open loops] (commitments you have made)\n(none)\n\n[Recent perceptions] (newest last)\n(none)\n\n[Recent outputs] (what you did recently — avoid repeating the same content)\n(none)"
       },
       {
         "role": "user",
@@ -58,37 +58,6 @@
             "required": [
               "id",
               "outcome"
-            ],
-            "type": "object"
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "GrepToolOutput",
-          "description": "Grep a stored tool output for a regex pattern. Returns matching lines\nwith their line index, capped by max_matches.",
-          "parameters": {
-            "properties": {
-              "id": {
-                "description": "output id from a tool result perception",
-                "type": "string"
-              },
-              "pattern": {
-                "description": "regex pattern (Python re); case-sensitive",
-                "type": "string"
-              },
-              "max_matches": {
-                "default": 20,
-                "description": "max matching lines to return",
-                "maximum": 200,
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "id",
-              "pattern"
             ],
             "type": "object"
           }
@@ -365,35 +334,6 @@
             },
             "required": [
               "monitor_id"
-            ],
-            "type": "object"
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "Scratchpad",
-          "description": "Manage your working-memory scratchpad (hard cap 2000 chars).\n\nop=\"set\": overwrite with `content`.\nop=\"append\": add `content` as a new line (newline auto-prepended if non-empty).\nop=\"clear\": wipe to empty (`content` is ignored).\n\nUse \"set\" to start fresh, \"append\" to jot a running note. To replace a\nspecific substring, just \"set\" the full new contents.",
-          "parameters": {
-            "properties": {
-              "op": {
-                "description": "\"set\" overwrite | \"append\" add a line | \"clear\" wipe",
-                "enum": [
-                  "set",
-                  "append",
-                  "clear"
-                ],
-                "type": "string"
-              },
-              "content": {
-                "description": "New content for set/append (≤2000 chars). Ignored for clear.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "op",
-              "content"
             ],
             "type": "object"
           }
@@ -613,7 +553,7 @@
       },
       {
         "role": "user",
-        "content": "[New conversation page — 07:33 Mon 10-26. Earlier context is not shown; use Recall for details.]\n\n[Mind state]\nmood: calm\nfocus: idle\n\n[Your agenda] (things you're pursuing because you want to)\n(none)\n\n[Open loops] (commitments you have made)\n(none)\n\n[Scratchpad]\n(empty)\n\n[Recent perceptions] (newest last)\n(none)\n\n[Recent outputs] (what you did recently — avoid repeating the same content)\n(none)"
+        "content": "[New conversation page — 07:33 Mon 10-26. Earlier context is not shown; use Recall for details.]\n\n[Mind state]\nmood: calm\nfocus: idle\n\n[Your agenda] (things you're pursuing because you want to)\n(none)\n\n[Open loops] (commitments you have made)\n(none)\n\n[Recent perceptions] (newest last)\n(none)\n\n[Recent outputs] (what you did recently — avoid repeating the same content)\n(none)"
       },
       {
         "role": "user",
@@ -684,37 +624,6 @@
             "required": [
               "id",
               "outcome"
-            ],
-            "type": "object"
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "GrepToolOutput",
-          "description": "Grep a stored tool output for a regex pattern. Returns matching lines\nwith their line index, capped by max_matches.",
-          "parameters": {
-            "properties": {
-              "id": {
-                "description": "output id from a tool result perception",
-                "type": "string"
-              },
-              "pattern": {
-                "description": "regex pattern (Python re); case-sensitive",
-                "type": "string"
-              },
-              "max_matches": {
-                "default": 20,
-                "description": "max matching lines to return",
-                "maximum": 200,
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "id",
-              "pattern"
             ],
             "type": "object"
           }
@@ -991,35 +900,6 @@
             },
             "required": [
               "monitor_id"
-            ],
-            "type": "object"
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "Scratchpad",
-          "description": "Manage your working-memory scratchpad (hard cap 2000 chars).\n\nop=\"set\": overwrite with `content`.\nop=\"append\": add `content` as a new line (newline auto-prepended if non-empty).\nop=\"clear\": wipe to empty (`content` is ignored).\n\nUse \"set\" to start fresh, \"append\" to jot a running note. To replace a\nspecific substring, just \"set\" the full new contents.",
-          "parameters": {
-            "properties": {
-              "op": {
-                "description": "\"set\" overwrite | \"append\" add a line | \"clear\" wipe",
-                "enum": [
-                  "set",
-                  "append",
-                  "clear"
-                ],
-                "type": "string"
-              },
-              "content": {
-                "description": "New content for set/append (≤2000 chars). Ignored for clear.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "op",
-              "content"
             ],
             "type": "object"
           }

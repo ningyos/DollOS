@@ -126,7 +126,7 @@ def test_safe_mode_wins_over_external_too(tmp_path):
     ml._ctx.principal = "external_public"
     ml._state.safe_mode = True
     reg = ml._active_tool_registry()
-    assert set(reg.keys()) <= {"Recall", "ReadToolOutput", "GrepToolOutput"}
+    assert set(reg.keys()) <= {"Recall", "ReadToolOutput"}
     for name in DANGEROUS:
         assert name not in reg
 

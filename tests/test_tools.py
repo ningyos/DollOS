@@ -14,7 +14,6 @@ from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
     SUB_TOOLS,
-    GrepToolOutput,
     InvokeSkill,
     NoteMemory,
     ReadToolOutput,
@@ -251,11 +250,9 @@ async def test_worker_shell_long_output_previews_and_pages_by_id(tmp_path):
     assert "line count 25" in out and "ReadToolOutput" in out
     out_id = re.search(r"output_id (out-[0-9a-f]{8})", out).group(1)
     # The worker pages past the preview with its own SUB_TOOLS.
-    assert ReadToolOutput in SUB_TOOLS and GrepToolOutput in SUB_TOOLS
+    assert ReadToolOutput in SUB_TOOLS
     more = await ReadToolOutput(id=out_id, offset=10, limit=5).run(ctx)
     assert more.splitlines()[1:] == ["11", "12", "13", "14", "15"]
-    hits = await GrepToolOutput(id=out_id, pattern=r"^2\d$").run(ctx)
-    assert "20" in hits and "25" in hits
     assert await _shell_results(queue) == []
 
 
@@ -1084,50 +1081,6 @@ async def test_read_tool_output_not_found(tmp_path: Path) -> None:
         await tool.run(ctx)
 
 
-# ---------- GrepToolOutput ----------
-
-
-@pytest.mark.asyncio
-async def test_grep_tool_output_finds_matches(tmp_path: Path) -> None:
-    store = ToolOutputStore(tmp_path)
-    text = "error: foo\nok\nerror: bar\nok\nERROR: baz\n"
-    output_id = store.write(text)
-    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
-
-    tool = GrepToolOutput(id=output_id, pattern=r"error:", max_matches=10)
-    result = await tool.run(ctx)
-
-    assert "line 0: error: foo" in result
-    assert "line 2: error: bar" in result
-    assert "ERROR" not in result   # case-sensitive by default
-
-
-@pytest.mark.asyncio
-async def test_grep_no_match(tmp_path: Path) -> None:
-    store = ToolOutputStore(tmp_path)
-    output_id = store.write("hello\nworld\n")
-    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
-    tool = GrepToolOutput(id=output_id, pattern=r"^nothing$", max_matches=10)
-    result = await tool.run(ctx)
-    assert "no matches" in result
-
-
-@pytest.mark.asyncio
-async def test_grep_invalid_regex_returns_actionable_message(tmp_path: Path) -> None:
-    """GrepToolOutput catches re.error and returns an actionable message to
-    the LLM instead of propagating the raw exception (no-fallback-compliant:
-    the error is surfaced loudly in the tool result, not swallowed)."""
-    store = ToolOutputStore(tmp_path)
-    output_id = store.write("hello\n")
-    ctx, _ms, _sink = _make_ctx(tmp_path, tool_output_store=store)
-    # Trailing unbalanced paren — re.error at compile time inside grep
-    tool = GrepToolOutput(id=output_id, pattern=r"(", max_matches=10)
-    result = await tool.run(ctx)
-    # Must surface the error, not raise; message must be actionable
-    assert "regex error" in result
-    assert "(" in result  # pattern echoed back
-
-
 @pytest.mark.asyncio
 async def test_scratchpad_set_then_append_then_clear(tmp_path):
     from dollos.tools import Scratchpad
@@ -1207,12 +1160,12 @@ async def test_note_tool_lesson_appends_and_indexes(tmp_path):
     from dollos.tools import NoteToolLesson
     ctx, ms, _sink = _make_ctx(tmp_path)
     out = await NoteToolLesson(situation="grepping large output",
-                               lesson="use GrepToolOutput, not Shell grep").run(ctx)
+                               lesson="use ReadToolOutput, not Shell cat").run(ctx)
     assert out.startswith("lesson noted:")
     path = tmp_path / "shared" / "tool_playbook.md"
     text = path.read_text()
     assert "[situation] grepping large output" in text
-    assert "use GrepToolOutput" in text
+    assert "use ReadToolOutput" in text
     # timestamp-only heading (no [k:v] axis tags that would leak into associative)
     import re
     heading = next(l for l in text.splitlines() if l.startswith("## "))
@@ -1266,3 +1219,16 @@ async def test_mood_tool_rejection_reaches_her_as_a_clear_tool_result(tmp_path):
     assert "one English word" in r.detail
     assert "a bit worried" in r.detail
     assert state.mood.emotion == "calm"
+
+
+# ---------- tool consolidation (plan 2026-10-29 decisions 2, 4) ----------
+
+
+def test_doll_and_workers_have_no_grep_tool_output_or_scratchpad():
+    from dollos.tools import KEEPER_TOOLS, MAIN_TOOLS, SUB_TOOLS
+    for tools in (MAIN_TOOLS, SUB_TOOLS):
+        names = {t.__name__ for t in tools}
+        assert "GrepToolOutput" not in names
+        assert "Scratchpad" not in names
+        assert "ReadToolOutput" in names
+    assert "Scratchpad" in {t.__name__ for t in KEEPER_TOOLS}

@@ -775,7 +775,7 @@ async def test_safe_mode_refuses_write_tools_at_execution(tmp_path):
     assert "NoteMemory" in names
     refusal = llm.calls[1]["messages"][-1]["content"]
     assert "NoteMemory is not available in this turn (safe mode)" in refusal
-    assert "GrepToolOutput, ReadToolOutput, Recall" in refusal
+    assert "ReadToolOutput, Recall" in refusal
     assert "NoteMemory" not in loop._state.tool_stats
     assert all("secret" not in f.read_text() for f in tmp_path.rglob("*.md"))
 

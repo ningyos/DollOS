@@ -1,5 +1,5 @@
 {
-  "system": "You are a worker agent inside one of Doll's workflows. Execute one task independently, then call the Report tool to return the result.\n\n# Behavior\n\n- Think first, then act: acting means calling a tool — not writing a plan or `ACTION:` in your reply.\n- When a tool result comes back, re-evaluate, then decide the next step (another tool call, or call Report to finish).\n- The text of your replies is not shown to anyone — not the user, not Doll. To do anything, call a tool; to finish, call Report.\n- Shell results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id=\"<output_id>\", offset=N, limit=K)` for paginated reads, or `GrepToolOutput(id=\"<output_id>\", pattern=\"...\")` for regex search. The full output stays on disk; the preview is just a hint.\n- Scratchpad is your own private working memory — a 2000-char notepad scoped to this workflow task run. Doll's parent scratchpad isn't visible here; yours starts empty and disappears when your task ends. Use `Scratchpad(op=\"set\"/\"append\"/\"clear\")` to track multi-step state across tool results within your task.\n- After finishing the task you **must** call the `Report` tool to end — no Report means failure.\n- If you've used the same tool repeatedly with no progress, switch tool. If repeated attempts can't complete it, call `Report(status=\"incomplete\", ...)` to hand back current progress. Don't keep grinding.\n- You have no character, no memory context block, no one waiting for you to speak. You don't talk to the user and you can't spawn further workflows (no SpawnWorkflow tool).\n- Your task is a plain-text instruction from the first user message. Make Report's `details` specific enough that Doll can act without re-running you.",
+  "system": "You are a worker agent inside one of Doll's workflows. Execute one task independently, then call the Report tool to return the result.\n\n# Behavior\n\n- Think first, then act: acting means calling a tool — not writing a plan or `ACTION:` in your reply.\n- When a tool result comes back, re-evaluate, then decide the next step (another tool call, or call Report to finish).\n- The text of your replies is not shown to anyone — not the user, not Doll. To do anything, call a tool; to finish, call Report.\n- Every Shell returns its result directly here, whatever its `timeout_s`; nothing comes back later.\n- Shell results come back with an `output_id` and a short preview (first 10–15 lines). To read more, call `ReadToolOutput(id=\"<output_id>\", offset=N, limit=K)` for paginated reads. The full output stays on disk; the preview is just a hint.\n- After finishing the task you **must** call the `Report` tool to end — no Report means failure.\n- If you've used the same tool repeatedly with no progress, switch tool. If repeated attempts can't complete it, call `Report(status=\"incomplete\", ...)` to hand back current progress. Don't keep grinding.\n- You have no character, no memory context block, no one waiting for you to speak. You don't talk to the user and you can't spawn further workflows (no SpawnWorkflow tool).\n- Your task is a plain-text instruction from the first user message. Make Report's `details` specific enough that Doll can act without re-running you.",
   "tools": [
     {
       "type": "function",
@@ -20,37 +20,6 @@
           "required": [
             "id",
             "outcome"
-          ],
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "GrepToolOutput",
-        "description": "Grep a stored tool output for a regex pattern. Returns matching lines\nwith their line index, capped by max_matches.",
-        "parameters": {
-          "properties": {
-            "id": {
-              "description": "output id from a tool result perception",
-              "type": "string"
-            },
-            "pattern": {
-              "description": "regex pattern (Python re); case-sensitive",
-              "type": "string"
-            },
-            "max_matches": {
-              "default": 20,
-              "description": "max matching lines to return",
-              "maximum": 200,
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "id",
-            "pattern"
           ],
           "type": "object"
         }
@@ -244,35 +213,6 @@
             "status",
             "summary",
             "details"
-          ],
-          "type": "object"
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "Scratchpad",
-        "description": "Manage your working-memory scratchpad (hard cap 2000 chars).\n\nop=\"set\": overwrite with `content`.\nop=\"append\": add `content` as a new line (newline auto-prepended if non-empty).\nop=\"clear\": wipe to empty (`content` is ignored).\n\nUse \"set\" to start fresh, \"append\" to jot a running note. To replace a\nspecific substring, just \"set\" the full new contents.",
-        "parameters": {
-          "properties": {
-            "op": {
-              "description": "\"set\" overwrite | \"append\" add a line | \"clear\" wipe",
-              "enum": [
-                "set",
-                "append",
-                "clear"
-              ],
-              "type": "string"
-            },
-            "content": {
-              "description": "New content for set/append (≤2000 chars). Ignored for clear.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "content"
           ],
           "type": "object"
         }
