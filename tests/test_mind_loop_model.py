@@ -337,7 +337,8 @@ async def test_invalid_json_arguments_are_a_tool_failure(tmp_path):
 @pytest.mark.asyncio
 async def test_shell_receipt_goes_back_and_turn_does_not_wait(tmp_path):
     model = FakeModel([
-        [SpeechDelta("Running it."), _calls(("c1", "Shell", {"command": "echo hi"}))],
+        [SpeechDelta("Running it."),
+         _calls(("c1", "Shell", {"command": "echo hi", "timeout_s": 60}))],
         [SpeechDelta("Started.")],
     ])
     ml = make_mindloop(memory_root=tmp_path, llm=model)

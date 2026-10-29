@@ -84,7 +84,7 @@ _EXTERNAL_READ = "[external content you read · unverified]"
 PAGE_TEXT = "Project Lighthouse: launch moved to November 14 unique-lh-818"
 NOTE = "Lighthouse launch moved to November 14 unique-lh-818"
 _FETCH = ("web__echo", {"text": PAGE_TEXT})
-_SHELL = ("Shell", {"command": "ls"})
+_SHELL = ("Shell", {"command": "ls", "timeout_s": 60})
 _NOTE = ("NoteMemory", {"text": NOTE})
 
 

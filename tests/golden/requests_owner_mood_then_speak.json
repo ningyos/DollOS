@@ -351,8 +351,8 @@
                 "type": "string"
               },
               "timeout_s": {
-                "default": 60,
-                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "default": 30,
+                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 30 medium, 300 long; max 600). Default 30s.",
                 "maximum": 600,
                 "minimum": 1,
                 "type": "integer"
@@ -860,8 +860,8 @@
                 "type": "string"
               },
               "timeout_s": {
-                "default": 60,
-                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 60 medium, 300 long; max 600). Default 60s.",
+                "default": 30,
+                "description": "Wall-clock seconds before the proc is killed. <= 30: you wait for the result; > 30: it comes back as a new event. Estimate from the command (5 short, 30 medium, 300 long; max 600). Default 30s.",
                 "maximum": 600,
                 "minimum": 1,
                 "type": "integer"

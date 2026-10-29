@@ -413,7 +413,7 @@ async def test_trusted_server_does_not_taint(tmp_path):
     clients, classes = await _boot(_server(tools=["echo"]))
     try:
         model = FakeModel([
-            _calls(("fake__echo", {"text": "x"}), ("Shell", {"command": "ls"})),
+            _calls(("fake__echo", {"text": "x"}), ("Shell", {"command": "ls", "timeout_s": 60})),
             [SpeechDelta("ok")],
         ])
         ml = _loop(tmp_path, model, classes)

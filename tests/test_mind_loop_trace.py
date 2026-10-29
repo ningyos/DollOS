@@ -376,7 +376,7 @@ def _shell_and_recall_pass(query: str = "X", speech: str = "跑個指令再查�
         "SEEN: x\nINTENT: y\nTOOL: Shell+Recall\nREVIEW: r\nMOOD: m\n</think>\n\n"
         f"{speech}"
         "<tool_call>\n"
-        '{"name":"Shell","arguments":{"command":"echo hi"}}\n'
+        '{"name":"Shell","arguments":{"command":"echo hi","timeout_s":60}}\n'
         "</tool_call>"
         "<tool_call>\n"
         f'{{"name":"Recall","arguments":{{"query":"{query}"}}}}\n'
