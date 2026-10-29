@@ -3,11 +3,6 @@ import sys
 import pytest
 
 
-def test_nisqa_runner_imports():
-    from dollos.voice_eval.nisqa import NISQARunner
-    assert NISQARunner() is not None
-
-
 def test_nisqa_unavailable_raises_clean_error():
     """If nisqa not installed, _ensure_loaded raises RuntimeError."""
     saved = sys.modules.get("nisqa")

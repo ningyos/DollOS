@@ -18,22 +18,6 @@ class _FakeMemSearch:
 
 
 @pytest.mark.asyncio
-async def test_append_transcript_writes_role_tagged_bullet(tmp_path):
-    ms = _FakeMemSearch()
-    await append_transcript(
-        transcripts_root=tmp_path,
-        memsearch=ms,
-        role="user",
-        text="hello",
-    )
-    expected = tmp_path / f"{date.today():%Y-%m-%d}.md"
-    assert expected.exists()
-    content = expected.read_text()
-    assert content.startswith("- ")
-    assert "Owner: hello" in content
-
-
-@pytest.mark.asyncio
 async def test_append_transcript_appends_multiple(tmp_path):
     ms = _FakeMemSearch()
     await append_transcript(

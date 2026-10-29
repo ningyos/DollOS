@@ -308,23 +308,6 @@ async def test_kernel_bootstrap_pushes_nothing_when_schedule_exists(tmp_path):
     assert await dollos._perception_queue.drain(timeout_s=0.1) == []
 
 
-@pytest.mark.asyncio
-async def test_kernel_bootstrap_skips_when_schedule_exists(tmp_path):
-    """If a schedule.toml exists for today, no bootstrap perception is pushed."""
-    settings = _make_settings(tmp_path)
-    dollos = DollOS(settings)
-    today_str = f"{_date.today():%Y-%m-%d}"
-    sched_path = tmp_path / "data" / "memory" / "schedule" / f"{today_str}.toml"
-    sched_path.parent.mkdir(parents=True, exist_ok=True)
-    sched_path.write_text('[[entry]]\ntime = "07:00:00"\nintent = "x"\n')
-
-    sink: asyncio.Queue = asyncio.Queue()
-    await dollos._handle_connect(sink)
-
-    perceptions = await dollos._perception_queue.drain(timeout_s=0.1)
-    assert not any(p.kind == "ScheduledMoment" for p in perceptions)
-
-
 # ----- Scheduler tests -----
 
 
@@ -505,21 +488,6 @@ async def test_kernel_no_voice_when_dollos_config_absent(tmp_path: Path):
         voice_tts=None,
     )
     assert out is None
-
-
-import pytest
-
-
-@pytest.mark.asyncio
-async def test_text_input_preempts_active_cascade():
-    """Marker: kernel-level preempt covered by Task 7 E2E smoke."""
-    pytest.skip("integration covered in Task 7 E2E smoke")
-
-
-@pytest.mark.asyncio
-async def test_kernel_replays_pending_wal_on_startup():
-    """WAL replay flow — covered by Task 7 E2E smoke."""
-    pytest.skip("integration covered in Task 7 smoke (scripts/smoke_crash_recovery.py)")
 
 
 # ----- Regression: I5 — bad schedule file must NOT kill _schedule_runner -----

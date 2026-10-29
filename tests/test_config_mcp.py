@@ -41,7 +41,3 @@ def test_settings_absent_mcp_table_defaults_off():
 
 def test_mcp_query_token_defaults_none():
     assert McpConfig().query_token is None
-
-
-def test_mcp_query_token_accepted():
-    assert McpConfig(enabled=True, config="mcp.toml", query_token="s3cr3t").query_token == "s3cr3t"

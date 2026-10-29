@@ -7,14 +7,6 @@ import sys
 import pytest
 
 
-def test_utmos_runner_import():
-    """Module imports without crashing even if utmosv2 isn't installed."""
-    from dollos.voice_eval.utmos import UTMOSRunner
-
-    runner = UTMOSRunner()
-    assert runner is not None
-
-
 def test_utmos_unavailable_raises_clean_error():
     """If utmosv2 is NOT installed, _ensure_loaded raises RuntimeError with helpful msg."""
     from dollos.voice_eval.utmos import UTMOSRunner

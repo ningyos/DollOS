@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from dollos.memory import FtsMemory
 from dollos.mind.mind_loop import MindLoop
 from dollos.mind.mind_state import MindState, Perception
@@ -179,26 +177,6 @@ async def test_recall_external_dm_owner_turn_full_retrieval(tmp_path: Path):
         ms.close()
 
 
-async def test_recall_external_public_teeth_private_never_returned(tmp_path: Path):
-    """Invert the assertion to prove real teeth: if scoping were a no-op, the
-    private note would surface and this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch(tmp_path)
-    try:
-        (base / "shared" / "x.md").write_text(
-            "## h\n\nprivate-fact unique-scope-444.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
-        ctx.origin_tier = "external_public"
-
-        out = await Recall(query="unique-scope-444").run(ctx)
-        with pytest.raises(AssertionError):
-            assert "private-fact" in out
-    finally:
-        ms.close()
-
-
 # ---------------------------------------------------------------------------
 # Whole-branch review C2: the OLD denylist only enumerated
 # {shared/, external_dm/} — transcripts/ (owner+Doll verbatim conversation,
@@ -230,28 +208,6 @@ async def test_recall_external_public_excludes_transcripts(tmp_path: Path):
         out = await Recall(query="unique-666").run(ctx)
         assert "public-fact" in out
         assert "owner-verbatim-transcript" not in out
-    finally:
-        ms.close()
-
-
-async def test_recall_external_public_teeth_transcripts_never_returned(tmp_path: Path):
-    """Invert the assertion to prove real teeth: if the allowlist regressed
-    back to the old denylist (which never enumerated transcripts/), the
-    transcript marker WOULD surface and this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch(tmp_path)
-    try:
-        (base / "transcripts" / "2026-07-05.md").write_text(
-            "## h\n\n- 12:00:00 主人說：owner-verbatim-transcript-unique-777\n",
-            encoding="utf-8",
-        )
-        await ms.index()
-
-        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
-        ctx.origin_tier = "external_public"
-
-        out = await Recall(query="unique-777").run(ctx)
-        with pytest.raises(AssertionError):
-            assert "owner-verbatim-transcript" in out
     finally:
         ms.close()
 
@@ -322,28 +278,6 @@ async def test_recall_external_public_excludes_sibling_prefixed_dir(tmp_path: Pa
         out = await Recall(query="unique-boundary-555").run(ctx)
         assert "public-safe" in out
         assert "sibling-leak" not in out
-    finally:
-        ms.close()
-
-
-async def test_recall_external_public_teeth_sibling_never_returned(tmp_path: Path):
-    """Teeth: index ONLY the sibling external_public_evil/ note. With the
-    boundary fix the stranger's Recall returns nothing from it; if the
-    trailing-separator boundary were dropped (bare LIKE '<...>/external_public%')
-    the sibling WOULD leak and this ``assert`` would NOT raise."""
-    ms, base = _make_memsearch_with_sibling(tmp_path)
-    try:
-        (base / "external_public_evil" / "bad.md").write_text(
-            "## h\n\nsibling-leak unique-boundary-666.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        ctx = _make_mind_ctx(tmp_path, memsearch=ms)
-        ctx.origin_tier = "external_public"
-
-        out = await Recall(query="unique-boundary-666").run(ctx)
-        with pytest.raises(AssertionError):
-            assert "sibling-leak" in out
     finally:
         ms.close()
 

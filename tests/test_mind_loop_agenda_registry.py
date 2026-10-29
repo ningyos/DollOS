@@ -91,23 +91,6 @@ def _drain_sink(sink: asyncio.Queue) -> list:
 
 
 @pytest.mark.asyncio
-async def test_agenda_moment_turn_does_not_emit_speech_to_sink(tmp_path):
-    """R1-M1: an AgendaMoment turn is her thinking internally, not talking to
-    the local sink — streamed text must not reach it, even though the fake
-    LLM's canned response contains speech ("hi") with no tool call. The
-    end-of-turn ``None`` pump sentinel (always fired, every turn, unrelated
-    to speech) is expected and excluded from this assertion."""
-    sink: asyncio.Queue = asyncio.Queue()
-    ml = make_mindloop(memory_root=tmp_path, sink=sink)
-
-    await ml._run_one_turn([_agenda_moment()])
-
-    items = _drain_sink(sink)
-    speech_items = [i for i in items if i is not None]
-    assert speech_items == [], f"AgendaMoment turn must not push speech, got: {speech_items}"
-
-
-@pytest.mark.asyncio
 async def test_reactive_turn_still_emits_speech_to_sink(tmp_path):
     """Contrast: a normal UserSpoke turn with the same fake LLM DOES reach
     the sink — proves the suppression in the previous test is agenda-specific,

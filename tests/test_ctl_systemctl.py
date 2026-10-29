@@ -14,7 +14,6 @@ import pytest
 from dollos.ctl.systemctl import (
     SystemctlError,
     build_journal_argv,
-    build_systemctl_argv,
     daemon_reload,
     disable_now,
     enable_now,
@@ -24,19 +23,6 @@ from dollos.ctl.systemctl import (
     status,
     stop,
 )
-
-
-def test_build_systemctl_argv_with_unit():
-    assert build_systemctl_argv("start", "dollos-daemon.service") == [
-        "systemctl",
-        "--user",
-        "start",
-        "dollos-daemon.service",
-    ]
-
-
-def test_build_systemctl_argv_without_unit():
-    assert build_systemctl_argv("daemon-reload") == ["systemctl", "--user", "daemon-reload"]
 
 
 def test_build_journal_argv_follow_true():

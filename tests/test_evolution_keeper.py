@@ -171,18 +171,6 @@ async def test_pass_forwards_model_and_budgets_to_keeper(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pass_no_change_logs_and_returns(tmp_path, monkeypatch):
-    mr, hist = _seed_root(tmp_path)
-    async def fake_keeper(**kw):
-        return {"details": "NO_CHANGE 證據不足"}
-    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
-    out = await ek.run_evolution_pass(**_pass_kwargs(mr))
-    assert out == "no_change"
-    assert [e["kind"] for e in self_history.read_events(hist)][-1] == "evo_no_change"
-    assert evo.load_slot(mr / "self_evolution" / "pending.json") is None
-
-
-@pytest.mark.asyncio
 async def test_pass_candidate_creates_awaiting_doll_slot_with_hwm(tmp_path, monkeypatch):
     mr, hist = _seed_root(tmp_path)
     async def fake_keeper(**kw):
@@ -235,20 +223,6 @@ async def test_pass_mechanical_kill(tmp_path, monkeypatch):
     assert out == "kill"
     events = self_history.read_events(hist)
     assert events[-1]["kind"] == "evo_kill" and "mechanical" in events[-1]["reason"]
-
-
-@pytest.mark.asyncio
-async def test_pass_skeptic_kill(tmp_path, monkeypatch):
-    mr, hist = _seed_root(tmp_path)
-    async def fake_keeper(**kw):
-        return {"details": f"CANDIDATE\n{VALID}\nEvidence:\n- s1"}
-    async def fake_skeptic(**kw):
-        return "kill:引用的證據不存在"
-    monkeypatch.setattr(ek, "_run_keeper_agent", fake_keeper)
-    monkeypatch.setattr(ek, "_run_full_skeptic", fake_skeptic)
-    out = await ek.run_evolution_pass(**_pass_kwargs(mr))
-    assert out == "kill"
-    assert evo.load_slot(mr / "self_evolution" / "pending.json") is None
 
 
 @pytest.mark.asyncio

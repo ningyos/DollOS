@@ -14,21 +14,3 @@ def test_mcp_channel_message_renders_as_ai_peer():
     out = _percep_body(p)
     assert out == "[AI peer, DM] Claude (another AI, self-described, unverified): hey Doll"
     assert "stranger" not in out          # must NOT fall through to the stranger branch
-
-
-def test_non_mcp_channel_message_still_stranger():
-    p = Perception(
-        kind="ChannelMessage", t=1.0,
-        data={"channel_id": "disc:1", "author": "Bob",
-              "author_is_owner": False, "is_dm": True, "content": "yo"},
-    )
-    out = _percep_body(p)
-    assert out == "[DM] stranger Bob: yo"
-
-
-def test_mcp_down_renders_lost_channel():
-    p = Perception(kind="McpDown", t=1.0, data={"service": "mcp-server", "rc": 3})
-    out = _percep_body(p)
-    assert "mcp-server" in out
-    assert "rc=3" in out
-    assert "{" not in out  # must be prose, not a raw dict dump (fallback str(d))

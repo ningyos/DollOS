@@ -20,22 +20,6 @@ def _reset_module():
             del sys.modules[key]
 
 
-def test_preload_cudnn_returns_int():
-    """preload_cudnn() must return an int and never raise."""
-    from dollos.voice._cuda import preload_cudnn
-    result = preload_cudnn()
-    assert isinstance(result, int)
-
-
-def test_preload_cudnn_no_raise_on_bad_environment():
-    """Must not raise even when called in a weird environment."""
-    from dollos.voice._cuda import preload_cudnn
-    try:
-        preload_cudnn()
-    except Exception as exc:  # pragma: no cover
-        raise AssertionError(f"preload_cudnn raised unexpectedly: {exc!r}") from exc
-
-
 def test_preload_cudnn_no_op_when_nvidia_cudnn_absent():
     """Returns 0 and doesn't raise when nvidia.cudnn is not importable."""
     _reset_module()

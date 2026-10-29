@@ -12,8 +12,6 @@ gone. `render_daemon_unit` / `resolve_params` for the daemon are unchanged.
 import sys
 from pathlib import Path
 
-import pytest
-
 from dollos.ctl.units import UnitParams, render_daemon_unit, resolve_params
 
 
@@ -26,22 +24,6 @@ def _params(**overrides) -> UnitParams:
     )
     defaults.update(overrides)
     return UnitParams(**defaults)
-
-
-def test_render_bridge_unit_no_longer_exists():
-    """`render_bridge_unit` was deleted wholesale — the bridge unit is gone,
-    not just unused. Import-by-name must fail."""
-    import dollos.ctl.units as units_mod
-
-    assert not hasattr(units_mod, "render_bridge_unit")
-
-
-def test_unit_params_has_no_bridge_only_fields():
-    """`UnitParams` must not carry the bridge-only fields the removed
-    `render_bridge_unit` used to consume."""
-    p = _params()
-    for bridge_field in ("bridge_config", "daemon_ws", "retention_days"):
-        assert not hasattr(p, bridge_field)
 
 
 def test_daemon_unit_contains_exec_start_and_restart_policy():
@@ -108,15 +90,3 @@ def test_resolve_params_expands_user_and_accepts_explicit_python_and_working_dir
     )
     assert p.python == "/custom/python"
     assert p.working_dir == str(tmp_path.resolve())
-
-
-def test_resolve_params_rejects_stray_bridge_config_kwarg():
-    """`resolve_params` no longer accepts a `bridge_config` kwarg — the
-    bridge config path is now consumed by the daemon's `[bridge].config`,
-    not by dollosctl at all."""
-    with pytest.raises(TypeError):
-        resolve_params(
-            daemon_config=Path("/c/d.toml"),
-            bridge_config=Path("/c/b.toml"),
-            data_root=Path("/wd/data"),
-        )

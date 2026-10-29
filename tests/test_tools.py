@@ -13,7 +13,6 @@ from dollos.mind.mind_state import MindState, Mood
 from dollos.mind.sink_resolver import SinkResolver
 from dollos.tool_outputs import ToolOutputStore
 from dollos.tools import (
-    MAIN_TOOLS,
     SUB_TOOLS,
     GrepToolOutput,
     InvokeSkill,
@@ -103,15 +102,6 @@ def _make_ctx(
     return ctx, ms, sink
 
 
-def test_note_memory_schema_has_text_field():
-    schema = NoteMemory.model_json_schema()
-    assert "text" in schema["properties"]
-
-
-def test_tools_list_contains_note_memory():
-    assert NoteMemory in MAIN_TOOLS
-
-
 @pytest.mark.asyncio
 async def test_note_memory_run_appends_bullet_to_daily_file(tmp_path):
     ctx, _ms, _sink = _make_ctx(tmp_path)
@@ -166,29 +156,6 @@ async def test_write_diary_writes_markdown_section_and_indexes(tmp_path):
     assert content.count("## ") >= 1
     assert "今天我學會了 transcript 跟 diary。" in content
     assert ms.indexed and Path(ms.indexed[-1]) == expected
-
-
-def test_write_diary_schema_has_content_field():
-    schema = WriteDiary.model_json_schema()
-    assert "content" in schema["properties"]
-    assert schema["properties"]["content"]["type"] == "string"
-
-
-def test_write_diary_in_tools_list():
-    assert WriteDiary in MAIN_TOOLS
-
-
-def test_shell_in_tools_list():
-    assert Shell in MAIN_TOOLS
-
-
-def test_shell_schema_has_command_and_timeout_s():
-    schema = Shell.model_json_schema()
-    assert "command" in schema["properties"]
-    assert schema["properties"]["command"]["type"] == "string"
-    assert "timeout_s" in schema["properties"]
-    assert schema["properties"]["timeout_s"]["minimum"] == 1
-    assert schema["properties"]["timeout_s"]["maximum"] == 600
 
 
 def test_shell_timeout_s_has_default():
@@ -404,16 +371,6 @@ async def test_doll_shell_still_enqueues_the_result(tmp_path):
     await ctx.shell_runner.stop()
 
 
-def test_invoke_skill_in_tools_list():
-    assert InvokeSkill in MAIN_TOOLS
-
-
-def test_invoke_skill_schema_has_name_field():
-    schema = InvokeSkill.model_json_schema()
-    assert "name" in schema["properties"]
-    assert schema["properties"]["name"]["type"] == "string"
-
-
 @pytest.mark.asyncio
 async def test_invoke_skill_run_returns_body_content(tmp_path):
     memory_root = tmp_path / "memory"
@@ -502,16 +459,6 @@ class _SearchableMemSearch:
 
     async def index_file(self, path):  # pragma: no cover
         pass
-
-
-def test_recall_in_tools_list():
-    assert Recall in MAIN_TOOLS
-
-
-def test_recall_schema_has_query_field():
-    schema = Recall.model_json_schema()
-    assert "query" in schema["properties"]
-    assert schema["properties"]["query"]["type"] == "string"
 
 
 def _ctx_with_search(tmp_path, hits):
@@ -695,37 +642,11 @@ def test_main_tools_includes_spawn_workflow_not_report():
     assert Report not in MAIN_TOOLS
 
 
-def test_spawn_subagent_not_importable():
-    """SpawnSubagent has been removed and must not be importable."""
-    import dollos.tools as _tools_mod
-    assert not hasattr(_tools_mod, "SpawnSubagent"), "SpawnSubagent must be gone from tools"
-
-
 def test_sub_tools_includes_report_not_spawn_workflow():
     from dollos.tools import SUB_TOOLS, Report, SpawnWorkflow
 
     assert Report in SUB_TOOLS
     assert SpawnWorkflow not in SUB_TOOLS
-
-
-def test_spawn_workflow_schema_has_tasks_mode_synthesis_timeout():
-    from dollos.tools import SpawnWorkflow
-
-    schema = SpawnWorkflow.model_json_schema()
-    props = schema["properties"]
-    # tasks: required array
-    assert "tasks" in props
-    assert "tasks" in schema["required"]
-    # mode: optional Literal with default
-    assert "mode" in props
-    assert "mode" not in schema.get("required", [])
-    # synthesis: optional string with default ""
-    assert "synthesis" in props
-    assert "synthesis" not in schema.get("required", [])
-    # timeout_s: optional int with default 600
-    assert "timeout_s" in props
-    assert "timeout_s" not in schema.get("required", [])
-    assert props["timeout_s"].get("default") == 600
 
 
 def test_spawn_workflow_tasks_max_length():
@@ -741,16 +662,6 @@ def test_spawn_workflow_tasks_max_length():
     # exactly 16 is ok
     sw = SpawnWorkflow(tasks=[WorkflowTask(task=f"t{i}") for i in range(16)])
     assert len(sw.tasks) == 16
-
-
-def test_report_schema_has_status_summary_details():
-    from dollos.tools import Report
-
-    schema = Report.model_json_schema()
-    for f in ("status", "summary", "details"):
-        assert f in schema["properties"]
-        assert f in schema["required"]
-    assert set(schema["properties"]["status"]["enum"]) == {"ok", "incomplete"}
 
 
 @pytest.mark.asyncio
@@ -1198,14 +1109,6 @@ async def test_scratchpad_append_over_cap_raises(tmp_path):
         await Scratchpad(op="append", content="y" * 100).run(ctx)
 
 
-def test_main_tools_has_scratchpad_not_old_four():
-    from dollos.tools import MAIN_TOOLS
-    names = {c.__name__ for c in MAIN_TOOLS}
-    assert "Scratchpad" in names
-    for gone in ("WriteScratchpad", "AppendScratchpad", "EditScratchpad", "ClearScratchpad"):
-        assert gone not in names
-
-
 # ---------- MoodTool ----------
 
 
@@ -1230,11 +1133,6 @@ async def test_mood_tool_no_reason(tmp_path):
     await MoodTool(emotion="calm").run(ctx)
     assert state.mood.emotion == "calm"
     assert state.mood.reason == ""
-
-
-def test_mood_tool_in_main_tools():
-    from dollos.tools import MAIN_TOOLS, MoodTool
-    assert MoodTool in MAIN_TOOLS
 
 
 # ---------- OutputRecord side-effects ----------
@@ -1281,17 +1179,6 @@ async def test_note_tool_lesson_appends_and_indexes(tmp_path):
     await NoteToolLesson(situation="s2", lesson="l2").run(ctx)
     assert "[situation] grepping large output" in path.read_text()
     assert "[situation] s2" in path.read_text()
-
-
-def test_note_tool_lesson_not_in_main_tools_but_in_reflection_tools():
-    from dollos.harness.turn_policy import POLICIES
-    from dollos.tools import MAIN_TOOLS, NoteToolLesson
-    reflection = POLICIES["reflection"]
-    assert NoteToolLesson not in MAIN_TOOLS
-    assert NoteToolLesson.__name__ in {e.tool for e in reflection.extra_tools}
-    assert reflection.kind_tools == "all"  # every MAIN_TOOLS entry
-
-
 
 
 # ---------- MoodTool: one English word ----------

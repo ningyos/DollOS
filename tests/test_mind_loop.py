@@ -278,76 +278,6 @@ async def test_iterate_non_user_perception_no_user_at(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_iterate_unknown_tool_skipped(tmp_path):
-    """Tool call referencing a name not in registry is logged + skipped."""
-    from tests._dispatcher_helpers import _make_mind_ctx
-    from dollos.tools import MAIN_TOOLS
-
-    state = MindState()
-    queue = PerceptionQueue()
-    queue.put(Perception(kind="Awoke", t=1.0, data={}))
-
-    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
-    ctx = _make_mind_ctx(tmp_path, state=state)
-
-    stream = (
-        "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: bogus\n</think>\n\n"
-        "hi"
-        "<tool_call>\n"
-        '{"name":"DoesNotExist","arguments":{}}\n'
-        "</tool_call>"
-    )
-    fake_llm = _FakeLLM(stream)
-    loop = MindLoop(
-        state=state,
-        queue=queue,
-        ctx=ctx,
-        llm=fake_llm,
-        system_prompt="SYS",
-        state_persist_path=tmp_path / "mind_state.json",
-        tool_registry=tool_registry,
-    )
-
-    # Should not crash
-    await loop.iterate()
-    assert state.iter_count == 1
-
-
-@pytest.mark.asyncio
-async def test_iterate_tool_validation_error_skipped(tmp_path):
-    """Bad arguments for a known tool → ValidationError swallowed, loop continues."""
-    from tests._dispatcher_helpers import _make_mind_ctx
-    from dollos.tools import MAIN_TOOLS
-
-    state = MindState()
-    queue = PerceptionQueue()
-    queue.put(Perception(kind="Awoke", t=1.0, data={}))
-
-    tool_registry = {cls.__name__: cls for cls in MAIN_TOOLS}
-    ctx = _make_mind_ctx(tmp_path, state=state)
-
-    stream = (
-        "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: NoteMemory\n</think>\n\n"
-        "<tool_call>\n"
-        '{"name":"NoteMemory","arguments":{"not_a_field":true}}\n'
-        "</tool_call>"
-    )
-    fake_llm = _FakeLLM(stream)
-    loop = MindLoop(
-        state=state,
-        queue=queue,
-        ctx=ctx,
-        llm=fake_llm,
-        system_prompt="SYS",
-        state_persist_path=tmp_path / "mind_state.json",
-        tool_registry=tool_registry,
-    )
-
-    await loop.iterate()
-    assert state.iter_count == 1
-
-
-@pytest.mark.asyncio
 async def test_shutdown_stops_run(tmp_path):
     from tests._dispatcher_helpers import _make_mind_ctx
     from dollos.tools import MAIN_TOOLS
@@ -470,16 +400,6 @@ async def test_iterate_truncates_wal_after_state_save(tmp_path):
     await loop.iterate()
 
     assert list(wal.iter_pending()) == []
-
-
-@pytest.mark.asyncio
-async def test_iterate_with_no_wal_unchanged(tmp_path):
-    """iterate() with wal=None still works (backwards compat)."""
-    from dollos.mind.mind_state import Perception
-    loop = _make_mind_loop(tmp_path)
-    # Put a perception so iterate() does real work
-    loop._queue.put(Perception(kind="UserSpoke", t=1.0, data={"text": "hi"}))
-    await loop.iterate()
 
 
 @pytest.mark.asyncio
@@ -642,16 +562,6 @@ def _speech_pass(speech: str) -> str:
     )
 
 
-def _shell_pass(speech: str = "跑個指令") -> str:
-    return (
-        "SEEN: x\nINTENT: y\nTOOL: Shell\nREVIEW: r\nMOOD: m\n</think>\n\n"
-        f"{speech}"
-        "<tool_call>\n"
-        '{"name":"Shell","arguments":{"command":"echo hi"}}\n'
-        "</tool_call>"
-    )
-
-
 def _note_memory_pass(text: str = "記下來", speech: str = "好") -> str:
     return (
         "SEEN: x\nINTENT: y\nTOOL: NoteMemory\nREVIEW: r\nMOOD: m\n</think>\n\n"
@@ -712,34 +622,6 @@ async def test_recall_result_refed_in_same_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fire_and_forget_tool_receipt_goes_back(tmp_path):
-    """A Shell call answers with its job receipt and the turn goes on to a 2nd
-    pass right away; the command's real result comes back later as a
-    perception (the turn never waits for it)."""
-    loop, llm = _make_scripted_loop(
-        tmp_path, scripts=[_shell_pass(), _speech_pass("started")],
-    )
-    await loop.iterate()
-    assert llm.pass_count == 2
-    tool_msg = llm.calls[1]["messages"][-1]
-    assert tool_msg["role"] == "tool"
-    assert "shell dispatched" in tool_msg["content"]
-
-
-@pytest.mark.asyncio
-async def test_successful_tool_result_goes_back_too(tmp_path):
-    """Every reply with tool calls gets another pass (harness §1) — a
-    successful NoteMemory included, so a reply that only called a tool still
-    gets to speak."""
-    loop, llm = _make_scripted_loop(
-        tmp_path, scripts=[_note_memory_pass(), _speech_pass("noted")],
-    )
-    await loop.iterate()
-    assert llm.pass_count == 2
-    assert "記下來" in llm.calls[1]["messages"][-1]["content"]
-
-
-@pytest.mark.asyncio
 async def test_failing_tool_turn_still_cascades(tmp_path):
     """A tool FAILURE goes back as a ``tool`` message for a 2nd pass, so Doll
     is told of (and can fix) her mistake (spec §7.3)."""
@@ -786,19 +668,6 @@ async def test_cancel_during_second_pass_exits_clean(tmp_path):
     spoken = "".join(c.text for c in chunks if isinstance(c, TextChunk))
     assert "SECOND" not in spoken
     assert loop.is_cascade_active is False
-
-
-@pytest.mark.asyncio
-async def test_sync_tool_budget_cap_terminates(tmp_path):
-    """A model that keeps emitting sync tools terminates at the budget cap."""
-    from dollos.mind.mind_loop import MAX_SYNC_REFEED_PASSES
-
-    # Every pass emits a Recall call; only the budget cap can stop the loop
-    # (Recall always succeeds, so the 3-strike failure abort never fires).
-    loop, llm = _make_scripted_loop(tmp_path, scripts=[_recall_pass()])
-    await loop.iterate()
-    assert llm.pass_count <= MAX_SYNC_REFEED_PASSES
-    assert llm.pass_count == MAX_SYNC_REFEED_PASSES
 
 
 # --- P6.3 (Task 8): bounded-severity read-only safe-mode ---

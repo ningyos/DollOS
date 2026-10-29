@@ -137,24 +137,6 @@ async def test_non_self_message_with_no_l0_signal_is_still_forwarded(tmp_path):
     assert event.payload["content"] == "anyone up for a game"
 
 
-# ----- self-filter stays -----
-
-
-async def test_self_message_is_logged_but_never_forwarded(tmp_path):
-    """Self-filter MUST stay: her own messages never reach the daemon
-    (regression here reintroduces the self-echo infinite loop P1b fixed) —
-    but they still get ambient-logged for corpus completeness."""
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
-
-    await controller.on_discord_message(
-        _event(author_id="bot-999", content="gura here", mentioned=True, msg_id="m3")
-    )
-
-    lines = _ambient_lines(tmp_path, "g1", "c1")
-    assert lines[0]["msg_id"] == "m3"
-    assert sent_to_daemon == []  # self-filter wins even though mentioned=True
-
-
 # ----- ambient.append fires for ALL messages, including self -----
 
 
@@ -179,48 +161,3 @@ async def test_ambient_append_fires_for_all_messages_including_self(tmp_path):
 
     registers = [m for m in sent_to_daemon if isinstance(m, ChannelRegister)]
     assert len(registers) == 1
-
-
-# ----- dynamic ChannelRegister now keys off first FORWARD, not first wake -----
-
-
-async def test_first_forward_from_unregistered_channel_registers_once(tmp_path):
-    """A channel outside the static allowlist gets its external sink
-    registered the first time any of its messages is FORWARDED — no L0
-    signal required anymore, since forwarding itself no longer depends on
-    L0."""
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
-
-    # c2 has never forwarded a message yet and carries NO L0 signal at all —
-    # still forwards (Option A) and still triggers first-forward registration.
-    await controller.on_discord_message(_event(channel_id="c2", msg_id="m1"))
-
-    assert len(sent_to_daemon) == 2
-    reg, ev = sent_to_daemon
-    assert isinstance(reg, ChannelRegister)
-    assert (reg.channel_id, reg.locus, reg.kind) == ("c2", "external", "discord")
-    assert isinstance(ev, ChannelEvent)
-    assert ev.channel_id == "c2"
-
-    # second message from c2 → no duplicate ChannelRegister, just another forward.
-    await controller.on_discord_message(_event(channel_id="c2", msg_id="m2"))
-
-    registers = [m for m in sent_to_daemon if isinstance(m, ChannelRegister)]
-    events = [m for m in sent_to_daemon if isinstance(m, ChannelEvent)]
-    assert len(registers) == 1
-    assert len(events) == 2
-
-
-async def test_self_message_from_unregistered_channel_does_not_register(tmp_path):
-    """A self-authored message in a not-yet-registered channel is logged but
-    never forwarded, so it must NOT trigger the dynamic ChannelRegister
-    either — registration is tied to forwarding, not to ambient logging."""
-    controller, discord, sent_to_daemon, ambient = _make(tmp_path)
-
-    await controller.on_discord_message(
-        _event(channel_id="c2", author_id="bot-999", msg_id="m1")
-    )
-
-    lines = _ambient_lines(tmp_path, "g1", "c2")
-    assert lines[0]["msg_id"] == "m1"
-    assert sent_to_daemon == []

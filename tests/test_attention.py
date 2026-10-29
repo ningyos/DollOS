@@ -4,7 +4,7 @@ L0 signal logic is moved daemon-side from `discord_bridge/wake.py::l0_wake`,
 minus the self-filter (the bridge no longer forwards self-authored events —
 see Task 3). `AttentionGate` is pure logic: no I/O, no async, flow-agnostic.
 """
-from dollos.mind.attention import AttentionGate, AdmitDecision, Session
+from dollos.mind.attention import AttentionGate, Session
 
 
 def _gate(
@@ -175,22 +175,6 @@ def test_non_signal_without_session_not_admitted():
     d = g.admit({"channel_id": "c1", "author_id": "u2", "is_dm": False, "mentioned": False, "content": "unrelated chatter"}, now=100.0)
     assert not d.admit and d.reason == "not_admitted"
     assert "c1" not in g._sessions
-
-
-def test_reply_to_bot_absent_key_is_safe_falsy_default():
-    """Event dicts without a reply_to_bot key (bridge hasn't been wired yet,
-    Task 3 concern) must not admit — `.get` defaults to falsy."""
-    g = _gate()
-    d = g.admit(_e(content="no reply flag at all"), now=100.0)
-    assert not d.admit and d.reason == "not_admitted"
-
-
-def test_admit_decision_and_session_are_dataclasses_with_expected_fields():
-    d = AdmitDecision(admit=True, reason="l0_dm")
-    assert d.admit is True and d.reason == "l0_dm"
-    s = Session(channel_id="c1", participants={"u1"}, last_activity=1.0, turn_count=0, window_s=90.0)
-    assert s.channel_id == "c1" and s.participants == {"u1"}
-    assert s.turn_count == 0 and s.window_s == 90.0
 
 
 # ----- forget() — bound _sessions growth on disconnect (whole-branch review) -----

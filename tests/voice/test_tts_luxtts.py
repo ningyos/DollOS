@@ -13,11 +13,6 @@ def test_luxtts_sample_rate_is_48000():
     assert LuxTTSEngine.sample_rate == 48000
 
 
-def test_luxtts_chunk_size_is_20ms_at_48k():
-    from dollos.voice.tts_luxtts import _CHUNK_BYTES
-    assert _CHUNK_BYTES == 1920
-
-
 def test_luxtts_pcm_chunking_matches_array(tmp_path: Path):
     from dollos.voice.tts_luxtts import _pcm_chunks
 

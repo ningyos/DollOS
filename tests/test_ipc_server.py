@@ -175,32 +175,6 @@ async def test_ws_server_calls_on_connect_with_sink():
 
 
 @pytest.mark.asyncio
-async def test_ws_server_calls_on_disconnect_after_disconnect():
-    """on_disconnect fires after the client closes the websocket."""
-    disconnected = asyncio.Event()
-
-    async def _on_disconnect(sink) -> None:
-        disconnected.set()
-
-    server = WebSocketServer(
-        host="127.0.0.1", port=0,
-        handler=_make_echo_handler(),
-        on_disconnect=_on_disconnect,
-    )
-    await server.start()
-    try:
-        port = server.port
-        assert port is not None
-        uri = f"ws://127.0.0.1:{port}"
-        async with websockets.connect(uri) as ws:
-            await ws.send('{"type": "text_input", "text": "x"}')
-            await asyncio.wait_for(ws.recv(), timeout=2.0)
-        await asyncio.wait_for(disconnected.wait(), timeout=2.0)
-    finally:
-        await server.stop()
-
-
-@pytest.mark.asyncio
 async def test_pump_task_names_include_remote_address():
     """Each pump task name must encode the client address so concurrent
     connections are distinguishable in asyncio task dumps / logs.

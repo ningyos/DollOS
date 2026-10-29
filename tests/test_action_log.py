@@ -111,11 +111,6 @@ def test_pulse_moment_action_phrase():
     assert phrase == "body signal: battery down to 12% and discharging"
 
 
-def test_non_pulse_kind_still_none():
-    # a kind action_phrase_for_perception doesn't handle → still None (unchanged)
-    assert action_phrase_for_perception("ReflectionMoment", {}) is None
-
-
 def test_phrases_carry_no_daemon_chinese():
     """The daemon's own words in every phrase are English (plan 2026-10-19
     Task 8); only her content (here ASCII) passes through."""

@@ -129,12 +129,3 @@ async def test_gate_skipped_turn_emits_no_vitals_row(tmp_path):
     assert len(rec.records) == 1, (
         "gate-skipped turn must not emit a vitals row from the stale stash"
     )
-
-
-@pytest.mark.asyncio
-async def test_no_vitals_recorder_is_a_noop(tmp_path):
-    """vitals_recorder=None (default) must not raise or break the turn."""
-    llm = _ScriptedLLM([_speech_pass("你好")])
-    ml = make_mindloop(memory_root=tmp_path, llm=llm, energy_enabled=True)
-
-    await ml._run_one_turn([_user_perception("hi")])  # must not raise

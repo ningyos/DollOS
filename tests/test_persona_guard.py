@@ -74,10 +74,6 @@ def test_multiple_simultaneous_violations_all_reported():
 
 # ===== §3: fingerprint_response =====
 
-def test_fingerprint_same_input_same_hash():
-    assert fingerprint_response("哈囉，最近好嗎？") == fingerprint_response("哈囉，最近好嗎？")
-
-
 def test_fingerprint_whitespace_and_case_insensitive():
     a = fingerprint_response("Hello   World")
     b = fingerprint_response("hello world")

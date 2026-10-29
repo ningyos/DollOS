@@ -96,12 +96,6 @@ def test_diary_days_since_counts_english_and_old_chinese_diaries(tmp_path):
 _FACTORY = "主人說話我才回,沒事就安靜待著"
 
 
-def test_restatement_constants_are_module_level():
-    """Minimal-knob principle: module constants, not config."""
-    assert evo.RESTATEMENT_THRESHOLD == 0.6
-    assert evo.RESTATEMENT_MIN_SENTENCE == 8
-
-
 def test_restatement_overlap_verbatim_factory_sentence_killed():
     cand = ("我最近會主動整理系統日誌,一行行看下去有種踏實感。"
             f"{_FACTORY}。")

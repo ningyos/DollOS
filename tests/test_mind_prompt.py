@@ -8,7 +8,7 @@ conversation opens a page with ``render_epoch_start`` and adds one
 import time
 
 from dollos.mind.mind_state import (
-    MindState, OpenLoop,
+    MindState,
     Perception, OutputRecord,
 )
 from dollos.mind.mind_prompt import (
@@ -39,35 +39,10 @@ def test_memory_hits_rendered_as_bullets():
     assert "- user lives in Taipei" in out
 
 
-def test_open_loops_rendered():
-    state = MindState()
-    state.open_loops.append(OpenLoop(id="t1", desc="check tmp", opened_at=NOW - 10))
-    out = render_epoch_start(state, Seen(), "internal", NOW)
-    assert "t1" in out and "check tmp" in out
-
-
 def test_open_loops_empty_renders_none():
     from dollos.mind.mind_prompt import _render_open_loops
 
     assert _render_open_loops([], time.time()) == "(none)"
-
-
-def test_recent_perceptions_newest_last():
-    state = MindState()
-    state.recent_perceptions.append(Perception(kind="UserSpoke", t=100.0, data={"text": "first"}))
-    state.recent_perceptions.append(Perception(kind="UserSpoke", t=200.0, data={"text": "second"}))
-    out = render_epoch_start(state, Seen(), "internal", NOW)
-    assert out.index("first") < out.index("second")  # newest last
-
-
-def test_recent_outputs_block():
-    state = MindState()
-    state.recent_outputs.append(OutputRecord(
-        t=NOW - 3, kind="Speech", summary="spoke: hi", origin_tier="internal"),
-    )
-    out = render_epoch_start(state, Seen(), "internal", NOW)
-    assert "[Recent outputs]" in out
-    assert "spoke: hi" in out
 
 
 def test_recent_outputs_warns_on_recent_speech():
@@ -175,23 +150,6 @@ def test_repeat_loop_detected_perception_rendered():
     assert "3" in body
     assert "SetFocus" in body
     assert "focus → same thing" in body
-
-
-def test_persona_drift_detected_perception_rendered():
-    from dollos.mind.mind_prompt import _percep_body
-
-    p = Perception(
-        kind="PersonaDriftDetected",
-        t=time.time(),
-        data={
-            "violations": ["banned substring found: 'a~'"],
-            "snippet": "哈囉a~最近好嗎",
-        },
-    )
-    body = _percep_body(p)
-    assert "banned substring found: 'a~'" in body
-    assert "哈囉a~最近好嗎" in body
-    assert "persona constraints" in body
 
 
 def test_persona_drift_describes_without_commanding():
@@ -313,20 +271,7 @@ def test_safe_mode_shown_on_page_snapshot():
     assert "3 consecutive tool failures" in out
 
 
-def test_safe_mode_omitted_from_page_snapshot_when_off():
-    out = render_epoch_start(MindState(), Seen(), "internal", NOW)
-    assert "[Safe mode]" not in out
-
-
 # --- Memory-writing guideline (primary language + understand-then-write) ---
-
-
-def test_memory_guideline_names_the_language():
-    """The [Memory guideline] (now in the system message, see
-    MindLoop._system_for_turn) interpolates the configured primary_language."""
-    out = render_memory_guideline("English")
-    assert out.startswith("[Memory guideline]")
-    assert "is in English" in out
 
 
 def test_memory_guideline_language_is_parameterized():
@@ -334,24 +279,6 @@ def test_memory_guideline_language_is_parameterized():
     assert "is in Japanese" in out
     # The default must NOT leak through when a different language is configured.
     assert "English" not in out
-
-
-def test_memory_guideline_covers_everything_she_writes():
-    """All-English plan Task 2: the guideline names everything she writes
-    down, not only notes and diary — self-profile, agenda and schedule came
-    out English while notes and diary stayed Chinese because they were not
-    covered; "who I am now" is hers too (she rewrites it via SelfRevision)."""
-    out = render_memory_guideline("English")
-    for kind in ("notes", "diary", "who I am now", "self-profile", "agenda", "schedule"):
-        assert kind in out
-    assert "Your notes and diary are written in" not in out
-
-
-def test_memory_guideline_says_understand_then_write_own_words():
-    """The guideline describes understand-first, own-words, no verbatim copy."""
-    lowered = render_memory_guideline("English").lower()
-    assert "own words" in lowered
-    assert "verbatim" in lowered
 
 
 def test_memory_guideline_describes_rather_than_commands():

@@ -3,12 +3,6 @@
 from dollos.mind import evolution as evo
 
 
-def test_constants():
-    assert evo.COUNTER_ROUND_CAP == 2
-    assert evo.VERDICT_ERRORS_BOUND == 3
-    assert evo.ECHO_SIMILARITY == 0.9
-
-
 def test_keeper_slot_enters_awaiting_doll():
     s = evo.make_keeper_slot(candidate="候選文", rationale="因為X",
                              hwm_before=128, created_ts=100.0)

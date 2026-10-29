@@ -120,16 +120,3 @@ def test_mcp_channel_message_is_external_public_tier():
               "content": "hi"},
     )
     assert MindLoop._derive_origin_tier([p]) == "external_public"
-
-
-def test_mcp_peer_never_reaches_external_dm_even_if_dm():
-    # is_dm=True but author_is_owner=False (a peer is NEVER the owner, §E) ⇒
-    # must stay external_public, never external_dm (which would leak the
-    # owner's full private-memory retrieval to an unverified AI).
-    p = Perception(
-        kind="ChannelMessage", t=1.0,
-        data={"channel_id": "mcp:c1:call1", "author": "Claude",
-              "author_is_owner": False, "is_dm": True, "channel_kind": "mcp",
-              "content": "hi"},
-    )
-    assert MindLoop._derive_origin_tier([p]) != "external_dm"

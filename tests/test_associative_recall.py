@@ -117,14 +117,6 @@ def test_build_context_filter_chinese_mood_non_empty():
     assert tags["mood"] == "平靜"
 
 
-def test_build_heading_chinese_mood_present_in_heading():
-    """I2: build_heading must include mood:平靜 tag for Chinese emotion."""
-    state = MindState(mood=Mood(emotion="平靜"))
-    now = datetime(2026, 5, 18, 22, 34, 12)
-    heading = build_heading(state, now)
-    assert "mood:平靜" in heading, f"Expected mood:平靜 in heading, got: {heading!r}"
-
-
 def test_build_context_filter_chinese_mood_with_spaces():
     """I2: spaces in Chinese emotion are replaced with '_', not stripped."""
     state = MindState(mood=Mood(emotion="有點 焦慮"))

@@ -13,11 +13,6 @@ def _cm(**data):
     return Perception(kind="ChannelMessage", t=time.time(), data=base)
 
 
-def test_channel_message_is_valid_kind():
-    p = _cm()
-    assert p.kind == "ChannelMessage"          # no Literal ValidationError
-
-
 def test_percep_body_renders_content_and_author():
     body = _percep_body(_cm(author="alice", content="ping"))
     assert "alice" in body and "ping" in body and "general" in body

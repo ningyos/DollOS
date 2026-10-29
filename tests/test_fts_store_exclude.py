@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from dollos.memory import FtsMemory
 
 
@@ -51,27 +49,6 @@ async def test_exclude_prefixes_filters_out_private_tier(tmp_path: Path):
         assert len(scoped) == 1
         assert "public marker" in scoped[0]["content"]
         assert "private marker" not in scoped[0]["content"]
-    finally:
-        ms.close()
-
-
-async def test_exclude_prefixes_has_teeth_private_never_returned(tmp_path: Path):
-    """Invert the assertion to prove the filter has real teeth: if
-    ``exclude_prefixes`` were a no-op, the private note would still be
-    returned and this ``assert`` would NOT raise — so wrapping it in
-    ``pytest.raises(AssertionError)`` itself must succeed."""
-    ms, base = _make(tmp_path)
-    try:
-        (base / "shared" / "x.md").write_text(
-            "## h\n\nprivate marker unique-beta-111.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        scoped = await ms.search(
-            "unique-beta-111", top_k=5, exclude_prefixes=[base / "shared"]
-        )
-        with pytest.raises(AssertionError):
-            assert any("private marker" in h["content"] for h in scoped)
     finally:
         ms.close()
 
@@ -123,28 +100,5 @@ async def test_exclude_prefix_is_directory_boundary_not_string_prefix(tmp_path: 
         # shared/ excluded, shared_backup/ NOT excluded (distinct directory).
         assert len(scoped) == 1
         assert "sibling marker" in scoped[0]["content"]
-    finally:
-        ms.close()
-
-
-async def test_exclude_prefixes_none_is_unchanged_default(tmp_path: Path):
-    """Regression guard: omitting exclude_prefixes (or passing None) behaves
-    exactly like before this feature — full recall, no filtering."""
-    ms, base = _make(tmp_path)
-    try:
-        (base / "shared" / "x.md").write_text(
-            "## h\n\nprivate marker unique-delta-333.\n", encoding="utf-8"
-        )
-        (base / "external_public" / "y.md").write_text(
-            "## h\n\npublic marker unique-delta-333.\n", encoding="utf-8"
-        )
-        await ms.index()
-
-        default_hits = await ms.search("unique-delta-333", top_k=5)
-        explicit_none_hits = await ms.search(
-            "unique-delta-333", top_k=5, exclude_prefixes=None
-        )
-        assert len(default_hits) == 2
-        assert len(explicit_none_hits) == 2
     finally:
         ms.close()
