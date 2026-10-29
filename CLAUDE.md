@@ -136,7 +136,7 @@ DollOS/
 
 ### 下一個
 
-1. **工具合併 plan**：25 個工具收成約 15 個（harness spec §4）。
+1. **v1 收尾**：完整的 v1 驗收（spec `docs/superpowers/specs/2026-10-29-v1-end-to-end-acceptance-design.md`，草稿）。
 2. **macOS 移植**：spec `docs/superpowers/specs/2026-10-21-macos-port-design.md`，plan `docs/superpowers/plans/2026-10-21-macos-port.md`。核心能用之前凍結。
 
 **已收的設計準則**：
