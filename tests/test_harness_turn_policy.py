@@ -47,7 +47,6 @@ AGENDA = _p("AgendaMoment")
 PULSE = _p("PulseMoment", severity="critical", detail="hot")
 RESULT = _p("ToolResultArrived")
 SCHEDULED = _p("ScheduledMoment")
-MONITOR = _p("MonitorFired")
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +61,6 @@ MONITOR = _p("MonitorFired")
     ([STRANGER], "conversation"),
     ([RESULT], "conversation"),
     ([SCHEDULED], "conversation"),
-    ([MONITOR], "conversation"),
     ([REFLECT], "reflection"),
     ([REFLECT, REFLECT], "reflection"),
     ([USER, REFLECT], "reflection"),          # MF-2: owner present, still reflection
@@ -83,7 +81,6 @@ MONITOR = _p("MonitorFired")
     ([PULSE, USER], "conversation"),
     ([AGENDA, RESULT], "conversation"),
     ([AGENDA, SCHEDULED], "conversation"),
-    ([AGENDA, MONITOR], "conversation"),
     ([DIARY, AGENDA], "conversation"),
     ([DIARY, PULSE], "conversation"),
     ([AGENDA, PULSE], "conversation"),
@@ -111,7 +108,7 @@ def test_safe_mode_has_top_priority(batch):
 _MAIN = frozenset({
     "AdvanceGoal", "CloseLoop", "InvokeSkill", "MoodTool",
     "NoteMemory", "OpenLoop", "PursueGoal", "ReadToolOutput", "Recall",
-    "RemoveMonitor", "SetFocus", "Shell", "SpawnMonitor",
+    "SetFocus", "Shell",
     "SpawnWorkflow", "WriteDiary", "WriteSchedule",
 })
 _SAFE = {"ReadToolOutput", "Recall"}

@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import Iterator
 
-from dollos.mind.mind_state import Perception
+from dollos.mind.mind_state import LEGACY_PERCEPTION_KINDS, Perception
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,9 @@ class PerceptionWAL:
             try:
                 obj = json.loads(line)
                 seq = int(obj["seq"])
+                if obj["kind"] in LEGACY_PERCEPTION_KINDS:
+                    logger.info("wal: dropping legacy %s perception (seq %d)", obj["kind"], seq)
+                    continue
                 p = Perception(kind=obj["kind"], t=float(obj["t"]), data=obj.get("data") or {})
                 yield seq, p
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:

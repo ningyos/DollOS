@@ -140,7 +140,6 @@ async def run_profile_keeper(
         think_budget=think_budget_tokens,
         purpose="profile_keeper",
         shell_runner=None,
-        monitor_runner=None,
         # The quote check reads the whole day's file, not the tail the
         # keeper was shown: the owner said it today either way.
         owner_transcript=src,

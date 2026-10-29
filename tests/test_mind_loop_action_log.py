@@ -67,13 +67,15 @@ async def test_writediary_sets_turn_flag(tmp_path):
 async def test_world_events_are_logged(tmp_path):
     state = MindState()
     queue = PerceptionQueue(wal=None)
-    queue.put(Perception(kind="MonitorFired", t=time.time(),
-                         data={"monitor_id": "mon-2", "line": "OOM killed"}))
+    queue.put(Perception(kind="ToolResultArrived", t=time.time(),
+                         data={"tool": "Shell", "task_id": "sh-2", "status": "ok",
+                               "summary": "OOM killed"}))
     stream = "SEEN: x\nINTENT: y\nREVIEW: z\nMOOD: w\nTOOL: none\n</think>\n\n"
     ml = make_mindloop(memory_root=tmp_path / "memory", state=state, queue=queue, llm=_FakeLLM(stream))
     await ml.iterate()
     log = _today_log(tmp_path)
-    assert any(is_action_log_line(l) and "Monitor mon-2 fired: OOM killed" in l for l in log.splitlines())
+    want = 'Shell "sh-2" finished [ok]: OOM killed'
+    assert any(is_action_log_line(l) and want in l for l in log.splitlines())
 
 
 @pytest.mark.asyncio

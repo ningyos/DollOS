@@ -204,7 +204,7 @@ _UNBOUND_TAINTED = "is not available in this turn (after reading external conten
 # Tools whose effect can cause a later turn (a result perception, a
 # scheduled moment, an agenda / goal wake-up).
 _FOLLOW_UP_TOOLS = frozenset({
-    "Shell", "SpawnWorkflow", "SpawnMonitor", "WriteSchedule", "OpenLoop",
+    "Shell", "SpawnWorkflow", "WriteSchedule", "OpenLoop",
     "PursueGoal",
 })
 
@@ -554,3 +554,11 @@ def test_no_stranger_or_tainted_turn_can_cause_a_follow_up():
     assert not tools_for("external_public") & _FOLLOW_UP_TOOLS
     assert not TAINTED_TOOLS & _FOLLOW_UP_TOOLS
     assert TAINTED_TOOLS == {"Recall", "NoteMemory", "Report"}
+
+
+def test_tool_matrix_has_no_monitor_tools():
+    """Plan 2026-10-29 decision 3: the monitor tools are gone from every row."""
+    from dollos.harness.permissions import TOOL_MATRIX
+
+    assert "SpawnMonitor" not in TOOL_MATRIX
+    assert "RemoveMonitor" not in TOOL_MATRIX

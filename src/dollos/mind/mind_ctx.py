@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from dollos.memory import FtsMemory
     from dollos.mind.mind_state import MindState
     from dollos.mind.sink_resolver import SinkResolver
-    from dollos.monitor_runner import MonitorRunner
     from dollos.shell_runner import ShellRunner
     from dollos.tool_outputs import ToolOutputStore
     from dollos.workflow import WorkflowRunner
@@ -49,7 +48,6 @@ class MindCtx:
     tool_output_store: "ToolOutputStore"
     shell_runner: "ShellRunner"
     workflow_runner: "WorkflowRunner | None"
-    monitor_runner: "MonitorRunner"
 
     # A1 self-profile — total-char cap for self_profile.md (from Settings).
     self_profile_max_chars: int = 4000

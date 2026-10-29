@@ -3,9 +3,8 @@ per-tier tool list the model is shown (plan 2026-10-18 decision 3).
 
 An external_public turn (strangers, non-owner DMs, the owner posting in a
 PUBLIC channel) must get a structurally reduced tool set — Shell,
-SpawnWorkflow, SpawnMonitor, RemoveMonitor, InvokeSkill, WriteSchedule, and
-SelfRevision must never appear, no matter what safe_mode/reflection/evolution
-flags are set. This is the hard security boundary.
+SpawnWorkflow, InvokeSkill, WriteSchedule, and SelfRevision must never
+appear, no matter what safe_mode/reflection/evolution flags are set. This is the hard security boundary.
 
 The owner's own DM (external_dm) is NOT reduced any more: owner DM = the
 owner at the local keyboard (user decision 2026-10-27, plan 2026-10-27
@@ -22,7 +21,7 @@ from tests._mindloop_factory import make_mindloop
 # Full set that must NEVER appear on an external_public turn. SelfRevision
 # (慢變演化 self-rewrite) is in here too: an external reflection turn must not
 # regain it. (The owner's DM gets them since 2026-10-27, like the local owner.)
-DANGEROUS = ("Shell", "SpawnWorkflow", "SpawnMonitor", "RemoveMonitor",
+DANGEROUS = ("Shell", "SpawnWorkflow",
              "InvokeSkill", "WriteSchedule", "SelfRevision")
 
 

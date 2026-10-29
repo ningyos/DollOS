@@ -27,14 +27,6 @@ class _FakeWorkflowRunner:
         pass
 
 
-class _FakeMonitorRunner:
-    def spawn(self, **kwargs):
-        return "mon-1"
-
-    async def remove(self, monitor_id):
-        return True
-
-
 class _FakeMemSearch:
     """Fake memsearch — records every index_file call so tests can prove
     self_profile.md is NEVER indexed (always-inject, not recall)."""
@@ -54,7 +46,7 @@ def make_mind_ctx(tmp_path):
     """Builds a real MindCtx with a tmp memory_root and a fake memsearch that
     records index_file calls. Everything else is the same real/near-real
     plumbing _dispatcher_helpers.py uses elsewhere (real MindState, real
-    ToolOutputStore, fake shell/workflow/monitor runners)."""
+    ToolOutputStore, fake shell/workflow runners)."""
 
     def _factory(self_profile_max_chars: int = 1200,
                  pin_sections: frozenset[str] = REFLECTION_SECTIONS) -> MindCtx:
@@ -69,7 +61,6 @@ def make_mind_ctx(tmp_path):
             tool_output_store=ToolOutputStore(tmp_path / "tool_outputs"),
             shell_runner=_FakeShellRunner(),
             workflow_runner=_FakeWorkflowRunner(),
-            monitor_runner=_FakeMonitorRunner(),
             self_profile_max_chars=self_profile_max_chars,
             pin_sections=pin_sections,
         )

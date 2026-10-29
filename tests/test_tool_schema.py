@@ -146,12 +146,10 @@ def test_every_tool_schema_is_english():
 
 
 def test_result_descriptions_name_the_real_perception_lines():
-    """Shell / SpawnMonitor describe how their results come back with the
-    perception line she actually sees, not a stale paraphrase."""
+    """Shell describes how its result comes back with the perception line
+    she actually sees, not a stale paraphrase."""
     shell = inspect.cleandoc(tools_mod.Shell.__doc__)
-    monitor = inspect.cleandoc(tools_mod.SpawnMonitor.__doc__)
     assert "ToolResultArrived: Shell" in shell
-    assert "MonitorFired:" in monitor
 
 
 def test_mood_emotion_is_described_as_one_english_word():

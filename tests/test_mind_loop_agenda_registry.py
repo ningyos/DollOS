@@ -37,11 +37,11 @@ def _user_perception(text: str = "hi") -> Perception:
     return Perception(kind="UserSpoke", t=time.time(), data={"text": text})
 
 
-def _monitor_fired_perception() -> Perception:
+def _tool_result_perception() -> Perception:
     return Perception(
-        kind="MonitorFired",
+        kind="ToolResultArrived",
         t=time.time(),
-        data={"monitor_id": "m1", "line": "some output line"},
+        data={"tool": "Shell", "task_id": "sh-1", "status": "ok", "summary": "some output line"},
     )
 
 
@@ -110,15 +110,15 @@ async def test_agenda_cobatched_with_other_internal_perception_keeps_full_regist
     """Whole-branch review Finding 1 (operational-safety): ``drain_grouped``
     (perception_queue.py:85) batches ALL origin-less internal perceptions
     into ONE bucket — not just AgendaMoment+UserSpoke. An AgendaMoment
-    co-batched with ANY other origin-less perception (MonitorFired here,
-    stands in for ToolResultArrived/ScheduledMoment/Awoke/BridgeDown/etc.)
-    must NOT be treated as a pure-agenda turn either — otherwise a monitor
-    alert lands in the same batch as a stray AgendaMoment and gets silently
+    co-batched with ANY other origin-less perception (ToolResultArrived
+    here, stands in for ScheduledMoment/Awoke/BridgeDown/etc.)
+    must NOT be treated as a pure-agenda turn either — otherwise a tool
+    result lands in the same batch as a stray AgendaMoment and gets silently
     downgraded to AGENDA_TOOLS with its speech suppressed."""
     sink: asyncio.Queue = asyncio.Queue()
     ml = make_mindloop(memory_root=tmp_path, sink=sink)
 
-    await ml._run_one_turn([_agenda_moment(), _monitor_fired_perception()])
+    await ml._run_one_turn([_agenda_moment(), _tool_result_perception()])
 
     assert ml._moment != "agenda", (
         "the kind must not be agenda when co-batched with ANY other origin-less "

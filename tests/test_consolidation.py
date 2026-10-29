@@ -243,10 +243,10 @@ class _FakeRenderer:
 
 
 def test_keeper_tools_allowlist():
-    from dollos.tools import KEEPER_TOOLS, Report, Scratchpad, Shell, NoteMemory, SpawnMonitor, RemoveMonitor
+    from dollos.tools import KEEPER_TOOLS, Report, Scratchpad
     names = {c.__name__ for c in KEEPER_TOOLS}
     assert names <= {"Report", "Scratchpad", "Recall"}
-    assert names & {"Shell", "NoteMemory", "SpawnMonitor", "RemoveMonitor"} == set()
+    assert names & {"Shell", "NoteMemory"} == set()
     assert Report in KEEPER_TOOLS
     assert Scratchpad in KEEPER_TOOLS
 

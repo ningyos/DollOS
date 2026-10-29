@@ -16,7 +16,6 @@ import dollos.workflow as workflow_mod
 from dollos.llm.model import ModelAdapter
 from dollos.mind.mind_state import Perception
 from dollos.mind.perception_queue import PerceptionQueue
-from dollos.monitor_runner import MonitorRunner
 from dollos.prompts import PromptRenderer
 from dollos.shell_runner import ShellRunner
 from dollos.tool_outputs import ToolOutputStore
@@ -104,7 +103,6 @@ def _make_runner(
     queue: PerceptionQueue | None = None,
     *,
     shell_runner: ShellRunner | None = None,
-    monitor_runner: MonitorRunner | None = None,
 ) -> tuple[WorkflowRunner, PerceptionQueue, ToolOutputStore]:
     q = queue if queue is not None else PerceptionQueue()
     store = ToolOutputStore(tmp_path / "tool_outputs")
@@ -117,7 +115,6 @@ def _make_runner(
         tool_output_store=store,
         perception_queue=q,
         shell_runner=shell_runner,
-        monitor_runner=monitor_runner,
     )
     return runner, q, store
 
@@ -579,43 +576,6 @@ async def test_worker_ctx_has_shell_runner(tmp_path: Path):
         await _wait_for_tool_result(queue, timeout=3.0)
         assert captured
         assert captured[0].shell_runner is shell_runner
-    finally:
-        SUB_TOOLS.clear()
-        SUB_TOOLS.extend(orig)
-
-
-@pytest.mark.asyncio
-async def test_worker_ctx_has_monitor_runner(tmp_path: Path):
-    """WorkflowRunner forwards monitor_runner into the worker MindCtx."""
-    from dollos.mind.mind_ctx import MindCtx
-    from dollos.tools import SUB_TOOLS
-
-    captured: list[MindCtx] = []
-
-    class _CaptureTool(BaseModel):
-        token: str = "x"
-
-        async def run(self, ctx) -> None:
-            captured.append(ctx)
-            return None
-
-    orig = list(SUB_TOOLS)
-    SUB_TOOLS.clear()
-    SUB_TOOLS.extend([_CaptureTool])
-    try:
-        model = FakeModel(
-            ['<tool_call>{"name":"_CaptureTool","arguments":{"token":"x"}}</tool_call>']
-        )
-        queue = PerceptionQueue()
-        monitor_runner = MonitorRunner(cwd=tmp_path, perception_queue=queue)
-        runner, _, _ = _make_runner(model, tmp_path, queue, monitor_runner=monitor_runner)
-        runner.spawn(
-            workflow_id="wf-mon", tasks=["capture ctx"], synthesis=None,
-            mode="map_reduce", timeout_s=10,
-        )
-        await _wait_for_tool_result(queue, timeout=3.0)
-        assert captured
-        assert captured[0].monitor_runner is monitor_runner
     finally:
         SUB_TOOLS.clear()
         SUB_TOOLS.extend(orig)

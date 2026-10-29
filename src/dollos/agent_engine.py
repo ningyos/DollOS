@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from dollos.harness.turn_policy import TurnKind
     from dollos.llm.model import ModelAdapter
     from dollos.memory import FtsMemory
-    from dollos.monitor_runner import MonitorRunner
     from dollos.prompts import PromptRenderer
     from dollos.shell_runner import ShellRunner
     from dollos.tool_outputs import ToolOutputStore
@@ -49,7 +48,6 @@ async def run_agent(
     transcripts_root: Path,
     tool_output_store: "ToolOutputStore",
     shell_runner: "ShellRunner | None" = None,
-    monitor_runner: "MonitorRunner | None" = None,
     tools: list[type] = SUB_TOOLS,
     kind: "TurnKind",
     max_tokens: int = 4096,
@@ -103,7 +101,6 @@ async def run_agent(
         tool_output_store=tool_output_store,
         shell_runner=shell_runner,
         workflow_runner=None,  # no recursion / no nested workflows
-        monitor_runner=monitor_runner,
         self_profile_max_chars=self_profile_max_chars,
         owner_transcript=owner_transcript,
         # agent_report starts None; the Report tool sets it to signal exit.

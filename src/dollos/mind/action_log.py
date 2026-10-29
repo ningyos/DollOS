@@ -40,10 +40,6 @@ def action_phrase_for_tool(name: str, arguments: dict, prior_mood_emotion: str) 
         return f"ran a command: {_clip(cmd, 80)}"
     if name == "SpawnWorkflow":
         return f"dispatched a workflow ({_count(a.get('tasks'), 'task')})"
-    if name == "SpawnMonitor":
-        return f"set up a monitor: {_clip(a.get('command', ''), 60)}"
-    if name == "RemoveMonitor":
-        return f"removed monitor {a.get('monitor_id', '?')}"
     if name == "PursueGoal":
         return f'took on a new goal: "{_clip(a.get("desc", ""), 60)}"'
     if name == "AdvanceGoal":
@@ -83,10 +79,6 @@ def action_phrase_for_perception(kind: str, data: dict) -> str | None:
         status = d.get("status", "?")
         summary = _clip(d.get("summary", ""), 80)
         return f'{tool} "{task_id}" finished [{status}]: {summary}'
-    if kind == "MonitorFired":
-        return f"Monitor {d.get('monitor_id', '?')} fired: {_clip(d.get('line', ''), 80)}"
-    if kind == "MonitorEnded":
-        return f"Monitor {d.get('monitor_id', '?')} ended (exit {d.get('exit_status', '?')})"
     if kind in ("BridgeDown", "McpDown"):
         return f"{d.get('service', '?')} went down (rc={d.get('rc', '?')})"
     if kind == "PulseMoment":

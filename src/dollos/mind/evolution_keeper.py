@@ -166,7 +166,7 @@ async def _run_keeper_agent(*, task, model, renderer, memsearch, memory_root,
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
         tools=KEEPER_TOOLS, kind="keeper", max_tokens=max_tokens,
         think_budget=think_budget_tokens, purpose="evolution",
-        shell_runner=None, monitor_runner=None)
+        shell_runner=None)
 
 
 async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_identity,
@@ -186,7 +186,7 @@ async def _run_full_skeptic(*, candidate, rationale, bundle, current, pack_ident
         transcripts_root=transcripts_root, tool_output_store=tool_output_store,
         tools=KEEPER_TOOLS, kind="keeper", max_tokens=max_tokens,
         think_budget=think_budget_tokens, purpose="evolution",
-        shell_runner=None, monitor_runner=None)
+        shell_runner=None)
     if not report or not report.get("details"):
         raise RuntimeError("skeptic returned no verdict")
     details = report["details"].strip()

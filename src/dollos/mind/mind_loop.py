@@ -95,8 +95,8 @@ _CONVERSATION_PIN_SECTIONS = frozenset({"user", "relationship"})
 # does NOT count — it is present on almost every turn and would saturate the flag.
 # P1e spec §3.4 S1: ChannelMessage (Discord) added — a Discord-originated turn
 # now down-weights PinSelf writes via the existing self_history provenance path,
-# same as a tool-result/monitor turn.
-_EXTERNAL_KINDS = frozenset({"ToolResultArrived", "MonitorFired", "MonitorEnded", "ChannelMessage"})
+# same as a tool-result turn.
+_EXTERNAL_KINDS = frozenset({"ToolResultArrived", "ChannelMessage"})
 
 
 def batch_external(perceptions) -> bool:
@@ -472,8 +472,8 @@ class MindLoop:
 
             # World events (things that happened to her) → action log (Task
             # 4). Structurally owner/internal-only: strangers cannot produce
-            # Shell/Workflow/Monitor results (those tools aren't in the
-            # external_public TOOL_MATRIX row), so ToolResult/Monitor/
+            # Shell/Workflow results (those tools aren't in the
+            # external_public TOOL_MATRIX row), so ToolResult/
             # service-down perceptions never carry a stranger origin — no
             # origin gate needed here.
             # (Also: origin_tier is only derived AFTER this loop below, so it
@@ -1334,7 +1334,7 @@ class MindLoop:
         in ``dollos.harness.runner``; the policy is
         ``POLICIES[_binding_kind()]`` (at most ``MAX_SYNC_REFEED_PASSES``
         passes, the safe-mode failure rule). Fire-and-forget tools (a Shell
-        longer than ``tools.DOLL_WAIT_MAX_S``, SpawnWorkflow, SpawnMonitor)
+        longer than ``tools.DOLL_WAIT_MAX_S``, SpawnWorkflow)
         answer with a job receipt; their real result comes back later as a
         perception, the turn never waits for it. A shorter Shell runs to its
         end inside the call (plan 2026-10-29 decision 1).

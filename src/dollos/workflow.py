@@ -8,8 +8,6 @@ the ``PerceptionQueue`` with the combined result — the intermediate worker noi
 never reaches Doll's context. A worker's Shell waits for its own result
 (``ShellRunner.run_and_wait``, plan 2026-10-28 decision 2): the output comes
 back as that call's tool message, not as a ToolResultArrived on Doll's queue.
-SpawnMonitor does not: a worker's monitor still fires its events onto Doll's
-queue, since the MonitorRunner is shared.
 
 Modes (v1):
     map_reduce — parallel fan-out + optional synthesis.
@@ -47,7 +45,6 @@ if TYPE_CHECKING:
     from dollos.llm.model import ModelAdapter
     from dollos.memory import FtsMemory
     from dollos.mind.perception_queue import PerceptionQueue
-    from dollos.monitor_runner import MonitorRunner
     from dollos.prompts import PromptRenderer
     from dollos.shell_runner import ShellRunner
     from dollos.tool_outputs import ToolOutputStore
@@ -83,7 +80,6 @@ class WorkflowRunner:
         transcripts_root: Path,
         perception_queue: "PerceptionQueue | None" = None,
         shell_runner: "ShellRunner | None" = None,
-        monitor_runner: "MonitorRunner | None" = None,
         tool_output_store: "ToolOutputStore",
         cascade_logger: "CascadeLogger | None" = None,
         think_budget_tokens: int = 1024,
@@ -95,7 +91,6 @@ class WorkflowRunner:
         self._transcripts_root = transcripts_root
         self._perception_queue = perception_queue
         self._shell_runner = shell_runner
-        self._monitor_runner = monitor_runner
         self._tool_output_store = tool_output_store
         self._cascade_logger = cascade_logger
         # [llm].think_budget_tokens: caps each agent call's thinking.
@@ -331,7 +326,6 @@ class WorkflowRunner:
             transcripts_root=self._transcripts_root,
             tool_output_store=self._tool_output_store,
             shell_runner=self._shell_runner,
-            monitor_runner=self._monitor_runner,
             tools=SUB_TOOLS, kind="worker",
             max_tokens=4096,  # answer budget; thinking is on top
             think_budget=self._think_budget_tokens,

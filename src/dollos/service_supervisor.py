@@ -4,7 +4,7 @@
 supervise(crash 偵測 + 指數 backoff + healthy-uptime 重置 + crash-loop 上限)/ graceful
 terminate(SIGINT→wait→SIGKILL→reap)。v1 只註冊一個服務(discord-bridge),但介面通用。
 
-與 ShellRunner/MonitorRunner/WorkflowRunner(射後不理的 job spawner)分工不同:本類是
+與 ShellRunner/WorkflowRunner(射後不理的 job spawner)分工不同:本類是
 長命服務的守護者。設計見 docs/superpowers/specs/2026-07-06-bridge-internalization-design.md。
 """
 from __future__ import annotations

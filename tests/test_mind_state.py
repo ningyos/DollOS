@@ -120,3 +120,29 @@ def test_old_state_file_with_scratchpad_still_loads(tmp_path):
     loaded = load_state(p)
     assert loaded.scratchpad == "waiting for ls"
     assert loaded.focus == "old"
+
+
+def test_load_state_drops_legacy_monitor_perceptions(tmp_path):
+    """A state file saved before the monitor feature was removed (plan
+    2026-10-29 decision 3) may hold MonitorFired / MonitorEnded perceptions
+    and a "monitor" active task. It loads; the monitor perceptions are dropped."""
+    import json
+
+    from dollos.mind.mind_state import load_state
+
+    path = tmp_path / "mind_state.json"
+    path.write_text(json.dumps({
+        "recent_perceptions": [
+            {"kind": "MonitorFired", "t": 1.0,
+             "data": {"monitor_id": "mon-1", "line": "x"}, "seq": None},
+            {"kind": "UserSpoke", "t": 2.0, "data": {"text": "hi"}, "seq": None},
+            {"kind": "MonitorEnded", "t": 3.0,
+             "data": {"monitor_id": "mon-1", "exit_status": 0}, "seq": None},
+        ],
+        "active_tasks": [
+            {"task_id": "mon-1", "kind": "monitor", "summary": "tail", "started_at": 1.0},
+        ],
+    }))
+    s = load_state(path)
+    assert [p.kind for p in s.recent_perceptions] == ["UserSpoke"]
+    assert path.exists()  # not quarantined

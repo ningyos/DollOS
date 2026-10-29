@@ -9,7 +9,7 @@ def test_kind_literal_covers_all_emitted_kinds():
     hints = get_type_hints(Perception)
     kinds = set(get_args(hints["kind"]))
     emitted = {
-        "UserSpoke", "ToolResultArrived", "MonitorFired", "MonitorEnded",
+        "UserSpoke", "ToolResultArrived",
         "ScheduledMoment", "Awoke", "ReflectionMoment", "Interrupted",
     }
     assert emitted <= kinds
