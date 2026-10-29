@@ -417,3 +417,27 @@ def test_profile_keeper_config_defaults_and_rejects_unknown_keys():
     assert c.think_budget_tokens == 1024
     with pytest.raises(ValidationError):
         ProfileKeeperConfig(interval_s=10)
+
+
+def test_keepers_read_a_whole_normal_day_by_default():
+    """A normal day (~50 owner messages) is 15–20k chars; an early correction
+    must reach the daily keepers, so the default tail fits a whole day, and
+    the agent timeout covers prefilling it (Strata ~310 tok/s: 40k chars ≈
+    21k tokens ≈ 70 s cold) plus a few tool calls."""
+    import inspect
+
+    from dollos.config import ConsolidationConfig, ProfileKeeperConfig
+    from dollos.mind.consolidation import ConsolidationTrigger, run_consolidation
+    from dollos.mind.profile_keeper import run_profile_keeper
+
+    def default(fn, name):
+        return inspect.signature(fn).parameters[name].default
+
+    assert ConsolidationConfig().transcript_tail_chars == 40_000
+    assert ProfileKeeperConfig().transcript_tail_chars == 40_000
+    assert ConsolidationConfig().agent_timeout_s == 300
+    assert default(run_consolidation, "transcript_tail_chars") == 40_000
+    assert default(run_profile_keeper, "transcript_tail_chars") == 40_000
+    assert default(ConsolidationTrigger, "transcript_tail_chars") == 40_000
+    assert default(ConsolidationTrigger, "profile_keeper_transcript_tail_chars") == 40_000
+    assert default(ConsolidationTrigger, "agent_timeout_s") == 300

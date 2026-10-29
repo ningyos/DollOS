@@ -103,7 +103,7 @@ async def run_profile_keeper(
     tool_output_store,
     max_tokens: int = 2048,
     think_budget_tokens: int = 1024,
-    transcript_tail_chars: int = 8000,
+    transcript_tail_chars: int = 40_000,
     self_profile_max_chars: int = 4000,
 ) -> bool:
     """Run the profile keeper over ``target_date``'s transcript.

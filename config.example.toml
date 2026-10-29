@@ -192,7 +192,7 @@ thermal_multiplier_hot = 1.4     # GPU >75°C
 # enabled = true
 # max_tokens = 2048               # answer budget per keeper call
 # think_budget_tokens = 1024      # thinking cap per keeper call
-# transcript_tail_chars = 8000    # how much of the day's conversation it reads (the end)
+# transcript_tail_chars = 40000   # how much of the day's conversation it reads (the end; a whole normal day)
 
 # ----------------------------------------------------------------------
 # Self pulse — Doll's proprioception of her host (CPU / mem / GPU /
