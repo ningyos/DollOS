@@ -1,0 +1,5 @@
+# test_grade_synth.py output and run data
+_synth/
+__pycache__/
+*/
+!.gitignore

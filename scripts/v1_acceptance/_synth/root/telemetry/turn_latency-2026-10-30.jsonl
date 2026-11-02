@@ -1,3 +1,0 @@
-{"ts": 1793314806.5, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_b3", "conversation": "private", "epoch": 1}
-{"ts": 1793314808.5, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_b4", "conversation": "private", "epoch": 1}
-{"ts": 1793314985.5, "total_ms": 5000, "perception_kinds": ["ScheduledMoment"], "turn_id": "t_rem", "conversation": "private", "epoch": 1}

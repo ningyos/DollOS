@@ -1,7 +1,0 @@
-{"ts": 1793271609.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_a4", "conversation": "private", "epoch": 1}
-{"ts": 1793271639.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_a5", "conversation": "private", "epoch": 1}
-{"ts": 1793271669.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_a6", "conversation": "private", "epoch": 1}
-{"ts": 1793271679.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_a7", "conversation": "private", "epoch": 1}
-{"ts": 1793271689.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_c01", "conversation": "private", "epoch": 2}
-{"ts": 1793271694.5004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_probe", "conversation": "private", "epoch": 2}
-{"ts": 1793271697.2004, "total_ms": 5000, "perception_kinds": ["UserSpoke"], "turn_id": "t_bye", "conversation": "private", "epoch": 3}
