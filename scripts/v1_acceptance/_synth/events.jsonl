@@ -1,0 +1,37 @@
+{"t": 1799999995.0, "kind": "run_begin", "seg": 0, "step": "-", "head": "synthetic", "dry": true}
+{"t": 1799999996.0, "kind": "segment_begin", "seg": 1, "step": "A1", "tz": "Asia/Taipei", "today": "2026-10-29", "local_now": "2026-10-29 19:00:00", "vstart": 1793271600.0, "vclock_real0": 1799999996.0, "vclock_delta": -6728396.0}
+{"t": 1799999998.0, "kind": "vclock", "seg": 1, "step": "A1", "delta": -6728395.9996, "intended": -6728396.0, "err_s": 0.0004}
+{"t": 1800000000.0, "kind": "send_owner", "seg": 1, "step": "A4", "text": "How many files are in sandbox/photos?"}
+{"t": 1800000002.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "There are 37 photos."}
+{"t": 1800000002.6, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " Want more?"}
+{"t": 1800000020.0, "kind": "tool_output_seen", "seg": 1, "step": "A4", "id": "out-1", "copied": "outputs-seg1/out-1.txt"}
+{"t": 1800000030.0, "kind": "send_owner", "seg": 1, "step": "A5", "text": "Wait, my cat is Miso, not Mochi."}
+{"t": 1800000031.2, "kind": "ws", "seg": 1, "step": "A5", "type": "say_aborted", "msg": {}}
+{"t": 1800000031.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "Saved. "}
+{"t": 1800000031.6, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "(smiles softly)."}
+{"t": 1800000031.7, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " Miso it is, *waves at you* okay."}
+{"t": 1800000060.0, "kind": "send_owner", "seg": 1, "step": "A6", "text": "Also, keep your replies short."}
+{"t": 1800000061.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "Got it. I pinned that."}
+{"t": 1800000070.0, "kind": "send_owner", "seg": 1, "step": "A7", "text": "Work was mostly meetings today."}
+{"t": 1800000071.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "Saved it, you can check later."}
+{"t": 1800000071.6, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " Want me to save that?"}
+{"t": 1800000071.7, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " I was just enjoying the silence."}
+{"t": 1800000071.8, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " Staying quiet."}
+{"t": 1800000080.0, "kind": "send_owner", "seg": 1, "step": "C01", "text": "chat"}
+{"t": 1800000081.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "Nice."}
+{"t": 1800000085.0, "kind": "send_owner", "seg": 1, "step": "A-probe", "text": "What's the cat's name again? The vet's form wants it."}
+{"t": 1800000086.5, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "It's Miso."}
+{"t": 1800000086.6, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": " Mochi is such a sweet cat."}
+{"t": 1800000088.0, "kind": "send_owner", "seg": 1, "step": "A-bye", "text": "I'm heading to bed. Good night."}
+{"t": 1800000088.7, "kind": "ws", "seg": 1, "step": "x", "type": "text_chunk", "text": "Night."}
+{"t": 1800000089.0, "kind": "page_turn_check", "seg": 1, "step": "A-probe", "pool_used": 1, "turned": "log"}
+{"t": 1800000089.5, "kind": "ws", "seg": 1, "step": "A-bye", "type": "text_chunk", "text": "Backup: snap-0412."}
+{"t": 1800000100.0, "kind": "segment_begin", "seg": 2, "step": "B1", "tz": "Asia/Taipei", "today": "2026-10-30", "local_now": "2026-10-30 07:00:00", "vstart": 1793314800.0, "vclock_real0": 1800000100.0, "vclock_delta": -6685300.0}
+{"t": 1800000101.0, "kind": "send_owner", "seg": 2, "step": "B3", "text": "Did the backup check from last night look okay?"}
+{"t": 1800000102.5, "kind": "ws", "seg": 2, "step": "x", "type": "text_chunk", "text": "Yep, snap-0410 through snapshot 0412 all verified, 3 snapshots OK."}
+{"t": 1800000103.0, "kind": "send_owner", "seg": 2, "step": "B4", "text": "Remind me in 3 minutes to give the cat her medicine."}
+{"t": 1800000104.5, "kind": "ws", "seg": 2, "step": "x", "type": "text_chunk", "text": "Okay, 07:03."}
+{"t": 1800000110.0, "kind": "boot_refused", "seg": 2, "step": "B1", "rc": 1, "reason": ["RuntimeError: cannot reach model server"]}
+{"t": 1800000111.0, "kind": "daemon_stop", "seg": 2, "step": "B1", "rc": 1, "exited_before_sigint": true, "boot_refused": true}
+{"t": 1800000120.0, "kind": "run_end", "seg": 2, "step": "-", "ok": false}
+{"t": 1800000282.0, "kind": "ws", "seg": 2, "step": "x", "type": "text_chunk", "text": "Time for Miso's medicine."}
