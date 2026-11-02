@@ -39,40 +39,9 @@ v1 的功能都做完、合併進 `main` 了，只差**正式驗收**：照 spec
 
 ### 工具
 
-工具放在 `scripts/v1_acceptance/`。它原本在 zenith 的 /tmp，這次才搬進 repo。
-
-| 檔案 | 作用 |
-|---|---|
-| `run.sh <tag>` | 跑一次，接著評分，最後清掉殘留行程（當掉後也會清） |
-| `live_v1.py` | driver |
-| `grade_v1.py <tag>` | 評分；`--summary <tag>...` 合併多次 |
-| `fixtures_v1.py`、`chat_pool.py` | 夾具和 80 則閒聊 |
-| `v1lib.py` | 共用函式，含 VClock |
-| `vclock_launch.py` | 用 time-machine 讓 daemon 跑在虛擬時間 |
-| `stub_llm.py` | 乾跑用的假模型 |
-| `test_grade_synth.py` | 評分器自我測試，32 項 |
-| `pilot-grade.txt` | 試跑的完整成績 |
-
-**在 Mac 上要先做的**：
-1. 驗收必須跑在乾淨、detached 在 `4dc05ce` 的 worktree 上（driver 的 preflight 會檢查 HEAD）：
-
-   ```bash
-   git worktree add --detach .worktrees/v1-accept 4dc05ce
-   cd .worktrees/v1-accept && uv sync
-   ```
-
-2. 設定環境變數 `DOLLOS_V1_WT`（worktree 的絕對路徑），需要時再設 `DOLLOS_V1_STRATA`，預設是 `http://100.110.158.36:8080`。
-3. 從 `run.sh` 所在的目錄跑；輸出會寫在旁邊的 `<tag>/`。先用 `stub_llm.py` 乾跑一次，確認 Mac 上路徑、port、`uvx mcp-server-fetch` 都正常。
-4. 這些腳本只在 Linux 上跑過。Mac 上可能卡的地方：
-   - `pgrep` 的寫法、`/proc/<pid>/cwd`（`run.sh` 找殘留行程時會用到）。
-   - process group。
-   - time-machine。
-
-   遇到就修腳本，不要改 worktree。
+驗收的 driver 和評分器沒有進 repo（使用者決定，Mac 上要重做）。照 spec 的 §3（腳本）和 §9（driver 細節）重寫。驗收要跑在乾淨、detached 在 `4dc05ce` 的 worktree 上，那個 commit 的程式碼跟現在的 `main` 一樣。
 
 ### 試跑結果（不算分，在 zenith 上用真的 Strata）
-
-完整成績在 `scripts/v1_acceptance/pilot-grade.txt`。
 
 - **過的**：A4、A5、A6、A10–A11（主人插話）、A12、翻頁（23 則閒聊後翻頁，翻完還記得貓叫 Miso）、A-probe、A-fetch、A-taint、重開、B-probe、B4、B5–B6、偏好第二天（10/10）、每天整理（keeper 把「貓叫 Miso」補進 profile）。
 - **四條零容忍**全過。
@@ -83,15 +52,15 @@ v1 的功能都做完、合併進 `main` 了，只差**正式驗收**：照 spec
 
 ### 正式 3 次的狀況
 
-- **第一次跑**：s1 進行到 C18 時，**driver 自己**（不是 daemon）在 Python 3.13 裡 general protection fault。它沒清掉 daemon，s2、s3 就因為 port 被占而開不起來。`run.sh` 已經補上自動清殘留。
+- **第一次跑**：s1 進行到 C18 時，**driver 自己**（不是 daemon）在 Python 3.13 裡 general protection fault。它沒清掉 daemon，s2、s3 就因為 port 被占而開不起來。新的 driver 要在當掉後也清得掉自己啟動的行程。
 - **重跑**：剛開始就被停掉了，一筆也沒跑完。
 - **zenith 上的 Python 當機**：一共 4 次，全在 uv 管理的 Python 3.13（測試腳本 2 次、評分程式 1 次、10/28 daemon 1 次）。原因沒查出來，**不要**下結論說是硬體問題，使用者說另一個專案的 session 沒事。到 Mac 上先看會不會再發生。
 
 ### 下一步
 
-1. 在 Mac 上照上面準備好，乾跑一次。
-2. 問使用者 OK 後，跑正式 3 次（s1、s2、s3），每次大約 30 分鐘。
-3. `grade_v1.py --summary s1 s2 s3`，看每一步是否 ≥2/3。spec 的「需要主人看」那幾項給使用者看。
+1. 照 spec 在 Mac 上重做 driver 和評分器，先用假模型乾跑一次。
+2. 問使用者 OK 後，跑正式 3 次，每次大約 30 分鐘。
+3. 算分，看每一步是否 ≥2/3。spec 的「需要主人看」那幾項給使用者看。
 4. 寫驗收報告到 `docs/research/`，請使用者判定 v1 是否完成，再更新 `CLAUDE.md` 的「下一個」。
 5. 看 3 次的數據之後，再決定要不要修：每回合都叫 `NoteMemory`、B3 記不住細節、偏好第一天剛好卡在門檻。
 
