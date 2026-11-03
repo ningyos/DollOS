@@ -5,10 +5,7 @@ reasoning_effort = "high"      # Strata maps this to the model
 timeout_s = 300.0
 max_tokens = 4096
 
-[decision]
-base_url = "http://127.0.0.1:1976" # `fm serve --port 1976` (started by the owner)
-model = "system"
-timeout_s = 30.0
+# The decision model is Apple Foundation Models on this Mac, called in-process.
 
 [core]
 data_dir = "data"

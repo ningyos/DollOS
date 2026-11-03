@@ -1,15 +1,17 @@
 # dollcore demo
 
-依 `docs/superpowers/specs/2026-11-03-core-design-proposal.md` 做的最小可跑版本。提案還沒全部定案，demo 先照提案的建議做（例如 §10 第 1 題選了 SQLite），之後依決定改。
+依 `docs/superpowers/specs/2026-11-03-core-design-proposal.md` 做的最小可跑版本。提案還沒全部定案，demo 先照提案的建議做（例如 §10 第 1 題選了 SQLite），之後依決定改。2026-11-04 從 Python 改寫成 Swift Package（`Sources/DollCore` 函式庫、`Sources/DollCLI` 終端機），只用 Foundation、FoundationModels、系統 SQLite3，沒有第三方套件。需要 macOS 26 以上、Apple Intelligence 開著。
 
 ## 跑起來
 
 ```bash
-fm serve --port 1976            # decision model（Apple FM），另開一個終端機
 cp dollcore.example.toml dollcore.toml
-uv sync
-uv run dollcore --config dollcore.toml
+swift run dollcore --config dollcore.toml
 ```
+
+decision model 是這台 Mac 上的 Apple Foundation Models，直接在行程裡呼叫，不用另外開 `fm serve`。開機時會檢查主模型（`/health`、`/v1/models`）和 Foundation Models 可不可用；任一個不行就直接報錯結束，不降級。
+
+設定檔是 TOML，但只吃一個嚴格的子集：`[section]`、`key = value`、`#` 註解、字串（含 `"""` 多行）、整數、小數、true/false、單行陣列。其他寫法和不認得的 key 都直接報錯。角色包 `doll.toml` 用同一個 parser 讀。
 
 指令：直接打字 = 主人說話；`/dm <誰> <內容>` = 別人私訊她；`/approve <job>`、`/deny <job> [理由]` = 核准或拒絕她要跑的外部動作；`/pending` 看還在等核准的；`/lines` 看事情線和 job；`/quit`。
 
@@ -27,13 +29,14 @@ uv run dollcore --config dollcore.toml
 
 - gate 只決定「跑不跑」，命令跑起來後仍然沒有 sandbox，權限就是目前的使用者。核准前要自己看清楚命令。
 - 「只有主人能核准」目前只靠終端機：`Doll.approve()` / `Doll.deny()` 是一般的 public method，本身不檢查呼叫者是誰。現在唯一的呼叫端是 REPL，而能打字進 REPL 的就是主人。之後只要加 IPC、Discord 或任何 API 呼叫端，就必須在程式端做核准者身分驗證，不能直接把這兩個 method 接出去。這是 demo 限制，不是通用的身分驗證。
+- Shell job 用 `posix_spawn` 加 `POSIX_SPAWN_SETSID` 開 `/bin/sh -c`，自成一個 session／process group；逾時或 CancelJob 時對整個 group 送 SIGKILL。命令自己再開新 session 跑掉的子行程，殺不到。
 
 ## 做了什麼
 
 - 一個佇列、一個消費者，一次一回合（spec 第 1 項）；不做 WAL（第 2 項）。
 - 一條時間線，依身分投影：主人和她自己的回合看全部；陌生人只看自己的 DM，沒有工具，看不到主人糾正（3.4）。
 - 內部工具（Recall、NoteMemory、PinSelf、OpenLine、UpdateLine、CancelJob）在回合內做完；外部工具（Shell）一律變成 job，派出後程式結束回合，結果變成新事件回來。
-- 閒置時問 decision model 要推進哪條線（3.5、3.6）；每條線每天有步數上限；進行中的線有上限。
+- 閒置時問 decision model（Apple Foundation Models，guided generation，答案只能是候選 line id 或 `none`）要推進哪條線（3.5、3.6）；每條線每天有步數上限；進行中的線有上限。閒置檢查是獨立的 Task，不卡住消費者。
 - 開機時清掉上次留下的 job 行程，標成 `lost`，不重跑。
 - 所有行為數字在 `dollcore.example.toml`。
 
@@ -43,6 +46,8 @@ uv run dollcore --config dollcore.toml
 
 ## 驗證
 
-- `uv run --with pytest pytest -q tests -p no:anyio`：11 個測試。原本 7 個（派 job 後回合結束、內部工具續跑、重複呼叫就停、陌生人看不到主人內容、主人看得到 DM、線數上限、錯的 line_id 不結束回合），加上 approval gate 4 個：核准前不執行、拒絕後不執行且她會被告知、逾時算拒絕、開機時殘留的等核准 job 標成 `lost`。
-- 2026-11-03 對 Strata（`qwen3.8-flash-next-iq3_s`）和本機 `fm serve` 跑完整情境：記住稱呼、查磁碟（job）、開線並推進、陌生人問主人私事被拒、主人問起 DM、閒置時 decision model 挑中那條線並推進一步。
-- 2026-11-03 透過真的 `dollcore` CLI（stdin/stdout）測 approval gate：她要跑 `find`，`/approve` 後回報 5 個資料夾；陌生人 DM 要她 `touch /tmp/dollsmoke/PWNED`，她拒絕，主人回合轉述時也沒有自己發出請求；主人叫她跑同一條命令再 `/deny`，她回報沒跑。`PWNED` 檔案始終不存在。
+- `swift test`：12 個測試。從 Python 版搬過來的 11 個：原本 7 個（派 job 後回合結束、內部工具續跑、重複呼叫就停、陌生人看不到主人內容、主人看得到 DM、線數上限、錯的 line_id 不結束回合），加上 approval gate 4 個：核准前不執行、拒絕後不執行且她會被告知、逾時算拒絕、開機時殘留的等核准 job 標成 `lost`。另加 1 個：設定檔有不認得的 key 就報錯。主模型和 decision model 都是假的，不連 Strata。
+- 2026-11-04 Swift 版開機對 Strata 和 Foundation Models 檢查通過（`娃娃 is up.`）；模型名稱寫錯時開機直接報錯結束。
+- 以下兩項是 2026-11-03 對 Python 版做的，Swift 版還沒重跑：
+  - 2026-11-03 對 Strata（`qwen3.8-flash-next-iq3_s`）和本機 `fm serve` 跑完整情境：記住稱呼、查磁碟（job）、開線並推進、陌生人問主人私事被拒、主人問起 DM、閒置時 decision model 挑中那條線並推進一步。
+  - 2026-11-03 透過真的 `dollcore` CLI（stdin/stdout）測 approval gate：她要跑 `find`，`/approve` 後回報 5 個資料夾；陌生人 DM 要她 `touch /tmp/dollsmoke/PWNED`，她拒絕，主人回合轉述時也沒有自己發出請求；主人叫她跑同一條命令再 `/deny`，她回報沒跑。`PWNED` 檔案始終不存在。

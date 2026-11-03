@@ -46,3 +46,6 @@ logs/
 
 # CodeGraph local index
 .codegraph/
+
+# Swift
+.build/
