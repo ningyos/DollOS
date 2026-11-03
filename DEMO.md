@@ -23,7 +23,10 @@ uv run dollcore --config dollcore.toml
 - 等核准的 job 不能被 decision model 推進；daemon 重開時，上次留下的等核准 job 標成 `lost`，不會自動執行。
 - `approve_external = false` 時，外部動作直接執行（舊行為）。
 
-限制：gate 只決定「跑不跑」，命令跑起來後仍然沒有 sandbox，權限就是目前的使用者。核准前要自己看清楚命令。
+限制：
+
+- gate 只決定「跑不跑」，命令跑起來後仍然沒有 sandbox，權限就是目前的使用者。核准前要自己看清楚命令。
+- 「只有主人能核准」目前只靠終端機：`Doll.approve()` / `Doll.deny()` 是一般的 public method，本身不檢查呼叫者是誰。現在唯一的呼叫端是 REPL，而能打字進 REPL 的就是主人。之後只要加 IPC、Discord 或任何 API 呼叫端，就必須在程式端做核准者身分驗證，不能直接把這兩個 method 接出去。這是 demo 限制，不是通用的身分驗證。
 
 ## 做了什麼
 
