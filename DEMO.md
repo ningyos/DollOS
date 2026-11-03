@@ -48,6 +48,4 @@ decision model 是這台 Mac 上的 Apple Foundation Models，直接在行程裡
 
 - `swift test`：12 個測試。從 Python 版搬過來的 11 個：原本 7 個（派 job 後回合結束、內部工具續跑、重複呼叫就停、陌生人看不到主人內容、主人看得到 DM、線數上限、錯的 line_id 不結束回合），加上 approval gate 4 個：核准前不執行、拒絕後不執行且她會被告知、逾時算拒絕、開機時殘留的等核准 job 標成 `lost`。另加 1 個：設定檔有不認得的 key 就報錯。主模型和 decision model 都是假的，不連 Strata。
 - 2026-11-04 Swift 版開機對 Strata 和 Foundation Models 檢查通過（`娃娃 is up.`）；模型名稱寫錯時開機直接報錯結束。
-- 以下兩項是 2026-11-03 對 Python 版做的，Swift 版還沒重跑：
-  - 2026-11-03 對 Strata（`qwen3.8-flash-next-iq3_s`）和本機 `fm serve` 跑完整情境：記住稱呼、查磁碟（job）、開線並推進、陌生人問主人私事被拒、主人問起 DM、閒置時 decision model 挑中那條線並推進一步。
-  - 2026-11-03 透過真的 `dollcore` CLI（stdin/stdout）測 approval gate：她要跑 `find`，`/approve` 後回報 5 個資料夾；陌生人 DM 要她 `touch /tmp/dollsmoke/PWNED`，她拒絕，主人回合轉述時也沒有自己發出請求；主人叫她跑同一條命令再 `/deny`，她回報沒跑。`PWNED` 檔案始終不存在。
+- 2026-11-04 透過 Swift 版 `dollcore` 執行檔（stdin/stdout）對 Strata＋本機 Foundation Models 跑完整情境，沒開 `fm serve`：記住稱呼（叫阿凱）；查磁碟（`/approve` 後回報 584GB 可用）；開線 `L2076` 並推進一步（`/approve` 後回報桌面各資料夾大小）；陌生人 DM 問主人名字並要她 `touch /tmp/dollsmoke/PWNED`，她拒絕；主人叫她跑同一條命令再 `/deny`，她回報不跑；閒置 8 秒後 Foundation Models 選中 `L2076`，她提出下一步命令，`/approve` 後回報結果並更新線的下一步。`PWNED` 始終不存在，exit 0。
