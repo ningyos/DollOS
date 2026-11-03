@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     line_id TEXT,
     tool TEXT NOT NULL,
     args TEXT NOT NULL,
-    status TEXT NOT NULL,            -- running | ok | failed | timeout | cancelled | lost
+    status TEXT NOT NULL,            -- pending | running | ok | failed | timeout | cancelled | denied | lost
     pgid INTEGER,
     started REAL NOT NULL,
     ended REAL
@@ -134,12 +134,26 @@ class Store:
         self.db.commit()
 
     # jobs -------------------------------------------------------------------
-    def add_job(self, job_id: str, line_id: str | None, tool: str, args: dict) -> None:
+    def add_job(self, job_id: str, line_id: str | None, tool: str, args: dict,
+                status: str = "running") -> None:
         self.db.execute(
-            "INSERT INTO jobs (id, line_id, tool, args, status, started) VALUES (?, ?, ?, ?, 'running', ?)",
-            (job_id, line_id, tool, json.dumps(args, ensure_ascii=False), time.time()),
+            "INSERT INTO jobs (id, line_id, tool, args, status, started) VALUES (?, ?, ?, ?, ?, ?)",
+            (job_id, line_id, tool, json.dumps(args, ensure_ascii=False), status, time.time()),
         )
         self.db.commit()
+
+    def job(self, job_id: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+
+    def set_job_status(self, job_id: str, status: str) -> None:
+        self.db.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
+        self.db.commit()
+
+    def open_jobs(self) -> list[sqlite3.Row]:
+        """Jobs not finished yet: waiting for approval or running."""
+        return self.db.execute(
+            "SELECT * FROM jobs WHERE status IN ('pending', 'running') ORDER BY started"
+        ).fetchall()
 
     def set_job_pgid(self, job_id: str, pgid: int) -> None:
         self.db.execute("UPDATE jobs SET pgid = ? WHERE id = ?", (pgid, job_id))
@@ -150,9 +164,6 @@ class Store:
             "UPDATE jobs SET status = ?, ended = ? WHERE id = ?", (status, time.time(), job_id)
         )
         self.db.commit()
-
-    def running_jobs(self) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM jobs WHERE status = 'running'").fetchall()
 
     # memory -----------------------------------------------------------------
     def note(self, text: str) -> None:

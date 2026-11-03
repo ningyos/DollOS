@@ -35,6 +35,8 @@ class CoreConfig:
     shell_timeout_s: float = 600.0
     job_result_inline_chars: int = 4000
     timeline_window_messages: int = 200
+    approve_external: bool = True
+    approval_timeout_s: float = 1800.0
 
 
 @dataclass(frozen=True)

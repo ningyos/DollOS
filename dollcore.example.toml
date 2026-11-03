@@ -19,5 +19,7 @@ line_daily_steps = 20
 idle_first_s = 300.0
 idle_every_s = 600.0
 shell_timeout_s = 600.0
+approve_external = true       # every external action waits for /approve
+approval_timeout_s = 1800.0   # unanswered requests are denied after this
 job_result_inline_chars = 4000
 timeline_window_messages = 200

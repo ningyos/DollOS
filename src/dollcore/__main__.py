@@ -2,6 +2,9 @@
 
     you> text                 the owner talks
     you> /dm <who> <text>     someone else DMs Doll
+    you> /approve <job>       run a job Doll asked for
+    you> /deny <job> [why]    refuse it
+    you> /pending             list jobs waiting for approval
     you> /lines               show work lines and jobs
     you> /quit
 """
@@ -23,6 +26,12 @@ def _say(audience: str, text: str) -> None:
     print(f"\n[Doll{tag}] {text}\n", flush=True)
 
 
+def _ask(job_id: str, tool: str, args: dict, line_id: str | None) -> None:
+    line = f" (line {line_id})" if line_id else ""
+    print(f"\n[approval] {job_id}{line} {tool}: {args.get('command')}\n"
+          f"           /approve {job_id}   or   /deny {job_id} [why]\n", flush=True)
+
+
 async def _repl(doll: Doll) -> None:
     loop = asyncio.get_running_loop()
     runner = asyncio.create_task(doll.run())
@@ -38,6 +47,16 @@ async def _repl(doll: Doll) -> None:
                 break
             if line == "/lines":
                 print(doll._lines_block(), flush=True)
+                continue
+            if line == "/pending":
+                print("\n".join(f"{j}: {c}" for j, c in doll.pending()) or "(none)", flush=True)
+                continue
+            if line.startswith("/approve "):
+                print(doll.approve(line.split()[1]), flush=True)
+                continue
+            if line.startswith("/deny "):
+                parts = line.split(" ", 2)
+                print(doll.deny(parts[1], parts[2] if len(parts) > 2 else ""), flush=True)
                 continue
             if line.startswith("/dm "):
                 _, who, text = line.split(" ", 2)
@@ -58,11 +77,12 @@ def main() -> None:
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load(args.config)
-    doll = Doll(cfg, Path.cwd(), _say)
+    doll = Doll(cfg, Path.cwd(), _say, _ask)
 
     async def go() -> None:
         await doll.boot()
-        print(f"{doll.name} is up. /dm <who> <text>, /lines, /quit", flush=True)
+        print(f"{doll.name} is up. /dm <who> <text>, /approve <job>, /deny <job>, /pending, "
+              "/lines, /quit", flush=True)
         await _repl(doll)
 
     asyncio.run(go())
