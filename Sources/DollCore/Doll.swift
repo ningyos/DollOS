@@ -130,13 +130,11 @@ public actor Doll {
         }
     }
 
+    /// Owner voice is the only input that cancels a model call in flight (3.1); the event is
+    /// queued first so the rerun sees it.
     public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false) {
         put(Event(.owner, .owner, text, secret: secret, voice: voice))
-    }
-
-    /// The cancel hook for owner voice (M6): drops the model call in flight; the turn reruns from scratch.
-    public func interrupt() {
-        inflight?.cancel()
+        if voice { inflight?.cancel() }
     }
 
     /// Ends `run()` after the current turn.

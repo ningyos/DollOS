@@ -14,13 +14,22 @@ private actor FakeModel: MainModel {
 
     func check() async throws {}
 
+    /// When set, the next request hangs until the call is cancelled (a long model call).
+    var stallNext = false
+
     func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
         requests.append((messages, effort))
+        if stallNext {
+            stallNext = false
+            try await Task.sleep(for: .seconds(30))
+        }
         guard !replies.isEmpty else { throw ModelError("script ran out at request \(requests.count)") }
         let content = replies.removeFirst()
         let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 }
         return ModelReply(content: content, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
     }
+
+    func stall() { stallNext = true }
 
     func add(_ more: [String]) { replies += more }
     func seen(_ i: Int) -> [ChatMessage] { requests[i].messages }
@@ -101,6 +110,29 @@ private struct Harness {
     let events = try h.store.events()
     #expect(events.map(\.text) == ["voice", "text", "r", "好"])
     #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .jobResult, .jobResult])
+}
+
+@Test func ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("這題難")
+    try await h.turn("【我想一下】high\n等我")                 // next call is high
+    await h.model.stall()
+    await h.model.add(["好"])
+    await h.doll.ownerSaid("開始算")
+    let doll = h.doll
+    let running = Task { try await doll.runOnce() }
+    while await h.model.requests.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+    await h.doll.ownerSaid("等等不用算了", voice: true)      // cancels the stalled call
+    try await running.value
+    let reqs = await h.model.requests
+    #expect(reqs.count == 3)
+    #expect(reqs[1].effort == "high" && reqs[2].effort == "high")    // the think survives the cancelled call
+    #expect(!reqs[1].messages.contains { $0.content.contains("等等不用算了") })
+    #expect(reqs[2].messages.contains { $0.content.contains("等等不用算了") })
+    #expect(h.reports.map(\.index) == [1, 2] && h.said == ["等我", "好"])
+    #expect(h.logs.contains { $0.contains("turn 2 interrupted") })
+    let later = try h.store.events().filter { $0.kind == .owner }.map(\.text)
+    #expect(later == ["這題難", "開始算", "等等不用算了"])
 }
 
 @Test func noEventMeansNoTurn() async throws {

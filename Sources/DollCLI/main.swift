@@ -44,7 +44,6 @@ do {
         } else if line.hasPrefix("say ") {
             await doll.ownerSaid(String(line.dropFirst(4)))
         } else if line.hasPrefix("voice ") {
-            await doll.interrupt()
             await doll.ownerSaid(String(line.dropFirst(6)), voice: true)
         } else {
             out("unknown command; say <text>, voice <text>, status, quit")
