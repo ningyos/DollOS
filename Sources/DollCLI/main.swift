@@ -1,7 +1,7 @@
 // Terminal front end: runs the core and reads commands on stdin. Only the owner exists in M1.
 //
 //     say <text>          owner text
-//     voice <text>        owner voice (same words, higher priority; the real voice path is M6)
+//     voice <text>        owner voice: interrupts a model call in flight, then higher priority (the real voice path is M6)
 //     status              print the 【狀況】 footer
 //     quit
 
@@ -44,6 +44,7 @@ do {
         } else if line.hasPrefix("say ") {
             await doll.ownerSaid(String(line.dropFirst(4)))
         } else if line.hasPrefix("voice ") {
+            await doll.interrupt()
             await doll.ownerSaid(String(line.dropFirst(6)), voice: true)
         } else {
             out("unknown command; say <text>, voice <text>, status, quit")

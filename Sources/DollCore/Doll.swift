@@ -235,6 +235,8 @@ public actor Doll {
         try await turn()
     }
 
+    /// One model call over the whole timeline. Owner voice may cancel the call in flight; the
+    /// step then restarts from scratch with the queue drained again, so the voice is in it.
     func turn() async throws {
         turnIndex += 1
         let events = try store.events()
@@ -243,22 +245,22 @@ public actor Doll {
         let footerText = footer(contextTokens: Int(Double(estimate) * tokenRatio))
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = effortNext ?? llm.defaultEffort
-        effortNext = nil
 
+        let task = Task { try await model.chat(messages, effort: effort) }
+        inflight = task
         let reply: ModelReply
-        while true {
-            let task = Task { try await model.chat(messages, effort: effort) }
-            inflight = task
-            do {
-                reply = try await task.value
-                inflight = nil
-                break
-            } catch is CancellationError {
-                inflight = nil
-                if stopped { throw CancellationError() }
-                log("INFO", "turn \(turnIndex) interrupted; rerunning")
-            }
+        do {
+            reply = try await task.value
+            inflight = nil
+        } catch is CancellationError {
+            inflight = nil
+            if stopped { throw CancellationError() }
+            log("INFO", "turn \(turnIndex) interrupted; rerunning with the new events")
+            turnIndex -= 1
+            try drain()
+            return try await turn()
         }
+        effortNext = nil
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, estimate))
         let r = Reply.parse(reply.content)
         var actions: [String] = []
