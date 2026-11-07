@@ -1,22 +1,24 @@
 [llm]
 base_url = "http://192.0.2.11:8080"
 model = "qwen3.8-flash-next-iq3_s"
-reasoning_effort = "high"      # Strata maps this to the model
-timeout_s = 300.0
-max_tokens = 4096
-
-# The decision model is Apple Foundation Models on this Mac, called in-process.
+default_effort = "none"       # 決定（spec 3.1）：預設 none；她用【我想一下】medium／high 調高一次
+timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
+max_tokens = 4096             # 初始值理由：一回合一個動作，回覆很少超過 1k token；4k 夠 high 的思考
 
 [core]
 data_dir = "data"
 pack = "character_packs/doll2/doll.toml"
-max_internal_passes = 4
-max_open_lines = 5
-line_daily_steps = 20
-idle_first_s = 300.0
-idle_every_s = 600.0
-shell_timeout_s = 600.0
-approve_external = true       # every external action waits for /approve
-approval_timeout_s = 1800.0   # unanswered requests are denied after this
-job_result_inline_chars = 4000
-timeline_window_messages = 200
+# 佇列排進時間線的優先序，高→低（spec 3.1；M1 只有這三種來源）
+priority = ["owner_voice", "owner_text", "job_result"]
+
+[shell]
+# M2 之前她唯一能動的地方（plan M1 臨時邊界）；不存在會建
+scratch_dir = "~/dollos-scratch"
+# 命令在這幾秒內跑完就馬上排成結果事件，超過轉背景 job（spec 3.1）
+wait_s = 10.0                 # 初始值理由：舊版量測短 Shell 當輪回結果省掉 4–6 次呼叫；10 秒約等於一次模型呼叫，等更久不划算
+timeout_s = 3600.0            # 初始值理由：背景 job 的硬上限；試跑裡最長 3 分鐘，留 20 倍
+result_tail_chars = 4000      # 初始值理由：約 1–2k token 的輸出尾巴；再長每回合重讀太貴
+
+[idle]
+# 連續 N 輪沒工具呼叫＝空轉，只寫 log（spec 3.8；不通知、不限速）
+max_turns_without_tool = 3    # 初始值理由：r5 失敗樣本是連續 3 輪只寫標記不動手；2 輪可能只是回話

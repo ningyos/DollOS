@@ -1,12 +1,9 @@
-// Terminal front end.
+// Terminal front end: runs the core and reads commands on stdin. Only the owner exists in M1.
 //
-//     you> text                 the owner talks
-//     you> /dm <who> <text>     someone else DMs Doll
-//     you> /approve <job>       run a job Doll asked for
-//     you> /deny <job> [why]    refuse it
-//     you> /pending             list jobs waiting for approval
-//     you> /lines               show work lines and jobs
-//     you> /quit
+//     say <text>          owner text
+//     voice <text>        owner voice (same words, higher priority; the real voice path is M6)
+//     status              print the 【狀況】 footer
+//     quit
 
 import DollCore
 import Foundation
@@ -27,53 +24,36 @@ let doll: Doll
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
     doll = try Doll(
-        config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath),
-        main: HTTPMainModel(cfg.llm), decision: FoundationDecisionModel(),
-        say: { audience, text in
-            let tag = audience == "private" ? "" : " → \(audience.dropFirst(3))"
-            out("\n[Doll\(tag)] \(text)\n")
-        },
-        ask: { jobID, _, args, lineID in
-            let line = lineID.map { " (line \($0))" } ?? ""
-            out("\n[approval] \(jobID)\(line) Shell: \(args["command"]?.string ?? "")\n"
-                + "           /approve \(jobID)   or   /deny \(jobID) [why]\n")
-        })
+        config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
+        say: { text in out("\n[Doll] \(text)\n") })
     try await doll.boot()
 } catch {
     fail("\(error)")
 }
 
-out("\(doll.name) is up. /dm <who> <text>, /approve <job>, /deny <job>, /pending, /lines, /quit")
+out("\(doll.name) is up. say <text>, voice <text>, status, quit")
 let runner = Task { try await doll.run() }
 
 do {
     for try await raw in FileHandle.standardInput.bytes.lines {
         let line = raw.trimmingCharacters(in: .whitespaces)
         if line.isEmpty { continue }
-        if line == "/quit" { break }
-        if line == "/lines" {
-            out(try await doll.linesBlock())
-        } else if line == "/pending" {
-            let rows = try await doll.pending()
-            out(rows.isEmpty ? "(none)" : rows.map { "\($0.id): \($0.command)" }.joined(separator: "\n"))
-        } else if line.hasPrefix("/approve ") {
-            out(try await doll.approve(String(line.split(separator: " ")[1])))
-        } else if line.hasPrefix("/deny ") {
-            let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
-            out(try await doll.deny(parts[1], reason: parts.count > 2 ? parts[2] : ""))
-        } else if line.hasPrefix("/dm ") {
-            let parts = line.split(separator: " ", maxSplits: 2).map(String.init)
-            guard parts.count == 3 else { out("usage: /dm <who> <text>"); continue }
-            await doll.dm(parts[1], parts[2])
+        if line == "quit" { break }
+        if line == "status" {
+            out(try await doll.status())
+        } else if line.hasPrefix("say ") {
+            await doll.ownerSaid(String(line.dropFirst(4)))
+        } else if line.hasPrefix("voice ") {
+            await doll.ownerSaid(String(line.dropFirst(6)), voice: true)
         } else {
-            await doll.ownerSaid(line)
+            out("unknown command; say <text>, voice <text>, status, quit")
         }
     }
 } catch {
     fail("\(error)")
 }
 
-// /quit or end of input: stop the consumer, interrupting a model call in flight.
+// quit or end of input: stop the consumer, interrupting a model call in flight.
 await doll.stop()
 runner.cancel()
 do {

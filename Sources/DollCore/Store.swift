@@ -1,67 +1,83 @@
 import Foundation
 import SQLite3
 
-/// One SQLite file: the timeline, work lines, jobs, memory notes, pinned corrections.
+/// One SQLite file: the append-only timeline (events), the 【狀況】 footer each reply
+/// answered, and the jobs the program needs to kill after a restart.
 ///
 /// This is not a WAL. Nothing is replayed after a crash; the queue lives in memory.
 private let schema = """
-CREATE TABLE IF NOT EXISTS timeline (
+CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
-    audience TEXT NOT NULL,          -- 'private' (owner + Doll) or 'dm:<who>'
-    line_id TEXT,
-    message TEXT NOT NULL            -- one chat-completions message as JSON
+    kind TEXT NOT NULL,              -- owner | doll | result | job
+    source TEXT NOT NULL,            -- owner | internal
+    has_secret INTEGER NOT NULL DEFAULT 0,
+    voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
+    text TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS lines (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    opened_by TEXT NOT NULL,
-    status TEXT NOT NULL,            -- active | paused | done
-    next_step TEXT NOT NULL DEFAULT '',
-    summary TEXT NOT NULL DEFAULT '',
-    last_touched REAL NOT NULL,
-    steps_day TEXT NOT NULL DEFAULT '',
-    steps_today INTEGER NOT NULL DEFAULT 0
+CREATE TABLE IF NOT EXISTS footers (
+    seq INTEGER PRIMARY KEY,         -- her reply's seq
+    text TEXT NOT NULL               -- the 【狀況】 she saw right before it; a prompt artifact, not an event
 );
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
-    line_id TEXT,
-    tool TEXT NOT NULL,
-    args TEXT NOT NULL,
-    status TEXT NOT NULL,            -- pending | running | ok | failed | timeout | cancelled | denied | lost
+    command TEXT NOT NULL,
+    status TEXT NOT NULL,            -- running | ok | failed | timeout | cancelled | lost
     pgid INTEGER,
     started REAL NOT NULL,
     ended REAL
 );
-CREATE TABLE IF NOT EXISTS pins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    text TEXT NOT NULL
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5(text, ts UNINDEXED, tokenize='trigram');
 """
 
 public struct StoreError: Error, CustomStringConvertible {
     public let description: String
 }
 
-public struct Line: Sendable {
-    public let id: String
-    public let title: String
-    public let openedBy: String
-    public let status: String
-    public let nextStep: String
-    public let summary: String
-    public let lastTouched: Double
-    public let stepsDay: String
-    public let stepsToday: Int
+public enum Principal: String, Sendable {
+    case owner, `internal`
 }
 
-public struct Job: Sendable {
+public struct Event: Sendable, Equatable {
+    public enum Kind: String, Sendable {
+        case owner      // the owner spoke
+        case doll       // her reply, verbatim
+        case result     // a short command's output (or "turned into a background job")
+        case job        // a background job finished
+    }
+    public var kind: Kind
+    public var principal: Principal
+    public var text: String
+    public var secret: Bool
+    /// Only owner voice may cancel a model call in flight (voice itself is M6).
+    public var voice: Bool
+    public var seq: Int64?
+    public var ts: Double
+    /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
+    /// server's prefix cache stays valid; never part of the timeline proper.
+    public var footer: String?
+
+    public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false) {
+        self.kind = kind
+        self.principal = principal
+        self.text = text
+        self.secret = secret
+        self.voice = voice
+        self.seq = nil
+        self.ts = Date().timeIntervalSince1970
+    }
+
+    public var priority: Priority {
+        switch kind {
+        case .owner: voice ? .ownerVoice : .ownerText
+        case .result, .job: .jobResult
+        case .doll: .jobResult   // never queued; her replies go straight to the timeline
+        }
+    }
+}
+
+public struct Job: Sendable, Equatable {
     public let id: String
-    public let lineID: String?
-    public let tool: String
-    public let args: String          // the tool arguments as JSON
+    public let command: String
     public let status: String
     public let pgid: Int32?
     public let started: Double
@@ -70,8 +86,6 @@ public struct Job: Sendable {
 private enum Bind {
     case text(String), int(Int64), real(Double), null
 }
-
-private func bind(_ s: String?) -> Bind { s.map(Bind.text) ?? .null }
 
 private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -96,6 +110,7 @@ public final class Store {
             throw StoreError(description: "cannot open \(path.path)")
         }
         db = handle
+        sqlite3_busy_timeout(db, 5000)   // a second connection (dollctl, tests) may hold a write briefly
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { throw error() }
     }
 
@@ -133,126 +148,65 @@ public final class Store {
 
     private var now: Bind { .real(Date().timeIntervalSince1970) }
 
-    // timeline ---------------------------------------------------------------
-    public func append(_ audience: String, _ message: ChatMessage, lineID: String? = nil) throws {
-        let json = String(decoding: try ChatMessage.encoder.encode(message), as: UTF8.self)
-        try exec("INSERT INTO timeline (ts, audience, line_id, message) VALUES (?, ?, ?, ?)",
-                 [now, .text(audience), bind(lineID), .text(json)])
+    // events -----------------------------------------------------------------
+    private static let eventColumns =
+        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice"
+        + " FROM events e LEFT JOIN footers f ON f.seq = e.seq"
+
+    private static func event(_ r: Row) -> Event {
+        var e = Event(Event.Kind(rawValue: r.text(2)!)!, Principal(rawValue: r.text(3)!)!, r.text(5)!,
+                      secret: r.int(4)! != 0, voice: r.int(7)! != 0)
+        e.seq = r.int(0)
+        e.ts = r.real(1)
+        e.footer = r.text(6)
+        return e
     }
 
-    /// The visible slice of the one timeline, oldest first.
-    public func project(_ audiences: [String], window: Int) throws -> [ChatMessage] {
-        let marks = Array(repeating: "?", count: audiences.count).joined(separator: ",")
-        let rows = try query(
-            "SELECT message FROM (SELECT seq, message FROM timeline WHERE audience IN (\(marks))"
-                + " ORDER BY seq DESC LIMIT ?) ORDER BY seq",
-            audiences.map(Bind.text) + [.int(Int64(window))]) { $0.text(0)! }
-        var msgs = try rows.map { try JSONDecoder().decode(ChatMessage.self, from: Data($0.utf8)) }
-        // A window cut must not start inside a tool exchange.
-        while msgs.first?.role == "tool" { msgs.removeFirst() }
-        return msgs
+    public func attachFooter(_ seq: Int64, _ text: String) throws {
+        try exec("INSERT INTO footers (seq, text) VALUES (?, ?)", [.int(seq), .text(text)])
     }
 
-    public func dmAudiences() throws -> [String] {
-        try query("SELECT DISTINCT audience FROM timeline WHERE audience LIKE 'dm:%'") { $0.text(0)! }
+    public func footer(_ seq: Int64) throws -> String? {
+        try query("SELECT text FROM footers WHERE seq = ?", [.int(seq)]) { $0.text(0)! }.first
     }
 
-    // lines ------------------------------------------------------------------
-    public func openLine(_ id: String, title: String, openedBy: String, nextStep: String) throws {
-        try exec("INSERT INTO lines (id, title, opened_by, status, next_step, last_touched)"
-                    + " VALUES (?, ?, ?, 'active', ?, ?)",
-                 [.text(id), .text(title), .text(openedBy), .text(nextStep), now])
+    /// Appends one event and returns it with its seq.
+    @discardableResult
+    public func append(_ ev: Event) throws -> Event {
+        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text) VALUES (?, ?, ?, ?, ?, ?)",
+                 [.real(ev.ts), .text(ev.kind.rawValue), .text(ev.principal.rawValue),
+                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text)])
+        var out = ev
+        out.seq = sqlite3_last_insert_rowid(db)
+        return out
     }
 
-    private static let lineColumns =
-        "SELECT id, title, opened_by, status, next_step, summary, last_touched, steps_day, steps_today FROM lines"
-
-    private static func line(_ r: Row) -> Line {
-        Line(id: r.text(0)!, title: r.text(1)!, openedBy: r.text(2)!, status: r.text(3)!,
-             nextStep: r.text(4)!, summary: r.text(5)!, lastTouched: r.real(6),
-             stepsDay: r.text(7)!, stepsToday: Int(r.int(8)!))
-    }
-
-    public func lines(status: String? = nil) throws -> [Line] {
-        if let status {
-            return try query(Self.lineColumns + " WHERE status = ? ORDER BY last_touched", [.text(status)], Self.line)
-        }
-        return try query(Self.lineColumns + " ORDER BY last_touched", [], Self.line)
-    }
-
-    public func line(_ id: String) throws -> Line? {
-        try query(Self.lineColumns + " WHERE id = ?", [.text(id)], Self.line).first
-    }
-
-    public func updateLine(_ id: String, status: String, nextStep: String, summary: String) throws {
-        try exec("UPDATE lines SET status = ?, next_step = ?, summary = ?, last_touched = ? WHERE id = ?",
-                 [.text(status), .text(nextStep), .text(summary), now, .text(id)])
-    }
-
-    public func countStep(_ id: String, today: String) throws {
-        try exec("UPDATE lines SET steps_today = CASE WHEN steps_day = ? THEN steps_today + 1 ELSE 1 END,"
-                    + " steps_day = ?, last_touched = ? WHERE id = ?",
-                 [.text(today), .text(today), now, .text(id)])
+    /// The whole timeline, oldest first. Only the owner exists in M1, so there is one projection.
+    public func events() throws -> [Event] {
+        try query(Self.eventColumns + " ORDER BY e.seq", [], Self.event)
     }
 
     // jobs -------------------------------------------------------------------
-    public func addJob(_ id: String, lineID: String?, tool: String, args: String, status: String = "running") throws {
-        try exec("INSERT INTO jobs (id, line_id, tool, args, status, started) VALUES (?, ?, ?, ?, ?, ?)",
-                 [.text(id), bind(lineID), .text(tool), .text(args), .text(status), now])
+    public func addJob(_ id: String, command: String, pgid: Int32?) throws {
+        try exec("INSERT INTO jobs (id, command, status, pgid, started) VALUES (?, ?, 'running', ?, ?)",
+                 [.text(id), .text(command), pgid.map { Bind.int(Int64($0)) } ?? .null, now])
     }
 
-    private static let jobColumns = "SELECT id, line_id, tool, args, status, pgid, started FROM jobs"
+    private static let jobColumns = "SELECT id, command, status, pgid, started FROM jobs"
 
     private static func job(_ r: Row) -> Job {
-        Job(id: r.text(0)!, lineID: r.text(1), tool: r.text(2)!, args: r.text(3)!, status: r.text(4)!,
-            pgid: r.int(5).map { Int32($0) }, started: r.real(6))
+        Job(id: r.text(0)!, command: r.text(1)!, status: r.text(2)!, pgid: r.int(3).map { Int32($0) }, started: r.real(4))
     }
 
     public func job(_ id: String) throws -> Job? {
         try query(Self.jobColumns + " WHERE id = ?", [.text(id)], Self.job).first
     }
 
-    public func setJobStatus(_ id: String, _ status: String) throws {
-        try exec("UPDATE jobs SET status = ? WHERE id = ?", [.text(status), .text(id)])
-    }
-
-    /// Jobs not finished yet: waiting for approval or running.
-    public func openJobs() throws -> [Job] {
-        try query(Self.jobColumns + " WHERE status IN ('pending', 'running') ORDER BY started", [], Self.job)
-    }
-
-    public func setJobPgid(_ id: String, _ pgid: Int32) throws {
-        try exec("UPDATE jobs SET pgid = ? WHERE id = ?", [.int(Int64(pgid)), .text(id)])
+    public func runningJobs() throws -> [Job] {
+        try query(Self.jobColumns + " WHERE status = 'running' ORDER BY started", [], Self.job)
     }
 
     public func finishJob(_ id: String, _ status: String) throws {
         try exec("UPDATE jobs SET status = ?, ended = ? WHERE id = ?", [.text(status), now, .text(id)])
-    }
-
-    // memory -----------------------------------------------------------------
-    public func note(_ text: String) throws {
-        try exec("INSERT INTO notes (text, ts) VALUES (?, ?)", [.text(text), now])
-    }
-
-    public func recall(_ query: String, limit: Int) throws -> [String] {
-        let words = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        let terms = words.filter { $0.unicodeScalars.count >= 3 }
-        let expr = (terms.isEmpty ? [query] : terms)
-            .map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            .joined(separator: " OR ")
-        do {
-            return try self.query("SELECT text FROM notes WHERE notes MATCH ? ORDER BY rank LIMIT ?",
-                                  [.text(expr), .int(Int64(limit))]) { $0.text(0)! }
-        } catch let e as StoreError {
-            throw ToolError("bad recall query: \(e.description)")
-        }
-    }
-
-    public func pin(_ text: String) throws {
-        try exec("INSERT INTO pins (ts, text) VALUES (?, ?)", [now, .text(text)])
-    }
-
-    public func pins() throws -> [String] {
-        try query("SELECT text FROM pins ORDER BY id") { $0.text(0)! }
     }
 }

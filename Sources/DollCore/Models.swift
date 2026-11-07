@@ -1,84 +1,19 @@
 import Foundation
-import FoundationModels
 
-/// Any JSON value: tool schemas and tool-call arguments.
-public enum JSONValue: Codable, Sendable, Equatable {
-    case null
-    case bool(Bool)
-    case number(Double)
-    case string(String)
-    case array([JSONValue])
-    case object([String: JSONValue])
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.singleValueContainer()
-        if c.decodeNil() { self = .null }
-        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
-        else if let n = try? c.decode(Double.self) { self = .number(n) }
-        else if let s = try? c.decode(String.self) { self = .string(s) }
-        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
-        else { self = .object(try c.decode([String: JSONValue].self)) }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        switch self {
-        case .null: try c.encodeNil()
-        case .bool(let b): try c.encode(b)
-        case .number(let n): try c.encode(n)
-        case .string(let s): try c.encode(s)
-        case .array(let a): try c.encode(a)
-        case .object(let o): try c.encode(o)
-        }
-    }
-
-    public var string: String? {
-        if case .string(let s) = self { return s }
-        return nil
-    }
-}
-
-public struct ToolCall: Codable, Sendable, Equatable {
-    public struct Function: Codable, Sendable, Equatable {
-        public var name: String
-        public var arguments: String?
-        public init(name: String, arguments: String?) { self.name = name; self.arguments = arguments }
-    }
-    public var id: String
-    public var type: String?
-    public var function: Function
-    public init(id: String, type: String? = "function", function: Function) {
-        self.id = id; self.type = type; self.function = function
-    }
-}
-
-/// One chat-completions message, stored verbatim in the timeline.
+/// One chat-completions message. The timeline stores events, not messages;
+/// messages are rendered from events every step.
 public struct ChatMessage: Codable, Sendable, Equatable {
     public var role: String
-    public var content: String?
-    public var reasoningContent: String?
-    public var toolCalls: [ToolCall]?
-    public var toolCallID: String?
+    public var content: String
 
-    enum CodingKeys: String, CodingKey {
-        case role, content
-        case reasoningContent = "reasoning_content"
-        case toolCalls = "tool_calls"
-        case toolCallID = "tool_call_id"
-    }
-
-    public init(role: String, content: String?, reasoningContent: String? = nil,
-                toolCalls: [ToolCall]? = nil, toolCallID: String? = nil) {
+    public init(role: String, content: String) {
         self.role = role
         self.content = content
-        self.reasoningContent = reasoningContent
-        self.toolCalls = toolCalls
-        self.toolCallID = toolCallID
     }
 
     static let encoder: JSONEncoder = {
         let e = JSONEncoder()
-        // Sorted keys keep request bytes stable across turns, so the server's prompt cache can reuse them.
+        // Sorted keys keep request bytes stable across steps, so the server's prompt cache can reuse them.
         e.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
         return e
     }()
@@ -89,21 +24,49 @@ public struct ModelError: Error, CustomStringConvertible {
     public init(_ description: String) { self.description = description }
 }
 
+/// What one call cost. Strata reports `usage` and its own `timings`; other
+/// servers may leave the timings nil.
+public struct ModelUsage: Sendable, Equatable {
+    public var promptTokens: Int
+    public var completionTokens: Int
+    /// Strata `timings.prompt_n`: prompt tokens actually computed this call.
+    public var prefilled: Int?
+    /// Strata `timings.cache_n`: prompt tokens served from its cache.
+    public var cached: Int?
+    public var promptMs: Double?
+    public var predictedMs: Double?
+
+    public init(promptTokens: Int, completionTokens: Int, prefilled: Int? = nil, cached: Int? = nil,
+                promptMs: Double? = nil, predictedMs: Double? = nil) {
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.prefilled = prefilled
+        self.cached = cached
+        self.promptMs = promptMs
+        self.predictedMs = predictedMs
+    }
+}
+
+public struct ModelReply: Sendable, Equatable {
+    public var content: String
+    public var reasoning: String?
+    public var usage: ModelUsage
+    public init(content: String, reasoning: String? = nil, usage: ModelUsage) {
+        self.content = content
+        self.reasoning = reasoning
+        self.usage = usage
+    }
+}
+
 /// The main model: an OpenAI chat-completions endpoint.
 public protocol MainModel: Sendable {
     func check() async throws
-    func chat(_ messages: [ChatMessage], tools: [JSONValue]) async throws -> ChatMessage
-}
-
-/// Small structured judgments. Self-reported picks, not calibrated probabilities.
-public protocol DecisionModel: Sendable {
-    func check() async throws
-    /// Returns one of `choices` or "none".
-    func pick(instructions: String, prompt: String, choices: [String]) async throws -> String
+    /// `effort` is the Strata `reasoning_effort` value for this one call.
+    func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply
 }
 
 /// DollOS does not know which model sits behind the URL. The only Strata dialect
-/// field sent is `reasoning_effort`.
+/// field sent is `reasoning_effort`; `timings` is read when present.
 public struct HTTPMainModel: MainModel {
     let cfg: LlmConfig
 
@@ -132,25 +95,34 @@ public struct HTTPMainModel: MainModel {
         }
     }
 
-    public func chat(_ messages: [ChatMessage], tools: [JSONValue]) async throws -> ChatMessage {
+    private struct Reply: Decodable {
+        struct Msg: Decodable {
+            let content: String?
+            let reasoning_content: String?
+        }
+        struct Choice: Decodable { let message: Msg; let finish_reason: String? }
+        struct Usage: Decodable { let prompt_tokens: Int; let completion_tokens: Int }
+        struct Timings: Decodable {
+            let prompt_n: Int?; let cache_n: Int?; let prompt_ms: Double?; let predicted_ms: Double?
+        }
+        let choices: [Choice]
+        let usage: Usage?
+        let timings: Timings?
+    }
+
+    private func post(_ messages: [ChatMessage], effort: String, maxTokens: Int) async throws -> Reply {
         struct Body: Encodable {
             let model: String
             let messages: [ChatMessage]
             let max_tokens: Int
             let reasoning_effort: String
-            let tools: [JSONValue]?
-        }
-        struct Reply: Decodable {
-            struct Choice: Decodable { let message: ChatMessage; let finish_reason: String? }
-            let choices: [Choice]
         }
         var req = URLRequest(url: URL(string: cfg.baseURL + "/v1/chat/completions")!)
         req.httpMethod = "POST"
         req.timeoutInterval = cfg.timeoutS
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try ChatMessage.encoder.encode(Body(
-            model: cfg.model, messages: messages, max_tokens: cfg.maxTokens,
-            reasoning_effort: cfg.reasoningEffort, tools: tools.isEmpty ? nil : tools))
+            model: cfg.model, messages: messages, max_tokens: maxTokens, reasoning_effort: effort))
         let data: Data, status: Int
         do {
             let (d, resp) = try await URLSession.shared.data(for: req)
@@ -162,42 +134,21 @@ public struct HTTPMainModel: MainModel {
         guard status == 200 else {
             throw ModelError("main model HTTP \(status): \(String(decoding: data.prefix(300), as: UTF8.self))")
         }
-        let reply: Reply
-        do { reply = try JSONDecoder().decode(Reply.self, from: data) } catch {
+        do { return try JSONDecoder().decode(Reply.self, from: data) } catch {
             throw ModelError("main model returned an unreadable reply: \(error)")
         }
+    }
+
+    public func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
+        let reply = try await post(messages, effort: effort, maxTokens: cfg.maxTokens)
         guard let choice = reply.choices.first else { throw ModelError("main model returned no choices") }
         if choice.finish_reason == "length" { throw ModelError("main model hit max_tokens") }
-        return choice.message
-    }
-}
-
-/// Apple's on-device Foundation Models, called directly, with guided generation
-/// constrained to the candidate ids plus "none".
-public struct FoundationDecisionModel: DecisionModel {
-    public init() {}
-
-    public func check() async throws {
-        let availability = SystemLanguageModel.default.availability
-        guard case .available = availability else {
-            throw ModelError("Apple Foundation Models unavailable: \(availability)")
-        }
-    }
-
-    public func pick(instructions: String, prompt: String, choices: [String]) async throws -> String {
-        do {
-            let root = DynamicGenerationSchema(name: "Decision", properties: [
-                DynamicGenerationSchema.Property(
-                    name: "line_id", schema: DynamicGenerationSchema(name: "LineID", anyOf: choices + ["none"])),
-            ])
-            let schema = try GenerationSchema(root: root, dependencies: [])
-            let session = LanguageModelSession(instructions: instructions)
-            let reply = try await session.respond(
-                to: prompt, schema: schema, options: GenerationOptions(samplingMode: .greedy))
-            return try reply.content.value(String.self, forProperty: "line_id")
-        } catch {
-            try Task.checkCancellation()
-            throw ModelError("decision model failed: \(error)")
-        }
+        guard let u = reply.usage else { throw ModelError("main model returned no usage") }
+        let t = reply.timings
+        return ModelReply(
+            content: choice.message.content ?? "", reasoning: choice.message.reasoning_content,
+            usage: ModelUsage(promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens,
+                              prefilled: t?.prompt_n, cached: t?.cache_n, promptMs: t?.prompt_ms,
+                              predictedMs: t?.predicted_ms))
     }
 }

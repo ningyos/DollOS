@@ -4,7 +4,8 @@ import Foundation
 public struct LlmConfig: Sendable {
     public var baseURL: String
     public var model: String
-    public var reasoningEffort = "high"
+    /// `reasoning_effort` for a normal turn. "我想一下" raises it for one call.
+    public var defaultEffort = "none"
     public var timeoutS = 300.0
     public var maxTokens = 4096
 }
@@ -12,52 +13,85 @@ public struct LlmConfig: Sendable {
 public struct CoreConfig: Sendable {
     public var dataDir = "data"
     public var pack = "character_packs/doll2/doll.toml"
-    public var maxInternalPasses = 4
-    public var maxOpenLines = 5
-    public var lineDailySteps = 20
-    public var idleFirstS = 300.0
-    public var idleEveryS = 600.0
-    public var shellTimeoutS = 600.0
-    public var jobResultInlineChars = 4000
-    public var timelineWindowMessages = 200
-    public var approveExternal = true
-    public var approvalTimeoutS = 1800.0
+    /// Event sources from highest to lowest priority when the queue is drained.
+    public var priority = ["owner_voice", "owner_text", "job_result"]
+}
+
+public struct ShellConfig: Sendable {
+    /// Where every command runs. The only place she touches until the VM (M2).
+    public var scratchDir = "~/dollos-scratch"
+    /// A command that finishes within this many seconds returns in the same turn.
+    public var waitS = 10.0
+    /// Hard limit for a background job.
+    public var timeoutS = 3600.0
+    /// How much of a command's output she gets to see (the tail).
+    public var resultTailChars = 4000
+}
+
+public struct IdleConfig: Sendable {
+    /// N: this many consecutive turns without a tool call writes one log line.
+    public var maxTurnsWithoutTool = 3
 }
 
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
+    public var shell: ShellConfig
+    public var idle: IdleConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "shell", "idle"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
         var l = Section(name: "llm", raw: llmRaw)
         var llm = LlmConfig(baseURL: try l.required("base_url"), model: try l.required("model"))
-        try l.read("reasoning_effort", &llm.reasoningEffort)
+        try l.read("default_effort", &llm.defaultEffort)
         try l.read("timeout_s", &llm.timeoutS)
         try l.read("max_tokens", &llm.maxTokens)
         try l.finish()
+        guard Effort.levels.contains(llm.defaultEffort) else {
+            throw TOMLError(description: "[llm] default_effort must be one of \(Effort.levels)")
+        }
 
         var c = Section(name: "core", raw: raw["core"] ?? [:])
         var core = CoreConfig()
         try c.read("data_dir", &core.dataDir)
         try c.read("pack", &core.pack)
-        try c.read("max_internal_passes", &core.maxInternalPasses)
-        try c.read("max_open_lines", &core.maxOpenLines)
-        try c.read("line_daily_steps", &core.lineDailySteps)
-        try c.read("idle_first_s", &core.idleFirstS)
-        try c.read("idle_every_s", &core.idleEveryS)
-        try c.read("shell_timeout_s", &core.shellTimeoutS)
-        try c.read("job_result_inline_chars", &core.jobResultInlineChars)
-        try c.read("timeline_window_messages", &core.timelineWindowMessages)
-        try c.read("approve_external", &core.approveExternal)
-        try c.read("approval_timeout_s", &core.approvalTimeoutS)
+        try c.read("priority", &core.priority)
         try c.finish()
-        return Config(llm: llm, core: core)
+        let known = Set(Priority.allCases.map(\.rawValue))
+        guard Set(core.priority) == known, core.priority.count == known.count else {
+            throw TOMLError(description: "[core] priority must list each of \(known.sorted()) exactly once")
+        }
+
+        var s = Section(name: "shell", raw: raw["shell"] ?? [:])
+        var shell = ShellConfig()
+        try s.read("scratch_dir", &shell.scratchDir)
+        try s.read("wait_s", &shell.waitS)
+        try s.read("timeout_s", &shell.timeoutS)
+        try s.read("result_tail_chars", &shell.resultTailChars)
+        try s.finish()
+
+        var i = Section(name: "idle", raw: raw["idle"] ?? [:])
+        var idle = IdleConfig()
+        try i.read("max_turns_without_tool", &idle.maxTurnsWithoutTool)
+        try i.finish()
+        guard idle.maxTurnsWithoutTool >= 1 else {
+            throw TOMLError(description: "[idle] max_turns_without_tool must be at least 1")
+        }
+        return Config(llm: llm, core: core, shell: shell, idle: idle)
     }
+}
+
+public enum Effort {
+    public static let levels = ["none", "medium", "high"]
+}
+
+/// Event sources, named as in `[core] priority`.
+public enum Priority: String, CaseIterable, Sendable {
+    case ownerVoice = "owner_voice", ownerText = "owner_text", jobResult = "job_result"
 }
 
 /// Reads typed keys out of one section and rejects keys nobody read.
@@ -97,10 +131,13 @@ private struct Section {
         }
     }
 
-    mutating func read(_ key: String, _ out: inout Bool) throws {
+    mutating func read(_ key: String, _ out: inout [String]) throws {
         guard let v = raw.removeValue(forKey: key) else { return }
-        guard case .bool(let b) = v else { throw bad(key, "true or false") }
-        out = b
+        guard case .array(let items) = v else { throw bad(key, "an array of strings") }
+        out = try items.map {
+            guard case .string(let s) = $0 else { throw bad(key, "an array of strings") }
+            return s
+        }
     }
 
     func finish() throws {

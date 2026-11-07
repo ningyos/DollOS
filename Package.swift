@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(name: "DollCore", linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "DollCLI", dependencies: ["DollCore"]),
+        .executableTarget(name: "m1-skeleton", dependencies: ["DollCore"], path: "experiments/m1-skeleton/Runner"),
         .testTarget(name: "DollCoreTests", dependencies: ["DollCore"]),
     ]
 )

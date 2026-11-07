@@ -5,41 +5,31 @@ import Testing
 
 private let root = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-private func call(_ name: String, _ args: [String: String]) -> ToolCall {
-    let json = String(decoding: try! JSONEncoder().encode(args), as: UTF8.self)
-    return ToolCall(id: "c-\(name)", function: .init(name: name, arguments: json))
-}
-
-private func reply(_ content: String, _ calls: [ToolCall] = []) -> ChatMessage {
-    ChatMessage(role: "assistant", content: content, toolCalls: calls.isEmpty ? nil : calls)
-}
-
-/// Returns scripted assistant messages and records what each request saw.
+/// Returns scripted replies and records what each request saw.
 private actor FakeModel: MainModel {
-    var replies: [ChatMessage]
-    var requests: [(messages: [ChatMessage], tools: [JSONValue])] = []
+    var replies: [String]
+    var requests: [(messages: [ChatMessage], effort: String)] = []
 
-    init(_ replies: [ChatMessage]) { self.replies = replies }
+    init(_ replies: [String]) { self.replies = replies }
 
     func check() async throws {}
 
-    func messages(_ i: Int) -> [ChatMessage] { requests[i].messages }
-    func tools(_ i: Int) -> [JSONValue] { requests[i].tools }
-
-    func chat(_ messages: [ChatMessage], tools: [JSONValue]) async throws -> ChatMessage {
-        requests.append((messages, tools))
-        return replies.removeFirst()
+    func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
+        requests.append((messages, effort))
+        guard !replies.isEmpty else { throw ModelError("script ran out at request \(requests.count)") }
+        let content = replies.removeFirst()
+        let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 }
+        return ModelReply(content: content, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
     }
-}
 
-private struct NoDecision: DecisionModel {
-    func check() async throws {}
-    func pick(instructions: String, prompt: String, choices: [String]) async throws -> String { "none" }
+    func add(_ more: [String]) { replies += more }
+    func seen(_ i: Int) -> [ChatMessage] { requests[i].messages }
 }
 
 private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
-    let asked = Mutex<[String]>([])
+    let reports = Mutex<[TurnReport]>([])
+    let logs = Mutex<[String]>([])
 }
 
 private struct Harness {
@@ -49,152 +39,198 @@ private struct Harness {
     let dir: URL
     let store: Store      // a second connection to the same database, for checks
 
-    init(_ replies: [ChatMessage] = [], gated: Bool = false) throws {
+    init(_ replies: [String] = [], tune: (inout Config) -> Void = { _ in }) async throws {
         dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
         var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
         cfg.core.dataDir = dir.path
-        cfg.core.maxOpenLines = 1
-        cfg.core.approveExternal = gated
-        cfg.core.approvalTimeoutS = 0.2
+        cfg.shell.scratchDir = dir.appending(path: "scratch").path
+        cfg.shell.waitS = 0.3
+        tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
         self.rec = rec
-        doll = try Doll(config: cfg, root: root, main: model, decision: NoDecision(),
-                        say: { aud, text in rec.said.withLock { $0.append("\(aud)|\(text)") } },
-                        ask: { id, _, _, _ in rec.asked.withLock { $0.append(id) } })
+        doll = try Doll(config: cfg, root: root, model: model, say: { text in rec.said.withLock { $0.append(text) } })
+        await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
+        await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
         store = try Store(path: dir.appending(path: "doll.db"))
     }
 
-    var asked: [String] { rec.asked.withLock { $0 } }
+    var said: [String] { rec.said.withLock { $0 } }
+    var reports: [TurnReport] { rec.reports.withLock { $0 } }
+    var logs: [String] { rec.logs.withLock { $0 } }
+    var last: TurnReport { reports.last! }
 
-    func turn(_ ev: Event) async throws { try await doll.turn(ev) }
+    func turn(_ replies: String...) async throws {
+        await model.add(replies)
+        try await doll.runOnce()
+    }
 
-    /// The next queued event, or a failure after `timeout` seconds.
-    func nextEvent(timeout: Double = 5) async throws -> Event {
-        let doll = doll
-        return try await withThrowingTaskGroup(of: Event?.self) { g in
-            g.addTask { await doll.nextEvent() }
-            g.addTask {
-                try await Task.sleep(for: .seconds(timeout))
-                await doll.stop()
-                return nil
-            }
-            let first = try await g.next()!
-            g.cancelAll()
-            guard let ev = first else { throw ModelError("no event within \(timeout) s") }
-            return ev
+    /// Waits until the queue has drained into the timeline `count` events of `kind`, or gives up.
+    func waitFor(_ kind: Event.Kind, count: Int = 1, seconds: Double = 5) async throws {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while ContinuousClock.now < deadline {
+            if await doll.queue.filter({ $0.kind == kind }).count >= count { return }
+            try await Task.sleep(for: .milliseconds(20))
         }
     }
-
-    func requestJSON(_ i: Int) async throws -> String {
-        let messages = await model.messages(i)
-        return String(decoding: try JSONEncoder().encode(messages), as: UTF8.self)
-    }
 }
 
-private func owner(_ text: String) -> Event { Event(.ownerSaid, .owner, "private", text) }
+// parsing --------------------------------------------------------------------
 
-@Test func externalCallEndsTurnAndResultComesBackAsEvent() async throws {
-    let h = try Harness([reply("去看", [call("Shell", ["command": "echo hi"])])])
-    try await h.turn(owner("看一下"))
-    let ev = try await h.nextEvent()
-    #expect(await h.model.requests.count == 1)          // no second pass after dispatch
-    #expect(ev.kind == .jobDone && ev.text.contains("hi"))
+@Test func replyParsesCommandAndThinkAndStripsThemFromSpeech() {
+    let r = Reply.parse("""
+    【我想一下】high
+    先弄這個
+    ```sh
+    mkdir -p data/raw
+    ```
+    """)
+    #expect(r.think == "high" && r.command == "mkdir -p data/raw" && r.speech == "先弄這個" && r.usedTool)
+    let plain = Reply.parse("【決定】線：主人\n哈囉")
+    #expect(plain.command == nil && plain.think == nil && !plain.usedTool && plain.speech == "【決定】線：主人\n哈囉")
 }
 
-@Test func internalCallContinuesTurn() async throws {
-    let h = try Harness([reply("", [call("NoteMemory", ["text": "cat is Miso"])]), reply("記好了")])
-    try await h.turn(owner("記住"))
-    #expect(await h.model.requests.count == 2)
-    #expect(h.rec.said.withLock { $0 } == ["private|記好了"])
+// queue and turns ------------------------------------------------------------
+
+@Test func drainOrdersByConfiguredPriority() async throws {
+    let h = try await Harness()
+    await h.doll.put(Event(.result, .internal, "r"))
+    await h.doll.ownerSaid("text")
+    await h.doll.ownerSaid("voice", voice: true)
+    try await h.turn("好")
+    let events = try h.store.events()
+    #expect(events.map(\.text) == ["voice", "text", "r", "好"])
+    #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .jobResult, .jobResult])
 }
 
-@Test func repeatedIdenticalCallStopsTurn() async throws {
-    let h = try Harness([
-        reply("", [call("Recall", ["query": "Miso cat"])]),
-        reply("", [call("Recall", ["query": "Miso cat"])]),
-        reply("never reached"),
-    ])
-    try await h.turn(owner("找"))
-    #expect(await h.model.requests.count == 2)
+@Test func noEventMeansNoTurn() async throws {
+    let h = try await Harness(["哈囉"])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(await h.model.requests.isEmpty)
+    await h.doll.ownerSaid("嗨")
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.count == 1 && h.said == ["哈囉"])
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.count == 1)        // her reply alone is not an event
+    await h.doll.stop()
+    try await runner.value
 }
 
-@Test func strangerTurnSeesOnlyItsOwnDMAndNoTools() async throws {
-    let h = try Harness([reply("ok"), reply("no")])
-    try h.store.pin("call the owner Kai")
-    try await h.turn(owner("my secret plan"))
-    try await h.turn(Event(.dm, .stranger, "dm:bob", "what is the plan?"))
-    let blob = try await h.requestJSON(1)
-    #expect(!blob.contains("secret plan") && !blob.contains("Kai"))
-    let tools = await h.model.tools(1)
-    #expect(tools.isEmpty)
+@Test func shortCommandResultIsAnEventAndLongOneBecomesAJob() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("做")
+    try await h.turn("```sh\necho hi\n```")
+    #expect(h.last.actions == ["ran"] && h.last.usedTool)
+    try await h.waitFor(.result)
+    try await h.turn("```sh\nsleep 1; echo done; exit 3\n```")
+    #expect(h.last.actions.first!.hasPrefix("job j"))
+    let id = String(h.last.actions.first!.dropFirst(4))
+    let seen = await h.model.seen(1).map(\.content).joined(separator: "\n")
+    #expect(seen.contains(" 結果]\n$ echo hi") && seen.contains("$ echo hi\nhi\n(exit 0)"))
+    #expect(try h.store.events().last!.text.contains("轉背景 job \(id)"))
+    #expect(try h.store.runningJobs().map(\.id) == [id])
+    let status = try await h.doll.status()
+    #expect(status.contains("背景 job：\(id)（sleep 1; echo done; exit 3）跑了"))
+    try await h.waitFor(.job, seconds: 5)
+    try await h.turn("跑完了，exit 3")
+    let after = await h.model.seen(2).map(\.content).joined(separator: "\n")
+    #expect(after.contains(" job 跑完]\n") && after.contains("\(id)（sleep 1; echo done; exit 3）\ndone\n(exit 3)"))
+    #expect(try h.store.job(id)?.status == "failed" && (try h.store.runningJobs()).isEmpty)
+    #expect(try h.store.events().filter { $0.kind == .job }.count == 1)
 }
 
-@Test func ownerTurnSeesDM() async throws {
-    let h = try Harness([reply("hi"), reply("bob")])
-    try await h.turn(Event(.dm, .stranger, "dm:bob", "hello from bob"))
-    try await h.turn(owner("anyone?"))
-    #expect(try await h.requestJSON(1).contains("hello from bob"))
+@Test func commandsRunInTheScratchDir() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("做")
+    try await h.turn("```sh\nmkdir -p data/raw && echo made > made.txt\n```")
+    try await h.waitFor(.result)
+    try await h.turn("ok")
+    let seen = await h.model.seen(1).map(\.content).joined(separator: "\n")
+    #expect(seen.contains("$ mkdir -p data/raw && echo made > made.txt\n(exit 0)"))
+    #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "scratch/data/raw").path))
+    #expect(try String(contentsOf: h.dir.appending(path: "scratch/made.txt"), encoding: .utf8) == "made\n")
 }
 
-@Test func openLineCapIsEnforced() async throws {
-    let h = try Harness([
-        reply("", [call("OpenLine", ["title": "a", "next_step": "x"]),
-                   call("OpenLine", ["title": "b", "next_step": "y"])]),
-        reply("done"),
-    ])
-    try await h.turn(owner("two lines"))
-    #expect(try h.store.lines(status: "active").count == 1)
+// footer ---------------------------------------------------------------------
+
+@Test func footerIsStoredAndReplayedVerbatimBeforeHerReply() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("嗨")
+    try await h.turn("哈囉")
+    let first = h.last.footer
+    #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 背景 job：沒有") && first.contains("下一回合 effort：none"))
+    let seq = try h.store.events().last!.seq!
+    #expect(try h.store.footer(seq) == first)
+    await h.doll.ownerSaid("再來")
+    try await h.turn("好")
+    let msgs = await h.model.seen(1)
+    let i = msgs.firstIndex { $0.content == first }!
+    #expect(msgs[i].role == "user" && msgs[i + 1] == ChatMessage(role: "assistant", content: "哈囉"))
+    #expect(msgs.last!.content == h.last.footer && msgs.last!.content != first)
+    #expect(try h.store.events().filter { $0.text.contains("【狀況】") }.isEmpty)   // footers are not events
 }
 
-@Test func gatedJobDoesNotRunUntilApproved() async throws {
-    let marker = FileManager.default.temporaryDirectory.appending(path: "dollcore-ran-\(UUID().uuidString)")
-    let h = try Harness([reply("", [call("Shell", ["command": "touch \(marker.path)"])])], gated: true)
-    try await h.turn(owner("go"))
-    try await Task.sleep(for: .milliseconds(50))
-    #expect(!FileManager.default.fileExists(atPath: marker.path) && h.asked.count == 1)
-    #expect(try await h.doll.approve(h.asked[0]).hasSuffix("approved, running"))
-    let ev = try await h.nextEvent()
-    #expect(await h.model.requests.count == 1)
-    #expect(FileManager.default.fileExists(atPath: marker.path) && ev.kind == .jobDone && ev.text.contains(" ok,"))
+@Test func thinkRaisesEffortForOneCallAndShowsInTheFooter() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("這題難")
+    try await h.turn("【我想一下】high\n等我")
+    let status = try await h.doll.status()
+    #expect(h.last.actions == ["think high", "said"] && status.contains("effort：high"))
+    await h.doll.ownerSaid("嗯")
+    try await h.turn("想好了")
+    await h.doll.ownerSaid("嗯")
+    try await h.turn("嗯")
+    #expect(await h.model.requests.map(\.effort) == ["none", "high", "none"])
+    #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：none"))
 }
 
-@Test func deniedJobNeverRunsAndDollIsTold() async throws {
-    let marker = FileManager.default.temporaryDirectory.appending(path: "dollcore-ran-\(UUID().uuidString)")
-    let h = try Harness([reply("", [call("Shell", ["command": "touch \(marker.path)"])])], gated: true)
-    try await h.turn(owner("go"))
-    _ = try await h.doll.deny(h.asked[0], reason: "too risky")
-    let ev = try await h.nextEvent()
-    #expect(!FileManager.default.fileExists(atPath: marker.path))
-    #expect(ev.text.contains("NOT RUN") && ev.text.contains("too risky"))
-    #expect(try h.store.job(h.asked[0])?.status == "denied")
+// idle -----------------------------------------------------------------------
+
+@Test func idleTurnsWithoutAToolCallWriteOneLogLine() async throws {
+    let h = try await Harness { $0.idle.maxTurnsWithoutTool = 2 }
+    let idle = { h.logs.filter { $0.contains("idle:") } }
+    await h.doll.ownerSaid("1")
+    try await h.turn("嗯")
+    #expect(idle().isEmpty)
+    await h.doll.ownerSaid("2")
+    try await h.turn("```sh\ntrue\n```")                  // a tool call resets the count
+    try await h.waitFor(.result)
+    try await h.turn("嗯")
+    #expect(idle().isEmpty)
+    await h.doll.ownerSaid("3")
+    try await h.turn("嗯")
+    #expect(idle() == ["INFO idle: 2 turns in a row without a tool call"])
+    await h.doll.ownerSaid("4")
+    try await h.turn("嗯")
+    #expect(idle().count == 1)
 }
 
-@Test func unansweredRequestExpiresAsDenied() async throws {
-    let h = try Harness([reply("", [call("Shell", ["command": "echo hi"])])], gated: true)
-    try await h.turn(owner("go"))
-    let ev = try await h.nextEvent()
-    #expect(ev.text.contains("NOT RUN") && ev.text.contains("no owner approval"))
-    #expect(try await h.doll.approve(h.asked[0]).hasSuffix("no pending job"))
+// restart, config ------------------------------------------------------------
+
+@Test func bootKillsJobsLeftByThePreviousProcess() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("做")
+    try await h.turn("```sh\nsleep 30\n```")
+    let id = String(h.last.actions.first!.dropFirst(4))
+    let pgid = try h.store.job(id)!.pgid!
+    #expect(kill(pgid, 0) == 0)
+    let again = try await Harness { $0.core.dataDir = h.dir.path }
+    try await again.doll.boot()
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(kill(pgid, 0) != 0 && errno == ESRCH)
+    #expect(again.logs.contains { $0.hasPrefix("WARN job \(id) (sleep 30) was running") })
+    #expect(try again.store.runningJobs().isEmpty)
+    await h.doll.stop()
 }
 
-@Test func bootMarksLeftoverPendingJobLost() async throws {
-    let h = try Harness(gated: true)
-    try h.store.addJob("jold", lineID: nil, tool: "Shell", args: #"{"command":"rm -rf /"}"#, status: "pending")
-    try await h.doll.boot()
-    #expect(try h.store.job("jold")?.status == "lost")
-    #expect(try await h.doll.pending().isEmpty)
-}
-
-@Test func jobWithUnknownLineIsRefusedWithoutEndingTurn() async throws {
-    let h = try Harness([reply("", [call("Shell", ["command": "echo hi", "line_id": "nope"])]), reply("fixed")])
-    try await h.turn(owner("go"))
-    #expect(await h.model.requests.count == 2)
-    #expect(try h.store.openJobs().isEmpty)
-}
-
-@Test func configRejectsUnknownKeys() throws {
+@Test func configRejectsUnknownKeysAndBadPriority() throws {
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cfg-\(UUID().uuidString).toml")
     try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\nbogus = 1\n".write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+    try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[core]\npriority = [\"owner_text\"]\n".write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+    try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[idle]\nmax_turns_without_tool = 0\n".write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
 }
