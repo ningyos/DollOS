@@ -20,7 +20,8 @@ swift run dollcore --config dollcore.toml
 ## 怎麼運作
 
 - 事件三種：主人語音、主人文字、命令的結果（短命令的結果、背景 job 跑完）。佇列在記憶體；排程點依 `[core] priority` 排進時間線。**有事件才給回合；佇列空的時候程序睡著，不打 Strata。**
-- 一回合＝一次模型呼叫。她的回覆裡只有兩種工具：一條 ```sh 命令、一行【我想一下】medium|high（下一次呼叫開思考）。其他文字就是對主人說的話。
+- 一回合＝一次模型呼叫。她的回覆裡只有四種工具：一條 ```sh 命令、一行【我想一下】medium|high（下一次呼叫開思考）、【記】秘密|公開（寫一條記憶）、【想】<問題>（查記憶）。其他文字就是對主人說的話。
+- 記憶（M3a）：markdown 是原始資料（`<memory.dir>/secret|public`，front-matter 帶來源事件 seq、confidence），SQLite 只是可重建的索引（FTS5 trigram＋embedding）。開機時如果檔數和索引對不上就重建索引。【想】＝FTS＋`NLContextualEmbedding` 餘弦、RRF 融合、confidence 加權，回 top-k 附〔確定／大概／聽說〕。secret 的記憶只進看得到秘密的回合。
 - 命令在 `[shell] scratch_dir`（預設 `~/dollos-scratch/`）裡用 `posix_spawn` 跑（`Executor` protocol，M2 換成 VM）。`wait_s` 內跑完 → 結果馬上排成事件（下一回合就看到）；超過 → 轉背景 job，時間線記一句「轉背景」（不給回合），跑完才排成 job 結果事件（exit code＋輸出尾巴 `result_tail_chars`）。命令不擋。
 - 時間線在 SQLite `events`（append-only：時間、來源、含不含秘密、內容；主人事件另記語音／文字）。只有主人，所以投影只有一種（全部）。
 - 每回合最後一則訊息是【狀況】，只有事實：還在跑的背景 job（id、命令、跑了多久）、context 約幾個 token、下一回合 effort。她回覆後 footer 存進 `footers` 表掛在那則回覆上，之後每回合都照原樣放回 prompt（prefix 不變，Strata 的 checkpoint 才接得上）；不進 `events`。

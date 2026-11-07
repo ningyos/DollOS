@@ -29,6 +29,29 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 """
 
+/// The memory index (M3a): rebuildable from the markdown files, never the source.
+/// `tokenize='trigram'` because the records are Chinese: the default tokenizer would
+/// not split them at all.
+private let memorySchema = """
+CREATE TABLE IF NOT EXISTS memory_index (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    folder TEXT NOT NULL,            -- the config directory name: secret | public
+    secret INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    ts REAL NOT NULL,
+    source_seq INTEGER NOT NULL,
+    kind TEXT NOT NULL               -- empty in M3a (FM decides it in M3b)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    text, id UNINDEXED, secret UNINDEXED, tokenize='trigram'
+);
+CREATE TABLE IF NOT EXISTS memory_vectors (
+    id TEXT PRIMARY KEY,
+    vector BLOB NOT NULL             -- Float32, L2-normalized
+);
+"""
+
 public struct StoreError: Error, CustomStringConvertible {
     public let description: String
 }
@@ -84,7 +107,7 @@ public struct Job: Sendable, Equatable {
 }
 
 private enum Bind {
-    case text(String), int(Int64), real(Double), null
+    case text(String), int(Int64), real(Double), null, blob(Data)
 }
 
 private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -98,6 +121,10 @@ private struct Row {
         sqlite3_column_type(stmt, i) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, i)
     }
     func real(_ i: Int32) -> Double { sqlite3_column_double(stmt, i) }
+    func blob(_ i: Int32) -> Data {
+        guard let p = sqlite3_column_blob(stmt, i) else { return Data() }
+        return Data(bytes: p, count: Int(sqlite3_column_bytes(stmt, i)))
+    }
 }
 
 public final class Store {
@@ -111,7 +138,8 @@ public final class Store {
         }
         db = handle
         sqlite3_busy_timeout(db, 5000)   // a second connection (dollctl, tests) may hold a write briefly
-        guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { throw error() }
+        guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK,
+              sqlite3_exec(db, memorySchema, nil, nil, nil) == SQLITE_OK else { throw error() }
     }
 
     deinit { sqlite3_close(db) }
@@ -130,6 +158,7 @@ public final class Store {
             case .int(let v): sqlite3_bind_int64(stmt, i, v)
             case .real(let v): sqlite3_bind_double(stmt, i, v)
             case .null: sqlite3_bind_null(stmt, i)
+            case .blob(let d): sqlite3_bind_blob(stmt, i, (d as NSData).bytes, Int32(d.count), transient)
             }
         }
         var out: [T] = []
@@ -208,5 +237,74 @@ public final class Store {
 
     public func finishJob(_ id: String, _ status: String) throws {
         try exec("UPDATE jobs SET status = ?, ended = ? WHERE id = ?", [.text(status), now, .text(id)])
+    }
+
+    // memory index (M3a) ------------------------------------------------------
+    public struct MemoryMeta {
+        public let id: String
+        public let path: String
+        public let folder: String
+        public let secret: Bool
+        public let confidence: Double
+    }
+
+    public struct MemoryVectorRow {
+        public let id: String
+        public let vector: Data
+    }
+
+    /// Inserts or replaces one index entry (the markdown file was already written).
+    public func putMemoryIndex(id: String, path: String, folder: String, secret: Bool, confidence: Double,
+                               ts: Double, sourceSeq: Int64, kind: String, text: String, vector: Data) throws {
+        try exec("""
+            INSERT INTO memory_index (id, path, folder, secret, confidence, ts, source_seq, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET path = excluded.path, folder = excluded.folder,
+                secret = excluded.secret, confidence = excluded.confidence, ts = excluded.ts,
+                source_seq = excluded.source_seq, kind = excluded.kind
+            """, [.text(id), .text(path), .text(folder), .int(secret ? 1 : 0),
+                  .real(confidence), .real(ts), .int(sourceSeq), .text(kind)])
+        try exec("DELETE FROM memory_fts WHERE id = ?", [.text(id)])
+        try exec("INSERT INTO memory_fts (text, id, secret) VALUES (?, ?, ?)",
+                 [.text(text), .text(id), .int(secret ? 1 : 0)])
+        try exec("INSERT INTO memory_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
+                 [.text(id), .blob(vector)])
+    }
+
+    public func countMemoryIndex() throws -> Int {
+        try query("SELECT count(*) FROM memory_index", []) { Int($0.int(0)!) }.first ?? 0
+    }
+
+    public func clearMemoryIndex() throws {
+        for sql in ["DELETE FROM memory_index", "DELETE FROM memory_fts", "DELETE FROM memory_vectors"] {
+            try exec(sql, [])
+        }
+    }
+
+    /// FTS5 hits ordered by BM25 rank; the id/secret columns are UNINDEXED so the MATCH only sees text.
+    /// The id tiebreak matters: equal BM25 scores otherwise order arbitrarily, and RRF ranks would
+    /// change between a run and an index rebuild.
+    public func memoryFTS(match: String, includeSecret: Bool, limit: Int) throws -> [String] {
+        let filter = includeSecret ? "" : " AND secret = 0"
+        return try query("""
+            SELECT id FROM memory_fts WHERE memory_fts MATCH ?\(filter) ORDER BY rank, id LIMIT ?
+            """, [.text(match), .int(Int64(limit))]) { $0.text(0)! }
+    }
+
+    public func memoryVectors(includeSecret: Bool) throws -> [MemoryVectorRow] {
+        let filter = includeSecret ? "" : "WHERE m2.secret = 0"
+        return try query("""
+            SELECT m.id, m.vector FROM memory_vectors m JOIN memory_index m2 ON m2.id = m.id \(filter)
+            """, []) {
+            MemoryVectorRow(id: $0.text(0)!, vector: $0.blob(1))
+        }
+    }
+
+    public func memoryMeta(_ id: String) throws -> MemoryMeta? {
+        try query("SELECT id, path, folder, secret, confidence FROM memory_index WHERE id = ?",
+                  [.text(id)]) {
+            MemoryMeta(id: $0.text(0)!, path: $0.text(1)!, folder: $0.text(2)!,
+                       secret: $0.int(3)! != 0, confidence: $0.real(4))
+        }.first
     }
 }

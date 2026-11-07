@@ -33,15 +33,41 @@ public struct IdleConfig: Sendable {
     public var maxTurnsWithoutTool = 3
 }
 
+/// M3a: 【記】／【想】. The markdown files are the source; the SQLite tables are a
+/// rebuildable index (spec 6).
+public struct MemoryConfig: Sendable {
+    public var dir = "memory"
+    public var secretDir = "secret"
+    public var publicDir = "public"
+    /// How many records 【想】 returns.
+    public var topK = 5
+    /// RRF's k: the constant in 1/(k + rank).
+    public var rrfK = 60
+    /// Per list: how many FTS hits and how many vector hits become candidates.
+    public var maxCandidates = 50
+    /// Confidence enters the fused score as this multiple of itself.
+    public var confidenceWeight = 0.01
+    /// The confidence at or above which a hit is shown as 確定 / 大概; below 大概 it is 聽說.
+    public var highConfidence = 0.70
+    public var mediumConfidence = 0.40
+    /// Starting confidence per source tier (spec 6: evidence count stays at 1 in M3a).
+    public var confidence: [SourceTier: Double] = [:]
+    /// `NLContextualEmbedding` language tag.
+    public var language = "zh-Hant"
+    /// Cap on how many phrases one 【想】 query turns into FTS MATCH terms.
+    public var maxQueryPhrases = 16
+}
+
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
     public var shell: ShellConfig
     public var idle: IdleConfig
+    public var memory: MemoryConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "shell", "idle"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "shell", "idle", "memory"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -81,7 +107,34 @@ public struct Config: Sendable {
         guard idle.maxTurnsWithoutTool >= 1 else {
             throw TOMLError(description: "[idle] max_turns_without_tool must be at least 1")
         }
-        return Config(llm: llm, core: core, shell: shell, idle: idle)
+
+        var m = Section(name: "memory", raw: raw["memory"] ?? [:])
+        var memory = MemoryConfig()
+        try m.read("dir", &memory.dir)
+        try m.read("secret_dir", &memory.secretDir)
+        try m.read("public_dir", &memory.publicDir)
+        try m.read("top_k", &memory.topK)
+        try m.read("rrf_k", &memory.rrfK)
+        try m.read("max_candidates", &memory.maxCandidates)
+        try m.read("confidence_weight", &memory.confidenceWeight)
+        try m.read("high_confidence", &memory.highConfidence)
+        try m.read("medium_confidence", &memory.mediumConfidence)
+        try m.read("language", &memory.language)
+        try m.read("max_query_phrases", &memory.maxQueryPhrases)
+        for tier in SourceTier.allCases {
+            var v: Double?
+            try m.read("confidence_" + tier.rawValue, &v)
+            guard let v, (0...1).contains(v) else {
+                throw TOMLError(description: "[memory] confidence_\(tier.rawValue) is required and must be between 0 and 1")
+            }
+            memory.confidence[tier] = v
+        }
+        try m.finish()
+        guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
+              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty else {
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k) and high_confidence > medium_confidence")
+        }
+        return Config(llm: llm, core: core, shell: shell, idle: idle, memory: memory)
     }
 }
 
@@ -127,8 +180,15 @@ private struct Section {
         switch v {
         case .double(let d): out = d
         case .int(let n): out = Double(n)
-        default: throw bad(key, "a number")
-        }
+        default: throw bad(key, "a number") }
+    }
+
+    mutating func read(_ key: String, _ out: inout Double?) throws {
+        guard let v = raw.removeValue(forKey: key) else { return }
+        switch v {
+        case .double(let d): out = d
+        case .int(let n): out = Double(n)
+        default: throw bad(key, "a number") }
     }
 
     mutating func read(_ key: String, _ out: inout [String]) throws {

@@ -51,8 +51,10 @@ public actor Doll {
     let llm: LlmConfig
     let shell: ShellConfig
     let idle: IdleConfig
+    let memoryConfig: MemoryConfig
     public nonisolated let scratch: URL
     let store: Store
+    let memory: Memory
     let model: any MainModel
     let executor: any Executor
     let say: Say
@@ -79,10 +81,14 @@ public actor Doll {
         llm = config.llm
         shell = config.shell
         idle = config.idle
+        memoryConfig = config.memory
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         scratch = URL(filePath: (shell.scratchDir as NSString).expandingTildeInPath)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         store = try Store(path: data.appending(path: "doll.db"))
+        // No fallback: a missing embedding model is an error, the same as an unreachable Strata (spec 3.1).
+        let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
+        memory = try Memory(config: memoryConfig, root: memRoot, store: store)
         self.model = model
         self.executor = executor ?? LocalShell(cwd: scratch.path, hardTimeoutS: shell.timeoutS)
         self.say = say
@@ -104,6 +110,9 @@ public actor Doll {
     public func setObserver(_ f: (@Sendable (TurnReport) -> Void)?) { observer = f }
     public func setLogSink(_ f: (@Sendable (String) -> Void)?) { logSink = f }
 
+    /// Rebuilds the memory index from the markdown files (spec 6: SQLite is a rebuildable index).
+    public func rebuildMemory() throws { try memory.rebuild() }
+
     func log(_ level: String, _ msg: String) {
         Log.write(level, msg)
         logSink?("\(level) \(msg)")
@@ -113,6 +122,8 @@ public actor Doll {
     /// Checks the model (unreachable = error, no fallback) and kills jobs that outlived the
     /// previous process. M2 reattaches them instead.
     public func boot() async throws {
+        // Memories written by a previous process exist only as markdown until indexed (spec 6).
+        try memory.syncOnBoot()
         try await model.check()
         for job in try store.runningJobs() {
             if let pgid = job.pgid { LocalShell.killGroup(pgid) }
@@ -183,7 +194,7 @@ public actor Doll {
 
     // prompt -----------------------------------------------------------------
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(name: name, shell: shell)
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(name: name, shell: shell, memory: memoryConfig)
     }
 
     /// One event as prompt messages. Her replies carry the footer they were answering, so the
@@ -277,6 +288,46 @@ public actor Doll {
         }
         if let cmd = r.command {
             actions.append(try await runCommand(cmd))
+        }
+        // 【記】：the program fills seq, ts, confidence, kind (spec 6). The tier comes from
+        // the event she is answering, not from anything she can claim. Her own tool
+        // acknowledgements are not sources.
+        for note in r.notes {
+            let programAck: (Event) -> Bool = { e in
+                e.kind == .result && (e.text.hasPrefix("【記】") || e.text.hasPrefix("【想】"))
+            }
+            let source = events.last { $0.kind != .doll && !programAck($0) }
+            let tier: SourceTier = switch source?.kind {
+            case .owner?: .owner
+            case .result?, .job?: .tool
+            default: .doll
+            }
+            let seq = source?.seq ?? stored.seq!
+            do {
+                let id = try memory.write(note.text, secret: note.secret, sourceSeq: seq, tier: tier)
+                put(Event(.result, .internal, "【記】已存入 \(id)（\(note.secret ? memoryConfig.secretDir : memoryConfig.publicDir)/\(id).md，confidence \(memoryConfig.confidence[tier]!)）"))
+                actions.append("note \(note.secret ? "secret" : "public")")
+            } catch {
+                log("ERROR", "【記】failed: \(error)")
+                put(Event(.result, .internal, "【記】失败了：\(error)"))
+            }
+        }
+        // 【想】：same secret rule as her replies (5.1): a turn sees secrets only if it saw secret events.
+        if let query = r.query {
+            let secretVisible = events.contains(where: \.secret)
+            do {
+                let hits = try memory.search(query, secretVisible: secretVisible)
+                var out = "【想】\(query)：\(hits.count) 條"
+                for hit in hits {
+                    out += "\n\n〔\(hit.level)｜\(hit.folder)｜confidence \(hit.confidence)〕\n\(hit.text)"
+                }
+                // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
+                put(Event(.result, .internal, out, secret: hits.contains(where: \.secret)))
+                actions.append("search \(hits.count)")
+            } catch {
+                log("ERROR", "【想】failed: \(error)")
+                put(Event(.result, .internal, "【想】失败了：\(error)"))
+            }
         }
         if !r.speech.isEmpty {
             say(r.speech)

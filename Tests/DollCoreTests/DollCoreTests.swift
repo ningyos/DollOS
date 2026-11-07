@@ -53,6 +53,7 @@ private struct Harness {
         var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
         cfg.core.dataDir = dir.path
         cfg.shell.scratchDir = dir.appending(path: "scratch").path
+        cfg.memory.dir = dir.appending(path: "memory").path
         cfg.shell.waitS = 0.3
         tune(&cfg)
         model = FakeModel(replies)
@@ -257,6 +258,35 @@ private struct Harness {
     await h.doll.stop()
 }
 
+/// The markdown files are the source of truth; a process whose index tables are empty (fresh
+/// database, or a lost/corrupt index) must re-index them at boot or 【想】 finds nothing.
+@Test func bootIndexesMemoriesLeftInMarkdown() async throws {
+    let h = try await Harness(["【記】公開\n主人的伺服器叫 Strata"])
+    await h.doll.ownerSaid("記一下我的伺服器")
+    try await h.turn()
+    #expect(try h.store.countMemoryIndex() == 1)
+    try h.store.clearMemoryIndex()                     // what the next process sees
+    let again = try await Harness(["【想】伺服器叫什麼"]) {
+        $0.core.dataDir = h.dir.path
+        $0.memory.dir = h.dir.appending(path: "memory").path
+    }
+    try await again.doll.boot()
+    #expect(try h.store.countMemoryIndex() == 1)
+    await again.doll.ownerSaid("我的伺服器叫什麼？")
+    try await again.turn()
+    #expect(again.last.actions.contains { $0.hasPrefix("search 1") })
+    try await again.turn("查到了")                       // drains the result event into the timeline
+    // the indexed row is the one that answers: FTS finds it, public, from the owner
+    let ids = try h.store.memoryFTS(match: "\"Strata\"", includeSecret: false, limit: 5)
+    #expect(ids.count == 1)
+    let meta = try #require(try h.store.memoryMeta(ids[0]))
+    #expect(!meta.secret && meta.confidence > 0.8)
+    // the result event injected into her timeline carries the indexed text
+    let results = try h.store.events().filter { $0.kind == .result }.map(\.text)
+    #expect(results.contains { $0.contains("Strata") })
+    await h.doll.stop()
+}
+
 @Test func configRejectsUnknownKeysAndBadPriority() throws {
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cfg-\(UUID().uuidString).toml")
     try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\nbogus = 1\n".write(to: file, atomically: true, encoding: .utf8)
@@ -265,4 +295,155 @@ private struct Harness {
     #expect(throws: TOMLError.self) { try Config.load(file) }
     try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[idle]\nmax_turns_without_tool = 0\n".write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
+}
+
+// memory (M3a) ---------------------------------------------------------------
+//
+// A corpus built for the acceptance numbers in the plan: 30 records written through
+// 【記】, 10 questions, ≥ 8 right. Two of the ten can only be answered by one side of
+// the hybrid index: `kettlebell` is not a paraphrasable Chinese token (FTS-only), and
+// 出國帶回什麼 shares no trigram with its record (embedding-only). The rest were checked
+// against the real NLContextualEmbedding model before locking the numbers.
+
+private let memoryCorpus = [
+"主人最喜歡吃牛肉麵，尤其是巷口張家那碗",
+"主人講過他小時候住在高雄",
+"主人每週三晚上會跟阿明打籃球",
+"主人的貓叫咪咪，是一隻橘貓",
+"主人討厭香菜，碗裡有香菜會全部挑掉",
+"主人正在寫一篇關於時序記憶的論文",
+"主人的工作專案叫 DollOS，用 Swift 寫的",
+"主人打算二月請假去北海道滑雪",
+"主人擔心下個月的房租會調漲",
+"主人跟姐姐吵架了，心情很低落",                      // #9: secret
+"主人買了一把 kettlebell 十八公斤在家練力量",
+"主人上次說他不太會游泳",
+"主人喜歡聽伍佰的歌，開車時會大聲唱",
+"主人的生日是三月十二日",
+"主人對花生過敏，嚴重的話會起蕁麻疹",              // #14: secret
+"主人週一週二都睡很晚，早上起不來",
+"主人說他想學彈吉他",
+"主人的腳踏車上週在火車站被偷了",
+"主人幫咪咪買了自動餵食器",
+"主人習慣早上六點起床跑步",
+"主人說他最討厭星期一開早會",
+"主人在用一個叫 Strata 的模型伺服器",
+"主人的筆電是 M5 的 MacBook Pro",
+"主人上次去日本買了招福貓的御守",
+"主人說明年想帶爸媽去旅行",
+"主人的銀行帳戶密碼結尾是 42",                      // #25: secret
+"主人覺得自己方向感很差，常迷路",
+"主人收藏了三十幾張黑膠唱片",
+"主人上次煮火鍋把廚房弄得到處都是煙",
+"主人說跑步聽到伍佰會跑比較快",
+]
+private let secretRecords = Set([9, 14, 25])
+
+/// (question, the record that answers it)
+private let memoryQueries: [(String, Int)] = [
+("主人最愛吃什麼", 0),
+("kettlebell", 10),                                   // only FTS can find this
+("主人的貓叫什麼名字", 3),
+("對什麼食物過敏會起蕁麻疹", 14),
+("跟阿明做什麼運動", 2),
+("主人為什麼心情低落", 9),
+("主人擔心房租會調漲嗎", 8),
+("主人的生日幾號", 13),
+("想帶爸媽去哪裡旅行", 24),
+("主人出國旅遊帶回什麼", 23),                          // only the embedding can find this
+]
+
+/// Writes the whole corpus through 【記】: one owner event, then one reply that carries
+/// 30 marker blocks. Returns the harness.
+private func memoryHarness() async throws -> Harness {
+    let h = try await Harness()
+    await h.doll.ownerSaid("這些是我講過的事，記起來")
+    var reply = ""
+    for (i, text) in memoryCorpus.enumerated() {
+        reply += "【記】\(secretRecords.contains(i) ? "秘密" : "公開")\n\(text)\n\n"
+    }
+    try await h.turn(reply)
+    try await h.doll.drain()                 // the 【記】 acks are queued; put them on the timeline
+    return h
+}
+
+@Test func writeThirtyAndQueryTenWithHybridRetrieval() async throws {
+    let h = try await memoryHarness()
+    #expect(h.last.actions.filter { $0.hasPrefix("note") }.count == 30)
+    let acks = try h.store.events().filter { $0.kind == .result && $0.text.hasPrefix("【記】已存入") }
+    #expect(acks.count == 30)
+    // 30 markdown files, the configured three in secret/.
+    let fm = FileManager.default
+    let pubDir = h.dir.appending(path: "memory/public").path
+    let secDir = h.dir.appending(path: "memory/secret").path
+    #expect(try fm.contentsOfDirectory(atPath: pubDir).filter { $0.hasSuffix(".md") }.count == 27)
+    #expect(try fm.contentsOfDirectory(atPath: secDir).filter { $0.hasSuffix(".md") }.count == 3)
+
+    var correct = 0
+    for (query, want) in memoryQueries {
+        // The owner's turn: secrets visible (5.1), the same setting the plan's 10 questions assume.
+        await h.doll.ownerSaid("查一下", secret: true)
+        try await h.turn("【想】\(query)")
+        try await h.doll.drain()
+        let hits = try h.store.events().filter { $0.kind == .result && $0.text.hasPrefix("【想】") }.last!.text
+        // The wanted record is one of the returned hits.
+        if hits.contains(memoryCorpus[want]) { correct += 1 }
+        #expect(hits.contains("〔確定｜") || hits.contains("〔大概｜") || hits.contains("〔聽說｜"))
+        #expect(h.reports.last!.actions.last!.hasPrefix("search "))
+    }
+    #expect(correct >= 8)   // 30/10 acceptance number (plan M3a)
+}
+
+@Test func indexRebuildFromMarkdownGivesTheSameAnswers() async throws {
+    let h = try await memoryHarness()
+    let answers = memoryQueries.map { q, _ in q }
+    func asked(_ query: String) async throws -> String {
+        await h.doll.ownerSaid("查一下", secret: true)
+        try await h.turn("【想】\(query)")
+        try await h.doll.drain()
+        return try h.store.events().filter { $0.kind == .result && $0.text.hasPrefix("【想】\(query)") }.last!.text
+    }
+    var before: [String] = []
+    for q in answers { before.append(try await asked(q)) }
+    // Wipe the index tables the way a lost/corrupt index would look, then rebuild from the files.
+    try h.store.clearMemoryIndex()
+    #expect(try h.store.memoryFTS(match: "\"kettlebell\"", includeSecret: true, limit: 10).isEmpty)
+    try await h.doll.rebuildMemory()
+    var after: [String] = []
+    for q in answers { after.append(try await asked(q)) }
+    #expect(before == after)
+}
+
+@Test func oneQueryOnlyFTSCanFindAndOneOnlyTheEmbedding() async throws {
+    let h = try await memoryHarness()
+    // Exact rare token, no paraphrase: a pure vector search over this model does not rank it first.
+    await h.doll.ownerSaid("查")
+    try await h.turn("【想】kettlebell")
+    try await h.doll.drain()
+    let ftsOnly = try h.store.events().last { $0.kind == .result }!.text
+    #expect(ftsOnly.contains(memoryCorpus[10]))
+    // Paraphrase with no shared trigram with the record.
+    await h.doll.ownerSaid("查")
+    try await h.turn("【想】主人出國旅遊帶回什麼")
+    try await h.doll.drain()
+    let embeddingOnly = try h.store.events().last { $0.kind == .result }!.text
+    #expect(embeddingOnly.contains(memoryCorpus[23]))
+}
+
+@Test func secretMemoryStaysOutOfTurnsWithoutSecrets() async throws {
+    let h = try await memoryHarness()
+    let secretText = memoryCorpus[9]
+    // So far nothing secret is on the timeline: this turn has no secrets visible.
+    await h.doll.ownerSaid("查")
+    try await h.turn("【想】跟姐姐吵架了")
+    try await h.doll.drain()
+    let without = try h.store.events().last { $0.kind == .result }!.text
+    #expect(!without.contains(secretText) && !without.contains("｜secret｜"))
+    #expect(without.contains("【想】"))     // the query itself ran
+    // Now a secret enters the timeline (spec 5.1: the same rule that marks her replies).
+    await h.doll.ownerSaid("我跟姐姐的事你還記得嗎", secret: true)
+    try await h.turn("【想】跟姐姐吵架了")
+    try await h.doll.drain()
+    let withSecret = try h.store.events().last { $0.kind == .result }!.text
+    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定｜secret｜"))
 }
