@@ -56,6 +56,10 @@ public struct MemoryConfig: Sendable {
     public var language = "zh-Hant"
     /// Cap on how many phrases one 【想】 query turns into FTS MATCH terms.
     public var maxQueryPhrases = 16
+    /// M3b: at most this many FM candidates per owner turn in the next footer's 【可能值得記】.
+    public var maxCandidatesPerTurn = 3
+    /// M3b: how long the next turn waits for an unfinished extraction before skipping it.
+    public var candidateWaitS = 2.0
 }
 
 public struct Config: Sendable {
@@ -121,6 +125,8 @@ public struct Config: Sendable {
         try m.read("medium_confidence", &memory.mediumConfidence)
         try m.read("language", &memory.language)
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
+        try m.read("max_candidates_per_turn", &memory.maxCandidatesPerTurn)
+        try m.read("candidate_wait_s", &memory.candidateWaitS)
         for tier in SourceTier.allCases {
             var v: Double?
             try m.read("confidence_" + tier.rawValue, &v)
@@ -131,8 +137,9 @@ public struct Config: Sendable {
         }
         try m.finish()
         guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
-              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k) and high_confidence > medium_confidence")
+              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
+              memory.maxCandidatesPerTurn >= 1, memory.candidateWaitS >= 0 else {
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), high_confidence > medium_confidence, max_candidates_per_turn >= 1, candidate_wait_s >= 0")
         }
         return Config(llm: llm, core: core, shell: shell, idle: idle, memory: memory)
     }

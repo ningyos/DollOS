@@ -40,3 +40,6 @@ confidence_stranger = 0.5     # 陌生人講的（M6 才有這種輸入）：一
 confidence_doll = 0.3         # 她自己的推測：最弱，要查證才講
 language = "zh-Hant"          # NLContextualEmbedding 的語言；zh-Hans／zh-Hant 在本機是同一個模型（實測同一 modelIdentifier）
 max_query_phrases = 16        # 初始值理由：中文查句切三連字窗，30 字以內的句子不會超過 28 個；16 個已經蓋住整句，再多重複字不增加命中
+# M3b：FM 在主人說話的回合並行抽候選，掛下一回合【狀況】的【可能值得記】，只出現一次（spec 6，2026-11-08）
+max_candidates_per_turn = 3   # 初始值理由：一句話裡值得記的事通常 1–2 件；3 條約 60–100 token，【狀況】不會變長
+candidate_wait_s = 2.0        # 初始值理由：FM 判一句約 0.9 秒（spec 6 試跑）；下一回合最多多等 2 秒，等不到就跳過、寫 log

@@ -9,6 +9,8 @@ private let root = URL(filePath: #filePath).deletingLastPathComponent().deleting
 private actor FakeModel: MainModel {
     var replies: [String]
     var requests: [(messages: [ChatMessage], effort: String)] = []
+    /// When each request reached the model.
+    var starts: [ContinuousClock.Instant] = []
 
     init(_ replies: [String]) { self.replies = replies }
 
@@ -19,6 +21,7 @@ private actor FakeModel: MainModel {
 
     func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
         requests.append((messages, effort))
+        starts.append(.now)
         if stallNext {
             stallNext = false
             try await Task.sleep(for: .seconds(30))
@@ -35,6 +38,38 @@ private actor FakeModel: MainModel {
     func seen(_ i: Int) -> [ChatMessage] { requests[i].messages }
 }
 
+/// Stands in for Apple FM: kinds by memory text (default happened), candidates scripted per
+/// extraction call, and an optional delay that makes extraction slow.
+private actor FakeDecision: DecisionModel {
+    var kinds: [String: MemoryKind] = [:]
+    var scripted: [[String]] = []
+    var delay: Duration = .zero
+    var judged: [(source: String, memory: String)] = []
+    var extracted: [[Utterance]] = []
+    var extractStarts: [ContinuousClock.Instant] = []
+    var extractEnds: [ContinuousClock.Instant] = []
+
+    func check() async throws {}
+
+    func judgeKind(source: String, memory: String) async throws -> KindJudgment {
+        judged.append((source, memory))
+        return KindJudgment(kind: kinds[memory] ?? .happened, reason: "fake")
+    }
+
+    func extractCandidates(_ utterances: [Utterance], max: Int) async throws -> [Candidate] {
+        extracted.append(utterances)
+        extractStarts.append(.now)
+        try await Task.sleep(for: delay)
+        extractEnds.append(.now)
+        let texts = scripted.isEmpty ? [] : scripted.removeFirst()
+        return texts.prefix(max).map { Candidate(text: $0, sourceSeq: utterances.last!.seq) }
+    }
+
+    func set(kind: MemoryKind, for memory: String) { kinds[memory] = kind }
+    func script(_ calls: [[String]]) { scripted += calls }
+    func slow(_ d: Duration) { delay = d }
+}
+
 private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
     let reports = Mutex<[TurnReport]>([])
@@ -44,6 +79,7 @@ private final class Recorder: Sendable {
 private struct Harness {
     let doll: Doll
     let model: FakeModel
+    let decision: FakeDecision
     let rec: Recorder
     let dir: URL
     let store: Store      // a second connection to the same database, for checks
@@ -57,9 +93,12 @@ private struct Harness {
         cfg.shell.waitS = 0.3
         tune(&cfg)
         model = FakeModel(replies)
+        let decision = FakeDecision()
+        self.decision = decision
         let rec = Recorder()
         self.rec = rec
-        doll = try Doll(config: cfg, root: root, model: model, say: { text in rec.said.withLock { $0.append(text) } })
+        doll = try Doll(config: cfg, root: root, model: model, decision: decision,
+                        say: { text in rec.said.withLock { $0.append(text) } })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
         await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
         store = try Store(path: dir.appending(path: "doll.db"))
@@ -388,7 +427,7 @@ private func memoryHarness() async throws -> Harness {
         let hits = try h.store.events().filter { $0.kind == .result && $0.text.hasPrefix("【想】") }.last!.text
         // The wanted record is one of the returned hits.
         if hits.contains(memoryCorpus[want]) { correct += 1 }
-        #expect(hits.contains("〔確定｜") || hits.contains("〔大概｜") || hits.contains("〔聽說｜"))
+        #expect(hits.contains("〔確定的") || hits.contains("〔大概的") || hits.contains("〔聽說的"))
         #expect(h.reports.last!.actions.last!.hasPrefix("search "))
     }
     #expect(correct >= 8)   // 30/10 acceptance number (plan M3a)
@@ -445,5 +484,104 @@ private func memoryHarness() async throws -> Harness {
     try await h.turn("【想】跟姐姐吵架了")
     try await h.doll.drain()
     let withSecret = try h.store.events().last { $0.kind == .result }!.text
-    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定｜secret｜"))
+    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定的已發生｜secret〕"))
+}
+
+// memory (M3b) ---------------------------------------------------------------
+
+@Test func noteKindComesFromTheDecisionModelIntoFileAndIndex() async throws {
+    let h = try await Harness()
+    await h.decision.set(kind: .intended, for: "主人下週要去東京")
+    await h.doll.ownerSaid("我下週要去東京")
+    try await h.turn("【記】公開\n主人下週要去東京")
+    let judged = await h.decision.judged
+    #expect(judged.count == 1 && judged[0].source == "[主人] 我下週要去東京" && judged[0].memory == "主人下週要去東京")
+    let dir = h.dir.appending(path: "memory/public")
+    let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".md") }
+    #expect(files.count == 1)
+    let text = try String(contentsOf: dir.appending(path: files[0]), encoding: .utf8)
+    #expect(text.contains("kind = \"intended\""))
+    let meta = try #require(try h.store.memoryMeta(String(files[0].dropLast(3))))
+    #expect(meta.kind == "intended")
+    try await h.doll.drain()
+    #expect(try h.store.events().contains { $0.kind == .result && $0.text.contains("kind intended") })
+    // the index rebuilt from markdown keeps it
+    try await h.doll.rebuildMemory()
+    #expect(try h.store.memoryMeta(String(files[0].dropLast(3)))?.kind == "intended")
+}
+
+@Test func recallShowsConfidenceLevelAndKindTogether() async throws {
+    let h = try await Harness()
+    await h.decision.set(kind: .intended, for: "主人下週要去東京")
+    await h.doll.ownerSaid("我下週要去東京")
+    try await h.turn("【記】公開\n主人下週要去東京")
+    await h.doll.ownerSaid("我要去哪？")
+    try await h.turn("【想】主人要去東京")
+    try await h.doll.drain()
+    let out = try h.store.events().last { $0.kind == .result && $0.text.hasPrefix("【想】") }!.text
+    #expect(out.contains("〔確定的打算｜public〕\n主人下週要去東京"))
+    let hit = MemoryHit(id: "x", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: .happened, text: "")
+    #expect(hit.label == "聽說的已發生")
+}
+
+@Test func candidatesShowOnceInTheNextFooterAndAreNeverWritten() async throws {
+    let h = try await Harness()
+    await h.decision.script([["主人對花生過敏"], []])
+    await h.doll.ownerSaid("我對花生過敏")
+    try await h.turn("好，我知道了")                            // turn 1: extraction runs beside the call
+    let owner = try h.store.events().first { $0.kind == .owner }!
+    #expect(await h.decision.extracted.map { $0.map(\.seq) } == [[owner.seq!]])
+    #expect(!h.reports[0].footer.contains("【可能值得記】"))
+    await h.doll.ownerSaid("嗯")
+    try await h.turn("嗯嗯")                                    // turn 2: shows turn 1's candidate
+    #expect(h.reports[1].footer.contains("【可能值得記】") && h.reports[1].footer.contains("- 主人對花生過敏"))
+    await h.doll.put(Event(.result, .internal, "r"))
+    try await h.turn("好")                                      // turn 3: gone (turn 2 extracted nothing)
+    #expect(!h.reports[2].footer.contains("【可能值得記】") && !h.reports[2].footer.contains("花生"))
+    // proposals only; nothing reaches memory unless she writes 【記】
+    #expect(try h.store.countMemoryIndex() == 0)
+    let pub = (try? FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "memory/public").path)) ?? []
+    #expect(pub.filter { $0.hasSuffix(".md") }.isEmpty)
+    #expect(h.logs.contains { $0.contains("candidates from turn 1: #\(owner.seq!) 主人對花生過敏") })
+}
+
+@Test func slowExtractionDoesNotDelayTheModelCall() async throws {
+    let h = try await Harness { $0.memory.candidateWaitS = 5 }
+    await h.decision.slow(.seconds(1.5))
+    await h.decision.script([["主人下週要去東京"]])
+    await h.doll.ownerSaid("我下週要去東京")
+    let t0 = ContinuousClock.now
+    try await h.turn("好")
+    let turnTime = ContinuousClock.now - t0
+    #expect(turnTime < .seconds(1))                             // the turn did not wait for it
+    let callStart = await h.model.starts[0]
+    #expect(await h.decision.extractEnds.isEmpty)               // still extracting when the turn ended
+    #expect(callStart < (await h.decision.extractStarts[0]) + .seconds(1.5))
+    await h.doll.put(Event(.result, .internal, "r"))
+    try await h.turn("嗯")                                      // next turn waits (within candidate_wait_s)
+    #expect(h.reports[1].footer.contains("- 主人下週要去東京"))
+}
+
+@Test func extractionNotDoneWithinTheWaitIsSkippedAndLogged() async throws {
+    let h = try await Harness { $0.memory.candidateWaitS = 0.2 }
+    await h.decision.slow(.seconds(3))
+    await h.decision.script([["主人下週要去東京"]])
+    await h.doll.ownerSaid("我下週要去東京")
+    try await h.turn("好")
+    await h.doll.put(Event(.result, .internal, "r"))
+    let t0 = ContinuousClock.now
+    try await h.turn("嗯")
+    #expect(ContinuousClock.now - t0 < .seconds(1.5))
+    #expect(!h.reports[1].footer.contains("【可能值得記】"))
+    #expect(h.logs.contains { $0.contains("candidate extraction for turn 1 not done after 0.2 s; skipped") })
+}
+
+@Test func noExtractionOnTurnsWithoutOwnerEvents() async throws {
+    let h = try await Harness()
+    await h.doll.put(Event(.result, .internal, "$ ls\n(exit 0)"))
+    try await h.turn("好")
+    #expect(await h.decision.extracted.isEmpty)
+    await h.doll.ownerSaid("早安")
+    try await h.turn("早")
+    #expect(await h.decision.extracted.count == 1)
 }

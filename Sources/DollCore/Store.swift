@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS memory_index (
     confidence REAL NOT NULL,
     ts REAL NOT NULL,
     source_seq INTEGER NOT NULL,
-    kind TEXT NOT NULL               -- empty in M3a (FM decides it in M3b)
+    kind TEXT NOT NULL               -- happened | intended | uncertain (FM, M3b); empty for M3a records
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     text, id UNINDEXED, secret UNINDEXED, tokenize='trigram'
@@ -246,6 +246,7 @@ public final class Store {
         public let folder: String
         public let secret: Bool
         public let confidence: Double
+        public let kind: String
     }
 
     public struct MemoryVectorRow {
@@ -301,10 +302,10 @@ public final class Store {
     }
 
     public func memoryMeta(_ id: String) throws -> MemoryMeta? {
-        try query("SELECT id, path, folder, secret, confidence FROM memory_index WHERE id = ?",
+        try query("SELECT id, path, folder, secret, confidence, kind FROM memory_index WHERE id = ?",
                   [.text(id)]) {
             MemoryMeta(id: $0.text(0)!, path: $0.text(1)!, folder: $0.text(2)!,
-                       secret: $0.int(3)! != 0, confidence: $0.real(4))
+                       secret: $0.int(3)! != 0, confidence: $0.real(4), kind: $0.text(5)!)
         }.first
     }
 }
