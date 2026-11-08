@@ -1,8 +1,8 @@
 import Foundation
 import NaturalLanguage
 
-/// M3a memory (spec 6): the markdown files under `<memory.dir>/<secret_dir>/` and
-/// `<memory.dir>/<public_dir>/` are the source of truth. The SQLite tables in `Store`
+/// M3a memory (spec 6): the markdown files under `<memory.dir>/<secret_dir>/`, `<own_dir>/` and
+/// `<public_dir>/` are the source of truth. The SQLite tables in `Store`
 /// (FTS5 trigram + embedding blobs + metadata) are only an index, rebuildable with
 /// `rebuild()`. No fallback: if the embedding model is unavailable, that is an error.
 public struct MemoryError: Error, CustomStringConvertible {
@@ -32,10 +32,29 @@ public enum MemoryKind: String, Sendable, CaseIterable {
     }
 }
 
+/// Which layer a memory is in (spec 6, 2026-11-08). The directory names come from config.
+public enum MemoryFolder: String, Sendable, CaseIterable {
+    /// The owner's secrets.
+    case secret
+    /// Her own secrets: her passwords, accounts, tokens.
+    case own
+    case `public`
+}
+
+/// Whose turn a recall runs in; decides the folders it reads (`Memory.visible`).
+public enum Audience: Sendable {
+    /// Answering the owner.
+    case owner
+    /// Her own work, woken by something she set up (a watch).
+    case doll
+    /// Answering someone other than the owner (no such input until M6).
+    case stranger
+}
+
 public struct MemoryHit: Sendable {
     public var id: String
-    public var folder: String       // the config directory name: "secret" | "public"
-    public var secret: Bool
+    public var folder: String       // the config directory name of secret | own | public
+    public var secret: Bool         // in the owner's secret folder
     public var confidence: Double
     public var level: String        // 確定 / 大概 / 聽說, from the confidence thresholds
     /// nil when she gave none (front-matter `kind = ""`): a fact or a preference.
@@ -107,7 +126,7 @@ public final class Memory {
         self.store = store
         embedder = try Embedder(language: config.language)
         let fm = FileManager.default
-        for dir in [config.secretDir, config.publicDir] {
+        for dir in [config.secretDir, config.ownDir, config.publicDir] {
             try fm.createDirectory(at: root.appending(path: dir), withIntermediateDirectories: true)
         }
     }
@@ -116,8 +135,24 @@ public final class Memory {
         Data(bytes: v, count: v.count * MemoryLayout<Float>.size)
     }
 
-    private func directory(_ secret: Bool) -> URL {
-        root.appending(path: secret ? config.secretDir : config.publicDir)
+    func dirName(_ f: MemoryFolder) -> String {
+        switch f {
+        case .secret: config.secretDir
+        case .own: config.ownDir
+        case .public: config.publicDir
+        }
+    }
+
+    private func directory(_ f: MemoryFolder) -> URL { root.appending(path: dirName(f)) }
+
+    /// Which folders a turn may read (spec 6, 2026-11-08). `secret` keeps the 5.1 rule: only a turn
+    /// that already saw a secret event, and never a stranger's. `own` (her own passwords, tokens) is
+    /// for the owner's turns and her own, never a stranger's. `public` is for everyone.
+    public static func visible(_ audience: Audience, sawSecret: Bool) -> Set<MemoryFolder> {
+        switch audience {
+        case .stranger: [.public]
+        case .owner, .doll: sawSecret ? [.public, .own, .secret] : [.public, .own]
+        }
     }
 
     private static func hex(_ n: Int) -> String {
@@ -166,7 +201,7 @@ public final class Memory {
     }
 
     @discardableResult
-    public func write(_ text: String, secret: Bool, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?) throws -> String {
+    public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -174,12 +209,12 @@ public final class Memory {
         }
         let ts = Date().timeIntervalSince1970
         let id = "\(sourceSeq)-\(Self.hex(6))"
-        let folder = secret ? config.secretDir : config.publicDir
-        let url = directory(secret).appending(path: "\(id).md")
+        let folder = dirName(f)
+        let url = directory(f).appending(path: "\(id).md")
         try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier, body: body)
             .write(to: url, atomically: true, encoding: .utf8)
         let vector = try embedder.embed(body)
-        try store.putMemoryIndex(id: id, path: url.path, folder: folder, secret: secret, confidence: confidence,
+        try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: confidence,
                                 ts: ts, sourceSeq: sourceSeq, kind: kind?.rawValue ?? "", text: body, vector: Self.blob(vector))
         return id
     }
@@ -187,8 +222,8 @@ public final class Memory {
     /// Number of records on disk (the source of truth).
     private func fileCount() -> Int {
         let fm = FileManager.default
-        return [true, false].reduce(0) { n, secret in
-            n + ((try? fm.contentsOfDirectory(atPath: directory(secret).path)) ?? [])
+        return MemoryFolder.allCases.reduce(0) { n, f in
+            n + ((try? fm.contentsOfDirectory(atPath: directory(f).path)) ?? [])
                 .filter { $0.hasSuffix(".md") }.count
         }
     }
@@ -204,9 +239,9 @@ public final class Memory {
     public func rebuild() throws {
         try store.clearMemoryIndex()
         let fm = FileManager.default
-        for secret in [true, false] {
-            let dir = directory(secret)
-            let folder = secret ? config.secretDir : config.publicDir
+        for f in MemoryFolder.allCases {
+            let dir = directory(f)
+            let folder = dirName(f)
             guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names.sorted() where name.hasSuffix(".md") {
                 let url = dir.appending(path: name)
@@ -215,7 +250,7 @@ public final class Memory {
                 guard !parsed.body.isEmpty else { continue }
                 let id = String(name.dropLast(3))
                 let vector = try embedder.embed(parsed.body)
-                try store.putMemoryIndex(id: id, path: url.path, folder: folder, secret: secret, confidence: parsed.confidence,
+                try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: parsed.confidence,
                                         ts: parsed.ts, sourceSeq: parsed.sourceSeq, kind: parsed.kind,
                                         text: parsed.body, vector: Self.blob(vector))
             }
@@ -258,15 +293,18 @@ public final class Memory {
         return Array(unique.prefix(maxPhrases))
     }
 
-    public func search(_ query: String, secretVisible: Bool) throws -> [MemoryHit] {
+    /// Searches only the folders `visible` lets this turn read (`Memory.visible`).
+    public func search(_ query: String, visible: Set<MemoryFolder>) throws -> [MemoryHit] {
+        let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
+        guard !names.isEmpty else { return [] }
         var ftsRanked: [String] = []
         let phrases = Self.queryPhrases(query, maxPhrases: config.maxQueryPhrases)
         if !phrases.isEmpty {
             let match = phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")
-            ftsRanked = try store.memoryFTS(match: match, includeSecret: secretVisible, limit: config.maxCandidates)
+            ftsRanked = try store.memoryFTS(match: match, folders: names, limit: config.maxCandidates)
         }
         let qv = try embedder.embed(query)
-        let scored = try store.memoryVectors(includeSecret: secretVisible).map { row -> (String, Double) in
+        let scored = try store.memoryVectors(folders: names).map { row -> (String, Double) in
             var dot = 0.0
             row.vector.withUnsafeBytes { raw in
                 let v = raw.bindMemory(to: Float.self)
@@ -283,15 +321,16 @@ public final class Memory {
         var hits: [MemoryHit] = []
         for (id, var score) in fused {
             guard let meta = try store.memoryMeta(id) else { continue }
-            if meta.secret && !secretVisible { continue }
+            if !names.contains(meta.folder) { continue }
             score += config.confidenceWeight * meta.confidence
             guard let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { continue }
             let parsed = try Self.parseFile(body)
             guard !parsed.body.isEmpty else { continue }
             let level = meta.confidence >= config.highConfidence ? "確定"
                 : meta.confidence >= config.mediumConfidence ? "大概" : "聽說"
-            hits.append(MemoryHit(id: id, folder: meta.folder, secret: meta.secret, confidence: meta.confidence,
-                                  level: level, kind: MemoryKind(rawValue: parsed.kind), text: parsed.body))
+            hits.append(MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
+                                  confidence: meta.confidence, level: level,
+                                  kind: MemoryKind(rawValue: parsed.kind), text: parsed.body))
             fused[id] = score
         }
         return hits.sorted {

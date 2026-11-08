@@ -2,16 +2,39 @@ import Foundation
 
 /// One chat-completions message. The timeline stores events, not messages;
 /// messages are rendered from events every step.
-public struct ChatMessage: Codable, Sendable, Equatable {
+public struct ChatMessage: Encodable, Sendable, Equatable {
     public var role: String
     /// Her assistant messages are her raw reply, tool call text included, so a re-render is
     /// byte-identical. A `role: "tool"` message is one call's result; the template renders it as a
     /// `<tool_response>` block and needs no call id.
     public var content: String
+    /// A screenshot as a `data:` URI, built from the stored file's bytes, so every turn re-sends
+    /// the same bytes. With one, `content` goes out as [text part, image_url part].
+    public var image: String?
 
-    public init(role: String, content: String) {
+    public init(role: String, content: String, image: String? = nil) {
         self.role = role
         self.content = content
+        self.image = image
+    }
+
+    enum CodingKeys: String, CodingKey { case role, content }
+    private struct Part: Encodable {
+        struct URL: Encodable { let url: String }
+        let type: String
+        var text: String?
+        var image_url: URL?
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(role, forKey: .role)
+        if let image {
+            try c.encode([Part(type: "text", text: content), Part(type: "image_url", image_url: .init(url: image))],
+                         forKey: .content)
+        } else {
+            try c.encode(content, forKey: .content)
+        }
     }
 
     static let encoder: JSONEncoder = {

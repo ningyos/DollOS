@@ -14,18 +14,29 @@ public struct CoreConfig: Sendable {
     public var dataDir = "data"
     public var pack = "character_packs/doll2/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
-    public var priority = ["owner_voice", "owner_text", "job_result"]
+    public var priority = ["owner_voice", "owner_text", "watch"]
 }
 
-public struct ShellConfig: Sendable {
-    /// Where every command runs. The only place she touches until the VM (M2).
-    public var scratchDir = "~/dollos-scratch"
-    /// A command that finishes within this many seconds returns in the same turn.
-    public var waitS = 10.0
-    /// Hard limit for a background job.
-    public var timeoutS = 3600.0
-    /// How much of a command's output she gets to see (the tail).
-    public var resultTailChars = 4000
+/// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
+public struct ComputerConfig: Sendable {
+    /// The VM's whole ID: `vmpal ui` resolves it without asking VMPal.
+    public var vmID = ""
+    /// The VMPal CLI; it runs as `<vmpal> --cli ui <vm_id> …`.
+    public var vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"
+    /// Every screenshot she gets has this width; her coordinates are in this space.
+    public var screenshotWidth = 1280
+    /// "jpeg" or "png".
+    public var screenshotFormat = "jpeg"
+    /// Rough prompt tokens of one screenshot, for the footer's context figure only.
+    public var screenshotTokens = 350
+    /// watch: how often the watched region is captured and compared.
+    public var watchPollS = 1.0
+    /// watch: at least this many seconds between two wakes.
+    public var watchMinIntervalS = 10.0
+    /// watch: after this many wakes in a row with no computer action from her, the watch stops.
+    public var watchStopAfter = 3
+    /// watch: max_wait when she gives none.
+    public var watchDefaultMaxWaitS = 120.0
 }
 
 public struct IdleConfig: Sendable {
@@ -37,7 +48,9 @@ public struct IdleConfig: Sendable {
 /// rebuildable index (spec 6).
 public struct MemoryConfig: Sendable {
     public var dir = "memory"
+    /// Three folders (spec 6, 2026-11-08): the owner's secrets, her own secrets (passwords, tokens), the rest.
     public var secretDir = "secret"
+    public var ownDir = "own"
     public var publicDir = "public"
     /// How many records recall returns.
     public var topK = 5
@@ -61,13 +74,13 @@ public struct MemoryConfig: Sendable {
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
-    public var shell: ShellConfig
+    public var computer: ComputerConfig
     public var idle: IdleConfig
     public var memory: MemoryConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "shell", "idle", "memory"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "idle", "memory"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -92,13 +105,23 @@ public struct Config: Sendable {
             throw TOMLError(description: "[core] priority must list each of \(known.sorted()) exactly once")
         }
 
-        var s = Section(name: "shell", raw: raw["shell"] ?? [:])
-        var shell = ShellConfig()
-        try s.read("scratch_dir", &shell.scratchDir)
-        try s.read("wait_s", &shell.waitS)
-        try s.read("timeout_s", &shell.timeoutS)
-        try s.read("result_tail_chars", &shell.resultTailChars)
-        try s.finish()
+        var v = Section(name: "computer", raw: raw["computer"] ?? [:])
+        var computer = ComputerConfig()
+        computer.vmID = try v.required("vm_id")
+        try v.read("vmpal", &computer.vmpal)
+        try v.read("screenshot_width", &computer.screenshotWidth)
+        try v.read("screenshot_format", &computer.screenshotFormat)
+        try v.read("screenshot_tokens", &computer.screenshotTokens)
+        try v.read("watch_poll_s", &computer.watchPollS)
+        try v.read("watch_min_interval_s", &computer.watchMinIntervalS)
+        try v.read("watch_stop_after", &computer.watchStopAfter)
+        try v.read("watch_default_max_wait_s", &computer.watchDefaultMaxWaitS)
+        try v.finish()
+        guard ["jpeg", "png"].contains(computer.screenshotFormat), computer.screenshotWidth >= 1,
+              computer.watchPollS > 0, computer.watchMinIntervalS >= 0, computer.watchStopAfter >= 1,
+              computer.watchDefaultMaxWaitS > 0 else {
+            throw TOMLError(description: "[computer] screenshot_format is jpeg or png; screenshot_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
+        }
 
         var i = Section(name: "idle", raw: raw["idle"] ?? [:])
         var idle = IdleConfig()
@@ -112,6 +135,7 @@ public struct Config: Sendable {
         var memory = MemoryConfig()
         try m.read("dir", &memory.dir)
         try m.read("secret_dir", &memory.secretDir)
+        try m.read("own_dir", &memory.ownDir)
         try m.read("public_dir", &memory.publicDir)
         try m.read("top_k", &memory.topK)
         try m.read("rrf_k", &memory.rrfK)
@@ -131,10 +155,11 @@ public struct Config: Sendable {
         }
         try m.finish()
         guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
-              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), high_confidence > medium_confidence")
+              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
+              Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), high_confidence > medium_confidence, three distinct folder names")
         }
-        return Config(llm: llm, core: core, shell: shell, idle: idle, memory: memory)
+        return Config(llm: llm, core: core, computer: computer, idle: idle, memory: memory)
     }
 }
 
@@ -144,7 +169,7 @@ public enum Effort {
 
 /// Event sources, named as in `[core] priority`.
 public enum Priority: String, CaseIterable, Sendable {
-    case ownerVoice = "owner_voice", ownerText = "owner_text", jobResult = "job_result"
+    case ownerVoice = "owner_voice", ownerText = "owner_text", watch
 }
 
 /// Reads typed keys out of one section and rejects keys nobody read.

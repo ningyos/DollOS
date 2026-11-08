@@ -8,16 +8,20 @@ max_tokens = 4096             # 初始值理由：一回合一個動作，回覆
 [core]
 data_dir = "data"
 pack = "character_packs/doll2/doll.toml"
-# 佇列排進時間線的優先序，高→低（spec 3.1；M1 只有這三種來源）
-priority = ["owner_voice", "owner_text", "job_result"]
+# 佇列排進時間線的優先序，高→低（spec 3.1；M2 的三種來源：主人說話、主人打字、watch 叫醒）
+priority = ["owner_voice", "owner_text", "watch"]
 
-[shell]
-# M2 之前她唯一能動的地方（plan M1 臨時邊界）；不存在會建
-scratch_dir = "~/dollos-scratch"
-# 命令在這幾秒內跑完就馬上排成結果事件，超過轉背景 job（spec 3.1）
-wait_s = 10.0                 # 初始值理由：舊版量測短 Shell 當輪回結果省掉 4–6 次呼叫；10 秒約等於一次模型呼叫，等更久不划算
-timeout_s = 3600.0            # 初始值理由：背景 job 的硬上限；試跑裡最長 3 分鐘，留 20 倍
-result_tail_chars = 4000      # 初始值理由：約 1–2k token 的輸出尾巴；再長每回合重讀太貴
+[computer]
+# M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
+vm_id = "E6813EBA"            # Doll VM；用 ID 不用名字：vmpal ui 不用回頭問 VMPal
+vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"   # PATH 上沒有 vmpal
+screenshot_width = 1280       # 初始值理由：VMPal 的座標空間本來就是 1280 寬，截圖同寬她的座標不用換算；一張約 350 token（spec 3.x 探測）
+screenshot_format = "jpeg"    # 初始值理由：VMPal 預設；1280 寬一張約 270 KB，PNG 大好幾倍，每回合都要重送
+screenshot_tokens = 350       # 只用來估【狀況】的 context 長度；1356×737 探測一張約 350 token
+watch_poll_s = 1.0            # 初始值理由：一次區域截圖約 0.05 秒；每秒比一次夠快，又不佔 VM
+watch_min_interval_s = 10.0   # 初始值理由：兩次叫醒至少隔 10 秒，大約一次模型呼叫的時間；一直變的畫面不會每秒叫她（主人選限頻）
+watch_stop_after = 3          # 初始值理由：連 3 次叫醒都沒動作＝她不在看這塊；再叫只是燒回合
+watch_default_max_wait_s = 120.0   # 初始值理由：她沒說最多等多久時等 2 分鐘；一般 app 開啟、網頁載入、短命令都在這之內
 
 [idle]
 # 連續 N 輪沒工具呼叫＝空轉，只寫 log（spec 3.8；不通知、不限速）
@@ -27,6 +31,7 @@ max_turns_without_tool = 3    # 初始值理由：r5 失敗樣本是連續 3 輪
 # M3a：markdown 是原始資料（spec 6），SQLite 只當可重建索引
 dir = "memory"
 secret_dir = "secret"         # 主人的秘密，只進對主人的回合（spec 5.1）
+own_dir = "own"              # 她自己的秘密（密碼、token）：主人的回合和她自己做事的回合看得到，陌生人的回合看不到（spec 6，2026-11-08）
 public_dir = "public"
 top_k = 5                     # 初始值理由：一次 recall 讀 5 條約 200–400 token；再多每回合重讀太貴，也稀釋她的注意力
 rrf_k = 60                    # 初始值理由：RRF 原始論文的建議常數；k 大讓單一條列表的第 1 名不會壓死另一條列表

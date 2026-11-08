@@ -1,31 +1,23 @@
 import Foundation
 import SQLite3
 
-/// One SQLite file: the append-only timeline (events), the 【狀況】 footer each reply
-/// answered, and the jobs the program needs to kill after a restart.
+/// One SQLite file: the append-only timeline (events) and the 【狀況】 footer each reply answered.
 ///
 /// This is not a WAL. Nothing is replayed after a crash; the queue lives in memory.
 private let schema = """
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
-    kind TEXT NOT NULL,              -- owner | doll | tool | job
+    kind TEXT NOT NULL,              -- owner | doll | tool | watch
     source TEXT NOT NULL,            -- owner | internal
     has_secret INTEGER NOT NULL DEFAULT 0,
     voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
-    text TEXT NOT NULL               -- her replies: raw, tool call text included, exactly as re-sent
+    text TEXT NOT NULL,              -- her replies: raw, tool call text included, exactly as re-sent
+    image TEXT                       -- a screenshot file under shots/, re-sent byte-identical
 );
 CREATE TABLE IF NOT EXISTS footers (
     seq INTEGER PRIMARY KEY,         -- her reply's seq
     text TEXT NOT NULL               -- the 【狀況】 she saw right before it; a prompt artifact, not an event
-);
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    command TEXT NOT NULL,
-    status TEXT NOT NULL,            -- running | ok | failed | timeout | cancelled | lost
-    pgid INTEGER,
-    started REAL NOT NULL,
-    ended REAL
 );
 """
 
@@ -36,15 +28,14 @@ private let memorySchema = """
 CREATE TABLE IF NOT EXISTS memory_index (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL,
-    folder TEXT NOT NULL,            -- the config directory name: secret | public
-    secret INTEGER NOT NULL,
+    folder TEXT NOT NULL,            -- the config directory name of secret | own | public
     confidence REAL NOT NULL,
     ts REAL NOT NULL,
     source_seq INTEGER NOT NULL,
     kind TEXT NOT NULL               -- happened | intended | uncertain, as she gave it; empty when she gave none
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    text, id UNINDEXED, secret UNINDEXED, tokenize='trigram'
+    text, id UNINDEXED, folder UNINDEXED, tokenize='trigram'
 );
 CREATE TABLE IF NOT EXISTS memory_vectors (
     id TEXT PRIMARY KEY,
@@ -64,8 +55,8 @@ public struct Event: Sendable, Equatable {
     public enum Kind: String, Sendable {
         case owner      // the owner spoke
         case doll       // her reply, verbatim (tool call text included)
-        case tool       // the result of one of her tool calls (incl. "turned into a background job"), in call order
-        case job        // a background job finished
+        case tool       // the result of one of her tool calls, in call order
+        case watch      // her watch woke her: the region changed, or max_wait passed
     }
     public var kind: Kind
     public var principal: Principal
@@ -73,18 +64,22 @@ public struct Event: Sendable, Equatable {
     public var secret: Bool
     /// Only owner voice may cancel a model call in flight (voice itself is M6).
     public var voice: Bool
+    /// A screenshot's file name under the data dir's `shots/`; rendered as an image part.
+    public var image: String?
     public var seq: Int64?
     public var ts: Double
     /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
     /// server's prefix cache stays valid; never part of the timeline proper.
     public var footer: String?
 
-    public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false) {
+    public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
+                image: String? = nil) {
         self.kind = kind
         self.principal = principal
         self.text = text
         self.secret = secret
         self.voice = voice
+        self.image = image
         self.seq = nil
         self.ts = Date().timeIntervalSince1970
     }
@@ -92,18 +87,10 @@ public struct Event: Sendable, Equatable {
     public var priority: Priority {
         switch kind {
         case .owner: voice ? .ownerVoice : .ownerText
-        case .job: .jobResult
-        case .doll, .tool: .jobResult   // never queued; her replies and tool results go straight to the timeline
+        case .watch: .watch
+        case .doll, .tool: .watch   // never queued; her replies and tool results go straight to the timeline
         }
     }
-}
-
-public struct Job: Sendable, Equatable {
-    public let id: String
-    public let command: String
-    public let status: String
-    public let pgid: Int32?
-    public let started: Double
 }
 
 private enum Bind {
@@ -175,16 +162,14 @@ public final class Store {
         try query(sql, args) { _ in () }
     }
 
-    private var now: Bind { .real(Date().timeIntervalSince1970) }
-
     // events -----------------------------------------------------------------
     private static let eventColumns =
-        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice"
+        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice, e.image"
         + " FROM events e LEFT JOIN footers f ON f.seq = e.seq"
 
     private static func event(_ r: Row) -> Event {
         var e = Event(Event.Kind(rawValue: r.text(2)!)!, Principal(rawValue: r.text(3)!)!, r.text(5)!,
-                      secret: r.int(4)! != 0, voice: r.int(7)! != 0)
+                      secret: r.int(4)! != 0, voice: r.int(7)! != 0, image: r.text(8))
         e.seq = r.int(0)
         e.ts = r.real(1)
         e.footer = r.text(6)
@@ -202,41 +187,17 @@ public final class Store {
     /// Appends one event and returns it with its seq.
     @discardableResult
     public func append(_ ev: Event) throws -> Event {
-        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text) VALUES (?, ?, ?, ?, ?, ?)",
+        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text, image) VALUES (?, ?, ?, ?, ?, ?, ?)",
                  [.real(ev.ts), .text(ev.kind.rawValue), .text(ev.principal.rawValue),
-                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text)])
+                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text), ev.image.map { .text($0) } ?? .null])
         var out = ev
         out.seq = sqlite3_last_insert_rowid(db)
         return out
     }
 
-    /// The whole timeline, oldest first. Only the owner exists in M1, so there is one projection.
+    /// The whole timeline, oldest first. Only the owner exists so far, so there is one projection.
     public func events() throws -> [Event] {
         try query(Self.eventColumns + " ORDER BY e.seq", [], Self.event)
-    }
-
-    // jobs -------------------------------------------------------------------
-    public func addJob(_ id: String, command: String, pgid: Int32?) throws {
-        try exec("INSERT INTO jobs (id, command, status, pgid, started) VALUES (?, ?, 'running', ?, ?)",
-                 [.text(id), .text(command), pgid.map { Bind.int(Int64($0)) } ?? .null, now])
-    }
-
-    private static let jobColumns = "SELECT id, command, status, pgid, started FROM jobs"
-
-    private static func job(_ r: Row) -> Job {
-        Job(id: r.text(0)!, command: r.text(1)!, status: r.text(2)!, pgid: r.int(3).map { Int32($0) }, started: r.real(4))
-    }
-
-    public func job(_ id: String) throws -> Job? {
-        try query(Self.jobColumns + " WHERE id = ?", [.text(id)], Self.job).first
-    }
-
-    public func runningJobs() throws -> [Job] {
-        try query(Self.jobColumns + " WHERE status = 'running' ORDER BY started", [], Self.job)
-    }
-
-    public func finishJob(_ id: String, _ status: String) throws {
-        try exec("UPDATE jobs SET status = ?, ended = ? WHERE id = ?", [.text(status), now, .text(id)])
     }
 
     // memory index (M3a) ------------------------------------------------------
@@ -244,7 +205,6 @@ public final class Store {
         public let id: String
         public let path: String
         public let folder: String
-        public let secret: Bool
         public let confidence: Double
         public let kind: String
     }
@@ -255,19 +215,19 @@ public final class Store {
     }
 
     /// Inserts or replaces one index entry (the markdown file was already written).
-    public func putMemoryIndex(id: String, path: String, folder: String, secret: Bool, confidence: Double,
+    public func putMemoryIndex(id: String, path: String, folder: String, confidence: Double,
                                ts: Double, sourceSeq: Int64, kind: String, text: String, vector: Data) throws {
         try exec("""
-            INSERT INTO memory_index (id, path, folder, secret, confidence, ts, source_seq, kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO memory_index (id, path, folder, confidence, ts, source_seq, kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET path = excluded.path, folder = excluded.folder,
-                secret = excluded.secret, confidence = excluded.confidence, ts = excluded.ts,
+                confidence = excluded.confidence, ts = excluded.ts,
                 source_seq = excluded.source_seq, kind = excluded.kind
-            """, [.text(id), .text(path), .text(folder), .int(secret ? 1 : 0),
+            """, [.text(id), .text(path), .text(folder),
                   .real(confidence), .real(ts), .int(sourceSeq), .text(kind)])
         try exec("DELETE FROM memory_fts WHERE id = ?", [.text(id)])
-        try exec("INSERT INTO memory_fts (text, id, secret) VALUES (?, ?, ?)",
-                 [.text(text), .text(id), .int(secret ? 1 : 0)])
+        try exec("INSERT INTO memory_fts (text, id, folder) VALUES (?, ?, ?)",
+                 [.text(text), .text(id), .text(folder)])
         try exec("INSERT INTO memory_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
                  [.text(id), .blob(vector)])
     }
@@ -282,30 +242,30 @@ public final class Store {
         }
     }
 
-    /// FTS5 hits ordered by BM25 rank; the id/secret columns are UNINDEXED so the MATCH only sees text.
-    /// The id tiebreak matters: equal BM25 scores otherwise order arbitrarily, and RRF ranks would
-    /// change between a run and an index rebuild.
-    public func memoryFTS(match: String, includeSecret: Bool, limit: Int) throws -> [String] {
-        let filter = includeSecret ? "" : " AND secret = 0"
+    /// FTS5 hits ordered by BM25 rank, from the given folders only; the id/folder columns are
+    /// UNINDEXED so the MATCH only sees text. The id tiebreak matters: equal BM25 scores otherwise
+    /// order arbitrarily, and RRF ranks would change between a run and an index rebuild.
+    public func memoryFTS(match: String, folders: [String], limit: Int) throws -> [String] {
+        let marks = folders.map { _ in "?" }.joined(separator: ", ")
         return try query("""
-            SELECT id FROM memory_fts WHERE memory_fts MATCH ?\(filter) ORDER BY rank, id LIMIT ?
-            """, [.text(match), .int(Int64(limit))]) { $0.text(0)! }
+            SELECT id FROM memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks)) ORDER BY rank, id LIMIT ?
+            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit))]) { $0.text(0)! }
     }
 
-    public func memoryVectors(includeSecret: Bool) throws -> [MemoryVectorRow] {
-        let filter = includeSecret ? "" : "WHERE m2.secret = 0"
+    public func memoryVectors(folders: [String]) throws -> [MemoryVectorRow] {
+        let marks = folders.map { _ in "?" }.joined(separator: ", ")
         return try query("""
-            SELECT m.id, m.vector FROM memory_vectors m JOIN memory_index m2 ON m2.id = m.id \(filter)
-            """, []) {
+            SELECT m.id, m.vector FROM memory_vectors m JOIN memory_index m2 ON m2.id = m.id WHERE m2.folder IN (\(marks))
+            """, folders.map { .text($0) }) {
             MemoryVectorRow(id: $0.text(0)!, vector: $0.blob(1))
         }
     }
 
     public func memoryMeta(_ id: String) throws -> MemoryMeta? {
-        try query("SELECT id, path, folder, secret, confidence, kind FROM memory_index WHERE id = ?",
+        try query("SELECT id, path, folder, confidence, kind FROM memory_index WHERE id = ?",
                   [.text(id)]) {
             MemoryMeta(id: $0.text(0)!, path: $0.text(1)!, folder: $0.text(2)!,
-                       secret: $0.int(3)! != 0, confidence: $0.real(4), kind: $0.text(5)!)
+                       confidence: $0.real(3), kind: $0.text(4)!)
         }.first
     }
 }
