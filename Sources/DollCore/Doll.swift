@@ -554,7 +554,7 @@ public actor Doll {
         case .click(let x, let y, let button, let count): return "click \(x),\(y)\(extra(button, count))"
         case .clickText(let text, let button, let count): return "click「\(text)」\(extra(button, count))"
         case .clickElement(let role, let name, let button, let count):
-            return "click 元素 \(role.map { "\($0) " } ?? "")\"\(name)\"\(extra(button, count))"
+            return "click 元素 " + [role, name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ") + extra(button, count)
         case .type(let text): return "type「\(text)」"
         case .key(let keys): return "key \(keys)"
         case .scroll(let direction, let amount): return "scroll \(direction) \(amount)"

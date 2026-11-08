@@ -905,6 +905,27 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
                                                           "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
                                                           "失敗：click 的 on 只配 x、y 用"])
     #expect(h.vm.actions.count == 6)
+    // Escaped quotes read as quotes (round 6: textfield \"Search\"); a role word alone is a role.
+    try await h.turn(Scripted("", ("click", [("element", #"textfield \"Search\""#)]), ("click", [("element", "textfield")])))
+    #expect(h.vm.actions.suffix(2) == [.clickElement(role: "textfield", name: "Search", button: "left", count: 1),
+                                       .clickElement(role: "textfield", name: nil, button: "left", count: 1)])
+    #expect(try h.toolResults().suffix(2).map { $0.text.components(separatedBy: "\n")[0] }
+            == ["click 元素 textfield \"Search\"", "click 元素 textfield"])
+}
+
+@Test func anElementTextParsesEscapedQuotesAndARoleAlone() throws {
+    let cases: [(String, String?, String?)] = [
+        (#"textfield "Search""#, "textfield", "Search"), (#"textfield \"Search\""#, "textfield", "Search"),
+        (#"\"Open Recent\""#, nil, "Open Recent"), (#"{\"role\": \"button\", \"name\": \"OK\"}"#, "button", "OK"),
+        (#"{"name": "say \"hi\""}"#, nil, #"say "hi""#),
+        ("textfield", "textfield", nil), ("TextField", "textfield", nil), (#"{"role": "Button"}"#, "button", nil),
+        ("Finder", nil, "Finder"),
+    ]
+    for (raw, role, name) in cases {
+        let got = try Tools.clickElement(raw)
+        #expect(got.role == role && got.name == name, "\(raw) → \(String(describing: got))")
+    }
+    #expect(throws: ToolError.self) { try Tools.clickElement(#"{"role": "", "name": ""}"#) }
 }
 
 @Test func windowCoordinatesAreConvertedThroughTheLastCropAndOffImagePointsAreNeverClicked() async throws {
@@ -942,38 +963,69 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
 
 /// agent-desktop in the VM for `click(element:)`, answering by command as 2.6 did in the Doll VM
 /// (2026-11-09, Finder's Documents window, answers cut to the fields read). Records the scripts.
+/// The click script's shell is played here: the accessibility press answers `press`; only when that
+/// says not_delivered does the `--headed` press run and answer `headed`.
 private final class FakeAgentDesktop: Sendable {
     let calls = Mutex<[[String]]>([])
     let found: String
     let windows: String
-    init(found: [(role: String, name: String, ref: String)], focused: Bool = true) {
+    let press: String, headed: String
+    init(found: [(role: String, name: String, ref: String)], focused: Bool = true,
+         press: String = FakeAgentDesktop.clicked, headed: String = FakeAgentDesktop.clicked) {
         let ms = found.map { #"{"interactive":true,"name":"\#($0.name)","ref_id":"\#($0.ref)","role":"\#($0.role)","states":[],"value":null}"# }
         self.found = #"{"version":"2.6","ok":true,"command":"find","data":{"matches":["# + ms.joined(separator: ",") + #"],"total_matches":\#(ms.count)}}"#
         windows = #"{"version":"2.6","ok":true,"command":"list-windows","data":["#
             + #"{"app_name":"Calendar","id":"w-1","is_focused":false,"title":"Calendar","visible":true},"#
             + #"{"app_name":"Finder","id":"w-2","is_focused":\#(focused),"title":"Finder","visible":true}]}"#
+        (self.press, self.headed) = (press, headed)
     }
     static let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
     /// Every ref's bounds: e1 at (465,186) 64×64 points, e2 at (260,301) 171×32, e3 at (500,120) 160×20,
-    /// e4 same as e2 (a cell inside its row).
+    /// e4 same as e2 (a cell inside its row). Any other ref's bounds cannot be read.
     static let places = ["@s:e1": (465.0, 186.0, 64.0, 64.0), "@s:e2": (260.0, 301.0, 171.0, 32.0),
                          "@s:e3": (500.0, 120.0, 160.0, 20.0), "@s:e4": (260.0, 301.0, 171.0, 32.0)]
     static func bounds(_ ref: String) -> String {
-        let p = places[ref]!
+        guard let p = places[ref] else {
+            return #"{"version":"2.6","ok":false,"command":"get","error":{"code":"STALE_REF","message":"gone"}}"#
+        }
         return #"{"version":"2.6","ok":true,"command":"get","data":{"property":"bounds","ref":"\#(ref)","value":{"height":\#(p.3),"width":\#(p.2),"x":\#(p.0),"y":\#(p.1)}}}"#
     }
     static let snapshot = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Finder","tree":{"role":"window","name":"Documents","bounds":{"height":436.0,"width":920.0,"x":260.0,"y":120.0},"children":["#
         + #"{"role":"treeitem","name":"Recents","ref_id":"@s:e5","bounds":{"height":32.0,"width":171.0,"x":260.0,"y":172.0}},"#
         + #"{"role":"image","name":"notes.txt","ref_id":"@s:e1","bounds":{"height":64.0,"width":64.0,"x":465.0,"y":186.0}}]}}}"#
+    /// With no window (2026-11-09, Finder frontmost and windowless): the app menus cannot be read; the
+    /// menu bar extras and the Dock can. Dock icons 54×70 points from x 48, the extras in the top row.
+    static let surfaces = "@@menubar\n"
+        + #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No window found to identify the application owning surface 'menubar'"}}"#
+        + "\n@@menu-bar-extras\n"
+        + #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"SystemUIServer","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"children":["#
+        + #"{"role":"menuitem","name":"Text Input","ref_id":"@m:e1","bounds":{"height":24.0,"width":30.0,"x":1250.0,"y":0.0}},"#
+        + #"{"role":"menuitem","name":"Clock","ref_id":"@m:e2","bounds":{"height":24.0,"width":120.0,"x":1300.0,"y":0.0}}]}}}"#
+        + "\n@@dock\n"
+        + #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Dock","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"children":[{"role":"list","ref_id":"@d:e1","bounds":{"height":70.0,"width":1360.0,"x":40.0,"y":820.0},"children":["#
+        + #"{"role":"dockitem","name":"Finder","ref_id":"@d:e2","bounds":{"height":70.0,"width":54.0,"x":48.0,"y":825.0}},"#
+        + #"{"role":"dockitem","name":"TextEdit","ref_id":"@d:e3","bounds":{"height":70.0,"width":54.0,"x":102.0,"y":825.0}}]}]}}}"#
     static let clicked = #"{"version":"2.6","ok":true,"command":"click","data":{"action":"click","disposition":{"delivery":"delivered_unverified","retry":"unsafe"},"steps":[]}}"#
+    /// A Finder file icon's double-click without --headed (2026-11-09, cut).
+    static let denied = #"{"version":"2.6","ok":false,"command":"double-click","error":{"code":"POLICY_DENIED","message":"Target is not actionable: supported_action (semantic gesture is unavailable and physical fallback is denied)","disposition":{"delivery":"not_delivered","retry":"safe"}}}"#
+    /// A sheet's Save with --headed (2026-11-09).
+    static let noWindow = #"{"version":"2.6","ok":false,"command":"click","error":{"code":"ACTION_FAILED","message":"Physical input target has no verified owning window","details":{"physical_delivery_started":false},"disposition":{"delivery":"not_delivered","retry":"safe"}}}"#
+
+    /// `vmpal ui …` calls (the settle after an element click), kept apart from the exec scripts.
+    let uiCalls = Mutex<[[String]]>([])
 
     func run(_ args: [String]) throws -> String {
+        if args.first == "ui" { uiCalls.withLock { $0.append(args) }; return "" }
         calls.withLock { $0.append(args) }
         let script = args[5], a = Array(args.dropFirst(8))   // exec <vm> -- /bin/sh -c <script> sh <agent-desktop> <args…>
         if script.contains("list-windows") { return windows + "\n@@displays\n" + Self.displays }
         if script.contains(" find ") { return found }
         if script.contains("snapshot --window-id") { return Self.snapshot }
-        if script.contains("--headed") { return Self.bounds(a[0]) + "\n@@click\n" + Self.clicked }
+        if script.contains("snapshot --surface") { return Self.surfaces }
+        if script.contains("@@semantic") {
+            return Self.bounds(a[0]) + "\n@@semantic\n" + press
+                + (press.contains(#""delivery":"not_delivered""#) ? "\n@@headed\n" + headed : "")
+        }
         if script.contains("for r in") { return a.map { "@@\($0)\n" + Self.bounds($0) }.joined(separator: "\n") }
         throw ComputerError("unexpected script \(script)")
     }
@@ -983,21 +1035,27 @@ private final class FakeAgentDesktop: Sendable {
 @Test func anElementIsFoundFreshInTheFrontWindowAndClickedOnlyWhenItIsTheOneMatch() async throws {
     var cfg = ComputerConfig()
     cfg.vmID = "E6813EBA"
-    // One match: found in the focused window, clicked with its fresh ref, said with its center in
-    // full-screenshot pixels ((465 + 32) × 1280/1440, (186 + 32) × 1280/1440) and the disposition.
+    // One match: found in the focused window, pressed through accessibility with its fresh ref, said
+    // with its center in full-screenshot pixels ((465 + 32) × 1280/1440, (186 + 32) × 1280/1440),
+    // the way it went and the disposition.
     let one = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
     let said = try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-    #expect(said == "雙擊了 image \"notes.txt\" (442,194)（全螢幕截圖座標）。agent-desktop：delivery=delivered_unverified, retry=unsafe；這不代表真的點到，看下面的截圖。")
+    #expect(said == "雙擊了 image \"notes.txt\" (442,194)（全螢幕截圖座標），用無障礙按壓（semantic）。agent-desktop：delivery=delivered_unverified, retry=unsafe；這不代表真的點到，看下面的截圖。")
     let calls = one.calls.withLock { $0 }
     #expect(calls.count == 3 && calls.allSatisfy { Array($0.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] })
-    #expect(Array(calls[1].suffix(4)) == ["sh", cfg.agentDesktop, "w-2", "notes.txt"] && calls[1][5].contains("find --window-id \"$2\" --name \"$3\""))
-    #expect(calls[2][5].contains("double-click --headed \"$2\"") && calls[2].last == "@s:e1")
+    #expect(Array(calls[1].suffix(5)) == ["sh", cfg.agentDesktop, "w-2", "--name", "notes.txt"]
+            && calls[1][5].contains("find --window-id \"$2\" \"$3\" \"$4\""))
+    // The press first; `--headed` only in the branch for agent-desktop's not_delivered.
+    #expect(calls[2][5].contains(#"a=$("$1" double-click "$2")"#) && calls[2].last == "@s:e1")
+    #expect(calls[2][5].contains(#"*'"delivery":"not_delivered"'*) echo @@headed; "$1" double-click --headed "$2";;"#))
+    // Then, like every other action, the screen settles before the screenshot is taken.
+    #expect(one.uiCalls.withLock { $0 }.map { Array($0.dropFirst(2)) } == [["wait", "--settled", "--observe", "none"]])
 
     // Exact name beats a name that only contains it; the role narrows.
     let exact = FakeAgentDesktop(found: [("statictext", "notes.txt backup", "@s:e3"), ("image", "Notes.txt", "@s:e1")])
     #expect(try await VMPalDriver(cfg, vmpal: { try exact.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
                 .hasPrefix("點了 image \"Notes.txt\" (442,194)"))
-    #expect(exact.scripts.last!.contains("\"$1\" click --headed"))
+    #expect(exact.scripts.last!.contains(#"a=$("$1" click "$2")"#))
 
     // Several: no click; each candidate with its role, name and center. The cell at its row's exact
     // spot is the same target and is not listed twice.
@@ -1012,12 +1070,12 @@ private final class FakeAgentDesktop: Sendable {
             statictext "Documents" (516,116)
             """)
     }
-    #expect(!many.scripts.contains { $0.contains("--headed") })
+    #expect(!many.scripts.contains { $0.contains("@@semantic") })
     // The same row and cell alone are one target: clicked.
     let same = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4")])
     #expect(try await VMPalDriver(cfg, vmpal: { try same.run($0) }).act(.clickElement(role: nil, name: "Documents", button: "right", count: 1))
                 .hasPrefix("右鍵點了 treeitem \"Documents\" (307,282)"))
-    #expect(same.scripts.last!.contains("right-click --headed") && same.calls.withLock { $0.last!.last } == "@s:e2")
+    #expect(same.scripts.last!.contains(#"a=$("$1" right-click "$2")"#) && same.calls.withLock { $0.last!.last } == "@s:e2")
 
     // None: no click; the window's similar names with their centers.
     let none = FakeAgentDesktop(found: [])
@@ -1027,7 +1085,7 @@ private final class FakeAgentDesktop: Sendable {
     } catch let e as ComputerError {
         #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有「nots.txt」。名字相近的（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
     }
-    #expect(!none.scripts.contains { $0.contains("--headed") })
+    #expect(!none.scripts.contains { $0.contains("@@semantic") })
     // The name fits but not the role: those are listed.
     let role = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
     do {
@@ -1036,12 +1094,114 @@ private final class FakeAgentDesktop: Sendable {
     } catch let e as ComputerError {
         #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有button「notes.txt」；名字對、角色不同的有（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
     }
-    // No focused window: nothing to search.
-    let desk = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], focused: false)
-    await #expect(throws: ComputerError.self) {
-        try await VMPalDriver(cfg, vmpal: { try desk.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
+}
+
+@Test func aRoleAloneIsMatchedByRole() async throws {
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    // One: `find --role` in the focused window; it has no name and is said by its role.
+    let one = FakeAgentDesktop(found: [("textfield", "", "@s:e1")])
+    #expect(try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
+                .hasPrefix("點了 textfield (442,194)（全螢幕截圖座標），用無障礙按壓（semantic）"))
+    #expect(Array(one.calls.withLock { $0[1] }.suffix(4)) == [cfg.agentDesktop, "w-2", "--role", "textfield"])
+    // Several: no click, each with its center.
+    let two = FakeAgentDesktop(found: [("textfield", "", "@s:e1"), ("textfield", "Save As:", "@s:e3")])
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try two.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
+        Issue.record("an ambiguous role was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == """
+            沒有點：最前面的視窗（Finder）裡有 2 個符合textfield，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
+            textfield (442,194)
+            textfield "Save As:" (516,116)
+            """)
     }
-    #expect(desk.calls.withLock { $0.count } == 1)
+    #expect(!two.scripts.contains { $0.contains("@@semantic") })
+    // None: no click.
+    let none = FakeAgentDesktop(found: [])
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try none.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
+        Issue.record("a missing role was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有textfield。")
+    }
+    #expect(!none.scripts.contains { $0.contains("@@semantic") })
+}
+
+@Test func withNoFrontWindowAnElementIsSearchedInTheDockAndTheMenuBar() async throws {
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    func driver(_ fake: FakeAgentDesktop) -> VMPalDriver { VMPalDriver(cfg, vmpal: { try fake.run($0) }) }
+    // One: the Dock's Finder from the surfaces' snapshot (no `find`), its center from that snapshot
+    // when its bounds cannot be read again: (48 + 27, 825 + 35) × 1280/1440.
+    let finder = FakeAgentDesktop(found: [], focused: false)
+    #expect(try await driver(finder).act(.clickElement(role: nil, name: "finder", button: "left", count: 1))
+            == "點了 dockitem \"Finder\" (67,764)（全螢幕截圖座標），用無障礙按壓（semantic）。agent-desktop：delivery=delivered_unverified, retry=unsafe；這不代表真的點到，看下面的截圖。")
+    let scripts = finder.scripts
+    #expect(scripts.count == 3 && scripts[1].contains("menubar menu-bar-extras dock") && !scripts.contains { $0.contains(" find ") })
+    #expect(finder.calls.withLock { $0[2].last } == "@d:e2")
+    // The role narrows, the same way as in a window.
+    #expect(try await driver(FakeAgentDesktop(found: [], focused: false)).act(.clickElement(role: "menuitem", name: "clock", button: "left", count: 1))
+                .hasPrefix("點了 menuitem \"Clock\" (1209,11)"))
+    // Several: no click; candidates from the menu bar and the Dock with their centers.
+    let text = FakeAgentDesktop(found: [], focused: false)
+    do {
+        _ = try await driver(text).act(.clickElement(role: nil, name: "text", button: "left", count: 1))
+        Issue.record("an ambiguous Dock item was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == """
+            沒有點：Dock 和選單列（現在沒有最前面的視窗）裡有 2 個符合「text」，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
+            menuitem "Text Input" (1124,11)
+            dockitem "TextEdit" (115,764)
+            """)
+    }
+    #expect(!text.scripts.contains { $0.contains("@@semantic") })
+    // A role alone: the Dock's two items.
+    do {
+        _ = try await driver(FakeAgentDesktop(found: [], focused: false)).act(.clickElement(role: "dockitem", name: nil, button: "left", count: 1))
+        Issue.record("an ambiguous role was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description.hasSuffix("有 2 個符合dockitem，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：\ndockitem \"Finder\" (67,764)\ndockitem \"TextEdit\" (115,764)"))
+    }
+    // None: near names from the same items.
+    let typo = FakeAgentDesktop(found: [], focused: false)
+    do {
+        _ = try await driver(typo).act(.clickElement(role: nil, name: "Findr", button: "left", count: 1))
+        Issue.record("a missing Dock item was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == "沒有點：Dock 和選單列（現在沒有最前面的視窗）裡沒有「Findr」。名字相近的（全螢幕截圖座標）：\ndockitem \"Finder\" (67,764)")
+    }
+    #expect(typo.scripts.count == 2)
+}
+
+@Test func aPressNotDeliveredIsRetriedWithRealPointerInputAndTheResultSaysWhichWayWent() async throws {
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    let denied = "POLICY_DENIED: Target is not actionable: supported_action (semantic gesture is unavailable and physical fallback is denied)"
+    // A Finder icon's double-click: the press is not delivered, the pointer is.
+    let icon = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied)
+    #expect(try await VMPalDriver(cfg, vmpal: { try icon.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
+            == "雙擊了 image \"notes.txt\" (442,194)（全螢幕截圖座標），用實體滑鼠（physical，headed）：無障礙按壓沒送出（agent-desktop：\(denied)；delivery=not_delivered, retry=safe）。"
+            + "實體滑鼠 agent-desktop：delivery=delivered_unverified, retry=unsafe；這不代表真的點到，看下面的截圖。")
+    #expect(icon.calls.withLock { $0.count } == 3)
+    // Neither way: an error with both answers.
+    let neither = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied, headed: FakeAgentDesktop.noWindow)
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try neither.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
+        Issue.record("an undelivered click was a success")
+    } catch let e as ComputerError {
+        #expect(e.description == "沒有點成 image \"notes.txt\" (442,194)：無障礙按壓沒送出（agent-desktop：\(denied)；delivery=not_delivered, retry=safe），"
+                + "實體滑鼠（headed）也沒有（agent-desktop：ACTION_FAILED: Physical input target has no verified owning window；delivery=not_delivered, retry=safe）。")
+    }
+    // A press that failed after it was delivered is not pressed again.
+    let failed = #"{"version":"2.6","ok":false,"command":"click","error":{"code":"ACTION_FAILED","message":"press went wrong","disposition":{"delivery":"delivered_unverified","retry":"unsafe"}}}"#
+    let once = FakeAgentDesktop(found: [("button", "Save", "@s:e3")], press: failed, headed: FakeAgentDesktop.denied)
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try once.run($0) }).act(.clickElement(role: "button", name: "Save", button: "left", count: 1))
+        Issue.record("a failed press was a success")
+    } catch let e as ComputerError {
+        #expect(e.description == "click button \"Save\" (516,116) 失敗（無障礙按壓）：ACTION_FAILED: press went wrong（agent-desktop：delivery=delivered_unverified, retry=unsafe）")
+    }
 }
 
 @Test func aVMPalFailureIsAFailedResultNeverASuccess() async throws {

@@ -82,11 +82,11 @@ public enum Tools {
         }
         return [
             Spec(name: "click",
-                 description: "點一下，element、text、x/y 三種只給一種。最好用 element：視窗概要裡那一行（例如 button \"Save\"，角色可省略），程式當下在最前面的視窗找它再點；找到好幾個或找不到就不點，回候選和它們的全螢幕座標。text 點畫面上那段字。x、y 預設是全螢幕截圖的座標；用視窗圖上的座標就加 on: window，程式換算。\(after)",
+                 description: "點一下，element、text、x/y 三種只給一種。最好用 element：視窗概要裡那一行（例如 button \"Save\"，角色可省略），程式當下在最前面的視窗找它再點（沒有視窗時在 Dock 和選單列找）；找到好幾個或找不到就不點，回候選和它們的全螢幕座標。text 點畫面上那段字。x、y 預設是全螢幕截圖的座標；用視窗圖上的座標就加 on: window，程式換算。\(after)",
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         ("element", ["type": "string", "description": "最前面視窗裡的元素：角色和名字，例如 button \"Save\"；只給名字也可以"]),
+                         ("element", ["type": "string", "description": "最前面視窗（沒有視窗時 Dock 和選單列）裡的元素：角色和名字，例如 button \"Save\"；只給名字或只給角色也可以"]),
                          ("text", ["type": "string", "description": "畫面上要點的字"]),
                      ] + ints(["x", "y"], "座標，像素；左上角是 0,0") + [
                          ("on", ["type": "string", "enum": ["screen", "window"],
@@ -340,28 +340,32 @@ public enum Tools {
     ]
 
     /// `click`'s element: `{"role": …, "name": …}`, the outline's `role "name"`, `"name"`, a role word
-    /// and the name after it, or just the name.
-    static func clickElement(_ raw: String) throws -> (role: String?, name: String) {
+    /// and the name after it, a role word alone, or just the name. Escaped quotes (`textfield
+    /// \"Search\"`, M2 round 6) read as quotes.
+    static func clickElement(_ raw: String) throws -> (role: String?, name: String?) {
         func unquote(_ s: Substring) -> String {
             let t = s.trimmingCharacters(in: .whitespaces)
             return t.count >= 2 && t.hasPrefix("\"") && t.hasSuffix("\"") ? String(t.dropFirst().dropLast()) : t
         }
-        if raw.hasPrefix("{") {
-            struct Element: Decodable { let role: String?; let name: String }
-            guard let e = try? JSONDecoder().decode(Element.self, from: Data(raw.utf8)) else {
+        let unescaped = raw.replacingOccurrences(of: "\\\"", with: "\"").trimmingCharacters(in: .whitespaces)
+        if unescaped.hasPrefix("{") {
+            struct Element: Decodable { let role: String?; let name: String? }
+            guard let e = [raw, unescaped].lazy.compactMap({ try? JSONDecoder().decode(Element.self, from: Data($0.utf8)) }).first else {
                 throw ToolError(description: "click 的 element 要是 角色 \"名字\"，或 {\"role\": …, \"name\": …}；讀不懂：\(raw)")
             }
-            let role = e.role?.trimmingCharacters(in: .whitespaces)
-            let name = e.name.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { throw ToolError(description: "click 的 element 沒有名字") }
-            return (role.flatMap { $0.isEmpty ? nil : $0 }, name)
+            let role = e.role?.trimmingCharacters(in: .whitespaces).lowercased()
+            let name = e.name?.trimmingCharacters(in: .whitespaces)
+            let r = role.flatMap { $0.isEmpty ? nil : $0 }, n = name.flatMap { $0.isEmpty ? nil : $0 }
+            guard r != nil || n != nil else { throw ToolError(description: "click 的 element 沒有名字也沒有角色") }
+            return (r, n)
         }
-        let parts = raw.split(separator: " ", maxSplits: 1)
+        if roles.contains(unescaped.lowercased()) { return (unescaped.lowercased(), nil) }
+        let parts = unescaped.split(separator: " ", maxSplits: 1)
         if parts.count == 2, let rest = Optional(parts[1].trimmingCharacters(in: .whitespaces)), !rest.isEmpty,
            roles.contains(parts[0].lowercased()) || (rest.hasPrefix("\"") && !parts[0].hasPrefix("\"")) {
             return (parts[0].lowercased(), unquote(Substring(rest)))
         }
-        return (nil, unquote(Substring(raw)))
+        return (nil, unquote(Substring(unescaped)))
     }
 }
 

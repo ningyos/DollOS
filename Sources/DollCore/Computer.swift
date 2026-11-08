@@ -16,8 +16,9 @@ public enum ComputerAction: Sendable, Equatable {
     case click(x: Int, y: Int, button: String, count: Int)
     case clickText(String, button: String, count: Int)
     /// An element of the front window, found fresh at click time (spec 3.1, M2 round 6): its name
-    /// exactly (case-insensitive), else containing `name`; `role` narrows it when given.
-    case clickElement(role: String?, name: String, button: String, count: Int)
+    /// exactly (case-insensitive), else containing `name`; `role` narrows it when given. No name:
+    /// the role alone (M2 round 7). No front window: the Dock and the menu bar instead.
+    case clickElement(role: String?, name: String?, button: String, count: Int)
     case type(String)
     case key(String)
     case scroll(direction: String, amount: Int)
@@ -222,12 +223,15 @@ public struct VMPalDriver: ComputerDriver {
 
     /// `click` by element (spec 3.1, M2 round 6). At click time: the focused window from
     /// `list-windows`, then `find --window-id` in it, so the ref is fresh and a second window of the
-    /// same app is never searched. One match is clicked with real pointer input (`--headed`: Finder's
-    /// file icons ignore the accessibility press, 2026-11-09 probe) and the result says what was
-    /// clicked, where, and agent-desktop's disposition as given. Several matches are never guessed
-    /// between and no match is never a click on something else: both fail with candidates and their
-    /// centers in her full-screenshot pixels, so she can pick one by coordinates.
-    func clickElement(role: String?, name: String, button: String, count: Int) async throws -> String {
+    /// same app is never searched; with no focused window (round 7), the menu bar's, menu bar
+    /// extras' and Dock's items instead. One match is pressed through accessibility first (a sheet's
+    /// Save has no physical owning window for `--headed`, 2026-11-09); when agent-desktop says that
+    /// press was not delivered (Finder's file icons have no semantic double-click), with real
+    /// pointer input (`--headed`). The result says what was clicked, where, which way got through
+    /// and agent-desktop's disposition as given. Several matches are never guessed between and no
+    /// match is never a click on something else: both fail with candidates and their centers in her
+    /// full-screenshot pixels, so she can pick one by coordinates.
+    func clickElement(role: String?, name: String?, button: String, count: Int) async throws -> String {
         let verb: String
         switch (button, count) {
         case ("left", 1): verb = "click"
@@ -235,50 +239,92 @@ public struct VMPalDriver: ComputerDriver {
         case (_, 1): verb = "right-click"
         default: throw ComputerError("element 不能右鍵雙擊；右鍵 count 給 1")
         }
+        guard name != nil || role != nil else { throw ComputerError("element 要有名字或角色") }
         let ad = cfg.agentDesktop
         let info = Self.sections(try await agentDesktop("\"$1\" list-windows; echo @@displays; \"$1\" list-displays", [ad]),
                                  first: "windows")
         let screen = try WindowSummary.display(Data((info["displays"] ?? "").utf8))
-        let window = try ElementClick.frontWindow(Data((info["windows"] ?? "").utf8))
-        let found = try ElementClick.matches(Data(
-            try await agentDesktop("\"$1\" find --window-id \"$2\" --name \"$3\"", [ad, window.id, name]).utf8))
         let width = cfg.screenshotWidth
+        let scope: ElementClick.Window, found: [ElementClick.Match]
+        /// Every item of the Dock and the menu bar when that is where the search went (near names come from here).
+        var desktopItems: [ElementClick.Match]?
+        if let window = try ElementClick.frontWindow(Data((info["windows"] ?? "").utf8)) {
+            scope = window
+            let query = name.map { ["--name", $0] } ?? ["--role", role!]
+            found = try ElementClick.matches(Data(
+                try await agentDesktop("\"$1\" find --window-id \"$2\" \"$3\" \"$4\"", [ad, window.id] + query).utf8),
+                unnamed: name == nil)
+        } else {
+            let parts = Self.sections(try await agentDesktop("""
+                for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
+                echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done; exit 0
+                """, [ad]))
+            var items: [ElementClick.Match] = [], unread: [String] = []
+            for s in DesktopSummary.surfaces {
+                do { items += try ElementClick.elements(Data((parts[s.flag] ?? "").utf8), unnamed: true) } catch {
+                    unread.append("\(s.label)：\(error)")
+                }
+            }
+            guard !items.isEmpty else {
+                throw ComputerError("沒有點：現在沒有最前面的視窗，Dock 和選單列也讀不到。" + unread.joined(separator: "；"))
+            }
+            scope = ElementClick.desktop
+            found = items
+            desktopItems = items
+        }
         func listed(_ ms: [ElementClick.Match]) async throws -> String {
             let at = try await bounds(ms.filter { $0.bounds == nil }.map(\.ref))
             return ms.map { m in ElementClick.line(m, (m.bounds ?? at[m.ref]).map { ElementClick.center($0, on: screen, width: width) }) }
                 .joined(separator: "\n")
         }
-        let target = (role ?? "") + "「\(name)」"
+        let target = (role ?? "") + (name.map { "「\($0)」" } ?? "")
         var pick = ElementClick.pick(found, role: role, name: name)
         if case .several(let ms) = pick {
             // An element and its own cell or label (Finder's sidebar: treeitem and cell "Documents",
             // 2026-11-09) are one spot on the screen: the same name at the same center is one target.
-            let at = try await bounds(ms.prefix(ElementClick.maxPlaced).map(\.ref))
-            pick = ElementClick.collapse(ms.map { m in var m = m; m.bounds = at[m.ref]; return m })
+            let placed = Array(ms.prefix(ElementClick.maxPlaced))
+            let at = try await bounds(placed.filter { $0.bounds == nil }.map(\.ref))
+            pick = ElementClick.collapse(ms.map { m in var m = m; m.bounds = m.bounds ?? at[m.ref]; return m })
         }
         switch pick {
         case .one(let m):
-            let out = Self.sections(try await agentDesktop(
-                "\"$1\" get \"$2\" --property bounds; echo @@click; \"$1\" \(verb) --headed \"$2\"; exit 0", [ad, m.ref]),
-                first: "bounds")
-            let point = ElementClick.bounds(Data((out["bounds"] ?? "").utf8)).map { ElementClick.center($0, on: screen, width: width) }
-            return try ElementClick.clicked(m, verb: verb, at: point, answer: Data((out["click"] ?? "").utf8))
+            // One run: the accessibility press, and only when agent-desktop says it was not delivered,
+            // the same with real pointer input. printf, not echo: the answer may hold backslashes.
+            let out = Self.sections(try await agentDesktop("""
+                "$1" get "$2" --property bounds; echo @@semantic; a=$("$1" \(verb) "$2"); printf '%s\\n' "$a"
+                case "$a" in *'"delivery":"not_delivered"'*) echo @@headed; "$1" \(verb) --headed "$2";; esac; exit 0
+                """, [ad, m.ref]), first: "bounds")
+            let point = (ElementClick.bounds(Data((out["bounds"] ?? "").utf8)) ?? m.bounds).map { ElementClick.center($0, on: screen, width: width) }
+            let said = try ElementClick.clicked(m, verb: verb, at: point, semantic: Data((out["semantic"] ?? "").utf8),
+                                                headed: out["headed"].map { Data($0.utf8) })
+            // Like every other action, wait for the screen to settle before the screenshot: a Dock press
+            // returns before the app's window exists (round 7: 8/8 screenshots showed no window yet).
+            do {
+                _ = try await ui(["wait", "--settled", "--observe", "none"])
+            } catch {
+                return said + "（畫面沒等到穩定：\(error)）"
+            }
+            return said
         case .several(let ms):
             let shown = Array(ms.prefix(ElementClick.maxListed))
-            throw ComputerError("沒有點：\(window.label)裡有 \(ms.count) 個符合\(target)，不知道是哪一個。"
+            throw ComputerError("沒有點：\(scope.label)裡有 \(ms.count) 個符合\(target)，不知道是哪一個。"
                                 + "要點的那個用它的座標 click x、y（全螢幕截圖座標）：\n" + (try await listed(shown))
                                 + (ms.count > shown.count ? "\n（另外 \(ms.count - shown.count) 個沒列）" : ""))
         case .none(let named) where !named.isEmpty:
             let shown = Array(named.prefix(ElementClick.maxListed))
-            throw ComputerError("沒有點：\(window.label)裡沒有\(target)；名字對、角色不同的有（全螢幕截圖座標）：\n"
+            throw ComputerError("沒有點：\(scope.label)裡沒有\(target)；名字對、角色不同的有（全螢幕截圖座標）：\n"
                                 + (try await listed(shown)))
         case .none:
+            guard let name else { throw ComputerError("沒有點：\(scope.label)裡沒有\(target)。") }
             // `find` with no name times out on a whole window (TIMEOUT, 2026-11-09); its snapshot is 0.4 s.
-            let all = try ElementClick.elements(Data(try await agentDesktop(
-                "\"$1\" snapshot --window-id \"$2\" -i --compact --include-bounds", [ad, window.id]).utf8))
+            let all: [ElementClick.Match]
+            if let desktopItems { all = desktopItems } else {
+                all = try ElementClick.elements(Data(try await agentDesktop(
+                    "\"$1\" snapshot --window-id \"$2\" -i --compact --include-bounds", [ad, scope.id]).utf8))
+            }
             let near = ElementClick.similar(all, to: name)
-            guard !near.isEmpty else { throw ComputerError("沒有點：\(window.label)裡沒有\(target)，也沒有名字相近的元素。") }
-            throw ComputerError("沒有點：\(window.label)裡沒有\(target)。名字相近的（全螢幕截圖座標）：\n" + (try await listed(near)))
+            guard !near.isEmpty else { throw ComputerError("沒有點：\(scope.label)裡沒有\(target)，也沒有名字相近的元素。") }
+            throw ComputerError("沒有點：\(scope.label)裡沒有\(target)。名字相近的（全螢幕截圖座標）：\n" + (try await listed(near)))
         }
     }
 
@@ -478,7 +524,7 @@ enum DesktopSummary {
 /// `click` by element (spec 3.1, M2 round 6): agent-desktop's answers read on this Mac (never
 /// python in the VM: it pops the developer-tools installer), the pick, and what she reads back.
 enum ElementClick {
-    /// One `find` match she could click: one with a ref and a name.
+    /// One `find` match she could click: one with a ref (and a name, unless she gave only a role).
     struct Match: Equatable {
         let role: String
         let name: String
@@ -493,6 +539,9 @@ enum ElementClick {
         let label: String
     }
 
+    /// Where the search goes with no front window (spec 3.1, 2026-11-09).
+    static let desktop = Window(id: "", label: "Dock 和選單列（現在沒有最前面的視窗）")
+
     enum Pick: Equatable {
         case one(Match)
         case several([Match])
@@ -505,24 +554,22 @@ enum ElementClick {
     /// Several matches: the first this many get their bounds read, to find ones at the same spot.
     static let maxPlaced = 20
 
-    /// `list-windows`: the focused one.
-    static func frontWindow(_ json: Data) throws -> Window {
+    /// `list-windows`: the focused one; nil when none is.
+    static func frontWindow(_ json: Data) throws -> Window? {
         struct W: Decodable { let id: String; let app_name: String?; let title: String?; let is_focused: Bool? }
         struct Answer: Decodable { let ok: Bool; let data: [W]?; let error: WindowSummary.Answer.Failure? }
         guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
             throw ComputerError("agent-desktop list-windows 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
         }
         guard a.ok, let all = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
-        guard let w = all.first(where: { $0.is_focused == true }) else {
-            throw ComputerError("沒有點：現在沒有最前面的視窗，element 沒地方找；桌面上請用 Dock 和選單列概要的座標點。")
-        }
+        guard let w = all.first(where: { $0.is_focused == true }) else { return nil }
         // `title` was the app's name in every sample (Finder, 2026-11-09); then only the app is said.
         let app = w.app_name ?? "?", title = w.title ?? ""
         return Window(id: w.id, label: "最前面的視窗（\(app)\(title.isEmpty || title == app ? "" : "「\(title)」")）")
     }
 
-    /// `find`: the matches with a ref and a name, in agent-desktop's order.
-    static func matches(_ json: Data) throws -> [Match] {
+    /// `find`: the matches with a ref and a name (`unnamed`: also those without one), in agent-desktop's order.
+    static func matches(_ json: Data, unnamed: Bool = false) throws -> [Match] {
         struct M: Decodable { let role: String?; let name: String?; let ref_id: String? }
         struct Payload: Decodable { let matches: [M] }
         struct Answer: Decodable { let ok: Bool; let data: Payload?; let error: WindowSummary.Answer.Failure? }
@@ -531,21 +578,22 @@ enum ElementClick {
         }
         guard a.ok, let d = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop find 沒有回結果") }
         return d.matches.compactMap { m in
-            guard let ref = m.ref_id, let name = m.name, !name.isEmpty else { return nil }
-            return Match(role: m.role ?? "?", name: name, ref: ref)
+            guard let ref = m.ref_id, unnamed || !(m.name ?? "").isEmpty else { return nil }
+            return Match(role: m.role ?? "?", name: m.name ?? "", ref: ref)
         }
     }
 
-    /// A window `snapshot -i --include-bounds`: every element with a ref and a name, in tree order.
-    static func elements(_ json: Data) throws -> [Match] {
+    /// A `snapshot -i --include-bounds` (a window or a surface): every element with a ref and a name
+    /// (`unnamed`: also those without one), in tree order.
+    static func elements(_ json: Data, unnamed: Bool = false) throws -> [Match] {
         guard let a = try? JSONDecoder().decode(WindowSummary.Answer.self, from: json) else {
             throw ComputerError("agent-desktop snapshot 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
         }
         guard a.ok, let tree = a.data?.tree else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
         var out: [Match] = []
         func walk(_ n: WindowSummary.Node) {
-            if let ref = n.ref_id, let name = n.name, !name.isEmpty {
-                out.append(Match(role: n.role ?? "?", name: name, ref: ref, bounds: n.bounds))
+            if let ref = n.ref_id, unnamed || !(n.name ?? "").isEmpty {
+                out.append(Match(role: n.role ?? "?", name: n.name ?? "", ref: ref, bounds: n.bounds))
             }
             n.children?.forEach(walk)
         }
@@ -554,13 +602,19 @@ enum ElementClick {
     }
 
     /// Role first (case-insensitive) when given; then the names equal to `name` (case-insensitive),
-    /// else the ones containing it.
-    static func pick(_ found: [Match], role: String?, name: String) -> Pick {
-        let q = name.lowercased()
-        let named = found.filter { $0.name.lowercased().contains(q) }
-        let fit = role.map { r in named.filter { $0.role.lowercased() == r.lowercased() } } ?? named
-        let exact = fit.filter { $0.name.lowercased() == q }
-        let hits = exact.isEmpty ? fit : exact
+    /// else the ones containing it. No name: the role alone.
+    static func pick(_ found: [Match], role: String?, name: String?) -> Pick {
+        let hits: [Match], named: [Match]
+        if let name {
+            let q = name.lowercased()
+            named = found.filter { !$0.name.isEmpty && $0.name.lowercased().contains(q) }
+            let fit = role.map { r in named.filter { $0.role.lowercased() == r.lowercased() } } ?? named
+            let exact = fit.filter { $0.name.lowercased() == q }
+            hits = exact.isEmpty ? fit : exact
+        } else {
+            named = []
+            hits = found.filter { $0.role.lowercased() == role?.lowercased() }
+        }
         switch hits.count {
         case 1: return .one(hits[0])
         case 0: return .none(named)
@@ -621,15 +675,15 @@ enum ElementClick {
         return (px(b.x + b.width / 2 - screen.x), px(b.y + b.height / 2 - screen.y))
     }
 
-    /// `role "name" (x,y)`, the outline's and the Dock summary's form.
+    /// `role "name" (x,y)`, the outline's and the Dock summary's form; `role (x,y)` without a name.
     static func line(_ m: Match, _ at: (x: Int, y: Int)?) -> String {
-        "\(m.role) \"\(m.name)\" " + (at.map { "(\($0.x),\($0.y))" } ?? "(位置讀不到)")
+        "\(m.role) " + (m.name.isEmpty ? "" : "\"\(m.name)\" ") + (at.map { "(\($0.x),\($0.y))" } ?? "(位置讀不到)")
     }
 
-    /// The click's answer: what was clicked, where, and agent-desktop's disposition as it gave it.
-    /// `delivered_unverified` is not proof; the screenshots after it are. A failed click throws.
-    static func clicked(_ m: Match, verb: String, at: (x: Int, y: Int)?, answer: Data) throws -> String {
-        let obj = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any]
+    /// One press's answer: whether agent-desktop said ok, and its words (code: message, or the raw
+    /// answer) and disposition as given.
+    static func answer(_ data: Data) -> (ok: Bool, words: String, disposition: String) {
+        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let ok = obj?["ok"] as? Bool ?? false
         let body = (ok ? obj?["data"] : obj?["error"]) as? [String: Any]
         let disposition = (body?["disposition"] as? [String: Any]).map { d in
@@ -638,14 +692,29 @@ enum ElementClick {
                 return (order.firstIndex(of: k1) ?? 2, k1) < (order.firstIndex(of: k2) ?? 2, k2)
             }.map { "\($0)=\(d[$0].map { "\($0)" } ?? "")" }.joined(separator: ", ")
         } ?? "沒有 disposition"
+        let why = [body?["code"] as? String, body?["message"] as? String].compactMap { $0 }.joined(separator: ": ")
+        return (ok, why.isEmpty && !ok ? String(decoding: data.prefix(300), as: UTF8.self) : why, disposition)
+    }
+
+    /// The click's answer: what was clicked, where, which way got through (the accessibility press,
+    /// or real pointer input after agent-desktop said the press was not delivered) and agent-desktop's
+    /// words and disposition as given. `delivered_unverified` is not proof; the screenshots after it
+    /// are. A click neither way got through throws.
+    static func clicked(_ m: Match, verb: String, at: (x: Int, y: Int)?, semantic: Data, headed: Data?) throws -> String {
         let what = line(m, at)
-        guard ok else {
-            let why = [body?["code"] as? String, body?["message"] as? String].compactMap { $0 }.joined(separator: ": ")
-            let raw = String(decoding: answer.prefix(300), as: UTF8.self)
-            throw ComputerError("\(verb) \(what) 失敗：\(why.isEmpty ? raw : why)（agent-desktop：\(disposition)）")
-        }
         let done = ["click": "點了", "double-click": "雙擊了", "right-click": "右鍵點了"][verb] ?? verb
-        return "\(done) \(what)（全螢幕截圖座標）。agent-desktop：\(disposition)；這不代表真的點到，看下面的截圖。"
+        let press = answer(semantic)
+        let pressSaid = (press.words.isEmpty ? "" : "\(press.words)；") + press.disposition
+        guard let headed else {
+            guard press.ok else { throw ComputerError("\(verb) \(what) 失敗（無障礙按壓）：\(press.words)（agent-desktop：\(press.disposition)）") }
+            return "\(done) \(what)（全螢幕截圖座標），用無障礙按壓（semantic）。agent-desktop：\(press.disposition)；這不代表真的點到，看下面的截圖。"
+        }
+        let mouse = answer(headed)
+        guard mouse.ok else {
+            throw ComputerError("沒有點成 \(what)：無障礙按壓沒送出（agent-desktop：\(pressSaid)），實體滑鼠（headed）也沒有（agent-desktop：\((mouse.words.isEmpty ? "" : "\(mouse.words)；") + mouse.disposition)）。")
+        }
+        return "\(done) \(what)（全螢幕截圖座標），用實體滑鼠（physical，headed）：無障礙按壓沒送出（agent-desktop：\(pressSaid)）。"
+            + "實體滑鼠 agent-desktop：\(mouse.disposition)；這不代表真的點到，看下面的截圖。"
     }
 }
 
