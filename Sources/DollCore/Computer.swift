@@ -51,6 +51,10 @@ public protocol ComputerDriver: Sendable {
     /// The front window's outline and place; throws with the reason when there is none (no front
     /// window, no accessibility access, agent-desktop missing).
     func frontWindow() async throws -> FrontWindow
+    /// With no front window (spec 3.1, 2026-11-09): the menu bar's and the Dock's items, one line
+    /// each, `role "name" (x,y)` with the item's center in full-screenshot pixels. A part that could
+    /// not be read is a line saying why; throws when none could (agent-desktop missing, no screen).
+    func desktopSummary() async throws -> String
 }
 
 /// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
@@ -196,6 +200,29 @@ public struct VMPalDriver: ComputerDriver {
         return FrontWindow(summary: summary, place: WindowSummary.place(bounds, on: screen, width: cfg.screenshotWidth))
     }
 
+    /// agent-desktop's menu bar, menu bar extras and Dock surfaces, then the screen's size, in one
+    /// `vmpal exec`. Each answer is one JSON line after a `@@<name>` marker; a surface that fails
+    /// answers its JSON error and the script goes on. The script's status is `list-displays`'s.
+    public func desktopSummary() async throws -> String {
+        let out: String
+        do {
+            out = try await exec("""
+                for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
+                echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done
+                echo "@@displays"; "$1" list-displays
+                """, [cfg.agentDesktop])
+        } catch let e as ComputerError {
+            throw ComputerError(WindowSummary.errorText(e.description))
+        }
+        var parts: [String: String] = [:], key = ""
+        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("@@") { key = String(line.dropFirst(2)) } else { parts[key, default: ""] += line }
+        }
+        let screen = try WindowSummary.display(Data((parts["displays"] ?? "").utf8))
+        return DesktopSummary.render(DesktopSummary.surfaces.map { ($0, Data((parts[$0.flag] ?? "").utf8)) },
+                                     on: screen, width: cfg.screenshotWidth)
+    }
+
     static func tempFile(_ what: String, ext: String? = nil) -> URL {
         FileManager.default.temporaryDirectory.appending(path: "dollos-\(what)-\(UUID().uuidString)" + (ext.map { ".\($0)" } ?? ""))
     }
@@ -314,5 +341,51 @@ enum WindowSummary {
     static func errorText(_ text: String) -> String {
         guard let a = try? JSONDecoder().decode(Answer.self, from: Data(text.utf8)), let f = a.error else { return text }
         return describe(f)
+    }
+}
+
+/// The menu bar and the Dock as text, for when there is no front window to crop (spec 3.1,
+/// 2026-11-09: round 4's six coordinate misses were all on the bare desktop, three below the screen
+/// and three on the wrong Dock icon). One line per item: role, "name", its center in her
+/// full-screenshot pixels, converted from agent-desktop's points the same way as the crop.
+enum DesktopSummary {
+    struct Surface: Sendable, Equatable {
+        /// agent-desktop's `--surface` value.
+        let flag: String
+        /// What she reads it as.
+        let label: String
+    }
+
+    /// Top to bottom. The app menus need a window of the app on macOS 27 (agent-desktop 2.6:
+    /// WINDOW_NOT_FOUND with Finder frontmost and no window); that line then says so.
+    static let surfaces = [
+        Surface(flag: "menubar", label: "選單列"),
+        Surface(flag: "menu-bar-extras", label: "選單列右側"),
+        Surface(flag: "dock", label: "Dock"),
+    ]
+
+    static func render(_ answers: [(Surface, Data)], on screen: WindowSummary.Rect, width: Int) -> String {
+        func px(_ points: Double) -> Int { Int((points * Double(width) / screen.width).rounded()) }
+        var lines = ["Dock 和選單列（項目中心，全螢幕截圖座標）："]
+        for (surface, json) in answers {
+            guard let a = try? JSONDecoder().decode(WindowSummary.Answer.self, from: json) else {
+                lines.append("\(surface.label)讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: json.prefix(300), as: UTF8.self))")
+                continue
+            }
+            guard a.ok, let tree = a.data?.tree else {
+                lines.append("\(surface.label)讀不到：\(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回內容")")
+                continue
+            }
+            // Leaves with a name and a size: the clickable items, not the list or group around them.
+            var items: [String] = []
+            func walk(_ n: WindowSummary.Node) {
+                if let kids = n.children, !kids.isEmpty { kids.forEach(walk); return }
+                guard let name = n.name, !name.isEmpty, let b = n.bounds, b.width > 0, b.height > 0 else { return }
+                items.append("\(n.role ?? "?") \"\(name)\" (\(px(b.x + b.width / 2 - screen.x)),\(px(b.y + b.height / 2 - screen.y)))")
+            }
+            walk(tree)
+            lines += items.isEmpty ? ["\(surface.label)：沒有項目"] : items
+        }
+        return lines.joined(separator: "\n")
     }
 }

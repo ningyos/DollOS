@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS events (
     image TEXT,                      -- the full-screen screenshot file under shots/, re-sent byte-identical
     crop_note TEXT,                  -- the line before the front window's crop: where it sits, or why there is none
     crop TEXT,                       -- the front window's crop file under shots/, re-sent byte-identical
-    window TEXT                      -- the front window's outline sent after them, verbatim
+    window TEXT                      -- the front window's outline, or why there is none plus the menu bar and Dock; verbatim
 );
 CREATE TABLE IF NOT EXISTS footers (
     seq INTEGER PRIMARY KEY,         -- her reply's seq
@@ -74,8 +74,8 @@ public struct Event: Sendable, Equatable {
     public var cropNote: String?
     /// The front window's crop, a file under `shots/`; rendered as an image part after `cropNote`.
     public var crop: String?
-    /// The front window's outline (or why there is none) taken with those screenshots; rendered
-    /// verbatim as the last text part.
+    /// The front window's outline taken with those screenshots, or why there is none followed by the
+    /// menu bar's and Dock's items; rendered verbatim as the last text part.
     public var window: String?
     public var seq: Int64?
     public var ts: Double

@@ -97,6 +97,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var changing = false
         var captures = 0
         var windowFailure: String?
+        var desktopFailure: String?
         var place = FrontWindow.Place.at(Region(10, 20, 300, 200))
     }
     let state = Mutex(State())
@@ -132,10 +133,18 @@ private final class FakeComputer: ComputerDriver, Sendable {
         }
     }
 
+    func desktopSummary() async throws -> String {
+        try state.withLock { s in
+            if let f = s.desktopFailure { throw ComputerError(f) }
+            return "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
+        }
+    }
+
     func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
     func failNext(_ text: String) { state.withLock { $0.failNext = text } }
     func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
+    func failDesktop(_ text: String?) { state.withLock { $0.desktopFailure = text } }
     func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
@@ -924,16 +933,30 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(parts[4]["text"] as? String == "\n" + results[2].window!)
 }
 
-@Test func noFrontWindowMeansNoCropAndTheResultSaysSo() async throws {
+@Test func noFrontWindowMeansNoCropButTheMenuBarAndDockStoredVerbatim() async throws {
     let h = try await menuHarness()
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", key("Escape")))
     let r = try h.toolResults().last!
     #expect(r.text == "key Escape\nDone: 1 action in 0.1 s." && r.image != nil)
     #expect(r.crop == nil && r.cropNote == nil)
-    #expect(r.window == "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found")
+    let desktop = "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\n"
+        + "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
+    #expect(r.window == desktop)
     #expect(h.last.actions == ["key", "error window"])
     #expect(h.logs.contains { $0.contains("window outline failed") })
+    // Re-sent byte-identical on the next turn, as the last text part.
+    try await h.turn("嗯")
+    let sent = try #require(await h.model.seen(2).last { $0.role == "tool" })
+    let sentJSON = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(sent)) as! [String: Any]
+    #expect((sentJSON["content"] as! [[String: Any]]).last?["text"] as? String == "\n" + desktop)
+    // The summary failing too: the result says so.
+    h.vm.failDesktop("agent-desktop: not found")
+    try await h.turn(Scripted("", key("Escape")))
+    #expect(try h.toolResults().last!.window
+            == "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\nDock 和選單列概要失敗：agent-desktop: not found")
+    #expect(h.last.actions == ["key", "error window", "error desktop"])
+    h.vm.failDesktop(nil)
     // A window with no place to crop: the outline still comes, the crop's line says why.
     h.vm.failWindow(nil)
     h.vm.setPlace(.unknown("最前面的視窗不在螢幕上"))
@@ -941,9 +964,48 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let s = try h.toolResults().last!
     #expect(s.crop == nil && s.cropNote == "沒有視窗圖：最前面的視窗不在螢幕上" && s.window!.hasPrefix("前景 app：Fake"))
     try await h.turn("嗯")
-    let message = try #require(await h.model.seen(3).last { $0.role == "tool" })
+    let message = try #require(await h.model.seen(5).last { $0.role == "tool" })
     let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
     #expect((json["content"] as! [[String: Any]]).map { $0["type"] as! String } == ["text", "image_url", "text", "text"])
+}
+
+@Test func theMenuBarAndDockAreOneLinePerItemWithItsCenterInScreenshotPixels() async throws {
+    // Answers as agent-desktop 2.6 gave them in the Doll VM (2026-11-09, Finder frontmost, no window),
+    // cut to a few items.
+    let menubar = #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No window found to identify the application owning surface 'menubar'"}}"#
+    let extras = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"MenuBarAgent","tree":{"bounds":{"height":30.0,"width":170.0,"x":1250.0,"y":0.0},"children":["#
+        + #"{"bounds":{"height":30.0,"width":26.0,"x":1250.0,"y":0.0},"role":"group","children":[{"bounds":{"height":22.0,"width":26.0,"x":1250.0,"y":4.0},"name":"Control Center","ref_id":"@s:e1","role":"menuitem"}]},"#
+        + #"{"bounds":{"height":30.0,"width":128.0,"x":1292.0,"y":0.0},"role":"group","children":[{"bounds":{"height":22.0,"width":128.0,"x":1292.0,"y":4.0},"name":"Clock","ref_id":"@s:e2","role":"menuitem"}]}]}}}"#
+    let dock = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Dock","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"role":"application","name":"Dock","children":["#
+        + #"{"bounds":{"height":70.0,"width":1360.0,"x":40.0,"y":820.0},"role":"list","children":["#
+        + #"{"bounds":{"height":69.9776611328125,"width":53.977691650390625,"x":47.97772216796875,"y":825.0223388671875},"name":"Finder","role":"dockitem"},"#
+        + #"{"bounds":{"height":69.9776611328125,"width":24.0,"x":1073.0,"y":825.0223388671875},"role":"separator"},"#
+        + #"{"bounds":{"height":69.9776611328125,"width":53.977691650390625,"x":1205.0,"y":825.0223388671875},"name":"Terminal","role":"dockitem"}]}]}}}"#
+    let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    let seen = Mutex<[[String]]>([])
+    let driver = VMPalDriver(cfg, vmpal: { args in
+        seen.withLock { $0.append(args) }
+        return ["@@menubar", menubar, "@@menu-bar-extras", extras, "@@dock", dock, "@@displays", displays].joined(separator: "\n")
+    })
+    // One `vmpal exec`: agent-desktop's path as $1. Centers: (x + width/2) × 1280/1440, rounded.
+    #expect(try await driver.desktopSummary() == """
+        Dock 和選單列（項目中心，全螢幕截圖座標）：
+        選單列讀不到：WINDOW_NOT_FOUND: No window found to identify the application owning surface 'menubar'
+        menuitem "Control Center" (1123,13)
+        menuitem "Clock" (1205,13)
+        dockitem "Finder" (67,764)
+        dockitem "Terminal" (1095,764)
+        """)
+    let calls = seen.withLock { $0 }
+    #expect(calls.count == 1)
+    let call = try #require(calls.first)
+    #expect(Array(call.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] && call.suffix(2) == ["sh", cfg.agentDesktop])
+    #expect(call[5].contains("for s in menubar menu-bar-extras dock;") && call[5].contains("\"$1\" list-displays"))
+    // agent-desktop missing or no screen: the whole summary fails with the VM's text.
+    let bad = VMPalDriver(cfg, vmpal: { _ in throw ComputerError("sh: agent-desktop: not found") })
+    await #expect(throws: ComputerError.self) { try await bad.desktopSummary() }
 }
 
 @Test func theWindowOutlineIsOneLinePerElementWithoutRefsAndItsBoundsPlaceTheCrop() async throws {

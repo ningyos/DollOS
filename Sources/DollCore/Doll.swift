@@ -436,8 +436,10 @@ public actor Doll {
 
     /// `text` plus a fresh full-screen screenshot, the front window's crop with where it sits on the
     /// full screen, and the window's outline (spec 3.1, 2026-11-09). Her coordinates stay full-screen
-    /// pixels. No front window: no crop and no outline, and the result says why. A failed screenshot,
-    /// crop or outline is said in the result (and is an error); none is dropped silently.
+    /// pixels. No front window: no crop and no outline, the result says why, and the menu bar's and
+    /// Dock's items with their centers follow in the outline's place. A failed screenshot, crop,
+    /// outline or menu bar/Dock summary is said in the result (and is an error); none is dropped
+    /// silently.
     func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
         let computer = computer
         async let front: Result<FrontWindow, Error> = {
@@ -467,8 +469,14 @@ public actor Doll {
             }
         case .failure(let error):
             log("ERROR", "turn \(turnIndex): window outline failed: \(error)")
-            out.window = "沒有視窗圖和視窗概要：\(error)"
             out.actions.append("error window")
+            let desktop: String
+            do { desktop = try await computer.desktopSummary() } catch {
+                log("ERROR", "turn \(turnIndex): menu bar and Dock summary failed: \(error)")
+                desktop = "Dock 和選單列概要失敗：\(error)"
+                out.actions.append("error desktop")
+            }
+            out.window = "沒有視窗圖和視窗概要：\(error)\n\(desktop)"
         }
         return out
     }
