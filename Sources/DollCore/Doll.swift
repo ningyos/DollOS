@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// The skeleton: one queue, one consumer, one timeline, one line (the owner's).
 /// The actor is the single serial owner of Doll state; everything durable is in `Store`.
@@ -40,25 +39,6 @@ private func hex(_ n: Int) -> String {
     String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(n))
 }
 
-/// Resumes a continuation exactly once, from whichever side gets there first.
-private final class Once<T: Sendable>: Sendable {
-    private let slot: Mutex<CheckedContinuation<T, Never>?>
-    init(_ c: CheckedContinuation<T, Never>) { slot = Mutex(c) }
-    func resume(_ value: T) { slot.withLock { $0.take() }?.resume(returning: value) }
-}
-
-/// The task's result, or nil if it has not finished within `seconds` (the task keeps running).
-func finished<T: Sendable>(_ task: Task<T, any Error>, within seconds: Double) async -> Result<T, any Error>? {
-    await withCheckedContinuation { (c: CheckedContinuation<Result<T, any Error>?, Never>) in
-        let once = Once(c)
-        Task { once.resume(await task.result) }
-        Task {
-            try? await Task.sleep(for: .seconds(seconds))
-            once.resume(nil)
-        }
-    }
-}
-
 struct RunningJob {
     let command: String
     let started: Double
@@ -77,7 +57,6 @@ public actor Doll {
     let store: Store
     let memory: Memory
     let model: any MainModel
-    let decision: any DecisionModel
     let executor: any Executor
     let say: Say
 
@@ -101,16 +80,8 @@ public actor Doll {
     var logSink: (@Sendable (String) -> Void)?
     /// Last real prompt size versus our estimate of the same prompt, to scale the footer's context figure.
     var tokenRatio = 1.0
-    /// Owner events drained since the last completed turn: the input of this turn's extraction.
-    var turnOwner: [Event] = []
-    /// The extraction started for the turn in progress (runs beside its model call).
-    var extracting: Task<[Candidate], any Error>?
-    /// The extraction of the last completed turn; the next turn collects it for its footer.
-    var lastExtraction: (turn: Int, task: Task<[Candidate], any Error>)?
-    /// Candidates in this turn's footer. Shown once, then dropped (spec 6, 2026-11-08).
-    var proposals: [Candidate] = []
 
-    public init(config: Config, root: URL, model: any MainModel, decision: any DecisionModel,
+    public init(config: Config, root: URL, model: any MainModel,
                 executor: (any Executor)? = nil,
                 say: @escaping Say) throws {
         core = config.core
@@ -126,7 +97,6 @@ public actor Doll {
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: store)
         self.model = model
-        self.decision = decision
         self.executor = executor ?? LocalShell(cwd: scratch.path, hardTimeoutS: shell.timeoutS)
         self.say = say
         tools = Tools.specs(shell: shell, memory: memoryConfig)
@@ -163,8 +133,6 @@ public actor Doll {
         // Memories written by a previous process exist only as markdown until indexed (spec 6).
         try memory.syncOnBoot()
         try await model.check()
-        // Apple FM judges every remembered item's kind and proposes candidates; unavailable = error (spec 9.1).
-        try await decision.check()
         for job in try store.runningJobs() {
             if let pgid = job.pgid { LocalShell.killGroup(pgid) }
             try store.finishJob(job.id, "lost")
@@ -223,14 +191,11 @@ public actor Doll {
         }.map(\.element)
         queue.removeAll()
         for ev in batch {
-            let stored = try store.append(ev)
-            if stored.kind == .owner { turnOwner.append(stored) }
+            try store.append(ev)
         }
     }
 
     func shutdown() throws {
-        extracting?.cancel()
-        lastExtraction?.task.cancel()
         for (id, job) in running {
             job.handle.cancel()
             try store.finishJob(id, "cancelled")
@@ -280,10 +245,6 @@ public actor Doll {
             out.append("- 背景 job：\(id)（\(j.command)）跑了 \(seconds(now - j.started))")
         }
         out.append("- context 約 \(contextTokens) token；下一回合 effort：\(effortNext ?? llm.defaultEffort)")
-        if !proposals.isEmpty {
-            out.append("【可能值得記】（從主人上一回合的話抽出來的；要記就自己呼叫 remember，不理就算了）")
-            for c in proposals { out.append("- \(c.text)") }
-        }
         return out.joined(separator: "\n")
     }
 
@@ -308,19 +269,6 @@ public actor Doll {
     func turn() async throws {
         turnIndex += 1
         followUp = false
-        // Last turn's extraction goes into this footer; waited for only up to candidate_wait_s.
-        if let last = lastExtraction {
-            lastExtraction = nil
-            proposals = await collect(last.task, from: last.turn)
-        }
-        // This turn's: beside the model call, never before it (spec 6). A rerun after owner
-        // voice restarts it over every owner event of the turn.
-        if !turnOwner.isEmpty {
-            extracting?.cancel()
-            let utterances = turnOwner.map { Utterance(seq: $0.seq!, text: $0.text) }
-            let decision = decision, max = memoryConfig.maxCandidatesPerTurn
-            extracting = Task.detached { try await decision.extractCandidates(utterances, max: max) }
-        }
         let events = try store.events()
         var messages = [ChatMessage(role: "system", content: systemPrompt())] + events.flatMap(render)
         let guess = estimate(messages)
@@ -343,10 +291,6 @@ public actor Doll {
             return try await turn()
         }
         effortNext = nil
-        lastExtraction = extracting.map { (turnIndex, $0) }
-        extracting = nil
-        turnOwner = []
-        proposals = []
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
@@ -407,7 +351,7 @@ public actor Doll {
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
             case .remember(let items):
-                return await remember(items, seen: events, reply: reply)
+                return remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try recall(query, seen: events)
             }
@@ -417,10 +361,10 @@ public actor Doll {
         }
     }
 
-    /// The program fills seq, ts, confidence, kind (spec 6). The tier comes from the event she is
-    /// answering, not from anything she can claim; results of her own memory and think calls are
-    /// not sources.
-    func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) async -> Outcome {
+    /// The program fills seq, ts, confidence; the kind is hers (spec 6, 2026-11-08). The tier comes
+    /// from the event she is answering, not from anything she can claim; results of her own memory
+    /// and think calls are not sources.
+    func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) -> Outcome {
         let names = Self.callNames(events)
         let source = events.last { e in
             e.kind != .doll && !(e.kind == .tool && names[e.seq!] != "shell")
@@ -430,21 +374,18 @@ public actor Doll {
         case .tool?, .job?: .tool
         default: .doll
         }
-        let sourceText = switch source?.kind {
-        case .owner?: "[主人] \(source!.text)"
-        case .tool?, .job?: "[工具結果] \(source!.text)"
-        default: "[我說] \(reply.text)"
-        }
         // With no source event she is the source: the reply this call belongs to.
         let seq = source?.seq ?? reply.seq!
         var lines: [String] = [], actions: [String] = []
         for (i, item) in items.enumerated() {
             let folder = item.secret ? memoryConfig.secretDir : memoryConfig.publicDir
             do {
-                let judged = try await decision.judgeKind(source: sourceText, memory: item.text)
-                log("INFO", "remember kind=\(judged.kind.rawValue) (\(judged.reason))")
-                let id = try memory.write(item.text, secret: item.secret, sourceSeq: seq, tier: tier, kind: judged.kind)
-                lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)，kind \(judged.kind.rawValue)）")
+                if let bad = item.badKind {
+                    throw ToolError(description: "kind 只能是 happened、intended、uncertain，或不填；收到 \(bad)")
+                }
+                let id = try memory.write(item.text, secret: item.secret, sourceSeq: seq, tier: tier, kind: item.kind)
+                let kind = item.kind.map { "，kind \($0.rawValue)" } ?? ""
+                lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)\(kind)）")
                 actions.append("remember \(folder)")
             } catch {
                 log("ERROR", "remember item \(i + 1) failed: \(error)")
@@ -479,26 +420,6 @@ public actor Doll {
         }
         // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
-    }
-
-    // candidates -------------------------------------------------------------
-    /// The candidates of turn `from`, if its extraction finishes within `candidate_wait_s`.
-    /// A miss is logged and skipped: a lost proposal, not a fallback.
-    func collect(_ task: Task<[Candidate], any Error>, from: Int) async -> [Candidate] {
-        let wait = memoryConfig.candidateWaitS
-        switch await finished(task, within: wait) {
-        case .success(let found)?:
-            log("INFO", "candidates from turn \(from): "
-                + (found.isEmpty ? "none" : found.map { "#\($0.sourceSeq) \($0.text)" }.joined(separator: " / ")))
-            return found
-        case .failure(let error)?:
-            log("ERROR", "candidate extraction for turn \(from) failed: \(error)")
-            return []
-        case nil:
-            task.cancel()
-            log("WARN", "candidate extraction for turn \(from) not done after \(wait) s; skipped")
-            return []
-        }
     }
 
     // commands ---------------------------------------------------------------

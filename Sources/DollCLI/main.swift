@@ -25,7 +25,6 @@ do {
     let cfg = try Config.load(URL(filePath: argv[2]))
     doll = try Doll(
         config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
-        decision: AppleDecisionModel(),
         say: { text in out("\n[Doll] \(text)\n") })
     try await doll.boot()
 } catch {

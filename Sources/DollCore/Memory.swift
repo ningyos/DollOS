@@ -17,18 +17,33 @@ public enum SourceTier: String, Sendable, CaseIterable {
     case doll        // her own guess
 }
 
+/// What a memory says about its event (spec 6), given by her on `remember`. Facts and
+/// preferences have none. Only `happened` counts as already happened.
+public enum MemoryKind: String, Sendable, CaseIterable {
+    case happened, intended, uncertain
+
+    /// How recall shows it after the confidence level: 「確定的打算」「聽說的已發生」.
+    public var label: String {
+        switch self {
+        case .happened: "已發生"
+        case .intended: "打算"
+        case .uncertain: "未證實"
+        }
+    }
+}
+
 public struct MemoryHit: Sendable {
     public var id: String
     public var folder: String       // the config directory name: "secret" | "public"
     public var secret: Bool
     public var confidence: Double
     public var level: String        // 確定 / 大概 / 聽說, from the confidence thresholds
-    /// nil only for records written before M3b (front-matter `kind = ""`).
+    /// nil when she gave none (front-matter `kind = ""`): a fact or a preference.
     public var kind: MemoryKind?
     public var text: String
 
-    /// What she sees: the level and the kind together, 「確定的打算」「聽說的已發生」 (spec 6).
-    public var label: String { kind.map { "\(level)的\($0.label)" } ?? "\(level)（kind 未判）" }
+    /// What she sees: the level and the kind together, 「確定的打算」「聽說的已發生」, or the level alone (spec 6).
+    public var label: String { kind.map { "\(level)的\($0.label)" } ?? level }
 }
 
 /// `NLContextualEmbedding`, mean-pooled over L2-normalized token vectors (Apple's
@@ -151,7 +166,7 @@ public final class Memory {
     }
 
     @discardableResult
-    public func write(_ text: String, secret: Bool, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind) throws -> String {
+    public func write(_ text: String, secret: Bool, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -161,11 +176,11 @@ public final class Memory {
         let id = "\(sourceSeq)-\(Self.hex(6))"
         let folder = secret ? config.secretDir : config.publicDir
         let url = directory(secret).appending(path: "\(id).md")
-        try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind.rawValue, tier: tier, body: body)
+        try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier, body: body)
             .write(to: url, atomically: true, encoding: .utf8)
         let vector = try embedder.embed(body)
         try store.putMemoryIndex(id: id, path: url.path, folder: folder, secret: secret, confidence: confidence,
-                                ts: ts, sourceSeq: sourceSeq, kind: kind.rawValue, text: body, vector: Self.blob(vector))
+                                ts: ts, sourceSeq: sourceSeq, kind: kind?.rawValue ?? "", text: body, vector: Self.blob(vector))
         return id
     }
 

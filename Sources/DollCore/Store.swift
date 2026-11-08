@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS memory_index (
     confidence REAL NOT NULL,
     ts REAL NOT NULL,
     source_seq INTEGER NOT NULL,
-    kind TEXT NOT NULL               -- happened | intended | uncertain (FM, M3b); empty for M3a records
+    kind TEXT NOT NULL               -- happened | intended | uncertain, as she gave it; empty when she gave none
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
     text, id UNINDEXED, secret UNINDEXED, tokenize='trigram'

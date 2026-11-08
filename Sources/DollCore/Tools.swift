@@ -6,7 +6,7 @@ import Foundation
 /// defines them: the tool block in the system prompt, the parser, and argument decoding.
 ///
 ///     think(level: medium | high)        the next model call thinks first
-///     remember(items: [{text, secret}])  one memory per item
+///     remember(items: [{text, secret, kind?}])  one memory per item; kind: happened | intended | uncertain
 ///     recall(query)                      search her memories
 ///     shell(cmd)                         transitional, until M2 (see `specs`)
 public enum Tools {
@@ -47,6 +47,8 @@ public enum Tools {
                              "properties": [
                                  "text": ["type": "string", "description": "要記的一件事"],
                                  "secret": ["type": "boolean", "description": "是不是秘密：只有跟主人的場景看得到。拿不準就 true"],
+                                 "kind": ["type": "string", "enum": ["happened", "intended", "uncertain"],
+                                          "description": "happened＝已經發生；intended＝打算、還沒做；uncertain＝沒證實（聽說、猜的、結果不明）。是事實或喜好就不填"],
                              ],
                              "required": ["text", "secret"],
                          ],
@@ -54,7 +56,7 @@ public enum Tools {
                      "required": ["items"],
                  ], jsonParameters: ["items"]),
             Spec(name: "recall",
-                 description: "查記憶，最多回 \(memory.topK) 條。每條附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕。",
+                 description: "查記憶，最多回 \(memory.topK) 條。每條附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕；沒填 kind 的是〔確定｜public〕。",
                  parameters: [
                      "type": "object",
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
@@ -87,7 +89,10 @@ public enum Tools {
         struct Item: Decodable {
             let text: String
             let secret: Bool
-            enum CodingKeys: CodingKey { case text, secret }
+            let kind: MemoryKind?
+            /// What she wrote for `kind` when it is not one of the three; only this item fails.
+            let badKind: String?
+            enum CodingKeys: CodingKey { case text, secret, kind }
             init(from decoder: any Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 text = try c.decode(String.self, forKey: .text)
@@ -101,6 +106,17 @@ public enum Tools {
                     case let other: throw ToolError(description: "secret 要是 true 或 false，收到 \(other)")
                     }
                 }
+                // Absent, null or "" = no kind (a fact or a preference).
+                let raw: String
+                if try !c.contains(.kind) || c.decodeNil(forKey: .kind) {
+                    raw = ""
+                } else if let s = try? c.decode(String.self, forKey: .kind) {
+                    raw = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    raw = "不是字串的值"
+                }
+                kind = MemoryKind(rawValue: raw)
+                badKind = raw.isEmpty || kind != nil ? nil : raw
             }
         }
         case shell(String)
@@ -144,7 +160,7 @@ public enum Tools {
             let raw = value("items")
             let items: [Request.Item]
             do { items = try JSONDecoder().decode([Request.Item].self, from: Data(raw.utf8)) } catch {
-                throw ToolError(description: "remember 的 items 要是 JSON 陣列，每條 {\"text\": …, \"secret\": true/false}；讀不懂：\(raw)")
+                throw ToolError(description: "remember 的 items 要是 JSON 陣列，每條 {\"text\": …, \"secret\": true/false, \"kind\": 可不填}；讀不懂：\(raw)")
             }
             guard !items.isEmpty else { throw ToolError(description: "remember 的 items 是空的") }
             return .remember(items)
@@ -337,7 +353,7 @@ enum Instructions {
 
         你跟主人在同一條時間線上。有事情發生（主人說話、工具的結果回來、背景 job 跑完）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
 
-        每個回合的最後一則訊息是【狀況】，裡面只有事實：還在跑的背景 job、context 大約多長、下一回合的 effort。主人上一回合說的話裡如果有可能值得記的事，【狀況】會多一段【可能值得記】；它只出現這一次，要記就自己呼叫 remember，不記就不用理。
+        每個回合的最後一則訊息是【狀況】，裡面只有事實：還在跑的背景 job、context 大約多長、下一回合的 effort。
 
         ## 怎麼做事
 
@@ -345,7 +361,7 @@ enum Instructions {
 
         回覆裡 <tool_call> 以外的文字就是你對主人說的話；要說的話寫在工具呼叫前面。沒話要說可以不寫。
 
-        記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是事情的種類，只有「已發生」才是真的發生過。確信度低或還沒發生，就先查證再講。秘密只有跟主人的場景看得到；不確定算不算秘密就當秘密。
+        記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。秘密只有跟主人的場景看得到；不確定算不算秘密就當秘密。
 
         ## 做事的規矩
 

@@ -29,8 +29,12 @@ private func shell(_ cmd: String) -> (String, [(String, String)]) { ("shell", [(
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
 private func recall(_ q: String) -> (String, [(String, String)]) { ("recall", [("query", q)]) }
 private func remember(_ items: [(String, Bool)]) -> (String, [(String, String)]) {
-    struct Item: Encodable { let text: String; let secret: Bool }
-    return ("remember", [("items", String(decoding: try! JSONEncoder().encode(items.map { Item(text: $0.0, secret: $0.1) }), as: UTF8.self))])
+    remember(kinds: items.map { ($0.0, $0.1, nil) })
+}
+private func remember(kinds items: [(String, Bool, String?)]) -> (String, [(String, String)]) {
+    struct Item: Encodable { let text: String; let secret: Bool; let kind: String? }
+    let json = try! JSONEncoder().encode(items.map { Item(text: $0.0, secret: $0.1, kind: $0.2) })
+    return ("remember", [("items", String(decoding: json, as: UTF8.self))])
 }
 
 /// Returns scripted replies as raw content and records what each request saw.
@@ -66,43 +70,6 @@ private actor FakeModel: MainModel {
     func seen(_ i: Int) -> [ChatMessage] { requests[i].messages }
 }
 
-/// Stands in for Apple FM: kinds by memory text (default happened), candidates scripted per
-/// extraction call, and an optional delay that makes extraction slow.
-private actor FakeDecision: DecisionModel {
-    var kinds: [String: MemoryKind] = [:]
-    var scripted: [[String]] = []
-    var delay: Duration = .zero
-    var judged: [(source: String, memory: String)] = []
-    var extracted: [[Utterance]] = []
-    var extractStarts: [ContinuousClock.Instant] = []
-    var extractEnds: [ContinuousClock.Instant] = []
-
-    func check() async throws {}
-
-    /// Memory texts whose kind judgment fails (an FM error).
-    var failing: Set<String> = []
-
-    func judgeKind(source: String, memory: String) async throws -> KindJudgment {
-        judged.append((source, memory))
-        if failing.contains(memory) { throw ModelError("FM unavailable") }
-        return KindJudgment(kind: kinds[memory] ?? .happened, reason: "fake")
-    }
-
-    func extractCandidates(_ utterances: [Utterance], max: Int) async throws -> [Candidate] {
-        extracted.append(utterances)
-        extractStarts.append(.now)
-        try await Task.sleep(for: delay)
-        extractEnds.append(.now)
-        let texts = scripted.isEmpty ? [] : scripted.removeFirst()
-        return texts.prefix(max).map { Candidate(text: $0, sourceSeq: utterances.last!.seq) }
-    }
-
-    func set(kind: MemoryKind, for memory: String) { kinds[memory] = kind }
-    func fail(on memory: String) { failing.insert(memory) }
-    func script(_ calls: [[String]]) { scripted += calls }
-    func slow(_ d: Duration) { delay = d }
-}
-
 private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
     let reports = Mutex<[TurnReport]>([])
@@ -112,7 +79,6 @@ private final class Recorder: Sendable {
 private struct Harness {
     let doll: Doll
     let model: FakeModel
-    let decision: FakeDecision
     let rec: Recorder
     let dir: URL
     let store: Store      // a second connection to the same database, for checks
@@ -126,11 +92,9 @@ private struct Harness {
         cfg.shell.waitS = 0.3
         tune(&cfg)
         model = FakeModel(replies)
-        let decision = FakeDecision()
-        self.decision = decision
         let rec = Recorder()
         self.rec = rec
-        doll = try Doll(config: cfg, root: root, model: model, decision: decision,
+        doll = try Doll(config: cfg, root: root, model: model,
                         say: { text in rec.said.withLock { $0.append(text) } })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
         await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
@@ -276,17 +240,16 @@ private struct Harness {
 
 @Test func failedCallsStillGetAToolResult() async throws {
     let h = try await Harness()
-    await h.decision.fail(on: "會失敗的記憶")
     await h.doll.ownerSaid("試試")
     try await h.turn(Scripted("", ("bogus", []), ("shell", [("command", "ls")]), think("low"),
-                              remember([("會失敗的記憶", false), ("主人喜歡貓", false)]), ("recall", []), shell("echo ok"),
+                              remember(kinds: [("會失敗的記憶", false, "done"), ("主人喜歡貓", false, nil)]), ("recall", []), shell("echo ok"),
                               ("remember", [("items", "主人養貓")])))
     let results = try h.toolResults()
     #expect(results.count == 7)
     #expect(results[0].text == "失敗：沒有 bogus 這個工具")
     #expect(results[1].text == "失敗：shell 沒有 command 這個參數")
     #expect(results[2].text == "失敗：think 的 level 只能是 medium 或 high，收到 low")
-    #expect(results[3].text.hasPrefix("第 1 條沒存：FM unavailable\n第 2 條已存入 public/"))
+    #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
     #expect(results[5].text == "$ echo ok\nok\n(exit 0)")                // later calls still run
     #expect(results[6].text.hasPrefix("失敗：remember 的 items 要是 JSON 陣列"))
@@ -623,7 +586,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
         let hits = try await ask(h, query, secret: true)
         // The wanted record is one of the returned hits.
         if hits.contains(memoryCorpus[want]) { correct += 1 }
-        #expect(hits.contains("〔確定的") || hits.contains("〔大概的") || hits.contains("〔聽說的"))
+        #expect(hits.contains("〔確定｜") || hits.contains("〔大概｜") || hits.contains("〔聽說｜"))
         #expect(h.reports.last!.actions.last!.hasPrefix("recall "))
     }
     #expect(correct >= 8)   // 30/10 acceptance number (plan M3a)
@@ -662,103 +625,61 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     #expect(!(try h.toolResults().last!.secret))
     // Now a secret enters the timeline (spec 5.1: the same rule that marks her replies).
     let withSecret = try await ask(h, "跟姐姐吵架了", secret: true)
-    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定的已發生｜secret〕"))
+    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定｜secret〕"))
     #expect(try h.toolResults().last!.secret)          // a secret hit marks the tool result
 }
 
-// memory (M3b) ---------------------------------------------------------------
+// memory kind (2026-11-08: hers, no FM) ----------------------------------------
 
-@Test func rememberedKindComesFromTheDecisionModelIntoFileAndIndex() async throws {
+@Test func kindIsWrittenWhenGivenAndEmptyWhenNot() async throws {
     let h = try await Harness()
-    await h.decision.set(kind: .intended, for: "主人下週要去東京")
-    await h.doll.ownerSaid("我下週要去東京")
-    try await h.turn(Scripted("", remember([("主人下週要去東京", false)])))
-    let judged = await h.decision.judged
-    #expect(judged.count == 1 && judged[0].source == "[主人] 我下週要去東京" && judged[0].memory == "主人下週要去東京")
+    await h.doll.ownerSaid("我下個月要去大阪，我的貓叫麻糬")
+    try await h.turn(Scripted("", remember(kinds: [("主人下個月要去大阪", false, "intended"), ("主人的貓叫麻糬", false, nil)])))
+    let ack = try h.toolResults().last!.text.split(separator: "\n")
+    #expect(ack.count == 2 && ack[0].contains("kind intended") && !ack[1].contains("kind"))
     let dir = h.dir.appending(path: "memory/public")
-    let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".md") }
-    #expect(files.count == 1)
-    let text = try String(contentsOf: dir.appending(path: files[0]), encoding: .utf8)
-    #expect(text.contains("kind = \"intended\""))
-    let meta = try #require(try h.store.memoryMeta(String(files[0].dropLast(3))))
-    #expect(meta.kind == "intended")
-    #expect(try h.toolResults().last!.text.contains("kind intended"))
+    var kinds: [String: String] = [:]
+    for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".md") {
+        let parsed = try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8))
+        #expect(try h.store.memoryMeta(String(name.dropLast(3)))?.kind == parsed.kind)
+        kinds[parsed.body] = parsed.kind
+    }
+    #expect(kinds == ["主人下個月要去大阪": "intended", "主人的貓叫麻糬": ""])
     // the index rebuilt from markdown keeps it
     try await h.doll.rebuildMemory()
-    #expect(try h.store.memoryMeta(String(files[0].dropLast(3)))?.kind == "intended")
+    for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".md") {
+        let parsed = try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8))
+        #expect(try h.store.memoryMeta(String(name.dropLast(3)))?.kind == kinds[parsed.body])
+    }
 }
 
-@Test func recallShowsConfidenceLevelAndKindTogether() async throws {
+@Test func anInvalidKindFailsOnlyThatItem() async throws {
     let h = try await Harness()
-    await h.decision.set(kind: .intended, for: "主人下週要去東京")
-    await h.doll.ownerSaid("我下週要去東京")
-    try await h.turn(Scripted("", remember([("主人下週要去東京", false)])))
-    await h.doll.ownerSaid("我要去哪？")
-    try await h.turn(Scripted("", recall("主人要去東京")))
+    await h.doll.ownerSaid("記一下")
+    let items = #"[{"text": "主人去過京都", "secret": false, "kind": "done"}, {"text": "主人喜歡貓", "secret": false}, "#
+        + #"{"text": "主人怕蛇", "secret": false, "kind": 3}, {"text": "主人昨天跑了五公里", "secret": false, "kind": "happened"}]"#
+    try await h.turn(Scripted("", ("remember", [("items", items)])))
+    let lines = try h.toolResults().last!.text.split(separator: "\n").map(String.init)
+    #expect(lines.count == 4)
+    #expect(lines[0] == "第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done")
+    #expect(lines[1].hasPrefix("第 2 條已存入 public/"))
+    #expect(lines[2] == "第 3 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 不是字串的值")
+    #expect(lines[3].hasPrefix("第 4 條已存入 public/") && lines[3].contains("kind happened"))
+    #expect(h.last.actions == ["error remember", "remember public", "error remember", "remember public"])
+    #expect(try h.store.countMemoryIndex() == 2)
+}
+
+@Test func recallLabelsCarryTheKindOnlyWhenGiven() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("我下個月要去大阪，我的貓叫麻糬")
+    try await h.turn(Scripted("", remember(kinds: [("主人下個月要去大阪", false, "intended"), ("主人的貓叫麻糬", false, nil)])))
+    await h.doll.ownerSaid("你記得我什麼？")
+    try await h.turn(Scripted("", recall("主人")))
     let out = try h.toolResults().last!.text
-    #expect(out.contains("〔確定的打算｜public〕\n主人下週要去東京"))
+    #expect(out.contains("〔確定的打算｜public〕\n主人下個月要去大阪"))
+    #expect(out.contains("〔確定｜public〕\n主人的貓叫麻糬"))
+    #expect(!out.contains("未判"))
     let hit = MemoryHit(id: "x", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: .happened, text: "")
     #expect(hit.label == "聽說的已發生")
-}
-
-@Test func candidatesShowOnceInTheNextFooterAndAreNeverWritten() async throws {
-    let h = try await Harness()
-    await h.decision.script([["主人對花生過敏"], []])
-    await h.doll.ownerSaid("我對花生過敏")
-    try await h.turn("好，我知道了")                            // turn 1: extraction runs beside the call
-    let owner = try h.store.events().first { $0.kind == .owner }!
-    #expect(await h.decision.extracted.map { $0.map(\.seq) } == [[owner.seq!]])
-    #expect(!h.reports[0].footer.contains("【可能值得記】"))
-    await h.doll.ownerSaid("嗯")
-    try await h.turn("嗯嗯")                                    // turn 2: shows turn 1's candidate
-    #expect(h.reports[1].footer.contains("【可能值得記】") && h.reports[1].footer.contains("- 主人對花生過敏"))
-    await h.doll.put(Event(.job, .internal, "r"))
-    try await h.turn("好")                                      // turn 3: gone (turn 2 extracted nothing)
-    #expect(!h.reports[2].footer.contains("【可能值得記】") && !h.reports[2].footer.contains("花生"))
-    // proposals only; nothing reaches memory unless she calls remember
-    #expect(try h.store.countMemoryIndex() == 0)
-    let pub = (try? FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "memory/public").path)) ?? []
-    #expect(pub.filter { $0.hasSuffix(".md") }.isEmpty)
-    #expect(h.logs.contains { $0.contains("candidates from turn 1: #\(owner.seq!) 主人對花生過敏") })
-}
-
-@Test func slowExtractionDoesNotDelayTheModelCall() async throws {
-    let h = try await Harness { $0.memory.candidateWaitS = 5 }
-    await h.decision.slow(.seconds(1.5))
-    await h.decision.script([["主人下週要去東京"]])
-    await h.doll.ownerSaid("我下週要去東京")
-    let t0 = ContinuousClock.now
-    try await h.turn("好")
-    let turnTime = ContinuousClock.now - t0
-    #expect(turnTime < .seconds(1))                             // the turn did not wait for it
-    let callStart = await h.model.starts[0]
-    #expect(await h.decision.extractEnds.isEmpty)               // still extracting when the turn ended
-    #expect(callStart < (await h.decision.extractStarts[0]) + .seconds(1.5))
-    await h.doll.put(Event(.job, .internal, "r"))
-    try await h.turn("嗯")                                      // next turn waits (within candidate_wait_s)
-    #expect(h.reports[1].footer.contains("- 主人下週要去東京"))
-}
-
-@Test func extractionNotDoneWithinTheWaitIsSkippedAndLogged() async throws {
-    let h = try await Harness { $0.memory.candidateWaitS = 0.2 }
-    await h.decision.slow(.seconds(3))
-    await h.decision.script([["主人下週要去東京"]])
-    await h.doll.ownerSaid("我下週要去東京")
-    try await h.turn("好")
-    await h.doll.put(Event(.job, .internal, "r"))
-    let t0 = ContinuousClock.now
-    try await h.turn("嗯")
-    #expect(ContinuousClock.now - t0 < .seconds(1.5))
-    #expect(!h.reports[1].footer.contains("【可能值得記】"))
-    #expect(h.logs.contains { $0.contains("candidate extraction for turn 1 not done after 0.2 s; skipped") })
-}
-
-@Test func noExtractionOnTurnsWithoutOwnerEvents() async throws {
-    let h = try await Harness()
-    await h.doll.put(Event(.job, .internal, "$ ls\n(exit 0)"))
-    try await h.turn("好")
-    #expect(await h.decision.extracted.isEmpty)
-    await h.doll.ownerSaid("早安")
-    try await h.turn("早")
-    #expect(await h.decision.extracted.count == 1)
+    #expect(MemoryHit(id: "y", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: nil, text: "").label == "聽說")
 }
