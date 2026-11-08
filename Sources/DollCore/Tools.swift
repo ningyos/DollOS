@@ -82,11 +82,15 @@ public enum Tools {
         }
         return [
             Spec(name: "click",
-                 description: "點一下：給 x、y（\(px)），或給 text（點畫面上那段字）。\(after)",
+                 description: "點一下，element、text、x/y 三種只給一種。最好用 element：視窗概要裡那一行（例如 button \"Save\"，角色可省略），程式當下在最前面的視窗找它再點；找到好幾個或找不到就不點，回候選和它們的全螢幕座標。text 點畫面上那段字。x、y 預設是全螢幕截圖的座標；用視窗圖上的座標就加 on: window，程式換算。\(after)",
                  parameters: [
                      "type": "object",
-                     "properties": .object(ints(["x", "y"], px) + [
-                         ("text", ["type": "string", "description": "畫面上要點的字；給了就不要給 x、y"]),
+                     "properties": .object([
+                         ("element", ["type": "string", "description": "最前面視窗裡的元素：角色和名字，例如 button \"Save\"；只給名字也可以"]),
+                         ("text", ["type": "string", "description": "畫面上要點的字"]),
+                     ] + ints(["x", "y"], "座標，像素；左上角是 0,0") + [
+                         ("on", ["type": "string", "enum": ["screen", "window"],
+                                 "description": .string("x、y 是哪張圖上的：screen＝全螢幕截圖（\(c.screenshotWidth) 寬，不填就是這個），window＝最近一張視窗圖")]),
                          ("button", ["type": "string", "enum": ["left", "right"], "description": "不填是 left"]),
                          ("count", ["type": "integer", "description": "1 單擊、2 雙擊；不填是 1"]),
                      ]),
@@ -198,6 +202,9 @@ public enum Tools {
         case useComputer
         case leaveComputer
         case act(ComputerAction)
+        /// `click` at x, y on the full screenshot or on the last window crop; the program converts
+        /// and checks them before anything is clicked.
+        case clickAt(x: Int, y: Int, onWindow: Bool, button: String, count: Int)
         case screenshot
         /// nil region = the whole screen; nil max_wait = the configured default.
         case watch(Region?, maxWait: Double?)
@@ -275,12 +282,22 @@ public enum Tools {
             let count = try int("count") ?? 1
             guard count == 1 || count == 2 else { throw ToolError(description: "click 的 count 只能是 1 或 2，收到 \(count)") }
             let x = try int("x"), y = try int("y")
-            if let text = given("text"), !text.isEmpty {
-                guard x == nil, y == nil else { throw ToolError(description: "click 給 x、y 或 text 其中一種，不要兩種都給") }
-                return .act(.clickText(text, button: button, count: count))
+            let element = given("element").flatMap { $0.isEmpty ? nil : $0 }
+            let text = given("text").flatMap { $0.isEmpty ? nil : $0 }
+            let on = try oneOf("on", ["screen", "window"], default: "")
+            let targets = [element != nil, text != nil, x != nil || y != nil].filter { $0 }.count
+            guard targets == 1 else {
+                throw ToolError(description: targets == 0 ? "click 要給 element、text 或 x 和 y 其中一種"
+                                                          : "click 的 element、text、x/y 只能給一種，不要同時給")
             }
-            guard let x, let y else { throw ToolError(description: "click 要給 x 和 y，或給 text") }
-            return .act(.click(x: x, y: y, button: button, count: count))
+            guard on.isEmpty || x != nil || y != nil else { throw ToolError(description: "click 的 on 只配 x、y 用") }
+            if let element {
+                let (role, name) = try clickElement(element)
+                return .act(.clickElement(role: role, name: name, button: button, count: count))
+            }
+            if let text { return .act(.clickText(text, button: button, count: count)) }
+            guard let x, let y else { throw ToolError(description: "click 的 x 和 y 要一起給") }
+            return .clickAt(x: x, y: y, onWindow: on == "window", button: button, count: count)
         case "type":
             // Not trimmed: a newline she writes is a Return.
             let text = value("text")
@@ -311,6 +328,40 @@ public enum Tools {
         default:
             fatalError("tool \(call.name) listed but not decoded")
         }
+    }
+
+    /// Roles agent-desktop names in the window outline (round 5's outlines, plus common web and
+    /// text roles): a first word that is one of these is the element's role.
+    static let roles: Set<String> = [
+        "button", "checkbox", "radiobutton", "menubutton", "popupbutton", "combobox", "textfield", "textarea",
+        "searchfield", "statictext", "text", "link", "image", "menuitem", "dockitem", "treeitem", "cell", "row",
+        "column", "tab", "tablist", "list", "outline", "table", "grid", "group", "radiogroup", "toolbar",
+        "scrollarea", "scrollbar", "slider", "disclosure", "heading", "window", "sheet", "handle", "ruler",
+    ]
+
+    /// `click`'s element: `{"role": …, "name": …}`, the outline's `role "name"`, `"name"`, a role word
+    /// and the name after it, or just the name.
+    static func clickElement(_ raw: String) throws -> (role: String?, name: String) {
+        func unquote(_ s: Substring) -> String {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.count >= 2 && t.hasPrefix("\"") && t.hasSuffix("\"") ? String(t.dropFirst().dropLast()) : t
+        }
+        if raw.hasPrefix("{") {
+            struct Element: Decodable { let role: String?; let name: String }
+            guard let e = try? JSONDecoder().decode(Element.self, from: Data(raw.utf8)) else {
+                throw ToolError(description: "click 的 element 要是 角色 \"名字\"，或 {\"role\": …, \"name\": …}；讀不懂：\(raw)")
+            }
+            let role = e.role?.trimmingCharacters(in: .whitespaces)
+            let name = e.name.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { throw ToolError(description: "click 的 element 沒有名字") }
+            return (role.flatMap { $0.isEmpty ? nil : $0 }, name)
+        }
+        let parts = raw.split(separator: " ", maxSplits: 1)
+        if parts.count == 2, let rest = Optional(parts[1].trimmingCharacters(in: .whitespaces)), !rest.isEmpty,
+           roles.contains(parts[0].lowercased()) || (rest.hasPrefix("\"") && !parts[0].hasPrefix("\"")) {
+            return (parts[0].lowercased(), unquote(Substring(rest)))
+        }
+        return (nil, unquote(Substring(raw)))
     }
 }
 

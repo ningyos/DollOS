@@ -12,8 +12,12 @@ public struct Region: Sendable, Equatable, CustomStringConvertible {
 }
 
 public enum ComputerAction: Sendable, Equatable {
+    /// Full-screenshot pixels.
     case click(x: Int, y: Int, button: String, count: Int)
     case clickText(String, button: String, count: Int)
+    /// An element of the front window, found fresh at click time (spec 3.1, M2 round 6): its name
+    /// exactly (case-insensitive), else containing `name`; `role` narrows it when given.
+    case clickElement(role: String?, name: String, button: String, count: Int)
     case type(String)
     case key(String)
     case scroll(direction: String, amount: Int)
@@ -100,6 +104,8 @@ public struct VMPalDriver: ComputerDriver {
             args = ["click", "\(scale(x))", "\(scale(y))"] + clickFlags(button, count)
         case .clickText(let text, let button, let count):
             args = ["click", "--text", text] + clickFlags(button, count)
+        case .clickElement(let role, let name, let button, let count):
+            return try await clickElement(role: role, name: name, button: button, count: count)
         case .type(let text) where !text.allSatisfy(\.isASCII):
             return try await paste(text)
         case .type(let text):
@@ -204,23 +210,101 @@ public struct VMPalDriver: ComputerDriver {
     /// `vmpal exec`. Each answer is one JSON line after a `@@<name>` marker; a surface that fails
     /// answers its JSON error and the script goes on. The script's status is `list-displays`'s.
     public func desktopSummary() async throws -> String {
-        let out: String
-        do {
-            out = try await exec("""
-                for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
-                echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done
-                echo "@@displays"; "$1" list-displays
-                """, [cfg.agentDesktop])
-        } catch let e as ComputerError {
-            throw ComputerError(WindowSummary.errorText(e.description))
-        }
-        var parts: [String: String] = [:], key = ""
-        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
-            if line.hasPrefix("@@") { key = String(line.dropFirst(2)) } else { parts[key, default: ""] += line }
-        }
+        let parts = Self.sections(try await agentDesktop("""
+            for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
+            echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done
+            echo "@@displays"; "$1" list-displays
+            """, [cfg.agentDesktop]))
         let screen = try WindowSummary.display(Data((parts["displays"] ?? "").utf8))
         return DesktopSummary.render(DesktopSummary.surfaces.map { ($0, Data((parts[$0.flag] ?? "").utf8)) },
                                      on: screen, width: cfg.screenshotWidth)
+    }
+
+    /// `click` by element (spec 3.1, M2 round 6). At click time: the focused window from
+    /// `list-windows`, then `find --window-id` in it, so the ref is fresh and a second window of the
+    /// same app is never searched. One match is clicked with real pointer input (`--headed`: Finder's
+    /// file icons ignore the accessibility press, 2026-11-09 probe) and the result says what was
+    /// clicked, where, and agent-desktop's disposition as given. Several matches are never guessed
+    /// between and no match is never a click on something else: both fail with candidates and their
+    /// centers in her full-screenshot pixels, so she can pick one by coordinates.
+    func clickElement(role: String?, name: String, button: String, count: Int) async throws -> String {
+        let verb: String
+        switch (button, count) {
+        case ("left", 1): verb = "click"
+        case ("left", _): verb = "double-click"
+        case (_, 1): verb = "right-click"
+        default: throw ComputerError("element 不能右鍵雙擊；右鍵 count 給 1")
+        }
+        let ad = cfg.agentDesktop
+        let info = Self.sections(try await agentDesktop("\"$1\" list-windows; echo @@displays; \"$1\" list-displays", [ad]),
+                                 first: "windows")
+        let screen = try WindowSummary.display(Data((info["displays"] ?? "").utf8))
+        let window = try ElementClick.frontWindow(Data((info["windows"] ?? "").utf8))
+        let found = try ElementClick.matches(Data(
+            try await agentDesktop("\"$1\" find --window-id \"$2\" --name \"$3\"", [ad, window.id, name]).utf8))
+        let width = cfg.screenshotWidth
+        func listed(_ ms: [ElementClick.Match]) async throws -> String {
+            let at = try await bounds(ms.filter { $0.bounds == nil }.map(\.ref))
+            return ms.map { m in ElementClick.line(m, (m.bounds ?? at[m.ref]).map { ElementClick.center($0, on: screen, width: width) }) }
+                .joined(separator: "\n")
+        }
+        let target = (role ?? "") + "「\(name)」"
+        var pick = ElementClick.pick(found, role: role, name: name)
+        if case .several(let ms) = pick {
+            // An element and its own cell or label (Finder's sidebar: treeitem and cell "Documents",
+            // 2026-11-09) are one spot on the screen: the same name at the same center is one target.
+            let at = try await bounds(ms.prefix(ElementClick.maxPlaced).map(\.ref))
+            pick = ElementClick.collapse(ms.map { m in var m = m; m.bounds = at[m.ref]; return m })
+        }
+        switch pick {
+        case .one(let m):
+            let out = Self.sections(try await agentDesktop(
+                "\"$1\" get \"$2\" --property bounds; echo @@click; \"$1\" \(verb) --headed \"$2\"; exit 0", [ad, m.ref]),
+                first: "bounds")
+            let point = ElementClick.bounds(Data((out["bounds"] ?? "").utf8)).map { ElementClick.center($0, on: screen, width: width) }
+            return try ElementClick.clicked(m, verb: verb, at: point, answer: Data((out["click"] ?? "").utf8))
+        case .several(let ms):
+            let shown = Array(ms.prefix(ElementClick.maxListed))
+            throw ComputerError("沒有點：\(window.label)裡有 \(ms.count) 個符合\(target)，不知道是哪一個。"
+                                + "要點的那個用它的座標 click x、y（全螢幕截圖座標）：\n" + (try await listed(shown))
+                                + (ms.count > shown.count ? "\n（另外 \(ms.count - shown.count) 個沒列）" : ""))
+        case .none(let named) where !named.isEmpty:
+            let shown = Array(named.prefix(ElementClick.maxListed))
+            throw ComputerError("沒有點：\(window.label)裡沒有\(target)；名字對、角色不同的有（全螢幕截圖座標）：\n"
+                                + (try await listed(shown)))
+        case .none:
+            // `find` with no name times out on a whole window (TIMEOUT, 2026-11-09); its snapshot is 0.4 s.
+            let all = try ElementClick.elements(Data(try await agentDesktop(
+                "\"$1\" snapshot --window-id \"$2\" -i --compact --include-bounds", [ad, window.id]).utf8))
+            let near = ElementClick.similar(all, to: name)
+            guard !near.isEmpty else { throw ComputerError("沒有點：\(window.label)裡沒有\(target)，也沒有名字相近的元素。") }
+            throw ComputerError("沒有點：\(window.label)裡沒有\(target)。名字相近的（全螢幕截圖座標）：\n" + (try await listed(near)))
+        }
+    }
+
+    /// Each ref's bounds (screen points), one `vmpal exec`; a ref whose bounds could not be read is absent.
+    func bounds(_ refs: [String]) async throws -> [String: WindowSummary.Rect] {
+        guard !refs.isEmpty else { return [:] }
+        let out = Self.sections(try await agentDesktop(
+            "a=\"$1\"; shift; for r in \"$@\"; do echo \"@@$r\"; \"$a\" get \"$r\" --property bounds; done; exit 0",
+            [cfg.agentDesktop] + refs))
+        return out.compactMapValues { ElementClick.bounds(Data($0.utf8)) }
+    }
+
+    /// An agent-desktop script through `vmpal exec`; a failed run throws agent-desktop's JSON error as text.
+    func agentDesktop(_ script: String, _ args: [String]) async throws -> String {
+        do { return try await exec(script, args) } catch let e as ComputerError {
+            throw ComputerError(WindowSummary.errorText(e.description))
+        }
+    }
+
+    /// A script's output split at `@@<name>` marker lines; lines before the first marker go to `first`.
+    static func sections(_ out: String, first: String = "") -> [String: String] {
+        var parts: [String: String] = [:], key = first
+        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("@@") { key = String(line.dropFirst(2)) } else { parts[key, default: ""] += line }
+        }
+        return parts
     }
 
     static func tempFile(_ what: String, ext: String? = nil) -> URL {
@@ -281,6 +365,7 @@ enum WindowSummary {
         let name: String?
         let bounds: Rect?
         let children_count: Int?
+        let ref_id: String?
         let children: [Node]?
     }
 
@@ -387,5 +472,202 @@ enum DesktopSummary {
             lines += items.isEmpty ? ["\(surface.label)：沒有項目"] : items
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+/// `click` by element (spec 3.1, M2 round 6): agent-desktop's answers read on this Mac (never
+/// python in the VM: it pops the developer-tools installer), the pick, and what she reads back.
+enum ElementClick {
+    /// One `find` match she could click: one with a ref and a name.
+    struct Match: Equatable {
+        let role: String
+        let name: String
+        let ref: String
+        /// Screen points, when the answer had them (a snapshot does, `find` does not).
+        var bounds: WindowSummary.Rect? = nil
+    }
+
+    struct Window: Equatable {
+        let id: String
+        /// How results name it: 最前面的視窗（App「title」）.
+        let label: String
+    }
+
+    enum Pick: Equatable {
+        case one(Match)
+        case several([Match])
+        /// No match; the ones whose name fits but whose role does not (empty without a role).
+        case none([Match])
+    }
+
+    /// At most this many candidates are listed in a failed click.
+    static let maxListed = 8
+    /// Several matches: the first this many get their bounds read, to find ones at the same spot.
+    static let maxPlaced = 20
+
+    /// `list-windows`: the focused one.
+    static func frontWindow(_ json: Data) throws -> Window {
+        struct W: Decodable { let id: String; let app_name: String?; let title: String?; let is_focused: Bool? }
+        struct Answer: Decodable { let ok: Bool; let data: [W]?; let error: WindowSummary.Answer.Failure? }
+        guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
+            throw ComputerError("agent-desktop list-windows 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
+        }
+        guard a.ok, let all = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
+        guard let w = all.first(where: { $0.is_focused == true }) else {
+            throw ComputerError("沒有點：現在沒有最前面的視窗，element 沒地方找；桌面上請用 Dock 和選單列概要的座標點。")
+        }
+        // `title` was the app's name in every sample (Finder, 2026-11-09); then only the app is said.
+        let app = w.app_name ?? "?", title = w.title ?? ""
+        return Window(id: w.id, label: "最前面的視窗（\(app)\(title.isEmpty || title == app ? "" : "「\(title)」")）")
+    }
+
+    /// `find`: the matches with a ref and a name, in agent-desktop's order.
+    static func matches(_ json: Data) throws -> [Match] {
+        struct M: Decodable { let role: String?; let name: String?; let ref_id: String? }
+        struct Payload: Decodable { let matches: [M] }
+        struct Answer: Decodable { let ok: Bool; let data: Payload?; let error: WindowSummary.Answer.Failure? }
+        guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
+            throw ComputerError("agent-desktop find 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
+        }
+        guard a.ok, let d = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop find 沒有回結果") }
+        return d.matches.compactMap { m in
+            guard let ref = m.ref_id, let name = m.name, !name.isEmpty else { return nil }
+            return Match(role: m.role ?? "?", name: name, ref: ref)
+        }
+    }
+
+    /// A window `snapshot -i --include-bounds`: every element with a ref and a name, in tree order.
+    static func elements(_ json: Data) throws -> [Match] {
+        guard let a = try? JSONDecoder().decode(WindowSummary.Answer.self, from: json) else {
+            throw ComputerError("agent-desktop snapshot 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
+        }
+        guard a.ok, let tree = a.data?.tree else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
+        var out: [Match] = []
+        func walk(_ n: WindowSummary.Node) {
+            if let ref = n.ref_id, let name = n.name, !name.isEmpty {
+                out.append(Match(role: n.role ?? "?", name: name, ref: ref, bounds: n.bounds))
+            }
+            n.children?.forEach(walk)
+        }
+        walk(tree)
+        return out
+    }
+
+    /// Role first (case-insensitive) when given; then the names equal to `name` (case-insensitive),
+    /// else the ones containing it.
+    static func pick(_ found: [Match], role: String?, name: String) -> Pick {
+        let q = name.lowercased()
+        let named = found.filter { $0.name.lowercased().contains(q) }
+        let fit = role.map { r in named.filter { $0.role.lowercased() == r.lowercased() } } ?? named
+        let exact = fit.filter { $0.name.lowercased() == q }
+        let hits = exact.isEmpty ? fit : exact
+        switch hits.count {
+        case 1: return .one(hits[0])
+        case 0: return .none(named)
+        default: return .several(hits)
+        }
+    }
+
+    /// Several matches with their bounds where read: the same name (case-insensitive) at the same
+    /// center is one target, the first (outermost) kept. One left is `.one`; a match without bounds
+    /// always stays its own.
+    static func collapse(_ ms: [Match]) -> Pick {
+        var kept: [Match] = []
+        for m in ms {
+            let same = { (k: Match) -> Bool in
+                guard let a = k.bounds, let b = m.bounds else { return false }
+                return k.name.lowercased() == m.name.lowercased()
+                    && abs((a.x + a.width / 2) - (b.x + b.width / 2)) < 1 && abs((a.y + a.height / 2) - (b.y + b.height / 2)) < 1
+            }
+            if !kept.contains(where: same) { kept.append(m) }
+        }
+        return kept.count == 1 ? .one(kept[0]) : .several(kept)
+    }
+
+    /// For a name with no match: the elements sharing the longest run of characters with it (at
+    /// least half the name, and two unless the name is shorter), best first, at most `maxListed`.
+    static func similar(_ all: [Match], to name: String) -> [Match] {
+        let q = Array(name.lowercased())
+        func run(_ s: String) -> Int {
+            let t = Array(s.lowercased())
+            var best = 0, prev = [Int](repeating: 0, count: t.count + 1)
+            for a in q {
+                var cur = [Int](repeating: 0, count: t.count + 1)
+                for (j, b) in t.enumerated() where a == b {
+                    cur[j + 1] = prev[j] + 1
+                    best = max(best, cur[j + 1])
+                }
+                prev = cur
+            }
+            return best
+        }
+        // Half the name at least: "nots.txt" finds "notes.txt" (s.txt), not "Recents" (ts).
+        let need = max(min(2, q.count), (q.count + 1) / 2)
+        let scored = all.map { ($0, run($0.name)) }.filter { $0.1 >= need }
+        return Array(scored.enumerated().sorted { ($0.1.1, -$0.0) > ($1.1.1, -$1.0) }.map(\.1.0).prefix(maxListed))
+    }
+
+    /// `get --property bounds`: screen points.
+    static func bounds(_ json: Data) -> WindowSummary.Rect? {
+        struct Payload: Decodable { let value: WindowSummary.Rect? }
+        struct Answer: Decodable { let ok: Bool; let data: Payload? }
+        guard let a = try? JSONDecoder().decode(Answer.self, from: json), a.ok else { return nil }
+        return a.data?.value
+    }
+
+    /// A rectangle's center in her full-screenshot pixels, converted like the crop and the Dock.
+    static func center(_ b: WindowSummary.Rect, on screen: WindowSummary.Rect, width: Int) -> (x: Int, y: Int) {
+        func px(_ points: Double) -> Int { Int((points * Double(width) / screen.width).rounded()) }
+        return (px(b.x + b.width / 2 - screen.x), px(b.y + b.height / 2 - screen.y))
+    }
+
+    /// `role "name" (x,y)`, the outline's and the Dock summary's form.
+    static func line(_ m: Match, _ at: (x: Int, y: Int)?) -> String {
+        "\(m.role) \"\(m.name)\" " + (at.map { "(\($0.x),\($0.y))" } ?? "(位置讀不到)")
+    }
+
+    /// The click's answer: what was clicked, where, and agent-desktop's disposition as it gave it.
+    /// `delivered_unverified` is not proof; the screenshots after it are. A failed click throws.
+    static func clicked(_ m: Match, verb: String, at: (x: Int, y: Int)?, answer: Data) throws -> String {
+        let obj = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any]
+        let ok = obj?["ok"] as? Bool ?? false
+        let body = (ok ? obj?["data"] : obj?["error"]) as? [String: Any]
+        let disposition = (body?["disposition"] as? [String: Any]).map { d in
+            d.keys.sorted { k1, k2 in
+                let order = ["delivery", "retry"]
+                return (order.firstIndex(of: k1) ?? 2, k1) < (order.firstIndex(of: k2) ?? 2, k2)
+            }.map { "\($0)=\(d[$0].map { "\($0)" } ?? "")" }.joined(separator: ", ")
+        } ?? "沒有 disposition"
+        let what = line(m, at)
+        guard ok else {
+            let why = [body?["code"] as? String, body?["message"] as? String].compactMap { $0 }.joined(separator: ": ")
+            let raw = String(decoding: answer.prefix(300), as: UTF8.self)
+            throw ComputerError("\(verb) \(what) 失敗：\(why.isEmpty ? raw : why)（agent-desktop：\(disposition)）")
+        }
+        let done = ["click": "點了", "double-click": "雙擊了", "right-click": "右鍵點了"][verb] ?? verb
+        return "\(done) \(what)（全螢幕截圖座標）。agent-desktop：\(disposition)；這不代表真的點到，看下面的截圖。"
+    }
+}
+
+/// An image's pixel size from its PNG or JPEG header, for turning crop coordinates into the
+/// screen's (spec 3.1, M2 round 6: she clicked crop positions as if they were full-screen ones).
+enum ImageSize {
+    static func of(_ data: Data) -> (width: Int, height: Int)? {
+        let b = [UInt8](data.prefix(64 * 1024))
+        func be16(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
+        func be32(_ i: Int) -> Int { be16(i) << 16 | be16(i + 2) }
+        if b.count >= 24, b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return (be32(16), be32(20)) }
+        guard b.count >= 4, b[0] == 0xFF, b[1] == 0xD8 else { return nil }
+        var i = 2
+        while i + 9 < b.count {
+            guard b[i] == 0xFF else { return nil }
+            let marker = b[i + 1]
+            if marker == 0xFF { i += 1; continue }
+            if marker == 0xD8 || marker == 0x01 || (0xD0...0xD7).contains(marker) { i += 2; continue }
+            // SOF0–SOF15 except DHT (C4), JPG (C8), DAC (CC): height, then width.
+            if (0xC0...0xCF).contains(marker), ![0xC4, 0xC8, 0xCC].contains(marker) { return (be16(i + 7), be16(i + 5)) }
+            i += 2 + be16(i + 2)
+        }
+        return nil
     }
 }

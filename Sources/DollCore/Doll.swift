@@ -94,6 +94,11 @@ public actor Doll {
     var watchSerial = 0
     /// Wakes from the current watch since her last computer action.
     var watchIdle = 0
+    /// The last full screenshot's pixel size: where her screen coordinates must fall.
+    var screenSize: (width: Int, height: Int)?
+    /// The last window crop she was shown: where it sits on the full screenshot and its pixel size,
+    /// to turn `on: window` coordinates into full-screen ones. nil when the last result had no crop.
+    var cropMap: (region: Region, width: Int, height: Int)?
     /// Screenshot file → its `data:` URI, so a stored image is read and encoded once.
     var imageURIs: [String: String] = [:]
     var observer: (@Sendable (TurnReport) -> Void)?
@@ -413,14 +418,12 @@ public actor Doll {
                 watchIdle = 0
                 return await withScreenshot("現在的畫面：", actions: [name])
             case .act(let action):
-                watchIdle = 0
-                let said: String
-                do { said = try await computer.act(action) } catch {
-                    // VMPal's own words, verbatim; the screenshot shows where things stand.
-                    log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
-                    return await withScreenshot("失敗：\(Self.describe(action))\n\(error)", actions: ["error \(name)"])
-                }
-                return await withScreenshot("\(Self.describe(action))\n\(said)", actions: [name])
+                return await perform(action, said: Self.describe(action), name: name)
+            case .clickAt(let x, let y, let onWindow, let button, let count):
+                let p = try screenPoint(x, y, onWindow: onWindow)
+                let action = ComputerAction.click(x: p.x, y: p.y, button: button, count: count)
+                let line = onWindow ? "click 視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" + Self.extra(button, count) : Self.describe(action)
+                return await perform(action, said: line, name: name)
             case .watch(let region, let maxWait):
                 let replaced = watch != nil
                 let w = startWatch(region, maxWait: maxWait ?? computerConfig.watchDefaultMaxWaitS)
@@ -435,17 +438,17 @@ public actor Doll {
     }
 
     /// `text` plus a fresh full-screen screenshot, the front window's crop with where it sits on the
-    /// full screen, and the window's outline (spec 3.1, 2026-11-09). Her coordinates stay full-screen
-    /// pixels. No front window: no crop and no outline, the result says why, and the menu bar's and
-    /// Dock's items with their centers follow in the outline's place. A failed screenshot, crop,
-    /// outline or menu bar/Dock summary is said in the result (and is an error); none is dropped
-    /// silently.
+    /// full screen and its size, and the window's outline (spec 3.1, 2026-11-09). No front window: no
+    /// crop and no outline, the result says why, and the menu bar's and Dock's items with their
+    /// centers follow in the outline's place. A failed screenshot, crop, outline or menu bar/Dock
+    /// summary is said in the result (and is an error); none is dropped silently.
     func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
         let computer = computer
         async let front: Result<FrontWindow, Error> = {
             do { return .success(try await computer.frontWindow()) } catch { return .failure(error) }
         }()
         var out = Outcome(text: text, actions: actions)
+        cropMap = nil
         do { out.image = try await capture(nil) } catch {
             log("ERROR", "turn \(turnIndex): screenshot failed: \(error)")
             out.text += "\n截圖失敗：\(error)"
@@ -458,7 +461,8 @@ public actor Doll {
             case .at(let r):
                 do {
                     out.crop = try await capture(r)
-                    out.cropNote = "視窗圖：最前面的視窗，在全螢幕 (\(r.x0),\(r.y0))–(\(r.x1),\(r.y1))；點擊座標一律用全螢幕截圖的。"
+                    let size = cropMap.map { "，圖 \($0.width)×\($0.height)" } ?? ""
+                    out.cropNote = "視窗圖：最前面的視窗，在全螢幕 (\(r.x0),\(r.y0))–(\(r.x1),\(r.y1))\(size)；用這張圖上的座標點要加 on: window。"
                 } catch {
                     log("ERROR", "turn \(turnIndex): window crop failed: \(error)")
                     out.cropNote = "沒有視窗圖：截視窗失敗：\(error)"
@@ -482,27 +486,75 @@ public actor Doll {
     }
 
     /// Takes a full-screen screenshot, or the front window's crop at `region`, and stores its bytes
-    /// as a file under `shots/`.
+    /// as a file under `shots/`. Notes its pixel size for `click`'s coordinates.
     func capture(_ region: Region?) async throws -> String {
         let data: Data, format: String
         if let region {
             (data, format) = (try await computer.windowShot(region), computerConfig.windowCropFormat)
+            cropMap = ImageSize.of(data).map { (region, $0.width, $0.height) }
         } else {
             (data, format) = (try await computer.screenshot(region: nil), computerConfig.screenshotFormat)
+            screenSize = ImageSize.of(data)
         }
         let file = "\(hex(16)).\(format == "png" ? "png" : "jpg")"
         try data.write(to: shots.appending(path: file))
         return file
     }
 
+    /// Runs one action and returns `said` and the VM's text, or the failure, with fresh screenshots.
+    /// The action's own time, screenshots excluded, goes to the log (M2 round 6: element-click latency).
+    func perform(_ action: ComputerAction, said: String, name: String) async -> Outcome {
+        watchIdle = 0
+        let start = ContinuousClock.now
+        let result: Result<String, Error>
+        do { result = .success(try await computer.act(action)) } catch { result = .failure(error) }
+        let took = start.duration(to: .now)
+        log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
+        switch result {
+        case .success(let answer):
+            return await withScreenshot("\(said)\n\(answer)", actions: [name])
+        case .failure(let error):
+            // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
+            log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
+            return await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
+        }
+    }
+
+    /// `click` x, y in full-screenshot pixels: as given (`on: screen`), or from the last window crop
+    /// through where it sits on the screen and its size (`on: window`). A point off the screen, or
+    /// off the crop, is an error and nothing is clicked.
+    func screenPoint(_ x: Int, _ y: Int, onWindow: Bool) throws -> (x: Int, y: Int) {
+        let width = screenSize?.width ?? computerConfig.screenshotWidth
+        guard onWindow else {
+            guard x >= 0, y >= 0, x < width, screenSize.map({ y < $0.height }) ?? true else {
+                throw ToolError(description: "沒有點：\(x),\(y) 在螢幕外（全螢幕截圖 "
+                                + (screenSize.map { "\($0.width)×\($0.height)" } ?? "\(width) 寬") + "）")
+            }
+            return (x, y)
+        }
+        guard let m = cropMap else {
+            throw ToolError(description: "沒有點：最近的結果沒有視窗圖，on: window 換算不了；用全螢幕截圖的座標")
+        }
+        guard x >= 0, y >= 0, x < m.width, y < m.height else {
+            throw ToolError(description: "沒有點：\(x),\(y) 不在視窗圖裡（視窗圖 \(m.width)×\(m.height)）")
+        }
+        let r = m.region
+        let sx = r.x0 + Int((Double(x) * Double(r.x1 - r.x0) / Double(m.width)).rounded(.down))
+        let sy = r.y0 + Int((Double(y) * Double(r.y1 - r.y0) / Double(m.height)).rounded(.down))
+        return (sx, sy)
+    }
+
+    static func extra(_ button: String, _ count: Int) -> String {
+        (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
+    }
+
     /// What an action was, for the first line of its result.
     static func describe(_ a: ComputerAction) -> String {
-        func extra(_ button: String, _ count: Int) -> String {
-            (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
-        }
         switch a {
         case .click(let x, let y, let button, let count): return "click \(x),\(y)\(extra(button, count))"
         case .clickText(let text, let button, let count): return "click「\(text)」\(extra(button, count))"
+        case .clickElement(let role, let name, let button, let count):
+            return "click 元素 \(role.map { "\($0) " } ?? "")\"\(name)\"\(extra(button, count))"
         case .type(let text): return "type「\(text)」"
         case .key(let keys): return "key \(keys)"
         case .scroll(let direction, let amount): return "scroll \(direction) \(amount)"

@@ -87,8 +87,8 @@ private final class Recorder: Sendable {
 
 /// The VM: records actions; a screenshot is "frame <n> <region or full>", the window crop "frame <n>
 /// crop <region>", so bytes change only when the test moves the frame (or `changing` moves it on
-/// every capture). The window outline names the frame too, or fails with `windowFailure`; the
-/// window sits at `place`.
+/// every capture). With `screenSize` / `cropSize` set, a PNG header of that size comes first. The
+/// window outline names the frame too, or fails with `windowFailure`; the window sits at `place`.
 private final class FakeComputer: ComputerDriver, Sendable {
     struct State {
         var actions: [ComputerAction] = []
@@ -99,6 +99,8 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var windowFailure: String?
         var desktopFailure: String?
         var place = FrontWindow.Place.at(Region(10, 20, 300, 200))
+        var screenSize: (Int, Int)?
+        var cropSize: (Int, Int)?
     }
     let state = Mutex(State())
 
@@ -117,12 +119,13 @@ private final class FakeComputer: ComputerDriver, Sendable {
         state.withLock { s in
             s.captures += 1
             if s.changing { s.frame += 1 }
-            return Data("frame \(s.frame) \(region.map { "\($0)" } ?? "full")".utf8)
+            let head = region == nil ? s.screenSize.map { pngHeader($0.0, $0.1) } ?? Data() : Data()
+            return head + Data("frame \(s.frame) \(region.map { "\($0)" } ?? "full")".utf8)
         }
     }
 
     func windowShot(_ region: Region) async throws -> Data {
-        state.withLock { s in Data("frame \(s.frame) crop \(region)".utf8) }
+        state.withLock { s in (s.cropSize.map { pngHeader($0.0, $0.1) } ?? Data()) + Data("frame \(s.frame) crop \(region)".utf8) }
     }
 
     func frontWindow() async throws -> FrontWindow {
@@ -146,7 +149,15 @@ private final class FakeComputer: ComputerDriver, Sendable {
     func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
     func failDesktop(_ text: String?) { state.withLock { $0.desktopFailure = text } }
     func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
+    func setSizes(screen: (Int, Int)?, crop: (Int, Int)?) { state.withLock { $0.screenSize = screen; $0.cropSize = crop } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
+}
+
+/// A PNG's signature and IHDR: enough for its pixel size.
+private func pngHeader(_ width: Int, _ height: Int) -> Data {
+    func be32(_ v: Int) -> [UInt8] { [24, 16, 8, 0].map { UInt8((v >> $0) & 0xFF) } }
+    return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13] + Array("IHDR".utf8) + be32(width) + be32(height)
+                + [8, 2, 0, 0, 0])
 }
 
 private struct Harness {
@@ -411,7 +422,7 @@ private struct Harness {
     let wire = String(decoding: try enc([reqs[3].first { !$0.images.isEmpty }!]), as: UTF8.self)
     #expect(wire.contains(#""content":[{"text":"#)
             && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},"#
-                             + #"{"text":"\n視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；點擊座標一律用全螢幕截圖的。","type":"text"},"#
+                             + #"{"text":"\n視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。","type":"text"},"#
                              + #"{"image_url":{"url":"\#(uris[1])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
     // The system prompt, tool block included, is the same on every turn.
     #expect(Set(reqs.map { $0[0] }.map { "\($0.role)|\($0.content)" }).count == 1)
@@ -864,10 +875,173 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(h.last.actions == ["click", "click", "type", "key", "scroll", "drag", "screenshot"])
     try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("text", "A")]),
                               ("scroll", [("direction", "sideways")])))
-    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：click 要給 x 和 y，或給 text",
-                                                          "失敗：click 給 x、y 或 text 其中一種，不要兩種都給",
+    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：click 的 x 和 y 要一起給",
+                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
                                                           "失敗：scroll 的 direction 只能是 up、down、left、right，收到 sideways"])
     #expect(h.vm.actions.count == 6)
+}
+
+@Test func clickTakesExactlyOneOfElementTextOrCoordinates() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", ("click", [("element", "button \"Save\""), ("count", "2")]),
+                              ("click", [("element", "notes.txt")]),
+                              ("click", [("element", #"{"role": "image", "name": "notes.txt"}"#), ("button", "right")]),
+                              ("click", [("element", "\"Open Recent\"")]),
+                              ("click", [("text", "Save")]),
+                              ("click", [("x", "100"), ("y", "200"), ("on", "screen")])))
+    #expect(h.vm.actions == [.clickElement(role: "button", name: "Save", button: "left", count: 2),
+                             .clickElement(role: nil, name: "notes.txt", button: "left", count: 1),
+                             .clickElement(role: "image", name: "notes.txt", button: "right", count: 1),
+                             .clickElement(role: nil, name: "Open Recent", button: "left", count: 1),
+                             .clickText("Save", button: "left", count: 1),
+                             .click(x: 100, y: 200, button: "left", count: 1)])
+    #expect(try h.toolResults().suffix(6).map { $0.text.components(separatedBy: "\n")[0] }
+            == ["click 元素 button \"Save\" 雙擊", "click 元素 \"notes.txt\"", "click 元素 image \"notes.txt\" right",
+                "click 元素 \"Open Recent\"", "click「Save」", "click 100,200"])
+    try await h.turn(Scripted("", ("click", []), ("click", [("element", "OK"), ("x", "1"), ("y", "2")]),
+                              ("click", [("element", "OK"), ("text", "OK")]), ("click", [("text", "OK"), ("on", "window")])))
+    #expect(try h.toolResults().suffix(4).map(\.text) == ["失敗：click 要給 element、text 或 x 和 y 其中一種",
+                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
+                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
+                                                          "失敗：click 的 on 只配 x、y 用"])
+    #expect(h.vm.actions.count == 6)
+}
+
+@Test func windowCoordinatesAreConvertedThroughTheLastCropAndOffImagePointsAreNeverClicked() async throws {
+    let h = try await menuHarness()
+    // The crop: full-screen (10,20)–(300,200), 290×180 pixels of screen shown as a 580×360 image.
+    h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
+    try await h.turn(Scripted("", screenshotCall))
+    #expect(try h.toolResults().last!.cropNote == "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)，圖 580×360；用這張圖上的座標點要加 on: window。")
+    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")])))
+    #expect(h.vm.actions == [.click(x: 60, y: 45, button: "left", count: 2)])
+    let r = try h.toolResults().last!
+    #expect(r.text == "click 視窗圖 100,50 → 全螢幕 60,45 雙擊\nDone: 1 action in 0.1 s." && r.image != nil)
+    // Off the crop, off the screen: an error, nothing clicked.
+    try await h.turn(Scripted("", ("click", [("x", "580"), ("y", "10"), ("on", "window")]),
+                              ("click", [("x", "640"), ("y", "800")]), ("click", [("x", "-1"), ("y", "5")])))
+    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：沒有點：580,10 不在視窗圖裡（視窗圖 580×360）",
+                                                          "失敗：沒有點：640,800 在螢幕外（全螢幕截圖 1280×800）",
+                                                          "失敗：沒有點：-1,5 在螢幕外（全螢幕截圖 1280×800）"])
+    #expect(h.last.actions == ["error click", "error click", "error click"] && h.vm.actions.count == 1)
+    // The last result had no crop: window coordinates cannot be converted.
+    h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
+    try await h.turn(Scripted("", screenshotCall, ("click", [("x", "10"), ("y", "10"), ("on", "window")])))
+    #expect(try h.toolResults().last!.text == "失敗：沒有點：最近的結果沒有視窗圖，on: window 換算不了；用全螢幕截圖的座標")
+    #expect(h.vm.actions.count == 1)
+}
+
+@Test func imageSizeReadsPNGAndJPEGHeaders() {
+    #expect(ImageSize.of(pngHeader(1280, 609)).map { [$0.width, $0.height] } == [1280, 609])
+    // SOI, an APP0 segment, then SOF0: precision, height, width.
+    let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x4A, 0x46, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x61, 0x05, 0x00, 0x03,
+                     0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01])
+    #expect(ImageSize.of(jpeg).map { [$0.width, $0.height] } == [1280, 609])
+    #expect(ImageSize.of(Data("frame 0 full".utf8)) == nil)
+}
+
+/// agent-desktop in the VM for `click(element:)`, answering by command as 2.6 did in the Doll VM
+/// (2026-11-09, Finder's Documents window, answers cut to the fields read). Records the scripts.
+private final class FakeAgentDesktop: Sendable {
+    let calls = Mutex<[[String]]>([])
+    let found: String
+    let windows: String
+    init(found: [(role: String, name: String, ref: String)], focused: Bool = true) {
+        let ms = found.map { #"{"interactive":true,"name":"\#($0.name)","ref_id":"\#($0.ref)","role":"\#($0.role)","states":[],"value":null}"# }
+        self.found = #"{"version":"2.6","ok":true,"command":"find","data":{"matches":["# + ms.joined(separator: ",") + #"],"total_matches":\#(ms.count)}}"#
+        windows = #"{"version":"2.6","ok":true,"command":"list-windows","data":["#
+            + #"{"app_name":"Calendar","id":"w-1","is_focused":false,"title":"Calendar","visible":true},"#
+            + #"{"app_name":"Finder","id":"w-2","is_focused":\#(focused),"title":"Finder","visible":true}]}"#
+    }
+    static let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
+    /// Every ref's bounds: e1 at (465,186) 64×64 points, e2 at (260,301) 171×32, e3 at (500,120) 160×20,
+    /// e4 same as e2 (a cell inside its row).
+    static let places = ["@s:e1": (465.0, 186.0, 64.0, 64.0), "@s:e2": (260.0, 301.0, 171.0, 32.0),
+                         "@s:e3": (500.0, 120.0, 160.0, 20.0), "@s:e4": (260.0, 301.0, 171.0, 32.0)]
+    static func bounds(_ ref: String) -> String {
+        let p = places[ref]!
+        return #"{"version":"2.6","ok":true,"command":"get","data":{"property":"bounds","ref":"\#(ref)","value":{"height":\#(p.3),"width":\#(p.2),"x":\#(p.0),"y":\#(p.1)}}}"#
+    }
+    static let snapshot = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Finder","tree":{"role":"window","name":"Documents","bounds":{"height":436.0,"width":920.0,"x":260.0,"y":120.0},"children":["#
+        + #"{"role":"treeitem","name":"Recents","ref_id":"@s:e5","bounds":{"height":32.0,"width":171.0,"x":260.0,"y":172.0}},"#
+        + #"{"role":"image","name":"notes.txt","ref_id":"@s:e1","bounds":{"height":64.0,"width":64.0,"x":465.0,"y":186.0}}]}}}"#
+    static let clicked = #"{"version":"2.6","ok":true,"command":"click","data":{"action":"click","disposition":{"delivery":"delivered_unverified","retry":"unsafe"},"steps":[]}}"#
+
+    func run(_ args: [String]) throws -> String {
+        calls.withLock { $0.append(args) }
+        let script = args[5], a = Array(args.dropFirst(8))   // exec <vm> -- /bin/sh -c <script> sh <agent-desktop> <args…>
+        if script.contains("list-windows") { return windows + "\n@@displays\n" + Self.displays }
+        if script.contains(" find ") { return found }
+        if script.contains("snapshot --window-id") { return Self.snapshot }
+        if script.contains("--headed") { return Self.bounds(a[0]) + "\n@@click\n" + Self.clicked }
+        if script.contains("for r in") { return a.map { "@@\($0)\n" + Self.bounds($0) }.joined(separator: "\n") }
+        throw ComputerError("unexpected script \(script)")
+    }
+    var scripts: [String] { calls.withLock { $0.map { $0[5] } } }
+}
+
+@Test func anElementIsFoundFreshInTheFrontWindowAndClickedOnlyWhenItIsTheOneMatch() async throws {
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    // One match: found in the focused window, clicked with its fresh ref, said with its center in
+    // full-screenshot pixels ((465 + 32) × 1280/1440, (186 + 32) × 1280/1440) and the disposition.
+    let one = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
+    let said = try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
+    #expect(said == "雙擊了 image \"notes.txt\" (442,194)（全螢幕截圖座標）。agent-desktop：delivery=delivered_unverified, retry=unsafe；這不代表真的點到，看下面的截圖。")
+    let calls = one.calls.withLock { $0 }
+    #expect(calls.count == 3 && calls.allSatisfy { Array($0.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] })
+    #expect(Array(calls[1].suffix(4)) == ["sh", cfg.agentDesktop, "w-2", "notes.txt"] && calls[1][5].contains("find --window-id \"$2\" --name \"$3\""))
+    #expect(calls[2][5].contains("double-click --headed \"$2\"") && calls[2].last == "@s:e1")
+
+    // Exact name beats a name that only contains it; the role narrows.
+    let exact = FakeAgentDesktop(found: [("statictext", "notes.txt backup", "@s:e3"), ("image", "Notes.txt", "@s:e1")])
+    #expect(try await VMPalDriver(cfg, vmpal: { try exact.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
+                .hasPrefix("點了 image \"Notes.txt\" (442,194)"))
+    #expect(exact.scripts.last!.contains("\"$1\" click --headed"))
+
+    // Several: no click; each candidate with its role, name and center. The cell at its row's exact
+    // spot is the same target and is not listed twice.
+    let many = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4"), ("statictext", "Documents", "@s:e3")])
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try many.run($0) }).act(.clickElement(role: nil, name: "documents", button: "left", count: 1))
+        Issue.record("an ambiguous element was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == """
+            沒有點：最前面的視窗（Finder）裡有 2 個符合「documents」，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
+            treeitem "Documents" (307,282)
+            statictext "Documents" (516,116)
+            """)
+    }
+    #expect(!many.scripts.contains { $0.contains("--headed") })
+    // The same row and cell alone are one target: clicked.
+    let same = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4")])
+    #expect(try await VMPalDriver(cfg, vmpal: { try same.run($0) }).act(.clickElement(role: nil, name: "Documents", button: "right", count: 1))
+                .hasPrefix("右鍵點了 treeitem \"Documents\" (307,282)"))
+    #expect(same.scripts.last!.contains("right-click --headed") && same.calls.withLock { $0.last!.last } == "@s:e2")
+
+    // None: no click; the window's similar names with their centers.
+    let none = FakeAgentDesktop(found: [])
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try none.run($0) }).act(.clickElement(role: nil, name: "nots.txt", button: "left", count: 1))
+        Issue.record("a missing element was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有「nots.txt」。名字相近的（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
+    }
+    #expect(!none.scripts.contains { $0.contains("--headed") })
+    // The name fits but not the role: those are listed.
+    let role = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
+    do {
+        _ = try await VMPalDriver(cfg, vmpal: { try role.run($0) }).act(.clickElement(role: "button", name: "notes.txt", button: "left", count: 1))
+        Issue.record("an element of another role was clicked")
+    } catch let e as ComputerError {
+        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有button「notes.txt」；名字對、角色不同的有（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
+    }
+    // No focused window: nothing to search.
+    let desk = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], focused: false)
+    await #expect(throws: ComputerError.self) {
+        try await VMPalDriver(cfg, vmpal: { try desk.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
+    }
+    #expect(desk.calls.withLock { $0.count } == 1)
 }
 
 @Test func aVMPalFailureIsAFailedResultNeverASuccess() async throws {
@@ -906,7 +1080,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await h.turn(Scripted("", key("cmd+n"), screenshotCall))
     let results = try h.toolResults()                                  // use_computer's, key's, screenshot's
     #expect(results.count == 3 && results.allSatisfy { $0.image != nil && $0.crop != nil })
-    let note = "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；點擊座標一律用全螢幕截圖的。"
+    let note = "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。"
     #expect(results.allSatisfy { $0.cropNote == note })
     let shot = { (f: String) in String(decoding: try Data(contentsOf: h.dir.appending(path: "shots/\(f)")), as: UTF8.self) }
     #expect(try results.map { try shot($0.image!) } == ["frame 0 full", "frame 1 full", "frame 1 full"])
