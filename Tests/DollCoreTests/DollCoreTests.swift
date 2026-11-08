@@ -240,6 +240,42 @@ private struct Harness {
     }
 }
 
+@Test func toolCallLikeTextThatIsNotTheFormatIsAnErrorNeverSpeech() {
+    // <invoke name=…> (seen from iq2_xs, /tmp/m2why/replay1.log), then a good call
+    let a = ParsedReply("好，我開電腦看一下。\n<invoke name=\"use_computer\">\n</invoke>\n"
+                        + "<tool_call>\n<function=think>\n<parameter=level>\nhigh\n</parameter>\n</function>\n</tool_call>")
+    #expect(a.speech == "好，我開電腦看一下。")
+    #expect(a.calls.map(\.name) == ["use_computer", "think"])
+    #expect(a.calls[0].malformed == "<invoke name=\"use_computer\"> 不是工具呼叫的格式，沒有執行" && a.calls[1].malformed == nil)
+    // a stray <parameter=…> with nothing around it: the rest is part of the broken call
+    let b = ParsedReply("我開電腦。\n<parameter=level>\nmedium\n</parameter>\n")
+    #expect(b.speech == "我開電腦。")
+    #expect(b.calls == [ToolCall(name: "", malformed: "<parameter=level> 不是工具呼叫的格式，沒有執行")])
+    let unclosed = ParsedReply("嗯<parameter=x>\nabc")
+    #expect(unclosed.speech == "嗯" && unclosed.calls.count == 1)
+    // <tool_call …> with attributes, lone closing tags, and two replies seen from iq2_xs at effort
+    // medium (/tmp/m2why/latency.log): `<parameter name=…>…</invoke>`, and a <function=…> whose
+    // only wrapper is a trailing </tool_call> (one mistake, one error)
+    for raw in ["<tool_call name=\"key\">ls</tool_call>", "好</invoke>", "好\n</function>\n</tool_call>",
+                "<parameter name=\"level\">\nmedium\n</parameter>\n\n</invoke>",
+                "<function=use_computer>\n</function>\n</tool_call>"] {
+        let p = ParsedReply(raw)
+        #expect(p.calls.count == 1 && p.calls[0].malformed != nil && !p.speech.contains("<") , "\(raw)")
+    }
+    #expect(ParsedReply("<tool_call name=\"key\">ls</tool_call>").calls[0].name == "key")
+    #expect(ParsedReply("<parameter name=\"level\">\nmedium\n</parameter>").calls[0].name == "")
+    #expect(ParsedReply("<function name=\"use_computer\"></function>").calls.map(\.name) == ["use_computer"])
+}
+
+@Test func aMalformedCallsResultTellsTheFormat() throws {
+    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory)
+    let call = ParsedReply("<invoke name=\"use_computer\">\n</invoke>").calls[0]
+    #expect(throws: ToolError.self) { try Tools.decode(call, specs: specs) }
+    do { _ = try Tools.decode(call, specs: specs) } catch {
+        #expect("\(error)" == "<invoke name=\"use_computer\"> 不是工具呼叫的格式，沒有執行\n" + ParsedReply.format)
+    }
+}
+
 @Test func systemPromptOpensWithTheTemplateToolBlockThenThePersona() async throws {
     let h = try await Harness()
     let sys = await h.doll.systemPrompt()
@@ -273,7 +309,7 @@ private struct Harness {
     #expect(msgs[a].content == Scripted("好，一次做完", recall("一"), think("medium"), recall("二")).raw)
     #expect(msgs[(a + 1)...(a + 3)].map(\.role) == ["tool", "tool", "tool"])
     #expect(msgs[(a + 1)...(a + 3)].map(\.content) == results.map(\.text))
-    #expect(await h.model.requests.map(\.effort) == ["none", "medium"])
+    #expect(await h.model.requests.map(\.effort) == ["medium", "medium"])    // owner turn, then her think
 }
 
 @Test func aRawReplyRunsItsCallsInTheOrderSheWroteThem() async throws {
@@ -314,7 +350,7 @@ private struct Harness {
     await h.doll.ownerSaid("試試")
     try await h.turn("<function=recall>\n<parameter=query>\nls\n</parameter>\n</function>")
     #expect(h.said.isEmpty)
-    #expect(try h.toolResults().map(\.text) == ["失敗：<function=recall> 沒有包在 <tool_call> 和 </tool_call> 裡"])
+    #expect(try h.toolResults().map(\.text) == ["失敗：<function=recall> 沒有包在 <tool_call> 和 </tool_call> 裡\n" + ParsedReply.format])
     #expect(h.last.actions == ["error recall"] && h.last.usedTool)
 }
 
@@ -359,8 +395,10 @@ private struct Harness {
     await h.doll.ownerSaid("盯著畫面")
     try await Task.sleep(for: .milliseconds(500))
     #expect(await h.model.requests.count == 3)                          // the watch ack did not wake her
-    try await Task.sleep(for: .seconds(1.2))
-    #expect(await h.model.requests.count == 4 && h.said.last == "沒變")   // max_wait passing did
+    // max_wait (1 s) passing wakes her; poll instead of a fixed sleep so a busy parallel suite can't race it.
+    let deadline = ContinuousClock.now + .seconds(5)
+    while await h.model.requests.count < 4, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(await h.model.requests.count == 4 && h.said.last == "沒變")
     await h.doll.stop()
     try await runner.value
 }
@@ -424,7 +462,7 @@ private struct Harness {
     try await h.turn("哈囉")
     let first = h.last.footer
     #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 選單：頂層（電腦工具鎖著；use_computer() 打開）")
-            && first.contains("- watch：沒有") && first.contains("下一回合 effort：none"))
+            && first.contains("- watch：沒有") && first.contains("下一回合 effort：medium"))
     let seq = try h.store.events().last!.seq!
     #expect(try h.store.footer(seq) == first)
     await h.doll.ownerSaid("再來")
@@ -446,8 +484,25 @@ private struct Harness {
     try await h.turn("想好了")
     await h.doll.ownerSaid("嗯")
     try await h.turn("嗯")
-    #expect(await h.model.requests.map(\.effort) == ["none", "high", "none"])
-    #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：none"))
+    #expect(await h.model.requests.map(\.effort) == ["medium", "high", "medium"])
+    #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：medium"))
+}
+
+@Test func ownerTurnsUseOwnerTurnEffortAndOtherTurnsTheDefault() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("查一下")
+    try await h.turn(Scripted("好", recall("一")))                     // owner line drained: medium
+    try await h.turn("沒有")                                            // only her tool result: default
+    await h.doll.ownerSaid("再說一次", voice: true)
+    try await h.turn("沒有喔")                                          // owner voice counts too
+    #expect(await h.model.requests.map(\.effort) == ["medium", "none", "medium"])
+    #expect(h.reports.map(\.effort) == ["medium", "none", "medium"])
+    #expect(h.reports[1].footer.contains("effort：none"))
+
+    let off = try await Harness(tune: { $0.llm.ownerTurnEffort = "none" })
+    await off.doll.ownerSaid("嗨")
+    try await off.turn("哈囉")
+    #expect(await off.model.requests.map(\.effort) == ["none"])
 }
 
 // idle -----------------------------------------------------------------------

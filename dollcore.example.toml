@@ -2,6 +2,7 @@
 base_url = "http://192.0.2.11:8080"
 model = "qwen3.8-flash-next-iq3_s"
 default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 think(medium／high) 調高一次
+owner_turn_effort = "medium" # 決定（2026-11-08）：含新主人事件（打字／說話）的回合用 medium。理由：none 時第 1 回合常只說一句就停（B 同一請求重送 5／8 有呼叫工具），medium 10/10；她用 think 指定的仍優先
 timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
 max_tokens = 4096             # 初始值理由：一回合一個動作，回覆很少超過 1k token；4k 夠 high 的思考
 

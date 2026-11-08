@@ -74,6 +74,11 @@ public actor Doll {
     var idleTurns = 0
     /// Set by `think`; consumed by the next model call.
     var effortNext: String?
+    /// The events drained since her last answered call include an owner line: the next call uses
+    /// `owner_turn_effort` unless she set one with `think`.
+    var ownerTurn = false
+    /// The effort the next model call uses.
+    var nextEffort: String { effortNext ?? (ownerTurn ? llm.ownerTurnEffort : llm.defaultEffort) }
     /// Her tool calls produced results she has not answered yet: she gets the next turn even with
     /// an empty queue (a watch's ack alone does not count; its wake will).
     var followUp = false
@@ -206,6 +211,7 @@ public actor Doll {
         for ev in batch {
             try store.append(ev)
         }
+        if batch.contains(where: { $0.kind == .owner }) { ownerTurn = true }
     }
 
     func shutdown() {
@@ -260,7 +266,7 @@ public actor Doll {
         out.append(inComputer ? "- 選單：電腦（用完呼叫 leave_computer() 離開）"
                               : "- 選單：頂層（電腦工具鎖著；use_computer() 打開）")
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
-        out.append("- context 約 \(contextTokens) token；下一回合 effort：\(effortNext ?? llm.defaultEffort)")
+        out.append("- context 約 \(contextTokens) token；下一回合 effort：\(nextEffort)")
         return out.joined(separator: "\n")
     }
 
@@ -290,7 +296,7 @@ public actor Doll {
         let guess = estimate(messages)
         let footerText = footer(contextTokens: Int(Double(guess) * tokenRatio))
         messages.append(ChatMessage(role: "user", content: footerText))
-        let effort = effortNext ?? llm.defaultEffort
+        let effort = nextEffort
 
         let task = Task { try await model.chat(messages, effort: effort) }
         inflight = task
@@ -307,6 +313,7 @@ public actor Doll {
             return try await turn()
         }
         effortNext = nil
+        ownerTurn = false
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 

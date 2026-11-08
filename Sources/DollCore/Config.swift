@@ -6,6 +6,9 @@ public struct LlmConfig: Sendable {
     public var model: String
     /// `reasoning_effort` for a normal turn. "我想一下" raises it for one call.
     public var defaultEffort = "none"
+    /// `reasoning_effort` for a turn whose drained events include a new owner line (text or voice).
+    /// Her `think` for that call still wins.
+    public var ownerTurnEffort = "medium"
     public var timeoutS = 300.0
     public var maxTokens = 4096
 }
@@ -87,11 +90,14 @@ public struct Config: Sendable {
         var l = Section(name: "llm", raw: llmRaw)
         var llm = LlmConfig(baseURL: try l.required("base_url"), model: try l.required("model"))
         try l.read("default_effort", &llm.defaultEffort)
+        try l.read("owner_turn_effort", &llm.ownerTurnEffort)
         try l.read("timeout_s", &llm.timeoutS)
         try l.read("max_tokens", &llm.maxTokens)
         try l.finish()
-        guard Effort.levels.contains(llm.defaultEffort) else {
-            throw TOMLError(description: "[llm] default_effort must be one of \(Effort.levels)")
+        for (key, value) in [("default_effort", llm.defaultEffort), ("owner_turn_effort", llm.ownerTurnEffort)] {
+            guard Effort.levels.contains(value) else {
+                throw TOMLError(description: "[llm] \(key) must be one of \(Effort.levels)")
+            }
         }
 
         var c = Section(name: "core", raw: raw["core"] ?? [:])

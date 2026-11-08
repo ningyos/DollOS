@@ -101,13 +101,17 @@ public struct VMPalDriver: ComputerDriver {
         p.standardOutput = out
         p.standardError = err
         p.standardInput = FileHandle.nullDevice
+        // terminationHandler, not waitUntilExit: waitUntilExit on a dispatch worker was seen to hang
+        // after the child had already exited (M2 medium runs, 2026-11-08).
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
         do { try p.run() } catch { throw ComputerError("cannot run \(cfg.vmpal): \(error.localizedDescription)") }
         let (stdout, stderr) = await withCheckedContinuation { (c: CheckedContinuation<(Data, Data), Never>) in
             DispatchQueue.global().async {
                 // Answers are a few lines; stderr cannot fill its pipe while stdout is read.
                 let o = out.fileHandleForReading.readDataToEndOfFile()
                 let e = err.fileHandleForReading.readDataToEndOfFile()
-                p.waitUntilExit()
+                exited.wait()
                 c.resume(returning: (o, e))
             }
         }

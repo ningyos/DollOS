@@ -206,7 +206,7 @@ public enum Tools {
     /// `specs` are the tools she may call now; `locked` are listed somewhere but closed (the computer
     /// menu outside `use_computer`): calling one is an error that says how to open it.
     static func decode(_ call: ToolCall, specs: [Spec], locked: [Spec] = []) throws -> Request {
-        if let problem = call.malformed { throw ToolError(description: problem) }
+        if let problem = call.malformed { throw ToolError(description: problem + "\n" + ParsedReply.format) }
         guard let spec = specs.first(where: { $0.name == call.name }) else {
             if locked.contains(where: { $0.name == call.name }) {
                 throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 use_computer() 打開電腦選單")
@@ -346,29 +346,44 @@ public struct ParsedReply: Sendable, Equatable {
     public var calls: [ToolCall]
 
     /// Every `<tool_call>…</tool_call>` block in textual order. A bare `<function=…>` outside one, an
-    /// unclosed block, or a block whose inside is not `<function=…><parameter=…>…</function>` is a
-    /// malformed call (never dropped), so she learns what was wrong.
+    /// unclosed block, a block whose inside is not `<function=…><parameter=…>…</function>`, or any
+    /// other tool-call-like fragment (`<invoke name=…>`, a stray `<parameter=…>` or closing tag) is a
+    /// malformed call (never dropped, never spoken), so she learns what was wrong.
     public init(_ content: String) {
         let open = "<tool_call>", close = "</tool_call>", fn = "<function="
         var speech = "", calls: [ToolCall] = []
         var rest = content[...]
         while true {
-            let o = rest.range(of: open), f = rest.range(of: fn)
-            if let f, o.map({ f.lowerBound < $0.lowerBound }) ?? true {
-                // A function block with no <tool_call> around it.
-                speech += rest[..<f.lowerBound]
-                let end = rest[f.upperBound...].range(of: "</function>")?.upperBound ?? rest.endIndex
-                let name = Self.name(rest[f.upperBound..<end])
-                calls.append(ToolCall(name: name, malformed: "<function=\(name)> 沒有包在 <tool_call> 和 </tool_call> 裡"))
-                rest = rest[end...]
-                continue
-            }
-            guard let o else {
+            guard let m = Self.markers.compactMap({ rest.range(of: $0)?.lowerBound }).min() else {
                 speech += rest
                 break
             }
-            speech += rest[..<o.lowerBound]
-            let after = rest[o.upperBound...]
+            speech += rest[..<m]
+            let at = rest[m...]
+            if at.hasPrefix(fn) {
+                // A function block with no <tool_call> around it (a `</tool_call>` right after it is
+                // part of the same mistake, not a second one).
+                var end = at.range(of: "</function>")?.upperBound ?? at.endIndex
+                let name = Self.name(at[at.index(m, offsetBy: fn.count)..<end])
+                let tail = at[end...].drop { $0.isWhitespace }
+                if tail.hasPrefix(close) { end = tail.index(tail.startIndex, offsetBy: close.count) }
+                calls.append(ToolCall(name: name, malformed: "<function=\(name)> 沒有包在 <tool_call> 和 </tool_call> 裡"))
+                rest = at[end...]
+                continue
+            }
+            guard at.hasPrefix(open) else {
+                // Tool-call-like text that is not the format: it runs to the last closing tag before
+                // the next <tool_call>, or to that <tool_call> / the end when nothing closes it.
+                let stop = at.dropFirst().range(of: open)?.lowerBound ?? at.endIndex
+                let region = at[..<stop]
+                let end = Self.closers.compactMap { region.range(of: $0, options: .backwards)?.upperBound }.max() ?? stop
+                let head = String(region.prefix { $0 != ">" && $0 != "\n" }.prefix(60))
+                let tag = head + (region.dropFirst(head.count).first == ">" ? ">" : "")
+                calls.append(ToolCall(name: Self.strayName(tag), malformed: "\(tag) 不是工具呼叫的格式，沒有執行"))
+                rest = at[end...]
+                continue
+            }
+            let after = at.dropFirst(open.count)
             let c = after.range(of: close)
             let next = after.range(of: open)
             if let c, next.map({ c.lowerBound < $0.lowerBound }) ?? true {
@@ -385,6 +400,23 @@ public struct ParsedReply: Sendable, Equatable {
         }
         self.speech = speech.trimmingCharacters(in: .whitespacesAndNewlines)
         self.calls = calls
+    }
+
+    /// The one call format, appended to every malformed call's result.
+    public static let format = "正確格式：\n<tool_call>\n<function=工具名>\n<parameter=參數名>\n值\n</parameter>\n</function>\n</tool_call>"
+
+    /// Where a call, or something that looks like one, starts. `<tool_call` also catches
+    /// `<tool_call name=…>`, `<function` / `<parameter` also catch `<function name=…>` /
+    /// `<parameter name=…>`; only the exact `<tool_call>` opens a block.
+    private static let markers = ["<tool_call", "</tool_call>", "<function", "</function>",
+                                  "<invoke", "</invoke>", "<parameter", "</parameter>"]
+    private static let closers = ["</tool_call>", "</function>", "</invoke>", "</parameter>"]
+
+    /// The tool a stray `<invoke …>` / `<function …>` / `<tool_call …>` tag names (`name="x"` /
+    /// `name=x`), or "". A `<parameter name=…>` names a parameter, not a tool.
+    private static func strayName(_ tag: String) -> String {
+        guard !tag.hasPrefix("<parameter"), let m = tag.firstMatch(of: /name\s*=\s*"?([A-Za-z0-9_\-]+)/) else { return "" }
+        return String(m.1)
     }
 
     /// The function name at the start of `s` (the text after `<function=`), or "" if there is none.
