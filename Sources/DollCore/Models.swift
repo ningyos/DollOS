@@ -4,6 +4,9 @@ import Foundation
 /// messages are rendered from events every step.
 public struct ChatMessage: Codable, Sendable, Equatable {
     public var role: String
+    /// Her assistant messages are her raw reply, tool call text included, so a re-render is
+    /// byte-identical. A `role: "tool"` message is one call's result; the template renders it as a
+    /// `<tool_response>` block and needs no call id.
     public var content: String
 
     public init(role: String, content: String) {
@@ -48,6 +51,7 @@ public struct ModelUsage: Sendable, Equatable {
 }
 
 public struct ModelReply: Sendable, Equatable {
+    /// Her reply verbatim, tool call text included; `ParsedReply` reads the calls out of it.
     public var content: String
     public var reasoning: String?
     public var usage: ModelUsage
@@ -61,7 +65,8 @@ public struct ModelReply: Sendable, Equatable {
 /// The main model: an OpenAI chat-completions endpoint.
 public protocol MainModel: Sendable {
     func check() async throws
-    /// `effort` is the Strata `reasoning_effort` value for this one call.
+    /// `effort` is the Strata `reasoning_effort` value for this one call. No `tools` are sent: her
+    /// tools are listed in the system prompt and her calls come back as text in `content`.
     func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply
 }
 
@@ -146,7 +151,8 @@ public struct HTTPMainModel: MainModel {
         guard let u = reply.usage else { throw ModelError("main model returned no usage") }
         let t = reply.timings
         return ModelReply(
-            content: choice.message.content ?? "", reasoning: choice.message.reasoning_content,
+            content: choice.message.content ?? "",
+            reasoning: choice.message.reasoning_content,
             usage: ModelUsage(promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens,
                               prefilled: t?.prompt_n, cached: t?.cache_n, promptMs: t?.prompt_ms,
                               predictedMs: t?.predicted_ms))

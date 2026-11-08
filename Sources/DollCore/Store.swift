@@ -9,11 +9,11 @@ private let schema = """
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
-    kind TEXT NOT NULL,              -- owner | doll | result | job
+    kind TEXT NOT NULL,              -- owner | doll | tool | job
     source TEXT NOT NULL,            -- owner | internal
     has_secret INTEGER NOT NULL DEFAULT 0,
     voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
-    text TEXT NOT NULL
+    text TEXT NOT NULL               -- her replies: raw, tool call text included, exactly as re-sent
 );
 CREATE TABLE IF NOT EXISTS footers (
     seq INTEGER PRIMARY KEY,         -- her reply's seq
@@ -63,8 +63,8 @@ public enum Principal: String, Sendable {
 public struct Event: Sendable, Equatable {
     public enum Kind: String, Sendable {
         case owner      // the owner spoke
-        case doll       // her reply, verbatim
-        case result     // a short command's output (or "turned into a background job")
+        case doll       // her reply, verbatim (tool call text included)
+        case tool       // the result of one of her tool calls (incl. "turned into a background job"), in call order
         case job        // a background job finished
     }
     public var kind: Kind
@@ -92,8 +92,8 @@ public struct Event: Sendable, Equatable {
     public var priority: Priority {
         switch kind {
         case .owner: voice ? .ownerVoice : .ownerText
-        case .result, .job: .jobResult
-        case .doll: .jobResult   // never queued; her replies go straight to the timeline
+        case .job: .jobResult
+        case .doll, .tool: .jobResult   // never queued; her replies and tool results go straight to the timeline
         }
     }
 }

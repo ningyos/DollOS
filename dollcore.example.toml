@@ -1,7 +1,7 @@
 [llm]
 base_url = "http://192.0.2.11:8080"
 model = "qwen3.8-flash-next-iq3_s"
-default_effort = "none"       # 決定（spec 3.1）：預設 none；她用【我想一下】medium／high 調高一次
+default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 think(medium／high) 調高一次
 timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
 max_tokens = 4096             # 初始值理由：一回合一個動作，回覆很少超過 1k token；4k 夠 high 的思考
 
@@ -28,7 +28,7 @@ max_turns_without_tool = 3    # 初始值理由：r5 失敗樣本是連續 3 輪
 dir = "memory"
 secret_dir = "secret"         # 主人的秘密，只進對主人的回合（spec 5.1）
 public_dir = "public"
-top_k = 5                     # 初始值理由：一次【想】讀 5 條約 200–400 token；再多每回合重讀太貴，也稀釋她的注意力
+top_k = 5                     # 初始值理由：一次 recall 讀 5 條約 200–400 token；再多每回合重讀太貴，也稀釋她的注意力
 rrf_k = 60                    # 初始值理由：RRF 原始論文的建議常數；k 大讓單一條列表的第 1 名不會壓死另一條列表
 max_candidates = 50           # 初始值理由：每條列表取 50，2 萬條以內記憶體裡算 cosine 不到 0.1 秒（30 條實測 <1 ms）
 confidence_weight = 0.01      # 初始值理由：RRF 分數約 0.003–0.033（k=60）；0.01×confidence 讓確信度能翻掉名次差一两名、不會蓋過排序本身

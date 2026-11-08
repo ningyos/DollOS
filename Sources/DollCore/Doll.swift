@@ -14,8 +14,9 @@ public typealias Say = @Sendable (String) -> Void
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
     public var index: Int
-    public var actions: [String]       // "ran" | "job <id>" | "think <level>" | "said"
+    public var actions: [String]       // "said" | "ran" | "job <id>" | "think <level>" | "remember <folder>" | "recall <n>" | "error <tool>"
     public var reply: String
+    public var toolCalls: [ToolCall]
     public var footer: String
     public var effort: String
     public var usage: ModelUsage
@@ -88,8 +89,13 @@ public actor Doll {
     var turnIndex = 0
     /// Consecutive turns without a tool call.
     var idleTurns = 0
-    /// Set by 【我想一下】; consumed by the next model call.
+    /// Set by `think`; consumed by the next model call.
     var effortNext: String?
+    /// Her tool calls produced results she has not answered yet: she gets the next turn even with
+    /// an empty queue (a background-job ack alone does not count; its job event will).
+    var followUp = false
+    /// Her tools, built once; the system prompt lists them, so it never changes between turns.
+    let tools: [Tools.Spec]
     var observer: (@Sendable (TurnReport) -> Void)?
     /// Tests read her log lines here; stderr gets them regardless.
     var logSink: (@Sendable (String) -> Void)?
@@ -123,6 +129,7 @@ public actor Doll {
         self.decision = decision
         self.executor = executor ?? LocalShell(cwd: scratch.path, hardTimeoutS: shell.timeoutS)
         self.say = say
+        tools = Tools.specs(shell: shell, memory: memoryConfig)
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -156,7 +163,7 @@ public actor Doll {
         // Memories written by a previous process exist only as markdown until indexed (spec 6).
         try memory.syncOnBoot()
         try await model.check()
-        // Apple FM judges every 【記】's kind and proposes candidates; unavailable = error (spec 9.1).
+        // Apple FM judges every remembered item's kind and proposes candidates; unavailable = error (spec 9.1).
         try await decision.check()
         for job in try store.runningJobs() {
             if let pgid = job.pgid { LocalShell.killGroup(pgid) }
@@ -189,9 +196,10 @@ public actor Doll {
         waiter = nil
     }
 
-    /// Sleeps until an event arrives (true) or `stop()` (false). No timer: nothing wakes her but events.
+    /// Sleeps until an event arrives or her tool results await her (true), or `stop()` (false).
+    /// No timer: nothing else wakes her.
     func waitForEvent() async -> Bool {
-        if !queue.isEmpty { return true }
+        if !queue.isEmpty || followUp { return true }
         if stopped { return false }
         return await withCheckedContinuation { waiter = $0 }
     }
@@ -231,21 +239,31 @@ public actor Doll {
     }
 
     // prompt -----------------------------------------------------------------
+    /// Fixed for the life of the process: the template's tool block, then the persona. This is the
+    /// same text the template would render from `tools` plus a system message, so the prompt opens
+    /// the way she was trained on.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(name: name, shell: shell, memory: memoryConfig)
+        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text
     }
 
-    /// One event as prompt messages. Her replies carry the footer they were answering, so the
-    /// prompt prefix is byte-stable turn to turn (the server caches from the last assistant turn).
+    /// One event as prompt messages. Her replies carry the footer they were answering and her raw
+    /// content (tool call text included), so the prompt prefix is byte-stable turn to turn (the server
+    /// caches from the last assistant turn). Tool results follow her reply directly, in call order;
+    /// the template wraps them in `<tool_response>`.
     func render(_ ev: Event) -> [ChatMessage] {
         let t = clock(ev.ts)
         switch ev.kind {
         case .doll:
-            return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? []) + [ChatMessage(role: "assistant", content: ev.text)]
+            return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
+                + [ChatMessage(role: "assistant", content: ev.text)]
         case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
-        case .result: return [ChatMessage(role: "user", content: "[\(t) 結果]\n\(ev.text)")]
+        case .tool: return [ChatMessage(role: "tool", content: ev.text)]
         case .job: return [ChatMessage(role: "user", content: "[\(t) job 跑完]\n\(ev.text)")]
         }
+    }
+
+    func estimate(_ msgs: [ChatMessage]) -> Int {
+        msgs.reduce(0) { $0 + estimateTokens($1.content) + 4 }
     }
 
     func seconds(_ d: Double) -> String { "\(Int(d.rounded())) 秒" }
@@ -263,7 +281,7 @@ public actor Doll {
         }
         out.append("- context 約 \(contextTokens) token；下一回合 effort：\(effortNext ?? llm.defaultEffort)")
         if !proposals.isEmpty {
-            out.append("【可能值得記】（從主人上一回合的話抽出來的；要記就自己寫【記】，不理就算了）")
+            out.append("【可能值得記】（從主人上一回合的話抽出來的；要記就自己呼叫 remember，不理就算了）")
             for c in proposals { out.append("- \(c.text)") }
         }
         return out.joined(separator: "\n")
@@ -275,8 +293,7 @@ public actor Doll {
     }
 
     func estimateContext() throws -> Int {
-        let msgs = [ChatMessage(role: "system", content: systemPrompt())] + (try store.events().flatMap(render))
-        return msgs.reduce(0) { $0 + estimateTokens($1.content) + 4 }
+        estimate([ChatMessage(role: "system", content: systemPrompt())] + (try store.events().flatMap(render)))
     }
 
     // one turn ---------------------------------------------------------------
@@ -290,6 +307,7 @@ public actor Doll {
     /// step then restarts from scratch with the queue drained again, so the voice is in it.
     func turn() async throws {
         turnIndex += 1
+        followUp = false
         // Last turn's extraction goes into this footer; waited for only up to candidate_wait_s.
         if let last = lastExtraction {
             lastExtraction = nil
@@ -305,8 +323,8 @@ public actor Doll {
         }
         let events = try store.events()
         var messages = [ChatMessage(role: "system", content: systemPrompt())] + events.flatMap(render)
-        let estimate = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 }
-        let footerText = footer(contextTokens: Int(Double(estimate) * tokenRatio))
+        let guess = estimate(messages)
+        let footerText = footer(contextTokens: Int(Double(guess) * tokenRatio))
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = effortNext ?? llm.defaultEffort
 
@@ -329,78 +347,29 @@ public actor Doll {
         extracting = nil
         turnOwner = []
         proposals = []
-        tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, estimate))
-        let r = Reply.parse(reply.content)
+        tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
-        // She saw every event, so a secret seen marks her reply (5.1).
+        // She saw every event, so a secret seen marks her reply (5.1). Stored raw: re-sent byte-identical.
         let stored = try store.append(Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret)))
         try store.attachFooter(stored.seq!, footerText)
 
-        if let level = r.think {
-            if Effort.levels.contains(level), level != "none" {
-                effortNext = level
-                actions.append("think \(level)")
-            } else {
-                log("WARN", "turn \(turnIndex): 【我想一下】\(level) ignored; only medium or high")
-            }
-        }
-        if let cmd = r.command {
-            actions.append(try await runCommand(cmd))
-        }
-        // 【記】：the program fills seq, ts, confidence, kind (spec 6). The tier comes from
-        // the event she is answering, not from anything she can claim. Her own tool
-        // acknowledgements are not sources.
-        for note in r.notes {
-            let programAck: (Event) -> Bool = { e in
-                e.kind == .result && (e.text.hasPrefix("【記】") || e.text.hasPrefix("【想】"))
-            }
-            let source = events.last { $0.kind != .doll && !programAck($0) }
-            let tier: SourceTier = switch source?.kind {
-            case .owner?: .owner
-            case .result?, .job?: .tool
-            default: .doll
-            }
-            let seq = source?.seq ?? stored.seq!
-            let sourceText = switch source?.kind {
-            case .owner?: "[主人] \(source!.text)"
-            case .result?, .job?: "[工具結果] \(source!.text)"
-            default: "[我說] \(r.speech)"
-            }
-            do {
-                let judged = try await decision.judgeKind(source: sourceText, memory: note.text)
-                log("INFO", "【記】kind=\(judged.kind.rawValue) (\(judged.reason))")
-                let id = try memory.write(note.text, secret: note.secret, sourceSeq: seq, tier: tier, kind: judged.kind)
-                put(Event(.result, .internal, "【記】已存入 \(id)（\(note.secret ? memoryConfig.secretDir : memoryConfig.publicDir)/\(id).md，confidence \(memoryConfig.confidence[tier]!)，kind \(judged.kind.rawValue)）"))
-                actions.append("note \(note.secret ? "secret" : "public")")
-            } catch {
-                log("ERROR", "【記】failed: \(error)")
-                put(Event(.result, .internal, "【記】失败了：\(error)"))
-            }
-        }
-        // 【想】：same secret rule as her replies (5.1): a turn sees secrets only if it saw secret events.
-        if let query = r.query {
-            let secretVisible = events.contains(where: \.secret)
-            do {
-                let hits = try memory.search(query, secretVisible: secretVisible)
-                var out = "【想】\(query)：\(hits.count) 條"
-                for hit in hits {
-                    out += "\n\n〔\(hit.label)｜\(hit.folder)〕\n\(hit.text)"
-                }
-                // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
-                put(Event(.result, .internal, out, secret: hits.contains(where: \.secret)))
-                actions.append("search \(hits.count)")
-            } catch {
-                log("ERROR", "【想】failed: \(error)")
-                put(Event(.result, .internal, "【想】失败了：\(error)"))
-            }
-        }
-        if !r.speech.isEmpty {
-            say(r.speech)
+        let parsed = ParsedReply(reply.content)
+        if !parsed.speech.isEmpty {
+            say(parsed.speech)
             actions.append("said")
         }
+        // Every call, in the order she wrote it, gets exactly one tool result right after her reply
+        // (spec 6, 2026-11-08); a malformed or unknown one gets a result saying what was wrong.
+        for call in parsed.calls {
+            let out = await execute(call, seen: events, reply: stored)
+            try store.append(Event(.tool, .internal, out.text, secret: out.secret))
+            actions += out.actions
+            if !out.background { followUp = true }
+        }
 
-        if r.usedTool {
+        let usedTool = !parsed.calls.isEmpty
+        if usedTool {
             idleTurns = 0
         } else {
             idleTurns += 1
@@ -410,11 +379,106 @@ public actor Doll {
             }
         }
 
-        let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, footer: footerText,
-                                effort: effort, usage: reply.usage, usedTool: r.usedTool)
+        let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
+                                footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
+    }
+
+    // tools ------------------------------------------------------------------
+    /// One call's result: the tool message text, whether it carries a secret, the report actions,
+    /// and whether it only says the command went background (no next turn for that alone).
+    struct Outcome {
+        var text: String
+        var secret = false
+        var actions: [String]
+        var background = false
+    }
+
+    /// Runs one tool call. Every failure becomes the call's result text; nothing here throws.
+    func execute(_ call: ToolCall, seen events: [Event], reply: Event) async -> Outcome {
+        let name = call.name.isEmpty ? "tool_call" : call.name
+        do {
+            switch try Tools.decode(call, specs: tools) {
+            case .shell(let cmd):
+                return try await runCommand(cmd)
+            case .think(let level):
+                effortNext = level
+                return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
+            case .remember(let items):
+                return await remember(items, seen: events, reply: reply)
+            case .recall(let query):
+                return try recall(query, seen: events)
+            }
+        } catch {
+            log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
+            return Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
+        }
+    }
+
+    /// The program fills seq, ts, confidence, kind (spec 6). The tier comes from the event she is
+    /// answering, not from anything she can claim; results of her own memory and think calls are
+    /// not sources.
+    func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) async -> Outcome {
+        let names = Self.callNames(events)
+        let source = events.last { e in
+            e.kind != .doll && !(e.kind == .tool && names[e.seq!] != "shell")
+        }
+        let tier: SourceTier = switch source?.kind {
+        case .owner?: .owner
+        case .tool?, .job?: .tool
+        default: .doll
+        }
+        let sourceText = switch source?.kind {
+        case .owner?: "[主人] \(source!.text)"
+        case .tool?, .job?: "[工具結果] \(source!.text)"
+        default: "[我說] \(reply.text)"
+        }
+        // With no source event she is the source: the reply this call belongs to.
+        let seq = source?.seq ?? reply.seq!
+        var lines: [String] = [], actions: [String] = []
+        for (i, item) in items.enumerated() {
+            let folder = item.secret ? memoryConfig.secretDir : memoryConfig.publicDir
+            do {
+                let judged = try await decision.judgeKind(source: sourceText, memory: item.text)
+                log("INFO", "remember kind=\(judged.kind.rawValue) (\(judged.reason))")
+                let id = try memory.write(item.text, secret: item.secret, sourceSeq: seq, tier: tier, kind: judged.kind)
+                lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)，kind \(judged.kind.rawValue)）")
+                actions.append("remember \(folder)")
+            } catch {
+                log("ERROR", "remember item \(i + 1) failed: \(error)")
+                lines.append("第 \(i + 1) 條沒存：\(error)")
+                actions.append("error remember")
+            }
+        }
+        return Outcome(text: lines.joined(separator: "\n"), actions: actions)
+    }
+
+    /// The tool each result answers, by the result's seq: her reply's calls, read back from its raw
+    /// text, matched in order to the tool results that follow it.
+    static func callNames(_ events: [Event]) -> [Int64: String] {
+        var out: [Int64: String] = [:]
+        var pending: ArraySlice<ToolCall> = []
+        for e in events {
+            switch e.kind {
+            case .doll: pending = ParsedReply(e.text).calls[...]
+            case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
+            case .owner, .job: break
+            }
+        }
+        return out
+    }
+
+    /// Same secret rule as her replies (5.1): a turn sees secrets only if it saw secret events.
+    func recall(_ query: String, seen events: [Event]) throws -> Outcome {
+        let hits = try memory.search(query, secretVisible: events.contains(where: \.secret))
+        var out = "\(query)：\(hits.count) 條"
+        for hit in hits {
+            out += "\n\n〔\(hit.label)｜\(hit.folder)〕\n\(hit.text)"
+        }
+        // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
+        return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
     }
 
     // candidates -------------------------------------------------------------
@@ -438,21 +502,18 @@ public actor Doll {
     }
 
     // commands ---------------------------------------------------------------
-    /// Short: the result is queued at once (her next turn). Long: a background job whose end is queued later.
-    func runCommand(_ cmd: String) async throws -> String {
+    /// Short: the output is the call's result. Long: a background job whose end is queued later as a job event.
+    func runCommand(_ cmd: String) async throws -> Outcome {
         let handle = try executor.start(cmd)
         if let r = await handle.wait(shell.waitS) {
-            put(Event(.result, .internal, "$ \(cmd)\n" + show(r)))
-            return "ran"
+            return Outcome(text: "$ \(cmd)\n" + show(r), actions: ["ran"])
         }
         let id = "j" + hex(6)
         try store.addJob(id, command: cmd, pgid: handle.pgid)
         running[id] = RunningJob(command: cmd, started: Date().timeIntervalSince1970, handle: handle)
-        // Not an event: she learns it went background from the timeline when the next event comes.
-        try store.append(Event(.result, .internal,
-            "$ \(cmd)\n（超過 \(Int(shell.waitS)) 秒還沒跑完，轉背景 job \(id)；跑完會變一個事件回來）"))
         Task { self.jobFinished(id, await handle.finish()) }
-        return "job \(id)"
+        return Outcome(text: "$ \(cmd)\n（超過 \(Int(shell.waitS)) 秒還沒跑完，轉背景 job \(id)；跑完會變一個事件回來）",
+                       actions: ["job \(id)"], background: true)
     }
 
     /// The tail of the output plus the exit code.

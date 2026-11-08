@@ -5,7 +5,7 @@ import FoundationModels
 public enum MemoryKind: String, Sendable, CaseIterable {
     case happened, intended, uncertain
 
-    /// How 【想】 shows it after the confidence level: 「確定的打算」「聽說的已發生」.
+    /// How recall shows it after the confidence level: 「確定的打算」「聽說的已發生」.
     public var label: String {
         switch self {
         case .happened: "已發生"

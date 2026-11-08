@@ -153,7 +153,7 @@ public final class Memory {
     @discardableResult
     public func write(_ text: String, secret: Bool, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty else { throw MemoryError(description: "【記】 with no text") }
+        guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
             throw MemoryError(description: "no starting confidence configured for tier \(tier.rawValue)")
         }

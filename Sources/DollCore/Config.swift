@@ -33,13 +33,13 @@ public struct IdleConfig: Sendable {
     public var maxTurnsWithoutTool = 3
 }
 
-/// M3a: 【記】／【想】. The markdown files are the source; the SQLite tables are a
+/// M3a: remember / recall. The markdown files are the source; the SQLite tables are a
 /// rebuildable index (spec 6).
 public struct MemoryConfig: Sendable {
     public var dir = "memory"
     public var secretDir = "secret"
     public var publicDir = "public"
-    /// How many records 【想】 returns.
+    /// How many records recall returns.
     public var topK = 5
     /// RRF's k: the constant in 1/(k + rank).
     public var rrfK = 60
@@ -54,7 +54,7 @@ public struct MemoryConfig: Sendable {
     public var confidence: [SourceTier: Double] = [:]
     /// `NLContextualEmbedding` language tag.
     public var language = "zh-Hant"
-    /// Cap on how many phrases one 【想】 query turns into FTS MATCH terms.
+    /// Cap on how many phrases one recall query turns into FTS MATCH terms.
     public var maxQueryPhrases = 16
     /// M3b: at most this many FM candidates per owner turn in the next footer's 【可能值得記】.
     public var maxCandidatesPerTurn = 3
