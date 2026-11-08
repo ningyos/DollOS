@@ -4,11 +4,13 @@ import Foundation
 public struct LlmConfig: Sendable {
     public var baseURL: String
     public var model: String
-    /// `reasoning_effort` for a normal turn. "我想一下" raises it for one call.
+    /// `reasoning_effort` for a turn with nothing new in it: no owner line, no tool result, no watch
+    /// wake. The loop takes no such turn today; this is what one would use.
     public var defaultEffort = "none"
-    /// `reasoning_effort` for a turn whose drained events include a new owner line (text or voice).
-    /// Her `think` for that call still wins.
-    public var ownerTurnEffort = "medium"
+    /// `reasoning_effort` for a turn that is part of a task: one whose drained events include a new
+    /// owner line (text or voice) or a watch wake, or that answers her own tool results. Her `think`
+    /// for that call still wins.
+    public var taskTurnEffort = "medium"
     public var timeoutS = 300.0
     public var maxTokens = 4096
 }
@@ -24,8 +26,10 @@ public struct CoreConfig: Sendable {
 public struct ComputerConfig: Sendable {
     /// The VM's whole ID: `vmpal ui` resolves it without asking VMPal.
     public var vmID = ""
-    /// The VMPal CLI; it runs as `<vmpal> --cli ui <vm_id> …`.
+    /// The VMPal CLI; it runs as `<vmpal> --cli ui <vm_id> …` (and `exec`, `cp`).
     public var vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"
+    /// agent-desktop inside the VM (run with `vmpal exec`): the front window's outline after every action.
+    public var agentDesktop = "/Users/doll/agent-desktop/agent-desktop"
     /// Every screenshot she gets has this width; her coordinates are in this space.
     public var screenshotWidth = 1280
     /// "jpeg" or "png".
@@ -90,11 +94,11 @@ public struct Config: Sendable {
         var l = Section(name: "llm", raw: llmRaw)
         var llm = LlmConfig(baseURL: try l.required("base_url"), model: try l.required("model"))
         try l.read("default_effort", &llm.defaultEffort)
-        try l.read("owner_turn_effort", &llm.ownerTurnEffort)
+        try l.read("task_turn_effort", &llm.taskTurnEffort)
         try l.read("timeout_s", &llm.timeoutS)
         try l.read("max_tokens", &llm.maxTokens)
         try l.finish()
-        for (key, value) in [("default_effort", llm.defaultEffort), ("owner_turn_effort", llm.ownerTurnEffort)] {
+        for (key, value) in [("default_effort", llm.defaultEffort), ("task_turn_effort", llm.taskTurnEffort)] {
             guard Effort.levels.contains(value) else {
                 throw TOMLError(description: "[llm] \(key) must be one of \(Effort.levels)")
             }
@@ -115,6 +119,7 @@ public struct Config: Sendable {
         var computer = ComputerConfig()
         computer.vmID = try v.required("vm_id")
         try v.read("vmpal", &computer.vmpal)
+        try v.read("agent_desktop", &computer.agentDesktop)
         try v.read("screenshot_width", &computer.screenshotWidth)
         try v.read("screenshot_format", &computer.screenshotFormat)
         try v.read("screenshot_tokens", &computer.screenshotTokens)

@@ -11,11 +11,15 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
     /// A screenshot as a `data:` URI, built from the stored file's bytes, so every turn re-sends
     /// the same bytes. With one, `content` goes out as [text part, image_url part].
     public var image: String?
+    /// Text that follows the image (the front window's outline), as one more text part. The template
+    /// joins parts with nothing between them, so it goes out after a newline.
+    public var after: String?
 
-    public init(role: String, content: String, image: String? = nil) {
+    public init(role: String, content: String, image: String? = nil, after: String? = nil) {
         self.role = role
         self.content = content
         self.image = image
+        self.after = after
     }
 
     enum CodingKeys: String, CodingKey { case role, content }
@@ -29,11 +33,13 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(role, forKey: .role)
-        if let image {
-            try c.encode([Part(type: "text", text: content), Part(type: "image_url", image_url: .init(url: image))],
-                         forKey: .content)
-        } else {
+        if image == nil && after == nil {
             try c.encode(content, forKey: .content)
+        } else {
+            try c.encode([Part(type: "text", text: content)]
+                         + (image.map { [Part(type: "image_url", image_url: .init(url: $0))] } ?? [])
+                         + (after.map { [Part(type: "text", text: "\n" + $0)] } ?? []),
+                         forKey: .content)
         }
     }
 

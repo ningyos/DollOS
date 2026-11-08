@@ -74,11 +74,13 @@ public actor Doll {
     var idleTurns = 0
     /// Set by `think`; consumed by the next model call.
     var effortNext: String?
-    /// The events drained since her last answered call include an owner line: the next call uses
-    /// `owner_turn_effort` unless she set one with `think`.
-    var ownerTurn = false
+    /// The next call is part of a task: the events drained since her last answered call include an
+    /// owner line or a watch wake, or her tool results await her. It uses `task_turn_effort` unless
+    /// she set one with `think`. Tool-result and wake turns count too (spec 3.1, 2026-11-08): at
+    /// effort none, 2 of 5 M2 medium C runs stopped mid-task on a tool-result turn with one sentence.
+    var taskTurn = false
     /// The effort the next model call uses.
-    var nextEffort: String { effortNext ?? (ownerTurn ? llm.ownerTurnEffort : llm.defaultEffort) }
+    var nextEffort: String { effortNext ?? (taskTurn ? llm.taskTurnEffort : llm.defaultEffort) }
     /// Her tool calls produced results she has not answered yet: she gets the next turn even with
     /// an empty queue (a watch's ack alone does not count; its wake will).
     var followUp = false
@@ -211,7 +213,7 @@ public actor Doll {
         for ev in batch {
             try store.append(ev)
         }
-        if batch.contains(where: { $0.kind == .owner }) { ownerTurn = true }
+        if batch.contains(where: { $0.kind == .owner || $0.kind == .watch }) { taskTurn = true }
     }
 
     func shutdown() {
@@ -239,7 +241,7 @@ public actor Doll {
             return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
                 + [ChatMessage(role: "assistant", content: ev.text)]
         case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
-        case .tool: return [ChatMessage(role: "tool", content: ev.text, image: image)]
+        case .tool: return [ChatMessage(role: "tool", content: ev.text, image: image, after: ev.window)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", image: image)]
         }
     }
@@ -254,7 +256,10 @@ public actor Doll {
     }
 
     func estimate(_ msgs: [ChatMessage]) -> Int {
-        msgs.reduce(0) { $0 + estimateTokens($1.content) + 4 + ($1.image == nil ? 0 : computerConfig.screenshotTokens) }
+        msgs.reduce(0) {
+            $0 + estimateTokens($1.content) + 4 + ($1.image == nil ? 0 : computerConfig.screenshotTokens)
+                + ($1.after.map(estimateTokens) ?? 0)
+        }
     }
 
     func seconds(_ d: Double) -> String { "\(Int(d.rounded())) 秒" }
@@ -313,7 +318,7 @@ public actor Doll {
             return try await turn()
         }
         effortNext = nil
-        ownerTurn = false
+        taskTurn = false
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
@@ -330,9 +335,12 @@ public actor Doll {
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         for call in parsed.calls {
             let out = await execute(call, seen: events, reply: stored)
-            try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image))
+            try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image, window: out.window))
             actions += out.actions
-            if !out.background { followUp = true }
+            if !out.background {
+                followUp = true
+                taskTurn = true
+            }
         }
 
         let usedTool = !parsed.calls.isEmpty
@@ -354,11 +362,13 @@ public actor Doll {
     }
 
     // tools ------------------------------------------------------------------
-    /// One call's result: the tool message text, its screenshot, whether it carries a secret, the
-    /// report actions, and whether it only says something started (no next turn for that alone).
+    /// One call's result: the tool message text, its screenshot and the front window's outline,
+    /// whether it carries a secret, the report actions, and whether it only says something started
+    /// (no next turn for that alone).
     struct Outcome {
         var text: String
         var image: String?
+        var window: String?
         var secret = false
         var actions: [String]
         var background = false
@@ -412,14 +422,27 @@ public actor Doll {
         }
     }
 
-    /// `text` plus a fresh screenshot. A failed screenshot is said in the text (and is an error).
+    /// `text` plus a fresh screenshot and, after it, the front window's outline. A failed screenshot
+    /// or outline is said in the result (and is an error); neither is dropped silently.
     func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
-        do {
-            return Outcome(text: text, image: try await capture(), actions: actions)
-        } catch {
+        let computer = computer
+        async let outline: Result<String, Error> = {
+            do { return .success(try await computer.windowSummary()) } catch { return .failure(error) }
+        }()
+        var out = Outcome(text: text, actions: actions)
+        do { out.image = try await capture() } catch {
             log("ERROR", "turn \(turnIndex): screenshot failed: \(error)")
-            return Outcome(text: text + "\n截圖失敗：\(error)", actions: actions + ["error screenshot"])
+            out.text += "\n截圖失敗：\(error)"
+            out.actions.append("error screenshot")
         }
+        switch await outline {
+        case .success(let s): out.window = s
+        case .failure(let error):
+            log("ERROR", "turn \(turnIndex): window outline failed: \(error)")
+            out.window = "前景視窗概要失敗：\(error)"
+            out.actions.append("error window")
+        }
+        return out
     }
 
     /// Takes a screenshot and stores its bytes as a file under `shots/`.

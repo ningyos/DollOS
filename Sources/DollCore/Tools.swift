@@ -76,7 +76,7 @@ public enum Tools {
     /// The computer menu (spec 3.1, 2026-11-08): listed only in `use_computer()`'s result.
     static func computerSpecs(_ c: ComputerConfig) -> [Spec] {
         let px = "截圖的像素座標（截圖 \(c.screenshotWidth) 寬，左上角是 0,0）"
-        let after = "做完會等畫面停下來，回一行結果和一張新截圖。"
+        let after = "做完會等畫面停下來，回一行結果、一張新截圖和最前面視窗的概要。"
         func ints(_ names: [String], _ what: String) -> [(String, JSONValue)] {
             names.map { ($0, ["type": "integer", "description": .string(what)]) }
         }
@@ -124,7 +124,7 @@ public enum Tools {
                      "required": ["x0", "y0", "x1", "y1"],
                  ], jsonParameters: []),
             Spec(name: "screenshot",
-                 description: "不做事，只回一張現在的截圖。",
+                 description: "不做事，只回一張現在的截圖和最前面視窗的概要。",
                  parameters: ["type": "object", "properties": [:], "required": []],
                  jsonParameters: []),
             Spec(name: "watch",
@@ -533,7 +533,7 @@ enum Instructions {
 
         做事只能透過工具：要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光用嘴說「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。
 
-        你有一台自己的電腦（macOS）。use_computer() 打開電腦選單，結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖。你只能從截圖看到畫面。用完呼叫 leave_computer() 離開，電腦工具會鎖回去。
+        你有一台自己的電腦（macOS）。use_computer() 打開電腦選單，結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。用完呼叫 leave_computer() 離開，電腦工具會鎖回去。
 
         回覆裡 <tool_call> 以外的文字就是你對主人說的話；要說的話寫在工具呼叫前面。沒話要說可以不寫。
 

@@ -86,7 +86,8 @@ private final class Recorder: Sendable {
 }
 
 /// The VM: records actions; a screenshot is "frame <n> <region or full>", so bytes change only when
-/// the test moves the frame (or `changing` moves it on every capture).
+/// the test moves the frame (or `changing` moves it on every capture). The window outline names
+/// the frame too, or fails with `windowFailure`.
 private final class FakeComputer: ComputerDriver, Sendable {
     struct State {
         var actions: [ComputerAction] = []
@@ -94,6 +95,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var frame = 0
         var changing = false
         var captures = 0
+        var windowFailure: String?
     }
     let state = Mutex(State())
 
@@ -116,9 +118,17 @@ private final class FakeComputer: ComputerDriver, Sendable {
         }
     }
 
+    func windowSummary() async throws -> String {
+        try state.withLock { s in
+            if let f = s.windowFailure { throw ComputerError(f) }
+            return "前景 app：Fake，視窗標題「frame \(s.frame)」\nwindow \"frame \(s.frame)\"\n  button \"OK\""
+        }
+    }
+
     func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
     func failNext(_ text: String) { state.withLock { $0.failNext = text } }
+    func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
 
@@ -377,9 +387,10 @@ private struct Harness {
     let uris = bytes.map { "data:image/jpeg;base64," + $0.base64EncodedString() }
     #expect(reqs[3].filter { $0.image != nil }.map(\.image!) == uris)
     #expect(reqs[3].filter { $0.image != nil }.allSatisfy { $0.role == "tool" })
-    // On the wire: [text part, image_url part].
+    // On the wire: [text part, image_url part, window outline text part].
     let wire = String(decoding: try enc([reqs[3].first { $0.image != nil }!]), as: UTF8.self)
-    #expect(wire.contains(#""content":[{"text":"#) && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"}]"#))
+    #expect(wire.contains(#""content":[{"text":"#)
+            && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
     // The system prompt, tool block included, is the same on every turn.
     #expect(Set(reqs.map { $0[0] }.map { "\($0.role)|\($0.content)" }).count == 1)
     #expect(reqs[0][0].role == "system" && reqs[0][0].content.hasPrefix("# Tools\n"))
@@ -488,21 +499,27 @@ private struct Harness {
     #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：medium"))
 }
 
-@Test func ownerTurnsUseOwnerTurnEffortAndOtherTurnsTheDefault() async throws {
+@Test func taskTurnsUseTaskTurnEffortAndOnlyAnEmptyTurnTheDefault() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("查一下")
-    try await h.turn(Scripted("好", recall("一")))                     // owner line drained: medium
-    try await h.turn("沒有")                                            // only her tool result: default
+    try await h.turn(Scripted("好", recall("一")))                     // owner line drained
+    try await h.turn(Scripted("", think("high")))                      // her tool result
+    try await h.turn("想好了")                                          // her think wins over the task effort
+    try await h.turn("嗯")                                              // nothing new: the default
+    await h.doll.put(Event(.watch, .internal, "盯著的整個畫面變了。"))
+    try await h.turn("看到了")                                          // a watch wake
     await h.doll.ownerSaid("再說一次", voice: true)
-    try await h.turn("沒有喔")                                          // owner voice counts too
-    #expect(await h.model.requests.map(\.effort) == ["medium", "none", "medium"])
-    #expect(h.reports.map(\.effort) == ["medium", "none", "medium"])
-    #expect(h.reports[1].footer.contains("effort：none"))
+    try await h.turn("沒有喔")                                          // owner voice
+    #expect(await h.model.requests.map(\.effort) == ["medium", "medium", "high", "none", "medium", "medium"])
+    #expect(h.reports.map(\.effort) == ["medium", "medium", "high", "none", "medium", "medium"])
+    #expect(h.reports[1].footer.contains("effort：medium") && h.reports[3].footer.contains("effort：none"))
 
-    let off = try await Harness(tune: { $0.llm.ownerTurnEffort = "none" })
+    let off = try await Harness(tune: { $0.llm.taskTurnEffort = "none"; $0.llm.defaultEffort = "high" })
     await off.doll.ownerSaid("嗨")
-    try await off.turn("哈囉")
-    #expect(await off.model.requests.map(\.effort) == ["none"])
+    try await off.turn(Scripted("哈囉", recall("嗨")))
+    try await off.turn("沒有")
+    try await off.turn("嗯")
+    #expect(await off.model.requests.map(\.effort) == ["none", "none", "high"])
 }
 
 // idle -----------------------------------------------------------------------
@@ -853,6 +870,135 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
         #expect(e.description == "vmpal: No text “紫色按鈕” on the screen")
     }
     #expect(try await d.act(.key("cmd+s")) == "Done: --cli ui E6813EBA key cmd+s --observe none")
+}
+
+@Test func everyComputerResultCarriesTheWindowOutlineAfterItsScreenshotStoredVerbatim() async throws {
+    let h = try await menuHarness()
+    h.vm.setFrame(1)
+    try await h.turn(Scripted("", key("cmd+n"), screenshotCall))
+    let results = try h.toolResults()                                  // use_computer's, key's, screenshot's
+    #expect(results.count == 3 && results.allSatisfy { $0.image != nil })
+    #expect(results[0].window == "前景 app：Fake，視窗標題「frame 0」\nwindow \"frame 0\"\n  button \"OK\"")
+    #expect(results[1].window == "前景 app：Fake，視窗標題「frame 1」\nwindow \"frame 1\"\n  button \"OK\"")
+    #expect(results[2].window == results[1].window)
+    #expect(h.last.actions == ["key", "screenshot"])
+    // The screen moves on; later requests still send the stored outline, byte for byte.
+    h.vm.setFrame(2)
+    try await h.turn("好")
+    try await h.turn("嗯")
+    let earlier = await h.model.seen(2), later = await h.model.seen(3)
+    #expect(try ChatMessage.encoder.encode(Array(later.prefix(earlier.count))) == ChatMessage.encoder.encode(earlier))
+    let message = try #require(earlier.last { $0.role == "tool" })
+    let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
+    let parts = json["content"] as! [[String: Any]]
+    #expect(parts.map { $0["type"] as! String } == ["text", "image_url", "text"])
+    #expect(parts[2]["text"] as? String == "\n" + results[2].window!)
+}
+
+@Test func aFailedWindowOutlineIsSaidInTheResultNotDropped() async throws {
+    let h = try await menuHarness()
+    h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
+    try await h.turn(Scripted("", key("Escape")))
+    let r = try h.toolResults().last!
+    #expect(r.text == "key Escape\nDone: 1 action in 0.1 s." && r.image != nil)
+    #expect(r.window == "前景視窗概要失敗：WINDOW_NOT_FOUND: No focused window found")
+    #expect(h.last.actions == ["key", "error window"])
+    #expect(h.logs.contains { $0.contains("window outline failed") })
+}
+
+@Test func theWindowOutlineIsOneLinePerElementWithoutRefs() async throws {
+    let ok = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Safari","ref_count":2,"snapshot_id":"s1","#
+        + #""window":{"id":"w-1","title":"Safari"},"tree":{"name":"Apple","role":"window","children":["#
+        + #"{"role":"group","children":[{"role":"scrollarea","children_count":2,"ref_id":"@s1:e1"}]},"#
+        + #"{"role":"button","name":"Go back","ref_id":"@s1:e2","states":["disabled"]}]}}}"#
+    let want = "前景 app：Safari，視窗標題「Apple」\nwindow \"Apple\"\n  group\n    scrollarea (2)\n  button \"Go back\""
+    #expect(try WindowSummary.render(Data(ok.utf8)) == want)
+    let err = #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No focused window found"}}"#
+    // Through the driver: agent-desktop in the VM via `vmpal exec`, its path as $1.
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    let seen = Mutex<[String]>([])
+    let good = VMPalDriver(cfg, vmpal: { args in seen.withLock { $0 = args }; return ok })
+    #expect(try await good.windowSummary() == want)
+    #expect(seen.withLock { $0 } == ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" snapshot --skeleton -i --compact",
+                                     "sh", cfg.agentDesktop])
+    let bad = VMPalDriver(cfg, vmpal: { _ in throw ComputerError(err) })   // agent-desktop exits 1 with its JSON answer
+    do {
+        _ = try await bad.windowSummary()
+        Issue.record("a failed outline came back as a success")
+    } catch let e as ComputerError {
+        #expect(e.description == "WINDOW_NOT_FOUND: No focused window found")
+    }
+}
+
+/// The VM side of `VMPalDriver` for typing: files `vmpal cp` put there, its clipboard, and what
+/// reached the focused app.
+private final class FakeVMPal: Sendable {
+    struct State {
+        var files: [String: String] = [:]
+        var clipboard = ""
+        var typed = ""
+        var calls: [[String]] = []
+        var failPaste = false
+    }
+    let state = Mutex(State())
+
+    func run(_ args: [String]) throws -> String {
+        try state.withLock { s in
+            s.calls.append(args)
+            switch args[0] {
+            case "cp":
+                s.files[String(args[2].split(separator: ":", maxSplits: 1)[1])] =
+                    try String(contentsOf: URL(filePath: args[1]), encoding: .utf8)
+            case "exec":    // exec <vm> -- /bin/sh -c <script> sh <args…>
+                let script = args[5], a = Array(args.dropFirst(7))
+                if script.contains("pbpaste >") { s.files[a[0]] = s.clipboard }
+                if script.contains("pbcopy <") { s.clipboard = s.files[a[0]] ?? "" }
+                if script.contains("rm -f") { for f in a { s.files[f] = nil } }
+            default:        // ui <vm> <command…>
+                let cmd = Array(args.dropFirst(2))
+                switch (cmd[0], cmd[1]) {
+                case ("key", "cmd+v"):
+                    if s.failPaste { throw ComputerError("vmpal: key failed") }
+                    s.typed += s.clipboard
+                case ("key", "Return"): s.typed += "\n"
+                case ("type", _): s.typed += String(try String(contentsOf: URL(filePath: cmd[2]), encoding: .utf8).dropLast())
+                default: break
+                }
+            }
+            return "Done: 1 action in 0.1 s."
+        }
+    }
+}
+
+@Test func nonASCIITextIsPastedThroughTheClipboardWhichComesBack() async throws {
+    let vm = FakeVMPal()
+    vm.state.withLock { $0.clipboard = "主人原本複製的" }
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    let d = VMPalDriver(cfg, vmpal: { try vm.run($0) })
+    let text = "你好，我是娃娃\n\nsecond"
+    let said = try await d.act(.type(text))
+    var s = vm.state.withLock { $0 }
+    #expect(s.typed == text && s.clipboard == "主人原本複製的" && s.files.isEmpty)
+    #expect(said.hasPrefix("經剪貼簿貼上（cmd+v），剪貼簿已還原。"))
+    #expect(!s.calls.joined().contains { $0.contains("你好") || $0.contains("second") })   // never a process argument
+    #expect(s.calls.filter { $0.starts(with: ["ui", "E6813EBA", "key", "cmd+v"]) }.count == 2)
+    // ASCII-only text is still typed.
+    vm.state.withLock { $0.calls = []; $0.typed = "" }
+    _ = try await d.act(.type("ls -la\n"))
+    s = vm.state.withLock { $0 }
+    #expect(s.typed == "ls -la\n" && s.calls.count == 1 && s.calls[0].starts(with: ["ui", "E6813EBA", "type", "--file"]))
+    // A failed paste is a failure, and the clipboard still comes back.
+    vm.state.withLock { $0.failPaste = true; $0.typed = "" }
+    do {
+        _ = try await d.act(.type("娃娃"))
+        Issue.record("a failed paste came back as a success")
+    } catch let e as ComputerError {
+        #expect(e.description == "vmpal: key failed")
+    }
+    s = vm.state.withLock { $0 }
+    #expect(s.typed == "" && s.clipboard == "主人原本複製的" && s.files.isEmpty)
 }
 
 @Test func aChangeInTheWatchedRegionWakesHerAndANewWatchReplacesTheOld() async throws {

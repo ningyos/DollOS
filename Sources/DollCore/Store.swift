@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS events (
     has_secret INTEGER NOT NULL DEFAULT 0,
     voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
     text TEXT NOT NULL,              -- her replies: raw, tool call text included, exactly as re-sent
-    image TEXT                       -- a screenshot file under shots/, re-sent byte-identical
+    image TEXT,                      -- a screenshot file under shots/, re-sent byte-identical
+    window TEXT                      -- the front window's outline sent after that screenshot, verbatim
 );
 CREATE TABLE IF NOT EXISTS footers (
     seq INTEGER PRIMARY KEY,         -- her reply's seq
@@ -66,6 +67,9 @@ public struct Event: Sendable, Equatable {
     public var voice: Bool
     /// A screenshot's file name under the data dir's `shots/`; rendered as an image part.
     public var image: String?
+    /// The front window's outline (or why there is none) taken with that screenshot; rendered
+    /// verbatim as a text part after the image.
+    public var window: String?
     public var seq: Int64?
     public var ts: Double
     /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
@@ -73,13 +77,14 @@ public struct Event: Sendable, Equatable {
     public var footer: String?
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
-                image: String? = nil) {
+                image: String? = nil, window: String? = nil) {
         self.kind = kind
         self.principal = principal
         self.text = text
         self.secret = secret
         self.voice = voice
         self.image = image
+        self.window = window
         self.seq = nil
         self.ts = Date().timeIntervalSince1970
     }
@@ -164,12 +169,12 @@ public final class Store {
 
     // events -----------------------------------------------------------------
     private static let eventColumns =
-        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice, e.image"
+        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice, e.image, e.window"
         + " FROM events e LEFT JOIN footers f ON f.seq = e.seq"
 
     private static func event(_ r: Row) -> Event {
         var e = Event(Event.Kind(rawValue: r.text(2)!)!, Principal(rawValue: r.text(3)!)!, r.text(5)!,
-                      secret: r.int(4)! != 0, voice: r.int(7)! != 0, image: r.text(8))
+                      secret: r.int(4)! != 0, voice: r.int(7)! != 0, image: r.text(8), window: r.text(9))
         e.seq = r.int(0)
         e.ts = r.real(1)
         e.footer = r.text(6)
@@ -187,9 +192,10 @@ public final class Store {
     /// Appends one event and returns it with its seq.
     @discardableResult
     public func append(_ ev: Event) throws -> Event {
-        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text, image) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text, image, window) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                  [.real(ev.ts), .text(ev.kind.rawValue), .text(ev.principal.rawValue),
-                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text), ev.image.map { .text($0) } ?? .null])
+                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text), ev.image.map { .text($0) } ?? .null,
+                  ev.window.map { .text($0) } ?? .null])
         var out = ev
         out.seq = sqlite3_last_insert_rowid(db)
         return out
