@@ -67,7 +67,7 @@ public enum Tools {
                      "required": ["query"],
                  ], jsonParameters: []),
             Spec(name: "use_computer",
-                 description: "打開電腦選單：坐到你的電腦（一台 macOS）前面。結果會列出操作電腦的工具，附一張現在的畫面。用完呼叫 leave_computer() 離開。",
+                 description: "打開電腦選單：坐到你的電腦（一台 macOS）前面。結果會列出操作電腦的工具，附現在的全螢幕截圖、最前面視窗的視窗圖和概要。用完呼叫 leave_computer() 離開。",
                  parameters: ["type": "object", "properties": [:], "required": []],
                  jsonParameters: []),
         ]
@@ -75,8 +75,8 @@ public enum Tools {
 
     /// The computer menu (spec 3.1, 2026-11-08): listed only in `use_computer()`'s result.
     static func computerSpecs(_ c: ComputerConfig) -> [Spec] {
-        let px = "截圖的像素座標（截圖 \(c.screenshotWidth) 寬，左上角是 0,0）"
-        let after = "做完會等畫面停下來，回一行結果、一張新截圖和最前面視窗的概要。"
+        let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
+        let after = "做完會等畫面停下來，回一行結果、一張新的全螢幕截圖、最前面視窗的視窗圖（附它在全螢幕上的位置）和視窗概要。"
         func ints(_ names: [String], _ what: String) -> [(String, JSONValue)] {
             names.map { ($0, ["type": "integer", "description": .string(what)]) }
         }
@@ -124,11 +124,11 @@ public enum Tools {
                      "required": ["x0", "y0", "x1", "y1"],
                  ], jsonParameters: []),
             Spec(name: "screenshot",
-                 description: "不做事，只回一張現在的截圖和最前面視窗的概要。",
+                 description: "不做事，只回現在的全螢幕截圖、最前面視窗的視窗圖和概要。",
                  parameters: ["type": "object", "properties": [:], "required": []],
                  jsonParameters: []),
             Spec(name: "watch",
-                 description: "盯著畫面一塊地方，馬上返回。那裡有變化就叫你（兩次至少隔 \(Int(c.watchMinIntervalS)) 秒），max_wait_s 秒內沒變化也會叫你；叫你時附一張截圖。再呼叫一次 watch 就取代上一個；連續 \(c.watchStopAfter) 次叫你都沒操作電腦，就自動停。",
+                 description: "盯著畫面一塊地方，馬上返回。那裡有變化就叫你（兩次至少隔 \(Int(c.watchMinIntervalS)) 秒），max_wait_s 秒內沒變化也會叫你；叫你時附一張全螢幕截圖。再呼叫一次 watch 就取代上一個；連續 \(c.watchStopAfter) 次叫你都沒操作電腦，就自動停。",
                  parameters: [
                      "type": "object",
                      "properties": [
@@ -149,7 +149,7 @@ public enum Tools {
     static func menu(_ specs: [Spec]) -> String {
         "電腦選單打開了，現在多了這些工具：\n<tools>"
             + specs.map { "\n" + $0.json.text }.joined()
-            + "\n</tools>\n呼叫格式跟上面的工具一樣。下面是現在的畫面。"
+            + "\n</tools>\n呼叫格式跟上面的工具一樣。下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
     }
 
     /// The tool block of the Strata chat template (`/props` → `chat_template`, the `tools` branch),

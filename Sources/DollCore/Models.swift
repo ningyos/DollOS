@@ -8,19 +8,25 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
     /// byte-identical. A `role: "tool"` message is one call's result; the template renders it as a
     /// `<tool_response>` block and needs no call id.
     public var content: String
-    /// A screenshot as a `data:` URI, built from the stored file's bytes, so every turn re-sends
-    /// the same bytes. With one, `content` goes out as [text part, image_url part].
-    public var image: String?
-    /// Text that follows the image (the front window's outline), as one more text part. The template
-    /// joins parts with nothing between them, so it goes out after a newline.
-    public var after: String?
+    /// What follows `content` in the same message, in order: screenshots as `data:` URIs built from
+    /// the stored files' bytes (so every turn re-sends the same bytes), and text (the crop's place,
+    /// the front window's outline). With any, `content` goes out as a list of parts, text first.
+    public var extra: [Extra]
 
-    public init(role: String, content: String, image: String? = nil, after: String? = nil) {
+    public enum Extra: Sendable, Equatable {
+        case image(String)
+        /// The template joins parts with nothing between them, so it goes out after a newline.
+        case text(String)
+    }
+
+    public init(role: String, content: String, extra: [Extra] = []) {
         self.role = role
         self.content = content
-        self.image = image
-        self.after = after
+        self.extra = extra
     }
+
+    /// The `data:` URIs among `extra`, in order.
+    public var images: [String] { extra.compactMap { if case .image(let u) = $0 { u } else { nil } } }
 
     enum CodingKeys: String, CodingKey { case role, content }
     private struct Part: Encodable {
@@ -33,13 +39,15 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(role, forKey: .role)
-        if image == nil && after == nil {
+        if extra.isEmpty {
             try c.encode(content, forKey: .content)
         } else {
-            try c.encode([Part(type: "text", text: content)]
-                         + (image.map { [Part(type: "image_url", image_url: .init(url: $0))] } ?? [])
-                         + (after.map { [Part(type: "text", text: "\n" + $0)] } ?? []),
-                         forKey: .content)
+            try c.encode([Part(type: "text", text: content)] + extra.map {
+                switch $0 {
+                case .image(let uri): Part(type: "image_url", image_url: .init(url: uri))
+                case .text(let t): Part(type: "text", text: "\n" + t)
+                }
+            }, forKey: .content)
         }
     }
 

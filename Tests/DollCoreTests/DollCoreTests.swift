@@ -85,9 +85,10 @@ private final class Recorder: Sendable {
     let logs = Mutex<[String]>([])
 }
 
-/// The VM: records actions; a screenshot is "frame <n> <region or full>", so bytes change only when
-/// the test moves the frame (or `changing` moves it on every capture). The window outline names
-/// the frame too, or fails with `windowFailure`.
+/// The VM: records actions; a screenshot is "frame <n> <region or full>", the window crop "frame <n>
+/// crop <region>", so bytes change only when the test moves the frame (or `changing` moves it on
+/// every capture). The window outline names the frame too, or fails with `windowFailure`; the
+/// window sits at `place`.
 private final class FakeComputer: ComputerDriver, Sendable {
     struct State {
         var actions: [ComputerAction] = []
@@ -96,6 +97,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var changing = false
         var captures = 0
         var windowFailure: String?
+        var place = FrontWindow.Place.at(Region(10, 20, 300, 200))
     }
     let state = Mutex(State())
 
@@ -118,10 +120,15 @@ private final class FakeComputer: ComputerDriver, Sendable {
         }
     }
 
-    func windowSummary() async throws -> String {
+    func windowShot(_ region: Region) async throws -> Data {
+        state.withLock { s in Data("frame \(s.frame) crop \(region)".utf8) }
+    }
+
+    func frontWindow() async throws -> FrontWindow {
         try state.withLock { s in
             if let f = s.windowFailure { throw ComputerError(f) }
-            return "前景 app：Fake，視窗標題「frame \(s.frame)」\nwindow \"frame \(s.frame)\"\n  button \"OK\""
+            return FrontWindow(summary: "前景 app：Fake，視窗標題「frame \(s.frame)」\nwindow \"frame \(s.frame)\"\n  button \"OK\"",
+                               place: s.place)
         }
     }
 
@@ -129,6 +136,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
     func failNext(_ text: String) { state.withLock { $0.failNext = text } }
     func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
+    func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
 
@@ -379,18 +387,23 @@ private struct Harness {
     for i in 1..<reqs.count {
         #expect(try enc(Array(reqs[i].prefix(reqs[i - 1].count))) == (try enc(reqs[i - 1])))
     }
-    // Two screenshots, each the stored file's exact bytes, as data URIs in the tool messages.
-    let shots = try h.toolResults().compactMap(\.image)
-    #expect(shots.count == 2)
-    let bytes = try shots.map { try Data(contentsOf: h.dir.appending(path: "shots/\($0)")) }
-    #expect(bytes.map { String(decoding: $0, as: UTF8.self) } == ["frame 0 full", "frame 7 full"])
+    // Two computer results, each a full screenshot and a window crop: the stored files' exact bytes,
+    // as data URIs in the tool messages, full screen first.
+    let results = try h.toolResults().filter { $0.image != nil }
+    #expect(results.count == 2 && results.allSatisfy { $0.crop != nil })
+    let files = results.flatMap { [$0.image!, $0.crop!] }
+    let bytes = try files.map { try Data(contentsOf: h.dir.appending(path: "shots/\($0)")) }
+    #expect(bytes.map { String(decoding: $0, as: UTF8.self) }
+            == ["frame 0 full", "frame 0 crop 10,20,300,200", "frame 7 full", "frame 7 crop 10,20,300,200"])
     let uris = bytes.map { "data:image/jpeg;base64," + $0.base64EncodedString() }
-    #expect(reqs[3].filter { $0.image != nil }.map(\.image!) == uris)
-    #expect(reqs[3].filter { $0.image != nil }.allSatisfy { $0.role == "tool" })
-    // On the wire: [text part, image_url part, window outline text part].
-    let wire = String(decoding: try enc([reqs[3].first { $0.image != nil }!]), as: UTF8.self)
+    #expect(reqs[3].flatMap(\.images) == uris)
+    #expect(reqs[3].filter { !$0.images.isEmpty }.allSatisfy { $0.role == "tool" })
+    // On the wire: [text, full screenshot, the crop's place, the crop, window outline].
+    let wire = String(decoding: try enc([reqs[3].first { !$0.images.isEmpty }!]), as: UTF8.self)
     #expect(wire.contains(#""content":[{"text":"#)
-            && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
+            && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},"#
+                             + #"{"text":"\n視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；點擊座標一律用全螢幕截圖的。","type":"text"},"#
+                             + #"{"image_url":{"url":"\#(uris[1])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
     // The system prompt, tool block included, is the same on every turn.
     #expect(Set(reqs.map { $0[0] }.map { "\($0.role)|\($0.content)" }).count == 1)
     #expect(reqs[0][0].role == "system" && reqs[0][0].content.hasPrefix("# Tools\n"))
@@ -400,15 +413,21 @@ private struct Harness {
     let h = try await Harness([Scripted("", useComputer), "好了", Scripted("盯著", watch("window", 1)), "沒變"])
     let doll = h.doll
     let runner = Task { try await doll.run() }
+    // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
+    func waitFor(_ n: Int, said s: Int, _ seconds: Double = 5) async throws {
+        let deadline = ContinuousClock.now + .seconds(seconds)
+        while (await h.model.requests.count < n || h.said.count < s), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
     await h.doll.ownerSaid("開電腦")
-    try await Task.sleep(for: .milliseconds(500))
+    try await waitFor(2, said: 1)
     #expect(await h.model.requests.count == 2 && h.said == ["好了"])     // the result woke her once
     await h.doll.ownerSaid("盯著畫面")
-    try await Task.sleep(for: .milliseconds(500))
+    try await waitFor(3, said: 2)
+    try await Task.sleep(for: .milliseconds(200))                       // well inside max_wait (1 s)
     #expect(await h.model.requests.count == 3)                          // the watch ack did not wake her
-    // max_wait (1 s) passing wakes her; poll instead of a fixed sleep so a busy parallel suite can't race it.
-    let deadline = ContinuousClock.now + .seconds(5)
-    while await h.model.requests.count < 4, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(50)) }
+    try await waitFor(4, said: 3)                                       // max_wait passing does
     #expect(await h.model.requests.count == 4 && h.said.last == "沒變")
     await h.doll.stop()
     try await runner.value
@@ -872,17 +891,23 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(try await d.act(.key("cmd+s")) == "Done: --cli ui E6813EBA key cmd+s --observe none")
 }
 
-@Test func everyComputerResultCarriesTheWindowOutlineAfterItsScreenshotStoredVerbatim() async throws {
+@Test func everyComputerResultIsFullScreenThenWindowCropThenOutlineStoredVerbatim() async throws {
     let h = try await menuHarness()
     h.vm.setFrame(1)
     try await h.turn(Scripted("", key("cmd+n"), screenshotCall))
     let results = try h.toolResults()                                  // use_computer's, key's, screenshot's
-    #expect(results.count == 3 && results.allSatisfy { $0.image != nil })
+    #expect(results.count == 3 && results.allSatisfy { $0.image != nil && $0.crop != nil })
+    let note = "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；點擊座標一律用全螢幕截圖的。"
+    #expect(results.allSatisfy { $0.cropNote == note })
+    let shot = { (f: String) in String(decoding: try Data(contentsOf: h.dir.appending(path: "shots/\(f)")), as: UTF8.self) }
+    #expect(try results.map { try shot($0.image!) } == ["frame 0 full", "frame 1 full", "frame 1 full"])
+    #expect(try results.map { try shot($0.crop!) }
+            == ["frame 0 crop 10,20,300,200", "frame 1 crop 10,20,300,200", "frame 1 crop 10,20,300,200"])
     #expect(results[0].window == "前景 app：Fake，視窗標題「frame 0」\nwindow \"frame 0\"\n  button \"OK\"")
     #expect(results[1].window == "前景 app：Fake，視窗標題「frame 1」\nwindow \"frame 1\"\n  button \"OK\"")
     #expect(results[2].window == results[1].window)
     #expect(h.last.actions == ["key", "screenshot"])
-    // The screen moves on; later requests still send the stored outline, byte for byte.
+    // The screen moves on; later requests still send the stored images and lines, byte for byte.
     h.vm.setFrame(2)
     try await h.turn("好")
     try await h.turn("嗯")
@@ -891,40 +916,74 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let message = try #require(earlier.last { $0.role == "tool" })
     let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
     let parts = json["content"] as! [[String: Any]]
-    #expect(parts.map { $0["type"] as! String } == ["text", "image_url", "text"])
-    #expect(parts[2]["text"] as? String == "\n" + results[2].window!)
+    #expect(parts.map { $0["type"] as! String } == ["text", "image_url", "text", "image_url", "text"])
+    let uri = { (f: String) in "data:image/jpeg;base64," + Data(try shot(f).utf8).base64EncodedString() }
+    #expect((parts[1]["image_url"] as? [String: String])?["url"] == (try uri(results[2].image!)))
+    #expect(parts[2]["text"] as? String == "\n" + note)
+    #expect((parts[3]["image_url"] as? [String: String])?["url"] == (try uri(results[2].crop!)))
+    #expect(parts[4]["text"] as? String == "\n" + results[2].window!)
 }
 
-@Test func aFailedWindowOutlineIsSaidInTheResultNotDropped() async throws {
+@Test func noFrontWindowMeansNoCropAndTheResultSaysSo() async throws {
     let h = try await menuHarness()
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", key("Escape")))
     let r = try h.toolResults().last!
     #expect(r.text == "key Escape\nDone: 1 action in 0.1 s." && r.image != nil)
-    #expect(r.window == "前景視窗概要失敗：WINDOW_NOT_FOUND: No focused window found")
+    #expect(r.crop == nil && r.cropNote == nil)
+    #expect(r.window == "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found")
     #expect(h.last.actions == ["key", "error window"])
     #expect(h.logs.contains { $0.contains("window outline failed") })
+    // A window with no place to crop: the outline still comes, the crop's line says why.
+    h.vm.failWindow(nil)
+    h.vm.setPlace(.unknown("最前面的視窗不在螢幕上"))
+    try await h.turn(Scripted("", screenshotCall))
+    let s = try h.toolResults().last!
+    #expect(s.crop == nil && s.cropNote == "沒有視窗圖：最前面的視窗不在螢幕上" && s.window!.hasPrefix("前景 app：Fake"))
+    try await h.turn("嗯")
+    let message = try #require(await h.model.seen(3).last { $0.role == "tool" })
+    let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
+    #expect((json["content"] as! [[String: Any]]).map { $0["type"] as! String } == ["text", "image_url", "text", "text"])
 }
 
-@Test func theWindowOutlineIsOneLinePerElementWithoutRefs() async throws {
+@Test func theWindowOutlineIsOneLinePerElementWithoutRefsAndItsBoundsPlaceTheCrop() async throws {
     let ok = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Safari","ref_count":2,"snapshot_id":"s1","#
-        + #""window":{"id":"w-1","title":"Safari"},"tree":{"name":"Apple","role":"window","children":["#
-        + #"{"role":"group","children":[{"role":"scrollarea","children_count":2,"ref_id":"@s1:e1"}]},"#
+        + #""window":{"id":"w-1","title":"Safari"},"tree":{"name":"Apple","role":"window","#
+        + #""bounds":{"height":499.0,"width":860.0,"x":40.0,"y":54.0},"children":["#
+        + #"{"role":"group","bounds":{"height":10.0,"width":10.0,"x":0.0,"y":0.0},"#
+        + #""children":[{"role":"scrollarea","children_count":2,"ref_id":"@s1:e1"}]},"#
         + #"{"role":"button","name":"Go back","ref_id":"@s1:e2","states":["disabled"]}]}}}"#
+    let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
     let want = "前景 app：Safari，視窗標題「Apple」\nwindow \"Apple\"\n  group\n    scrollarea (2)\n  button \"Go back\""
-    #expect(try WindowSummary.render(Data(ok.utf8)) == want)
     let err = #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No focused window found"}}"#
-    // Through the driver: agent-desktop in the VM via `vmpal exec`, its path as $1.
+    // Through the driver: agent-desktop in the VM via `vmpal exec`, its path as $1; a 1440×900-point
+    // screen in a 1280-wide screenshot.
     var cfg = ComputerConfig()
     cfg.vmID = "E6813EBA"
-    let seen = Mutex<[String]>([])
-    let good = VMPalDriver(cfg, vmpal: { args in seen.withLock { $0 = args }; return ok })
-    #expect(try await good.windowSummary() == want)
-    #expect(seen.withLock { $0 } == ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" snapshot --skeleton -i --compact",
-                                     "sh", cfg.agentDesktop])
+    let seen = Mutex<[[String]]>([])
+    let good = VMPalDriver(cfg, vmpal: { args in
+        seen.withLock { $0.append(args) }
+        if args[0] == "ui" { try Data("png".utf8).write(to: URL(filePath: args[4])); return "Image written." }
+        return args[5].contains("list-displays") ? displays : ok
+    })
+    #expect(try await good.frontWindow() == FrontWindow(summary: want, place: .at(Region(35, 48, 800, 492))))
+    #expect(seen.withLock { $0 } == [
+        ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" snapshot --skeleton -i --compact --include-bounds", "sh", cfg.agentDesktop],
+        ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" list-displays", "sh", cfg.agentDesktop],
+    ])
+    // The crop: her full-screen pixels, VMPal's 1280-wide space, at most the crop width.
+    seen.withLock { $0 = [] }
+    #expect(try await good.windowShot(Region(35, 48, 800, 492)) == Data("png".utf8))
+    let shot = try #require(seen.withLock { $0 }.first)
+    #expect(Array(shot.prefix(4)) == ["ui", "E6813EBA", "screenshot", "-o"]
+            && Array(shot.dropFirst(5)) == ["--region", "35,48,800,492", "--max-width", "1280"])
+    // Clipped to the screen; a window wholly off it has no place.
+    let screen = WindowSummary.Rect(x: 0, y: 0, width: 1440, height: 900)
+    #expect(WindowSummary.place(.init(x: -100, y: 800, width: 400, height: 300), on: screen, width: 1280) == .at(Region(0, 711, 267, 800)))
+    #expect(WindowSummary.place(.init(x: 1500, y: 0, width: 100, height: 100), on: screen, width: 1280) == .unknown("最前面的視窗不在螢幕上"))
     let bad = VMPalDriver(cfg, vmpal: { _ in throw ComputerError(err) })   // agent-desktop exits 1 with its JSON answer
     do {
-        _ = try await bad.windowSummary()
+        _ = try await bad.frontWindow()
         Issue.record("a failed outline came back as a success")
     } catch let e as ComputerError {
         #expect(e.description == "WINDOW_NOT_FOUND: No focused window found")

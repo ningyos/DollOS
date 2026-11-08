@@ -1,8 +1,8 @@
 import Foundation
 
-/// M2: her computer (spec 3.1, 2026-11-08). She sees it through screenshots plus a short outline of
-/// the front window, and acts on it with pointer and keyboard; the program drives it with
-/// `vmpal ui <vm> …` and `vmpal exec`. Tests swap in a fake driver.
+/// M2: her computer (spec 3.1, 2026-11-08). She sees it through a full-screen screenshot, a crop of
+/// the front window and a short outline of that window (2026-11-09), and acts on it with pointer and
+/// keyboard; the program drives it with `vmpal ui <vm> …` and `vmpal exec`. Tests swap in a fake driver.
 
 /// A rectangle in screenshot pixels, corners inclusive of x0,y0.
 public struct Region: Sendable, Equatable, CustomStringConvertible {
@@ -25,16 +25,32 @@ public struct ComputerError: Error, CustomStringConvertible {
     public init(_ description: String) { self.description = description }
 }
 
+/// The front window: its outline as she reads it (`WindowSummary.render`) and where it is.
+public struct FrontWindow: Sendable, Equatable {
+    public enum Place: Sendable, Equatable {
+        /// In her full screenshot's pixels, clipped to the screen.
+        case at(Region)
+        /// Why there is no place to crop (said to her instead of a crop).
+        case unknown(String)
+    }
+    public var summary: String
+    public var place: Place
+    public init(summary: String, place: Place) { (self.summary, self.place) = (summary, place) }
+}
+
 public protocol ComputerDriver: Sendable {
     /// Does one action and waits until the screen settles. Returns the VM's own text about it;
     /// a failed call (non-zero exit, an error answer) throws with the VM's error text.
     func act(_ action: ComputerAction) async throws -> String
-    /// One screenshot at the configured width and format. A region crops it; the bytes only need to
-    /// be equal when that part of the screen did not change.
+    /// One full-screen screenshot at the configured width and format, or a region of it (watch). A
+    /// region crops it; the bytes only need to be equal when that part of the screen did not change.
     func screenshot(region: Region?) async throws -> Data
-    /// The front window's outline as she reads it (`WindowSummary.render`); throws with the reason
-    /// when there is none (no front window, no accessibility access, agent-desktop missing).
-    func windowSummary() async throws -> String
+    /// The front window's crop: `region` in full-screenshot pixels, at the configured crop width and
+    /// format.
+    func windowShot(_ region: Region) async throws -> Data
+    /// The front window's outline and place; throws with the reason when there is none (no front
+    /// window, no accessibility access, agent-desktop missing).
+    func frontWindow() async throws -> FrontWindow
 }
 
 /// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
@@ -136,31 +152,48 @@ public struct VMPalDriver: ComputerDriver {
     }
 
     public func screenshot(region: Region?) async throws -> Data {
-        let ext = cfg.screenshotFormat == "png" ? "png" : "jpg"
-        let url = Self.tempFile("shot", ext: ext)
+        if let r = region { return try await shot(cfg.screenshotFormat, ["--region", vmRegion(r)]) }
+        return try await shot(cfg.screenshotFormat, ["--max-width", "\(cfg.screenshotWidth)"])
+    }
+
+    /// VMPal reads `--region` in its own 1280-wide space whatever `--max-width` is (2026-11-09: region
+    /// 0,0,1280,800 with --max-width 1719 was the whole screen); `--max-width` only caps the output.
+    public func windowShot(_ region: Region) async throws -> Data {
+        try await shot(cfg.windowCropFormat, ["--region", vmRegion(region), "--max-width", "\(cfg.windowCropWidth)"])
+    }
+
+    func vmRegion(_ r: Region) -> String { [r.x0, r.y0, r.x1, r.y1].map { "\(scale($0))" }.joined(separator: ",") }
+
+    func shot(_ format: String, _ extra: [String]) async throws -> Data {
+        let png = format == "png"
+        let url = Self.tempFile("shot", ext: png ? "png" : "jpg")
         defer { try? FileManager.default.removeItem(at: url) }
-        var args = ["screenshot", "-o", url.path] + (cfg.screenshotFormat == "png" ? ["--png"] : [])
-        if let r = region {
-            args += ["--region", [r.x0, r.y0, r.x1, r.y1].map { "\(scale($0))" }.joined(separator: ",")]
-        } else {
-            args += ["--max-width", "\(cfg.screenshotWidth)"]
-        }
-        _ = try await ui(args)
+        _ = try await ui(["screenshot", "-o", url.path] + (png ? ["--png"] : []) + extra)
         do { return try Data(contentsOf: url) } catch {
             throw ComputerError("vmpal wrote no screenshot: \(error.localizedDescription)")
         }
     }
 
-    /// agent-desktop in the VM (spec 3.1, 2026-11-08: screenshot plus the front window's skeleton).
-    /// It answers JSON on stdout, an error answer included (with exit 1).
-    public func windowSummary() async throws -> String {
+    /// agent-desktop in the VM (spec 3.1, 2026-11-08: the front window's skeleton; 2026-11-09: and
+    /// its place, for the crop). It answers JSON on stdout, an error answer included (with exit 1).
+    /// The window's bounds are screen points; `list-displays` gives the screen's, to turn them into
+    /// her screenshot's pixels.
+    public func frontWindow() async throws -> FrontWindow {
         let out: String
         do {
-            out = try await exec("\"$1\" snapshot --skeleton -i --compact", [cfg.agentDesktop])
+            out = try await exec("\"$1\" snapshot --skeleton -i --compact --include-bounds", [cfg.agentDesktop])
         } catch let e as ComputerError {
             throw ComputerError(WindowSummary.errorText(e.description))
         }
-        return try WindowSummary.render(Data(out.utf8))
+        let (summary, bounds) = try WindowSummary.parse(Data(out.utf8))
+        guard let bounds else { return FrontWindow(summary: summary, place: .unknown("agent-desktop 沒給這個視窗的位置")) }
+        let screen: WindowSummary.Rect
+        do {
+            screen = try WindowSummary.display(Data(try await exec("\"$1\" list-displays", [cfg.agentDesktop]).utf8))
+        } catch let e as ComputerError {
+            return FrontWindow(summary: summary, place: .unknown("不知道螢幕多大：\(WindowSummary.errorText(e.description))"))
+        }
+        return FrontWindow(summary: summary, place: WindowSummary.place(bounds, on: screen, width: cfg.screenshotWidth))
     }
 
     static func tempFile(_ what: String, ext: String? = nil) -> URL {
@@ -202,7 +235,8 @@ public struct VMPalDriver: ComputerDriver {
 /// The front window as a few lines of text: `agent-desktop snapshot --skeleton -i --compact` JSON,
 /// one line per element (role, "name", (children count) when the skeleton cut its children),
 /// two spaces of indent per depth. No refs: she has no tool that takes one, and a ref only lives as
-/// long as the snapshot that made it.
+/// long as the snapshot that made it. The tree's root is the window; its bounds (screen points,
+/// with `--include-bounds`) are where the crop goes.
 enum WindowSummary {
     struct Answer: Decodable {
         struct Failure: Decodable { let code: String?; let message: String? }
@@ -213,14 +247,18 @@ enum WindowSummary {
         let error: Failure?
     }
 
+    struct Rect: Decodable, Equatable { let x, y, width, height: Double }
+
     final class Node: Decodable {
         let role: String?
         let name: String?
+        let bounds: Rect?
         let children_count: Int?
         let children: [Node]?
     }
 
-    static func render(_ json: Data) throws -> String {
+    /// The outline she reads, and the window's bounds when agent-desktop gave them.
+    static func parse(_ json: Data) throws -> (summary: String, bounds: Rect?) {
         guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
             throw ComputerError("agent-desktop 的回答不是 JSON：\(String(decoding: json.prefix(300), as: UTF8.self))")
         }
@@ -239,7 +277,33 @@ enum WindowSummary {
             for c in n.children ?? [] { walk(c, depth + 1) }
         }
         walk(tree, 0)
-        return lines.joined(separator: "\n")
+        return (lines.joined(separator: "\n"), tree.bounds)
+    }
+
+    /// `agent-desktop list-displays`: the primary display's bounds in points (the first one when
+    /// none says primary).
+    static func display(_ json: Data) throws -> Rect {
+        struct Display: Decodable { let bounds: Rect; let is_primary: Bool? }
+        struct Displays: Decodable { let ok: Bool; let data: [Display]? }
+        guard let a = try? JSONDecoder().decode(Displays.self, from: json), a.ok, let all = a.data,
+              let d = all.first(where: { $0.is_primary == true }) ?? all.first else {
+            throw ComputerError("agent-desktop list-displays 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
+        }
+        return d.bounds
+    }
+
+    /// A window's points as pixels of a `width`-wide screenshot of `screen`, widened to whole pixels
+    /// and clipped to the screen.
+    static func place(_ w: Rect, on screen: Rect, width: Int) -> FrontWindow.Place {
+        // Multiply before dividing: 900 points of a 1440-point screen are exactly 800 of 1280 pixels.
+        func px(_ points: Double) -> Double { points * Double(width) / screen.width }
+        let height = Int(px(screen.height).rounded())
+        let x0 = max(0, Int(px(w.x - screen.x).rounded(.down)))
+        let y0 = max(0, Int(px(w.y - screen.y).rounded(.down)))
+        let x1 = min(width, Int(px(w.x + w.width - screen.x).rounded(.up)))
+        let y1 = min(height, Int(px(w.y + w.height - screen.y).rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return .unknown("最前面的視窗不在螢幕上") }
+        return .at(Region(x0, y0, x1, y1))
     }
 
     static func describe(_ f: Answer.Failure) -> String {

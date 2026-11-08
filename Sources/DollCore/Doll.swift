@@ -231,18 +231,23 @@ public actor Doll {
     /// One event as prompt messages. Her replies carry the footer they were answering and her raw
     /// content (tool call text included), so the prompt prefix is byte-stable turn to turn (the server
     /// caches from the last assistant turn). Tool results follow her reply directly, in call order;
-    /// the template wraps them in `<tool_response>`. A screenshot goes in the same message as an
-    /// image part, from the stored file's bytes.
+    /// the template wraps them in `<tool_response>`. A computer result goes out as one message: its
+    /// text, the full-screen screenshot, the crop's line, the front window's crop, the window's
+    /// outline (2026-11-09), images from the stored files' bytes.
     func render(_ ev: Event) throws -> [ChatMessage] {
         let t = clock(ev.ts)
-        let image = try ev.image.map(imageURI)
+        var extra: [ChatMessage.Extra] = []
+        if let f = ev.image { extra.append(.image(try imageURI(f))) }
+        if let n = ev.cropNote { extra.append(.text(n)) }
+        if let f = ev.crop { extra.append(.image(try imageURI(f))) }
+        if let w = ev.window { extra.append(.text(w)) }
         switch ev.kind {
         case .doll:
             return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
                 + [ChatMessage(role: "assistant", content: ev.text)]
         case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
-        case .tool: return [ChatMessage(role: "tool", content: ev.text, image: image, after: ev.window)]
-        case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", image: image)]
+        case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
+        case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
         }
     }
 
@@ -257,8 +262,12 @@ public actor Doll {
 
     func estimate(_ msgs: [ChatMessage]) -> Int {
         msgs.reduce(0) {
-            $0 + estimateTokens($1.content) + 4 + ($1.image == nil ? 0 : computerConfig.screenshotTokens)
-                + ($1.after.map(estimateTokens) ?? 0)
+            $0 + estimateTokens($1.content) + 4 + $1.extra.reduce(0) {
+                switch $1 {
+                case .image: $0 + computerConfig.screenshotTokens
+                case .text(let t): $0 + estimateTokens(t)
+                }
+            }
         }
     }
 
@@ -335,7 +344,8 @@ public actor Doll {
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         for call in parsed.calls {
             let out = await execute(call, seen: events, reply: stored)
-            try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image, window: out.window))
+            try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
+                                   cropNote: out.cropNote, crop: out.crop, window: out.window))
             actions += out.actions
             if !out.background {
                 followUp = true
@@ -362,12 +372,14 @@ public actor Doll {
     }
 
     // tools ------------------------------------------------------------------
-    /// One call's result: the tool message text, its screenshot and the front window's outline,
-    /// whether it carries a secret, the report actions, and whether it only says something started
-    /// (no next turn for that alone).
+    /// One call's result: the tool message text, its screenshots (full screen, then the front
+    /// window's crop after its line) and the front window's outline, whether it carries a secret, the
+    /// report actions, and whether it only says something started (no next turn for that alone).
     struct Outcome {
         var text: String
         var image: String?
+        var cropNote: String?
+        var crop: String?
         var window: String?
         var secret = false
         var actions: [String]
@@ -422,33 +434,55 @@ public actor Doll {
         }
     }
 
-    /// `text` plus a fresh screenshot and, after it, the front window's outline. A failed screenshot
-    /// or outline is said in the result (and is an error); neither is dropped silently.
+    /// `text` plus a fresh full-screen screenshot, the front window's crop with where it sits on the
+    /// full screen, and the window's outline (spec 3.1, 2026-11-09). Her coordinates stay full-screen
+    /// pixels. No front window: no crop and no outline, and the result says why. A failed screenshot,
+    /// crop or outline is said in the result (and is an error); none is dropped silently.
     func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
         let computer = computer
-        async let outline: Result<String, Error> = {
-            do { return .success(try await computer.windowSummary()) } catch { return .failure(error) }
+        async let front: Result<FrontWindow, Error> = {
+            do { return .success(try await computer.frontWindow()) } catch { return .failure(error) }
         }()
         var out = Outcome(text: text, actions: actions)
-        do { out.image = try await capture() } catch {
+        do { out.image = try await capture(nil) } catch {
             log("ERROR", "turn \(turnIndex): screenshot failed: \(error)")
             out.text += "\n截圖失敗：\(error)"
             out.actions.append("error screenshot")
         }
-        switch await outline {
-        case .success(let s): out.window = s
+        switch await front {
+        case .success(let w):
+            out.window = w.summary
+            switch w.place {
+            case .at(let r):
+                do {
+                    out.crop = try await capture(r)
+                    out.cropNote = "視窗圖：最前面的視窗，在全螢幕 (\(r.x0),\(r.y0))–(\(r.x1),\(r.y1))；點擊座標一律用全螢幕截圖的。"
+                } catch {
+                    log("ERROR", "turn \(turnIndex): window crop failed: \(error)")
+                    out.cropNote = "沒有視窗圖：截視窗失敗：\(error)"
+                    out.actions.append("error crop")
+                }
+            case .unknown(let why):
+                out.cropNote = "沒有視窗圖：\(why)"
+            }
         case .failure(let error):
             log("ERROR", "turn \(turnIndex): window outline failed: \(error)")
-            out.window = "前景視窗概要失敗：\(error)"
+            out.window = "沒有視窗圖和視窗概要：\(error)"
             out.actions.append("error window")
         }
         return out
     }
 
-    /// Takes a screenshot and stores its bytes as a file under `shots/`.
-    func capture() async throws -> String {
-        let data = try await computer.screenshot(region: nil)
-        let file = "\(hex(16)).\(computerConfig.screenshotFormat == "png" ? "png" : "jpg")"
+    /// Takes a full-screen screenshot, or the front window's crop at `region`, and stores its bytes
+    /// as a file under `shots/`.
+    func capture(_ region: Region?) async throws -> String {
+        let data: Data, format: String
+        if let region {
+            (data, format) = (try await computer.windowShot(region), computerConfig.windowCropFormat)
+        } else {
+            (data, format) = (try await computer.screenshot(region: nil), computerConfig.screenshotFormat)
+        }
+        let file = "\(hex(16)).\(format == "png" ? "png" : "jpg")"
         try data.write(to: shots.appending(path: file))
         return file
     }
@@ -529,7 +563,7 @@ public actor Doll {
             stopWatch()
         }
         let image: String?
-        do { image = try await capture() } catch {
+        do { image = try await capture(nil) } catch {
             log("ERROR", "watch \(id): screenshot failed: \(error)")
             text += "\n截圖失敗：\(error)"
             image = nil

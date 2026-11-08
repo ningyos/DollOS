@@ -16,9 +16,11 @@ priority = ["owner_voice", "owner_text", "watch"]
 # M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
 vm_id = "E6813EBA"            # Doll VM；用 ID 不用名字：vmpal ui 不用回頭問 VMPal
 vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"   # PATH 上沒有 vmpal
-agent_desktop = "/Users/doll/agent-desktop/agent-desktop"   # VM 裡的 agent-desktop（v1.2.0）；每個動作後用 vmpal exec 跑 snapshot --skeleton -i --compact，附最前面視窗的概要（2026-11-08 決定：截圖＋一部分的 tree）
+agent_desktop = "/Users/doll/agent-desktop/agent-desktop"   # VM 裡的 agent-desktop（v1.2.0）；每個動作後用 vmpal exec 跑 snapshot --skeleton -i --compact --include-bounds（視窗概要＋視窗位置）和 list-displays（換算成截圖座標）
 screenshot_width = 1280       # 初始值理由：VMPal 的座標空間本來就是 1280 寬，截圖同寬她的座標不用換算；一張約 350 token（spec 3.x 探測）
 screenshot_format = "jpeg"    # 初始值理由：VMPal 預設；1280 寬一張約 270 KB，PNG 大好幾倍，每回合都要重送
+window_crop_width = 1280      # 視窗圖最寬這麼寬（vmpal --max-width；窄視窗照螢幕原解析度）。初始值理由：2026-11-09 探測只截終端機視窗 1280 寬讀 build 號 10/10（全螢幕 0/10）；每張圖不管多大都約 300 token
+window_crop_format = "jpeg"   # 初始值理由：同全螢幕截圖；每回合都要重送
 screenshot_tokens = 350       # 只用來估【狀況】的 context 長度；1356×737 探測一張約 350 token
 watch_poll_s = 1.0            # 初始值理由：一次區域截圖約 0.05 秒；每秒比一次夠快，又不佔 VM
 watch_min_interval_s = 10.0   # 初始值理由：兩次叫醒至少隔 10 秒，大約一次模型呼叫的時間；一直變的畫面不會每秒叫她（主人選限頻）
