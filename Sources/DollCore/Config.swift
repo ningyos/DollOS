@@ -54,6 +54,10 @@ public struct ComputerConfig: Sendable {
     public var jpegQuality = 40
     /// Rough prompt tokens of one screenshot, for the footer's context figure only.
     public var screenshotTokens = 350
+    /// How many of the most recent turns keep their screenshots in the request; earlier results go
+    /// out as text only. The request stays small instead of growing by two images a turn (spec 3.1,
+    /// 2026-11-09: re-uploading every old screenshot was the biggest part of a 20-second turn).
+    public var imageTurnsKept = 2
     /// watch: how often the watched region is captured and compared.
     public var watchPollS = 1.0
     /// watch: at least this many seconds between two wakes.
@@ -167,6 +171,7 @@ public struct Config: Sendable {
         try v.read("window_crop_format", &computer.windowCropFormat)
         try v.read("jpeg_quality", &computer.jpegQuality)
         try v.read("screenshot_tokens", &computer.screenshotTokens)
+        try v.read("image_turns_kept", &computer.imageTurnsKept)
         try v.read("watch_poll_s", &computer.watchPollS)
         try v.read("watch_min_interval_s", &computer.watchMinIntervalS)
         try v.read("watch_stop_after", &computer.watchStopAfter)
@@ -174,9 +179,10 @@ public struct Config: Sendable {
         try v.finish()
         guard ["jpeg", "png"].contains(computer.screenshotFormat), ["jpeg", "png"].contains(computer.windowCropFormat),
               computer.screenshotWidth >= 1, computer.windowCropWidth >= 1, (0...100).contains(computer.jpegQuality),
+              computer.imageTurnsKept >= 1,
               computer.watchPollS > 0, computer.watchMinIntervalS >= 0, computer.watchStopAfter >= 1,
               computer.watchDefaultMaxWaitS > 0 else {
-            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
+            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; screenshot_width, window_crop_width, image_turns_kept, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

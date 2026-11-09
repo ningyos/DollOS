@@ -292,21 +292,37 @@ public actor Doll {
     /// the timeline but is not sent. The open scenario renders in full.
     func context(_ events: [Event]) throws -> [ChatMessage] {
         let closed = try store.closedScenarios()
-        var out = [ChatMessage(role: "system", content: systemPrompt())]
+        enum Mode { case full, enterResult(ClosedScenario), exitSpeech }
+        var plan: [(Event, Mode)] = []
         var i = 0
         for ev in events {
             let seq = ev.seq!
             while i < closed.count, closed[i].lastSeq < seq { i += 1 }
-            guard i < closed.count, seq > closed[i].startSeq else {
-                out += try render(ev)
-                continue
-            }
+            guard i < closed.count, seq > closed[i].startSeq else { plan.append((ev, .full)); continue }
             let c = closed[i]
-            if seq < c.enterResultSeq || ev.kind == .owner {
-                out += try render(ev)
-            } else if seq == c.enterResultSeq {
+            if seq < c.enterResultSeq || ev.kind == .owner { plan.append((ev, .full)) }
+            else if seq == c.enterResultSeq { plan.append((ev, .enterResult(c))) }
+            else if seq == c.endSeq { plan.append((ev, .exitSpeech)) }
+        }
+        // Only the last `image_turns_kept` turns keep their screenshots (spec 3.1, 2026-11-09): a turn's
+        // images are the ones after her reply, up to her next; a watch wake's belong to the turn before it.
+        var turnOfImage: [Int64: Int64] = [:], turns: [Int64] = [], lastReply: Int64 = 0
+        for (ev, mode) in plan {
+            guard case .full = mode else { continue }
+            if ev.kind == .doll { lastReply = ev.seq! }
+            guard ev.image != nil || ev.crop != nil else { continue }
+            turnOfImage[ev.seq!] = lastReply
+            if turns.last != lastReply { turns.append(lastReply) }
+        }
+        let withImages = Set(turns.suffix(computerConfig.imageTurnsKept))
+        var out = [ChatMessage(role: "system", content: systemPrompt())]
+        for (ev, mode) in plan {
+            switch mode {
+            case .full:
+                out += try render(ev, images: turnOfImage[ev.seq!].map(withImages.contains) ?? true)
+            case .enterResult(let c):
                 out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
-            } else if seq == c.endSeq {
+            case .exitSpeech:
                 let speech = ParsedReply(ev.text).speech
                 if !speech.isEmpty { out.append(ChatMessage(role: "assistant", content: speech)) }
             }
@@ -317,13 +333,18 @@ public actor Doll {
     /// One event as prompt messages. Tool results follow her reply directly, in call order; the
     /// template wraps them in `<tool_response>`. A computer result goes out as one message: its
     /// text, the full-screen screenshot, the crop's line, the front window's crop, the window's
-    /// outline (2026-11-09), images from the stored files' bytes.
-    func render(_ ev: Event) throws -> [ChatMessage] {
+    /// outline (2026-11-09), images from the stored files' bytes. `images: false`: the screenshots
+    /// are replaced by one fixed line, the rest stays.
+    func render(_ ev: Event, images: Bool = true) throws -> [ChatMessage] {
         let t = clock(ev.ts)
         var extra: [ChatMessage.Extra] = []
-        if let f = ev.image { extra.append(.image(try imageURI(f))) }
-        if let n = ev.cropNote { extra.append(.text(n)) }
-        if let f = ev.crop { extra.append(.image(try imageURI(f))) }
+        if images {
+            if let f = ev.image { extra.append(.image(try imageURI(f))) }
+            if let n = ev.cropNote { extra.append(.text(n)) }
+            if let f = ev.crop { extra.append(.image(try imageURI(f))) }
+        } else if ev.image != nil || ev.crop != nil {
+            extra.append(.text(Self.imagesPutAway))
+        }
         if let w = ev.window { extra.append(.text(w)) }
         switch ev.kind {
         case .doll:
@@ -335,6 +356,9 @@ public actor Doll {
         case .memory: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
         }
     }
+
+    /// What an older result says where its screenshots were (fixed bytes).
+    static let imagesPutAway = "（這回合的截圖已收起；只有最近幾回合帶圖）"
 
     func imageURI(_ file: String) throws -> String {
         if let uri = imageURIs[file] { return uri }

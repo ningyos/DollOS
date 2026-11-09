@@ -1014,6 +1014,40 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(try h.store.events().contains { $0.kind == .tool && $0.text.hasPrefix("key cmd+s") && $0.image != nil })
 }
 
+@Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
+    // spec 3.1, 2026-11-09: image_turns_kept = 2. A turn's images are the results after her reply.
+    // Request k is the one that produced turn k+1's reply, so it holds the results up to turn k.
+    let h = try await Harness()
+    await h.doll.ownerSaid("用電腦")
+    try await h.turn(Scripted("", useComputer))                                   // turn 1: image turn A (the menu's screenshot)
+    try await h.turn(Scripted("", key("cmd+n")))                                  // turn 2: image turn B
+    try await h.turn(Scripted("", key("cmd+s"), screenshotCall))                  // turn 3: image turn C, two results with images
+    try await h.turn(Scripted("", screenshotCall))                                // turn 4
+    let two = await h.model.seen(2), three = await h.model.seen(3)
+    // Request 2 holds A and B: both carry images. Request 3 holds A, B, C: A's images are gone, B's
+    // and C's stay; A's result keeps its text and says where the images were.
+    #expect(two.filter { !$0.images.isEmpty }.count == 2)
+    let menu = three.first { $0.content.hasPrefix("電腦選單打開了") }!
+    #expect(menu.images.isEmpty && menu.extra.contains(.text(Doll.imagesPutAway)))
+    let firstLine = { (m: ChatMessage) in String(m.content.split(separator: "\n").first ?? "") }
+    #expect(three.filter { !$0.images.isEmpty }.map(firstLine) == ["key cmd+n", "key cmd+s", "現在的畫面："])
+    // Everything before A's result is byte-identical; A's result is the first difference; the text
+    // after it is unchanged.
+    let a = two.firstIndex { $0.content.hasPrefix("電腦選單打開了") }!
+    #expect(Array(three.prefix(a)) == Array(two.prefix(a)) && three[a] != two[a])
+    #expect(three[a].content == two[a].content && three[a + 1...a + 2].map(\.content) == two[a + 1...a + 2].map(\.content))
+    // The files stay.
+    #expect(try h.store.events().filter { $0.image != nil }.count == 5)
+    // image_turns_kept = 1: in request 3 only C's results carry images.
+    let one = try await Harness(tune: { $0.computer.imageTurnsKept = 1 })
+    await one.doll.ownerSaid("用電腦")
+    try await one.turn(Scripted("", useComputer))
+    try await one.turn(Scripted("", key("cmd+n")))
+    try await one.turn(Scripted("", key("cmd+s"), screenshotCall))
+    try await one.turn(Scripted("", screenshotCall))
+    #expect((await one.model.seen(3)).filter { !$0.images.isEmpty }.map(firstLine) == ["key cmd+s", "現在的畫面："])
+}
+
 @Test func enteringWhileAScenarioIsOpenIsAnError() async throws {
     let h = try await menuHarness()
     let open = await h.doll.scenario?.startSeq
