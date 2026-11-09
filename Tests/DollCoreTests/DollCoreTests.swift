@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Synchronization
 import Testing
 @testable import DollCore
@@ -1386,6 +1387,7 @@ private final class FakeAgentDesktop: Sendable {
     // screen in a 1280-wide screenshot.
     var cfg = ComputerConfig()
     cfg.vmID = "E6813EBA"
+    cfg.jpegQuality = 0   // VMPal's bytes as they are; re-encoding has its own test
     let seen = Mutex<[[String]]>([])
     let good = VMPalDriver(cfg, vmpal: { args in
         seen.withLock { $0.append(args) }
@@ -1414,6 +1416,33 @@ private final class FakeAgentDesktop: Sendable {
     } catch let e as ComputerError {
         #expect(e.description == "WINDOW_NOT_FOUND: No focused window found")
     }
+}
+
+/// A JPEG screenshot is re-encoded at the configured quality: same pixel size, a valid and smaller
+/// file, the same bytes every time for the same input (old screenshots are re-sent byte-identical);
+/// quality 0 keeps VMPal's bytes.
+@Test func jpegScreenshotsAreReencodedAtTheConfiguredQuality() throws {
+    // A 320×200 photo-like image (noise) saved at maximum quality, like VMPal's own file.
+    let w = 320, h = 200
+    var pixels = [UInt8](repeating: 0, count: w * h * 4)
+    var seed: UInt32 = 7
+    for i in 0..<pixels.count { seed = seed &* 1_664_525 &+ 1_013_904_223; pixels[i] = UInt8(truncatingIfNeeded: seed >> 24) }
+    let ctx = try #require(CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                     space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+    let image = try #require(ctx.makeImage())
+    let original = NSMutableData()
+    let dst = try #require(CGImageDestinationCreateWithData(original, "public.jpeg" as CFString, 1, nil))
+    CGImageDestinationAddImage(dst, image, [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
+    #expect(CGImageDestinationFinalize(dst))
+    let vmpal = original as Data
+
+    let smaller = try VMPalDriver.reencodeJPEG(vmpal, quality: 40)
+    #expect(smaller.count < vmpal.count / 2)
+    let size = try #require(ImageSize.of(smaller))
+    #expect(size.width == w && size.height == h)
+    #expect(try VMPalDriver.reencodeJPEG(vmpal, quality: 40) == smaller)
+    #expect(try VMPalDriver.reencodeJPEG(vmpal, quality: 0) == vmpal)
+    #expect(throws: ComputerError.self) { try VMPalDriver.reencodeJPEG(Data("png".utf8), quality: 40) }
 }
 
 /// The VM side of `VMPalDriver` for typing: files `vmpal cp` put there, its clipboard, and what

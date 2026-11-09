@@ -45,6 +45,9 @@ public struct ComputerConfig: Sendable {
     public var windowCropWidth = 1280
     /// The crop's format: "jpeg" or "png".
     public var windowCropFormat = "jpeg"
+    /// JPEG screenshots (full and crop) are re-encoded at this quality, 1…100; 0 keeps VMPal's own
+    /// bytes. Every old screenshot is re-sent each turn, so their size is upload time (spec 3.1, 2026-11-09).
+    public var jpegQuality = 40
     /// Rough prompt tokens of one screenshot, for the footer's context figure only.
     public var screenshotTokens = 350
     /// watch: how often the watched region is captured and compared.
@@ -144,6 +147,7 @@ public struct Config: Sendable {
         try v.read("screenshot_format", &computer.screenshotFormat)
         try v.read("window_crop_width", &computer.windowCropWidth)
         try v.read("window_crop_format", &computer.windowCropFormat)
+        try v.read("jpeg_quality", &computer.jpegQuality)
         try v.read("screenshot_tokens", &computer.screenshotTokens)
         try v.read("watch_poll_s", &computer.watchPollS)
         try v.read("watch_min_interval_s", &computer.watchMinIntervalS)
@@ -151,10 +155,10 @@ public struct Config: Sendable {
         try v.read("watch_default_max_wait_s", &computer.watchDefaultMaxWaitS)
         try v.finish()
         guard ["jpeg", "png"].contains(computer.screenshotFormat), ["jpeg", "png"].contains(computer.windowCropFormat),
-              computer.screenshotWidth >= 1, computer.windowCropWidth >= 1,
+              computer.screenshotWidth >= 1, computer.windowCropWidth >= 1, (0...100).contains(computer.jpegQuality),
               computer.watchPollS > 0, computer.watchMinIntervalS >= 0, computer.watchStopAfter >= 1,
               computer.watchDefaultMaxWaitS > 0 else {
-            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
+            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
         }
 
         var i = Section(name: "idle", raw: raw["idle"] ?? [:])

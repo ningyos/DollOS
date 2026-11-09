@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 /// M2: her computer (spec 3.1, 2026-11-08). She sees it through a full-screen screenshot, a crop of
 /// the front window and a short outline of that window (2026-11-09), and acts on it with pointer and
@@ -213,9 +214,28 @@ public struct VMPalDriver: ComputerDriver {
         let url = Self.tempFile("shot", ext: png ? "png" : "jpg")
         defer { try? FileManager.default.removeItem(at: url) }
         _ = try await ui(["screenshot", "-o", url.path] + (png ? ["--png"] : []) + extra)
-        do { return try Data(contentsOf: url) } catch {
+        let data: Data
+        do { data = try Data(contentsOf: url) } catch {
             throw ComputerError("vmpal wrote no screenshot: \(error.localizedDescription)")
         }
+        return png ? data : try Self.reencodeJPEG(data, quality: cfg.jpegQuality)
+    }
+
+    /// Same pixels, smaller file: every old screenshot is re-sent each turn, so its size is upload time
+    /// (spec 3.1, 2026-11-09: quality 40 read the same small text 10/10 as VMPal's own bytes). 0 keeps them.
+    static func reencodeJPEG(_ data: Data, quality: Int) throws -> Data {
+        guard quality > 0 else { return data }
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+            throw ComputerError("screenshot is not a readable image")
+        }
+        let out = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
+            throw ComputerError("cannot encode JPEG")
+        }
+        CGImageDestinationAddImage(dst, image, [kCGImageDestinationLossyCompressionQuality: Double(quality) / 100] as CFDictionary)
+        guard CGImageDestinationFinalize(dst) else { throw ComputerError("cannot encode JPEG") }
+        return out as Data
     }
 
     /// agent-desktop in the VM (spec 3.1, 2026-11-08: the front window's skeleton; 2026-11-09: and
