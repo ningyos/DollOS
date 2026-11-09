@@ -1,0 +1,249 @@
+/// The dashboard's one page: inline CSS and JS, served from the binary. It reads the JSON routes and
+/// refetches them whenever `/events` says something changed; the only things it can send are
+/// interrupt and pause/resume.
+enum DashboardPage {
+    static let html = #"""
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>DollOS 後台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.45 -apple-system, "PingFang TC", sans-serif; background: #111418; color: #dde3ea; }
+  header { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+           padding: 8px 14px; background: #1b2028; border-bottom: 1px solid #2c3440; }
+  header .name { font-weight: 700; font-size: 15px; }
+  .badge { padding: 1px 8px; border-radius: 10px; background: #2c3440; }
+  .badge.thinking { background: #2d5a8a; } .badge.acting { background: #6a5a1e; } .badge.asleep { background: #333a44; }
+  .badge.paused { background: #8a2d2d; } .badge.live { background: #285a35; } .badge.dead { background: #8a2d2d; }
+  header button { font: inherit; padding: 3px 12px; border-radius: 5px; border: 1px solid #4a5666; background: #26303c; color: #fff; cursor: pointer; }
+  header button:disabled { opacity: .4; cursor: default; }
+  main { display: grid; grid-template-columns: minmax(300px, 1.1fr) minmax(360px, 1.3fr) minmax(280px, 1fr); gap: 10px; padding: 10px; }
+  section { background: #181c22; border: 1px solid #2a313b; border-radius: 6px; padding: 8px 10px; min-width: 0;
+            max-height: calc(100vh - 70px); overflow: auto; }
+  h2 { margin: 0 0 6px; font-size: 14px; color: #9fb4cc; }
+  h3 { margin: 10px 0 4px; font-size: 13px; color: #9fb4cc; }
+  img.shot { width: 100%; border: 1px solid #333; cursor: zoom-in; display: block; }
+  img.thumb { max-width: 160px; border: 1px solid #333; cursor: zoom-in; margin: 3px 4px 0 0; }
+  pre { white-space: pre-wrap; word-break: break-word; margin: 3px 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: #c9d2dc; }
+  .muted { color: #8794a3; } .secret { color: #e39b5b; }
+  .item { border-left: 3px solid #3a4452; padding: 4px 8px; margin: 0 0 8px; }
+  .item.owner { border-color: #4f9d69; } .item.turn { border-color: #4f7fb8; } .item.watch { border-color: #b89a4f; } .item.program { border-color: #6d5f8a; }
+  .speech { font-size: 14px; color: #fff; margin: 3px 0; }
+  .call { margin: 3px 0 3px 6px; }
+  .call summary, .mem summary { cursor: pointer; }
+  .call .fn { color: #8fc1ff; }
+  .mem { margin: 2px 0; }
+  .meta { color: #8794a3; font-size: 11px; }
+  #zoom { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9; cursor: zoom-out; }
+  #zoom img { max-width: 98vw; max-height: 98vh; margin: 1vh auto; display: block; }
+</style>
+</head>
+<body>
+<header>
+  <span class="name" id="name">…</span>
+  <span class="badge" id="state">…</span>
+  <span class="badge" id="paused" hidden>暫停中</span>
+  <span id="menu"></span>
+  <span id="watch"></span>
+  <span id="ctx"></span>
+  <span id="effort"></span>
+  <span id="queued"></span>
+  <span id="interrupted" class="muted"></span>
+  <span style="flex:1"></span>
+  <button id="btn-interrupt" title="取消她這一回合正在跑的模型呼叫">中斷</button>
+  <button id="btn-pause">暫停</button>
+  <span class="badge" id="live">連線中</span>
+</header>
+<main>
+  <section id="vision"><h2>視覺</h2><div id="vision-body" class="muted">還沒有截圖</div></section>
+  <section id="actions"><h2>動作</h2><div id="timeline"></div></section>
+  <section id="memory"><h2>記憶</h2>
+    <label class="muted"><input type="checkbox" id="show-program"> 顯示程式讀的快捷鍵（tier program）</label>
+    <div id="memory-body"></div></section>
+</main>
+<div id="zoom"><img alt=""></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
+}
+function clock(ts) {
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function shot(name, cls) {
+  const img = el("img", cls);
+  img.src = "/shots/" + encodeURIComponent(name);
+  img.alt = name;
+  img.onclick = () => { $("zoom").querySelector("img").src = img.src; $("zoom").style.display = "block"; };
+  return img;
+}
+$("zoom").onclick = () => { $("zoom").style.display = "none"; };
+function details(summary, body, open) {
+  const d = el("details");
+  if (open) d.open = true;
+  d.append(summary instanceof Node ? summary : el("summary", null, summary));
+  d.append(body);
+  return d;
+}
+
+let status = null;
+function renderStatus(s) {
+  status = s;
+  $("name").textContent = s.name;
+  const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", asleep: "睡著" };
+  $("state").textContent = names[s.state] || s.state;
+  $("state").className = "badge " + s.state;
+  $("paused").hidden = !s.paused;
+  $("menu").textContent = "選單：" + (s.scenario ? s.scenario + (s.expect ? `（expect：${s.expect}）` : "") : "頂層");
+  $("watch").textContent = "watch：" + (s.watch || "沒有");
+  $("ctx").textContent = `context 約 ${s.contextTokens} token`;
+  $("effort").textContent = "effort：" + s.effort;
+  $("queued").textContent = `排隊 ${s.queued} 件 · 第 ${s.turn} 回合`;
+  $("interrupted").textContent = s.lastInterrupt ? "上次中斷 " + clock(s.lastInterrupt) : "";
+  $("btn-interrupt").disabled = s.state !== "thinking";
+  $("btn-pause").textContent = s.paused ? "繼續" : "暫停";
+}
+
+function renderVision(v) {
+  const box = $("vision-body");
+  box.replaceChildren();
+  box.className = "";
+  if (!v.image && !v.windows) { box.className = "muted"; box.textContent = "還沒有截圖"; return; }
+  if (v.ts) box.append(el("div", "meta", `#${v.seq} · ${clock(v.ts)}`));
+  if (v.image) { box.append(el("h3", null, "全螢幕")); box.append(shot(v.image, "shot")); }
+  if (v.cropNote) box.append(el("pre", null, v.cropNote));
+  if (v.crop) { box.append(el("h3", null, "視窗圖")); box.append(shot(v.crop, "shot")); }
+  if (v.windows) { box.append(el("h3", null, "開著的視窗／焦點")); box.append(el("pre", null, v.windows)); }
+  if (v.window) { box.append(el("h3", null, "視窗概要")); box.append(el("pre", null, v.window)); }
+}
+
+function renderCall(c) {
+  const params = c.parameters.map(p => `${p.name}=${p.value.length > 60 ? p.value.slice(0, 60) + "…" : p.value}`).join(", ");
+  const sum = el("summary");
+  sum.append(el("span", "fn", c.name || "（格式壞掉）"), document.createTextNode(`(${params})`));
+  if (c.secret) sum.append(el("span", "secret", " 秘密"));
+  const body = el("div");
+  if (c.malformed) body.append(el("pre", "secret", "格式錯：" + c.malformed));
+  for (const p of c.parameters) if (p.value.length > 60 || p.value.includes("\n")) body.append(el("pre", "muted", `${p.name}:\n${p.value}`));
+  body.append(el("pre", null, c.result === null || c.result === undefined ? "（還沒有結果）" : c.result));
+  if (c.image) body.append(shot(c.image, "thumb"));
+  if (c.crop) body.append(shot(c.crop, "thumb"));
+  if (c.window) body.append(details("視窗概要", el("pre", null, c.window)));
+  const d = details(sum, body);
+  d.className = "call";
+  return d;
+}
+
+function renderTimeline(items) {
+  const box = $("timeline");
+  const open = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.key));
+  box.replaceChildren();
+  for (const it of items) {
+    const div = el("div", "item " + it.type);
+    const head = el("div", "meta", `#${it.seq} · ${clock(it.ts)}`);
+    if (it.secret) head.append(el("span", "secret", " · 含秘密"));
+    div.append(head);
+    if (it.type === "owner") {
+      div.append(el("div", "speech", `主人（${it.voice ? "語音" : "打字"}）：${it.text}`));
+    } else if (it.type === "watch") {
+      div.append(el("pre", null, "watch：" + it.text));
+      if (it.image) div.append(shot(it.image, "thumb"));
+    } else if (it.type === "program") {
+      const first = it.text.split("\n")[0];
+      div.append(details(first, el("pre", null, it.text)));
+    } else {
+      const stats = [];
+      if (it.seconds !== null && it.seconds !== undefined) stats.push(`${it.seconds.toFixed(1)} 秒`);
+      if (it.prompt !== null && it.prompt !== undefined) stats.push(`prompt ${it.prompt}`);
+      if (it.cached !== null && it.cached !== undefined) stats.push(`cached ${it.cached}`);
+      if (it.effort) stats.push(`effort ${it.effort}`);
+      head.append(document.createTextNode(" · 她的回合 · " + stats.join(" · ")));
+      if (it.speech) div.append(el("div", "speech", it.speech));
+      for (const c of it.calls) div.append(renderCall(c));
+      if (it.footer) div.append(details("她看到的【狀況】", el("pre", "muted", it.footer)));
+    }
+    div.querySelectorAll("details").forEach((d, i) => { d.dataset.key = it.seq + ":" + i; if (open.has(d.dataset.key)) d.open = true; });
+    box.append(div);
+  }
+}
+
+function memEntry(e) {
+  const sum = el("summary");
+  sum.append(document.createTextNode(e.title + " "));
+  sum.append(el("span", "meta", `${e.kind || "（無 kind）"} · ${e.level} ${e.confidence} · ${e.tier}`));
+  const d = details(sum, el("pre", null, e.text));
+  d.className = "mem";
+  d.dataset.key = "m:" + e.id;
+  return d;
+}
+
+function renderMemory(m) {
+  const box = $("memory-body");
+  const open = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.key));
+  box.replaceChildren();
+  const showProgram = $("show-program").checked;
+  box.append(el("h3", null, `這次附上的經驗（${m.attached.length}）`));
+  for (const e of m.attached) box.append(memEntry(e));
+  box.append(el("h3", null, `這次送出的快捷鍵（${m.cheatsheets.length}）`));
+  for (const s of m.cheatsheets) {
+    const d = details(s.title, el("pre", null, s.text));
+    d.dataset.key = "s:" + s.seq;
+    box.append(d);
+  }
+  const titles = { own: "own（她自己的秘密）", public: "public", secret: "secret（主人的秘密）" };
+  for (const f of m.folders) {
+    const shown = f.entries.filter(e => showProgram || e.tier !== "program");
+    const hidden = f.entries.length - shown.length;
+    box.append(el("h3", f.folder === "public" ? null : "secret",
+                  `${titles[f.folder] || f.folder}（${f.entries.length}${hidden ? `，藏了 ${hidden} 條快捷鍵` : ""}）`));
+    for (const e of shown) box.append(memEntry(e));
+  }
+  box.querySelectorAll("details").forEach(d => { if (open.has(d.dataset.key)) d.open = true; });
+}
+
+async function get(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  if (!r.ok) throw new Error(path + ": " + r.status + " " + await r.text());
+  return r.json();
+}
+
+let busy = false, dirty = false, memory = null;
+async function refresh() {
+  if (busy) { dirty = true; return; }
+  busy = true;
+  try {
+    const [s, t, v, m] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    busy = false;
+    if (dirty) { dirty = false; refresh(); }
+  }
+}
+$("show-program").onchange = () => { if (memory) renderMemory(memory); };
+
+async function post(path) {
+  const r = await fetch(path, { method: "POST" });
+  if (!r.ok && r.status !== 409) alert(path + ": " + r.status);
+  refresh();
+}
+$("btn-interrupt").onclick = () => post("/api/interrupt");
+$("btn-pause").onclick = () => post(status && status.paused ? "/api/resume" : "/api/pause");
+
+const events = new EventSource("/events");
+events.addEventListener("change", refresh);
+events.onopen = () => { $("live").textContent = "即時"; $("live").className = "badge live"; };
+events.onerror = () => { $("live").textContent = "斷線，重連中"; $("live").className = "badge dead"; };
+</script>
+</body>
+</html>
+"""#
+}

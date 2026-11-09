@@ -380,6 +380,15 @@ public final class Memory {
         return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
     }
 
+    /// Every memory file in folder `f`, newest first (ties by id), read from the markdown files; for
+    /// the dashboard.
+    func list(_ f: MemoryFolder) throws -> [(id: String, file: MemoryFile)] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
+        return try names.filter { $0.hasSuffix(".md") }.map { name in
+            (String(name.dropLast(3)), try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8)))
+        }.sorted { ($0.1.ts, $1.0) > ($1.1.ts, $0.0) }
+    }
+
     /// Changes an experience's stats in its file; the text, and so the index, stay as they are.
     /// Returns the new stats; nil when the file has none (written before stats existed).
     @discardableResult

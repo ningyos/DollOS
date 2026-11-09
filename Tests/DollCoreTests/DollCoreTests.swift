@@ -2747,3 +2747,196 @@ private final class FakeStrata: Sendable {
     _ = try await old.chat(turn([a, b, c]), effort: "none")
     #expect(!old.imageHashRefs && plain.s.withLock { $0.requests } == [[a, b], [a, b, c]])
 }
+
+// dashboard (2026-11-09) -------------------------------------------------------
+
+private func json<T: Decodable>(_ type: T.Type, _ r: Dashboard.Response) throws -> T {
+    #expect(r.status == 200, "\(String(decoding: r.body, as: UTF8.self))")
+    return try JSONDecoder().decode(T.self, from: r.body)
+}
+
+/// The dashboard on a harness; port 0 picks a free one when it is started.
+private func dashboard(_ h: Harness, items: Int = 200) -> Dashboard {
+    var c = DashboardConfig()
+    c.port = 0
+    c.timelineItems = items
+    return Dashboard(doll: h.doll, config: c)
+}
+
+/// Every memory file under the harness's memory dir, with its bytes.
+private func memoryFiles(_ h: Harness) throws -> [String: Data] {
+    let dir = h.dir.appending(path: "memory")
+    var out: [String: Data] = [:]
+    for sub in try FileManager.default.contentsOfDirectory(atPath: dir.path) {
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.appending(path: sub).path)) ?? [] {
+            out["\(sub)/\(name)"] = try Data(contentsOf: dir.appending(path: sub).appending(path: name))
+        }
+    }
+    return out
+}
+
+@Test func dashboardEndpointsShowAScriptedRunAndChangeNothing() async throws {
+    let h = try await Harness()
+    let d = dashboard(h)
+    await h.doll.ownerSaid("用電腦看一下 macOS 版本")
+    try await h.turn(Scripted("好，我看看", useComputer,
+                              remember(folders: [("我的信箱密碼是 hunter2", "own", nil), ("主人怕打雷", "secret", "happened"),
+                                                 ("天空是藍的", "public", nil)])))
+    h.vm.setFrame(1)
+    try await h.turn(Scripted("", key("cmd+space")))
+
+    let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
+    #expect(s.scenario == "電腦" && s.expect == "畫面上看得到結果" && s.watch == nil)
+    #expect(s.state == "asleep" && !s.paused && s.turn == 2 && s.queued == 0 && s.effort == "medium" && s.contextTokens > 0)
+
+    let t = try json([DashboardItem].self, await d.respond(method: "GET", target: "/api/timeline"))
+    #expect(t.map(\.type) == ["turn", "turn", "owner"])
+    #expect(t[2].text == "用電腦看一下 macOS 版本" && t[2].voice == false)
+    #expect(t[1].speech == "好，我看看" && t[1].calls?.map(\.name) == ["use_computer", "remember"])
+    #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image != nil && t[1].calls?[1].image == nil)
+    #expect(t[1].calls?[1].result?.contains("own/") == true)
+    #expect(t[0].calls?.map(\.name) == ["key"] && t[0].calls?[0].parameters.map(\.name) == ["key", "modifiers"])
+    for turn in t.prefix(2) {
+        #expect(turn.prompt != nil && turn.prompt! > 0 && turn.seconds != nil && turn.effort == "medium" && turn.footer?.hasPrefix("【狀況】") == true)
+    }
+    let limited = try json([DashboardItem].self, await dashboard(h, items: 1).respond(method: "GET", target: "/api/timeline"))
+    #expect(limited.map(\.seq) == [t[0].seq])
+
+    let v = try json(DashboardVision.self, await d.respond(method: "GET", target: "/api/vision"))
+    let last = try h.toolResults().last!
+    #expect(v.image == last.image && v.crop == last.crop && v.window == last.window && v.cropNote == last.cropNote)
+    #expect(v.window?.contains("frame 1") == true && v.windows == fakeWindowsLine)
+
+    let m = try json(DashboardMemory.self, await d.respond(method: "GET", target: "/api/memory"))
+    let byFolder = Dictionary(uniqueKeysWithValues: m.folders.map { ($0.folder, $0.entries) })
+    #expect(m.folders.map(\.folder) == ["own", "public", "secret"])
+    #expect(byFolder["own"]?.map(\.title) == ["我的信箱密碼是 hunter2"])
+    #expect(byFolder["secret"]?.map(\.kind) == ["happened"] && byFolder["secret"]?.first?.tier == "owner")
+    #expect(byFolder["public"]?.map(\.text) == ["天空是藍的"] && byFolder["public"]?.first?.level == "確定")
+    #expect(m.attached.isEmpty && m.cheatsheets.isEmpty)
+
+    // Every route, the page and the stream excepted, changes neither the timeline nor a memory file.
+    let before = (try h.store.events(), try memoryFiles(h))
+    for r in Dashboard.routes where r.kind != .events {
+        _ = await d.respond(method: r.method, target: r.path)
+    }
+    _ = await d.respond(method: "POST", target: "/api/resume")
+    let after = (try h.store.events(), try memoryFiles(h))
+    #expect(after.0 == before.0 && after.1 == before.1)
+    #expect(await d.respond(method: "GET", target: "/api/pause").status == 405)
+    #expect(await d.respond(method: "POST", target: "/api/status").status == 405)
+    #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
+}
+
+@Test func theOnlyPostRoutesAreInterruptPauseAndResume() {
+    #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path)) == ["/api/interrupt", "/api/pause", "/api/resume"])
+    #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
+}
+
+@Test func theShotRouteServesOneScreenshotByNameAndRefusesPaths() async throws {
+    let h = try await Harness()
+    let d = dashboard(h)
+    await h.doll.ownerSaid("開電腦")
+    try await h.turn(Scripted("", useComputer))
+    let name = try h.toolResults().last!.image!
+    let ok = await d.respond(method: "GET", target: "/shots/\(name)")
+    let stored = try Data(contentsOf: h.doll.shots.appending(path: name))
+    #expect(ok.status == 200 && ok.body == stored)
+    #expect(ok.contentType == "image/jpeg")
+    for bad in ["../doll.db", "..%2Fdoll.db", "%2E%2E%2Fdoll.db", "/etc/passwd", "%2Fetc%2Fpasswd", "..", "...", ".hidden",
+                "a/../../doll.db", "a%5C..%5Cdoll.db", ""] {
+        #expect(await d.respond(method: "GET", target: "/shots/\(bad)").status == 400, "\(bad)")
+    }
+    #expect(await d.respond(method: "GET", target: "/shots/nothere.jpg").status == 404)
+}
+
+@Test func interruptCancelsTheCallInFlightAndNothingRerunsIt() async throws {
+    let h = try await Harness(["好"])
+    let d = dashboard(h)
+    let doll = h.doll
+    #expect(await d.respond(method: "POST", target: "/api/interrupt").status == 409)   // nothing in flight
+    await h.model.stall()
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("算一下")
+    while await h.model.requests.count < 1 { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status")).state == "thinking")
+    #expect(try json([String: Bool].self, await d.respond(method: "POST", target: "/api/interrupt")) == ["interrupted": true])
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.count == 1 && h.said.isEmpty)                    // not rerun
+    #expect(try h.store.events().map(\.kind) == [.owner])                           // no reply stored
+    let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
+    #expect(s.state == "asleep" && s.turn == 0 && s.lastInterrupt != nil)
+    #expect(h.logs.contains { $0.contains("turn 1 interrupted from the dashboard") })
+    await doll.ownerSaid("好了嗎")                                                  // the next event gets a turn
+    while h.said.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(await h.model.requests.count == 2 && h.said == ["好"] && h.reports.map(\.index) == [1])
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func pauseStopsNewTurnsWhileEventsQueueAndResumeRunsThem() async throws {
+    let h = try await Harness(["兩件都收到"])
+    let d = dashboard(h)
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    #expect(try json([String: Bool].self, await d.respond(method: "POST", target: "/api/pause")) == ["paused": true])
+    await doll.ownerSaid("第一件")
+    await doll.ownerSaid("第二件")
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.isEmpty)
+    let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
+    #expect(s.paused && s.queued == 2 && s.state == "asleep")
+    #expect(try json([DashboardItem].self, await d.respond(method: "GET", target: "/api/timeline")).isEmpty)   // not drained
+    #expect(try json([String: Bool].self, await d.respond(method: "POST", target: "/api/resume")) == ["paused": false])
+    while h.said.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    let req = await h.model.seen(0)
+    #expect(req.contains { $0.content.contains("第一件") } && req.contains { $0.content.contains("第二件") })
+    #expect(await h.model.requests.count == 1 && h.said == ["兩件都收到"])
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func theServerAnswersOverHTTPAndStreamsAChangePerEvent() async throws {
+    let h = try await Harness(["嗨"])
+    let d = dashboard(h)
+    let port = try await d.start()
+    defer { d.stop() }
+    let base = "http://127.0.0.1:\(port)"
+    let (page, pageResponse) = try await URLSession.shared.data(from: URL(string: base + "/")!)
+    #expect((pageResponse as! HTTPURLResponse).statusCode == 200)
+    #expect(String(decoding: page, as: UTF8.self).contains("EventSource(\"/events\")"))
+    var post = URLRequest(url: URL(string: base + "/api/pause")!)
+    post.httpMethod = "POST"
+    let (_, postResponse) = try await URLSession.shared.data(for: post)
+    let paused = await h.doll.paused
+    #expect((postResponse as! HTTPURLResponse).statusCode == 200 && paused)
+
+    let (bytes, sse) = try await URLSession.shared.bytes(from: URL(string: base + "/events")!)
+    #expect((sse as! HTTPURLResponse).value(forHTTPHeaderField: "Content-Type") == "text/event-stream")
+    var lines = bytes.lines.makeAsyncIterator()
+    func next() async throws -> String? {   // the blank line ending each event may or may not be yielded
+        while let line = try await lines.next() { if !line.isEmpty { return line } }
+        return nil
+    }
+    #expect(try await next() == "event: change")
+    #expect(try await next() == "data: {\"what\":\"hello\"}")
+    await h.doll.ownerSaid("嗨")                                                   // queued while paused
+    #expect(try await next() == "event: change")
+    #expect(try await next() == "data: {\"what\":\"queue\"}")
+}
+
+@Test func dashboardConfigRejectsUnknownKeysAndBadValues() throws {
+    let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cfg-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+        + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    try (head + "[dashboard]\nport = 9000\nbind = \"127.0.0.1\"\ntimeline_items = 5\nenabled = false\n")
+        .write(to: file, atomically: true, encoding: .utf8)
+    let c = try Config.load(file).dashboard
+    #expect(c.port == 9000 && c.bind == "127.0.0.1" && c.timelineItems == 5 && !c.enabled)
+    for bad in ["typing = true", "port = 0", "port = 70000", "bind = \"\"", "timeline_items = 0"] {
+        try (head + "[dashboard]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+    let example = try Config.load(root.appending(path: "dollcore.example.toml")).dashboard
+    #expect(example.enabled && example.port == 8790 && example.bind == "127.0.0.1")
+}

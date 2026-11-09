@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS scenarios (
     success INTEGER NOT NULL,
     summary TEXT NOT NULL            -- hers, verbatim
 );
+CREATE TABLE IF NOT EXISTS turns (
+    seq INTEGER PRIMARY KEY,         -- her reply's seq
+    started REAL NOT NULL,           -- when the turn began (unix seconds)
+    seconds REAL NOT NULL,           -- the whole turn: model call and her tool calls
+    prompt INTEGER NOT NULL,         -- prompt tokens of the call
+    cached INTEGER,                  -- of those, served from the server's cache; NULL when the server did not say
+    effort TEXT NOT NULL             -- reasoning effort of the call
+);
 """
 
 /// The memory index (M3a): rebuildable from the markdown files, never the source.
@@ -246,7 +254,37 @@ public final class Store {
                   ev.window.map { .text($0) } ?? .null])
         var out = ev
         out.seq = sqlite3_last_insert_rowid(db)
+        onAppend?()
         return out
+    }
+
+    /// Called after every appended event (the dashboard's live feed).
+    var onAppend: (() -> Void)?
+
+    // turns --------------------------------------------------------------------
+    /// What one turn took, keyed by her reply's seq; for the dashboard, not the prompt.
+    public struct TurnStats: Sendable, Equatable {
+        public var seq: Int64
+        public var started: Double
+        public var seconds: Double
+        public var prompt: Int
+        public var cached: Int?
+        public var effort: String
+    }
+
+    public func recordTurn(_ t: TurnStats) throws {
+        try exec("INSERT INTO turns (seq, started, seconds, prompt, cached, effort) VALUES (?, ?, ?, ?, ?, ?)",
+                 [.int(t.seq), .real(t.started), .real(t.seconds), .int(Int64(t.prompt)),
+                  t.cached.map { .int(Int64($0)) } ?? .null, .text(t.effort)])
+    }
+
+    /// Every recorded turn by her reply's seq.
+    public func turnStats() throws -> [Int64: TurnStats] {
+        let rows = try query("SELECT seq, started, seconds, prompt, cached, effort FROM turns") {
+            TurnStats(seq: $0.int(0)!, started: $0.real(1), seconds: $0.real(2), prompt: Int($0.int(3)!),
+                      cached: $0.int(4).map(Int.init), effort: $0.text(5)!)
+        }
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.seq, $0) })
     }
 
     /// The whole timeline, oldest first. Only the owner exists so far, so there is one projection.

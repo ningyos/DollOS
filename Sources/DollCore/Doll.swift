@@ -146,6 +146,19 @@ public actor Doll {
     var logSink: (@Sendable (String) -> Void)?
     /// Last real prompt size versus our estimate of the same prompt, to scale the footer's context figure.
     var tokenRatio = 1.0
+    /// The dashboard's live feed: every appended event, turn start and end, pause, resume, interrupt.
+    public nonisolated let feed = ChangeFeed()
+    /// Set from the dashboard (2026-11-09): no new turn starts; events keep queueing; the turn in
+    /// flight finishes.
+    var paused = false
+    /// Set by `interrupt()`: the cancelled call ends its turn instead of rerunning.
+    var interruptRequested = false
+    /// When the dashboard last interrupted a call; nil before the first.
+    var lastInterrupt: Double?
+    /// A turn is running (model call or her tool calls).
+    var inTurn = false
+    /// The effort of the model call in flight.
+    var inflightEffort: String?
 
     public init(config: Config, root: URL, model: any MainModel,
                 computer: (any ComputerDriver)? = nil,
@@ -160,6 +173,7 @@ public actor Doll {
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         store = try Store(path: data.appending(path: "doll.db"))
+        store.onAppend = { [feed] in feed.notify(.event) }
         // No fallback: a missing embedding model is an error, the same as an unreachable Strata (spec 3.1).
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: store)
@@ -205,6 +219,7 @@ public actor Doll {
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {
         queue.append(ev)
+        feed.notify(.queue)
         if let w = waiter {
             waiter = nil
             w.resume(returning: true)
@@ -226,12 +241,42 @@ public actor Doll {
         waiter = nil
     }
 
-    /// Sleeps until an event arrives or her tool results await her (true), or `stop()` (false).
-    /// No timer: nothing else wakes her.
+    /// Stops giving turns (2026-11-09, dashboard). The turn in flight finishes; events keep queueing.
+    public func pause() {
+        paused = true
+        log("INFO", "paused from the dashboard")
+        feed.notify(.pause)
+    }
+
+    /// Turns resume: whatever queued meanwhile, or her unanswered tool results, gets the next one.
+    public func resume() {
+        paused = false
+        log("INFO", "resumed from the dashboard")
+        feed.notify(.pause)
+        if let w = waiter {
+            waiter = nil
+            w.resume(returning: true)
+        }
+    }
+
+    /// Cancels the model call in flight (2026-11-09, dashboard). Unlike owner voice, nothing reruns
+    /// it: the turn ends without a reply and she sleeps until the next event. false: no call in flight.
+    @discardableResult
+    public func interrupt() -> Bool {
+        guard let task = inflight else { return false }
+        interruptRequested = true
+        task.cancel()
+        return true
+    }
+
+    /// Sleeps until an event arrives or her tool results await her and she is not paused (true), or
+    /// `stop()` (false). No timer: nothing else wakes her.
     func waitForEvent() async -> Bool {
-        if !queue.isEmpty || followUp { return true }
-        if stopped { return false }
-        return await withCheckedContinuation { waiter = $0 }
+        while true {
+            if !paused, !queue.isEmpty || followUp { return true }
+            if stopped { return false }
+            guard await withCheckedContinuation({ waiter = $0 }) else { return false }
+        }
     }
 
     /// She is asleep and nothing will wake her: no queued event, no tool result she has not
@@ -415,6 +460,13 @@ public actor Doll {
     /// step then restarts from scratch with the queue drained again, so the voice is in it.
     func turn() async throws {
         turnIndex += 1
+        inTurn = true
+        feed.notify(.turn)
+        defer {
+            inTurn = false
+            feed.notify(.turn)
+        }
+        let started = Date().timeIntervalSince1970
         followUp = false
         attachedNow = []
         cheatsheetNow = []
@@ -437,15 +489,26 @@ public actor Doll {
 
         let task = Task { try await model.chat(messages, effort: effort) }
         inflight = task
+        inflightEffort = effort
+        feed.notify(.turn)
         let reply: ModelReply
         do {
             reply = try await task.value
             inflight = nil
+            inflightEffort = nil
         } catch is CancellationError {
             inflight = nil
+            inflightEffort = nil
             if stopped { throw CancellationError() }
-            log("INFO", "turn \(turnIndex) interrupted; rerunning with the new events")
             turnIndex -= 1
+            if interruptRequested {
+                interruptRequested = false
+                lastInterrupt = Date().timeIntervalSince1970
+                feed.notify(.interrupt)
+                log("INFO", "turn \(turnIndex + 1) interrupted from the dashboard; no reply, she waits for the next event")
+                return
+            }
+            log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
             try drain()
             return try await turn()
         }
@@ -543,6 +606,9 @@ public actor Doll {
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
+        try store.recordTurn(Store.TurnStats(seq: stored.seq!, started: started,
+                                             seconds: Date().timeIntervalSince1970 - started,
+                                             prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
     }
 
     // tools ------------------------------------------------------------------

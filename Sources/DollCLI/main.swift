@@ -21,12 +21,21 @@ let argv = CommandLine.arguments
 guard argv.count == 3, argv[1] == "--config" else { fail("usage: dollcore --config <file.toml>") }
 
 let doll: Doll
+let dashboard: Dashboard?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
     doll = try Doll(
         config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
         say: { text in out("\n[Doll] \(text)\n") })
     try await doll.boot()
+    if cfg.dashboard.enabled {
+        let d = Dashboard(doll: doll, config: cfg.dashboard)
+        let port = try await d.start()
+        out("dashboard: http://\(cfg.dashboard.bind):\(port)/")
+        dashboard = d
+    } else {
+        dashboard = nil
+    }
 } catch {
     fail("\(error)")
 }
@@ -54,6 +63,7 @@ do {
 }
 
 // quit or end of input: stop the consumer, interrupting a model call in flight.
+dashboard?.stop()
 await doll.stop()
 runner.cancel()
 do {

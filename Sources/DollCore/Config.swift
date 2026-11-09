@@ -76,6 +76,19 @@ public struct FilesConfig: Sendable {
     public var maxReadLines = 500
 }
 
+/// The owner's read-only web page, served by this process (2026-11-09): her vision, memory and
+/// actions live, plus interrupt and pause/resume.
+public struct DashboardConfig: Sendable {
+    public var enabled = true
+    public var port = 8790
+    /// The address the page listens on. The page shows the owner's secrets and her passwords:
+    /// loopback only unless the owner chooses otherwise.
+    public var bind = "127.0.0.1"
+    /// The timeline endpoint returns this many of the newest items (a turn, an owner line, a watch
+    /// wake, a program event); the database keeps every run.
+    public var timelineItems = 200
+}
+
 public struct IdleConfig: Sendable {
     /// N: this many consecutive turns without a tool call writes one log line.
     public var maxTurnsWithoutTool = 3
@@ -128,10 +141,11 @@ public struct Config: Sendable {
     public var files: FilesConfig
     public var idle: IdleConfig
     public var memory: MemoryConfig
+    public var dashboard: DashboardConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -236,7 +250,17 @@ public struct Config: Sendable {
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
             throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, three distinct folder names")
         }
-        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory)
+        var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
+        var dashboard = DashboardConfig()
+        try d.read("enabled", &dashboard.enabled)
+        try d.read("port", &dashboard.port)
+        try d.read("bind", &dashboard.bind)
+        try d.read("timeline_items", &dashboard.timelineItems)
+        try d.finish()
+        guard (1...65535).contains(dashboard.port), !dashboard.bind.isEmpty, dashboard.timelineItems >= 1 else {
+            throw TOMLError(description: "[dashboard] port 1…65535, bind not empty, timeline_items at least 1")
+        }
+        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard)
     }
 }
 
