@@ -16,6 +16,7 @@ public enum SourceTier: String, Sendable, CaseIterable {
     case stranger    // someone other than the owner (no such input until M6; reserved)
     case doll        // her own guess
     case program     // read by the program itself, no model in between (an app's menu shortcuts)
+    case selfReported = "self_reported"   // her computer actions, kept after she said the session reached what she expected
 }
 
 /// What a memory says about its event (spec 6), given by her on `remember`. Facts and
@@ -332,8 +333,10 @@ public final class Memory {
     }
 
     /// Searches only the folders `visible` lets this turn read (`Memory.visible`); at most `limit`
-    /// hits (default `top_k`).
-    public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int? = nil) throws -> [MemoryHit] {
+    /// hits (default `top_k`). With `tiers`, only records of those source tiers: every record is
+    /// ranked by vector, not just the first `max_candidates`, so a few among many others are not lost.
+    public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int? = nil,
+                       tiers: Set<SourceTier>? = nil) throws -> [MemoryHit] {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
         var ftsRanked: [String] = []
@@ -351,7 +354,7 @@ public final class Memory {
             }
             return (row.id, dot)
         }
-        let vectorRanked = scored.sorted { $0.1 > $1.1 }.prefix(config.maxCandidates).map(\.0)
+        let vectorRanked = scored.sorted { $0.1 > $1.1 }.prefix(tiers == nil ? config.maxCandidates : scored.count).map(\.0)
 
         // RRF over both lists, then confidence as an extra weighted term (spec 6).
         var fused: [String: Double] = [:]
@@ -364,7 +367,7 @@ public final class Memory {
             score += config.confidenceWeight * meta.confidence
             guard let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { continue }
             let parsed = try Self.parseFile(body)
-            guard !parsed.body.isEmpty else { continue }
+            guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { continue }
             let level = meta.confidence >= config.highConfidence ? "確定"
                 : meta.confidence >= config.mediumConfidence ? "大概" : "聽說"
             hits.append(MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,

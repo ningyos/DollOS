@@ -91,6 +91,9 @@ public struct MemoryConfig: Sendable {
     /// when a computer result's front app differs from the last one's, at most this many records not
     /// yet attached since the owner's last line go into the timeline as one 【相關記憶】 event. 0: off.
     public var autoAttachK = 5
+    /// An experience memory (her actions in a computer session she said reached what she expected,
+    /// spec 3.1, 2026-11-09) is cut to at most this many characters, steps from the middle first.
+    public var experienceMaxChars = 1200
 }
 
 public struct Config: Sendable {
@@ -177,6 +180,7 @@ public struct Config: Sendable {
         try m.read("language", &memory.language)
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
         try m.read("auto_attach_k", &memory.autoAttachK)
+        try m.read("experience_max_chars", &memory.experienceMaxChars)
         for tier in SourceTier.allCases {
             var v: Double?
             try m.read("confidence_" + tier.rawValue, &v)
@@ -187,10 +191,10 @@ public struct Config: Sendable {
         }
         try m.finish()
         guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
-              (0...memory.maxCandidates).contains(memory.autoAttachK),
+              (0...memory.maxCandidates).contains(memory.autoAttachK), memory.experienceMaxChars >= 100,
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, high_confidence > medium_confidence, three distinct folder names")
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, high_confidence > medium_confidence, three distinct folder names")
         }
         return Config(llm: llm, core: core, computer: computer, idle: idle, memory: memory)
     }

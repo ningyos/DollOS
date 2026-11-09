@@ -8,10 +8,12 @@ import Foundation
 ///     think(level: medium | high)        the next model call thinks first
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories
-///     use_computer()                     opens the computer menu (spec 3.1, 2026-11-08)
+///     use_computer(expect)               opens the computer menu (spec 3.1, 2026-11-08); expect: what she
+///                                        should see when done (2026-11-09)
 ///
 /// The computer menu's tools are listed only in `use_computer()`'s result, never in the system prompt,
-/// and work only until `leave_computer()`: click, type, key, scroll, drag, screenshot, watch.
+/// and work only until her computer session ends: click, type, key, scroll, drag, screenshot, watch,
+/// leave_computer (asks whether `expect` was reached), outcome (her answer; ends the session).
 public enum Tools {
     /// One tool as the system prompt lists it.
     struct Spec {
@@ -68,8 +70,11 @@ public enum Tools {
                  ], jsonParameters: []),
             Spec(name: "use_computer",
                  description: "打開電腦選單：坐到你的電腦（一台 macOS）前面。結果會列出操作電腦的工具，附現在的全螢幕截圖、最前面視窗的視窗圖和概要。用完呼叫 leave_computer() 離開。",
-                 parameters: ["type": "object", "properties": [:], "required": []],
-                 jsonParameters: []),
+                 parameters: [
+                     "type": "object",
+                     "properties": ["expect": ["type": "string", "description": "做完的時候畫面上、檔案裡應該看到什麼（例如：桌面有 copy.rtf，內容跟 notes.txt 一樣）"]],
+                     "required": ["expect"],
+                 ], jsonParameters: []),
         ]
     }
 
@@ -142,9 +147,19 @@ public enum Tools {
                      "required": ["target"],
                  ], jsonParameters: []),
             Spec(name: "leave_computer",
-                 description: "離開電腦選單；上面這些電腦工具會鎖回去，watch 也會停。",
+                 description: "要離開電腦選單時呼叫。程式會問你開始前說的期望達成了沒；下一回合用 outcome 回答，回答完電腦工具才鎖回去。watch 會停。",
                  parameters: ["type": "object", "properties": [:], "required": []],
                  jsonParameters: []),
+            Spec(name: "outcome",
+                 description: "leave_computer 之後回答：use_computer 時說的期望達成了沒。先檢查再答。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("success", ["type": "boolean", "description": "達成就是 true，沒有就是 false"]),
+                         ("evidence", ["type": "string", "description": "你看到什麼所以這樣判斷"]),
+                     ]),
+                     "required": ["success", "evidence"],
+                 ], jsonParameters: ["success"]),
         ]
     }
 
@@ -199,9 +214,10 @@ public enum Tools {
         case think(String)
         case remember([Item])
         case recall(String)
-        case useComputer
+        case useComputer(expect: String)
         case leaveComputer
         case act(ComputerAction)
+        case outcome(success: Bool, evidence: String)
         /// `click` at x, y on the full screenshot or on the last window crop; the program converts
         /// and checks them before anything is clicked.
         case clickAt(x: Int, y: Int, onWindow: Bool, button: String, count: Int)
@@ -216,7 +232,7 @@ public enum Tools {
         if let problem = call.malformed { throw ToolError(description: problem + "\n" + ParsedReply.format) }
         guard let spec = specs.first(where: { $0.name == call.name }) else {
             if locked.contains(where: { $0.name == call.name }) {
-                throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 use_computer() 打開電腦選單")
+                throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
             }
             throw ToolError(description: "沒有 \(call.name) 這個工具")
         }
@@ -272,7 +288,13 @@ public enum Tools {
         case "recall":
             return .recall(try nonEmpty("query"))
         case "use_computer":
-            return .useComputer
+            return .useComputer(expect: try nonEmpty("expect"))
+        case "outcome":
+            let raw = try nonEmpty("success").lowercased()
+            guard raw == "true" || raw == "false" else {
+                throw ToolError(description: "outcome 的 success 只能是 true 或 false，收到 \(raw)")
+            }
+            return .outcome(success: raw == "true", evidence: try nonEmpty("evidence"))
         case "leave_computer":
             return .leaveComputer
         case "screenshot":
@@ -588,7 +610,7 @@ enum Instructions {
 
         做事只能透過工具：要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光用嘴說「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。
 
-        你有一台自己的電腦（macOS）。use_computer() 打開電腦選單，結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。用完呼叫 leave_computer() 離開，電腦工具會鎖回去。
+        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。用完呼叫 leave_computer()，程式會問你 expect 達成了沒，下一回合檢查後用 outcome 回答，電腦工具才鎖回去。
 
         回覆裡 <tool_call> 以外的文字就是你對主人說的話；要說的話寫在工具呼叫前面。沒話要說可以不寫。
 

@@ -22,6 +22,24 @@ public struct TurnReport: Sendable {
     public var usedTool: Bool
     /// The 【相關記憶】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var attached: [String]
+    /// How a computer session ended this turn: "success" / "failure" from her `outcome`, "unknown"
+    /// when the turn after `leave_computer` did not answer; nil when none ended.
+    public var outcome: String?
+    /// The experience memory written this turn (on her success), verbatim.
+    public var experience: String?
+}
+
+/// One computer session (spec 3.1, 2026-11-09「先砍到最小」): from `use_computer(expect)` until her
+/// `outcome` (or the turn after `leave_computer` passing without one).
+struct ComputerSession {
+    /// What she said she should see when done.
+    let expect: String
+    /// The owner's last line when she opened the computer.
+    let task: String
+    /// Her computer actions, one line each: what she did, then the first line of the VM's answer.
+    var steps: [String] = []
+    /// `leave_computer` asked her whether it was reached; her next turn must answer with `outcome`.
+    var asked = false
 }
 
 enum Log {
@@ -90,8 +108,14 @@ public actor Doll {
     let tools: [Tools.Spec]
     /// The computer menu; listed only in `use_computer()`'s result.
     let computerTools: [Tools.Spec]
-    /// Between `use_computer()` and `leave_computer()`.
+    /// Between `use_computer()` and the end of its session (her `outcome`, or the turn after
+    /// `leave_computer()` without one).
     var inComputer = false
+    /// The open computer session; nil outside the computer menu.
+    var session: ComputerSession?
+    /// This turn's session end and experience memory, for its report.
+    var outcomeNow: String?
+    var experienceNow: String?
     /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
     /// files on first use, then kept here.
     var learnedApps: [String: String]?
@@ -299,8 +323,9 @@ public actor Doll {
     public func footer(contextTokens: Int) -> String {
         let now = Date().timeIntervalSince1970
         var out = ["【狀況】", "- 現在 \(clock(now))"]
-        out.append(inComputer ? "- 選單：電腦（用完呼叫 leave_computer() 離開）"
-                              : "- 選單：頂層（電腦工具鎖著；use_computer() 打開）")
+        out.append(!inComputer ? "- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）"
+                   : session?.asked == true ? "- 選單：電腦（這一回合用 outcome 回答期望達成了沒）"
+                   : "- 選單：電腦（用完呼叫 leave_computer() 離開）")
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- context 約 \(contextTokens) token；下一回合 effort：\(nextEffort)")
         return out.joined(separator: "\n")
@@ -328,6 +353,8 @@ public actor Doll {
         turnIndex += 1
         followUp = false
         attachedNow = []
+        outcomeNow = nil
+        experienceNow = nil
         // A new owner line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
@@ -371,6 +398,8 @@ public actor Doll {
         }
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
+        // A session `leave_computer` asked about before this turn must end in it: her `outcome`, or unknown.
+        let mustAnswer = session?.asked == true
         for call in parsed.calls {
             let out = await execute(call, seen: events, reply: stored)
             try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
@@ -380,6 +409,10 @@ public actor Doll {
                 followUp = true
                 taskTurn = true
             }
+        }
+        if mustAnswer, session != nil {
+            endSession("unknown")
+            try store.append(Event(.memory, .internal, "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。"))
         }
         // A computer result showed another front app: one 【相關記憶】 after all of this reply's results.
         if appSwitched {
@@ -400,7 +433,7 @@ public actor Doll {
 
         let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
-                                attached: attachedNow)
+                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
@@ -435,15 +468,36 @@ public actor Doll {
                 return remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try recall(query, seen: events)
-            case .useComputer:
+            case .useComputer(let expect):
                 guard !inComputer else { return Outcome(text: "已經在電腦選單裡了。", actions: [name]) }
                 inComputer = true
+                session = ComputerSession(expect: expect, task: events.last { $0.kind == .owner }?.text ?? "")
                 return await withScreenshot(Tools.menu(computerTools), actions: [name])
             case .leaveComputer:
-                inComputer = false
+                // Not relocked yet: her next turn may still look, and must answer with `outcome`.
                 let had = watch != nil
                 stopWatch()
-                return Outcome(text: "離開電腦選單了；電腦工具鎖回去了" + (had ? "，watch 也停了。" : "。"), actions: [name])
+                session?.asked = true
+                let expect = session?.expect ?? ""
+                return Outcome(text: "你開始前說完成時應該看到：「\(expect)」。現在達成了嗎？檢查後用 outcome(success, evidence) 回答。"
+                               + (had ? "（watch 停了。）" : ""), actions: [name])
+            case .outcome(let success, let evidence):
+                guard session?.asked == true else {
+                    throw ToolError(description: "outcome 要在 leave_computer() 之後回答")
+                }
+                let s = session!
+                endSession(success ? "success" : "failure")
+                log("INFO", "turn \(turnIndex): outcome success=\(success) evidence「\(evidence)」")
+                guard success else {
+                    return Outcome(text: "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。", actions: ["outcome failure"])
+                }
+                let text = Self.experienceText(task: s.task, expect: s.expect, steps: s.steps, evidence: evidence,
+                                               maxChars: memoryConfig.experienceMaxChars)
+                let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil)
+                experienceNow = text
+                log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars")
+                return Outcome(text: "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。",
+                               actions: ["outcome success"])
             case .screenshot:
                 watchIdle = 0
                 return await withScreenshot("現在的畫面：", actions: [name])
@@ -589,8 +643,10 @@ public actor Doll {
         log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
         switch result {
         case .success(let answer):
+            session?.steps.append(said + " → " + Self.firstLine(answer))
             return await withScreenshot("\(said)\n\(answer)", actions: [name])
         case .failure(let error):
+            session?.steps.append("失敗：" + said + " → " + Self.firstLine("\(error)"))
             // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
             return await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
@@ -708,6 +764,50 @@ public actor Doll {
         put(Event(.watch, .internal, text, image: image))
     }
 
+    // computer session ---------------------------------------------------------
+    /// Ends the open computer session as `outcome` (success / failure / unknown) and relocks the menu.
+    func endSession(_ outcome: String) {
+        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: no outcome after leave_computer") }
+        session = nil
+        inComputer = false
+        stopWatch()
+        outcomeNow = outcome
+    }
+
+    /// At most this many characters of a VM answer's first line go into a step.
+    static let stepAnswerChars = 80
+
+    static func firstLine(_ s: String) -> String {
+        let line = s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        return line.count > stepAnswerChars ? String(line.prefix(stepAnswerChars)) + "…" : line
+    }
+
+    /// One experience memory (spec 3.1, 2026-11-09): the owner's line, what she expected, her
+    /// numbered actions, her evidence. Over `maxChars`, steps go from the middle first (the first
+    /// and last steps say the most), each gap marked; the original numbers stay.
+    static func experienceText(task: String, expect: String, steps: [String], evidence: String, maxChars: Int) -> String {
+        let numbered = steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
+        var kept = Array(numbered.indices)
+        func render() -> String {
+            var lines = ["經驗：\(task)", "期望：\(expect)"]
+            var prev = -1
+            for i in kept {
+                if i > prev + 1 { lines.append("（省略 \(i - prev - 1) 步）") }
+                lines.append(numbered[i])
+                prev = i
+            }
+            if prev < numbered.count - 1 { lines.append("（省略 \(numbered.count - 1 - prev) 步）") }
+            lines.append("結果：\(evidence)")
+            return lines.joined(separator: "\n")
+        }
+        var text = render()
+        while text.count > maxChars, !kept.isEmpty {
+            kept.remove(at: kept.count / 2)
+            text = render()
+        }
+        return text.count > maxChars ? String(text.prefix(maxChars - 1)) + "…" : text
+    }
+
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
     static let observingTools: Set<String> = ["use_computer", "click", "type", "key", "scroll", "drag", "screenshot"]
@@ -784,14 +884,12 @@ public actor Doll {
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
     }
 
-    /// At most this many characters of a memory's first line go into 【相關記憶】; the rest is `recall`'s.
-    static let attachChars = 80
-
     /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): the owner's last line plus
     /// the front app's name as the query, the turn's visible folders (`recall`'s rule), the top
-    /// `auto_attach_k` hits minus those attached since the owner's last line. Anything left becomes
-    /// one 【相關記憶】 event in the timeline, re-sent byte-identical like every event; nothing left,
-    /// no event. Each record is its first line, cut at `attachChars`, after its label and folder.
+    /// `auto_attach_k` experiences (tier self_reported only; her other memories and the program's
+    /// shortcuts stay for `recall`, 2026-11-09) minus those attached since the owner's last line.
+    /// Anything left becomes one 【相關記憶】 event in the timeline, re-sent byte-identical like every
+    /// event; nothing left, no event. Each experience goes in whole (its length is capped when written).
     /// A failed search is logged and attaches nothing; the turn goes on.
     func attachMemories(trigger: String) {
         let k = memoryConfig.autoAttachK
@@ -801,18 +899,16 @@ public actor Doll {
             guard let owner = events.last(where: { $0.kind == .owner }) else { return }
             let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-            let found = try memory.search(query, visible: visible, limit: k)
+            let found = try memory.search(query, visible: visible, limit: k, tiers: [.selfReported])
             let fresh = found.filter { !attachedIDs.contains($0.id) }
             log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found, "
                 + "attached \(fresh.map(\.id)), already attached \(found.count - fresh.count)")
             guard !fresh.isEmpty else { return }
             attachedIDs.formUnion(fresh.map(\.id))
             let from = frontAppName.map { "主人的話和前景 app「\($0)」" } ?? "主人的話"
-            var text = "【相關記憶】程式用\(from)查到的；全文用 recall。"
+            var text = "【相關記憶】程式用\(from)查到的過去經驗："
             for hit in fresh {
-                let first = hit.text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
-                let short = first.count > Self.attachChars ? String(first.prefix(Self.attachChars)) + "…" : first
-                text += "\n〔\(hit.label)｜\(hit.folder)〕\(short)"
+                text += "\n〔\(hit.label)｜\(hit.folder)〕\n\(hit.text)"
             }
             try store.append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
             attachedNow.append(text)

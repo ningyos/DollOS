@@ -29,7 +29,10 @@ private func key(_ keys: String) -> (String, [(String, String)]) { ("key", [("ke
 private func watch(_ target: String, _ maxWait: Int? = nil) -> (String, [(String, String)]) {
     ("watch", [("target", target)] + (maxWait.map { [("max_wait_s", "\($0)")] } ?? []))
 }
-private let useComputer: (String, [(String, String)]) = ("use_computer", [])
+private let useComputer: (String, [(String, String)]) = ("use_computer", [("expect", "畫面上看得到結果")])
+private func outcome(_ success: Bool, _ evidence: String) -> (String, [(String, String)]) {
+    ("outcome", [("success", "\(success)"), ("evidence", evidence)])
+}
 private let leaveComputer: (String, [(String, String)]) = ("leave_computer", [])
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
@@ -535,7 +538,7 @@ private struct Harness {
     await h.doll.ownerSaid("嗨")
     try await h.turn("哈囉")
     let first = h.last.footer
-    #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 選單：頂層（電腦工具鎖著；use_computer() 打開）")
+    #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）")
             && first.contains("- watch：沒有") && first.contains("下一回合 effort：medium"))
     let seq = try h.store.events().last!.seq!
     #expect(try h.store.footer(seq) == first)
@@ -856,14 +859,14 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let h = try await Harness()
     await h.doll.ownerSaid("按一下 Return")
     try await h.turn(Scripted("", key("Return")))
-    #expect(try h.toolResults().last!.text == "失敗：key 現在鎖著：先呼叫 use_computer() 打開電腦選單")
+    #expect(try h.toolResults().last!.text == "失敗：key 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
     #expect(h.last.actions == ["error key"] && h.vm.actions.isEmpty)
     #expect(h.last.footer.contains("- 選單：頂層"))
     try await h.turn(Scripted("", useComputer))
     let menu = try h.toolResults().last!
     #expect(menu.text.hasPrefix("電腦選單打開了") && menu.image != nil)
     let listed = menu.text.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    let names = ["click", "type", "key", "scroll", "drag", "screenshot", "watch", "leave_computer"]
+    let names = ["click", "type", "key", "scroll", "drag", "screenshot", "watch", "leave_computer", "outcome"]
     #expect(listed.count == names.count)
     for (line, name) in zip(listed, names) {
         #expect(line.contains("\"name\": \"\(name)\""))
@@ -873,7 +876,10 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(h.last.actions == ["key"] && h.vm.actions == [.key("Return")])
     #expect(h.last.footer.contains("- 選單：電腦（用完呼叫 leave_computer() 離開）"))
     try await h.turn(Scripted("", leaveComputer))
-    #expect(try h.toolResults().last!.text == "離開電腦選單了；電腦工具鎖回去了。")
+    #expect(try h.toolResults().last!.text == "你開始前說完成時應該看到：「畫面上看得到結果」。現在達成了嗎？檢查後用 outcome(success, evidence) 回答。")
+    #expect(await h.doll.inComputer)
+    try await h.turn(Scripted("", outcome(false, "沒看到")))
+    #expect(try h.toolResults().last!.text == "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。")
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.vm.actions.count == 1)
     #expect(h.last.footer.contains("- 選單：頂層"))
@@ -1543,7 +1549,7 @@ private final class FakeVMPal: Sendable {
     let h = try await menuHarness()
     try await h.turn(Scripted("", watch("window", 60)))
     try await h.turn(Scripted("", leaveComputer))
-    #expect(try h.toolResults().last!.text == "離開電腦選單了；電腦工具鎖回去了，watch 也停了。")
+    #expect(try h.toolResults().last!.text.hasSuffix("回答。（watch 停了。）"))
     h.vm.setFrame(1)
     try await Task.sleep(for: .milliseconds(200))
     let left = await h.doll.watch?.id
@@ -1655,24 +1661,26 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
 
 // auto-attached memories and the open windows line (spec 3.1, 2026-11-09) ----------------
 
-/// Writes one record file into her memory folder and re-indexes, as if remembered earlier.
-private func seedMemory(_ h: Harness, _ folder: String, _ text: String) async throws {
+/// Writes one record file into her memory folder and re-indexes, as if remembered earlier. Default:
+/// an experience (tier self_reported, 0.4 = 大概), the only kind the program attaches.
+private func seedMemory(_ h: Harness, _ folder: String, _ text: String, tier: String = "self_reported",
+                        confidence: Double = 0.4) async throws {
     let dir = h.dir.appending(path: "memory/\(folder)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let file = "+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 0\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n\(text)"
+    let file = "+++\nkind = \"\"\nconfidence = \(confidence)\ncreated_ts = 0\nsource_event_seq = 1\nsource_tier = \"\(tier)\"\n+++\n\(text)"
     try file.write(to: dir.appending(path: "1-\(UUID().uuidString.prefix(6).lowercased()).md"), atomically: true, encoding: .utf8)
     try await h.doll.rebuildMemory()
 }
 
 private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events().filter { $0.kind == .memory } }
 
-@Test func anOwnerLineAttachesRelatedMemoriesBeforeHerTurn() async throws {
+@Test func anOwnerLineAttachesRelatedExperiencesWholeBeforeHerTurn() async throws {
     let h = try await Harness()
-    try await seedMemory(h, "public", "主人喜歡用 TextEdit 寫筆記\n第二行細節")
+    try await seedMemory(h, "public", "經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點")
     await h.doll.ownerSaid("幫我用 TextEdit 寫筆記")
     try await h.turn("好")
     let mem = try memoryEvents(h)
-    #expect(mem.map(\.text) == ["【相關記憶】程式用主人的話查到的；全文用 recall。\n〔確定｜public〕主人喜歡用 TextEdit 寫筆記"])
+    #expect(mem.map(\.text) == ["【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點"])
     // Right after the owner's line, before the footer.
     let seen = await h.model.seen(0)
     #expect(seen[seen.count - 2].content.hasSuffix("] " + mem[0].text) && seen[seen.count - 2].role == "user")
@@ -1686,60 +1694,47 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events()
 
     // auto_attach_k = 0: off.
     let off = try await Harness(tune: { $0.memory.autoAttachK = 0 })
-    try await seedMemory(off, "public", "主人喜歡用 TextEdit 寫筆記")
+    try await seedMemory(off, "public", "經驗：幫我用 TextEdit 寫筆記")
     await off.doll.ownerSaid("幫我用 TextEdit 寫筆記")
     try await off.turn("好")
     #expect(try memoryEvents(off).isEmpty)
 }
 
-@Test func anAppSwitchAttachesOnlyWhatIsNewUntilTheOwnerSpeaksAgain() async throws {
+@Test func onlyExperiencesAreAttachedNeverShortcutsOrHerOtherMemories() async throws {
     let h = try await Harness()
     h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用電腦")
-    // Her memory is empty at the owner's line: no event. use_computer shows TextEdit, its shortcuts
-    // are learned, and it is a new front app: one event after the result.
+    try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s", tier: "owner", confidence: 0.9)
+    try await seedMemory(h, "public", "TextEdit：File › Save＝⌘S（TextEdit 1.20）", tier: "program", confidence: 0.95)
+    try await seedMemory(h, "public", "經驗：用 TextEdit 存檔\n1. key cmd+s → Done\n結果：存好了")
+    await h.doll.ownerSaid("用 TextEdit 存檔")
     try await h.turn(Scripted("", useComputer))
-    var mem = try memoryEvents(h)
-    #expect(mem.count == 1)
-    #expect(mem[0].text.hasPrefix("【相關記憶】程式用主人的話和前景 app「TextEdit」查到的；全文用 recall。\n"))
-    #expect(mem[0].text.components(separatedBy: "\n").count == 4)
-    #expect(mem[0].text.contains("\n〔確定｜public〕TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）"))
-    let events = try h.store.events()
-    #expect(events.last?.kind == .memory && events[events.count - 2].kind == .tool)
-    // The same app again: nothing.
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try memoryEvents(h).count == 1)
-    // Another app: only what was not attached yet.
-    h.vm.setApp(AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0"),
-                [MenuShortcut(path: "File › New Finder Window", keys: "⌘N")])
-    try await h.turn(Scripted("", screenshotCall))
-    mem = try memoryEvents(h)
-    #expect(mem.count == 2)
-    #expect(mem.last?.text == "【相關記憶】程式用主人的話和前景 app「Finder」查到的；全文用 recall。\n〔確定｜public〕Finder：File › New Finder Window＝⌘N（Finder 15.0）")
-    // Back to TextEdit: a switch, but all it finds was attached already: no event, no empty one.
-    h.vm.setApp(textEdit, textEditKeys)
-    try await h.turn(Scripted("", screenshotCall))
-    #expect(try memoryEvents(h).count == 2)
-    #expect(h.logs.contains { $0.contains("相關記憶（前景 app 換成 TextEdit）") && $0.contains("attached [], already attached 4") })
-    // The owner's next line starts over: the same records come again.
-    await h.doll.ownerSaid("TextEdit 另存新檔")
+    // The owner's line: the experience only. use_computer shows TextEdit (a switch, its shortcuts
+    // learned now): nothing new to attach, no event.
+    let mem = try memoryEvents(h)
+    #expect(mem.count == 1 && mem[0].text.contains("經驗：用 TextEdit 存檔") && !mem[0].text.contains("⌘S（"))
+    #expect(!mem[0].text.contains("TextEdit 存檔按 cmd+s"))
+    #expect(h.logs.contains { $0.contains("相關記憶（前景 app 換成 TextEdit）") && $0.contains("attached [], already attached 1") })
+    // The shortcuts and her own memory are still recallable.
+    try await h.turn(Scripted("", recall("TextEdit 存檔")))
+    let found = try h.toolResults().last!.text
+    #expect(found.contains("TextEdit 存檔按 cmd+s") && found.contains("＝⌘S（TextEdit"))
+    // The owner's next line starts over: the same experience comes again.
+    await h.doll.ownerSaid("再存一次 TextEdit")
     try await h.turn("好")
-    mem = try memoryEvents(h)
-    #expect(mem.count == 3 && mem[2].text.hasPrefix("【相關記憶】程式用主人的話和前景 app「TextEdit」查到的"))
-    #expect(mem[2].text.components(separatedBy: "\n").count == 5)
+    #expect(try memoryEvents(h).count == 2)
 }
 
 @Test func attachedMemoriesAreResentByteIdentical() async throws {
     let h = try await Harness()
     h.vm.setApp(textEdit, textEditKeys)
-    try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s")
+    try await seedMemory(h, "public", "經驗：用電腦存檔\n1. key cmd+s → Done")
     await h.doll.ownerSaid("用電腦存檔")
     try await h.turn(Scripted("", useComputer))
     try await h.turn(Scripted("", key("cmd+s")))
     try await h.turn("好了")
     let reqs = await h.model.requests.map(\.messages)
     #expect(reqs.count == 3)
-    #expect(reqs[0].contains { $0.content.contains("【相關記憶】") } && reqs[1].filter { $0.content.contains("【相關記憶】") }.count == 2)
+    #expect(reqs[0].contains { $0.content.contains("【相關記憶】") } && reqs[1].filter { $0.content.contains("【相關記憶】") }.count == 1)
     // Every request starts with the whole request before it, footer included: nothing is ever
     // re-rendered differently or appended at the tail only.
     for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
@@ -1747,19 +1742,107 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events()
 
 @Test func attachedMemoriesKeepTheFolderRules() async throws {
     let h = try await Harness()
-    try await seedMemory(h, "secret", "TextEdit 的秘密筆記密碼是 1234")
-    try await seedMemory(h, "own", "我的 TextEdit 帳號是 doll")
-    try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s")
+    try await seedMemory(h, "secret", "經驗：TextEdit 的秘密筆記密碼是 1234")
+    try await seedMemory(h, "own", "經驗：我的 TextEdit 帳號是 doll")
+    try await seedMemory(h, "public", "經驗：TextEdit 存檔按 cmd+s")
     await h.doll.ownerSaid("TextEdit 怎麼用")
     try await h.turn("好")
     let first = try memoryEvents(h)
     #expect(first.count == 1 && !first[0].secret && !first[0].text.contains("1234"))
-    #expect(first[0].text.contains("〔確定｜own〕我的 TextEdit 帳號是 doll") && first[0].text.contains("〔確定｜public〕TextEdit 存檔按 cmd+s"))
+    #expect(first[0].text.contains("〔大概｜own〕\n經驗：我的 TextEdit 帳號是 doll") && first[0].text.contains("〔大概｜public〕\n經驗：TextEdit 存檔按 cmd+s"))
     // A secret owner line: the turn has seen a secret, so secret/ is read, and the event is a secret one.
     await h.doll.ownerSaid("TextEdit 的秘密筆記", secret: true)
     try await h.turn("好")
     let second = try memoryEvents(h)
-    #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔確定｜secret〕TextEdit 的秘密筆記密碼是 1234"))
+    #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔大概｜secret〕\n經驗：TextEdit 的秘密筆記密碼是 1234"))
+}
+
+// computer sessions and experiences (spec 3.1, 2026-11-09「先砍到最小」) -------------------
+
+/// Her public memory files with tier self_reported.
+private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTier, confidence: Double, kind: String, app: String, version: String)] {
+    try publicMemories(h).filter { $0.tier == .selfReported }
+}
+
+@Test func useComputerNeedsExpect() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("用電腦")
+    try await h.turn(Scripted("", ("use_computer", [])))
+    #expect(try h.toolResults().last!.text == "失敗：use_computer 少了參數 expect")
+    try await h.turn(Scripted("", ("use_computer", [("expect", "  ")])))
+    #expect(try h.toolResults().last!.text == "失敗：use_computer 的 expect 是空的")
+    #expect(await !h.doll.inComputer)
+}
+
+@Test func aSuccessfulOutcomeWritesOneExperienceOfHerActions() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("把 notes 存檔")
+    try await h.turn(Scripted("", ("use_computer", [("expect", "標題沒有「已編輯」")])))
+    // Before leave_computer, outcome is an error and nothing ends.
+    try await h.turn(Scripted("", outcome(true, "好了")))
+    #expect(try h.toolResults().last!.text == "失敗：outcome 要在 leave_computer() 之後回答")
+    h.vm.failNext("boom\nsecond line")
+    try await h.turn(Scripted("", ("click", [("text", "Save")]), screenshotCall))
+    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn(Scripted("", leaveComputer))
+    #expect(h.last.outcome == nil)
+    // The asked turn: the menu still open, the footer says to answer; she looks, then answers.
+    try await h.turn(Scripted("", screenshotCall, outcome(true, "標題沒有點")))
+    #expect(h.last.footer.contains("- 選單：電腦（這一回合用 outcome 回答期望達成了沒）"))
+    #expect(try h.toolResults().last!.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
+    let text = "經驗：把 notes 存檔\n期望：標題沒有「已編輯」\n1. 失敗：click「Save」 → boom\n2. key cmd+s → Done: 1 action in 0.1 s.\n結果：標題沒有點"
+    #expect(h.last.outcome == "success" && h.last.experience == text && h.last.actions.contains("outcome success"))
+    let mems = try experiences(h)
+    let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
+    #expect(mems.count == 1 && mems[0].text == text && mems[0].confidence == conf && mems[0].kind == "")
+    #expect(conf >= 0.3 && conf < 0.7)
+    // Relocked.
+    try await h.turn(Scripted("", key("Return")))
+    #expect(h.last.actions == ["error key"] && h.last.footer.contains("- 選單：頂層"))
+    #expect(await !h.doll.inComputer)
+    // The next time the owner asks the same, it is attached whole.
+    await h.doll.ownerSaid("把 notes 存檔")
+    try await h.turn("好")
+    #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + text))
+}
+
+@Test func aFailedOrMissingOutcomeWritesNothing() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", key("cmd+s"), leaveComputer))
+    try await h.turn(Scripted("", outcome(false, "還有點")))
+    #expect(h.last.outcome == "failure" && h.last.experience == nil)
+    #expect(try experiences(h).isEmpty)
+
+    // No outcome in the turn after leave_computer: unknown, relocked, said in the timeline.
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", watch("window", 60), leaveComputer))
+    #expect(await h.doll.watch == nil)
+    try await h.turn(Scripted("好了", screenshotCall))
+    #expect(h.last.outcome == "unknown" && h.last.experience == nil)
+    #expect(await !h.doll.inComputer)
+    #expect(try memoryEvents(h).last?.text == "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。")
+    #expect(h.logs.contains { $0.contains("outcome unknown") })
+    #expect(try experiences(h).isEmpty)
+    // A bad success value is an error, and the session stays asked.
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", leaveComputer))
+    try await h.turn(Scripted("", ("outcome", [("success", "maybe"), ("evidence", "x")]), outcome(true, "看到了")))
+    #expect(try h.toolResults().map(\.text).contains("失敗：outcome 的 success 只能是 true 或 false，收到 maybe"))
+    #expect(h.last.outcome == "success")
+    #expect(try experiences(h).count == 1)
+}
+
+@Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
+    let steps = (1...12).map { "key cmd+\($0) → Done: 1 action in 0.1 s." }
+    let full = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 10_000)
+    #expect(full.components(separatedBy: "\n").count == 15 && !full.contains("省略"))
+    let cut = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 300)
+    #expect(cut.count <= 300)
+    #expect(cut.hasPrefix("經驗：做事\n期望：做好\n1. key cmd+1 ") && cut.hasSuffix("\n12. key cmd+12 → Done: 1 action in 0.1 s.\n結果：看到了"))
+    #expect(cut.contains("（省略 ") && cut.components(separatedBy: "\n").count < 15)
+    // Header and evidence alone over the cap: hard cut.
+    let tiny = Doll.experienceText(task: String(repeating: "長", count: 500), expect: "x", steps: steps, evidence: "y", maxChars: 100)
+    #expect(tiny.count == 100 && tiny.hasSuffix("…"))
 }
 
 @Test func everyComputerResultEndsWithTheOpenWindowsAndFocusOrWhyNot() async throws {
