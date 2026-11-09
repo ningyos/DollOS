@@ -67,6 +67,93 @@ public struct MemoryHit: Sendable {
     public var label: String { kind.map { "\(level)的\($0.label)" } ?? level }
 }
 
+/// An experience's stats (spec 3.1, 2026-11-09): in its file's front-matter, so the embedded text
+/// stays what she did. `turns` and `seconds`: the task that wrote it, from the owner's line to her
+/// `outcome`. The other three: how often it was attached and then followed, and how those ended.
+public struct ExperienceStats: Sendable, Equatable {
+    public var turns: Int
+    public var seconds: Int
+    public var attachedFollowed: Int
+    public var attachedSuccess: Int
+    public var attachedFailed: Int
+
+    public init(turns: Int, seconds: Int, attachedFollowed: Int = 0, attachedSuccess: Int = 0, attachedFailed: Int = 0) {
+        self.turns = turns
+        self.seconds = seconds
+        self.attachedFollowed = attachedFollowed
+        self.attachedSuccess = attachedSuccess
+        self.attachedFailed = attachedFailed
+    }
+
+    /// The first line of the experience when attached; she sees it, the embedding does not.
+    public var line: String {
+        "成績：這次 \(turns) 回合、\(seconds) 秒；附上後照做 \(attachedFollowed) 次，成功 \(attachedSuccess) 次"
+            + "（這是已知可行的做法；如果看到更短的走法，可以直接走。）"
+    }
+}
+
+/// One memory file: a `+++` front-matter block, then the text verbatim. A record about one app at
+/// one version (a menu shortcut the program read) also names the app's bundle id and version; an
+/// experience, the owner's line it was for (JSON string) and its stats.
+public struct MemoryFile: Sendable, Equatable {
+    public var sourceSeq: Int64
+    public var ts: Double
+    public var confidence: Double
+    public var kind: String
+    public var tier: SourceTier
+    public var app = ""
+    public var appVersion = ""
+    public var task: String?
+    public var stats: ExperienceStats?
+    public var body: String
+
+    /// The file's bytes; `Memory.parseFile` of them gives this value back.
+    public var text: String {
+        var lines = ["+++", "kind = \"\(kind)\"", "confidence = \(confidence)", "created_ts = \(ts)",
+                     "source_event_seq = \(sourceSeq)", "source_tier = \"\(tier.rawValue)\""]
+        if !app.isEmpty { lines += ["app = \"\(app)\"", "app_version = \"\(appVersion)\""] }
+        if let task {
+            let enc = JSONEncoder()
+            enc.outputFormatting = .withoutEscapingSlashes
+            lines.append("task = " + String(decoding: (try? enc.encode(task)) ?? Data("\"\"".utf8), as: UTF8.self))
+        }
+        if let s = stats {
+            lines += ["turns = \(s.turns)", "seconds = \(s.seconds)", "attached_followed = \(s.attachedFollowed)",
+                      "attached_success = \(s.attachedSuccess)", "attached_failed = \(s.attachedFailed)"]
+        }
+        return (lines + ["+++", body]).joined(separator: "\n")
+    }
+}
+
+/// An experience memory as the program attaches it.
+public struct Experience: Sendable {
+    public var id: String
+    public var folder: String
+    public var secret: Bool
+    /// 確定 / 大概 / 聽說 (experiences have no kind).
+    public var level: String
+    public var file: MemoryFile
+
+    public var stats: ExperienceStats? { file.stats }
+    /// The owner's line it was for: front-matter `task`, or (a file without one) the text's first
+    /// line after 「經驗：」.
+    public var task: String {
+        if let t = file.task { return t }
+        let first = file.body.prefix { $0 != "\n" }
+        return String(first.hasPrefix("經驗：") ? first.dropFirst(3) : first)
+    }
+    /// Its numbered steps, without the numbers (steps cut for length are not there).
+    public var steps: [String] {
+        file.body.components(separatedBy: "\n").compactMap { line in
+            guard let dot = line.range(of: ". "), !line[..<dot.lowerBound].isEmpty,
+                  line[..<dot.lowerBound].allSatisfy(\.isASCII), line[..<dot.lowerBound].allSatisfy(\.isNumber) else { return nil }
+            return String(line[dot.upperBound...])
+        }
+    }
+    /// What she is shown: the stats line (when it has stats), then the text verbatim.
+    public var attachedText: String { (stats.map { $0.line + "\n" } ?? "") + file.body }
+}
+
 /// `NLContextualEmbedding`, mean-pooled over L2-normalized token vectors (Apple's
 /// documented pooling for subword embeddings), then L2-normalized again.
 final class Embedder {
@@ -100,12 +187,13 @@ final class Embedder {
             throw MemoryError(description: "embedding failed: \(error)")
         }
         var sums: [Double] = []
+        // The block returns whether to go on: true visits every token (false stopped after the first).
         result.enumerateTokenVectors(in: result.string.startIndex..<result.string.endIndex) { token, _ in
             let norm = token.reduce(0) { $0 + Double($1) * Double($1) }.squareRoot()
-            guard norm > 0 else { return false }
+            guard norm > 0 else { return true }
             if sums.isEmpty { sums = token.map { Double($0) / norm } }
             else { for i in 0..<token.count { sums[i] += Double(token[i]) / norm } }
-            return false
+            return true
         }
         guard !sums.isEmpty else { throw MemoryError(description: "embedding of an empty string") }
         let n = Double(sums.count)
@@ -131,6 +219,8 @@ public final class Memory {
         for dir in [config.secretDir, config.ownDir, config.publicDir] {
             try fm.createDirectory(at: root.appending(path: dir), withIntermediateDirectories: true)
         }
+        // An empty index is current whatever built it: writes into it need no rebuild at the next boot.
+        if try store.countMemoryIndex() == 0 { try store.setMemoryIndexVersion(Self.indexVersion) }
     }
 
     static func blob(_ v: [Float]) -> Data {
@@ -162,30 +252,19 @@ public final class Memory {
     }
 
     // markdown files ----------------------------------------------------------
-    /// One record = one file: a `+++` front-matter block, then the text verbatim. A record about one
-    /// app at one version (a menu shortcut the program read) also names the app's bundle id and version.
-    private static func fileText(sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
-                                 app: AppIdentity?, body: String) -> String {
-        let appLines = app.map { "app = \"\($0.bundleID)\"\napp_version = \"\($0.version)\"\n" } ?? ""
-        return """
-        +++
-        kind = "\(kind)"
-        confidence = \(confidence)
-        created_ts = \(ts)
-        source_event_seq = \(sourceSeq)
-        source_tier = "\(tier.rawValue)"
-        \(appLines)+++
-        \(body)
-        """
+    /// The file of the memory `id`, in whichever folder holds it; nil when none does.
+    private func url(of id: String) -> URL? {
+        MemoryFolder.allCases.map { directory($0).appending(path: "\(id).md") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    static func parseFile(_ text: String) throws -> (sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
-                                                     app: String, appVersion: String, body: String) {
+    static func parseFile(_ text: String) throws -> MemoryFile {
         let lines = text.components(separatedBy: "\n")
         guard lines.first == "+++", let end = lines.dropFirst().firstIndex(of: "+++") else {
             throw MemoryError(description: "no +++ front-matter block")
         }
-        var seq: Int64 = 0, ts = 0.0, confidence = 0.0, kind = "", tier = SourceTier.doll, app = "", appVersion = ""
+        var f = MemoryFile(sourceSeq: 0, ts: 0, confidence: 0, kind: "", tier: .doll, body: "")
+        var turns: Int?, seconds = 0, followed = 0, succeeded = 0, failed = 0
         for line in lines[1..<end] {
             let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { continue }
@@ -194,18 +273,26 @@ public final class Memory {
             let bare = value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2
                 ? String(value.dropFirst().dropLast()) : value
             switch key {
-            case "kind": kind = bare
-            case "confidence": confidence = Double(bare) ?? 0
-            case "created_ts": ts = Double(bare) ?? 0
-            case "source_event_seq": seq = Int64(bare) ?? 0
-            case "source_tier": tier = SourceTier(rawValue: bare) ?? .doll
-            case "app": app = bare
-            case "app_version": appVersion = bare
+            case "kind": f.kind = bare
+            case "confidence": f.confidence = Double(bare) ?? 0
+            case "created_ts": f.ts = Double(bare) ?? 0
+            case "source_event_seq": f.sourceSeq = Int64(bare) ?? 0
+            case "source_tier": f.tier = SourceTier(rawValue: bare) ?? .doll
+            case "app": f.app = bare
+            case "app_version": f.appVersion = bare
+            case "task": f.task = try? JSONDecoder().decode(String.self, from: Data(value.utf8))
+            case "turns": turns = Int(bare)
+            case "seconds": seconds = Int(bare) ?? 0
+            case "attached_followed": followed = Int(bare) ?? 0
+            case "attached_success": succeeded = Int(bare) ?? 0
+            case "attached_failed": failed = Int(bare) ?? 0
             default: break
             }
         }
-        let body = lines[(end + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (seq, ts, confidence, kind, tier, app, appVersion, body)
+        f.stats = turns.map { ExperienceStats(turns: $0, seconds: seconds, attachedFollowed: followed,
+                                              attachedSuccess: succeeded, attachedFailed: failed) }
+        f.body = lines[(end + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return f
     }
 
     /// Bundle id → version of every app whose shortcuts are in her public memories (front-matter `app`).
@@ -226,8 +313,7 @@ public final class Memory {
         return gone.count
     }
 
-    private func appRecords() throws -> [(URL, (sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
-                                                app: String, appVersion: String, body: String))] {
+    private func appRecords() throws -> [(URL, MemoryFile)] {
         let dir = directory(.public)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         return try names.sorted().filter { $0.hasSuffix(".md") }.compactMap { name in
@@ -237,10 +323,11 @@ public final class Memory {
         }
     }
 
-
+    /// An experience also gets the owner's line it was for and its stats in the front-matter, so the
+    /// embedded text stays what she did (spec 3.1, 2026-11-09).
     @discardableResult
     public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?,
-                      app: AppIdentity? = nil) throws -> String {
+                      app: AppIdentity? = nil, experience: (task: String, stats: ExperienceStats)? = nil) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -250,12 +337,96 @@ public final class Memory {
         let id = "\(sourceSeq)-\(Self.hex(6))"
         let folder = dirName(f)
         let url = directory(f).appending(path: "\(id).md")
-        try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier, app: app, body: body)
-            .write(to: url, atomically: true, encoding: .utf8)
+        let file = MemoryFile(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier,
+                              app: app?.bundleID ?? "", appVersion: app?.version ?? "",
+                              task: experience?.task, stats: experience?.stats, body: body)
+        try file.text.write(to: url, atomically: true, encoding: .utf8)
         let vector = try embedder.embed(body)
         try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: confidence,
                                 ts: ts, sourceSeq: sourceSeq, kind: kind?.rawValue ?? "", text: body, vector: Self.blob(vector))
         return id
+    }
+
+    // experiences -------------------------------------------------------------
+    /// 確定 / 大概 / 聽說 for a confidence (spec 6).
+    func level(_ confidence: Double) -> String {
+        confidence >= config.highConfidence ? "確定" : confidence >= config.mediumConfidence ? "大概" : "聽說"
+    }
+
+    /// Every experience (tier self_reported) in the folders `visible` names, by id.
+    func experiences(visible: Set<MemoryFolder>) throws -> [Experience] {
+        var out: [Experience] = []
+        for f in MemoryFolder.allCases where visible.contains(f) {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
+            for name in names.sorted() where name.hasSuffix(".md") {
+                let parsed = try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8))
+                guard parsed.tier == .selfReported, !parsed.body.isEmpty else { continue }
+                out.append(Experience(id: String(name.dropLast(3)), folder: dirName(f), secret: f == .secret,
+                                      level: level(parsed.confidence), file: parsed))
+            }
+        }
+        return out.sorted { $0.id < $1.id }
+    }
+
+    /// One experience by id; nil when no folder holds it or it is not an experience.
+    func experience(_ id: String) throws -> Experience? {
+        guard let url = url(of: id) else { return nil }
+        let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.tier == .selfReported else { return nil }
+        let folder = url.deletingLastPathComponent().lastPathComponent
+        return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
+    }
+
+    /// Changes an experience's stats in its file; the text, and so the index, stay as they are.
+    /// Returns the new stats; nil when the file has none (written before stats existed).
+    @discardableResult
+    func updateStats(_ id: String, _ change: (inout ExperienceStats) -> Void) throws -> ExperienceStats? {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard var stats = parsed.stats else { return nil }
+        change(&stats)
+        parsed.stats = stats
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        return stats
+    }
+
+    /// Experiences in groups: two whose owner lines embed at least `experience_group_similarity`
+    /// alike are in one group, and so is anything linked through a chain of such pairs.
+    func experienceGroups(_ list: [Experience]) throws -> [[Experience]] {
+        let vectors = try list.map { try embedder.embed($0.task) }
+        let groups = Self.groups(list.count) { i, j in
+            zip(vectors[i], vectors[j]).reduce(0.0) { $0 + Double($1.0) * Double($1.1) } >= config.experienceGroupSimilarity
+        }
+        return groups.map { $0.map { list[$0] } }
+    }
+
+    /// Connected components of `0..<n` under `similar`; each group in index order, groups by their first index.
+    static func groups(_ n: Int, similar: (Int, Int) -> Bool) -> [[Int]] {
+        var parent = Array(0..<n)
+        func root(_ i: Int) -> Int { parent[i] == i ? i : root(parent[i]) }
+        for i in 0..<n {
+            for j in (i + 1)..<n where similar(i, j) {
+                let a = root(i), b = root(j)
+                if a != b { parent[max(a, b)] = min(a, b) }
+            }
+        }
+        var byRoot: [Int: [Int]] = [:]
+        for i in 0..<n { byRoot[root(i), default: []].append(i) }
+        return byRoot.values.sorted { $0[0] < $1[0] }
+    }
+
+    /// Best first (spec 3.1, 2026-11-09, [Claude 定的]): any attached-then-failed goes below those
+    /// without; then fewest turns of the run that wrote it; more attached successes only break
+    /// ties. Experiences without stats come after those with; the id settles the rest.
+    public static func ranked(_ list: [Experience]) -> [Experience] {
+        func key(_ e: Experience) -> (Int, Int, Int, Int) {
+            guard let s = e.stats else { return (1, 0, 0, 0) }
+            return (0, s.attachedFailed > 0 ? 1 : 0, s.turns, -s.attachedSuccess)
+        }
+        return list.sorted { a, b in
+            let ka = key(a), kb = key(b)
+            return ka != kb ? ka < kb : a.id < b.id
+        }
     }
 
     /// Number of records on disk (the source of truth).
@@ -267,16 +438,25 @@ public final class Memory {
         }
     }
 
+    /// The index's version: change it whenever vectors or index rows would come out different from
+    /// the same files, so an index built by older code is rebuilt at boot. 2: vectors are the mean
+    /// of every token (1 stopped after the first token, 2026-11-09).
+    static let indexVersion = 2
+
     /// Called at boot: files written by a previous process (or by hand) are not in the index,
-    /// and a new process would not find them. If the counts disagree, the whole index is
-    /// rebuilt — records are small and few, a full rebuild is cheaper than tracking which are missing.
+    /// and a new process would not find them. If the counts disagree, or older code built the
+    /// index (`indexVersion`), the whole index is rebuilt — records are small and few, a full
+    /// rebuild is cheaper than tracking which are missing.
     func syncOnBoot() throws {
-        if fileCount() != (try store.countMemoryIndex()) { try rebuild() }
+        if try store.memoryIndexVersion() != Self.indexVersion || fileCount() != (try store.countMemoryIndex()) {
+            try rebuild()
+        }
     }
 
     /// Drops every index row and re-reads the markdown files (spec 6: SQLite is a rebuildable index).
     public func rebuild() throws {
         try store.clearMemoryIndex()
+        try store.setMemoryIndexVersion(Self.indexVersion)
         let fm = FileManager.default
         for f in MemoryFolder.allCases {
             let dir = directory(f)
@@ -368,8 +548,7 @@ public final class Memory {
             guard let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { continue }
             let parsed = try Self.parseFile(body)
             guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { continue }
-            let level = meta.confidence >= config.highConfidence ? "確定"
-                : meta.confidence >= config.mediumConfidence ? "大概" : "聽說"
+            let level = self.level(meta.confidence)
             hits.append(MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
                                   confidence: meta.confidence, level: level,
                                   kind: MemoryKind(rawValue: parsed.kind), text: parsed.body))

@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
     id TEXT PRIMARY KEY,
     vector BLOB NOT NULL             -- Float32, L2-normalized
 );
+CREATE TABLE IF NOT EXISTS memory_index_version (
+    one INTEGER PRIMARY KEY CHECK (one = 1),
+    version INTEGER NOT NULL         -- Memory.indexVersion of the code that built the index
+);
 """
 
 public struct StoreError: Error, CustomStringConvertible {
@@ -266,6 +270,16 @@ public final class Store {
         for sql in ["DELETE FROM memory_index", "DELETE FROM memory_fts", "DELETE FROM memory_vectors"] {
             try exec(sql, [])
         }
+    }
+
+    /// The `Memory.indexVersion` the index was built with; nil for an index from before versions.
+    public func memoryIndexVersion() throws -> Int? {
+        try query("SELECT version FROM memory_index_version WHERE one = 1", []) { Int($0.int(0)!) }.first
+    }
+
+    public func setMemoryIndexVersion(_ v: Int) throws {
+        try exec("INSERT INTO memory_index_version (one, version) VALUES (1, ?) ON CONFLICT(one) DO UPDATE SET version = excluded.version",
+                 [.int(Int64(v))])
     }
 
     /// FTS5 hits ordered by BM25 rank, from the given folders only; the id/folder columns are

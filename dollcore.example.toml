@@ -56,3 +56,5 @@ language = "zh-Hant"          # NLContextualEmbedding 的語言；zh-Hans／zh-H
 max_query_phrases = 16        # 初始值理由：中文查句切三連字窗，30 字以內的句子不會超過 28 個；16 個已經蓋住整句，再多重複字不增加命中
 auto_attach_k = 5             # 決定（2026-11-09，照 Qwen Code）：主人每則新訊息、電腦結果的前景 app 換了，程式用「主人最後一句＋前景 app 名」查記憶，附最多這麼多條（這則主人訊息以來附過的不再附）成一個【相關記憶】事件寫進時間線。0＝關。初始值理由：跟 top_k 一樣。改（2026-11-09）：只附經驗（source_tier self_reported），快捷鍵和她自己記的不附、recall 查得到
 experience_max_chars = 800   # 一條經驗最多幾個字（超過從中間的步驟砍起）。初始值理由：E 一次 9–16 個動作、一步約 30–50 字，800 字蓋得住；中文約一字一 token，附一次不到兩張截圖的量
+experience_group_similarity = 0.97   # 主人那句話的 embedding 相似度 ≥ 這個＝同一個目標，一組只附成績最好的一條（2026-11-09）。初始值理由：實測 E 跟改寫過的 E 0.984，E 跟 F（也是 notes.txt＋TextEdit）0.940，其他任務 0.72–0.88
+experience_follow_ratio = 0.5        # 附上的經驗有這麼多比例的步驟依序出現在她這次的動作裡＝照做了，照做才記成功／失敗。初始值理由：Experience2 P 對上 4–10 步，一半以上算照做

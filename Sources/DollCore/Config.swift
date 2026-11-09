@@ -97,6 +97,12 @@ public struct MemoryConfig: Sendable {
     /// An experience memory (her actions in a computer session she said reached what she expected,
     /// spec 3.1, 2026-11-09) is cut to at most this many characters, steps from the middle first.
     public var experienceMaxChars = 1200
+    /// Experiences whose owner-line embeddings are at least this similar are one group (the same
+    /// task); from each group only the best-ranked is attached (spec 3.1, 2026-11-09).
+    public var experienceGroupSimilarity = 0.97
+    /// An attached experience counts as followed when at least this share of its steps appear, in
+    /// order, among her actions of the session.
+    public var experienceFollowRatio = 0.5
 }
 
 public struct Config: Sendable {
@@ -185,6 +191,8 @@ public struct Config: Sendable {
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
         try m.read("auto_attach_k", &memory.autoAttachK)
         try m.read("experience_max_chars", &memory.experienceMaxChars)
+        try m.read("experience_group_similarity", &memory.experienceGroupSimilarity)
+        try m.read("experience_follow_ratio", &memory.experienceFollowRatio)
         for tier in SourceTier.allCases {
             var v: Double?
             try m.read("confidence_" + tier.rawValue, &v)
@@ -196,9 +204,11 @@ public struct Config: Sendable {
         try m.finish()
         guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
               (0...memory.maxCandidates).contains(memory.autoAttachK), memory.experienceMaxChars >= 100,
+              (0.0...1.0).contains(memory.experienceGroupSimilarity),
+              memory.experienceFollowRatio > 0, memory.experienceFollowRatio <= 1,
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, high_confidence > medium_confidence, three distinct folder names")
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, three distinct folder names")
         }
         return Config(llm: llm, core: core, computer: computer, idle: idle, memory: memory)
     }

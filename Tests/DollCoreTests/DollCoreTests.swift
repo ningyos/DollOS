@@ -638,6 +638,37 @@ private struct Harness {
     await h.doll.stop()
 }
 
+/// Vectors from older code (index version 1 kept only the first token's vector) are wrong even
+/// when every file is indexed: a different index version rebuilds the whole index at boot; the
+/// current one leaves it alone.
+@Test func bootRebuildsAnIndexBuiltByAnotherIndexVersion() async throws {
+    let h = try await Harness([Scripted("", remember([("主人的伺服器叫 Strata", false)]))])
+    #expect(try h.store.memoryIndexVersion() == Memory.indexVersion && Memory.indexVersion == 2)
+    await h.doll.ownerSaid("記一下我的伺服器")
+    try await h.turn()
+    let good = try h.store.memoryVectors(folders: ["public"])
+    #expect(good.count == 1)
+    let meta = try #require(try h.store.memoryMeta(good[0].id))
+    func stale() throws {      // what an old process left: same rows, another vector
+        try h.store.putMemoryIndex(id: good[0].id, path: meta.path, folder: meta.folder, confidence: meta.confidence, ts: 0,
+                                   sourceSeq: 1, kind: meta.kind, text: "主人的伺服器叫 Strata", vector: Memory.blob([1, 0, 0]))
+    }
+    func boot() async throws {
+        let again = try await Harness { $0.core.dataDir = h.dir.path; $0.memory.dir = h.dir.appending(path: "memory").path }
+        try await again.doll.boot()
+    }
+    // Current version, counts agree: nothing is rebuilt.
+    try stale()
+    try await boot()
+    #expect(try h.store.memoryVectors(folders: ["public"]).first?.vector == Memory.blob([1, 0, 0]))
+    // Version 1 (or none): rebuilt, the vector made again by the current code, the version stamped.
+    try h.store.setMemoryIndexVersion(1)
+    try await boot()
+    #expect(try h.store.memoryVectors(folders: ["public"]).first?.vector == good[0].vector)
+    #expect(try h.store.memoryIndexVersion() == 2)
+    await h.doll.stop()
+}
+
 @Test func configRejectsUnknownKeysAndBadPriority() throws {
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cfg-\(UUID().uuidString).toml")
     try "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\nbogus = 1\n".write(to: file, atomically: true, encoding: .utf8)
@@ -1833,10 +1864,17 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.last.footer.contains("- 選單：頂層"))
     #expect(await !h.doll.inComputer)
-    // The next time the owner asks the same, it is attached whole.
+    // Its stats are in the front-matter, not in the text (what is embedded): this run's 7 turns.
+    let files = try experienceFiles(h)
+    let stats = try #require(files.first?.stats)
+    #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
+    #expect(stats.turns == 7 && (0..<30).contains(stats.seconds)
+            && stats == ExperienceStats(turns: 7, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
+    // The next time the owner asks the same, it is attached whole, its stats line first.
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn("好")
-    #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + text))
+    #expect(stats.line == "成績：這次 7 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走。）")
+    #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
 }
 
 @Test func aFailedOrMissingOutcomeWritesNothing() async throws {
@@ -1906,4 +1944,169 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
             == "開著的視窗：沒有；焦點讀不到：WINDOW_NOT_FOUND: No window found")
     #expect(OpenWindows.line(windows: Data("boom".utf8), focused: Data(#"{"ok":true,"data":{"tree":{"role":"window"}}}"#.utf8))
             == "開著的視窗讀不到：agent-desktop 的回答不是 JSON：boom；焦點：沒有")
+}
+
+// experience stats, groups and ranking (spec 3.1, 2026-11-09) ------------------------------
+
+/// Her public experience files, parsed, by file name.
+private func experienceFiles(_ h: Harness) throws -> [MemoryFile] {
+    let dir = h.dir.appending(path: "memory/public")
+    return try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".md") }.sorted()
+        .map { try Memory.parseFile(String(contentsOf: dir.appending(path: $0), encoding: .utf8)) }
+        .filter { $0.tier == .selfReported }
+}
+
+/// Writes one experience file with stats into her public memory (as the program writes one) and re-indexes.
+private func seedExperience(_ h: Harness, _ id: String, task: String, steps: [String], stats: ExperienceStats?) async throws {
+    let dir = h.dir.appending(path: "memory/public")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let body = (["經驗：\(task)", "期望：做好"] + steps.enumerated().map { "\($0.offset + 1). \($0.element)" } + ["結果：好了"])
+        .joined(separator: "\n")
+    let file = MemoryFile(sourceSeq: 1, ts: 1794240000.5, confidence: 0.4, kind: "", tier: .selfReported,
+                          task: task, stats: stats, body: body)
+    try file.text.write(to: dir.appending(path: "\(id).md"), atomically: true, encoding: .utf8)
+    try await h.doll.rebuildMemory()
+}
+
+private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
+    try Memory.parseFile(String(contentsOf: h.dir.appending(path: "memory/public/\(id).md"), encoding: .utf8)).stats
+}
+
+@Test func aMemoryFileRendersBackByteIdentical() throws {
+    let f = MemoryFile(sourceSeq: 12, ts: 1794240000.123456, confidence: 0.4, kind: "", tier: .selfReported,
+                       task: "用 \"Finder\" 找/開\n第二行", stats: ExperienceStats(turns: 9, seconds: 140, attachedFollowed: 2,
+                                                                                attachedSuccess: 1, attachedFailed: 1),
+                       body: "經驗：x\n1. key cmd+s")
+    let parsed = try Memory.parseFile(f.text)
+    #expect(parsed == f && parsed.text == f.text)
+    #expect(f.text.contains("\ntask = \"用 \\\"Finder\\\" 找/開\\n第二行\"\nturns = 9\nseconds = 140\nattached_followed = 2\nattached_success = 1\nattached_failed = 1\n+++\n"))
+    // A file the program wrote before stats existed reads back the same, without any.
+    let old = "+++\nkind = \"\"\nconfidence = 0.4\ncreated_ts = 1794240000.0\nsource_event_seq = 0\nsource_tier = \"self_reported\"\n+++\n經驗：y"
+    let oldParsed = try Memory.parseFile(old)
+    #expect(oldParsed.text == old && oldParsed.stats == nil && oldParsed.task == nil)
+    let shortcut = MemoryFile(sourceSeq: 3, ts: 1.5, confidence: 0.95, kind: "", tier: .program, app: "com.apple.TextEdit",
+                              appVersion: "1.20", body: "TextEdit：File › Save＝⌘S")
+    #expect(try Memory.parseFile(shortcut.text).text == shortcut.text)
+}
+
+@Test func groupsAreChainsOfSimilarPairs() {
+    let pairs: Set<[Int]> = [[0, 2], [2, 4]]
+    #expect(Memory.groups(5) { pairs.contains([$0, $1]) } == [[0, 2, 4], [1], [3]])
+    #expect(Memory.groups(0) { _, _ in true }.isEmpty)
+    #expect(Memory.groups(3) { _, _ in true } == [[0, 1, 2]])
+}
+
+@Test func rankingIsFewestTurnsFailuresBelowSuccessesBreakTies() {
+    func exp(_ id: String, _ s: ExperienceStats?) -> Experience {
+        Experience(id: id, folder: "public", secret: false, level: "大概",
+                   file: MemoryFile(sourceSeq: 0, ts: 0, confidence: 0.4, kind: "", tier: .selfReported, stats: s, body: "經驗：x"))
+    }
+    let list = [
+        exp("a", ExperienceStats(turns: 8, seconds: 100, attachedFollowed: 1, attachedFailed: 1)),   // shortest, but failed once
+        exp("b", ExperienceStats(turns: 12, seconds: 200)),
+        exp("c", ExperienceStats(turns: 12, seconds: 250, attachedFollowed: 2, attachedSuccess: 2)),  // b's turns, more successes
+        exp("d", ExperienceStats(turns: 10, seconds: 300)),                                           // never attached: first anyway
+        exp("e", nil),
+        exp("f", ExperienceStats(turns: 9, seconds: 90, attachedFollowed: 3, attachedSuccess: 1, attachedFailed: 2)),
+    ]
+    #expect(Memory.ranked(list).map(\.id) == ["d", "c", "b", "a", "f", "e"])
+    #expect(Memory.ranked(list.reversed()).map(\.id) == ["d", "c", "b", "a", "f", "e"])
+}
+
+@Test func onlyTheBestOfEachTaskGroupIsAttached() async throws {
+    let h = try await Harness()
+    let e = "用 Finder 找到文件裡的 notes.txt，用 TextEdit 打開，在最後加一行『娃娃來過』，存檔"
+    let f = "用 TextEdit 打開文件裡的 notes.txt，另存一份到桌面，檔名 copy"
+    try await seedExperience(h, "1-elong", task: e, steps: ["key cmd+o", "key cmd+s"], stats: ExperienceStats(turns: 13, seconds: 219))
+    try await seedExperience(h, "2-eshort", task: e, steps: ["key cmd+s"], stats: ExperienceStats(turns: 10, seconds: 155))
+    try await seedExperience(h, "3-f", task: f, steps: ["key cmd+shift+s"], stats: ExperienceStats(turns: 8, seconds: 140))
+    await h.doll.ownerSaid(e)
+    try await h.turn("好")
+    let text = try #require(h.last.attached.first)
+    // E's two (same owner line, similarity 1) are one group: only its 10-turn one; F (0.94 < 0.97) is its own group.
+    #expect(text.contains("成績：這次 10 回合、155 秒") && !text.contains("13 回合") && text.contains("成績：這次 8 回合、140 秒"))
+    #expect(h.logs.contains { $0.contains("[2-eshort(10 回合, 照做 0, 成功 0, 失敗 0) > 1-elong(13 回合, 照做 0, 成功 0, 失敗 0)]") })
+    #expect(try await h.doll.experienceRanking().map { $0.map { String($0.prefix { $0 != ":" }) } } == [["2-eshort", "1-elong"], ["3-f"]])
+    // At similarity 1.0 owner lines that differ at all are separate groups: both are attached.
+    let loose = try await Harness(tune: { $0.memory.experienceGroupSimilarity = 1.0 })
+    try await seedExperience(loose, "1-a", task: e, steps: ["key cmd+o"], stats: ExperienceStats(turns: 13, seconds: 219))
+    try await seedExperience(loose, "2-b", task: e + "。", steps: ["key cmd+s"], stats: ExperienceStats(turns: 10, seconds: 155))
+    await loose.doll.ownerSaid(e)
+    try await loose.turn("好")
+    #expect(try #require(loose.last.attached.first).contains("13 回合") && loose.last.attached[0].contains("10 回合"))
+}
+
+@Test func stepsMatchInOrderByNamePointDoubleAndKey() {
+    // Experience2 (analysis.txt): P-1's experience against P-2's actions, P-2's against P-3's.
+    let p1 = ["click dockitem \"Finder\"", "click「Documents」", "click 441,213 right", "click 480,241", "click「TextEdit (default)」",
+              "click textfield", "type 「娃娃來過」", "key cmd+s"]
+    let p2 = ["click dockitem \"Finder\"", "click treeitem \"Documents\"", "click 441,213 right", "click「Open With」", "click 727,239",
+              "key cmd+Down", "type 「娃娃來過」", "key cmd+s"]
+    let p3 = ["click dockitem \"Finder\"", "click treeitem \"Documents\"", "click 575,246 right", "key Escape", "click 450,192", "key Return",
+              "key Escape", "click 450,192 right", "click「Open With」", "click「TextEdit (default)」", "key cmd+Down",
+              "type 「娃娃來過」", "key cmd+s"]
+    #expect(Doll.matchedSteps(p1, p2) == 5)   // Finder, Documents (same name), 441,213 right, type, cmd+s
+    #expect(Doll.matchedSteps(p2, p3) == 7)   // 441,213 right ~ 450,192 right (23 px)
+    #expect(Doll.matchedSteps(p2, []) == 0 && Doll.matchedSteps([], p2) == 0)
+    func same(_ a: String, _ b: String) -> Bool { StepShape(a).matches(StepShape(b)) }
+    #expect(same("click 430,195 雙擊", "click image \"notes.txt\" 雙擊") && !same("click 430,195", "click 430,195 雙擊"))
+    #expect(same("click 441,213", "click 441,253") && !same("click 441,213", "click 441,254"))
+    #expect(!same("click 441,213 right", "click 441,213") && same("click「OK」 right", "click button \"OK\" right"))
+    #expect(same("click textfield", "click textfield") && !same("click textfield", "click「textfield」"))
+    #expect(same("key cmd+Down", "key CMD+down") && !same("type 「a」", "type 「A」") && same("type 「a」", "type「a」"))
+    #expect(!same("key cmd+s", "type 「cmd+s」") && same("scroll down 3", "scroll down 3"))
+}
+
+@Test func aFollowedExperienceCountsHerOutcomeAndRanksBy() async throws {
+    let h = try await Harness()
+    let task = "把 notes 存檔"
+    try await seedExperience(h, "1-seed", task: task, steps: ["click dockitem \"Finder\"", "key cmd+s", "key cmd+w", "type 「娃娃來過」"],
+                             stats: ExperienceStats(turns: 9, seconds: 150))
+    // 1: two of its four steps in order (ratio 0.5 = experience_follow_ratio): followed, her success counted.
+    await h.doll.ownerSaid(task)
+    try await h.turn(Scripted("", useComputer))
+    let attached = try #require(h.reports[0].attached.first)
+    #expect(attached.contains("成績：這次 9 回合、150 秒；附上後照做 0 次，成功 0 次"))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s")))
+    try await h.turn(Scripted("", leaveComputer))
+    try await h.turn(Scripted("", outcome(true, "存好了")))
+    #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
+    #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
+    #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
+    // The attached event in the timeline is not re-rendered with the new stats: every request
+    // still starts with the whole one before it.
+    try await h.turn("好了")
+    #expect(try memoryEvents(h).first?.text == attached)
+    let reqs = await h.model.requests.map(\.messages)
+    for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+    // Her new experience (4 turns: use_computer, the actions, leave, outcome) now leads the group.
+    let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 4 })
+    #expect(fresh.stats == ExperienceStats(turns: 4, seconds: fresh.stats!.seconds))
+
+    // 2: the new one is attached; none of its steps done: not followed, nothing counted.
+    await h.doll.ownerSaid(task)
+    try await h.turn(Scripted("", useComputer))
+    #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 4 回合") && !h.last.attached[0].contains("9 回合"))
+    try await h.turn(Scripted("", key("cmd+q"), leaveComputer))
+    try await h.turn(Scripted("", outcome(false, "沒存到")))
+    #expect(h.last.follows.count == 1 && h.last.follows[0].hasSuffix("0/2 steps done in order (ratio 0.00), not followed"))
+    #expect(try experienceFiles(h).first { $0.stats?.turns == 4 }?.stats?.attachedFollowed == 0)
+
+    // 3: followed, and she says it failed: counted as a failure, and the failure demotes it below
+    // the 9-turn one that succeeded.
+    await h.doll.ownerSaid(task)
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), leaveComputer))
+    try await h.turn(Scripted("", outcome(false, "沒存到")))
+    #expect(h.last.follows.count == 1 && h.last.follows[0].contains("2/2 steps done in order (ratio 1.00), followed, counted failure: 照做 1、成功 0、失敗 1"))
+    let ranking = try await h.doll.experienceRanking()
+    #expect(ranking.count == 1 && ranking[0].count == 2 && ranking[0][0].hasPrefix("1-seed: 成績：這次 9 回合、150 秒；附上後照做 1 次，成功 1 次；失敗 0 次"))
+    #expect(ranking[0][1].contains("4 回合") && ranking[0][1].hasSuffix("附上後照做 1 次，成功 0 次；失敗 1 次"))
+    // An unknown outcome is only logged.
+    await h.doll.ownerSaid(task)
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s"), key("cmd+w"), leaveComputer))
+    try await h.turn(Scripted("好了", screenshotCall))
+    #expect(h.last.outcome == "unknown" && h.last.follows == ["experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted"])
+    #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
 }

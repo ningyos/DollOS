@@ -27,6 +27,9 @@ public struct TurnReport: Sendable {
     public var outcome: String?
     /// The experience memory written this turn (on her success), verbatim.
     public var experience: String?
+    /// Per experience attached during the session that ended this turn: how many of its steps she
+    /// did in order, and what was counted (spec 3.1, 2026-11-09).
+    public var follows: [String] = []
 }
 
 /// One computer session (spec 3.1, 2026-11-09「先砍到最小」): from `use_computer(expect)` until her
@@ -116,6 +119,7 @@ public actor Doll {
     /// This turn's session end and experience memory, for its report.
     var outcomeNow: String?
     var experienceNow: String?
+    var followsNow: [String] = []
     /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
     /// files on first use, then kept here.
     var learnedApps: [String: String]?
@@ -355,6 +359,7 @@ public actor Doll {
         attachedNow = []
         outcomeNow = nil
         experienceNow = nil
+        followsNow = []
         // A new owner line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
@@ -410,7 +415,8 @@ public actor Doll {
                 taskTurn = true
             }
         }
-        if mustAnswer, session != nil {
+        if mustAnswer, let s = session {
+            scoreAttached(steps: s.steps, outcome: "unknown")
             endSession("unknown")
             try store.append(Event(.memory, .internal, "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。"))
         }
@@ -433,7 +439,7 @@ public actor Doll {
 
         let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
-                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow)
+                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow, follows: followsNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
@@ -486,6 +492,7 @@ public actor Doll {
                     throw ToolError(description: "outcome 要在 leave_computer() 之後回答")
                 }
                 let s = session!
+                scoreAttached(steps: s.steps, outcome: success ? "success" : "failure")
                 endSession(success ? "success" : "failure")
                 log("INFO", "turn \(turnIndex): outcome success=\(success) evidence「\(evidence)」")
                 guard success else {
@@ -493,9 +500,15 @@ public actor Doll {
                 }
                 let text = Self.experienceText(task: s.task, expect: s.expect, steps: s.steps, evidence: evidence,
                                                maxChars: memoryConfig.experienceMaxChars)
-                let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil)
+                // Its run: from the owner's last line to this reply, her turns counted with this one.
+                let owner = events.last { $0.kind == .owner }
+                let turns = events.filter { $0.kind == .doll && $0.seq! > (owner?.seq ?? 0) }.count + 1
+                let stats = ExperienceStats(turns: turns, seconds: Int((reply.ts - (owner?.ts ?? reply.ts)).rounded()))
+                let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil,
+                                          experience: (task: s.task, stats: stats))
                 experienceNow = text
-                log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars")
+                log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars, "
+                    + "\(stats.turns) turns, \(stats.seconds) s")
                 return Outcome(text: "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。",
                                actions: ["outcome success"])
             case .screenshot:
@@ -888,11 +901,13 @@ public actor Doll {
     }
 
     /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): the owner's last line plus
-    /// the front app's name as the query, the turn's visible folders (`recall`'s rule), the top
-    /// `auto_attach_k` experiences (tier self_reported only; her other memories and the program's
-    /// shortcuts stay for `recall`, 2026-11-09) minus those attached since the owner's last line.
-    /// Anything left becomes one 【相關記憶】 event in the timeline, re-sent byte-identical like every
-    /// event; nothing left, no event. Each experience goes in whole (its length is capped when written).
+    /// the front app's name as the query, the turn's visible folders (`recall`'s rule), experiences
+    /// only (tier self_reported; her other memories and the program's shortcuts stay for `recall`,
+    /// 2026-11-09). Experiences for the same task are one group (`Memory.experienceGroups`); the top
+    /// `auto_attach_k` groups by relevance each give their best-ranked one (`Memory.ranked`), minus
+    /// those attached since the owner's last line. Anything left becomes one 【相關記憶】 event in the
+    /// timeline, re-sent byte-identical like every event; nothing left, no event. Each experience goes
+    /// in whole (its length is capped when written), its stats line first.
     /// A failed search is logged and attaches nothing; the turn goes on.
     func attachMemories(trigger: String) {
         let k = memoryConfig.autoAttachK
@@ -902,21 +917,147 @@ public actor Doll {
             guard let owner = events.last(where: { $0.kind == .owner }) else { return }
             let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-            let found = try memory.search(query, visible: visible, limit: k, tiers: [.selfReported])
-            let fresh = found.filter { !attachedIDs.contains($0.id) }
-            log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found, "
-                + "attached \(fresh.map(\.id)), already attached \(found.count - fresh.count)")
+            let found = try memory.search(query, visible: visible, limit: memoryConfig.maxCandidates, tiers: [.selfReported])
+            let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
+            var picked: [[Experience]] = []
+            for hit in found where picked.count < k {
+                guard let g = groups.first(where: { $0.contains { $0.id == hit.id } }),
+                      !picked.contains(where: { $0.contains { $0.id == hit.id } }) else { continue }
+                picked.append(Memory.ranked(g))
+            }
+            let fresh = picked.map { $0[0] }.filter { !attachedIDs.contains($0.id) }
+            let ranking = picked.map { g in "[" + g.map { e in
+                e.id + (e.stats.map { "(\($0.turns) 回合, 照做 \($0.attachedFollowed), 成功 \($0.attachedSuccess), 失敗 \($0.attachedFailed))" } ?? "(no stats)")
+            }.joined(separator: " > ") + "]" }
+            log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found in \(picked.count) groups "
+                + "\(ranking.joined(separator: " ")), attached \(fresh.map(\.id)), already attached \(picked.count - fresh.count)")
             guard !fresh.isEmpty else { return }
             attachedIDs.formUnion(fresh.map(\.id))
             let from = frontAppName.map { "主人的話和前景 app「\($0)」" } ?? "主人的話"
             var text = "【相關記憶】程式用\(from)查到的過去經驗："
-            for hit in fresh {
-                text += "\n〔\(hit.label)｜\(hit.folder)〕\n\(hit.text)"
+            for e in fresh {
+                text += "\n〔\(e.level)｜\(e.folder)〕\n\(e.attachedText)"
             }
             try store.append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
             attachedNow.append(text)
         } catch {
             log("ERROR", "turn \(turnIndex): 相關記憶（\(trigger)）failed: \(error)")
+        }
+    }
+
+    /// Her experiences in their groups, each best first (as attaching ranks them): one line per
+    /// experience, `id: stats line` (or `id: no stats`). For reports.
+    public func experienceRanking() throws -> [[String]] {
+        try memory.experienceGroups(try memory.experiences(visible: Set(MemoryFolder.allCases))).map { g in
+            Memory.ranked(g).map { "\($0.id): " + ($0.stats.map { "\($0.line.prefix { $0 != "（" })；失敗 \($0.attachedFailed) 次" } ?? "no stats") }
+        }
+    }
+
+    /// At a session's end, each experience attached since the owner's last line: the share of its
+    /// steps she did in order this session (`matchedSteps`). At least `experience_follow_ratio` is
+    /// followed, and a followed one counts her outcome in its stats (`attached_followed` and
+    /// `attached_success` or `attached_failed`); an unknown outcome is only logged.
+    func scoreAttached(steps done: [String], outcome: String) {
+        for id in attachedIDs.sorted() {
+            do {
+                guard let e = try memory.experience(id) else { continue }
+                let want = e.steps
+                let matched = Self.matchedSteps(want, done)
+                let ratio = want.isEmpty ? 0 : Double(matched) / Double(want.count)
+                let followed = ratio >= memoryConfig.experienceFollowRatio
+                var line = "experience \(id): \(matched)/\(want.count) steps done in order (ratio \(String(format: "%.2f", ratio)))"
+                if followed, outcome != "unknown" {
+                    let stats = try memory.updateStats(id) { s in
+                        s.attachedFollowed += 1
+                        if outcome == "success" { s.attachedSuccess += 1 } else { s.attachedFailed += 1 }
+                    }
+                    line += stats.map { s in
+                        ", followed, counted \(outcome): 照做 \(s.attachedFollowed)、成功 \(s.attachedSuccess)、失敗 \(s.attachedFailed)"
+                    } ?? ", followed; its file has no stats, nothing counted"
+                } else {
+                    line += followed ? ", followed; outcome unknown, nothing counted" : ", not followed"
+                }
+                log("INFO", "turn \(turnIndex): \(line)")
+                followsNow.append(line)
+            } catch {
+                log("ERROR", "turn \(turnIndex): scoring experience \(id) failed: \(error)")
+            }
+        }
+    }
+
+    /// How many of `want` appear in order among `done` (longest common subsequence under `sameStep`).
+    static func matchedSteps(_ want: [String], _ done: [String]) -> Int {
+        guard !want.isEmpty, !done.isEmpty else { return 0 }
+        let a = want.map(StepShape.init), b = done.map(StepShape.init)
+        var row = Array(repeating: 0, count: b.count + 1)
+        for i in 0..<a.count {
+            var prev = 0   // row[j] of the previous i
+            for j in 0..<b.count {
+                let up = row[j + 1]
+                row[j + 1] = a[i].matches(b[j]) ? prev + 1 : max(up, row[j])
+                prev = up
+            }
+        }
+        return row[b.count]
+    }
+}
+
+/// One experience step (`Doll.step`'s line) parsed for matching, the Experience2 analysis's loose
+/// rule: a click matches by the same element or text name, or a point within 40 px, with the same
+/// button; any double-click matches any double-click; keys case-insensitive; typed text exactly;
+/// anything else by its whole line.
+enum StepShape {
+    enum Target { case point(Int, Int), name(String), role(String) }
+    case click(Target, button: String, double: Bool)
+    case key(String)
+    case type(String)
+    case other(String)
+
+    init(_ line: String) {
+        if line.hasPrefix("key ") { self = .key(line.dropFirst(4).trimmingCharacters(in: .whitespaces).lowercased()); return }
+        if line.hasPrefix("type") {
+            var t = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("「"), t.hasSuffix("」"), t.count >= 2 { t = String(t.dropFirst().dropLast()) }
+            self = .type(t)
+            return
+        }
+        guard line.hasPrefix("click") else { self = .other(line); return }
+        var rest = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        var double = false, button = "left"
+        if rest.hasSuffix(" 雙擊") || rest == "雙擊" { double = true; rest = String(rest.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+        for b in ["right", "middle"] where rest.hasSuffix(" " + b) {
+            button = b
+            rest = String(rest.dropLast(b.count)).trimmingCharacters(in: .whitespaces)
+        }
+        let xy = rest.split(separator: ",")
+        if xy.count == 2, let x = Int(xy[0]), let y = Int(xy[1]) {
+            self = .click(.point(x, y), button: button, double: double)
+        } else if rest.hasPrefix("「"), rest.hasSuffix("」"), rest.count >= 2 {
+            self = .click(.name(String(rest.dropFirst().dropLast())), button: button, double: double)
+        } else if let open = rest.firstIndex(of: "\""), let close = rest.lastIndex(of: "\""), open < close {
+            self = .click(.name(String(rest[rest.index(after: open)..<close])), button: button, double: double)
+        } else {
+            self = .click(.role(rest), button: button, double: double)
+        }
+    }
+
+    func matches(_ o: StepShape) -> Bool {
+        switch (self, o) {
+        case let (.click(t1, b1, d1), .click(t2, b2, d2)):
+            if d1 || d2 { return d1 && d2 }
+            guard b1 == b2 else { return false }
+            switch (t1, t2) {
+            case let (.point(x1, y1), .point(x2, y2)):
+                let dx = Double(x1 - x2), dy = Double(y1 - y2)
+                return (dx * dx + dy * dy).squareRoot() <= 40
+            case let (.name(n1), .name(n2)): return n1 == n2
+            case let (.role(r1), .role(r2)): return r1 == r2
+            default: return false
+            }
+        case let (.key(k1), .key(k2)): return k1 == k2
+        case let (.type(t1), .type(t2)): return t1 == t2
+        case let (.other(l1), .other(l2)): return l1 == l2
+        default: return false
         }
     }
 }
