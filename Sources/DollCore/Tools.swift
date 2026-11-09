@@ -15,6 +15,15 @@ import Foundation
 /// and work only until her computer session ends: click, type, key, scroll, drag, screenshot, watch,
 /// outcome (whether `expect` was reached; ends the session, and nothing wakes her for it).
 public enum Tools {
+    /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
+    static let modifiers = ["cmd", "shift", "alt", "ctrl"]
+
+    /// The VMPal key string for one chord: modifiers in `modifiers` order, then the key, joined by `+`
+    /// (`cmd+shift+alt+s`). One fixed order, so the same chord is always the same step.
+    static func chord(key: String, modifiers mods: [String]) -> String {
+        (modifiers.filter(mods.contains) + [key.lowercased()]).joined(separator: "+")
+    }
+
     /// One tool as the system prompt lists it.
     struct Spec {
         let name: String
@@ -109,12 +118,16 @@ public enum Tools {
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: "key",
-                 description: "按鍵或組合鍵，例如 Return、Escape、cmd+s、cmd+space；用空白隔開會依序按。\(after)",
+                 description: "按一個鍵，可以同時按住修飾鍵。例：Return＝key(key: \"return\")；⌘S＝key(key: \"s\", modifiers: [\"cmd\"])；⇧⌥⌘S＝key(key: \"s\", modifiers: [\"cmd\", \"shift\", \"alt\"])。要依序按好幾個鍵，就在同一則回覆裡呼叫好幾次 key。\(after)",
                  parameters: [
                      "type": "object",
-                     "properties": ["keys": ["type": "string", "description": "要按的鍵"]],
-                     "required": ["keys"],
-                 ], jsonParameters: []),
+                     "properties": .object([
+                         ("key", ["type": "string", "description": "一個鍵：字母、數字，或 return、escape、tab、space、delete、up、down、left、right、f1 這類名字"]),
+                         ("modifiers", ["type": "array", "items": ["type": "string", "enum": .array(Tools.modifiers.map { .string($0) })],
+                                        "description": "同時按住的修飾鍵；不填就是沒有"]),
+                     ]),
+                     "required": ["key"],
+                 ], jsonParameters: ["modifiers"]),
             Spec(name: "scroll",
                  description: "捲動滑鼠所在的地方。\(after)",
                  parameters: [
@@ -319,7 +332,23 @@ public enum Tools {
             guard !text.isEmpty else { throw ToolError(description: "type 的 text 是空的") }
             return .act(.type(text))
         case "key":
-            return .act(.key(try nonEmpty("keys")))
+            let key = try nonEmpty("key")
+            guard !key.contains("+"), !key.contains(where: \.isWhitespace) else {
+                throw ToolError(description: "key 只放一個鍵，收到 \(key)；修飾鍵放 modifiers，例：key(key: \"s\", modifiers: [\"cmd\"])；要依序按好幾個鍵就呼叫好幾次 key")
+            }
+            var mods: [String] = []
+            if let raw = given("modifiers"), !raw.isEmpty {
+                guard let list = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else {
+                    throw ToolError(description: "key 的 modifiers 要是 JSON 陣列，例：[\"cmd\", \"shift\"]；收到 \(raw)")
+                }
+                for m in list.map({ $0.lowercased() }) {
+                    guard Tools.modifiers.contains(m) else {
+                        throw ToolError(description: "key 的 modifiers 只能是 \(Tools.modifiers.joined(separator: "、"))，收到 \(m)")
+                    }
+                    if !mods.contains(m) { mods.append(m) }
+                }
+            }
+            return .act(.key(Tools.chord(key: key, modifiers: mods)))
         case "scroll":
             let direction = try oneOf("direction", ["up", "down", "left", "right"], default: "")
             let amount = try int("amount") ?? 3

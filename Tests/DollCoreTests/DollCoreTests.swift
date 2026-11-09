@@ -26,7 +26,12 @@ private struct Scripted: ExpressibleByStringLiteral {
     }
 }
 
-private func key(_ keys: String) -> (String, [(String, String)]) { ("key", [("keys", keys)]) }
+/// `key("cmd+s")` → key(key: "s", modifiers: ["cmd"]); a lone key has no modifiers.
+private func key(_ chord: String) -> (String, [(String, String)]) {
+    let parts = chord.split(separator: "+").map(String.init)
+    let mods = parts.dropLast().map { "\"\($0)\"" }.joined(separator: ", ")
+    return ("key", [("key", parts.last!)] + (mods.isEmpty ? [] : [("modifiers", "[\(mods)]")]))
+}
 private func watch(_ target: String, _ maxWait: Int? = nil) -> (String, [(String, String)]) {
     ("watch", [("target", target)] + (maxWait.map { [("max_wait_s", "\($0)")] } ?? []))
 }
@@ -270,8 +275,32 @@ private struct Harness {
 @Test func parserStripsExactlyOneNewlineEachSideAndKeepsTheRest() {
     let raw = "<tool_call>\n<function=type>\n<parameter=text>\n\n  echo a\n  echo b  \n\n</parameter>\n</function>\n</tool_call>"
     #expect(ParsedReply(raw).calls[0].parameters == [.init("text", "\n  echo a\n  echo b  \n")])
-    let tight = "<tool_call><function=key><parameter=keys>Return</parameter></function></tool_call>"
-    #expect(ParsedReply(tight).calls[0].parameters == [.init("keys", "Return")])
+    let tight = "<tool_call><function=key><parameter=key>Return</parameter></function></tool_call>"
+    #expect(ParsedReply(tight).calls[0].parameters == [.init("key", "Return")])
+}
+
+@Test func keyIsOneKeyWithModifiersInAFixedOrder() throws {
+    let specs = Tools.computerSpecs(try Config.load(root.appending(path: "dollcore.example.toml")).computer)
+    func decode(_ params: [(String, String)]) throws -> Tools.Request {
+        let body = params.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined()
+        return try Tools.decode(ParsedReply("<tool_call>\n<function=key>\n\(body)</function>\n</tool_call>").calls[0], specs: specs)
+    }
+    func chord(_ params: [(String, String)]) throws -> String? {
+        guard case .act(.key(let k)) = try decode(params) else { return nil }
+        return k
+    }
+    #expect(try chord([("key", "Return")]) == "return")
+    // Any order, case or repeat she writes comes out as the one order, so the same chord is the same step.
+    #expect(try chord([("key", "S"), ("modifiers", "[\"alt\", \"CMD\", \"shift\", \"cmd\"]")]) == "cmd+shift+alt+s")
+    #expect(try chord([("key", "a"), ("modifiers", "[]")]) == "a")
+    // A chord or a sequence in `key`, an unknown modifier, or modifiers that are not a JSON array: errors that say how.
+    for bad in [[("key", "cmd a")], [("key", "cmd+a")], [("key", "a"), ("modifiers", "[\"option\"]")],
+                [("key", "a"), ("modifiers", "cmd")]] {
+        #expect(throws: ToolError.self) { try decode(bad) }
+    }
+    do { _ = try decode([("key", "cmd shift s")]); Issue.record("accepted") } catch let e as ToolError {
+        #expect(e.description.hasPrefix("key 只放一個鍵，收到 cmd shift s；修飾鍵放 modifiers"))
+    }
 }
 
 @Test func jsonParametersDecodeFromTheirText() throws {
@@ -911,7 +940,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
         #expect((try? JSONSerialization.jsonObject(with: Data(line.utf8))) != nil)
     }
     try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.actions == ["key"] && h.vm.actions == [.key("Return")])
+    #expect(h.last.actions == ["key"] && h.vm.actions == [.key("return")])
     #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）"))
     try await h.turn(Scripted("", outcome(false, "沒看到")))
     #expect(try h.toolResults().last!.text == "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。")
@@ -1338,7 +1367,7 @@ private final class FakeAgentDesktop: Sendable {
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", key("Escape")))
     let r = try h.toolResults().last!
-    #expect(r.text == "key Escape\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && r.image != nil)
+    #expect(r.text == "key escape\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && r.image != nil)
     #expect(r.crop == nil && r.cropNote == nil)
     let desktop = "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\n"
         + "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
@@ -2095,6 +2124,8 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     #expect(same("click 430,195 雙擊", "click image \"notes.txt\" 雙擊") && !same("click 430,195", "click 430,195 雙擊"))
     #expect(same("click 441,213", "click 441,253") && !same("click 441,213", "click 441,254"))
     #expect(!same("click 441,213 right", "click 441,213") && same("click「OK」 right", "click button \"OK\" right"))
+    // A chord an older experience wrote as `shift+cmd+s` is the step `key` now writes as `cmd+shift+s`.
+    #expect(same("key shift+cmd+s", "key cmd+shift+s") && same("key Tab Tab", "key tab tab") && !same("key cmd+s", "key cmd+shift+s"))
     #expect(same("click textfield", "click textfield") && !same("click textfield", "click「textfield」"))
     #expect(same("key cmd+Down", "key CMD+down") && !same("type 「a」", "type 「A」") && same("type 「a」", "type「a」"))
     #expect(!same("key cmd+s", "type 「cmd+s」") && same("scroll down 3", "scroll down 3"))

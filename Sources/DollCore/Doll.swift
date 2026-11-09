@@ -1067,7 +1067,16 @@ enum StepShape {
     case other(String)
 
     init(_ line: String) {
-        if line.hasPrefix("key ") { self = .key(line.dropFirst(4).trimmingCharacters(in: .whitespaces).lowercased()); return }
+        if line.hasPrefix("key ") {
+            // Experiences written before `key` took modifiers (2026-11-09) may say `shift+cmd+s`:
+            // put each chord's modifiers in the order `key` writes them now, so it is the same step.
+            let chords = line.dropFirst(4).trimmingCharacters(in: .whitespaces).lowercased().split(separator: " ").map { chord in
+                let parts = chord.split(separator: "+").map(String.init)
+                return parts.count > 1 ? Tools.chord(key: parts.last!, modifiers: Array(parts.dropLast())) : String(chord)
+            }
+            self = .key(chords.joined(separator: " "))
+            return
+        }
         if line.hasPrefix("type") {
             var t = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("「"), t.hasSuffix("」"), t.count >= 2 { t = String(t.dropFirst().dropLast()) }
