@@ -111,6 +111,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var menuReads: [String] = []
         var windowsLine = fakeWindowsLine
         var stateFailure: String?
+        var menuFailure: String?
     }
     let state = Mutex(State())
 
@@ -156,8 +157,13 @@ private final class FakeComputer: ComputerDriver, Sendable {
     func frontApp() async throws -> AppIdentity? { state.withLock { $0.frontAppReads += 1; return $0.app } }
 
     func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
-        state.withLock { $0.menuReads.append(bundleID); return $0.shortcuts }
+        try state.withLock {
+            $0.menuReads.append(bundleID)
+            if let f = $0.menuFailure { throw ComputerError(f) }
+            return $0.shortcuts
+        }
     }
+    func failMenus(_ text: String?) { state.withLock { $0.menuFailure = text } }
     func setApp(_ app: AppIdentity?, _ shortcuts: [MenuShortcut]) { state.withLock { $0.app = app; $0.shortcuts = shortcuts } }
 
     func frontState() async throws -> FrontState {
@@ -203,6 +209,7 @@ private struct Harness {
         cfg.computer.watchPollS = 0.02
         cfg.computer.watchMinIntervalS = 0
         cfg.memory.dir = dir.appending(path: "memory").path
+        cfg.computer.cheatsheet = false   // the cheatsheet's own tests switch it on
         tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
@@ -2109,4 +2116,100 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     try await h.turn(Scripted("好了", screenshotCall))
     #expect(h.last.outcome == "unknown" && h.last.follows == ["experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted"])
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
+}
+
+// the front app's cheatsheet (spec 3.1, 2026-11-09) -------------------------------------
+
+private let finder = AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0")
+private let finderKeys = [MenuShortcut(path: "File › New Finder Window", keys: "⌘N"), MenuShortcut(path: "Go › Desktop", keys: "⇧⌘D")]
+private let textEditSheet = "【快捷鍵】TextEdit 1.21\nFile › Save = ⌘S\nFile › Save As… = ⇧⌥⌘S\nFormat › Font › Bold = ⌘B"
+private let finderSheet = "【快捷鍵】Finder 15.0\nFile › New Finder Window = ⌘N\nGo › Desktop = ⇧⌘D"
+private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\.text).filter { $0.hasPrefix("【快捷鍵】") } }
+
+@Test func cheatsheetIsOnByDefault() throws {
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.cheatsheet)
+}
+
+@Test func aSwitchedToAppGetsItsCheatsheetOncePerTaskInReaderOrder() async throws {
+    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("用 TextEdit 另存一份")
+    try await h.turn(Scripted("", useComputer))
+    // The first result shows TextEdit: its whole list, in the reader's order, after the result.
+    #expect(try sheets(h) == [textEditSheet])
+    #expect(h.last.cheatsheets == [textEditSheet])
+    let tail = try h.store.events().suffix(2).map(\.kind)
+    #expect(tail == [.tool, .memory])
+    // Learning and the cheatsheet share one read.
+    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
+    // The same app again: nothing.
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h).count == 1 && h.last.cheatsheets.isEmpty)
+    // Another app: its own; back to the first: nothing, no read.
+    h.vm.setApp(finder, finderKeys)
+    try await h.turn(Scripted("", key("cmd+n")))
+    #expect(try sheets(h) == [textEditSheet, finderSheet])
+    h.vm.setApp(textEdit, textEditKeys)
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h) == [textEditSheet, finderSheet])
+    #expect(h.logs.contains { $0.contains("快捷鍵 of com.apple.TextEdit 1.21: 3 lines") })
+
+    // The owner's next line starts a task: on the next switch each app gets it again, from the cache.
+    await h.doll.ownerSaid("再存一份")
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h).count == 2)
+    h.vm.setApp(finder, finderKeys)
+    try await h.turn(Scripted("", key("cmd+n")))
+    h.vm.setApp(textEdit, textEditKeys)
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h) == [textEditSheet, finderSheet, finderSheet, textEditSheet])
+    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.finder"])
+}
+
+@Test func cheatsheetsAreResentByteIdentical() async throws {
+    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("用電腦存檔")
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn("好了")
+    let reqs = await h.model.requests.map(\.messages)
+    #expect(reqs.count == 3)
+    let rendered = reqs[1].filter { $0.content.contains("【快捷鍵】") }
+    #expect(rendered.count == 1 && rendered[0].role == "user" && rendered[0].content.hasSuffix("程式] " + textEditSheet))
+    for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+}
+
+@Test func noCheatsheetForAnUnknownAppOrAFailedReadWhichOnlyTheLogSays() async throws {
+    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
+    // No front app: nothing to read, no event.
+    h.vm.setApp(nil, [])
+    await h.doll.ownerSaid("用電腦")
+    try await h.turn(Scripted("", useComputer))
+    #expect(try sheets(h).isEmpty && h.vm.state.withLock { $0.menuReads.isEmpty })
+    // The reader fails: the log says so; no event, nothing in her results.
+    h.vm.setApp(textEdit, textEditKeys)
+    h.vm.failMenus("axmenus: no accessibility access")
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h).isEmpty && h.last.cheatsheets.isEmpty)
+    #expect(h.logs.contains { $0.hasPrefix("ERROR") && $0.contains("快捷鍵 of com.apple.TextEdit 1.21 failed") && $0.contains("no accessibility access") })
+    #expect(try h.store.events().allSatisfy { !$0.text.contains("快捷鍵") && !$0.text.contains("accessibility") })
+    // Not counted as sent: the next switch to it tries again.
+    h.vm.failMenus(nil)
+    h.vm.setApp(finder, finderKeys)
+    try await h.turn(Scripted("", key("cmd+n")))
+    h.vm.setApp(textEdit, textEditKeys)
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try sheets(h) == [finderSheet, textEditSheet])
+}
+
+@Test func cheatsheetOffSendsNothing() async throws {
+    let h = try await Harness(tune: { $0.computer.cheatsheet = false; $0.computer.learnShortcuts = false })
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("用電腦")
+    try await h.turn(Scripted("", useComputer))
+    h.vm.setApp(finder, finderKeys)
+    try await h.turn(Scripted("", key("cmd+n")))
+    #expect(try sheets(h).isEmpty && h.reports.allSatisfy { $0.cheatsheets.isEmpty })
+    #expect(h.vm.state.withLock { $0.menuReads.isEmpty })
 }

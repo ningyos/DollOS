@@ -36,6 +36,10 @@ public struct ComputerConfig: Sendable {
     /// When the front app is one not yet recorded at its version, the program writes one public
     /// memory per menu shortcut of it (spec 3.1, 2026-11-09).
     public var learnShortcuts = true
+    /// When a computer result's front app differs from the last one's and that app has had no
+    /// cheatsheet since the owner's last line, the program puts its whole menu-shortcut list into
+    /// the timeline as one 【快捷鍵】 event (spec 3.1, 2026-11-09).
+    public var cheatsheet = true
     /// Every screenshot she gets has this width; her coordinates are in this space.
     public var screenshotWidth = 1280
     /// "jpeg" or "png".
@@ -149,6 +153,7 @@ public struct Config: Sendable {
         try v.read("agent_desktop", &computer.agentDesktop)
         try v.read("ax_menus", &computer.axMenus)
         try v.read("learn_shortcuts", &computer.learnShortcuts)
+        try v.read("cheatsheet", &computer.cheatsheet)
         try v.read("screenshot_width", &computer.screenshotWidth)
         try v.read("screenshot_format", &computer.screenshotFormat)
         try v.read("window_crop_width", &computer.windowCropWidth)
