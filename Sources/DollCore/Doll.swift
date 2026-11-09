@@ -441,12 +441,35 @@ public actor Doll {
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         // Her `outcome` ends the scenario: the calls after it are refused, and nothing wakes her for it.
-        for call in parsed.calls {
-            let ended = outcomeNow != nil
-            let out = ended
-                ? Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
-                          actions: ["error \(call.name.isEmpty ? "tool_call" : call.name)"], background: true)
-                : await execute(call, seen: events, reply: stored)
+        // Her computer actions (click, type, key, scroll, drag) run in order and stop at the first
+        // failure (2026-11-09): only the last one done carries the observation, the ones before it
+        // answer with their line only, and the ones after a failure are not run. Actions written
+        // after an `outcome` never run, so the one before it is the last.
+        let live = parsed.calls.prefix { $0.name != "outcome" }
+        let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
+        var chain = Chain(), step = 0, failed: (step: Int, line: String)?
+        for (i, call) in parsed.calls.enumerated() {
+            let name = call.name.isEmpty ? "tool_call" : call.name
+            let isAction = Tools.actionNames.contains(call.name)
+            let out: Outcome
+            if outcomeNow != nil {
+                out = Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
+                              actions: ["error \(name)"], background: true)
+            } else if isAction, let failed {
+                out = Outcome(text: "失敗：前面第 \(failed.step) 步（\(failed.line)）失敗了，這一步沒做",
+                              actions: ["skipped \(name)"], background: true)
+            } else {
+                if isAction { step += 1 }
+                chain.last = !actionAt.contains(i) || actionAt.last == i
+                out = await execute(call, seen: events, reply: stored, chain: chain)
+                if isAction {
+                    if let line = out.failedStep {
+                        failed = (step, line)
+                    } else if !chain.last {
+                        chain.owed = true
+                    }
+                }
+            }
             let result = try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
                                                 cropNote: out.cropNote, crop: out.crop, window: out.window))
             if out.enters { scenario?.enterResultSeq = result.seq }
@@ -512,10 +535,20 @@ public actor Doll {
         var background = false
         /// This call entered a scenario: its result is the one her summary replaces once she leaves.
         var enters = false
+        /// This computer action failed (before or in the VM): its line, for the refusals after it.
+        var failedStep: String?
+    }
+
+    /// Where a reply's computer actions stand (2026-11-09): whether this call is the last action she
+    /// wrote (its result carries the observation), and whether an earlier action already answered
+    /// with its line only (so a failure here must show the screen, or she sees nothing of this reply).
+    struct Chain {
+        var last = true
+        var owed = false
     }
 
     /// Runs one tool call. Every failure becomes the call's result text; nothing here throws.
-    func execute(_ call: ToolCall, seen events: [Event], reply: Event) async -> Outcome {
+    func execute(_ call: ToolCall, seen events: [Event], reply: Event, chain: Chain = Chain()) async -> Outcome {
         let name = call.name.isEmpty ? "tool_call" : call.name
         do {
             let request = try Tools.decode(call, specs: tools + (scenario?.tools ?? []),
@@ -566,12 +599,12 @@ public actor Doll {
                 watchIdle = 0
                 return await withScreenshot("現在的畫面：", actions: [name])
             case .act(let action):
-                return await perform(action, said: Self.describe(action), name: name)
+                return await perform(action, said: Self.describe(action), name: name, chain: chain)
             case .clickAt(let x, let y, let onWindow, let button, let count):
                 let p = try screenPoint(x, y, onWindow: onWindow)
                 let action = ComputerAction.click(x: p.x, y: p.y, button: button, count: count)
                 let line = onWindow ? "click 視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" + Self.extra(button, count) : Self.describe(action)
-                return await perform(action, said: line, name: name)
+                return await perform(action, said: line, name: name, chain: chain)
             case .watch(let region, let maxWait):
                 let replaced = watch != nil
                 let w = startWatch(region, maxWait: maxWait ?? computerConfig.watchDefaultMaxWaitS)
@@ -598,7 +631,14 @@ public actor Doll {
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
-            return Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
+            // A computer action refused before the VM (bad arguments, a point off the screen) ends the
+            // reply's chain like one that failed in it; the screen is shown when an earlier action
+            // of this reply answered with its line only.
+            guard Tools.actionNames.contains(call.name) else { return Outcome(text: "失敗：\(error)", actions: ["error \(name)"]) }
+            var out = chain.owed ? await withScreenshot("失敗：\(error)", actions: ["error \(name)"])
+                                 : Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
+            out.failedStep = name
+            return out
         }
     }
 
@@ -755,9 +795,10 @@ public actor Doll {
         return file
     }
 
-    /// Runs one action and returns `said` and the VM's text, or the failure, with fresh screenshots.
+    /// Runs one action and returns `said` and the VM's text, or the failure. The last action of her
+    /// reply (and every failure) comes with fresh screenshots; an earlier one with its line only.
     /// The action's own time, screenshots excluded, goes to the log (M2 round 6: element-click latency).
-    func perform(_ action: ComputerAction, said: String, name: String) async -> Outcome {
+    func perform(_ action: ComputerAction, said: String, name: String, chain: Chain) async -> Outcome {
         watchIdle = 0
         let start = ContinuousClock.now
         let result: Result<String, Error>
@@ -767,12 +808,15 @@ public actor Doll {
         switch result {
         case .success(let answer):
             scenario?.steps.append(Self.step(action))
+            guard chain.last else { return Outcome(text: "\(said)\n\(answer)", actions: [name]) }
             return await withScreenshot("\(said)\n\(answer)", actions: [name])
         case .failure(let error):
             // A failed action is not a step of the experience (spec 3.1, 2026-11-09).
             // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
-            return await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
+            var out = await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
+            out.failedStep = said
+            return out
         }
     }
 

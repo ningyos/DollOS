@@ -101,6 +101,8 @@ private final class FakeComputer: ComputerDriver, Sendable {
     struct State {
         var actions: [ComputerAction] = []
         var failNext: String?
+        /// Actions that still pass before `failNext` fires.
+        var failAfter = 0
         var frame = 0
         var changing = false
         var captures = 0
@@ -125,8 +127,10 @@ private final class FakeComputer: ComputerDriver, Sendable {
         try state.withLock { s in
             s.actions.append(action)
             if let f = s.failNext {
-                s.failNext = nil
-                throw ComputerError(f)
+                if s.failAfter > 0 { s.failAfter -= 1 } else {
+                    s.failNext = nil
+                    throw ComputerError(f)
+                }
             }
             return "Done: 1 action in 0.1 s."
         }
@@ -182,7 +186,7 @@ private final class FakeComputer: ComputerDriver, Sendable {
 
     func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
-    func failNext(_ text: String) { state.withLock { $0.failNext = text } }
+    func failNext(_ text: String, after: Int = 0) { state.withLock { $0.failNext = text; $0.failAfter = after } }
     func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
     func failDesktop(_ text: String?) { state.withLock { $0.desktopFailure = text } }
     func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
@@ -1019,28 +1023,71 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(await h.doll.scenario?.startSeq == open && open != nil)
 }
 
-@Test func everyComputerActionReturnsATextLineAndAScreenshot() async throws {
+@Test func onlyTheLastActionOfAReplyCarriesTheObservation() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "200")]),
-                              ("click", [("text", "Save"), ("button", "right"), ("count", "2")]),
-                              ("type", [("text", "sw_vers\n")]), key("cmd+s"),
-                              ("scroll", [("direction", "down"), ("amount", "5")]),
-                              ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), screenshotCall))
-    let results = Array(try h.toolResults().suffix(7))
-    #expect(results.allSatisfy { $0.image != nil })
-    #expect(results.map { $0.text.components(separatedBy: "\n")[0] }
-            == ["click 100,200", "click「Save」 right 雙擊", "type「sw_vers", "key cmd+s", "scroll down 5", "drag 1,2 → 3,4", "現在的畫面："])
-    #expect(results.prefix(6).allSatisfy { $0.text.hasSuffix("\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine) })
-    #expect(h.vm.actions == [.click(x: 100, y: 200, button: "left", count: 1), .clickText("Save", button: "right", count: 2),
-                             .type("sw_vers\n"), .key("cmd+s"), .scroll(direction: "down", amount: 5),
-                             .drag(x0: 1, y0: 2, x1: 3, y1: 4)])
-    #expect(h.last.actions == ["click", "click", "type", "key", "scroll", "drag", "screenshot"])
+    // Three actions in one reply: two text-only results, one observation at the end, three steps.
+    try await h.turn(Scripted("", ("click", [("text", "Save"), ("button", "right"), ("count", "2")]),
+                              ("type", [("text", "sw_vers\n")]), key("cmd+s")))
+    var results = Array(try h.toolResults().suffix(3))
+    #expect(results.map(\.text) == ["click「Save」 right 雙擊\nDone: 1 action in 0.1 s.", "type「sw_vers\n」\nDone: 1 action in 0.1 s.",
+                                   "key cmd+s\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine])
+    #expect(results.map { $0.image != nil } == [false, false, true] && results.map { $0.window != nil } == [false, false, true])
+    #expect(h.vm.actions == [.clickText("Save", button: "right", count: 2), .type("sw_vers\n"), .key("cmd+s")])
+    #expect(h.last.actions == ["click", "type", "key"])
+    #expect(await h.doll.scenario?.steps == ["click「Save」 right 雙擊", "type 「sw_vers\n」", "key cmd+s"])
+    // Every other tool between them keeps its result; the last action is the last one written, wherever it is.
+    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), screenshotCall,
+                              ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("high")))
+    results = Array(try h.toolResults().suffix(5))
+    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == ["scroll down 5", "現在的畫面：", "drag 1,2 → 3,4", "click 100,200", "下一回合 effort：high"])
+    #expect(results.map { $0.image != nil } == [false, true, false, true, false])
+    #expect(h.last.actions == ["scroll", "screenshot", "drag", "click", "think high"])
+    // A single action is unchanged: its line, the VM's answer, the observation.
+    try await h.turn(Scripted("", key("Return")))
+    let one = try h.toolResults().last!
+    #expect(one.text == "key return\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && one.image != nil && one.window != nil)
+    // Bad arguments alone: a text result, no screenshot, as before.
     try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("text", "A")]),
                               ("scroll", [("direction", "sideways")])))
     #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：click 的 x 和 y 要一起給",
-                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
-                                                          "失敗：scroll 的 direction 只能是 up、down、left、right，收到 sideways"])
+                                                          "失敗：前面第 1 步（click）失敗了，這一步沒做",
+                                                          "失敗：前面第 1 步（click）失敗了，這一步沒做"])
+    #expect(try h.toolResults().suffix(3).allSatisfy { $0.image == nil })
+    #expect(h.last.actions == ["error click", "skipped click", "skipped scroll"] && h.vm.actions.count == 7)
+}
+
+@Test func aFailedActionStopsTheReplysChainAndShowsTheScreen() async throws {
+    let h = try await menuHarness()
+    let err = "vmpal: Stopped at action 1 of 1 (left_click): No text “Save” on the screen after 3.1 s."
+    try await h.turn(Scripted("", key("cmd+shift+s"), ("click", [("text", "Save")]), ("type", [("text", "copy")])))
+    #expect(h.vm.actions == [.key("cmd+shift+s"), .clickText("Save", button: "left", count: 1), .type("copy")])
+    // Step 1 runs text-only; step 2 fails in the VM with the observation; step 3 is refused, not run.
+    h.vm.failNext(err, after: 1)
+    try await h.turn(Scripted("", key("cmd+shift+s"), ("click", [("text", "Save")]), ("type", [("text", "copy")]), screenshotCall))
+    let results = Array(try h.toolResults().suffix(4))
+    #expect(results.map(\.text) == ["key cmd+shift+s\nDone: 1 action in 0.1 s.",
+                                    "失敗：click「Save」\n\(err)\n" + fakeWindowsLine,
+                                    "失敗：前面第 2 步（click「Save」）失敗了，這一步沒做",
+                                    "現在的畫面：\n" + fakeWindowsLine])
+    #expect(results.map { $0.image != nil } == [false, true, false, true])
+    #expect(h.vm.actions.count == 5 && h.vm.actions.last == .clickText("Save", button: "left", count: 1))
+    #expect(h.last.actions == ["key", "error click", "skipped type", "screenshot"])
+    // Only the done actions are steps.
+    #expect(await h.doll.scenario?.steps == ["key cmd+shift+s", "click「Save」", "type 「copy」", "key cmd+shift+s"])
+    // Bad arguments after a text-only step: the failure shows the screen, since nothing of this reply did yet.
+    try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
+    let bad = Array(try h.toolResults().suffix(3))
+    #expect(bad[0].text == "key return\nDone: 1 action in 0.1 s." && bad[0].image == nil)
+    #expect(bad[1].text.hasPrefix("失敗：沒有點：99999,1 在螢幕外") && bad[1].text.hasSuffix("\n" + fakeWindowsLine) && bad[1].image != nil)
+    #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
     #expect(h.vm.actions.count == 6)
+    // Outcome after actions in the same reply still ends the scenario; the action before it is the last.
+    try await h.turn(Scripted("", key("cmd+s"), outcome(true, "存好了"), key("cmd+q")))
+    let end = Array(try h.toolResults().suffix(3))
+    #expect(end[0].image != nil && end[0].text.hasPrefix("key cmd+s\n"))
+    #expect(end[1].text.hasPrefix("記下了：達成。") && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
+    #expect(h.last.outcome == "success" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+shift+s\n2. click「Save」\n3. type 「copy」\n4. key cmd+shift+s\n5. key return\n6. key cmd+s") == true)
+    #expect(await h.doll.scenario == nil && h.vm.actions.count == 7)
 }
 
 @Test func clickTakesExactlyOneOfElementTextOrCoordinates() async throws {
@@ -1060,8 +1107,11 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(try h.toolResults().suffix(6).map { $0.text.components(separatedBy: "\n")[0] }
             == ["click 元素 button \"Save\" 雙擊", "click 元素 \"notes.txt\"", "click 元素 image \"notes.txt\" right",
                 "click 元素 \"Open Recent\"", "click「Save」", "click 100,200"])
-    try await h.turn(Scripted("", ("click", []), ("click", [("element", "OK"), ("x", "1"), ("y", "2")]),
-                              ("click", [("element", "OK"), ("text", "OK")]), ("click", [("text", "OK"), ("on", "window")])))
+    // One bad call per reply: after a failed action the rest of a reply is not run.
+    for bad in [("click", []), ("click", [("element", "OK"), ("x", "1"), ("y", "2")]),
+                ("click", [("element", "OK"), ("text", "OK")]), ("click", [("text", "OK"), ("on", "window")])] as [(String, [(String, String)])] {
+        try await h.turn(Scripted("", bad))
+    }
     #expect(try h.toolResults().suffix(4).map(\.text) == ["失敗：click 要給 element、text 或 x 和 y 其中一種",
                                                           "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
                                                           "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
@@ -1100,13 +1150,15 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(h.vm.actions == [.click(x: 60, y: 45, button: "left", count: 2)])
     let r = try h.toolResults().last!
     #expect(r.text == "click 視窗圖 100,50 → 全螢幕 60,45 雙擊\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && r.image != nil)
-    // Off the crop, off the screen: an error, nothing clicked.
-    try await h.turn(Scripted("", ("click", [("x", "580"), ("y", "10"), ("on", "window")]),
-                              ("click", [("x", "640"), ("y", "800")]), ("click", [("x", "-1"), ("y", "5")])))
+    // Off the crop, off the screen: an error, nothing clicked (one per reply: a failed action ends the reply's chain).
+    for bad in [[("x", "580"), ("y", "10"), ("on", "window")], [("x", "640"), ("y", "800")], [("x", "-1"), ("y", "5")]] {
+        try await h.turn(Scripted("", ("click", bad)))
+        #expect(h.last.actions == ["error click"])
+    }
     #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：沒有點：580,10 不在視窗圖裡（視窗圖 580×360）",
                                                           "失敗：沒有點：640,800 在螢幕外（全螢幕截圖 1280×800）",
                                                           "失敗：沒有點：-1,5 在螢幕外（全螢幕截圖 1280×800）"])
-    #expect(h.last.actions == ["error click", "error click", "error click"] && h.vm.actions.count == 1)
+    #expect(h.vm.actions.count == 1)
     // The last result had no crop: window coordinates cannot be converted.
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", screenshotCall, ("click", [("x", "10"), ("y", "10"), ("on", "window")])))
@@ -1972,7 +2024,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // The next time the owner asks the same, it is attached whole, its stats line first.
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn("好")
-    #expect(stats.line == "成績：這次 5 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走。）")
+    #expect(stats.line == "成績：這次 5 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走；結果猜得到的幾步可以寫在同一則回覆裡。）")
     #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
 }
 

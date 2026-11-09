@@ -89,10 +89,14 @@ public enum Tools {
         ]
     }
 
+    /// The computer tools that move the VM (click, type, key, scroll, drag): in one reply they run in
+    /// order and stop at the first failure; only the last one done carries the observation (2026-11-09).
+    static let actionNames: Set<String> = ["click", "type", "key", "scroll", "drag"]
+
     /// The computer menu (spec 3.1, 2026-11-08): listed only in `use_computer()`'s result.
     static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
         let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
-        let after = "做完會等畫面停下來，回一行結果、一張新的全螢幕截圖、最前面視窗的視窗圖（附它在全螢幕上的位置）和視窗概要。"
+        let after = "做完會等畫面停下來，回一行結果（同一則回覆裡最後一個動作才附新的截圖、視窗圖和概要）。"
         func ints(_ names: [String], _ what: String) -> [(String, JSONValue)] {
             names.map { ($0, ["type": "integer", "description": .string(what)]) }
         }
@@ -212,8 +216,12 @@ public enum Tools {
     static func menu(_ specs: [Spec]) -> String {
         "電腦選單打開了，現在多了這些工具：\n<tools>"
             + specs.map { "\n" + $0.json.text }.joined()
-            + "\n</tools>\n呼叫格式跟上面的工具一樣。下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
+            + "\n</tools>\n呼叫格式跟上面的工具一樣。" + chaining + "下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
     }
+
+    /// How her computer actions chain in one reply (2026-11-09): in the menu's intro and the system
+    /// prompt's computer paragraph, one text.
+    static let chaining = "接下來幾步的結果猜得到的話（例如：打開另存面板、打檔名、按 Save），就照順序寫在同一則回覆裡，程式會照順序做，哪一步失敗就停在那裡，後面的不做。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）會附新的全螢幕截圖、視窗圖和概要，前面的只回一行結果。結果猜不到的（找不找得到、會跳出什麼）就先做那一步、看了再說。"
 
     /// The tool block of the Strata chat template (`/props` → `chat_template`, the `tools` branch),
     /// wording and call format copied verbatim, so she sees the format she was trained on. It opens
@@ -688,7 +696,7 @@ enum Instructions {
 
         做事只能透過工具：要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光用嘴說「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。
 
-        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話寫在同一則回覆的 outcome 前面。同一則回覆裡寫在 outcome 後面的呼叫不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
+        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；動作做完會回一行結果，一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。\(Tools.chaining)做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話寫在同一則回覆的 outcome 前面。同一則回覆裡寫在 outcome 後面的呼叫不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
 
         回覆裡 <tool_call> 以外的文字就是你對主人說的話；要說的話寫在工具呼叫前面。沒話要說可以不寫。
 

@@ -88,7 +88,7 @@ public struct ExperienceStats: Sendable, Equatable {
     /// The first line of the experience when attached; she sees it, the embedding does not.
     public var line: String {
         "成績：這次 \(turns) 回合、\(seconds) 秒；附上後照做 \(attachedFollowed) 次，成功 \(attachedSuccess) 次"
-            + "（這是已知可行的做法；如果看到更短的走法，可以直接走。）"
+            + "（這是已知可行的做法；如果看到更短的走法，可以直接走；結果猜得到的幾步可以寫在同一則回覆裡。）"
     }
 }
 
