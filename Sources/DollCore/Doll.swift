@@ -22,8 +22,8 @@ public struct TurnReport: Sendable {
     public var usedTool: Bool
     /// The 【相關記憶】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var attached: [String]
-    /// How a computer session ended this turn: "success" / "failure" from her `outcome`, "unknown"
-    /// when the turn after `leave_computer` did not answer; nil when none ended.
+    /// How a computer session ended this turn: "success" / "failure" from her `outcome`; nil when
+    /// none ended.
     public var outcome: String?
     /// The experience memory written this turn (on her success), verbatim.
     public var experience: String?
@@ -35,7 +35,7 @@ public struct TurnReport: Sendable {
 }
 
 /// One computer session (spec 3.1, 2026-11-09「先砍到最小」): from `use_computer(expect)` until her
-/// `outcome` (or the turn after `leave_computer` passing without one).
+/// `outcome`, or until the program stops with it still open (unknown).
 struct ComputerSession {
     /// What she said she should see when done.
     let expect: String
@@ -43,8 +43,6 @@ struct ComputerSession {
     let task: String
     /// Her computer actions that went through, one short line each (`Doll.step`); no VM answer text.
     var steps: [String] = []
-    /// `leave_computer` asked her whether it was reached; her next turn must answer with `outcome`.
-    var asked = false
 }
 
 enum Log {
@@ -113,8 +111,7 @@ public actor Doll {
     let tools: [Tools.Spec]
     /// The computer menu; listed only in `use_computer()`'s result.
     let computerTools: [Tools.Spec]
-    /// Between `use_computer()` and the end of its session (her `outcome`, or the turn after
-    /// `leave_computer()` without one).
+    /// Between `use_computer()` and the end of its session (her `outcome`).
     var inComputer = false
     /// The open computer session; nil outside the computer menu.
     var session: ComputerSession?
@@ -277,6 +274,11 @@ public actor Doll {
     }
 
     func shutdown() {
+        // A session still open when the program stops (turn cap, stop) never got her outcome.
+        if let s = session {
+            scoreAttached(steps: s.steps, outcome: "unknown")
+            endSession("unknown")
+        }
         stopWatch()
     }
 
@@ -339,8 +341,7 @@ public actor Doll {
         let now = Date().timeIntervalSince1970
         var out = ["【狀況】", "- 現在 \(clock(now))"]
         out.append(!inComputer ? "- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）"
-                   : session?.asked == true ? "- 選單：電腦（這一回合用 outcome 回答期望達成了沒）"
-                   : "- 選單：電腦（用完呼叫 leave_computer() 離開）")
+                   : "- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）")
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- context 約 \(contextTokens) token；下一回合 effort：\(nextEffort)")
         return out.joined(separator: "\n")
@@ -416,10 +417,13 @@ public actor Doll {
         }
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
-        // A session `leave_computer` asked about before this turn must end in it: her `outcome`, or unknown.
-        let mustAnswer = session?.asked == true
+        // Her `outcome` ends the session: the calls after it are refused, and nothing wakes her for it.
         for call in parsed.calls {
-            let out = await execute(call, seen: events, reply: stored)
+            let ended = outcomeNow != nil
+            let out = ended
+                ? Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
+                          actions: ["error \(call.name.isEmpty ? "tool_call" : call.name)"], background: true)
+                : await execute(call, seen: events, reply: stored)
             try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
                                    cropNote: out.cropNote, crop: out.crop, window: out.window))
             actions += out.actions
@@ -428,10 +432,11 @@ public actor Doll {
                 taskTurn = true
             }
         }
-        if mustAnswer, let s = session {
-            scoreAttached(steps: s.steps, outcome: "unknown")
-            endSession("unknown")
-            try store.append(Event(.memory, .internal, "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。"))
+        if outcomeNow != nil {
+            followUp = false
+            taskTurn = false
+            cheatsheetDue = []
+            appSwitched = false
         }
         // A computer result showed another front app: its 【快捷鍵】 (once per task), then one
         // 【相關記憶】, after all of this reply's results.
@@ -496,19 +501,8 @@ public actor Doll {
                 inComputer = true
                 session = ComputerSession(expect: expect, task: events.last { $0.kind == .owner }?.text ?? "")
                 return await withScreenshot(Tools.menu(computerTools), actions: [name])
-            case .leaveComputer:
-                // Not relocked yet: her next turn may still look, and must answer with `outcome`.
-                let had = watch != nil
-                stopWatch()
-                session?.asked = true
-                let expect = session?.expect ?? ""
-                return Outcome(text: "你開始前說完成時應該看到：「\(expect)」。現在達成了嗎？檢查後用 outcome(success, evidence) 回答。"
-                               + (had ? "（watch 停了。）" : ""), actions: [name])
             case .outcome(let success, let evidence):
-                guard session?.asked == true else {
-                    throw ToolError(description: "outcome 要在 leave_computer() 之後回答")
-                }
-                let s = session!
+                guard let s = session else { throw ToolError(description: "outcome 只能在電腦選單裡呼叫") }
                 scoreAttached(steps: s.steps, outcome: success ? "success" : "failure")
                 endSession(success ? "success" : "failure")
                 log("INFO", "turn \(turnIndex): outcome success=\(success) evidence「\(evidence)」")
@@ -839,7 +833,7 @@ public actor Doll {
     // computer session ---------------------------------------------------------
     /// Ends the open computer session as `outcome` (success / failure / unknown) and relocks the menu.
     func endSession(_ outcome: String) {
-        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: no outcome after leave_computer") }
+        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: session ended without her outcome") }
         session = nil
         inComputer = false
         stopWatch()

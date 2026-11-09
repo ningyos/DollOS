@@ -34,7 +34,6 @@ private let useComputer: (String, [(String, String)]) = ("use_computer", [("expe
 private func outcome(_ success: Bool, _ evidence: String) -> (String, [(String, String)]) {
     ("outcome", [("success", "\(success)"), ("evidence", evidence)])
 }
-private let leaveComputer: (String, [(String, String)]) = ("leave_computer", [])
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
 private func recall(_ q: String) -> (String, [(String, String)]) { ("recall", [("query", q)]) }
@@ -894,7 +893,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     return h
 }
 
-@Test func theComputerMenuOpensWithUseComputerAndLocksAgainWithLeave() async throws {
+@Test func theComputerMenuOpensWithUseComputerAndLocksAgainWithOutcome() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("按一下 Return")
     try await h.turn(Scripted("", key("Return")))
@@ -905,7 +904,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let menu = try h.toolResults().last!
     #expect(menu.text.hasPrefix("電腦選單打開了") && menu.image != nil)
     let listed = menu.text.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    let names = ["click", "type", "key", "scroll", "drag", "screenshot", "watch", "leave_computer", "outcome"]
+    let names = ["click", "type", "key", "scroll", "drag", "screenshot", "watch", "outcome"]
     #expect(listed.count == names.count)
     for (line, name) in zip(listed, names) {
         #expect(line.contains("\"name\": \"\(name)\""))
@@ -913,12 +912,10 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     }
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["key"] && h.vm.actions == [.key("Return")])
-    #expect(h.last.footer.contains("- 選單：電腦（用完呼叫 leave_computer() 離開）"))
-    try await h.turn(Scripted("", leaveComputer))
-    #expect(try h.toolResults().last!.text == "你開始前說完成時應該看到：「畫面上看得到結果」。現在達成了嗎？檢查後用 outcome(success, evidence) 回答。")
-    #expect(await h.doll.inComputer)
+    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）"))
     try await h.turn(Scripted("", outcome(false, "沒看到")))
     #expect(try h.toolResults().last!.text == "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。")
+    #expect(await !h.doll.inComputer)
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.vm.actions.count == 1)
     #expect(h.last.footer.contains("- 選單：頂層"))
@@ -1612,11 +1609,11 @@ private final class FakeVMPal: Sendable {
     #expect(await watchWakes(h).count == 2)
 }
 
-@Test func leavingTheComputerStopsTheWatch() async throws {
+@Test func outcomeStopsTheWatch() async throws {
     let h = try await menuHarness()
     try await h.turn(Scripted("", watch("window", 60)))
-    try await h.turn(Scripted("", leaveComputer))
-    #expect(try h.toolResults().last!.text.hasSuffix("回答。（watch 停了。）"))
+    try await h.turn(Scripted("", outcome(false, "沒好")))
+    #expect(h.last.outcome == "failure")
     h.vm.setFrame(1)
     try await Task.sleep(for: .milliseconds(200))
     let left = await h.doll.watch?.id
@@ -1845,21 +1842,16 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn(Scripted("", ("use_computer", [("expect", "標題沒有「已編輯」")])))
-    // Before leave_computer, outcome is an error and nothing ends.
-    try await h.turn(Scripted("", outcome(true, "好了")))
-    #expect(try h.toolResults().last!.text == "失敗：outcome 要在 leave_computer() 之後回答")
-    // A failed action is not a step; each step is only what she did, no VM answer text.
+    // The menu is open: an action that fails is not a step; each step is only what she did, no VM answer text.
     h.vm.failNext("boom\nsecond line")
     try await h.turn(Scripted("", ("click", [("text", "Save")]), screenshotCall))
     h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
     try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), screenshotCall))
     try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")]),
                               ("type", [("text", "娃娃來過")]), key("cmd+s")))
-    try await h.turn(Scripted("", leaveComputer))
-    #expect(h.last.outcome == nil)
-    // The asked turn: the menu still open, the footer says to answer; she looks, then answers.
+    // She looks, then answers in the same reply.
     try await h.turn(Scripted("", screenshotCall, outcome(true, "標題沒有點")))
-    #expect(h.last.footer.contains("- 選單：電腦（這一回合用 outcome 回答期望達成了沒）"))
+    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）"))
     #expect(try h.toolResults().last!.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
     let text = "經驗：把 notes 存檔\n期望：標題沒有「已編輯」\n1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s\n結果：標題沒有點"
     #expect(h.last.outcome == "success" && h.last.experience == text && h.last.actions.contains("outcome success"))
@@ -1871,43 +1863,87 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.last.footer.contains("- 選單：頂層"))
     #expect(await !h.doll.inComputer)
-    // Its stats are in the front-matter, not in the text (what is embedded): this run's 7 turns.
+    // Its stats are in the front-matter, not in the text (what is embedded): this run's 5 turns.
     let files = try experienceFiles(h)
     let stats = try #require(files.first?.stats)
     #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
-    #expect(stats.turns == 7 && (0..<30).contains(stats.seconds)
-            && stats == ExperienceStats(turns: 7, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
+    #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
+            && stats == ExperienceStats(turns: 5, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
     // The next time the owner asks the same, it is attached whole, its stats line first.
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn("好")
-    #expect(stats.line == "成績：這次 7 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走。）")
+    #expect(stats.line == "成績：這次 5 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走。）")
     #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
 }
 
 @Test func aFailedOrMissingOutcomeWritesNothing() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), leaveComputer))
-    try await h.turn(Scripted("", outcome(false, "還有點")))
+    try await h.turn(Scripted("", key("cmd+s"), outcome(false, "還有點")))
     #expect(h.last.outcome == "failure" && h.last.experience == nil)
     #expect(try experiences(h).isEmpty)
-
-    // No outcome in the turn after leave_computer: unknown, relocked, said in the timeline.
+    // A bad success value is an error, and the session stays open.
     try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", watch("window", 60), leaveComputer))
-    #expect(await h.doll.watch == nil)
-    try await h.turn(Scripted("好了", screenshotCall))
-    #expect(h.last.outcome == "unknown" && h.last.experience == nil)
-    #expect(await !h.doll.inComputer)
-    #expect(try memoryEvents(h).last?.text == "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。")
-    #expect(h.logs.contains { $0.contains("outcome unknown") })
-    #expect(try experiences(h).isEmpty)
-    // A bad success value is an error, and the session stays asked.
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", leaveComputer))
     try await h.turn(Scripted("", ("outcome", [("success", "maybe"), ("evidence", "x")]), outcome(true, "看到了")))
     #expect(try h.toolResults().map(\.text).contains("失敗：outcome 的 success 只能是 true 或 false，收到 maybe"))
     #expect(h.last.outcome == "success")
     #expect(try experiences(h).count == 1)
+    // A session still open when the program stops: unknown, relocked, logged, nothing written.
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", watch("window", 60)))
+    await h.doll.shutdown()
+    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.watch == nil)
+    #expect(h.logs.contains { $0.contains("outcome unknown: session ended without her outcome") })
+    #expect(try experiences(h).count == 1)
+}
+
+@Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
+    let h = try await Harness([Scripted("", useComputer), Scripted("存好了", key("cmd+s"), outcome(true, "看到了"))])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await h.doll.ownerSaid("存檔")
+    let deadline = ContinuousClock.now + .seconds(5)
+    while await h.model.requests.count < 2 || h.reports.count < 2, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(await h.model.requests.count == 2 && h.said == ["存好了"])  // her words came with the outcome
+    #expect(await h.doll.settled)
+    #expect(await !h.doll.inComputer)
+    #expect(h.last.outcome == "success" && h.vm.actions == [.key("cmd+s")])
+    // The result is still in the timeline, right after her reply.
+    let events = try h.store.events()
+    #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
+    #expect(events.dropLast(2).last?.kind == .doll)
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func outcomeOutsideASessionIsAnError() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("好了嗎")
+    try await h.turn(Scripted("", outcome(true, "好了")))
+    #expect(try h.toolResults().last!.text == "失敗：outcome 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
+    #expect(h.last.outcome == nil && h.last.actions == ["error outcome"])
+    // After a session ended, too.
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", outcome(false, "沒好")))
+    try await h.turn(Scripted("", outcome(true, "好了")))
+    #expect(try h.toolResults().last!.text == "失敗：outcome 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
+    #expect(h.last.outcome == nil)
+    #expect(try experiences(h).isEmpty)
+}
+
+@Test func callsAfterOutcomeInTheSameReplyAreRefused() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", key("cmd+s"), outcome(false, "沒好"), key("Return"), screenshotCall))
+    let refused = "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。"
+    #expect(try h.toolResults().suffix(3).map(\.text)
+            == ["記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。", refused, refused])
+    #expect(h.last.actions == ["key", "outcome failure", "error key", "error screenshot"])
+    #expect(h.vm.actions == [.key("cmd+s")])
+    #expect(await !h.doll.followUp)
+    #expect(await !h.doll.inComputer)
 }
 
 @Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
@@ -2075,7 +2111,6 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     let attached = try #require(h.reports[0].attached.first)
     #expect(attached.contains("成績：這次 9 回合、150 秒；附上後照做 0 次，成功 0 次"))
     try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s")))
-    try await h.turn(Scripted("", leaveComputer))
     try await h.turn(Scripted("", outcome(true, "存好了")))
     #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
@@ -2086,35 +2121,33 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     #expect(try memoryEvents(h).first?.text == attached)
     let reqs = await h.model.requests.map(\.messages)
     for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
-    // Her new experience (4 turns: use_computer, the actions, leave, outcome) now leads the group.
-    let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 4 })
-    #expect(fresh.stats == ExperienceStats(turns: 4, seconds: fresh.stats!.seconds))
+    // Her new experience (3 turns: use_computer, the actions, outcome) now leads the group.
+    let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 3 })
+    #expect(fresh.stats == ExperienceStats(turns: 3, seconds: fresh.stats!.seconds))
 
     // 2: the new one is attached; none of its steps done: not followed, nothing counted.
     await h.doll.ownerSaid(task)
     try await h.turn(Scripted("", useComputer))
-    #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 4 回合") && !h.last.attached[0].contains("9 回合"))
-    try await h.turn(Scripted("", key("cmd+q"), leaveComputer))
-    try await h.turn(Scripted("", outcome(false, "沒存到")))
+    #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 3 回合") && !h.last.attached[0].contains("9 回合"))
+    try await h.turn(Scripted("", key("cmd+q"), outcome(false, "沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].hasSuffix("0/2 steps done in order (ratio 0.00), not followed"))
-    #expect(try experienceFiles(h).first { $0.stats?.turns == 4 }?.stats?.attachedFollowed == 0)
+    #expect(try experienceFiles(h).first { $0.stats?.turns == 3 }?.stats?.attachedFollowed == 0)
 
     // 3: followed, and she says it failed: counted as a failure, and the failure demotes it below
     // the 9-turn one that succeeded.
     await h.doll.ownerSaid(task)
     try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), leaveComputer))
-    try await h.turn(Scripted("", outcome(false, "沒存到")))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), outcome(false, "沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].contains("2/2 steps done in order (ratio 1.00), followed, counted failure: 照做 1、成功 0、失敗 1"))
     let ranking = try await h.doll.experienceRanking()
     #expect(ranking.count == 1 && ranking[0].count == 2 && ranking[0][0].hasPrefix("1-seed: 成績：這次 9 回合、150 秒；附上後照做 1 次，成功 1 次；失敗 0 次"))
-    #expect(ranking[0][1].contains("4 回合") && ranking[0][1].hasSuffix("附上後照做 1 次，成功 0 次；失敗 1 次"))
-    // An unknown outcome is only logged.
+    #expect(ranking[0][1].contains("3 回合") && ranking[0][1].hasSuffix("附上後照做 1 次，成功 0 次；失敗 1 次"))
+    // An unknown outcome (the program stopped with the session open) is only logged.
     await h.doll.ownerSaid(task)
     try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s"), key("cmd+w"), leaveComputer))
-    try await h.turn(Scripted("好了", screenshotCall))
-    #expect(h.last.outcome == "unknown" && h.last.follows == ["experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted"])
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s"), key("cmd+w")))
+    await h.doll.shutdown()
+    #expect(h.logs.contains { $0.contains("experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
 }
 
