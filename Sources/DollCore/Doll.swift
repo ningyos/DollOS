@@ -889,10 +889,15 @@ public actor Doll {
 
     // scenarios ----------------------------------------------------------------
     /// The kind's own work on entering; its result text is what she sees first. The computer: its
-    /// menu, then a fresh screenshot.
+    /// menu, then a fresh screenshot. The front app at entry counts as newly seen, whatever it was
+    /// before: a previous scenario's 【快捷鍵】 and 【相關記憶】 left the context with it (2026-11-09,
+    /// chained E→F: F got no TextEdit sheet because TextEdit was already in front).
     func entered(_ kind: ScenarioKind) async -> Outcome {
         switch kind {
-        case .computer: await withScreenshot(Tools.menu(scenario!.tools), actions: [kind.enterTool])
+        case .computer:
+            frontAppName = nil
+            cheatsheetSent = []
+            return await withScreenshot(Tools.menu(scenario!.tools), actions: [kind.enterTool])
         }
     }
 

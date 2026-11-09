@@ -2312,6 +2312,25 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.finder"])
 }
 
+@Test func theFrontAppAtScenarioEntryGetsItsCheatsheetEvenIfItWasInFrontBefore() async throws {
+    // Chained E→F (2026-11-09): TextEdit stayed in front across the two scenarios, so F got no sheet;
+    // the first scenario's sheet had left the context with it. Entry resets what counts as a switch.
+    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("先存檔")
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", key("cmd+s"), outcome(true, "存了")))
+    #expect(try sheets(h) == [textEditSheet])
+    await h.doll.ownerSaid("再另存一份")
+    try await h.turn(Scripted("", useComputer))
+    #expect(try sheets(h) == [textEditSheet, textEditSheet] && h.last.cheatsheets == [textEditSheet])
+    // The same owner line, a third scenario: again, since the second's sheet is gone from the context too.
+    try await h.turn(Scripted("", outcome(true, "好了")))
+    try await h.turn(Scripted("", useComputer))
+    #expect(try sheets(h).count == 3)
+    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
+}
+
 @Test func cheatsheetsAreResentByteIdentical() async throws {
     let h = try await Harness(tune: { $0.computer.cheatsheet = true })
     h.vm.setApp(textEdit, textEditKeys)
