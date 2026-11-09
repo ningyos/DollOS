@@ -101,6 +101,10 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var place = FrontWindow.Place.at(Region(10, 20, 300, 200))
         var screenSize: (Int, Int)?
         var cropSize: (Int, Int)?
+        var app: AppIdentity?
+        var shortcuts: [MenuShortcut] = []
+        var frontAppReads = 0
+        var menuReads: [String] = []
     }
     let state = Mutex(State())
 
@@ -142,6 +146,13 @@ private final class FakeComputer: ComputerDriver, Sendable {
             return "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
         }
     }
+
+    func frontApp() async throws -> AppIdentity? { state.withLock { $0.frontAppReads += 1; return $0.app } }
+
+    func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
+        state.withLock { $0.menuReads.append(bundleID); return $0.shortcuts }
+    }
+    func setApp(_ app: AppIdentity?, _ shortcuts: [MenuShortcut]) { state.withLock { $0.app = app; $0.shortcuts = shortcuts } }
 
     func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
@@ -1556,4 +1567,82 @@ private final class FakeVMPal: Sendable {
     let stranger = try memory.search("VM 登入密碼", visible: Memory.visible(.stranger, sawSecret: false))
     #expect(!stranger.contains { $0.folder == "own" } && stranger.contains { $0.text.contains("深色模式") })
     #expect(try memory.search("VM 登入密碼", visible: Memory.visible(.doll, sawSecret: false)).contains { $0.folder == "own" })
+}
+
+// shortcut memory (spec 3.1, 2026-11-09) ---------------------------------------------
+
+private let textEdit = AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1.21")
+private let textEditKeys = [MenuShortcut(path: "File › Save", keys: "⌘S"), MenuShortcut(path: "File › Save As…", keys: "⇧⌥⌘S"),
+                            MenuShortcut(path: "Format › Font › Bold", keys: "⌘B")]
+
+/// Her public memory files, parsed, by text.
+private func publicMemories(_ h: Harness) throws -> [(text: String, tier: SourceTier, confidence: Double, kind: String, app: String, version: String)] {
+    let dir = h.dir.appending(path: "memory/public")
+    return try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".md") }.map {
+        let p = try Memory.parseFile(String(contentsOf: dir.appending(path: $0), encoding: .utf8))
+        return (p.body, p.tier, p.confidence, p.kind, p.app, p.appVersion)
+    }.sorted { $0.text < $1.text }
+}
+
+@Test func theFrontAppsShortcutsBecomeOneProgramMemoryEachOncePerVersion() async throws {
+    let h = try await Harness()
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("用電腦")
+    try await h.turn(Scripted("", useComputer))
+    let mems = try publicMemories(h)
+    #expect(mems.map(\.text) == ["TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", "TextEdit：File › Save＝⌘S（TextEdit 1.21）",
+                                 "TextEdit：Format › Font › Bold＝⌘B（TextEdit 1.21）"])
+    let program = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.program]!
+    #expect(program > 0.85)
+    #expect(mems.allSatisfy { $0.tier == .program && $0.confidence == program && $0.kind == "" && $0.app == "com.apple.TextEdit" && $0.version == "1.21" })
+    // The same app at the same version is never read again.
+    try await h.turn(Scripted("", screenshotCall, key("cmd+s")))
+    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
+    #expect(try publicMemories(h).count == 3)
+    // She finds them with recall, as 確定.
+    await h.doll.ownerSaid("另存新檔怎麼按？")
+    try await h.turn(Scripted("", recall("TextEdit 另存")))
+    #expect(try h.toolResults().last!.text.contains("〔確定｜public〕\nTextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）"))
+    // A new version rewrites that app's records.
+    h.vm.setApp(AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1.22"), [MenuShortcut(path: "File › Save", keys: "⌘S")])
+    try await h.turn(Scripted("", screenshotCall))
+    #expect(try publicMemories(h).map(\.text) == ["TextEdit：File › Save＝⌘S（TextEdit 1.22）"])
+    // Another app gets its own; the first app's stay.
+    h.vm.setApp(AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0"), [MenuShortcut(path: "File › New Finder Window", keys: "⌘N")])
+    try await h.turn(Scripted("", key("cmd+n")))
+    #expect(try publicMemories(h).map(\.text) == ["Finder：File › New Finder Window＝⌘N（Finder 15.0）", "TextEdit：File › Save＝⌘S（TextEdit 1.22）"])
+    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.TextEdit", "com.apple.finder"])
+    #expect(try h.store.countMemoryIndex() == 2)
+
+    // A new process on the same memory knows what is recorded from the files.
+    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    cfg.core.dataDir = h.dir.path
+    cfg.memory.dir = h.dir.appending(path: "memory").path
+    let again = try Doll(config: cfg, root: root, model: FakeModel([]), computer: h.vm, say: { _ in })
+    try await again.learnFrontApp()
+    #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
+}
+
+@Test func flagsDecideTheShortcutReadsAndTheRecallHint() async throws {
+    let on = try await Harness()
+    on.vm.setApp(textEdit, textEditKeys)
+    await on.doll.ownerSaid("用電腦")
+    try await on.turn(Scripted("", useComputer))
+    #expect(try on.toolResults().last!.text.components(separatedBy: "\n").contains("做事前可以先 recall 看看有沒有這個 app 的做法或快捷鍵。"))
+
+    let off = try await Harness(tune: { $0.computer.learnShortcuts = false; $0.computer.recallHint = false })
+    off.vm.setApp(textEdit, textEditKeys)
+    await off.doll.ownerSaid("用電腦")
+    try await off.turn(Scripted("", useComputer))
+    try await off.turn(Scripted("", key("cmd+s")))
+    #expect(try !off.toolResults()[0].text.contains("recall"))
+    #expect(off.vm.state.withLock { $0.frontAppReads == 0 && $0.menuReads.isEmpty })
+    #expect(try publicMemories(off).isEmpty)
+}
+
+@Test func axmenusOutputParses() {
+    #expect(VMPalDriver.parseFrontApp("com.apple.TextEdit\tTextEdit\t1.21\n") == textEdit)
+    #expect(VMPalDriver.parseFrontApp("") == nil && VMPalDriver.parseFrontApp("\tSomething\t1\n") == nil)
+    #expect(VMPalDriver.parseShortcuts("File › Save\t⌘S\nEdit › Complete\t⌥Esc\nbroken line\n")
+            == [MenuShortcut(path: "File › Save", keys: "⌘S"), MenuShortcut(path: "Edit › Complete", keys: "⌥Esc")])
 }

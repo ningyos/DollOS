@@ -254,6 +254,13 @@ public final class Store {
         try query("SELECT count(*) FROM memory_index", []) { Int($0.int(0)!) }.first ?? 0
     }
 
+    /// Removes one entry from every index table (its markdown file is already gone).
+    public func deleteMemoryIndex(id: String) throws {
+        for table in ["memory_index", "memory_fts", "memory_vectors"] {
+            try exec("DELETE FROM \(table) WHERE id = ?", [.text(id)])
+        }
+    }
+
     public func clearMemoryIndex() throws {
         for sql in ["DELETE FROM memory_index", "DELETE FROM memory_fts", "DELETE FROM memory_vectors"] {
             try exec(sql, [])

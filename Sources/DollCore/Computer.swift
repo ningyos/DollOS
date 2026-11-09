@@ -43,6 +43,21 @@ public struct FrontWindow: Sendable, Equatable {
     public init(summary: String, place: Place) { (self.summary, self.place) = (summary, place) }
 }
 
+/// The front app as the program keys her shortcut memories (spec 3.1, 2026-11-09): one app at one version.
+public struct AppIdentity: Sendable, Equatable {
+    public var bundleID: String
+    public var name: String
+    public var version: String
+    public init(bundleID: String, name: String, version: String) { (self.bundleID, self.name, self.version) = (bundleID, name, version) }
+}
+
+/// One menu item with a shortcut: its menu path (`File › Save As…`) and its keys (`⇧⌥⌘S`).
+public struct MenuShortcut: Sendable, Equatable {
+    public var path: String
+    public var keys: String
+    public init(path: String, keys: String) { (self.path, self.keys) = (path, keys) }
+}
+
 public protocol ComputerDriver: Sendable {
     /// Does one action and waits until the screen settles. Returns the VM's own text about it;
     /// a failed call (non-zero exit, an error answer) throws with the VM's error text.
@@ -60,6 +75,10 @@ public protocol ComputerDriver: Sendable {
     /// each, `role "name" (x,y)` with the item's center in full-screenshot pixels. A part that could
     /// not be read is a line saying why; throws when none could (agent-desktop missing, no screen).
     func desktopSummary() async throws -> String
+    /// The front app; nil when there is none.
+    func frontApp() async throws -> AppIdentity?
+    /// Every menu item of the running app `bundleID` that has a shortcut, in menu order.
+    func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut]
 }
 
 /// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
@@ -219,6 +238,30 @@ public struct VMPalDriver: ComputerDriver {
         let screen = try WindowSummary.display(Data((parts["displays"] ?? "").utf8))
         return DesktopSummary.render(DesktopSummary.surfaces.map { ($0, Data((parts[$0.flag] ?? "").utf8)) },
                                      on: screen, width: cfg.screenshotWidth)
+    }
+
+    /// `axmenus --front` (`scripts/axmenus.swift`, in the VM): bundle id, name, version, tab-separated.
+    public func frontApp() async throws -> AppIdentity? {
+        Self.parseFrontApp(try await exec("\"$1\" --front", [cfg.axMenus]))
+    }
+
+    /// `axmenus <bundle id>`: one `path<TAB>keys` line per menu item with a shortcut.
+    public func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
+        Self.parseShortcuts(try await exec("\"$1\" \"$2\"", [cfg.axMenus, bundleID]))
+    }
+
+    /// nil when there is no front app or it has no bundle id (nothing to key memories by).
+    static func parseFrontApp(_ out: String) -> AppIdentity? {
+        let f = out.trimmingCharacters(in: .newlines).components(separatedBy: "\t")
+        guard f.count == 3, !f[0].isEmpty else { return nil }
+        return AppIdentity(bundleID: f[0], name: f[1].isEmpty ? f[0] : f[1], version: f[2])
+    }
+
+    static func parseShortcuts(_ out: String) -> [MenuShortcut] {
+        out.split(separator: "\n").compactMap { line in
+            let f = line.components(separatedBy: "\t")
+            return f.count == 2 && !f[0].isEmpty && !f[1].isEmpty ? MenuShortcut(path: f[0], keys: f[1]) : nil
+        }
     }
 
     /// `click` by element (spec 3.1, M2 round 6). At click time: the focused window from

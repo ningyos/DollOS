@@ -15,6 +15,7 @@ public enum SourceTier: String, Sendable, CaseIterable {
     case tool        // command / job output
     case stranger    // someone other than the owner (no such input until M6; reserved)
     case doll        // her own guess
+    case program     // read by the program itself, no model in between (an app's menu shortcuts)
 }
 
 /// What a memory says about its event (spec 6), given by her on `remember`. Facts and
@@ -160,26 +161,30 @@ public final class Memory {
     }
 
     // markdown files ----------------------------------------------------------
-    /// One record = one file: a `+++` front-matter block, then the text verbatim.
-    private static func fileText(sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier, body: String) -> String {
-        """
+    /// One record = one file: a `+++` front-matter block, then the text verbatim. A record about one
+    /// app at one version (a menu shortcut the program read) also names the app's bundle id and version.
+    private static func fileText(sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
+                                 app: AppIdentity?, body: String) -> String {
+        let appLines = app.map { "app = \"\($0.bundleID)\"\napp_version = \"\($0.version)\"\n" } ?? ""
+        return """
         +++
         kind = "\(kind)"
         confidence = \(confidence)
         created_ts = \(ts)
         source_event_seq = \(sourceSeq)
         source_tier = "\(tier.rawValue)"
-        +++
+        \(appLines)+++
         \(body)
         """
     }
 
-    static func parseFile(_ text: String) throws -> (sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier, body: String) {
+    static func parseFile(_ text: String) throws -> (sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
+                                                     app: String, appVersion: String, body: String) {
         let lines = text.components(separatedBy: "\n")
         guard lines.first == "+++", let end = lines.dropFirst().firstIndex(of: "+++") else {
             throw MemoryError(description: "no +++ front-matter block")
         }
-        var seq: Int64 = 0, ts = 0.0, confidence = 0.0, kind = "", tier = SourceTier.doll
+        var seq: Int64 = 0, ts = 0.0, confidence = 0.0, kind = "", tier = SourceTier.doll, app = "", appVersion = ""
         for line in lines[1..<end] {
             let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { continue }
@@ -193,15 +198,48 @@ public final class Memory {
             case "created_ts": ts = Double(bare) ?? 0
             case "source_event_seq": seq = Int64(bare) ?? 0
             case "source_tier": tier = SourceTier(rawValue: bare) ?? .doll
+            case "app": app = bare
+            case "app_version": appVersion = bare
             default: break
             }
         }
         let body = lines[(end + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (seq, ts, confidence, kind, tier, body)
+        return (seq, ts, confidence, kind, tier, app, appVersion, body)
     }
 
+    /// Bundle id → version of every app whose shortcuts are in her public memories (front-matter `app`).
+    func learnedApps() throws -> [String: String] {
+        var out: [String: String] = [:]
+        for (_, parsed) in try appRecords() { out[parsed.app] = parsed.appVersion }
+        return out
+    }
+
+    /// Deletes every public record about `bundleID` (all versions), files and index rows. Returns how many.
     @discardableResult
-    public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?) throws -> String {
+    func forgetApp(_ bundleID: String) throws -> Int {
+        let gone = try appRecords().filter { $0.1.app == bundleID }
+        for (url, _) in gone {
+            try FileManager.default.removeItem(at: url)
+            try store.deleteMemoryIndex(id: String(url.lastPathComponent.dropLast(3)))
+        }
+        return gone.count
+    }
+
+    private func appRecords() throws -> [(URL, (sourceSeq: Int64, ts: Double, confidence: Double, kind: String, tier: SourceTier,
+                                                app: String, appVersion: String, body: String))] {
+        let dir = directory(.public)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return try names.sorted().filter { $0.hasSuffix(".md") }.compactMap { name in
+            let url = dir.appending(path: name)
+            let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+            return parsed.app.isEmpty ? nil : (url, parsed)
+        }
+    }
+
+
+    @discardableResult
+    public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?,
+                      app: AppIdentity? = nil) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -211,7 +249,7 @@ public final class Memory {
         let id = "\(sourceSeq)-\(Self.hex(6))"
         let folder = dirName(f)
         let url = directory(f).appending(path: "\(id).md")
-        try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier, body: body)
+        try Self.fileText(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier, app: app, body: body)
             .write(to: url, atomically: true, encoding: .utf8)
         let vector = try embedder.embed(body)
         try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: confidence,

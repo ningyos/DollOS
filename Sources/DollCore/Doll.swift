@@ -90,6 +90,9 @@ public actor Doll {
     let computerTools: [Tools.Spec]
     /// Between `use_computer()` and `leave_computer()`.
     var inComputer = false
+    /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
+    /// files on first use, then kept here.
+    var learnedApps: [String: String]?
     var watch: Watch?
     var watchSerial = 0
     /// Wakes from the current watch since her last computer action.
@@ -408,7 +411,8 @@ public actor Doll {
             case .useComputer:
                 guard !inComputer else { return Outcome(text: "已經在電腦選單裡了。", actions: [name]) }
                 inComputer = true
-                return await withScreenshot(Tools.menu(computerTools), actions: [name])
+                let hint = computerConfig.recallHint ? "\n" + Tools.recallHint : ""
+                return await withScreenshot(Tools.menu(computerTools) + hint, actions: [name])
             case .leaveComputer:
                 inComputer = false
                 let had = watch != nil
@@ -482,7 +486,46 @@ public actor Doll {
             }
             out.window = "沒有視窗圖和視窗概要：\(error)\n\(desktop)"
         }
+        // The front app, for her shortcut memories: after the rest, never alongside it (VMPal runs at
+        // most two CLI commands per VM at once; a third fails, 2026-11-09).
+        if computerConfig.learnShortcuts {
+            do {
+                if let app = try await computer.frontApp() { await learnShortcuts(app) }
+            } catch {
+                log("ERROR", "turn \(turnIndex): front app failed: \(error)")
+            }
+        }
         return out
+    }
+
+    /// The program's own shortcut memories (spec 3.1, 2026-11-09): the first time the front app is
+    /// one not recorded at its version, every menu shortcut it has becomes one public memory, tier
+    /// program, no kind; the app's records from another version are deleted first. She is not told:
+    /// they are in her memory for `recall`. A failed read is logged and tried again next time.
+    func learnShortcuts(_ app: AppIdentity) async {
+        do {
+            if learnedApps == nil { learnedApps = try memory.learnedApps() }
+            guard learnedApps?[app.bundleID] != app.version else { return }
+            let shortcuts = try await computer.menuShortcuts(app.bundleID)
+            // Re-checked after the await: another call may have recorded it meanwhile.
+            guard learnedApps?[app.bundleID] != app.version else { return }
+            let removed = try memory.forgetApp(app.bundleID)
+            for s in shortcuts {
+                try memory.write("\(app.name)：\(s.path)＝\(s.keys)（\(app.name) \(app.version)）", folder: .public,
+                                 sourceSeq: 0, tier: .program, kind: nil, app: app)
+            }
+            learnedApps?[app.bundleID] = app.version
+            log("INFO", "shortcuts of \(app.bundleID) \(app.version): \(shortcuts.count) written, \(removed) old removed")
+        } catch {
+            log("ERROR", "shortcuts of \(app.bundleID) \(app.version) failed: \(error)")
+        }
+    }
+
+    /// Records the front app's shortcuts now, as the first use of it would (a run that starts with
+    /// them already in her memory).
+    public func learnFrontApp() async throws {
+        guard let app = try await computer.frontApp() else { throw ComputerError("沒有前景 app") }
+        await learnShortcuts(app)
     }
 
     /// Takes a full-screen screenshot, or the front window's crop at `region`, and stores its bytes

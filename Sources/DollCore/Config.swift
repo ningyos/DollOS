@@ -30,6 +30,14 @@ public struct ComputerConfig: Sendable {
     public var vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"
     /// agent-desktop inside the VM (run with `vmpal exec`): the front window's outline after every action.
     public var agentDesktop = "/Users/doll/agent-desktop/agent-desktop"
+    /// The menu-shortcut reader inside the VM (`scripts/axmenus.swift`): `--front` names the front
+    /// app, `<bundle id>` lists that app's menu items with shortcuts.
+    public var axMenus = "/Users/doll/agent-desktop/axmenus"
+    /// When the front app is one not yet recorded at its version, the program writes one public
+    /// memory per menu shortcut of it (spec 3.1, 2026-11-09).
+    public var learnShortcuts = true
+    /// `use_computer()`'s result says to recall an app's ways and shortcuts first.
+    public var recallHint = true
     /// Every screenshot she gets has this width; her coordinates are in this space.
     public var screenshotWidth = 1280
     /// "jpeg" or "png".
@@ -125,6 +133,9 @@ public struct Config: Sendable {
         computer.vmID = try v.required("vm_id")
         try v.read("vmpal", &computer.vmpal)
         try v.read("agent_desktop", &computer.agentDesktop)
+        try v.read("ax_menus", &computer.axMenus)
+        try v.read("learn_shortcuts", &computer.learnShortcuts)
+        try v.read("recall_hint", &computer.recallHint)
         try v.read("screenshot_width", &computer.screenshotWidth)
         try v.read("screenshot_format", &computer.screenshotFormat)
         try v.read("window_crop_width", &computer.windowCropWidth)
@@ -211,6 +222,12 @@ private struct Section {
         guard let v = raw.removeValue(forKey: key) else { return }
         guard case .string(let s) = v else { throw bad(key, "a string") }
         out = s
+    }
+
+    mutating func read(_ key: String, _ out: inout Bool) throws {
+        guard let v = raw.removeValue(forKey: key) else { return }
+        guard case .bool(let b) = v else { throw bad(key, "true or false") }
+        out = b
     }
 
     mutating func read(_ key: String, _ out: inout Int) throws {
