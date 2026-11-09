@@ -22,6 +22,15 @@ CREATE TABLE IF NOT EXISTS footers (
     seq INTEGER PRIMARY KEY,         -- her reply's seq
     text TEXT NOT NULL               -- the 【狀況】 she saw right before it; a prompt artifact, not an event
 );
+CREATE TABLE IF NOT EXISTS scenarios (
+    start_seq INTEGER PRIMARY KEY,   -- her reply that entered it (called the enter tool)
+    kind TEXT NOT NULL,              -- computer
+    enter_result_seq INTEGER NOT NULL,   -- the enter call's result; rendered as her summary
+    end_seq INTEGER NOT NULL,        -- her reply that called outcome
+    last_seq INTEGER NOT NULL,       -- the last event of that turn
+    success INTEGER NOT NULL,
+    summary TEXT NOT NULL            -- hers, verbatim
+);
 """
 
 /// The memory index (M3a): rebuildable from the markdown files, never the source.
@@ -202,6 +211,28 @@ public final class Store {
 
     public func footer(_ seq: Int64) throws -> String? {
         try query("SELECT text FROM footers WHERE seq = ?", [.int(seq)]) { $0.text(0)! }.first
+    }
+
+    // scenarios --------------------------------------------------------------
+    /// Records a scenario she left with `outcome`; requests render its span from then on.
+    public func closeScenario(_ s: ClosedScenario) throws {
+        try exec("INSERT INTO scenarios (start_seq, kind, enter_result_seq, end_seq, last_seq, success, summary)"
+                 + " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 [.int(s.startSeq), .text(s.kind.rawValue), .int(s.enterResultSeq), .int(s.endSeq), .int(s.lastSeq),
+                  .int(s.success ? 1 : 0), .text(s.summary)])
+    }
+
+    /// Every closed scenario, oldest first.
+    public func closedScenarios() throws -> [ClosedScenario] {
+        try query("SELECT kind, start_seq, enter_result_seq, end_seq, last_seq, success, summary FROM scenarios ORDER BY start_seq") {
+            ClosedScenario(kind: ScenarioKind(rawValue: $0.text(0)!)!, startSeq: $0.int(1)!, enterResultSeq: $0.int(2)!,
+                           endSeq: $0.int(3)!, lastSeq: $0.int(4)!, success: $0.int(5)! != 0, summary: $0.text(6)!)
+        }
+    }
+
+    /// The newest event's seq; 0 for an empty timeline.
+    public func lastSeq() throws -> Int64 {
+        try query("SELECT coalesce(max(seq), 0) FROM events") { $0.int(0)! }.first ?? 0
     }
 
     /// Appends one event and returns it with its seq.

@@ -142,9 +142,12 @@ public struct Experience: Sendable {
         let first = file.body.prefix { $0 != "\n" }
         return String(first.hasPrefix("經驗：") ? first.dropFirst(3) : first)
     }
-    /// Its numbered steps, without the numbers (steps cut for length are not there).
+    /// Its numbered steps after the 「步驟：」 line, without the numbers (steps cut for length are not
+    /// there). Only after that line: her summary above it may number things too.
     public var steps: [String] {
-        file.body.components(separatedBy: "\n").compactMap { line in
+        let lines = file.body.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(of: "步驟：") else { return [] }
+        return lines[(start + 1)...].compactMap { line in
             guard let dot = line.range(of: ". "), !line[..<dot.lowerBound].isEmpty,
                   line[..<dot.lowerBound].allSatisfy(\.isASCII), line[..<dot.lowerBound].allSatisfy(\.isNumber) else { return nil }
             return String(line[dot.upperBound...])

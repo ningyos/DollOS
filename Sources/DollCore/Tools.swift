@@ -8,12 +8,13 @@ import Foundation
 ///     think(level: medium | high)        the next model call thinks first
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories
-///     use_computer(expect)               opens the computer menu (spec 3.1, 2026-11-08); expect: what she
-///                                        should see when done (2026-11-09)
+///     use_computer(expect)               enters the computer scenario (spec 3.1, 2026-11-08); expect: what
+///                                        she should see when done (2026-11-09)
 ///
-/// The computer menu's tools are listed only in `use_computer()`'s result, never in the system prompt,
-/// and work only until her computer session ends: click, type, key, scroll, drag, screenshot, watch,
-/// outcome (whether `expect` was reached; ends the session, and nothing wakes her for it).
+/// A scenario's tools (`ScenarioKind.tools`, then `outcome`) are listed only in its enter call's
+/// result, never in the system prompt, and work only while it is open: the computer's click, type,
+/// key, scroll, drag, screenshot, watch; `outcome(success, summary)` leaves it (her summary replaces
+/// the scenario's turns in later requests, and nothing wakes her for it).
 public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
     static let modifiers = ["cmd", "shift", "alt", "ctrl"]
@@ -159,21 +160,24 @@ public enum Tools {
                      ],
                      "required": ["target"],
                  ], jsonParameters: []),
-            Spec(name: "outcome",
-                 description: "結束這次用電腦：回答 use_computer 時說的期望（expect）達成了沒。先看最新的截圖、對照 expect 再答。呼叫完電腦工具就鎖回去、watch 停掉，程式不會再叫你；同一則回覆裡寫在 outcome 前面的文字，就是你這次對主人說的話。",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object([
-                         ("success", ["type": "boolean", "description": "達成就是 true，沒有就是 false"]),
-                         ("evidence", ["type": "string", "description": "你看到什麼所以這樣判斷"]),
-                     ]),
-                     "required": ["success", "evidence"],
-                 ], jsonParameters: ["success"]),
         ]
     }
 
-    /// `use_computer()`'s text, ahead of the first screenshot: the menu in the system block's
-    /// one-JSON-object-per-line format.
+    /// The tool that leaves any scenario, listed last in its menu (spec 3.1, 2026-11-09).
+    static let exitSpec = Spec(
+        name: "outcome",
+        description: "結束這次用電腦。先看最新的截圖、對照 use_computer 時說的期望（expect），再回答達成了沒。結束以後，這次用電腦的過程（截圖、每一步的結果）就不在你眼前了，只留下你在 summary 寫的；所以 summary 要寫給以後的自己看：用自然的話寫你做了什麼、怎麼做的、結果怎樣、你怎麼確認的。呼叫完電腦工具就鎖回去、watch 停掉，程式不會再叫你；同一則回覆裡寫在 outcome 前面的文字，就是你這次對主人說的話。",
+        parameters: [
+            "type": "object",
+            "properties": .object([
+                ("success", ["type": "boolean", "description": "達成就是 true，沒有就是 false"]),
+                ("summary", ["type": "string", "description": "寫給以後的自己：做了什麼、怎麼做的、結果、怎麼確認的"]),
+            ]),
+            "required": ["success", "summary"],
+        ], jsonParameters: ["success"])
+
+    /// The enter call's text, ahead of the first screenshot: the scenario's menu in the system
+    /// block's one-JSON-object-per-line format.
     static func menu(_ specs: [Spec]) -> String {
         "電腦選單打開了，現在多了這些工具：\n<tools>"
             + specs.map { "\n" + $0.json.text }.joined()
@@ -223,9 +227,9 @@ public enum Tools {
         case think(String)
         case remember([Item])
         case recall(String)
-        case useComputer(expect: String)
+        case enter(ScenarioKind, expect: String)
         case act(ComputerAction)
-        case outcome(success: Bool, evidence: String)
+        case outcome(success: Bool, summary: String)
         /// `click` at x, y on the full screenshot or on the last window crop; the program converts
         /// and checks them before anything is clicked.
         case clickAt(x: Int, y: Int, onWindow: Bool, button: String, count: Int)
@@ -234,13 +238,13 @@ public enum Tools {
         case watch(Region?, maxWait: Double?)
     }
 
-    /// `specs` are the tools she may call now; `locked` are listed somewhere but closed (the computer
-    /// menu outside `use_computer`): calling one is an error that says how to open it.
-    static func decode(_ call: ToolCall, specs: [Spec], locked: [Spec] = []) throws -> Request {
+    /// `specs` are the tools she may call now; `locked` are a scenario's tools while it is closed:
+    /// calling one is an error that says how to open it.
+    static func decode(_ call: ToolCall, specs: [Spec], locked: [(ScenarioKind, [Spec])] = []) throws -> Request {
         if let problem = call.malformed { throw ToolError(description: problem + "\n" + ParsedReply.format) }
         guard let spec = specs.first(where: { $0.name == call.name }) else {
-            if locked.contains(where: { $0.name == call.name }) {
-                throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
+            if let kind = locked.first(where: { $0.1.contains { $0.name == call.name } })?.0 {
+                throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 \(kind.enterTool)(expect) 打開\(kind.menuName)選單")
             }
             throw ToolError(description: "沒有 \(call.name) 這個工具")
         }
@@ -296,13 +300,13 @@ public enum Tools {
         case "recall":
             return .recall(try nonEmpty("query"))
         case "use_computer":
-            return .useComputer(expect: try nonEmpty("expect"))
+            return .enter(.computer, expect: try nonEmpty("expect"))
         case "outcome":
             let raw = try nonEmpty("success").lowercased()
             guard raw == "true" || raw == "false" else {
                 throw ToolError(description: "outcome 的 success 只能是 true 或 false，收到 \(raw)")
             }
-            return .outcome(success: raw == "true", evidence: try nonEmpty("evidence"))
+            return .outcome(success: raw == "true", summary: try nonEmpty("summary"))
         case "screenshot":
             return .screenshot
         case "click":
@@ -632,7 +636,7 @@ enum Instructions {
 
         做事只能透過工具：要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光用嘴說「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。
 
-        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。做完了，看最新的截圖對照 expect，用 outcome(success, evidence) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話寫在同一則回覆的 outcome 前面。同一則回覆裡寫在 outcome 後面的呼叫不會執行。
+        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；每個動作做完都會回一張新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話寫在同一則回覆的 outcome 前面。同一則回覆裡寫在 outcome 後面的呼叫不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
 
         回覆裡 <tool_call> 以外的文字就是你對主人說的話；要說的話寫在工具呼叫前面。沒話要說可以不寫。
 

@@ -36,8 +36,8 @@ private func watch(_ target: String, _ maxWait: Int? = nil) -> (String, [(String
     ("watch", [("target", target)] + (maxWait.map { [("max_wait_s", "\($0)")] } ?? []))
 }
 private let useComputer: (String, [(String, String)]) = ("use_computer", [("expect", "畫面上看得到結果")])
-private func outcome(_ success: Bool, _ evidence: String) -> (String, [(String, String)]) {
-    ("outcome", [("success", "\(success)"), ("evidence", evidence)])
+private func outcome(_ success: Bool, _ summary: String) -> (String, [(String, String)]) {
+    ("outcome", [("success", "\(success)"), ("summary", summary)])
 }
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
@@ -941,15 +941,60 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     }
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["key"] && h.vm.actions == [.key("return")])
-    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）"))
+    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, summary) 結束）"))
     try await h.turn(Scripted("", outcome(false, "沒看到")))
     #expect(try h.toolResults().last!.text == "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。")
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.vm.actions.count == 1)
     #expect(h.last.footer.contains("- 選單：頂層"))
     // Opening and closing the menu never touched the system prompt.
     #expect(Set(await h.model.requests.map { $0.messages[0].content }).count == 1)
+}
+
+@Test func leavingAScenarioPutsHerSummaryInPlaceOfItsTurns() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("把 notes 存檔")
+    let enter = Scripted("好，我來", useComputer)
+    try await h.turn(enter)                                                        // request 0: before entering
+    try await h.turn(Scripted("", key("cmd+s")))                                   // request 1: inside
+    try await h.turn(Scripted("存好了。", outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
+    // While it was open, its turns went out in full: the menu's screenshot, the key's result.
+    let inside = await h.model.seen(2)
+    #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.content.hasPrefix("key cmd+s") })
+    await h.doll.ownerSaid("謝謝")
+    try await h.turn("不客氣")                                                     // request 3: first after leaving
+    await h.doll.ownerSaid("再見")
+    try await h.turn("掰")                                                         // request 4
+
+    let before = await h.model.seen(0), after = await h.model.seen(3)
+    // The main context up to and including her entering reply, unchanged; then the enter call's
+    // result is her summary; then what she said when she left; then what came after.
+    #expect(Array(after.prefix(before.count + 1)) == before + [ChatMessage(role: "assistant", content: enter.raw)])
+    #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
+    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: "存好了。"))
+    #expect(after[before.count + 3].role == "user" && after[before.count + 3].content.hasSuffix("主人] 謝謝"))
+    #expect(after.last?.content.hasPrefix("【狀況】") == true)
+    // Nothing from inside: no screenshot, no computer result, no menu, no intermediate reply.
+    #expect(after.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty })
+    #expect(after.filter { $0.role == "tool" }.count == 1)
+    #expect(!after.contains { $0.content.hasPrefix("key cmd+s") || $0.content.hasPrefix("電腦選單打開了") || $0.content.hasPrefix("記下了") })
+    // Later requests extend it byte-identically.
+    let next = await h.model.seen(4)
+    #expect(Array(next.prefix(after.count)) == after)
+    let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
+    #expect(try enc(next).starts(with: enc(after).dropLast()))
+    // The timeline still holds every event of the scenario.
+    #expect(try h.store.events().contains { $0.kind == .tool && $0.text.hasPrefix("key cmd+s") && $0.image != nil })
+}
+
+@Test func enteringWhileAScenarioIsOpenIsAnError() async throws {
+    let h = try await menuHarness()
+    let open = await h.doll.scenario?.startSeq
+    try await h.turn(Scripted("", useComputer))
+    #expect(try h.toolResults().last!.text == "失敗：電腦選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
+    #expect(h.last.actions == ["error use_computer"])
+    #expect(await h.doll.scenario?.startSeq == open && open != nil)
 }
 
 @Test func everyComputerActionReturnsATextLineAndAScreenshot() async throws {
@@ -1850,7 +1895,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events()
     #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔大概｜secret〕\n經驗：TextEdit 的秘密筆記密碼是 1234"))
 }
 
-// computer sessions and experiences (spec 3.1, 2026-11-09「先砍到最小」) -------------------
+// scenarios, computer sessions and experiences (spec 3.1, 2026-11-09) ----------------------
 
 /// Her public memory files with tier self_reported.
 private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTier, confidence: Double, kind: String, app: String, version: String)] {
@@ -1864,7 +1909,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(try h.toolResults().last!.text == "失敗：use_computer 少了參數 expect")
     try await h.turn(Scripted("", ("use_computer", [("expect", "  ")])))
     #expect(try h.toolResults().last!.text == "失敗：use_computer 的 expect 是空的")
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
 }
 
 @Test func aSuccessfulOutcomeWritesOneExperienceOfHerActions() async throws {
@@ -1879,10 +1924,11 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")]),
                               ("type", [("text", "娃娃來過")]), key("cmd+s")))
     // She looks, then answers in the same reply.
-    try await h.turn(Scripted("", screenshotCall, outcome(true, "標題沒有點")))
-    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）"))
-    #expect(try h.toolResults().last!.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
-    let text = "經驗：把 notes 存檔\n期望：標題沒有「已編輯」\n1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s\n結果：標題沒有點"
+    try await h.turn(Scripted("", screenshotCall, outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
+    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, summary) 結束）"))
+    #expect(try h.toolResults().last!.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
+    let text = "經驗：把 notes 存檔\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
+        + "1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s"
     #expect(h.last.outcome == "success" && h.last.experience == text && h.last.actions.contains("outcome success"))
     let mems = try experiences(h)
     let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
@@ -1891,11 +1937,14 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // Relocked.
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["error key"] && h.last.footer.contains("- 選單：頂層"))
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
     // Its stats are in the front-matter, not in the text (what is embedded): this run's 5 turns.
     let files = try experienceFiles(h)
     let stats = try #require(files.first?.stats)
     #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
+    // Only the program's steps count as steps, not a numbered line in her summary.
+    #expect(Experience(id: "", folder: "public", secret: false, level: "", file: files[0]).steps
+            == ["click dockitem \"Finder\"", "click 60,45 雙擊", "type 「娃娃來過」", "key cmd+s"])
     #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
             && stats == ExperienceStats(turns: 5, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
     // The next time the owner asks the same, it is attached whole, its stats line first.
@@ -1910,20 +1959,22 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", key("cmd+s"), outcome(false, "還有點")))
     #expect(h.last.outcome == "failure" && h.last.experience == nil)
     #expect(try experiences(h).isEmpty)
-    // A bad success value is an error, and the session stays open.
+    // A bad success value is an error, and the scenario stays open.
     try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", ("outcome", [("success", "maybe"), ("evidence", "x")]), outcome(true, "看到了")))
+    try await h.turn(Scripted("", ("outcome", [("success", "maybe"), ("summary", "x")]), outcome(true, "看到了")))
     #expect(try h.toolResults().map(\.text).contains("失敗：outcome 的 success 只能是 true 或 false，收到 maybe"))
     #expect(h.last.outcome == "success")
     #expect(try experiences(h).count == 1)
-    // A session still open when the program stops: unknown, relocked, logged, nothing written.
+    // A scenario still open when the program stops: unknown, relocked, logged, nothing written.
     try await h.turn(Scripted("", useComputer))
     try await h.turn(Scripted("", watch("window", 60)))
     await h.doll.shutdown()
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
     #expect(await h.doll.watch == nil)
-    #expect(h.logs.contains { $0.contains("outcome unknown: session ended without her outcome") })
+    #expect(h.logs.contains { $0.contains("outcome unknown: computer scenario ended without her outcome") })
     #expect(try experiences(h).count == 1)
+    // Nothing is stored for it (no summary of hers), so its turns stay in requests in full.
+    #expect(try h.store.closedScenarios().map(\.success) == [false, true])
 }
 
 @Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
@@ -1938,11 +1989,11 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await Task.sleep(for: .milliseconds(200))
     #expect(await h.model.requests.count == 2 && h.said == ["存好了"])  // her words came with the outcome
     #expect(await h.doll.settled)
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
     #expect(h.last.outcome == "success" && h.vm.actions == [.key("cmd+s")])
     // The result is still in the timeline, right after her reply.
     let events = try h.store.events()
-    #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
+    #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
     #expect(events.dropLast(2).last?.kind == .doll)
     await h.doll.stop()
     try await runner.value
@@ -1972,19 +2023,26 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(h.last.actions == ["key", "outcome failure", "error key", "error screenshot"])
     #expect(h.vm.actions == [.key("cmd+s")])
     #expect(await !h.doll.followUp)
-    #expect(await !h.doll.inComputer)
+    #expect(await h.doll.scenario == nil)
+    // The next request: the enter call's result says it was not reached, with her summary; the
+    // refused calls' results are not in it.
+    await h.doll.ownerSaid("好吧")
+    try await h.turn("嗯")
+    let request = await h.model.requests.last!.messages
+    #expect(request.contains(ChatMessage(role: "tool", content: "沒達成。你自己記下的經過：\n沒好")))
+    #expect(!request.contains { $0.content.hasPrefix("失敗：這次用電腦已經用 outcome 結束了") || !$0.images.isEmpty })
 }
 
 @Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
     let steps = (1...12).map { "key cmd+\($0) then a long enough line" }
-    let full = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 10_000)
+    let full = Doll.experienceText(task: "做事", summary: "做好了，看過了", steps: steps, maxChars: 10_000)
     #expect(full.components(separatedBy: "\n").count == 15 && !full.contains("省略"))
-    let cut = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 300)
+    let cut = Doll.experienceText(task: "做事", summary: "做好了，看過了", steps: steps, maxChars: 300)
     #expect(cut.count <= 300)
-    #expect(cut.hasPrefix("經驗：做事\n期望：做好\n1. key cmd+1 ") && cut.hasSuffix("\n12. key cmd+12 then a long enough line\n結果：看到了"))
+    #expect(cut.hasPrefix("經驗：做事\n做好了，看過了\n步驟：\n1. key cmd+1 ") && cut.hasSuffix("\n12. key cmd+12 then a long enough line"))
     #expect(cut.contains("（省略 ") && cut.components(separatedBy: "\n").count < 15)
-    // Header and evidence alone over the cap: hard cut.
-    let tiny = Doll.experienceText(task: String(repeating: "長", count: 500), expect: "x", steps: steps, evidence: "y", maxChars: 100)
+    // Header and summary alone over the cap: hard cut.
+    let tiny = Doll.experienceText(task: String(repeating: "長", count: 500), summary: "y", steps: steps, maxChars: 100)
     #expect(tiny.count == 100 && tiny.hasSuffix("…"))
 }
 
@@ -2032,7 +2090,7 @@ private func experienceFiles(_ h: Harness) throws -> [MemoryFile] {
 private func seedExperience(_ h: Harness, _ id: String, task: String, steps: [String], stats: ExperienceStats?) async throws {
     let dir = h.dir.appending(path: "memory/public")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let body = (["經驗：\(task)", "期望：做好"] + steps.enumerated().map { "\($0.offset + 1). \($0.element)" } + ["結果：好了"])
+    let body = (["經驗：\(task)", "做好了。", "步驟："] + steps.enumerated().map { "\($0.offset + 1). \($0.element)" })
         .joined(separator: "\n")
     let file = MemoryFile(sourceSeq: 1, ts: 1794240000.5, confidence: 0.4, kind: "", tier: .selfReported,
                           task: task, stats: stats, body: body)
@@ -2146,12 +2204,14 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
-    // The attached event in the timeline is not re-rendered with the new stats: every request
-    // still starts with the whole one before it.
+    // The attached event in the timeline is not re-rendered with the new stats: every request in
+    // the scenario starts with the whole one before it, and the first after it with the one that
+    // entered it (its turns are folded into her summary).
     try await h.turn("好了")
     #expect(try memoryEvents(h).first?.text == attached)
     let reqs = await h.model.requests.map(\.messages)
-    for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+    for i in 1..<3 { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+    #expect(reqs.count == 4 && Array(reqs[3].prefix(reqs[0].count)) == reqs[0])
     // Her new experience (3 turns: use_computer, the actions, outcome) now leads the group.
     let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 3 })
     #expect(fresh.stats == ExperienceStats(turns: 3, seconds: fresh.stats!.seconds))

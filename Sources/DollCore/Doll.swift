@@ -22,27 +22,15 @@ public struct TurnReport: Sendable {
     public var usedTool: Bool
     /// The 【相關記憶】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var attached: [String]
-    /// How a computer session ended this turn: "success" / "failure" from her `outcome`; nil when
-    /// none ended.
+    /// How a scenario ended this turn: "success" / "failure" from her `outcome`; nil when none ended.
     public var outcome: String?
     /// The experience memory written this turn (on her success), verbatim.
     public var experience: String?
-    /// Per experience attached during the session that ended this turn: how many of its steps she
+    /// Per experience attached during the scenario that ended this turn: how many of its steps she
     /// did in order, and what was counted (spec 3.1, 2026-11-09).
     public var follows: [String] = []
     /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var cheatsheets: [String]
-}
-
-/// One computer session (spec 3.1, 2026-11-09「先砍到最小」): from `use_computer(expect)` until her
-/// `outcome`, or until the program stops with it still open (unknown).
-struct ComputerSession {
-    /// What she said she should see when done.
-    let expect: String
-    /// The owner's last line when she opened the computer.
-    let task: String
-    /// Her computer actions that went through, one short line each (`Doll.step`); no VM answer text.
-    var steps: [String] = []
 }
 
 enum Log {
@@ -109,13 +97,13 @@ public actor Doll {
     var followUp = false
     /// Her internal tools, built once; the system prompt lists them, so it never changes between turns.
     let tools: [Tools.Spec]
-    /// The computer menu; listed only in `use_computer()`'s result.
-    let computerTools: [Tools.Spec]
-    /// Between `use_computer()` and the end of its session (her `outcome`).
-    var inComputer = false
-    /// The open computer session; nil outside the computer menu.
-    var session: ComputerSession?
-    /// This turn's session end and experience memory, for its report.
+    /// Each scenario kind's tools, `outcome` last; listed only in its enter call's result.
+    let scenarioTools: [(ScenarioKind, [Tools.Spec])]
+    /// The open scenario; nil at the top level. One at a time.
+    var scenario: Scenario?
+    /// The scenario her `outcome` closed this turn; stored once the turn's results are in.
+    var closing: ClosedScenario?
+    /// This turn's scenario end and experience memory, for its report.
     var outcomeNow: String?
     var experienceNow: String?
     var followsNow: [String] = []
@@ -177,7 +165,7 @@ public actor Doll {
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say
         tools = Tools.specs(memory: memoryConfig)
-        computerTools = Tools.computerSpecs(config.computer)
+        scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer) + [Tools.exitSpec]) }
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -273,12 +261,11 @@ public actor Doll {
         if batch.contains(where: { $0.kind == .owner }) { ownerArrived = true }
     }
 
+    /// A scenario still open when the program stops (turn cap, stop) never got her outcome: it ends
+    /// unknown, and nothing is stored for it, so later requests keep its turns in full (there is no
+    /// summary of hers to put in their place, and a program-written one would put words in her mouth).
     func shutdown() {
-        // A session still open when the program stops (turn cap, stop) never got her outcome.
-        if let s = session {
-            scoreAttached(steps: s.steps, outcome: "unknown")
-            endSession("unknown")
-        }
+        if let s = scenario { leave(s, outcome: "unknown") }
         stopWatch()
     }
 
@@ -290,10 +277,43 @@ public actor Doll {
         Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text
     }
 
-    /// One event as prompt messages. Her replies carry the footer they were answering and her raw
-    /// content (tool call text included), so the prompt prefix is byte-stable turn to turn (the server
-    /// caches from the last assistant turn). Tool results follow her reply directly, in call order;
-    /// the template wraps them in `<tool_response>`. A computer result goes out as one message: its
+    /// The request before the footer: the system prompt, then the timeline. Her replies carry the
+    /// footer they were answering and her raw content (tool call text included), so the prompt
+    /// prefix is byte-stable turn to turn (the server caches from the last assistant turn).
+    ///
+    /// A scenario she left with `outcome` (spec 3.1, 2026-11-09): everything up to and including her
+    /// reply that entered it renders as before (with the results of calls she wrote ahead of the
+    /// enter call); the enter call's result becomes `Scenario.result` (how it ended and her summary);
+    /// owner lines that came in meanwhile stay; her speech in the reply that left it follows as her
+    /// message. Every other event of the span (results, screenshots, crops, watch wakes, the
+    /// program's 【相關記憶】 and 【快捷鍵】, her replies in between, the exit reply's results) stays in
+    /// the timeline but is not sent. The open scenario renders in full.
+    func context(_ events: [Event]) throws -> [ChatMessage] {
+        let closed = try store.closedScenarios()
+        var out = [ChatMessage(role: "system", content: systemPrompt())]
+        var i = 0
+        for ev in events {
+            let seq = ev.seq!
+            while i < closed.count, closed[i].lastSeq < seq { i += 1 }
+            guard i < closed.count, seq > closed[i].startSeq else {
+                out += try render(ev)
+                continue
+            }
+            let c = closed[i]
+            if seq < c.enterResultSeq || ev.kind == .owner {
+                out += try render(ev)
+            } else if seq == c.enterResultSeq {
+                out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
+            } else if seq == c.endSeq {
+                let speech = ParsedReply(ev.text).speech
+                if !speech.isEmpty { out.append(ChatMessage(role: "assistant", content: speech)) }
+            }
+        }
+        return out
+    }
+
+    /// One event as prompt messages. Tool results follow her reply directly, in call order; the
+    /// template wraps them in `<tool_response>`. A computer result goes out as one message: its
     /// text, the full-screen screenshot, the crop's line, the front window's crop, the window's
     /// outline (2026-11-09), images from the stored files' bytes.
     func render(_ ev: Event) throws -> [ChatMessage] {
@@ -340,8 +360,9 @@ public actor Doll {
     public func footer(contextTokens: Int) -> String {
         let now = Date().timeIntervalSince1970
         var out = ["【狀況】", "- 現在 \(clock(now))"]
-        out.append(!inComputer ? "- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）"
-                   : "- 選單：電腦（做完呼叫 outcome(success, evidence) 結束）")
+        out.append(scenario.map { "- 選單：\($0.kind.menuName)（做完呼叫 outcome(success, summary) 結束）" }
+                   ?? "- 選單：頂層（" + ScenarioKind.allCases.map { "\($0.menuName)工具鎖著；\($0.enterTool)(expect) 打開" }
+                       .joined(separator: "；") + "）")
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- context 約 \(contextTokens) token；下一回合 effort：\(nextEffort)")
         return out.joined(separator: "\n")
@@ -353,7 +374,7 @@ public actor Doll {
     }
 
     func estimateContext() throws -> Int {
-        estimate([ChatMessage(role: "system", content: systemPrompt())] + (try store.events().flatMap(render)))
+        estimate(try context(store.events()))
     }
 
     // one turn ---------------------------------------------------------------
@@ -381,7 +402,7 @@ public actor Doll {
             attachMemories(trigger: "主人的新訊息")
         }
         let events = try store.events()
-        var messages = [ChatMessage(role: "system", content: systemPrompt())] + (try events.flatMap(render))
+        var messages = try context(events)
         let guess = estimate(messages)
         let footerText = footer(contextTokens: Int(Double(guess) * tokenRatio))
         messages.append(ChatMessage(role: "user", content: footerText))
@@ -417,15 +438,16 @@ public actor Doll {
         }
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
-        // Her `outcome` ends the session: the calls after it are refused, and nothing wakes her for it.
+        // Her `outcome` ends the scenario: the calls after it are refused, and nothing wakes her for it.
         for call in parsed.calls {
             let ended = outcomeNow != nil
             let out = ended
                 ? Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
                           actions: ["error \(call.name.isEmpty ? "tool_call" : call.name)"], background: true)
                 : await execute(call, seen: events, reply: stored)
-            try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
-                                   cropNote: out.cropNote, crop: out.crop, window: out.window))
+            let result = try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
+                                                cropNote: out.cropNote, crop: out.crop, window: out.window))
+            if out.enters { scenario?.enterResultSeq = result.seq }
             actions += out.actions
             if !out.background {
                 followUp = true
@@ -445,6 +467,12 @@ public actor Doll {
         if appSwitched {
             appSwitched = false
             attachMemories(trigger: "前景 app 換成 \(frontAppName ?? "?")")
+        }
+        // The scenario she left this turn: from now on its span renders as her summary.
+        if var c = closing {
+            closing = nil
+            c.lastSeq = try store.lastSeq()
+            try store.closeScenario(c)
         }
 
         let usedTool = !parsed.calls.isEmpty
@@ -480,14 +508,16 @@ public actor Doll {
         var secret = false
         var actions: [String]
         var background = false
+        /// This call entered a scenario: its result is the one her summary replaces once she leaves.
+        var enters = false
     }
 
     /// Runs one tool call. Every failure becomes the call's result text; nothing here throws.
     func execute(_ call: ToolCall, seen events: [Event], reply: Event) async -> Outcome {
         let name = call.name.isEmpty ? "tool_call" : call.name
         do {
-            let request = try Tools.decode(call, specs: inComputer ? tools + computerTools : tools,
-                                           locked: inComputer ? [] : computerTools)
+            let request = try Tools.decode(call, specs: tools + (scenario?.tools ?? []),
+                                           locked: scenarioTools.filter { $0.0 != scenario?.kind })
             switch request {
             case .think(let level):
                 effortNext = level
@@ -496,20 +526,28 @@ public actor Doll {
                 return remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try recall(query, seen: events)
-            case .useComputer(let expect):
-                guard !inComputer else { return Outcome(text: "已經在電腦選單裡了。", actions: [name]) }
-                inComputer = true
-                session = ComputerSession(expect: expect, task: events.last { $0.kind == .owner }?.text ?? "")
-                return await withScreenshot(Tools.menu(computerTools), actions: [name])
-            case .outcome(let success, let evidence):
-                guard let s = session else { throw ToolError(description: "outcome 只能在電腦選單裡呼叫") }
-                scoreAttached(steps: s.steps, outcome: success ? "success" : "failure")
-                endSession(success ? "success" : "failure")
-                log("INFO", "turn \(turnIndex): outcome success=\(success) evidence「\(evidence)」")
-                guard success else {
-                    return Outcome(text: "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。", actions: ["outcome failure"])
+            case .enter(let kind, let expect):
+                if let open = scenario {
+                    throw ToolError(description: "\(open.kind.menuName)選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
                 }
-                let text = Self.experienceText(task: s.task, expect: s.expect, steps: s.steps, evidence: evidence,
+                scenario = Scenario(kind: kind, startSeq: reply.seq!, tools: scenarioTools.first { $0.0 == kind }!.1,
+                                    expect: expect, task: events.last { $0.kind == .owner }?.text ?? "")
+                var out = await entered(kind)
+                out.enters = true
+                return out
+            case .outcome(let success, let summary):
+                guard let s = scenario, let enterResult = s.enterResultSeq else {
+                    throw ToolError(description: "outcome 只能在打開的選單裡呼叫")
+                }
+                leave(s, outcome: success ? "success" : "failure")
+                closing = ClosedScenario(kind: s.kind, startSeq: s.startSeq, enterResultSeq: enterResult, endSeq: reply.seq!,
+                                         lastSeq: reply.seq!, success: success, summary: summary)
+                log("INFO", "turn \(turnIndex): outcome success=\(success) summary「\(summary)」")
+                guard success else {
+                    return Outcome(text: "記下了：沒達成。離開\(s.kind.menuName)選單了；\(s.kind.menuName)工具鎖回去了。",
+                                   actions: ["outcome failure"])
+                }
+                let text = Self.experienceText(task: s.task, summary: summary, steps: s.steps,
                                                maxChars: memoryConfig.experienceMaxChars)
                 // Its run: from the owner's last line to this reply, her turns counted with this one.
                 let owner = events.last { $0.kind == .owner }
@@ -520,7 +558,7 @@ public actor Doll {
                 experienceNow = text
                 log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars, "
                     + "\(stats.turns) turns, \(stats.seconds) s")
-                return Outcome(text: "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。",
+                return Outcome(text: "記下了：達成。你的經過和這次的步驟存成一條經驗。離開\(s.kind.menuName)選單了；\(s.kind.menuName)工具鎖回去了。",
                                actions: ["outcome success"])
             case .screenshot:
                 watchIdle = 0
@@ -709,7 +747,7 @@ public actor Doll {
         log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
         switch result {
         case .success(let answer):
-            session?.steps.append(Self.step(action))
+            scenario?.steps.append(Self.step(action))
             return await withScreenshot("\(said)\n\(answer)", actions: [name])
         case .failure(let error):
             // A failed action is not a step of the experience (spec 3.1, 2026-11-09).
@@ -830,13 +868,26 @@ public actor Doll {
         put(Event(.watch, .internal, text, image: image))
     }
 
-    // computer session ---------------------------------------------------------
-    /// Ends the open computer session as `outcome` (success / failure / unknown) and relocks the menu.
-    func endSession(_ outcome: String) {
-        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: session ended without her outcome") }
-        session = nil
-        inComputer = false
-        stopWatch()
+    // scenarios ----------------------------------------------------------------
+    /// The kind's own work on entering; its result text is what she sees first. The computer: its
+    /// menu, then a fresh screenshot.
+    func entered(_ kind: ScenarioKind) async -> Outcome {
+        switch kind {
+        case .computer: await withScreenshot(Tools.menu(scenario!.tools), actions: [kind.enterTool])
+        }
+    }
+
+    /// Ends the open scenario as `outcome` (success / failure / unknown) and relocks its tools. The
+    /// computer: experiences attached since the owner's last line are scored against her steps, and
+    /// the watch stops.
+    func leave(_ s: Scenario, outcome: String) {
+        switch s.kind {
+        case .computer:
+            scoreAttached(steps: s.steps, outcome: outcome)
+            stopWatch()
+        }
+        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: \(s.kind.rawValue) scenario ended without her outcome") }
+        scenario = nil
         outcomeNow = outcome
     }
 
@@ -851,14 +902,15 @@ public actor Doll {
         }
     }
 
-    /// One experience memory (spec 3.1, 2026-11-09): the owner's line, what she expected, her
-    /// numbered actions, her evidence. Over `maxChars`, steps go from the middle first (the first
-    /// and last steps say the most), each gap marked; the original numbers stay.
-    static func experienceText(task: String, expect: String, steps: [String], evidence: String, maxChars: Int) -> String {
+    /// One experience memory (spec 3.1, 2026-11-09): the owner's line, her summary, then the
+    /// program's numbered steps under 「步驟：」(`Experience.steps` reads only those). Over `maxChars`,
+    /// steps go from the middle first (the first and last steps say the most), each gap marked; the
+    /// original numbers stay.
+    static func experienceText(task: String, summary: String, steps: [String], maxChars: Int) -> String {
         let numbered = steps.enumerated().map { "\($0.offset + 1). \($0.element)" }
         var kept = Array(numbered.indices)
         func render() -> String {
-            var lines = ["經驗：\(task)", "期望：\(expect)"]
+            var lines = ["經驗：\(task)", summary, "步驟："]
             var prev = -1
             for i in kept {
                 if i > prev + 1 { lines.append("（省略 \(i - prev - 1) 步）") }
@@ -866,7 +918,6 @@ public actor Doll {
                 prev = i
             }
             if prev < numbered.count - 1 { lines.append("（省略 \(numbered.count - 1 - prev) 步）") }
-            lines.append("結果：\(evidence)")
             return lines.joined(separator: "\n")
         }
         var text = render()
