@@ -1015,9 +1015,10 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
 }
 
 @Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
-    // spec 3.1, 2026-11-09: image_turns_kept = 2. A turn's images are the results after her reply.
+    // spec 3.1, 2026-11-09: image_turns_kept = 2 here (the default 0 keeps every turn's images: on
+    // Qwen3-Next the cache resumes only from checkpoints). A turn's images are the results after her reply.
     // Request k is the one that produced turn k+1's reply, so it holds the results up to turn k.
-    let h = try await Harness()
+    let h = try await Harness(tune: { $0.computer.imageTurnsKept = 2 })
     await h.doll.ownerSaid("用電腦")
     try await h.turn(Scripted("", useComputer))                                   // turn 1: image turn A (the menu's screenshot)
     try await h.turn(Scripted("", key("cmd+n")))                                  // turn 2: image turn B
@@ -1046,6 +1047,15 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await one.turn(Scripted("", key("cmd+s"), screenshotCall))
     try await one.turn(Scripted("", screenshotCall))
     #expect((await one.model.seen(3)).filter { !$0.images.isEmpty }.map(firstLine) == ["key cmd+s", "現在的畫面："])
+    // The default keeps them all.
+    let all = try await Harness()
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.imageTurnsKept == 0)
+    await all.doll.ownerSaid("用電腦")
+    try await all.turn(Scripted("", useComputer))
+    try await all.turn(Scripted("", key("cmd+n")))
+    try await all.turn(Scripted("", key("cmd+s"), screenshotCall))
+    try await all.turn(Scripted("", screenshotCall))
+    #expect((await all.model.seen(3)).filter { !$0.images.isEmpty }.count == 4)
 }
 
 @Test func enteringWhileAScenarioIsOpenIsAnError() async throws {

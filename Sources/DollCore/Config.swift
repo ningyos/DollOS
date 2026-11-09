@@ -55,9 +55,11 @@ public struct ComputerConfig: Sendable {
     /// Rough prompt tokens of one screenshot, for the footer's context figure only.
     public var screenshotTokens = 350
     /// How many of the most recent turns keep their screenshots in the request; earlier results go
-    /// out as text only. The request stays small instead of growing by two images a turn (spec 3.1,
-    /// 2026-11-09: re-uploading every old screenshot was the biggest part of a 20-second turn).
-    public var imageTurnsKept = 2
+    /// out as text only. 0 = every turn keeps them (the default): on Qwen3-Next Strata's prompt cache
+    /// resumes only from checkpoints, so dropping an old image costs a re-prefill of everything after
+    /// the owner's line (2026-11-09: 25-31 s a turn instead of 6.5). Useful only for models whose cache
+    /// matches any prefix.
+    public var imageTurnsKept = 0
     /// watch: how often the watched region is captured and compared.
     public var watchPollS = 1.0
     /// watch: at least this many seconds between two wakes.
@@ -179,10 +181,10 @@ public struct Config: Sendable {
         try v.finish()
         guard ["jpeg", "png"].contains(computer.screenshotFormat), ["jpeg", "png"].contains(computer.windowCropFormat),
               computer.screenshotWidth >= 1, computer.windowCropWidth >= 1, (0...100).contains(computer.jpegQuality),
-              computer.imageTurnsKept >= 1,
+              computer.imageTurnsKept >= 0,
               computer.watchPollS > 0, computer.watchMinIntervalS >= 0, computer.watchStopAfter >= 1,
               computer.watchDefaultMaxWaitS > 0 else {
-            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; screenshot_width, window_crop_width, image_turns_kept, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
+            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; image_turns_kept 0 or more; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

@@ -314,7 +314,8 @@ public actor Doll {
             turnOfImage[ev.seq!] = lastReply
             if turns.last != lastReply { turns.append(lastReply) }
         }
-        let withImages = Set(turns.suffix(computerConfig.imageTurnsKept))
+        let kept = computerConfig.imageTurnsKept
+        let withImages = Set(kept == 0 ? turns : turns.suffix(kept))
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             switch mode {
