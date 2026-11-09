@@ -36,7 +36,7 @@ struct ComputerSession {
     let expect: String
     /// The owner's last line when she opened the computer.
     let task: String
-    /// Her computer actions, one line each: what she did, then the first line of the VM's answer.
+    /// Her computer actions that went through, one short line each (`Doll.step`); no VM answer text.
     var steps: [String] = []
     /// `leave_computer` asked her whether it was reached; her next turn must answer with `outcome`.
     var asked = false
@@ -643,10 +643,10 @@ public actor Doll {
         log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
         switch result {
         case .success(let answer):
-            session?.steps.append(said + " → " + Self.firstLine(answer))
+            session?.steps.append(Self.step(action))
             return await withScreenshot("\(said)\n\(answer)", actions: [name])
         case .failure(let error):
-            session?.steps.append("失敗：" + said + " → " + Self.firstLine("\(error)"))
+            // A failed action is not a step of the experience (spec 3.1, 2026-11-09).
             // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
             return await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
@@ -774,12 +774,15 @@ public actor Doll {
         outcomeNow = outcome
     }
 
-    /// At most this many characters of a VM answer's first line go into a step.
-    static let stepAnswerChars = 80
-
-    static func firstLine(_ s: String) -> String {
-        let line = s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
-        return line.count > stepAnswerChars ? String(line.prefix(stepAnswerChars)) + "…" : line
+    /// One step of an experience: only what she did, in full-screenshot coordinates (a click on the
+    /// window crop is stored where it landed); no VM answer text (spec 3.1, 2026-11-09).
+    static func step(_ a: ComputerAction) -> String {
+        switch a {
+        case .clickElement(let role, let name, let button, let count):
+            return "click " + [role, name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ") + extra(button, count)
+        case .type(let text): return "type 「\(text)」"
+        default: return describe(a)
+        }
     }
 
     /// One experience memory (spec 3.1, 2026-11-09): the owner's line, what she expected, her

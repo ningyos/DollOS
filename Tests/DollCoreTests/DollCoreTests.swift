@@ -1781,16 +1781,20 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // Before leave_computer, outcome is an error and nothing ends.
     try await h.turn(Scripted("", outcome(true, "好了")))
     #expect(try h.toolResults().last!.text == "失敗：outcome 要在 leave_computer() 之後回答")
+    // A failed action is not a step; each step is only what she did, no VM answer text.
     h.vm.failNext("boom\nsecond line")
     try await h.turn(Scripted("", ("click", [("text", "Save")]), screenshotCall))
-    try await h.turn(Scripted("", key("cmd+s")))
+    h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), screenshotCall))
+    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")]),
+                              ("type", [("text", "娃娃來過")]), key("cmd+s")))
     try await h.turn(Scripted("", leaveComputer))
     #expect(h.last.outcome == nil)
     // The asked turn: the menu still open, the footer says to answer; she looks, then answers.
     try await h.turn(Scripted("", screenshotCall, outcome(true, "標題沒有點")))
     #expect(h.last.footer.contains("- 選單：電腦（這一回合用 outcome 回答期望達成了沒）"))
     #expect(try h.toolResults().last!.text == "記下了：達成。這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
-    let text = "經驗：把 notes 存檔\n期望：標題沒有「已編輯」\n1. 失敗：click「Save」 → boom\n2. key cmd+s → Done: 1 action in 0.1 s.\n結果：標題沒有點"
+    let text = "經驗：把 notes 存檔\n期望：標題沒有「已編輯」\n1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s\n結果：標題沒有點"
     #expect(h.last.outcome == "success" && h.last.experience == text && h.last.actions.contains("outcome success"))
     let mems = try experiences(h)
     let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
@@ -1833,12 +1837,12 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 }
 
 @Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
-    let steps = (1...12).map { "key cmd+\($0) → Done: 1 action in 0.1 s." }
+    let steps = (1...12).map { "key cmd+\($0) then a long enough line" }
     let full = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 10_000)
     #expect(full.components(separatedBy: "\n").count == 15 && !full.contains("省略"))
     let cut = Doll.experienceText(task: "做事", expect: "做好", steps: steps, evidence: "看到了", maxChars: 300)
     #expect(cut.count <= 300)
-    #expect(cut.hasPrefix("經驗：做事\n期望：做好\n1. key cmd+1 ") && cut.hasSuffix("\n12. key cmd+12 → Done: 1 action in 0.1 s.\n結果：看到了"))
+    #expect(cut.hasPrefix("經驗：做事\n期望：做好\n1. key cmd+1 ") && cut.hasSuffix("\n12. key cmd+12 then a long enough line\n結果：看到了"))
     #expect(cut.contains("（省略 ") && cut.components(separatedBy: "\n").count < 15)
     // Header and evidence alone over the cap: hard cut.
     let tiny = Doll.experienceText(task: String(repeating: "長", count: 500), expect: "x", steps: steps, evidence: "y", maxChars: 100)
