@@ -156,9 +156,6 @@ public enum Tools {
             + "\n</tools>\n呼叫格式跟上面的工具一樣。下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
     }
 
-    /// One line after the menu when `computer.recall_hint` is on (spec 3.1, 2026-11-09: shortcut memory).
-    static let recallHint = "做事前可以先 recall 看看有沒有這個 app 的做法或快捷鍵。"
-
     /// The tool block of the Strata chat template (`/props` → `chat_template`, the `tools` branch),
     /// wording and call format copied verbatim, so she sees the format she was trained on. It opens
     /// the system prompt; the template puts the system text right after it with one blank line.

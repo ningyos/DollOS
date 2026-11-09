@@ -36,8 +36,6 @@ public struct ComputerConfig: Sendable {
     /// When the front app is one not yet recorded at its version, the program writes one public
     /// memory per menu shortcut of it (spec 3.1, 2026-11-09).
     public var learnShortcuts = true
-    /// `use_computer()`'s result says to recall an app's ways and shortcuts first.
-    public var recallHint = true
     /// Every screenshot she gets has this width; her coordinates are in this space.
     public var screenshotWidth = 1280
     /// "jpeg" or "png".
@@ -89,6 +87,10 @@ public struct MemoryConfig: Sendable {
     public var language = "zh-Hant"
     /// Cap on how many phrases one recall query turns into FTS MATCH terms.
     public var maxQueryPhrases = 16
+    /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): on a new owner line, and
+    /// when a computer result's front app differs from the last one's, at most this many records not
+    /// yet attached since the owner's last line go into the timeline as one 【相關記憶】 event. 0: off.
+    public var autoAttachK = 5
 }
 
 public struct Config: Sendable {
@@ -135,7 +137,6 @@ public struct Config: Sendable {
         try v.read("agent_desktop", &computer.agentDesktop)
         try v.read("ax_menus", &computer.axMenus)
         try v.read("learn_shortcuts", &computer.learnShortcuts)
-        try v.read("recall_hint", &computer.recallHint)
         try v.read("screenshot_width", &computer.screenshotWidth)
         try v.read("screenshot_format", &computer.screenshotFormat)
         try v.read("window_crop_width", &computer.windowCropWidth)
@@ -175,6 +176,7 @@ public struct Config: Sendable {
         try m.read("medium_confidence", &memory.mediumConfidence)
         try m.read("language", &memory.language)
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
+        try m.read("auto_attach_k", &memory.autoAttachK)
         for tier in SourceTier.allCases {
             var v: Double?
             try m.read("confidence_" + tier.rawValue, &v)
@@ -185,9 +187,10 @@ public struct Config: Sendable {
         }
         try m.finish()
         guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
+              (0...memory.maxCandidates).contains(memory.autoAttachK),
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), high_confidence > medium_confidence, three distinct folder names")
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, high_confidence > medium_confidence, three distinct folder names")
         }
         return Config(llm: llm, core: core, computer: computer, idle: idle, memory: memory)
     }

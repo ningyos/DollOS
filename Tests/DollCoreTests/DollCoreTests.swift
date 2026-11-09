@@ -105,6 +105,8 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var shortcuts: [MenuShortcut] = []
         var frontAppReads = 0
         var menuReads: [String] = []
+        var windowsLine = fakeWindowsLine
+        var stateFailure: String?
     }
     let state = Mutex(State())
 
@@ -154,6 +156,14 @@ private final class FakeComputer: ComputerDriver, Sendable {
     }
     func setApp(_ app: AppIdentity?, _ shortcuts: [MenuShortcut]) { state.withLock { $0.app = app; $0.shortcuts = shortcuts } }
 
+    func frontState() async throws -> FrontState {
+        try state.withLock { s in
+            if let f = s.stateFailure { throw ComputerError(f) }
+            return FrontState(line: s.windowsLine, app: s.app)
+        }
+    }
+    func failState(_ text: String?) { state.withLock { $0.stateFailure = text } }
+
     func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
     func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
     func failNext(_ text: String) { state.withLock { $0.failNext = text } }
@@ -163,6 +173,9 @@ private final class FakeComputer: ComputerDriver, Sendable {
     func setSizes(screen: (Int, Int)?, crop: (Int, Int)?) { state.withLock { $0.screenSize = screen; $0.cropSize = crop } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
+
+/// The fake's open windows and focus line, the last line of every computer result.
+private let fakeWindowsLine = "開著的視窗：Finder、Fake「frame」（前景）；焦點：button \"OK\""
 
 /// A PNG's signature and IHDR: enough for its pixel size.
 private func pngHeader(_ width: Int, _ height: Int) -> Data {
@@ -879,7 +892,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(results.allSatisfy { $0.image != nil })
     #expect(results.map { $0.text.components(separatedBy: "\n")[0] }
             == ["click 100,200", "click「Save」 right 雙擊", "type「sw_vers", "key cmd+s", "scroll down 5", "drag 1,2 → 3,4", "現在的畫面："])
-    #expect(results.prefix(6).allSatisfy { $0.text.hasSuffix("\nDone: 1 action in 0.1 s.") })
+    #expect(results.prefix(6).allSatisfy { $0.text.hasSuffix("\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine) })
     #expect(h.vm.actions == [.click(x: 100, y: 200, button: "left", count: 1), .clickText("Save", button: "right", count: 2),
                              .type("sw_vers\n"), .key("cmd+s"), .scroll(direction: "down", amount: 5),
                              .drag(x0: 1, y0: 2, x1: 3, y1: 4)])
@@ -948,7 +961,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")])))
     #expect(h.vm.actions == [.click(x: 60, y: 45, button: "left", count: 2)])
     let r = try h.toolResults().last!
-    #expect(r.text == "click 視窗圖 100,50 → 全螢幕 60,45 雙擊\nDone: 1 action in 0.1 s." && r.image != nil)
+    #expect(r.text == "click 視窗圖 100,50 → 全螢幕 60,45 雙擊\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && r.image != nil)
     // Off the crop, off the screen: an error, nothing clicked.
     try await h.turn(Scripted("", ("click", [("x", "580"), ("y", "10"), ("on", "window")]),
                               ("click", [("x", "640"), ("y", "800")]), ("click", [("x", "-1"), ("y", "5")])))
@@ -1221,7 +1234,7 @@ private final class FakeAgentDesktop: Sendable {
     h.vm.failNext(err)
     try await h.turn(Scripted("", ("click", [("text", "紫色按鈕")])))
     let r = try h.toolResults().last!
-    #expect(r.text == "失敗：click「紫色按鈕」\n\(err)")
+    #expect(r.text == "失敗：click「紫色按鈕」\n\(err)\n" + fakeWindowsLine)
     #expect(r.image != nil && h.last.actions == ["error click"])
 }
 
@@ -1283,7 +1296,7 @@ private final class FakeAgentDesktop: Sendable {
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", key("Escape")))
     let r = try h.toolResults().last!
-    #expect(r.text == "key Escape\nDone: 1 action in 0.1 s." && r.image != nil)
+    #expect(r.text == "key Escape\nDone: 1 action in 0.1 s.\n" + fakeWindowsLine && r.image != nil)
     #expect(r.crop == nil && r.cropNote == nil)
     let desktop = "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\n"
         + "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
@@ -1623,20 +1636,13 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
 }
 
-@Test func flagsDecideTheShortcutReadsAndTheRecallHint() async throws {
-    let on = try await Harness()
-    on.vm.setApp(textEdit, textEditKeys)
-    await on.doll.ownerSaid("用電腦")
-    try await on.turn(Scripted("", useComputer))
-    #expect(try on.toolResults().last!.text.components(separatedBy: "\n").contains("做事前可以先 recall 看看有沒有這個 app 的做法或快捷鍵。"))
-
-    let off = try await Harness(tune: { $0.computer.learnShortcuts = false; $0.computer.recallHint = false })
+@Test func learnShortcutsOffReadsNoMenus() async throws {
+    let off = try await Harness(tune: { $0.computer.learnShortcuts = false })
     off.vm.setApp(textEdit, textEditKeys)
     await off.doll.ownerSaid("用電腦")
     try await off.turn(Scripted("", useComputer))
     try await off.turn(Scripted("", key("cmd+s")))
-    #expect(try !off.toolResults()[0].text.contains("recall"))
-    #expect(off.vm.state.withLock { $0.frontAppReads == 0 && $0.menuReads.isEmpty })
+    #expect(off.vm.state.withLock { $0.menuReads.isEmpty })
     #expect(try publicMemories(off).isEmpty)
 }
 
@@ -1645,4 +1651,143 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     #expect(VMPalDriver.parseFrontApp("") == nil && VMPalDriver.parseFrontApp("\tSomething\t1\n") == nil)
     #expect(VMPalDriver.parseShortcuts("File › Save\t⌘S\nEdit › Complete\t⌥Esc\nbroken line\n")
             == [MenuShortcut(path: "File › Save", keys: "⌘S"), MenuShortcut(path: "Edit › Complete", keys: "⌥Esc")])
+}
+
+// auto-attached memories and the open windows line (spec 3.1, 2026-11-09) ----------------
+
+/// Writes one record file into her memory folder and re-indexes, as if remembered earlier.
+private func seedMemory(_ h: Harness, _ folder: String, _ text: String) async throws {
+    let dir = h.dir.appending(path: "memory/\(folder)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = "+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 0\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n\(text)"
+    try file.write(to: dir.appending(path: "1-\(UUID().uuidString.prefix(6).lowercased()).md"), atomically: true, encoding: .utf8)
+    try await h.doll.rebuildMemory()
+}
+
+private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events().filter { $0.kind == .memory } }
+
+@Test func anOwnerLineAttachesRelatedMemoriesBeforeHerTurn() async throws {
+    let h = try await Harness()
+    try await seedMemory(h, "public", "主人喜歡用 TextEdit 寫筆記\n第二行細節")
+    await h.doll.ownerSaid("幫我用 TextEdit 寫筆記")
+    try await h.turn("好")
+    let mem = try memoryEvents(h)
+    #expect(mem.map(\.text) == ["【相關記憶】程式用主人的話查到的；全文用 recall。\n〔確定｜public〕主人喜歡用 TextEdit 寫筆記"])
+    // Right after the owner's line, before the footer.
+    let seen = await h.model.seen(0)
+    #expect(seen[seen.count - 2].content.hasSuffix("] " + mem[0].text) && seen[seen.count - 2].role == "user")
+    #expect(seen[seen.count - 3].content.hasSuffix("幫我用 TextEdit 寫筆記"))
+    #expect(h.last.attached == [mem[0].text])
+    #expect(h.logs.contains { $0.contains("相關記憶（主人的新訊息）") && $0.contains("1 found") })
+    // Turns on her own tool results attach nothing.
+    try await h.turn(Scripted("", think("high")))
+    try await h.turn("嗯")
+    #expect(try memoryEvents(h).count == 1 && h.last.attached.isEmpty)
+
+    // auto_attach_k = 0: off.
+    let off = try await Harness(tune: { $0.memory.autoAttachK = 0 })
+    try await seedMemory(off, "public", "主人喜歡用 TextEdit 寫筆記")
+    await off.doll.ownerSaid("幫我用 TextEdit 寫筆記")
+    try await off.turn("好")
+    #expect(try memoryEvents(off).isEmpty)
+}
+
+@Test func anAppSwitchAttachesOnlyWhatIsNewUntilTheOwnerSpeaksAgain() async throws {
+    let h = try await Harness()
+    h.vm.setApp(textEdit, textEditKeys)
+    await h.doll.ownerSaid("用電腦")
+    // Her memory is empty at the owner's line: no event. use_computer shows TextEdit, its shortcuts
+    // are learned, and it is a new front app: one event after the result.
+    try await h.turn(Scripted("", useComputer))
+    var mem = try memoryEvents(h)
+    #expect(mem.count == 1)
+    #expect(mem[0].text.hasPrefix("【相關記憶】程式用主人的話和前景 app「TextEdit」查到的；全文用 recall。\n"))
+    #expect(mem[0].text.components(separatedBy: "\n").count == 4)
+    #expect(mem[0].text.contains("\n〔確定｜public〕TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）"))
+    let events = try h.store.events()
+    #expect(events.last?.kind == .memory && events[events.count - 2].kind == .tool)
+    // The same app again: nothing.
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try memoryEvents(h).count == 1)
+    // Another app: only what was not attached yet.
+    h.vm.setApp(AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0"),
+                [MenuShortcut(path: "File › New Finder Window", keys: "⌘N")])
+    try await h.turn(Scripted("", screenshotCall))
+    mem = try memoryEvents(h)
+    #expect(mem.count == 2)
+    #expect(mem.last?.text == "【相關記憶】程式用主人的話和前景 app「Finder」查到的；全文用 recall。\n〔確定｜public〕Finder：File › New Finder Window＝⌘N（Finder 15.0）")
+    // Back to TextEdit: a switch, but all it finds was attached already: no event, no empty one.
+    h.vm.setApp(textEdit, textEditKeys)
+    try await h.turn(Scripted("", screenshotCall))
+    #expect(try memoryEvents(h).count == 2)
+    #expect(h.logs.contains { $0.contains("相關記憶（前景 app 換成 TextEdit）") && $0.contains("attached [], already attached 4") })
+    // The owner's next line starts over: the same records come again.
+    await h.doll.ownerSaid("TextEdit 另存新檔")
+    try await h.turn("好")
+    mem = try memoryEvents(h)
+    #expect(mem.count == 3 && mem[2].text.hasPrefix("【相關記憶】程式用主人的話和前景 app「TextEdit」查到的"))
+    #expect(mem[2].text.components(separatedBy: "\n").count == 5)
+}
+
+@Test func attachedMemoriesAreResentByteIdentical() async throws {
+    let h = try await Harness()
+    h.vm.setApp(textEdit, textEditKeys)
+    try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s")
+    await h.doll.ownerSaid("用電腦存檔")
+    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn("好了")
+    let reqs = await h.model.requests.map(\.messages)
+    #expect(reqs.count == 3)
+    #expect(reqs[0].contains { $0.content.contains("【相關記憶】") } && reqs[1].filter { $0.content.contains("【相關記憶】") }.count == 2)
+    // Every request starts with the whole request before it, footer included: nothing is ever
+    // re-rendered differently or appended at the tail only.
+    for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+}
+
+@Test func attachedMemoriesKeepTheFolderRules() async throws {
+    let h = try await Harness()
+    try await seedMemory(h, "secret", "TextEdit 的秘密筆記密碼是 1234")
+    try await seedMemory(h, "own", "我的 TextEdit 帳號是 doll")
+    try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s")
+    await h.doll.ownerSaid("TextEdit 怎麼用")
+    try await h.turn("好")
+    let first = try memoryEvents(h)
+    #expect(first.count == 1 && !first[0].secret && !first[0].text.contains("1234"))
+    #expect(first[0].text.contains("〔確定｜own〕我的 TextEdit 帳號是 doll") && first[0].text.contains("〔確定｜public〕TextEdit 存檔按 cmd+s"))
+    // A secret owner line: the turn has seen a secret, so secret/ is read, and the event is a secret one.
+    await h.doll.ownerSaid("TextEdit 的秘密筆記", secret: true)
+    try await h.turn("好")
+    let second = try memoryEvents(h)
+    #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔確定｜secret〕TextEdit 的秘密筆記密碼是 1234"))
+}
+
+@Test func everyComputerResultEndsWithTheOpenWindowsAndFocusOrWhyNot() async throws {
+    let h = try await menuHarness()
+    #expect(try h.toolResults().last!.text.hasSuffix("\n" + fakeWindowsLine))
+    h.vm.failState("vmpal: exec failed")
+    try await h.turn(Scripted("", key("cmd+s")))
+    #expect(try h.toolResults().last!.text == "key cmd+s\nDone: 1 action in 0.1 s.\n開著的視窗和焦點讀不到：vmpal: exec failed")
+    #expect(h.last.actions == ["key", "error windows"])
+}
+
+@Test func openWindowsAndFocusRenderFromAgentDesktop() {
+    let windows = Data("""
+        {"ok":true,"data":[{"id":"w-1","app_name":"Finder","title":"Finder","is_focused":false,"visible":true},
+        {"id":"w-2","app_name":"TextEdit","title":"TextEdit","is_focused":true,"visible":true},
+        {"id":"w-3","app_name":"Caffeine","title":"Caffeine","is_focused":false,"visible":false},
+        {"id":"w-4","app_name":"Safari","title":"Apple","is_focused":false,"visible":true}]}
+        """.utf8)
+    let focused = Data("""
+        {"ok":true,"data":{"window":{"id":"w-2"},"tree":{"role":"window","name":"notes.txt","children":[
+        {"role":"scrollarea","children":[{"role":"textarea","value":"第一行\\n第二行很長很長很長很長很長很長很長很長","states":["focused"]}]},
+        {"role":"combobox","name":"font size","value":12},{"role":"button","name":"Close"}]}}}
+        """.utf8)
+    #expect(OpenWindows.line(windows: windows, focused: focused)
+            == "開著的視窗：Finder、TextEdit「notes.txt」（前景）、Safari「Apple」；焦點：textarea「第一行 第二行很長很長很長很長很長很長很…」")
+    let notFound = Data(#"{"ok":false,"error":{"code":"WINDOW_NOT_FOUND","message":"No window found"}}"#.utf8)
+    #expect(OpenWindows.line(windows: Data(#"{"ok":true,"data":[]}"#.utf8), focused: notFound)
+            == "開著的視窗：沒有；焦點讀不到：WINDOW_NOT_FOUND: No window found")
+    #expect(OpenWindows.line(windows: Data("boom".utf8), focused: Data(#"{"ok":true,"data":{"tree":{"role":"window"}}}"#.utf8))
+            == "開著的視窗讀不到：agent-desktop 的回答不是 JSON：boom；焦點：沒有")
 }

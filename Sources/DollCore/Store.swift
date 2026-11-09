@@ -8,7 +8,7 @@ private let schema = """
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
-    kind TEXT NOT NULL,              -- owner | doll | tool | watch
+    kind TEXT NOT NULL,              -- owner | doll | tool | watch | memory
     source TEXT NOT NULL,            -- owner | internal
     has_secret INTEGER NOT NULL DEFAULT 0,
     voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
@@ -60,6 +60,7 @@ public struct Event: Sendable, Equatable {
         case doll       // her reply, verbatim (tool call text included)
         case tool       // the result of one of her tool calls, in call order
         case watch      // her watch woke her: the region changed, or max_wait passed
+        case memory     // 【相關記憶】: records the program attached for her (spec 3.1, 2026-11-09)
     }
     public var kind: Kind
     public var principal: Principal
@@ -102,7 +103,7 @@ public struct Event: Sendable, Equatable {
         switch kind {
         case .owner: voice ? .ownerVoice : .ownerText
         case .watch: .watch
-        case .doll, .tool: .watch   // never queued; her replies and tool results go straight to the timeline
+        case .doll, .tool, .memory: .watch   // never queued; these go straight to the timeline
         }
     }
 }

@@ -20,6 +20,8 @@ public struct TurnReport: Sendable {
     public var effort: String
     public var usage: ModelUsage
     public var usedTool: Bool
+    /// The 【相關記憶】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
+    public var attached: [String]
 }
 
 enum Log {
@@ -93,6 +95,16 @@ public actor Doll {
     /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
     /// files on first use, then kept here.
     var learnedApps: [String: String]?
+    /// The front app's name in the last computer result; nil before the first.
+    var frontAppName: String?
+    /// A computer result this turn showed a front app other than the one before: attach memories.
+    var appSwitched = false
+    /// An owner line was drained since her last turn: attach memories, after forgetting what was attached.
+    var ownerArrived = false
+    /// The memories attached since the owner's last line; never attached twice in that span.
+    var attachedIDs: Set<String> = []
+    /// This turn's 【相關記憶】 events, for its report.
+    var attachedNow: [String] = []
     var watch: Watch?
     var watchSerial = 0
     /// Wakes from the current watch since her last computer action.
@@ -222,6 +234,7 @@ public actor Doll {
             try store.append(ev)
         }
         if batch.contains(where: { $0.kind == .owner || $0.kind == .watch }) { taskTurn = true }
+        if batch.contains(where: { $0.kind == .owner }) { ownerArrived = true }
     }
 
     func shutdown() {
@@ -256,6 +269,7 @@ public actor Doll {
         case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
+        case .memory: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
         }
     }
 
@@ -313,6 +327,13 @@ public actor Doll {
     func turn() async throws {
         turnIndex += 1
         followUp = false
+        attachedNow = []
+        // A new owner line starts a task: what was attached before may be attached again.
+        if ownerArrived {
+            ownerArrived = false
+            attachedIDs = []
+            attachMemories(trigger: "主人的新訊息")
+        }
         let events = try store.events()
         var messages = [ChatMessage(role: "system", content: systemPrompt())] + (try events.flatMap(render))
         let guess = estimate(messages)
@@ -360,6 +381,11 @@ public actor Doll {
                 taskTurn = true
             }
         }
+        // A computer result showed another front app: one 【相關記憶】 after all of this reply's results.
+        if appSwitched {
+            appSwitched = false
+            attachMemories(trigger: "前景 app 換成 \(frontAppName ?? "?")")
+        }
 
         let usedTool = !parsed.calls.isEmpty
         if usedTool {
@@ -373,7 +399,8 @@ public actor Doll {
         }
 
         let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
-                                footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool)
+                                footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
+                                attached: attachedNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
@@ -411,8 +438,7 @@ public actor Doll {
             case .useComputer:
                 guard !inComputer else { return Outcome(text: "已經在電腦選單裡了。", actions: [name]) }
                 inComputer = true
-                let hint = computerConfig.recallHint ? "\n" + Tools.recallHint : ""
-                return await withScreenshot(Tools.menu(computerTools) + hint, actions: [name])
+                return await withScreenshot(Tools.menu(computerTools), actions: [name])
             case .leaveComputer:
                 inComputer = false
                 let had = watch != nil
@@ -441,11 +467,12 @@ public actor Doll {
         }
     }
 
-    /// `text` plus a fresh full-screen screenshot, the front window's crop with where it sits on the
-    /// full screen and its size, and the window's outline (spec 3.1, 2026-11-09). No front window: no
-    /// crop and no outline, the result says why, and the menu bar's and Dock's items with their
-    /// centers follow in the outline's place. A failed screenshot, crop, outline or menu bar/Dock
-    /// summary is said in the result (and is an error); none is dropped silently.
+    /// `text` and the open windows / focus line, plus a fresh full-screen screenshot, the front
+    /// window's crop with where it sits on the full screen and its size, and the window's outline
+    /// (spec 3.1, 2026-11-09). No front window: no crop and no outline, the result says why, and the
+    /// menu bar's and Dock's items with their centers follow in the outline's place. A failed
+    /// screenshot, crop, outline, menu bar/Dock summary or window list is said in the result (and is
+    /// an error); none is dropped silently.
     func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
         let computer = computer
         async let front: Result<FrontWindow, Error> = {
@@ -486,14 +513,21 @@ public actor Doll {
             }
             out.window = "沒有視窗圖和視窗概要：\(error)\n\(desktop)"
         }
-        // The front app, for her shortcut memories: after the rest, never alongside it (VMPal runs at
-        // most two CLI commands per VM at once; a third fails, 2026-11-09).
-        if computerConfig.learnShortcuts {
-            do {
-                if let app = try await computer.frontApp() { await learnShortcuts(app) }
-            } catch {
-                log("ERROR", "turn \(turnIndex): front app failed: \(error)")
+        // The open windows, the focused element and the front app: after the rest, never alongside it
+        // (VMPal runs at most two CLI commands per VM at once; a third fails, 2026-11-09). The line
+        // ends the result's text; the front app keys her shortcut memories and the 【相關記憶】 on a switch.
+        do {
+            let state = try await computer.frontState()
+            out.text += "\n" + state.line
+            if let app = state.app {
+                if computerConfig.learnShortcuts { await learnShortcuts(app) }
+                if app.name != frontAppName { appSwitched = true }
+                frontAppName = app.name
             }
+        } catch {
+            log("ERROR", "turn \(turnIndex): open windows and focus failed: \(error)")
+            out.text += "\n開著的視窗和焦點讀不到：\(error)"
+            out.actions.append("error windows")
         }
         return out
     }
@@ -722,7 +756,7 @@ public actor Doll {
             switch e.kind {
             case .doll: pending = ParsedReply(e.text).calls[...]
             case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
-            case .owner, .watch: break
+            case .owner, .watch, .memory: break
             }
         }
         return out
@@ -748,5 +782,42 @@ public actor Doll {
         }
         // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
+    }
+
+    /// At most this many characters of a memory's first line go into 【相關記憶】; the rest is `recall`'s.
+    static let attachChars = 80
+
+    /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): the owner's last line plus
+    /// the front app's name as the query, the turn's visible folders (`recall`'s rule), the top
+    /// `auto_attach_k` hits minus those attached since the owner's last line. Anything left becomes
+    /// one 【相關記憶】 event in the timeline, re-sent byte-identical like every event; nothing left,
+    /// no event. Each record is its first line, cut at `attachChars`, after its label and folder.
+    /// A failed search is logged and attaches nothing; the turn goes on.
+    func attachMemories(trigger: String) {
+        let k = memoryConfig.autoAttachK
+        guard k > 0 else { return }
+        do {
+            let events = try store.events()
+            guard let owner = events.last(where: { $0.kind == .owner }) else { return }
+            let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
+            let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
+            let found = try memory.search(query, visible: visible, limit: k)
+            let fresh = found.filter { !attachedIDs.contains($0.id) }
+            log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found, "
+                + "attached \(fresh.map(\.id)), already attached \(found.count - fresh.count)")
+            guard !fresh.isEmpty else { return }
+            attachedIDs.formUnion(fresh.map(\.id))
+            let from = frontAppName.map { "主人的話和前景 app「\($0)」" } ?? "主人的話"
+            var text = "【相關記憶】程式用\(from)查到的；全文用 recall。"
+            for hit in fresh {
+                let first = hit.text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+                let short = first.count > Self.attachChars ? String(first.prefix(Self.attachChars)) + "…" : first
+                text += "\n〔\(hit.label)｜\(hit.folder)〕\(short)"
+            }
+            try store.append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
+            attachedNow.append(text)
+        } catch {
+            log("ERROR", "turn \(turnIndex): 相關記憶（\(trigger)）failed: \(error)")
+        }
     }
 }

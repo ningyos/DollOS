@@ -58,6 +58,17 @@ public struct MenuShortcut: Sendable, Equatable {
     public init(path: String, keys: String) { (self.path, self.keys) = (path, keys) }
 }
 
+/// After every computer action (spec 3.1, 2026-11-09): the line naming the open windows and the
+/// focused element, as she reads it, and the front app.
+public struct FrontState: Sendable, Equatable {
+    /// `開著的視窗：Finder、TextEdit「notes.txt」（前景）；焦點：textfield`; a part that could not be
+    /// read says so in its place.
+    public var line: String
+    /// nil when there is none or it could not be read.
+    public var app: AppIdentity?
+    public init(line: String, app: AppIdentity?) { (self.line, self.app) = (line, app) }
+}
+
 public protocol ComputerDriver: Sendable {
     /// Does one action and waits until the screen settles. Returns the VM's own text about it;
     /// a failed call (non-zero exit, an error answer) throws with the VM's error text.
@@ -79,6 +90,9 @@ public protocol ComputerDriver: Sendable {
     func frontApp() async throws -> AppIdentity?
     /// Every menu item of the running app `bundleID` that has a shortcut, in menu order.
     func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut]
+    /// The open windows, the focused element and the front app, in one VM command; throws only when
+    /// that command could not run at all.
+    func frontState() async throws -> FrontState
 }
 
 /// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
@@ -248,6 +262,19 @@ public struct VMPalDriver: ComputerDriver {
     /// `axmenus <bundle id>`: one `path<TAB>keys` line per menu item with a shortcut.
     public func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
         Self.parseShortcuts(try await exec("\"$1\" \"$2\"", [cfg.axMenus, bundleID]))
+    }
+
+    /// agent-desktop `list-windows` and `snapshot --surface focused`, then `axmenus --front`, in one
+    /// `vmpal exec` (VMPal runs at most two CLI commands per VM at once). Each part after a `@@<name>`
+    /// marker; a part that fails answers its error and the script goes on.
+    public func frontState() async throws -> FrontState {
+        let parts = Self.sections(try await exec("""
+            "$1" list-windows; echo; echo @@focused; "$1" snapshot --surface focused -i --compact; echo
+            echo @@front; "$2" --front; exit 0
+            """, [cfg.agentDesktop, cfg.axMenus]), first: "windows")
+        return FrontState(line: OpenWindows.line(windows: Data((parts["windows"] ?? "").utf8),
+                                                 focused: Data((parts["focused"] ?? "").utf8)),
+                          app: Self.parseFrontApp(parts["front"] ?? ""))
     }
 
     /// nil when there is no front app or it has no bundle id (nothing to key memories by).
@@ -781,5 +808,91 @@ enum ImageSize {
             i += 2 + be16(i + 2)
         }
         return nil
+    }
+}
+
+/// The open windows and the focused element as one line (spec 3.1, 2026-11-09), from agent-desktop's
+/// `list-windows` and `snapshot --surface focused`. Only windows agent-desktop calls visible are
+/// listed (the rest are menu-bar and helper windows: Caffeine, Siri, loginwindow), in its order.
+/// `list-windows` gives the app's name as `title` (every sample, 2026-11-09), so a window is named
+/// by its app alone unless the title differs; the focused one takes its title from the snapshot's
+/// window element. The focused element: role, "name", and the start of its value.
+enum OpenWindows {
+    /// At most this many characters of the focused element's value are shown.
+    static let maxValue = 20
+
+    struct Window: Decodable { let id: String; let app_name: String?; let title: String?; let is_focused: Bool?; let visible: Bool? }
+    struct Windows: Decodable { let ok: Bool; let data: [Window]?; let error: WindowSummary.Answer.Failure? }
+
+    final class Node: Decodable {
+        let role: String?
+        let name: String?
+        let value: String?
+        let states: [String]?
+        let children: [Node]?
+        enum CodingKeys: String, CodingKey { case role, name, value, states, children }
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: CodingKeys.self)
+            role = try c.decodeIfPresent(String.self, forKey: .role)
+            name = try c.decodeIfPresent(String.self, forKey: .name)
+            value = try? c.decodeIfPresent(String.self, forKey: .value)   // a number or flag is not shown
+            states = try c.decodeIfPresent([String].self, forKey: .states)
+            children = try c.decodeIfPresent([Node].self, forKey: .children)
+        }
+    }
+    struct Focused: Decodable {
+        struct Win: Decodable { let id: String? }
+        struct Payload: Decodable { let window: Win?; let tree: Node? }
+        let ok: Bool
+        let data: Payload?
+        let error: WindowSummary.Answer.Failure?
+    }
+
+    static func line(windows: Data, focused: Data) -> String {
+        let f = try? JSONDecoder().decode(Focused.self, from: focused)
+        let focusedTitle = f?.data?.tree?.name.flatMap { $0.isEmpty ? nil : $0 }
+        let list: String
+        if let w = try? JSONDecoder().decode(Windows.self, from: windows) {
+            if w.ok, let all = w.data {
+                let shown = all.filter { $0.visible == true }.map { win in
+                    let app = win.app_name ?? "?"
+                    let own = win.is_focused == true ? focusedTitle ?? win.title : win.title
+                    let title = own.flatMap { $0.isEmpty || $0 == app ? nil : $0 }
+                    return app + (title.map { "「\($0)」" } ?? "") + (win.is_focused == true ? "（前景）" : "")
+                }
+                list = "開著的視窗：" + (shown.isEmpty ? "沒有" : shown.joined(separator: "、"))
+            } else {
+                list = "開著的視窗讀不到：" + (w.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗")
+            }
+        } else {
+            list = "開著的視窗讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: windows.prefix(300), as: UTF8.self))"
+        }
+        let focus: String
+        if let f {
+            if f.ok, let tree = f.data?.tree {
+                focus = find(tree).map { "焦點：" + describe($0) } ?? "焦點：沒有"
+            } else {
+                focus = "焦點讀不到：" + (f.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回內容")
+            }
+        } else {
+            focus = "焦點讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: focused.prefix(300), as: UTF8.self))"
+        }
+        return list + "；" + focus
+    }
+
+    /// The first element, depth first, whose states include `focused`.
+    static func find(_ n: Node) -> Node? {
+        if n.states?.contains("focused") == true { return n }
+        for c in n.children ?? [] { if let hit = find(c) { return hit } }
+        return nil
+    }
+
+    static func describe(_ n: Node) -> String {
+        var out = n.role ?? "?"
+        if let name = n.name, !name.isEmpty { out += " \"\(name)\"" }
+        if let v = n.value?.replacingOccurrences(of: "\n", with: " "), !v.isEmpty {
+            out += "「" + (v.count > maxValue ? String(v.prefix(maxValue)) + "…" : v) + "」"
+        }
+        return out
     }
 }

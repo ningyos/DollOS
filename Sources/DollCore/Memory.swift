@@ -331,8 +331,9 @@ public final class Memory {
         return Array(unique.prefix(maxPhrases))
     }
 
-    /// Searches only the folders `visible` lets this turn read (`Memory.visible`).
-    public func search(_ query: String, visible: Set<MemoryFolder>) throws -> [MemoryHit] {
+    /// Searches only the folders `visible` lets this turn read (`Memory.visible`); at most `limit`
+    /// hits (default `top_k`).
+    public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int? = nil) throws -> [MemoryHit] {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
         var ftsRanked: [String] = []
@@ -374,6 +375,6 @@ public final class Memory {
         return hits.sorted {
             let a = fused[$0.id] ?? 0, b = fused[$1.id] ?? 0
             return a != b ? a > b : $0.id < $1.id
-        }.prefix(config.topK).map { $0 }
+        }.prefix(limit ?? config.topK).map { $0 }
     }
 }
