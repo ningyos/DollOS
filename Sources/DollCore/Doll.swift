@@ -27,6 +27,8 @@ public struct TurnReport: Sendable {
     public var outcome: String?
     /// The experience memory written this turn (on her success), verbatim.
     public var experience: String?
+    /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
+    public var cheatsheets: [String]
 }
 
 /// One computer session (spec 3.1, 2026-11-09「先砍到最小」): from `use_computer(expect)` until her
@@ -129,6 +131,15 @@ public actor Doll {
     var attachedIDs: Set<String> = []
     /// This turn's 【相關記憶】 events, for its report.
     var attachedNow: [String] = []
+    /// Menu shortcuts per app version (`bundle id` + version), read once per process and shared by
+    /// shortcut learning and the cheatsheet.
+    var shortcutCache: [String: [MenuShortcut]] = [:]
+    /// Bundle ids whose 【快捷鍵】 went into the timeline since the owner's last line.
+    var cheatsheetSent: Set<String> = []
+    /// Apps a computer result switched to this turn whose cheatsheet is still to be sent.
+    var cheatsheetDue: [AppIdentity] = []
+    /// This turn's 【快捷鍵】 events, for its report.
+    var cheatsheetNow: [String] = []
     var watch: Watch?
     var watchSerial = 0
     /// Wakes from the current watch since her last computer action.
@@ -353,12 +364,14 @@ public actor Doll {
         turnIndex += 1
         followUp = false
         attachedNow = []
+        cheatsheetNow = []
         outcomeNow = nil
         experienceNow = nil
         // A new owner line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
             attachedIDs = []
+            cheatsheetSent = []
             attachMemories(trigger: "主人的新訊息")
         }
         let events = try store.events()
@@ -414,7 +427,10 @@ public actor Doll {
             endSession("unknown")
             try store.append(Event(.memory, .internal, "沒收到 outcome：這次的結果記成不明，沒有存經驗。離開電腦選單了；電腦工具鎖回去了。"))
         }
-        // A computer result showed another front app: one 【相關記憶】 after all of this reply's results.
+        // A computer result showed another front app: its 【快捷鍵】 (once per task), then one
+        // 【相關記憶】, after all of this reply's results.
+        for app in cheatsheetDue { await sendCheatsheet(app) }
+        cheatsheetDue = []
         if appSwitched {
             appSwitched = false
             attachMemories(trigger: "前景 app 換成 \(frontAppName ?? "?")")
@@ -433,7 +449,8 @@ public actor Doll {
 
         let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
-                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow)
+                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow,
+                                cheatsheets: cheatsheetNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
@@ -575,7 +592,13 @@ public actor Doll {
             out.text += "\n" + state.line
             if let app = state.app {
                 if computerConfig.learnShortcuts { await learnShortcuts(app) }
-                if app.name != frontAppName { appSwitched = true }
+                if app.name != frontAppName {
+                    appSwitched = true
+                    if computerConfig.cheatsheet, !cheatsheetSent.contains(app.bundleID),
+                       !cheatsheetDue.contains(where: { $0.bundleID == app.bundleID }) {
+                        cheatsheetDue.append(app)
+                    }
+                }
                 frontAppName = app.name
             }
         } catch {
@@ -594,7 +617,7 @@ public actor Doll {
         do {
             if learnedApps == nil { learnedApps = try memory.learnedApps() }
             guard learnedApps?[app.bundleID] != app.version else { return }
-            let shortcuts = try await computer.menuShortcuts(app.bundleID)
+            let shortcuts = try await shortcuts(of: app)
             // Re-checked after the await: another call may have recorded it meanwhile.
             guard learnedApps?[app.bundleID] != app.version else { return }
             let removed = try memory.forgetApp(app.bundleID)
@@ -607,6 +630,42 @@ public actor Doll {
         } catch {
             log("ERROR", "shortcuts of \(app.bundleID) \(app.version) failed: \(error)")
         }
+    }
+
+    /// The menu shortcuts of `app` at its version: from the cache, else read from the VM once.
+    func shortcuts(of app: AppIdentity) async throws -> [MenuShortcut] {
+        let key = "\(app.bundleID)\t\(app.version)"
+        if let cached = shortcutCache[key] { return cached }
+        let read = try await computer.menuShortcuts(app.bundleID)
+        shortcutCache[key] = read
+        return read
+    }
+
+    /// The front app's whole cheatsheet into the timeline (spec 3.1, 2026-11-09): `【快捷鍵】<App>
+    /// <version>`, then one `選單 › 項目 = 鍵` line per shortcut in the reader's order; stored once,
+    /// re-sent byte-identical like every event. Once per app since the owner's last line. A failed
+    /// read, or an app without shortcuts, is said in the log only; a failed read is tried again on
+    /// the next switch to that app.
+    func sendCheatsheet(_ app: AppIdentity) async {
+        guard !cheatsheetSent.contains(app.bundleID) else { return }
+        do {
+            let shortcuts = try await shortcuts(of: app)
+            guard !shortcuts.isEmpty else {
+                log("INFO", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version): none, no event")
+                return
+            }
+            let text = Self.cheatsheetText(app, shortcuts)
+            try store.append(Event(.memory, .internal, text))
+            cheatsheetSent.insert(app.bundleID)
+            cheatsheetNow.append(text)
+            log("INFO", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version): \(shortcuts.count) lines, \(text.count) chars")
+        } catch {
+            log("ERROR", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version) failed: \(error)")
+        }
+    }
+
+    static func cheatsheetText(_ app: AppIdentity, _ shortcuts: [MenuShortcut]) -> String {
+        (["【快捷鍵】\(app.name) \(app.version)"] + shortcuts.map { "\($0.path) = \($0.keys)" }).joined(separator: "\n")
     }
 
     /// Records the front app's shortcuts now, as the first use of it would (a run that starts with
