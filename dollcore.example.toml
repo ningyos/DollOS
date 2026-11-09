@@ -31,6 +31,10 @@ watch_min_interval_s = 10.0   # 初始值理由：兩次叫醒至少隔 10 秒�
 watch_stop_after = 3          # 初始值理由：連 3 次叫醒都沒動作＝她不在看這塊；再叫只是燒回合
 watch_default_max_wait_s = 120.0   # 初始值理由：她沒說最多等多久時等 2 分鐘；一般 app 開啟、網頁載入、短命令都在這之內
 
+[files]
+# 電腦選單裡的檔案工具（2026-11-09）：read_file／write_file／edit_file 直接讀寫 VM 裡的文字檔，不經過 GUI
+max_read_lines = 500          # read_file 一次最多回這麼多行，剩下只說「還有 N 行」。初始值理由：一行約 10–40 token，500 行最多約 2 萬 token，一次讀完一般文字檔又不會把 context 塞滿
+
 [idle]
 # 連續 N 輪沒工具呼叫＝空轉，只寫 log（spec 3.8；不通知、不限速）
 max_turns_without_tool = 3    # 初始值理由：r5 失敗樣本是連續 3 輪只寫標記不動手；2 輪可能只是回話

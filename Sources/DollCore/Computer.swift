@@ -94,6 +94,13 @@ public protocol ComputerDriver: Sendable {
     /// The open windows, the focused element and the front app, in one VM command; throws only when
     /// that command could not run at all.
     func frontState() async throws -> FrontState
+    /// A file's bytes as they are in the VM (2026-11-09: her file tools). `~` and `~/…` are the VM
+    /// account's home; a relative path is under it. Throws with the reason: no such file, a folder,
+    /// no permission.
+    func readFile(_ path: String) async throws -> Data
+    /// Writes `data` as the whole file (created or replaced), creating missing folders; throws when
+    /// it could not, with the reason.
+    func writeFile(_ path: String, _ data: Data) async throws
 }
 
 /// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
@@ -295,6 +302,42 @@ public struct VMPalDriver: ComputerDriver {
         return FrontState(line: OpenWindows.line(windows: Data((parts["windows"] ?? "").utf8),
                                                  focused: Data((parts["focused"] ?? "").utf8)),
                           app: Self.parseFrontApp(parts["front"] ?? ""))
+    }
+
+    /// `$1` with `~` or `~/…` expanded to the VM account's home, into `p`.
+    static let expandHome = #"case "$1" in "~") p="$HOME";; "~/"*) p="$HOME${1#?}";; *) p="$1";; esac"#
+
+    /// The bytes come back as base64 (`vmpal exec` reads output as UTF-8 text and trims it; base64 is
+    /// ASCII with nothing to trim, so arbitrary bytes and a last newline survive). `vmpal exec` does not
+    /// forward stdin (probe 2026-11-09: `cat | wc -c` read 0 bytes), so input goes the other way, by file.
+    public func readFile(_ path: String) async throws -> Data {
+        let out = try await exec(Self.expandHome + """
+            ; [ -e "$p" ] || { echo "沒有這個檔案：$1" >&2; exit 1; }
+            [ -d "$p" ] && { echo "$1 是資料夾，不是檔案" >&2; exit 1; }
+            [ -r "$p" ] || { echo "沒有權限讀 $1" >&2; exit 1; }
+            base64 < "$p"
+            """, [path])
+        guard let data = Data(base64Encoded: out, options: .ignoreUnknownCharacters) else {
+            throw ComputerError("\(path) 的內容傳不回來（base64 讀不懂）")
+        }
+        return data
+    }
+
+    /// The bytes travel as a file through `vmpal cp` (probe 2026-11-09: 12 bytes with CR, non-ASCII and
+    /// two trailing newlines arrived byte-identical) into /tmp in the VM, then one `vmpal exec` makes the
+    /// folder and copies them into place (`cat`, so a file an app has open keeps its inode).
+    public func writeFile(_ path: String, _ data: Data) async throws {
+        let local = Self.tempFile("write")
+        defer { try? FileManager.default.removeItem(at: local) }
+        try data.write(to: local)
+        let staged = "/tmp/dollos-write-\(UUID().uuidString)"
+        _ = try await vmpal(["cp", local.path, "\(cfg.vmID):\(staged)"])
+        _ = try await exec(Self.expandHome + """
+            ; trap 'rm -f "$2"' EXIT
+            [ -d "$p" ] && { echo "$1 是資料夾，不能當檔案寫" >&2; exit 1; }
+            mkdir -p "$(dirname "$p")" || { echo "開不出 $1 的資料夾" >&2; exit 1; }
+            cat "$2" > "$p" || { echo "寫不進 $1" >&2; exit 1; }
+            """, [path, staged])
     }
 
     /// nil when there is no front app or it has no bundle id (nothing to key memories by).

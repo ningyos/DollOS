@@ -116,6 +116,8 @@ private final class FakeComputer: ComputerDriver, Sendable {
         var windowsLine = fakeWindowsLine
         var stateFailure: String?
         var menuFailure: String?
+        /// The VM's files by absolute path (`~` is /Users/doll); folders are implied.
+        var files: [String: Data] = [:]
     }
     let state = Mutex(State())
 
@@ -185,6 +187,25 @@ private final class FakeComputer: ComputerDriver, Sendable {
     func failDesktop(_ text: String?) { state.withLock { $0.desktopFailure = text } }
     func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
     func setSizes(screen: (Int, Int)?, crop: (Int, Int)?) { state.withLock { $0.screenSize = screen; $0.cropSize = crop } }
+
+    static func expand(_ path: String) -> String {
+        path == "~" ? "/Users/doll" : path.hasPrefix("~/") ? "/Users/doll" + path.dropFirst() : path.hasPrefix("/") ? path : "/Users/doll/" + path
+    }
+    func readFile(_ path: String) async throws -> Data {
+        try state.withLock { s in
+            if let f = s.failNext { s.failNext = nil; throw ComputerError(f) }
+            guard let d = s.files[Self.expand(path)] else { throw ComputerError("沒有這個檔案：\(path)") }
+            return d
+        }
+    }
+    func writeFile(_ path: String, _ data: Data) async throws {
+        try state.withLock { s in
+            if let f = s.failNext { s.failNext = nil; throw ComputerError(f) }
+            s.files[Self.expand(path)] = data
+        }
+    }
+    func put(_ path: String, _ text: String) { state.withLock { $0.files[Self.expand(path)] = Data(text.utf8) } }
+    func file(_ path: String) -> String? { state.withLock { $0.files[Self.expand(path)].map { String(decoding: $0, as: UTF8.self) } } }
     var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
 
@@ -280,7 +301,8 @@ private struct Harness {
 }
 
 @Test func keyIsOneKeyWithModifiersInAFixedOrder() throws {
-    let specs = Tools.computerSpecs(try Config.load(root.appending(path: "dollcore.example.toml")).computer)
+    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let specs = Tools.computerSpecs(cfg.computer, cfg.files)
     func decode(_ params: [(String, String)]) throws -> Tools.Request {
         let body = params.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined()
         return try Tools.decode(ParsedReply("<tool_call>\n<function=key>\n\(body)</function>\n</tool_call>").calls[0], specs: specs)
@@ -933,7 +955,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let menu = try h.toolResults().last!
     #expect(menu.text.hasPrefix("電腦選單打開了") && menu.image != nil)
     let listed = menu.text.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    let names = ["click", "type", "key", "scroll", "drag", "screenshot", "watch", "outcome"]
+    let names = ["click", "type", "key", "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch", "outcome"]
     #expect(listed.count == names.count)
     for (line, name) in zip(listed, names) {
         #expect(line.contains("\"name\": \"\(name)\""))
@@ -2336,4 +2358,205 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     try await h.turn(Scripted("", key("cmd+n")))
     #expect(try sheets(h).isEmpty && h.reports.allSatisfy { $0.cheatsheets.isEmpty })
     #expect(h.vm.state.withLock { $0.menuReads.isEmpty })
+}
+
+// file tools ------------------------------------------------------------------
+
+private let todoPath = "~/Documents/todo.txt"
+private let todoBefore = "買牛奶\n洗衣服\n寫作業\n"
+private func readFile(_ path: String, from: Int? = nil, to: Int? = nil) -> (String, [(String, String)]) {
+    ("read_file", [("path", path)] + (from.map { [("from", "\($0)")] } ?? []) + (to.map { [("to", "\($0)")] } ?? []))
+}
+private func writeFile(_ path: String, _ text: String) -> (String, [(String, String)]) { ("write_file", [("path", path), ("text", text)]) }
+private func editFile(_ path: String, _ old: String, _ new: String) -> (String, [(String, String)]) {
+    ("edit_file", [("path", path), ("old", old), ("new", new)])
+}
+
+@Test func readFileNumbersLinesReadsARangeAndCapsAtTheConfiguredCount() async throws {
+    let h = try await menuHarness(tune: { $0.files.maxReadLines = 3 })
+    h.vm.put(todoPath, todoBefore)
+    try await h.turn(Scripted("", readFile(todoPath), readFile(todoPath, from: 2, to: 3), readFile(todoPath, from: 3)))
+    var results = Array(try h.toolResults().suffix(3))
+    #expect(results[0].text == "read_file ~/Documents/todo.txt：共 3 行\n     1\t買牛奶\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[1].text == "read_file ~/Documents/todo.txt：共 3 行，這裡是第 2–3 行\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[2].text == "read_file ~/Documents/todo.txt：共 3 行，這裡是第 3–3 行\n     3\t寫作業")
+    // Text only: no screenshot, no crop, no outline, no open-windows line; the screen did not change.
+    #expect(results.allSatisfy { $0.image == nil && $0.crop == nil && $0.cropNote == nil && $0.window == nil && !$0.text.contains("開著的視窗") })
+    #expect(h.last.actions == ["read_file", "read_file", "read_file"] && h.vm.actions.isEmpty)
+    // Over the cap: the first lines and how many are left; from reads on. `to` past the end is the end.
+    h.vm.put("~/five.txt", "1\n2\n3\n4\n5\n")
+    try await h.turn(Scripted("", readFile("~/five.txt"), readFile("~/five.txt", from: 4, to: 99), readFile("~/five.txt", from: 2, to: 2)))
+    results = Array(try h.toolResults().suffix(3))
+    #expect(results[0].text == "read_file ~/five.txt：共 5 行，這裡是第 1–3 行\n     1\t1\n     2\t2\n     3\t3\n還有 2 行（read_file 加 from: 4 讀下去）")
+    #expect(results[1].text == "read_file ~/five.txt：共 5 行，這裡是第 4–5 行\n     4\t4\n     5\t5")
+    #expect(results[2].text == "read_file ~/five.txt：共 5 行，這裡是第 2–2 行\n     2\t2")
+    // An empty file, a last line without a newline, CRLF lines (the CR stays on its line).
+    h.vm.put("~/empty.txt", "")
+    h.vm.put("~/noeol.txt", "a\nb")
+    h.vm.put("~/crlf.txt", "a\r\nb\r\n")
+    try await h.turn(Scripted("", readFile("~/empty.txt"), readFile("~/noeol.txt"), readFile("~/crlf.txt")))
+    results = Array(try h.toolResults().suffix(3))
+    #expect(results[0].text == "read_file ~/empty.txt：空檔案，0 行")
+    #expect(results[1].text == "read_file ~/noeol.txt：共 2 行\n     1\ta\n     2\tb")
+    #expect(results[2].text == "read_file ~/crlf.txt：共 2 行\n     1\ta\r\n     2\tb\r")
+    // Bad arguments and a missing file: an error each, nothing read, no step.
+    try await h.turn(Scripted("", readFile(todoPath, from: 0), readFile(todoPath, from: 3, to: 2), ("read_file", [("path", todoPath), ("from", "abc")]),
+                              readFile(todoPath, from: 9), ("read_file", [("path", "  ")]), readFile("~/nope.txt")))
+    #expect(try h.toolResults().suffix(6).map(\.text) == [
+        "失敗：read_file 的 from 從 1 算起，收到 0",
+        "失敗：read_file 的 from 要小於等於 to，收到 from 3、to 2",
+        "失敗：read_file 的 from 要是整數，收到 abc",
+        "失敗：~/Documents/todo.txt 只有 3 行，from 是 9；from 最多 3",
+        "失敗：read_file 的 path 是空的",
+        "失敗：沒有這個檔案：~/nope.txt",
+    ])
+    #expect(h.last.actions == Array(repeating: "error read_file", count: 6))
+}
+
+@Test func writeFileCreatesOrOverwritesTheWholeFileAndReportsLinesAndBytes() async throws {
+    let h = try await menuHarness()
+    let text = "你好，我是娃娃\n第二行\n"
+    try await h.turn(Scripted("", writeFile("~/Desktop/new/hello.txt", text)))
+    #expect(try h.toolResults().last!.text == "write_file ~/Desktop/new/hello.txt：寫好了，2 行、\(text.utf8.count) bytes")
+    #expect(try h.vm.file("~/Desktop/new/hello.txt") == text && h.toolResults().last!.image == nil)
+    // Overwritten whole; no trailing newline stays that way; an empty text empties the file.
+    try await h.turn(Scripted("", writeFile("~/Desktop/new/hello.txt", "x"), writeFile("~/Desktop/new/hello.txt", "")))
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["write_file ~/Desktop/new/hello.txt：寫好了，1 行、1 bytes",
+                                                          "write_file ~/Desktop/new/hello.txt：寫好了，0 行、0 bytes"])
+    #expect(h.vm.file("~/Desktop/new/hello.txt") == "")
+    try await h.turn(Scripted("", ("write_file", [("path", ""), ("text", "a")]), ("write_file", [("path", "~/a.txt")])))
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["失敗：write_file 的 path 是空的", "失敗：write_file 少了參數 text"])
+    h.vm.failNext("寫不進 ~/b.txt")
+    try await h.turn(Scripted("", writeFile("~/b.txt", "a")))
+    #expect(try h.toolResults().last!.text == "失敗：寫不進 ~/b.txt" && h.last.actions == ["error write_file"])
+}
+
+@Test func editFileReplacesTheOneOccurrenceOrSaysHowManyAndTheNearestLines() async throws {
+    let h = try await menuHarness()
+    h.vm.put(todoPath, todoBefore)
+    try await h.turn(Scripted("", editFile(todoPath, "買牛奶", "買豆漿"), editFile(todoPath, "寫作業", "寫作業\n交房租")))
+    var results = Array(try h.toolResults().suffix(2))
+    #expect(results[0].text == "edit_file ~/Documents/todo.txt：改好了，第 1 行起（1 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[1].text == "edit_file ~/Documents/todo.txt：改好了，第 3 行起（1 行 → 2 行），現在共 4 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業\n     4\t交房租")
+    #expect(h.vm.file(todoPath) == "買豆漿\n洗衣服\n寫作業\n交房租\n")
+    #expect(results.allSatisfy { $0.image == nil && $0.window == nil } && h.last.actions == ["edit_file", "edit_file"])
+    // A multi-line old, a deletion (empty new), context around a change deep in a file.
+    try await h.turn(Scripted("", editFile(todoPath, "洗衣服\n寫作業", "寫作業\n洗衣服"), editFile(todoPath, "交房租\n", "")))
+    #expect(h.vm.file(todoPath) == "買豆漿\n寫作業\n洗衣服\n")
+    #expect(try h.toolResults().last!.text == "edit_file ~/Documents/todo.txt：改好了，第 4 行起（2 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t寫作業\n     3\t洗衣服")
+    h.vm.put("~/long.txt", (1...12).map { "line \($0)" }.joined(separator: "\n") + "\n")
+    try await h.turn(Scripted("", editFile("~/long.txt", "line 7", "seven")))
+    #expect(try h.toolResults().last!.text == "edit_file ~/long.txt：改好了，第 7 行起（1 行 → 1 行），現在共 12 行\n"
+            + "     4\tline 4\n     5\tline 5\n     6\tline 6\n     7\tseven\n     8\tline 8\n     9\tline 9\n    10\tline 10")
+    // 0 occurrences: the count and the nearest lines (most shared characters), exact whitespace included;
+    // several: the count; neither changes the file. Empty old and old == new never reach the file.
+    let before = h.vm.file(todoPath)
+    h.vm.put("~/dup.txt", "a\nb\na\n")
+    try await h.turn(Scripted("", editFile(todoPath, "買牛乳", "買豆漿"), editFile(todoPath, "買豆漿 ", "x"), editFile(todoPath, "zzz", "x"),
+                              editFile("~/dup.txt", "a", "c"), editFile(todoPath, "", "x"), editFile(todoPath, "洗衣服", "洗衣服")))
+    results = Array(try h.toolResults().suffix(6))
+    let zero = "失敗：edit_file ~/Documents/todo.txt：old 在檔案裡出現 0 次，沒改。old 要跟檔案裡一字不差（含空白、換行、標點）；"
+    #expect(results[0].text == zero + "最接近的幾行（照這裡的字寫 old）：\n     1\t買豆漿\n     2\t寫作業")
+    #expect(results[1].text == zero + "最接近的幾行（照這裡的字寫 old）：\n     1\t買豆漿\n     2\t寫作業")
+    #expect(results[2].text == zero + "檔案裡也沒有相近的行，先 read_file 看一下")
+    #expect(results[3].text == "失敗：edit_file ~/dup.txt：old 在檔案裡出現 2 次，不知道改哪一個，沒改。old 多帶幾行前後文，讓它只出現一次")
+    #expect(results[4].text == "失敗：edit_file 的 old 是空的；要加字就把它旁邊現有的那段當 old，new 填那段加上新的字")
+    #expect(results[5].text == "失敗：edit_file 的 old 和 new 一樣，沒有要改什麼")
+    #expect(h.vm.file(todoPath) == before && h.vm.file("~/dup.txt") == "a\nb\na\n")
+    #expect(h.last.actions == Array(repeating: "error edit_file", count: 6))
+    // The nearest line for a multi-line old is judged by its first non-blank line, shown with its neighbours.
+    try await h.turn(Scripted("", editFile("~/long.txt", "\nline 9x\nline 10", "y")))
+    #expect(try h.toolResults().last!.text.hasSuffix("最接近的幾行（照這裡的字寫 old）：\n     8\tline 8\n     9\tline 9\n    10\tline 10"))
+}
+
+@Test func fileToolsAreLockedOutsideASessionAndRefuseNonUTF8Files() async throws {
+    let h = try await Harness()
+    h.vm.put(todoPath, todoBefore)
+    await h.doll.ownerSaid("看一下 todo")
+    try await h.turn(Scripted("", readFile(todoPath), writeFile("~/a.txt", "a"), editFile(todoPath, "買牛奶", "買豆漿")))
+    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：read_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單",
+                                                          "失敗：write_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單",
+                                                          "失敗：edit_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單"])
+    #expect(h.vm.file(todoPath) == todoBefore && h.vm.file("~/a.txt") == nil)
+    try await h.turn(Scripted("", useComputer))
+    h.vm.state.withLock { $0.files["/Users/doll/bin.dat"] = Data([0xFF, 0xFE, 0x41]) }
+    try await h.turn(Scripted("", readFile("~/bin.dat"), editFile("~/bin.dat", "A", "B")))
+    let text = "失敗：~/bin.dat 不是 UTF-8 文字檔（3 bytes），read_file、write_file、edit_file 只處理文字檔"
+    #expect(try h.toolResults().suffix(2).map(\.text) == [text, text])
+    #expect(h.vm.state.withLock { $0.files["/Users/doll/bin.dat"] } == Data([0xFF, 0xFE, 0x41]))
+}
+
+@Test func fileStepsRecordThePathOnlyAndMatchByPath() async throws {
+    let h = try await Harness()
+    h.vm.put(todoPath, todoBefore)
+    await h.doll.ownerSaid("改 todo")
+    try await h.turn(Scripted("", ("use_computer", [("expect", "todo.txt 第一行是買豆漿")])))
+    try await h.turn(Scripted("", readFile(todoPath), writeFile("~/Desktop/a.txt", "一\n二\n"), editFile(todoPath, "沒有這段", "x"),
+                              editFile(todoPath, "買牛奶", "買豆漿"), outcome(true, "第一行是買豆漿")))
+    #expect(h.last.experience == "經驗：改 todo\n第一行是買豆漿\n步驟：\n1. read_file ~/Documents/todo.txt\n2. write_file ~/Desktop/a.txt（2 行）\n3. edit_file ~/Documents/todo.txt")
+    func same(_ a: String, _ b: String) -> Bool { StepShape(a).matches(StepShape(b)) }
+    #expect(same("write_file ~/a.txt（2 行）", "write_file ~/a.txt（5 行）") && same("read_file ~/a.txt", "read_file ~/a.txt"))
+    #expect(!same("read_file ~/a.txt", "edit_file ~/a.txt") && !same("read_file ~/a.txt", "read_file ~/b.txt") && !same("read_file ~/a.txt", "type 「~/a.txt」"))
+    #expect(Doll.matchedSteps(["read_file ~/t.txt", "edit_file ~/t.txt"], ["read_file ~/t.txt", "write_file ~/t.txt（3 行）", "edit_file ~/t.txt"]) == 2)
+}
+
+/// `vmpal` replaced by this Mac: `exec` runs the driver's `/bin/sh -c` script here with a temporary
+/// HOME, `cp` copies the file. The shell fragments the driver sends to the VM are exercised for real.
+private func localVMPal(home: URL) -> VMPalRun {
+    { args in
+        switch args[0] {
+        case "cp":
+            let to = String(args[2].split(separator: ":", maxSplits: 1)[1])
+            try FileManager.default.copyItem(at: URL(filePath: args[1]), to: URL(filePath: to))
+            return ""
+        case "exec":    // exec <vm> -- /bin/sh -c <script> sh <args…>
+            let p = Process()
+            p.executableURL = URL(filePath: args[3])
+            p.arguments = Array(args.dropFirst(4))
+            p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+            p.currentDirectoryURL = home
+            let out = Pipe(), err = Pipe()
+            p.standardOutput = out
+            p.standardError = err
+            try p.run()
+            let o = out.fileHandleForReading.readDataToEndOfFile(), e = err.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            let text = String(decoding: o, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard p.terminationStatus == 0 else {
+                let stderr = String(decoding: e, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                throw ComputerError(stderr.isEmpty ? text : stderr)
+            }
+            return text
+        default:
+            throw ComputerError("unexpected vmpal \(args)")
+        }
+    }
+}
+
+@Test func theVMPalDriverMovesFileBytesExactlyThroughCpAndBase64() async throws {
+    let home = FileManager.default.temporaryDirectory.appending(path: "dollos-vmhome-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    var cfg = ComputerConfig()
+    cfg.vmID = "E6813EBA"
+    let d = VMPalDriver(cfg, vmpal: localVMPal(home: home))
+    // Written through a folder that did not exist; CR, non-ASCII, two trailing newlines all arrive.
+    let bytes = Data("a\n\n你\r\n-x\n\n".utf8)
+    try await d.writeFile("~/Documents/todo.txt", bytes)
+    #expect(try Data(contentsOf: home.appending(path: "Documents/todo.txt")) == bytes)
+    #expect(try await d.readFile("~/Documents/todo.txt") == bytes)
+    // A relative path is under the home; ~ alone is the home; an empty file reads back empty.
+    try await d.writeFile("notes/a.txt", Data())
+    #expect(FileManager.default.fileExists(atPath: home.appending(path: "notes/a.txt").path))
+    #expect(try await d.readFile(home.appending(path: "notes/a.txt").path) == Data())
+    await #expect(throws: ComputerError.self) { try await d.readFile("~") }
+    // The driver's own error texts.
+    func failure(_ body: () async throws -> Void) async -> String {
+        do { try await body() } catch { return "\(error)" }
+        return "no error"
+    }
+    #expect(await failure { _ = try await d.readFile("~/nope.txt") } == "沒有這個檔案：~/nope.txt")
+    #expect(await failure { _ = try await d.readFile("~/Documents") } == "~/Documents 是資料夾，不是檔案")
+    #expect(await failure { try await d.writeFile("~/Documents", Data("x".utf8)) } == "~/Documents 是資料夾，不能當檔案寫")
+    #expect(try Data(contentsOf: home.appending(path: "Documents/todo.txt")) == bytes)
 }

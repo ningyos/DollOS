@@ -64,6 +64,12 @@ public struct ComputerConfig: Sendable {
     public var watchDefaultMaxWaitS = 120.0
 }
 
+/// Her file tools in the computer menu (2026-11-09): read_file, write_file, edit_file on text files in the VM.
+public struct FilesConfig: Sendable {
+    /// read_file returns at most this many lines at once; the rest is a count she reads with from/to.
+    public var maxReadLines = 500
+}
+
 public struct IdleConfig: Sendable {
     /// N: this many consecutive turns without a tool call writes one log line.
     public var maxTurnsWithoutTool = 3
@@ -113,12 +119,13 @@ public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
     public var computer: ComputerConfig
+    public var files: FilesConfig
     public var idle: IdleConfig
     public var memory: MemoryConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "idle", "memory"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -172,6 +179,12 @@ public struct Config: Sendable {
             throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
         }
 
+        var f = Section(name: "files", raw: raw["files"] ?? [:])
+        var files = FilesConfig()
+        try f.read("max_read_lines", &files.maxReadLines)
+        try f.finish()
+        guard files.maxReadLines >= 1 else { throw TOMLError(description: "[files] max_read_lines must be at least 1") }
+
         var i = Section(name: "idle", raw: raw["idle"] ?? [:])
         var idle = IdleConfig()
         try i.read("max_turns_without_tool", &idle.maxTurnsWithoutTool)
@@ -215,7 +228,7 @@ public struct Config: Sendable {
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
             throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, three distinct folder names")
         }
-        return Config(llm: llm, core: core, computer: computer, idle: idle, memory: memory)
+        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory)
     }
 }
 

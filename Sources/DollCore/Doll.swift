@@ -66,6 +66,7 @@ public actor Doll {
     let core: CoreConfig
     let llm: LlmConfig
     let computerConfig: ComputerConfig
+    let filesConfig: FilesConfig
     let idle: IdleConfig
     let memoryConfig: MemoryConfig
     /// Screenshot files; events name them, and each is re-sent byte-identical every turn.
@@ -152,6 +153,7 @@ public actor Doll {
         core = config.core
         llm = config.llm
         computerConfig = config.computer
+        filesConfig = config.files
         idle = config.idle
         memoryConfig = config.memory
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
@@ -165,7 +167,7 @@ public actor Doll {
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say
         tools = Tools.specs(memory: memoryConfig)
-        scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer) + [Tools.exitSpec]) }
+        scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer, config.files) + [Tools.exitSpec]) }
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -576,6 +578,23 @@ public actor Doll {
                 return Outcome(text: "開始盯著\(w.target)，最多等 \(seconds(w.maxWait))；有變化或時間到會叫你。"
                                + (replaced ? "（取代了上一個 watch）" : ""),
                                actions: [name], background: true)
+            // The file tools (2026-11-09): text only, no screenshot and no window line, the screen did
+            // not change. Only a success is a step, and the step never holds the content.
+            case .readFile(let path, let from, let to):
+                let text = try FileText.decode(try await computer.readFile(path), path: path)
+                let out = try FileText.read(text, path: path, from: from, to: to, max: filesConfig.maxReadLines)
+                scenario?.steps.append("read_file \(path)")
+                return Outcome(text: out, actions: [name])
+            case .writeFile(let path, let text):
+                try await computer.writeFile(path, Data(text.utf8))
+                scenario?.steps.append("write_file \(path)（\(FileText.lines(text).count) 行）")
+                return Outcome(text: FileText.written(text, path: path), actions: [name])
+            case .editFile(let path, let old, let new):
+                let text = try FileText.decode(try await computer.readFile(path), path: path)
+                let (changed, out) = try FileText.edit(text, path: path, old: old, new: new)
+                try await computer.writeFile(path, Data(changed.utf8))
+                scenario?.steps.append("edit_file \(path)")
+                return Outcome(text: out, actions: [name])
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
@@ -930,7 +949,7 @@ public actor Doll {
 
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
-    static let observingTools: Set<String> = ["use_computer", "click", "type", "key", "scroll", "drag", "screenshot"]
+    static let observingTools: Set<String> = ["use_computer", "click", "type", "key", "scroll", "drag", "screenshot", "read_file", "edit_file"]
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her
@@ -1109,13 +1128,16 @@ public actor Doll {
 /// One experience step (`Doll.step`'s line) parsed for matching, the Experience2 analysis's loose
 /// rule: a click matches by the same element or text name, or a point within 40 px, with the same
 /// button; any double-click matches any double-click; keys case-insensitive; typed text exactly;
-/// anything else by its whole line.
+/// a file tool by its path alone (write_file's line count aside); anything else by its whole line.
 enum StepShape {
     enum Target { case point(Int, Int), name(String), role(String) }
     case click(Target, button: String, double: Bool)
     case key(String)
     case type(String)
+    case file(tool: String, path: String)
     case other(String)
+
+    static let fileTools = ["read_file", "write_file", "edit_file"]
 
     init(_ line: String) {
         if line.hasPrefix("key ") {
@@ -1132,6 +1154,12 @@ enum StepShape {
             var t = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("「"), t.hasSuffix("」"), t.count >= 2 { t = String(t.dropFirst().dropLast()) }
             self = .type(t)
+            return
+        }
+        for tool in Self.fileTools where line.hasPrefix(tool + " ") {
+            var path = line.dropFirst(tool.count + 1).trimmingCharacters(in: .whitespaces)
+            if tool == "write_file", path.hasSuffix("行）"), let open = path.lastIndex(of: "（") { path = String(path[..<open]) }
+            self = .file(tool: tool, path: path)
             return
         }
         guard line.hasPrefix("click") else { self = .other(line); return }
@@ -1169,6 +1197,7 @@ enum StepShape {
             }
         case let (.key(k1), .key(k2)): return k1 == k2
         case let (.type(t1), .type(t2)): return t1 == t2
+        case let (.file(f1, p1), .file(f2, p2)): return f1 == f2 && p1 == p2
         case let (.other(l1), .other(l2)): return l1 == l2
         default: return false
         }

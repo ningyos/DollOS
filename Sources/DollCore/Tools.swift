@@ -13,8 +13,9 @@ import Foundation
 ///
 /// A scenario's tools (`ScenarioKind.tools`, then `outcome`) are listed only in its enter call's
 /// result, never in the system prompt, and work only while it is open: the computer's click, type,
-/// key, scroll, drag, screenshot, watch; `outcome(success, summary)` leaves it (her summary replaces
-/// the scenario's turns in later requests, and nothing wakes her for it).
+/// key, scroll, drag, read_file, write_file, edit_file (text files in the VM, 2026-11-09; text
+/// results, no screenshot), screenshot, watch; `outcome(success, summary)` leaves it (her summary
+/// replaces the scenario's turns in later requests, and nothing wakes her for it).
 public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
     static let modifiers = ["cmd", "shift", "alt", "ctrl"]
@@ -89,7 +90,7 @@ public enum Tools {
     }
 
     /// The computer menu (spec 3.1, 2026-11-08): listed only in `use_computer()`'s result.
-    static func computerSpecs(_ c: ComputerConfig) -> [Spec] {
+    static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
         let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
         let after = "做完會等畫面停下來，回一行結果、一張新的全螢幕截圖、最前面視窗的視窗圖（附它在全螢幕上的位置）和視窗概要。"
         func ints(_ names: [String], _ what: String) -> [(String, JSONValue)] {
@@ -145,6 +146,36 @@ public enum Tools {
                      "type": "object",
                      "properties": .object(ints(["x0", "y0", "x1", "y1"], px)),
                      "required": ["x0", "y0", "x1", "y1"],
+                 ], jsonParameters: []),
+            Spec(name: "read_file",
+                 description: "讀電腦裡的一個文字檔，回每一行，前面帶行號（像 cat -n）。路徑可以用 ~ 代表你的家目錄，例：read_file(path: \"~/Documents/todo.txt\")。超過 \(f.maxReadLines) 行只回前 \(f.maxReadLines) 行、說還有幾行，再用 from、to 讀後面（行號從 1 算）。只讀 UTF-8 的文字檔，不是文字會跟你說。畫面不會動，所以沒有截圖。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
+                     ] + ints(["from", "to"], "要讀的行號範圍，從 1 算、含頭尾；不填就從頭／到尾")),
+                     "required": ["path"],
+                 ], jsonParameters: []),
+            Spec(name: "write_file",
+                 description: "把整個檔案寫成 text：有這個檔就整個蓋掉，沒有就新建，資料夾不在也會順便開。text 怎麼寫就怎麼存，換行照原樣（最後一行要不要換行你決定）。例：write_file(path: \"~/Desktop/hello.txt\", text: \"你好，我是娃娃\\n\")。畫面不會動，所以沒有截圖。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
+                         ("text", ["type": "string", "description": "整個檔案的內容"]),
+                     ]),
+                     "required": ["path", "text"],
+                 ], jsonParameters: []),
+            Spec(name: "edit_file",
+                 description: "改文字檔裡的一段：把 old 換成 new。old 要跟檔案裡一字不差（含空白、換行、標點），而且整個檔案只能出現一次，不然不改、回原因和最接近的幾行。要改一行就把那整行當 old；要在最後加一行，old 填最後一行、new 填最後一行加換行加新的一行。例：edit_file(path: \"~/Documents/todo.txt\", old: \"買牛奶\", new: \"買豆漿\")。畫面不會動，所以沒有截圖。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
+                         ("old", ["type": "string", "description": "檔案裡現在的那段字，一字不差"]),
+                         ("new", ["type": "string", "description": "要換成的字；空的就是刪掉 old"]),
+                     ]),
+                     "required": ["path", "old", "new"],
                  ], jsonParameters: []),
             Spec(name: "screenshot",
                  description: "不做事，只回現在的全螢幕截圖、最前面視窗的視窗圖和概要。",
@@ -236,6 +267,10 @@ public enum Tools {
         case screenshot
         /// nil region = the whole screen; nil max_wait = the configured default.
         case watch(Region?, maxWait: Double?)
+        /// The file tools (2026-11-09): `from`/`to` 1-based inclusive, checked ≥ 1 and from ≤ to here.
+        case readFile(path: String, from: Int?, to: Int?)
+        case writeFile(path: String, text: String)
+        case editFile(path: String, old: String, new: String)
     }
 
     /// `specs` are the tools she may call now; `locked` are a scenario's tools while it is closed:
@@ -373,6 +408,23 @@ public enum Tools {
             let wait = try int("max_wait_s")
             if let wait, wait < 1 { throw ToolError(description: "watch 的 max_wait_s 至少是 1，收到 \(wait)") }
             return .watch(region, maxWait: wait.map(Double.init))
+        case "read_file":
+            let path = try nonEmpty("path")
+            let from = try int("from"), to = try int("to")
+            for (name, v) in [("from", from), ("to", to)] {
+                if let v, v < 1 { throw ToolError(description: "read_file 的 \(name) 從 1 算起，收到 \(v)") }
+            }
+            if let from, let to, from > to { throw ToolError(description: "read_file 的 from 要小於等於 to，收到 from \(from)、to \(to)") }
+            return .readFile(path: path, from: from, to: to)
+        case "write_file":
+            // text is not trimmed: the file gets exactly what she wrote (an empty text empties the file).
+            return .writeFile(path: try nonEmpty("path"), text: value("text"))
+        case "edit_file":
+            let path = try nonEmpty("path")
+            let old = value("old"), new = value("new")
+            guard !old.isEmpty else { throw ToolError(description: "edit_file 的 old 是空的；要加字就把它旁邊現有的那段當 old，new 填那段加上新的字") }
+            guard old != new else { throw ToolError(description: "edit_file 的 old 和 new 一樣，沒有要改什麼") }
+            return .editFile(path: path, old: old, new: new)
         default:
             fatalError("tool \(call.name) listed but not decoded")
         }
