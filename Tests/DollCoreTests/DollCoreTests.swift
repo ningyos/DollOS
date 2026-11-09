@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ImageIO
 import Synchronization
@@ -2674,4 +2675,75 @@ private func localVMPal(home: URL) -> VMPalRun {
     #expect(await failure { _ = try await d.readFile("~/Documents") } == "~/Documents 是資料夾，不是檔案")
     #expect(await failure { try await d.writeFile("~/Documents", Data("x".utf8)) } == "~/Documents 是資料夾，不能當檔案寫")
     #expect(try Data(contentsOf: home.appending(path: "Documents/todo.txt")) == bytes)
+}
+
+// pictures by reference (spec 3.1, 2026-11-09) ---------------------------------------------------
+
+/// A Strata stand-in: answers /health (with or without `image_hash_refs`), /v1/models, and chat
+/// completions; records each chat request's image URLs; holds the keys of pictures it has received
+/// as bytes; `forget` drops keys as an eviction or a restart would.
+private final class FakeStrata: Sendable {
+    let hashRefs: Bool
+    struct S { var held: Set<String> = []; var requests: [[String]] = []; var bodies: [Int] = [] }
+    let s = Mutex(S())
+    init(hashRefs: Bool) { self.hashRefs = hashRefs }
+    func forget(_ keys: [String]) { s.withLock { st in for k in keys { st.held.remove(k) } } }
+    var transport: HTTPMainModel.Transport {
+        { [self] req in
+            let path = req.url!.path
+            if path == "/health" { return (Data(#"{"status":"ok","image_hash_refs":\#(hashRefs)}"#.utf8), 200) }
+            if path == "/v1/models" { return (Data(#"{"data":[{"id":"m"}]}"#.utf8), 200) }
+            let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let urls = (body["messages"] as! [[String: Any]]).flatMap { m -> [String] in
+                guard let parts = m["content"] as? [[String: Any]] else { return [] }
+                return parts.compactMap { ($0["image_url"] as? [String: Any])?["url"] as? String }
+            }
+            return s.withLock { st in
+                st.requests.append(urls); st.bodies.append(req.httpBody!.count)
+                let missing = urls.filter { $0.hasPrefix("hash:") }.map { String($0.dropFirst(5)) }.filter { !st.held.contains($0) }
+                if !missing.isEmpty {
+                    let list = missing.map { "\"\($0)\"" }.joined(separator: ",")
+                    return (Data(#"{"error":{"type":"invalid_request_error","code":"image_not_cached","missing":[\#(list)]}}"#.utf8), 400)
+                }
+                for u in urls where u.hasPrefix("data:") { st.held.insert(HTTPMainModel.imageKey(u)!) }
+                return (Data(#"{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#.utf8), 200)
+            }
+        }
+    }
+}
+
+@Test func picturesTheServerHoldsGoOutAsHashReferencesAndAMissIsResentOnce() async throws {
+    // Screenshot-sized stand-ins (80 KB each, like a quality-40 JPEG), so the request sizes mean something.
+    let bytes = { (n: UInt8) in Data([0xFF, 0xD8, 0xFF] + [UInt8](repeating: n, count: 80_000)) }
+    let jpeg = { (n: UInt8) in "data:image/jpeg;base64," + bytes(n).base64EncodedString() }
+    let a = jpeg(1), b = jpeg(2), c = jpeg(3)
+    let key = { (uri: String) in HTTPMainModel.imageKey(uri)! }
+    // The key is the server's: the first 32 hex digits of the sha256 of the picture's bytes.
+    #expect(key(a) == String(SHA256.hash(data: bytes(1)).map { String(format: "%02x", $0) }.joined().prefix(32)))
+    let turn = { (uris: [String]) in [ChatMessage(role: "system", content: "s")]
+        + uris.map { ChatMessage(role: "tool", content: "r", extra: [.image($0)]) } }
+
+    let server = FakeStrata(hashRefs: true)
+    let model = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: server.transport)
+    try await model.check()
+    #expect(model.imageHashRefs)
+    _ = try await model.chat(turn([a, b]), effort: "none")
+    let two = try await model.chat(turn([a, b, c]), effort: "none")
+    // Turn 1: both as bytes. Turn 2: a and b by reference, c as bytes; the body is smaller than all three.
+    #expect(server.s.withLock { $0.requests } == [[a, b], ["hash:\(key(a))", "hash:\(key(b))", c]])
+    #expect(two.usage.requestBytes! < server.s.withLock { $0.bodies[0] } + c.count)
+    // The server drops a and b (an eviction or a restart): one 400 naming them, then the same request
+    // with a and b as bytes and c still by reference.
+    server.forget([key(a), key(b)])
+    _ = try await model.chat(turn([a, b, c]), effort: "none")
+    #expect(server.s.withLock { Array($0.requests.suffix(2)) }
+            == [["hash:\(key(a))", "hash:\(key(b))", "hash:\(key(c))"], [a, b, "hash:\(key(c))"]])
+
+    // A server without the flag gets every picture as bytes, every turn.
+    let plain = FakeStrata(hashRefs: false)
+    let old = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: plain.transport)
+    try await old.check()
+    _ = try await old.chat(turn([a, b]), effort: "none")
+    _ = try await old.chat(turn([a, b, c]), effort: "none")
+    #expect(!old.imageHashRefs && plain.s.withLock { $0.requests } == [[a, b], [a, b, c]])
 }
