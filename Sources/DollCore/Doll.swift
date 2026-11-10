@@ -538,12 +538,16 @@ public actor Doll {
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
+        // Calls the model wrote inside its thinking (no `</think>`) are her reply (2026-11-11).
+        let rescued = ParsedReply.rescued(content: reply.content, reasoning: reply.reasoning)
+        if rescued != nil { log("INFO", "turn \(turnIndex): her calls were inside the thinking (no </think>); taken as her reply") }
+        let content = rescued ?? reply.content
         // She saw every event, so a secret seen marks her reply (5.1). Stored raw: re-sent byte-identical.
-        let stored = try append(Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret)))
+        let stored = try append(Event(.doll, .internal, content, secret: events.contains(where: \.secret)))
         try timeline.attachFooter(stored.seq!, footerText)
 
         // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with `say`.
-        let parsed = ParsedReply(reply.content)
+        let parsed = ParsedReply(content)
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         // Her `outcome` ends the scenario: the calls after it are refused, and nothing wakes her for it.
@@ -617,7 +621,7 @@ public actor Doll {
             }
         }
 
-        let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: parsed.calls,
+        let report = TurnReport(index: turnIndex, actions: actions, reply: content, toolCalls: parsed.calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
                                 attached: attachedNow, outcome: outcomeNow, experience: experienceNow, follows: followsNow,
                                 cheatsheets: cheatsheetNow)

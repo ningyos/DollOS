@@ -3120,3 +3120,16 @@ extension Doll {
     #expect(result("use_computer").isEmpty && result("recall").isEmpty)
     #expect(result("read_file") == ["read_file 的結果"])
 }
+
+@Test func callsWrittenInsideTheThinkingAreHerReply() {
+    // A real reply (2026-11-11, replaying F-1 turn 3): no </think>, so content was null and the call sat in the thinking.
+    let thinking = "I found the file in ~/Documents/notes.txt, so now I need to open it in TextEdit and save a copy to the Desktop as requested. I'll use the Terminal to launch TextEdit with the file path, then use Save As to create the copy on the Desktop.\n\n<tool_call>\n<function=say>\n<parameter=text>\n找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。\n</parameter>\n</function>\n</tool_call>"
+    let reply = ParsedReply(ParsedReply.rescued(content: "", reasoning: thinking)!)
+    #expect(reply.said == ["找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。"] && reply.thought.isEmpty)
+    // Her content's own text stays her thought, the calls after it.
+    #expect(ParsedReply(ParsedReply.rescued(content: "嗯", reasoning: thinking)!).thought == "嗯")
+    // Not when the content has a call, the thinking has none, or the only one is in a code fence or mid-line.
+    #expect(ParsedReply.rescued(content: "<tool_call>\n<function=think>\n<parameter=level>\nnone\n</parameter>\n</function>\n</tool_call>", reasoning: thinking) == nil)
+    #expect(ParsedReply.rescued(content: "", reasoning: "just thinking") == nil && ParsedReply.rescued(content: "", reasoning: nil) == nil)
+    #expect(ParsedReply.rescued(content: "", reasoning: "```\n<tool_call>\n```\nI would write <tool_call> here") == nil)
+}

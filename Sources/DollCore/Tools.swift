@@ -595,6 +595,26 @@ public struct ParsedReply: Sendable, Equatable {
     /// The one call format, appended to every malformed call's result.
     public static let format = "正確格式：\n<tool_call>\n<function=工具名>\n<parameter=參數名>\n值\n</parameter>\n</function>\n</tool_call>"
 
+    /// Her reply when the model wrote its calls inside the thinking (2026-11-11): it left out
+    /// `</think>`, so the server put everything, calls included, in `reasoning_content` and the content
+    /// has no call (2 of 48 replays of one turn; her turn looked empty and she stopped). The same rule
+    /// as Strata's #804 rescue, which Strata applies only when a request declares `tools` (DollOS does
+    /// not): from the first `<tool_call>` that starts a line outside a code fence to the end of the
+    /// thinking is her calls; the thinking before it stays thinking. nil when the content already has
+    /// a call or the thinking has none. The result goes after her content, which stays her thought.
+    public static func rescued(content: String, reasoning: String?) -> String? {
+        guard ParsedReply(content).calls.isEmpty, let reasoning else { return nil }
+        var fenced = false
+        for line in reasoning.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("```") { fenced.toggle() }
+            guard !fenced, line.hasPrefix("<tool_call>") else { continue }
+            let calls = String(reasoning[line.startIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let thought = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return thought.isEmpty ? calls : thought + "\n\n" + calls
+        }
+        return nil
+    }
+
     /// Where a call, or something that looks like one, starts. `<tool_call` also catches
     /// `<tool_call name=…>`, `<function` / `<parameter` also catch `<function name=…>` /
     /// `<parameter name=…>`; only the exact `<tool_call>` opens a block.
