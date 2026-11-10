@@ -86,7 +86,7 @@ public struct DashboardItem: Codable, Sendable, Equatable {
     public var text: String?         // owner / watch / program: the event text
     public var voice: Bool?          // owner: spoken or typed
     public var image: String?        // watch: its screenshot
-    public var speech: String?       // turn: what she said, outside her calls
+    public var thought: String?      // turn: her own thought, the text outside her calls (her words to the owner are say calls)
     public var footer: String?       // turn: the 【狀況】 she answered
     public var calls: [DashboardCall]?
     public var seconds: Double?      // turn: model call and tool calls
@@ -161,7 +161,7 @@ extension Doll {
                 let parsed = ParsedReply(e.text)
                 let s = stats[seq]
                 items.append(DashboardItem(
-                    type: "turn", seq: seq, ts: e.ts, secret: e.secret, speech: parsed.speech, footer: e.footer,
+                    type: "turn", seq: seq, ts: e.ts, secret: e.secret, thought: parsed.thought, footer: e.footer,
                     calls: parsed.calls.map {
                         DashboardCall(name: $0.name, parameters: $0.parameters.map { .init(name: $0.name, value: $0.value) },
                                       malformed: $0.malformed, secret: false)

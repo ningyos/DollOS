@@ -165,8 +165,11 @@ function renderTimeline(items) {
       if (it.cached !== null && it.cached !== undefined) stats.push(`cached ${it.cached}`);
       if (it.effort) stats.push(`effort ${it.effort}`);
       head.append(document.createTextNode(" · 她的回合 · " + stats.join(" · ")));
-      if (it.speech) div.append(el("div", "speech", it.speech));
-      for (const c of it.calls) div.append(renderCall(c));
+      if (it.thought) div.append(el("div", "muted", "（心裡）" + it.thought));
+      for (const c of it.calls) {
+        const text = c.name === "say" && !c.malformed && c.parameters.find(p => p.name === "text");
+        div.append(text ? el("div", "speech", "說：" + text.value.trim()) : renderCall(c));
+      }
       if (it.footer) div.append(details("她看到的【狀況】", el("pre", "muted", it.footer)));
     }
     div.querySelectorAll("details").forEach((d, i) => { d.dataset.key = it.seq + ":" + i; if (open.has(d.dataset.key)) d.open = true; });

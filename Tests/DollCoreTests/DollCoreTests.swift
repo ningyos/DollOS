@@ -41,6 +41,7 @@ private func outcome(_ success: Bool, _ summary: String) -> (String, [(String, S
     ("outcome", [("success", "\(success)"), ("summary", summary)])
 }
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
+private func say(_ text: String) -> (String, [(String, String)]) { ("say", [("text", text)]) }
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
 private func recall(_ q: String) -> (String, [(String, String)]) { ("recall", [("query", q)]) }
 private func remember(_ items: [(String, Bool)]) -> (String, [(String, String)]) {
@@ -282,7 +283,7 @@ private struct Harness {
 
 @Test func parserReadsOneCall() {
     let p = ParsedReply("<tool_call>\n<function=recall>\n<parameter=query>\n主人的貓\n</parameter>\n</function>\n</tool_call>")
-    #expect(p.speech == "")
+    #expect(p.thought == "")
     #expect(p.calls == [ToolCall(name: "recall", parameters: [.init("query", "主人的貓")])])
 }
 
@@ -291,11 +292,11 @@ private struct Harness {
         + "<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>\n</tool_call>\n"
         + "<tool_call><function=think><parameter=level>high</parameter></function></tool_call>"
     let p = ParsedReply(raw)
-    #expect(p.speech == "好，我查一下再跑。")
+    #expect(p.thought == "好，我查一下再跑。")
     #expect(p.calls.map(\.name) == ["recall", "key", "think"])
     #expect(p.calls.map { $0.parameters[0].value } == ["A", "ls", "high"])
     #expect(p.calls.allSatisfy { $0.malformed == nil })
-    #expect(ParsedReply("就聊聊，沒有呼叫。\n").calls.isEmpty && ParsedReply("就聊聊，沒有呼叫。\n").speech == "就聊聊，沒有呼叫。")
+    #expect(ParsedReply("就聊聊，沒有呼叫。\n").calls.isEmpty && ParsedReply("就聊聊，沒有呼叫。\n").thought == "就聊聊，沒有呼叫。")
 }
 
 @Test func parserStripsExactlyOneNewlineEachSideAndKeepsTheRest() {
@@ -348,13 +349,13 @@ private struct Harness {
     // unclosed <tool_call>, then a good one
     let a = ParsedReply("嗯\n<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>\n"
                         + "<tool_call>\n<function=think>\n<parameter=level>\nhigh\n</parameter>\n</function>\n</tool_call>")
-    #expect(a.speech == "嗯")
+    #expect(a.thought == "嗯")
     #expect(a.calls.map(\.name) == ["key", "think"])
     #expect(a.calls[0].malformed == "<tool_call> 沒有 </tool_call> 收尾" && a.calls[1].malformed == nil)
     // <function> outside <tool_call>
     let b = ParsedReply("<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>")
     #expect(b.calls == [ToolCall(name: "key", malformed: "<function=key> 沒有包在 <tool_call> 和 </tool_call> 裡")])
-    #expect(b.speech == "")
+    #expect(b.thought == "")
     // missing </function>, missing </parameter>, junk inside, no function, duplicate parameter
     let cases: [(String, String)] = [
         ("<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</tool_call>", "key：<function=key> 沒有 </function> 收尾"),
@@ -372,15 +373,15 @@ private struct Harness {
     // <invoke name=…> (seen from iq2_xs, /tmp/m2why/replay1.log), then a good call
     let a = ParsedReply("好，我開電腦看一下。\n<invoke name=\"use_computer\">\n</invoke>\n"
                         + "<tool_call>\n<function=think>\n<parameter=level>\nhigh\n</parameter>\n</function>\n</tool_call>")
-    #expect(a.speech == "好，我開電腦看一下。")
+    #expect(a.thought == "好，我開電腦看一下。")
     #expect(a.calls.map(\.name) == ["use_computer", "think"])
     #expect(a.calls[0].malformed == "<invoke name=\"use_computer\"> 不是工具呼叫的格式，沒有執行" && a.calls[1].malformed == nil)
     // a stray <parameter=…> with nothing around it: the rest is part of the broken call
     let b = ParsedReply("我開電腦。\n<parameter=level>\nmedium\n</parameter>\n")
-    #expect(b.speech == "我開電腦。")
+    #expect(b.thought == "我開電腦。")
     #expect(b.calls == [ToolCall(name: "", malformed: "<parameter=level> 不是工具呼叫的格式，沒有執行")])
     let unclosed = ParsedReply("嗯<parameter=x>\nabc")
-    #expect(unclosed.speech == "嗯" && unclosed.calls.count == 1)
+    #expect(unclosed.thought == "嗯" && unclosed.calls.count == 1)
     // <tool_call …> with attributes, lone closing tags, and two replies seen from iq2_xs at effort
     // medium (/tmp/m2why/latency.log): `<parameter name=…>…</invoke>`, and a <function=…> whose
     // only wrapper is a trailing </tool_call> (one mistake, one error)
@@ -388,7 +389,7 @@ private struct Harness {
                 "<parameter name=\"level\">\nmedium\n</parameter>\n\n</invoke>",
                 "<function=use_computer>\n</function>\n</tool_call>"] {
         let p = ParsedReply(raw)
-        #expect(p.calls.count == 1 && p.calls[0].malformed != nil && !p.speech.contains("<") , "\(raw)")
+        #expect(p.calls.count == 1 && p.calls[0].malformed != nil && !p.thought.contains("<") , "\(raw)")
     }
     #expect(ParsedReply("<tool_call name=\"key\">ls</tool_call>").calls[0].name == "key")
     #expect(ParsedReply("<parameter name=\"level\">\nmedium\n</parameter>").calls[0].name == "")
@@ -407,12 +408,12 @@ private struct Harness {
 @Test func systemPromptOpensWithTheTemplateToolBlockThenThePersona() async throws {
     let h = try await Harness()
     let sys = await h.doll.systemPrompt()
-    #expect(sys.hasPrefix("# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"think\""))
+    #expect(sys.hasPrefix("# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"say\""))
     #expect(sys.contains("\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:"))
     #expect(sys.contains("</IMPORTANT>\n\n你是"))
     let listed = sys.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    #expect(listed.count == 4)
-    for (line, name) in zip(listed, ["think", "remember", "recall", "use_computer"]) {
+    #expect(listed.count == 5)
+    for (line, name) in zip(listed, ["say", "think", "remember", "recall", "use_computer"]) {
         #expect(line.contains("\"name\": \"\(name)\""))
         #expect((try? JSONSerialization.jsonObject(with: Data(line.utf8))) != nil)   // valid JSON
     }
@@ -425,8 +426,8 @@ private struct Harness {
     let h = try await Harness()
     await h.doll.ownerSaid("做三件事")
     try await h.turn(Scripted("好，一次做完", recall("一"), think("medium"), recall("二")))
-    #expect(h.said == ["好，一次做完"])                                  // only the speech is said
-    #expect(h.last.actions == ["said", "recall 0", "think medium", "recall 0"] && h.last.usedTool)
+    #expect(h.said.isEmpty)                                              // text outside her calls is her thought: never said
+    #expect(h.last.actions == ["recall 0", "think medium", "recall 0"] && h.last.usedTool)
     let results = try h.toolResults()
     #expect(results.map(\.text) == ["一：0 條", "下一回合 effort：medium", "二：0 條"])
     #expect(await h.doll.followUp)                                       // the results give her the next turn
@@ -446,8 +447,8 @@ private struct Harness {
     let raw = "我先查，再看目錄。\n\n<tool_call>\n<function=recall>\n<parameter=query>\n目錄\n</parameter>\n</function>\n</tool_call>\n"
         + "<tool_call>\n<function=think>\n<parameter=level>\nmedium\n</parameter>\n</function>\n</tool_call>"
     try await h.turn(Scripted(stringLiteral: raw))
-    #expect(h.said == ["我先查，再看目錄。"])
-    #expect(h.last.actions == ["said", "recall 0", "think medium"])
+    #expect(h.said.isEmpty)
+    #expect(h.last.actions == ["recall 0", "think medium"])
     #expect(try h.toolResults().map(\.text) == ["目錄：0 條", "下一回合 effort：medium"])
     let doll = try #require(try h.store.events().first { $0.kind == .doll })
     #expect(doll.text == raw)                                            // stored byte-identical
@@ -520,7 +521,7 @@ private struct Harness {
 }
 
 @Test func toolResultsGiveHerTheNextTurnButAWatchAckAloneDoesNot() async throws {
-    let h = try await Harness([Scripted("", useComputer), "好了", Scripted("盯著", watch("window", 1)), "沒變"])
+    let h = try await Harness([Scripted("", useComputer), Scripted("", say("好了")), Scripted("", say("盯著"), watch("window", 1)), Scripted("", say("沒變"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
@@ -536,7 +537,7 @@ private struct Harness {
     await h.doll.ownerSaid("盯著畫面")
     try await waitFor(3, said: 2)
     try await Task.sleep(for: .milliseconds(200))                       // well inside max_wait (1 s)
-    #expect(await h.model.requests.count == 3)                          // the watch ack did not wake her
+    #expect(await h.model.requests.count == 3)                          // neither the watch ack nor say woke her
     try await waitFor(4, said: 3)                                       // max_wait passing does
     #expect(await h.model.requests.count == 4 && h.said.last == "沒變")
     await h.doll.stop()
@@ -559,9 +560,9 @@ private struct Harness {
 @Test func ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("等我", think("high")))                 // next call is high
+    try await h.turn(Scripted("", say("等我"), think("high")))         // next call is high
     await h.model.stall()
-    await h.model.add(["好"])
+    await h.model.add([Scripted("", say("好"))])
     await h.doll.ownerSaid("開始算")
     let doll = h.doll
     let running = Task { try await doll.runOnce() }
@@ -580,7 +581,7 @@ private struct Harness {
 }
 
 @Test func noEventMeansNoTurn() async throws {
-    let h = try await Harness(["哈囉"])
+    let h = try await Harness([Scripted("", say("哈囉"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     try await Task.sleep(for: .milliseconds(500))
@@ -617,7 +618,7 @@ private struct Harness {
 @Test func thinkSetsTheNextCallsEffortOnceEitherWayAndShowsInTheFooter() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("等我", think("high")))
+    try await h.turn(Scripted("", say("等我"), think("high")))
     let status = try await h.doll.status()
     #expect(h.last.actions == ["said", "think high"] && status.contains("effort：high"))
     await h.doll.ownerSaid("嗯")
@@ -994,7 +995,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let enter = Scripted("好，我來", useComputer)
     try await h.turn(enter)                                                        // request 0: before entering
     try await h.turn(Scripted("", key("cmd+s")))                                   // request 1: inside
-    try await h.turn(Scripted("存好了。", outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
+    try await h.turn(Scripted("", say("存好了。"), outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
     // While it was open, its turns went out in full: the menu's screenshot, the key's result.
     let inside = await h.model.seen(2)
     #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.role == "tool" && $0.content == fakeWindowsLine })
@@ -1008,12 +1009,13 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // result is her summary; then what she said when she left; then what came after.
     #expect(Array(after.prefix(before.count + 1)) == before + [ChatMessage(role: "assistant", content: enter.raw)])
     #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
-    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: "存好了。"))
-    #expect(after[before.count + 3].role == "user" && after[before.count + 3].content.hasSuffix("主人] 謝謝"))
+    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: Scripted("", say("存好了。")).raw))
+    #expect(after[before.count + 3] == ChatMessage(role: "tool", content: ""))
+    #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人] 謝謝"))
     #expect(after.last?.content.hasPrefix("【狀況】") == true)
     // Nothing from inside: no screenshot, no computer result, no menu, no intermediate reply.
     #expect(after.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty })
-    #expect(after.filter { $0.role == "tool" }.count == 1)
+    #expect(after.filter { $0.role == "tool" }.count == 2)
     #expect(!after.contains { $0.content == fakeWindowsLine || $0.content.hasPrefix("電腦選單打開了") || $0.content.hasPrefix("記下了") })
     // Later requests extend it byte-identically.
     let next = await h.model.seen(4)
@@ -2102,7 +2104,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 }
 
 @Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("存好了", key("cmd+s"), outcome(true, "看到了"))])
+    let h = try await Harness([Scripted("", useComputer), Scripted("", say("存好了"), key("cmd+s"), outcome(true, "看到了"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await h.doll.ownerSaid("存檔")
@@ -2118,7 +2120,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // The result is still in the timeline, right after her reply.
     let events = try h.store.events()
     #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
-    #expect(events.dropLast(2).last?.kind == .doll)
+    #expect(events.dropLast(3).last?.kind == .doll)
     await h.doll.stop()
     try await runner.value
 }
@@ -2797,7 +2799,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     let t = try json([DashboardItem].self, await d.respond(method: "GET", target: "/api/timeline"))
     #expect(t.map(\.type) == ["turn", "turn", "owner"])
     #expect(t[2].text == "用電腦看一下 macOS 版本" && t[2].voice == false)
-    #expect(t[1].speech == "好，我看看" && t[1].calls?.map(\.name) == ["use_computer", "remember"])
+    #expect(t[1].thought == "好，我看看" && t[1].calls?.map(\.name) == ["use_computer", "remember"])
     #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image != nil && t[1].calls?[1].image == nil)
     #expect(t[1].calls?[1].result?.contains("own/") == true)
     #expect(t[0].calls?.map(\.name) == ["key"] && t[0].calls?[0].parameters.map(\.name) == ["key", "modifiers"])
@@ -2856,7 +2858,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 }
 
 @Test func interruptCancelsTheCallInFlightAndNothingRerunsIt() async throws {
-    let h = try await Harness(["好"])
+    let h = try await Harness([Scripted("", say("好"))])
     let d = dashboard(h)
     let doll = h.doll
     #expect(await d.respond(method: "POST", target: "/api/interrupt").status == 409)   // nothing in flight
@@ -2880,7 +2882,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 }
 
 @Test func pauseStopsNewTurnsWhileEventsQueueAndResumeRunsThem() async throws {
-    let h = try await Harness(["兩件都收到"])
+    let h = try await Harness([Scripted("", say("兩件都收到"))])
     let d = dashboard(h)
     let doll = h.doll
     let runner = Task { try await doll.run() }

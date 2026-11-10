@@ -13,7 +13,7 @@ public typealias Say = @Sendable (String) -> Void
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
     public var index: Int
-    public var actions: [String]       // "said" | "<tool>" | "think <level>" | "remember <folder>" | "recall <n>" | "error <tool>"
+    public var actions: [String]       // "said" (a say call) | "<tool>" | "think <level>" | "remember <folder>" | "recall <n>" | "error <tool>"
     public var reply: String
     public var toolCalls: [ToolCall]
     public var footer: String
@@ -331,8 +331,8 @@ public actor Doll {
     /// A scenario she left with `outcome` (spec 3.1, 2026-11-09): everything up to and including her
     /// reply that entered it renders as before (with the results of calls she wrote ahead of the
     /// enter call); the enter call's result becomes `Scenario.result` (how it ended and her summary);
-    /// owner lines that came in meanwhile stay; her speech in the reply that left it follows as her
-    /// message. Every other event of the span (results, screenshots, crops, watch wakes, the
+    /// owner lines that came in meanwhile stay; her `say` calls in the reply that left it follow as
+    /// her message (with their empty results). Every other event of the span (results, screenshots, crops, watch wakes, the
     /// program's 【相關記憶】 and 【快捷鍵】, her replies in between, the exit reply's results) stays in
     /// the timeline but is not sent. The open scenario renders in full.
     func context(_ events: [Event]) throws -> [ChatMessage] {
@@ -369,8 +369,12 @@ public actor Doll {
             case .enterResult(let c):
                 out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
             case .exitSpeech:
-                let speech = ParsedReply(ev.text).speech
-                if !speech.isEmpty { out.append(ChatMessage(role: "assistant", content: speech)) }
+                // What she said to the owner in the reply that left: her say calls and their (empty) results.
+                let says = ParsedReply(ev.text).calls.filter { $0.name == "say" && $0.malformed == nil }
+                if !says.isEmpty {
+                    out.append(ChatMessage(role: "assistant", content: says.map(\.text).joined(separator: "\n")))
+                    out += says.map { _ in ChatMessage(role: "tool", content: "") }
+                }
             }
         }
         return out
@@ -521,11 +525,8 @@ public actor Doll {
         let stored = try store.append(Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret)))
         try store.attachFooter(stored.seq!, footerText)
 
+        // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with `say`.
         let parsed = ParsedReply(reply.content)
-        if !parsed.speech.isEmpty {
-            say(parsed.speech)
-            actions.append("said")
-        }
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         // Her `outcome` ends the scenario: the calls after it are refused, and nothing wakes her for it.
@@ -645,6 +646,10 @@ public actor Doll {
             let request = try Tools.decode(call, specs: tools + (scenario?.tools ?? []),
                                            locked: scenarioTools.filter { $0.0 != scenario?.kind })
             switch request {
+            case .say(let text):
+                // Spoken to the owner; nothing new for her to read, and nothing to wake her for.
+                say(text)
+                return Outcome(text: "", actions: ["said"], background: true)
             case .think(let level):
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
