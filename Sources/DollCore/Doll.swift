@@ -550,7 +550,9 @@ public actor Doll {
         let parsed = ParsedReply(content)
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
-        // Her `outcome` ends the scenario: the calls after it are refused, and nothing wakes her for it.
+        // Her `outcome` ends the scenario: the calls after it are refused, except `say` (2026-11-11: she
+        // wrote it after the outcome and the owner heard nothing; speaking touches no computer), and
+        // nothing wakes her for it.
         // Her computer actions (click, type, key, scroll, drag) run in order and stop at the first
         // failure (2026-11-09): only the last one done carries the observation, the ones before it
         // answer with their line only, and the ones after a failure are not run. Actions written
@@ -562,7 +564,7 @@ public actor Doll {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
             let out: Outcome
-            if outcomeNow != nil {
+            if outcomeNow != nil, call.name != "say" {
                 out = Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
                               actions: ["error \(name)"], background: true)
             } else if isAction, let failed {

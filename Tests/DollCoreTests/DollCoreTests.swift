@@ -3145,3 +3145,18 @@ extension Doll {
     try await h.turn("")
     #expect(await h.doll.followUp)
 }
+
+@Test func aSayAfterOutcomeIsStillSaidAndKeptWhenTheMenuCloses() async throws {
+    // 2026-11-11: she wrote say after outcome; the owner heard nothing.
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", outcome(true, "存好了"), say("存好了喔"), key("cmd+q")))
+    #expect(h.said == ["存好了喔"] && h.vm.actions.isEmpty)
+    let end = Array(try h.toolResults().suffix(3))
+    #expect(end[1].text == "" && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
+    #expect(!(await h.doll.followUp))
+    // After the menu closes, the say stays in her context.
+    await h.doll.ownerSaid("謝謝")
+    try await h.turn(Scripted("", say("不客氣")))
+    let last = await h.model.requests.last!.messages
+    #expect(last.contains { $0.role == "assistant" && $0.content == Scripted("", say("存好了喔")).raw })
+}
