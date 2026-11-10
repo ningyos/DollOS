@@ -463,7 +463,7 @@ private struct Harness {
     #expect(results.count == 7)
     #expect(results[0].text == "失敗：沒有 bogus 這個工具")
     #expect(results[1].text == "失敗：recall 沒有 q 這個參數")
-    #expect(results[2].text == "失敗：think 的 level 只能是 medium 或 high，收到 low")
+    #expect(results[2].text == "失敗：think 的 level 只能是 none、medium 或 high，收到 low")
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
     #expect(results[5].text.hasPrefix("電腦選單打開了"))                  // later calls still run
@@ -614,7 +614,7 @@ private struct Harness {
     #expect(try h.store.events().filter { $0.text.contains("【狀況】") }.isEmpty)   // footers are not events
 }
 
-@Test func thinkRaisesEffortForOneCallAndShowsInTheFooter() async throws {
+@Test func thinkSetsTheNextCallsEffortOnceEitherWayAndShowsInTheFooter() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("這題難")
     try await h.turn(Scripted("等我", think("high")))
@@ -626,6 +626,15 @@ private struct Harness {
     try await h.turn("嗯")
     #expect(await h.model.requests.map(\.effort) == ["medium", "high", "medium"])
     #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：medium"))
+    // Down as well (2026-11-10): a step whose result she can predict, no thinking on the turn that reads it;
+    // the turn after that is back to the task effort.
+    await h.doll.ownerSaid("再查兩個")
+    try await h.turn(Scripted("", recall("一"), think("none")))
+    try await h.turn(Scripted("", recall("二")))
+    try await h.turn("好")
+    let efforts = await h.model.requests.map(\.effort)
+    #expect(Array(efforts.suffix(3)) == ["medium", "none", "medium"])
+    #expect(h.reports[4].effort == "none" && h.reports[4].footer.contains("effort：none") && h.reports[5].effort == "medium")
 }
 
 @Test func taskTurnsUseTaskTurnEffortAndOnlyAnEmptyTurnTheDefault() async throws {

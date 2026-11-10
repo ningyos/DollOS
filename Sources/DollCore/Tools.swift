@@ -5,7 +5,7 @@ import Foundation
 /// program parses her content itself, in the order she wrote it). This file is the only place that
 /// defines them: the tool block in the system prompt, the parser, and argument decoding.
 ///
-///     think(level: medium | high)        the next model call thinks first
+///     think(level: none | medium | high) the next model call's thinking (that call only)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories
 ///     use_computer(expect)               enters the computer scenario (spec 3.1, 2026-11-08); expect: what
@@ -46,10 +46,10 @@ public enum Tools {
     static func specs(memory: MemoryConfig) -> [Spec] {
         [
             Spec(name: "think",
-                 description: "下一次回合先思考再回答。medium 一般，high 更深。",
+                 description: "決定下一回合要不要先思考，只管下一回合，之後回到平常。none＝不想直接做（結果猜得到、照做就好的步驟，例如按了存檔、接下來只要確認）；medium 一般；high 更深（卡住、要想辦法的時候）。例：送出按鍵的同一則回覆裡呼叫 think(level: \"none\")，看結果的那一回合就不用想。",
                  parameters: [
                      "type": "object",
-                     "properties": ["level": ["type": "string", "enum": ["medium", "high"]]],
+                     "properties": ["level": ["type": "string", "enum": ["none", "medium", "high"]]],
                      "required": ["level"],
                  ], jsonParameters: []),
             Spec(name: "remember",
@@ -328,8 +328,8 @@ public enum Tools {
         switch call.name {
         case "think":
             let level = value("level").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard level == "medium" || level == "high" else {
-                throw ToolError(description: "think 的 level 只能是 medium 或 high，收到 \(level)")
+            guard ["none", "medium", "high"].contains(level) else {
+                throw ToolError(description: "think 的 level 只能是 none、medium 或 high，收到 \(level)")
             }
             return .think(level)
         case "remember":
