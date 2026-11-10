@@ -949,10 +949,12 @@ enum OpenWindows {
         return nil
     }
 
+    /// `role "name"「value」`; a newline in the value shows as ⏎ (2026-11-11: as a space she could not
+    /// see that notes.txt already ended in one, pressed Return after ⌘↓ and left a blank line).
     static func describe(_ n: Node) -> String {
         var out = n.role ?? "?"
         if let name = n.name, !name.isEmpty { out += " \"\(name)\"" }
-        if let v = n.value?.replacingOccurrences(of: "\n", with: " "), !v.isEmpty {
+        if let v = n.value?.replacingOccurrences(of: "\n", with: "⏎"), !v.isEmpty {
             out += "「" + (v.count > maxValue ? String(v.prefix(maxValue)) + "…" : v) + "」"
         }
         return out

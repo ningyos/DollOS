@@ -2194,7 +2194,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
         {"role":"combobox","name":"font size","value":12},{"role":"button","name":"Close"}]}}}
         """.utf8)
     #expect(OpenWindows.line(windows: windows, focused: focused)
-            == "開著的視窗：Finder、TextEdit「notes.txt」（前景）、Safari「Apple」；焦點：textarea「第一行 第二行很長很長很長很長很長很長很…」")
+            == "開著的視窗：Finder、TextEdit「notes.txt」（前景）、Safari「Apple」；焦點：textarea「第一行⏎第二行很長很長很長很長很長很長很…」")
     let notFound = Data(#"{"ok":false,"error":{"code":"WINDOW_NOT_FOUND","message":"No window found"}}"#.utf8)
     #expect(OpenWindows.line(windows: Data(#"{"ok":true,"data":[]}"#.utf8), focused: notFound)
             == "開著的視窗：沒有；焦點讀不到：WINDOW_NOT_FOUND: No window found")
