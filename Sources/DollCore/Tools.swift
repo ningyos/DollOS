@@ -210,7 +210,7 @@ public enum Tools {
     /// The tool that leaves any scenario, listed last in its menu (spec 3.1, 2026-11-09).
     static let exitSpec = Spec(
         name: "outcome",
-        description: "結束這次用電腦。先看最新的截圖、對照 use_computer 時說的期望（expect），再回答達成了沒。結束以後，這次用電腦的過程（截圖、每一步的結果）就不在你眼前了，只留下你在 summary 寫的；所以 summary 要寫給以後的自己看：用自然的話寫你做了什麼、怎麼做的、結果怎樣、你怎麼確認的。呼叫完電腦工具就鎖回去、watch 停掉，程式不會再叫你；要跟主人說的話，用 say 寫在同一則回覆的 outcome 前面。",
+        description: "結束這次用電腦。先看最新的截圖、對照 use_computer 時說的期望（expect），再回答達成了沒。跟這次要做到的事和動手前的樣子比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案），就是沒達成：先修好，修不好就報 false。「原本就是這樣」只有在你動手前親眼看過才算。結束以後，這次用電腦的過程（截圖、每一步的結果）就不在你眼前了，只留下你在 summary 寫的；所以 summary 要寫給以後的自己看：用自然的話寫你做了什麼、怎麼做的、結果怎樣、你怎麼確認的。呼叫完電腦工具就鎖回去、watch 停掉，程式不會再叫你；要跟主人說的話，用 say 寫在同一則回覆的 outcome 前面。",
         parameters: [
             "type": "object",
             "properties": .object([
