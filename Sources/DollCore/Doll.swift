@@ -899,8 +899,9 @@ public actor Doll {
         switch result {
         case .success(let answer):
             scenario?.steps.append(Self.step(action))
-            guard chain.last else { return Outcome(text: "\(said)\n\(answer)", actions: [name]) }
-            return await withScreenshot("\(said)\n\(answer)", actions: [name])
+            let text = [said, Self.condense(answer)].filter { !$0.isEmpty }.joined(separator: "\n")
+            guard chain.last else { return Outcome(text: text, actions: [name]) }
+            return await withScreenshot(text, actions: [name])
         case .failure(let error):
             // A failed action is not a step of the experience (spec 3.1, 2026-11-09).
             // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
@@ -909,6 +910,21 @@ public actor Doll {
             out.failedStep = said
             return out
         }
+    }
+
+    /// A successful action's answer as she reads it (2026-11-10): VMPal's bookkeeping lines are left
+    /// out: `Done: 1 action in 0.7 s. Screen 1280×800 (screenshot pixels), frame 8386.`, the echo of
+    /// where a pointer action landed (`left_click at (558, 328).`, `double_click on “x” at (…).`),
+    /// `Typed 46 characters.`, and the clipboard note of a paste. What she uses stays: `Changed: …`,
+    /// `Nothing changed …` (a click that may have missed), and anything else. They were most of the
+    /// ~90 tokens a result took, kept in every later turn.
+    static func condense(_ answer: String) -> String {
+        answer.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).filter { line in
+            !(line.hasPrefix("Done: ") && line.contains(" action")
+              || line.range(of: #"^(left_click|right_click|middle_click|double_click|triple_click)( on .*)? at \(\d+, \d+\)\.$"#, options: .regularExpression) != nil
+              || line.range(of: #"^Typed \d+ characters?\.$"#, options: .regularExpression) != nil
+              || line == "經剪貼簿貼上（cmd+v），剪貼簿已還原。")
+        }.joined(separator: "\n")
     }
 
     /// `click` x, y in full-screenshot pixels: as given (`on: screen`), or from the last window crop
