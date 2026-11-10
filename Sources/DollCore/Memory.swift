@@ -279,7 +279,9 @@ public final class TodayIndex {
     /// What of one event is searchable: the owner's text; her reply's `say` texts (together) and her
     /// thought; a tool result's text (computer results are already trimmed to what changed and the
     /// open windows; never images); a watch wake's text. Not the program's 【快捷鍵】 and 【相關記憶】,
-    /// and not `recall` results: those are copies of other data. Empty texts are left out.
+    /// not `recall` results (copies of other data), and not a scenario's enter result such as
+    /// `use_computer`'s (2026-11-11: the program's fixed menu text, not something that happened).
+    /// Empty texts are left out.
     static func entries(_ ev: Event, tool: String?) -> [(id: String, label: String, text: String)] {
         let seq = ev.seq!
         var out: [(String, String, String)] = []
@@ -290,12 +292,15 @@ public final class TodayIndex {
             out = [("\(seq)-say", "你說", parsed.said.joined(separator: "\n")), ("\(seq)-thought", "你想", parsed.thought)]
         case .tool:
             let name = (tool ?? "").isEmpty ? "tool_call" : tool!
-            if name != "recall" { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }
+            if !unindexedResults.contains(name) { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }
         case .watch: out = [("\(seq)-watch", "watch", ev.text)]
         case .memory: break
         }
         return out.map { ($0.0, $0.1, $0.2.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.2.isEmpty }
     }
+
+    /// Tools whose results the today index leaves out.
+    static let unindexedResults: Set<String> = Set(["recall"] + ScenarioKind.allCases.map(\.enterTool))
 
     private func put(_ ev: Event, tool: String?) throws -> [(Event, String, String, String, Data)] {
         try Self.entries(ev, tool: tool).map { (ev, $0.id, $0.label, $0.text, Memory.blob(try embedder.embed($0.text))) }

@@ -3109,3 +3109,14 @@ extension Doll {
     #expect(before == after)
     #expect(before.allSatisfy { $0.contains("〔今天 ") })
 }
+
+@Test func theTodayIndexLeavesOutMenusAndRecallResults() {
+    // 2026-11-11: use_computer's result is the program's menu text, not something that happened.
+    func result(_ tool: String) -> [String] {
+        var ev = Event(.tool, .internal, "電腦選單打開了，現在多了這些工具：…")
+        ev.seq = 7
+        return TodayIndex.entries(ev, tool: tool).map(\.label)
+    }
+    #expect(result("use_computer").isEmpty && result("recall").isEmpty)
+    #expect(result("read_file") == ["read_file 的結果"])
+}
