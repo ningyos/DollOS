@@ -745,10 +745,12 @@ public actor Doll {
             do { return .success(try await computer.frontWindow()) } catch { return .failure(error) }
         }()
         var out = Outcome(text: text, actions: actions)
+        // A successful action may have nothing of its own to say (2026-11-10): no leading blank line.
+        func add(_ line: String) { out.text = out.text.isEmpty ? line : out.text + "\n" + line }
         cropMap = nil
         do { out.image = try await capture(nil) } catch {
             log("ERROR", "turn \(turnIndex): screenshot failed: \(error)")
-            out.text += "\n截圖失敗：\(error)"
+            add("截圖失敗：\(error)")
             out.actions.append("error screenshot")
         }
         switch await front {
@@ -784,7 +786,7 @@ public actor Doll {
         // ends the result's text; the front app keys her shortcut memories and the 【相關記憶】 on a switch.
         do {
             let state = try await computer.frontState()
-            out.text += "\n" + state.line
+            add(state.line)
             if let app = state.app {
                 if computerConfig.learnShortcuts { await learnShortcuts(app) }
                 if app.name != frontAppName {
@@ -798,7 +800,7 @@ public actor Doll {
             }
         } catch {
             log("ERROR", "turn \(turnIndex): open windows and focus failed: \(error)")
-            out.text += "\n開著的視窗和焦點讀不到：\(error)"
+            add("開著的視窗和焦點讀不到：\(error)")
             out.actions.append("error windows")
         }
         return out
@@ -888,7 +890,7 @@ public actor Doll {
 
     /// Runs one action. A success says only what she does not already have (2026-11-10: her call is in
     /// the context, so it is not echoed): `note` (what the program worked out, e.g. a window-crop point's
-    /// screen point), then VMPal's words without its bookkeeping, or 「做了」 when nothing is left. A
+    /// screen point), then VMPal's words without its bookkeeping; nothing at all when nothing is left. A
     /// failure names the step (`said`) and the reason. The last action of her reply (and every failure)
     /// comes with fresh screenshots; an earlier one with its text only. The action's own time,
     /// screenshots excluded, goes to the log (M2 round 6: element-click latency).
@@ -902,8 +904,7 @@ public actor Doll {
         switch result {
         case .success(let answer):
             scenario?.steps.append(Self.step(action))
-            let parts = [note ?? "", Self.condense(answer)].filter { !$0.isEmpty }
-            let text = parts.isEmpty ? Self.doneWord : parts.joined(separator: "\n")
+            let text = [note ?? "", Self.condense(answer)].filter { !$0.isEmpty }.joined(separator: "\n")
             guard chain.last else { return Outcome(text: text, actions: [name]) }
             return await withScreenshot(text, actions: [name])
         case .failure(let error):
@@ -915,9 +916,6 @@ public actor Doll {
             return out
         }
     }
-
-    /// A successful action with nothing new to say (fixed bytes).
-    static let doneWord = "做了"
 
     /// A successful action's answer as she reads it (2026-11-10): VMPal's bookkeeping lines are left
     /// out: `Done: 1 action in 0.7 s. Screen 1280×800 (screenshot pixels), frame 8386.`, the echo of

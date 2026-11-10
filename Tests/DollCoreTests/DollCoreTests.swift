@@ -997,7 +997,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await h.turn(Scripted("存好了。", outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
     // While it was open, its turns went out in full: the menu's screenshot, the key's result.
     let inside = await h.model.seen(2)
-    #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.role == "tool" && $0.content.hasPrefix(Doll.doneWord) })
+    #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.role == "tool" && $0.content == fakeWindowsLine })
     await h.doll.ownerSaid("謝謝")
     try await h.turn("不客氣")                                                     // request 3: first after leaving
     await h.doll.ownerSaid("再見")
@@ -1014,14 +1014,14 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // Nothing from inside: no screenshot, no computer result, no menu, no intermediate reply.
     #expect(after.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty })
     #expect(after.filter { $0.role == "tool" }.count == 1)
-    #expect(!after.contains { $0.content.hasPrefix(Doll.doneWord) || $0.content.hasPrefix("電腦選單打開了") || $0.content.hasPrefix("記下了") })
+    #expect(!after.contains { $0.content == fakeWindowsLine || $0.content.hasPrefix("電腦選單打開了") || $0.content.hasPrefix("記下了") })
     // Later requests extend it byte-identically.
     let next = await h.model.seen(4)
     #expect(Array(next.prefix(after.count)) == after)
     let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
     #expect(try enc(next).starts(with: enc(after).dropLast()))
     // The timeline still holds every event of the scenario.
-    #expect(try h.store.events().contains { $0.kind == .tool && $0.text.hasPrefix(Doll.doneWord) && $0.image != nil })
+    #expect(try h.store.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
 }
 
 @Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
@@ -1041,7 +1041,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let menu = three.first { $0.content.hasPrefix("電腦選單打開了") }!
     #expect(menu.images.isEmpty && menu.extra.contains(.text(Doll.imagesPutAway)))
     let firstLine = { (m: ChatMessage) in String(m.content.split(separator: "\n").first ?? "") }
-    #expect(three.filter { !$0.images.isEmpty }.map(firstLine) == [Doll.doneWord, Doll.doneWord, "現在的畫面："])
+    #expect(three.filter { !$0.images.isEmpty }.map(firstLine) == [fakeWindowsLine, fakeWindowsLine, "現在的畫面："])
     // Everything before A's result is byte-identical; A's result is the first difference; the text
     // after it is unchanged.
     let a = two.firstIndex { $0.content.hasPrefix("電腦選單打開了") }!
@@ -1056,7 +1056,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await one.turn(Scripted("", key("cmd+n")))
     try await one.turn(Scripted("", key("cmd+s"), screenshotCall))
     try await one.turn(Scripted("", screenshotCall))
-    #expect((await one.model.seen(3)).filter { !$0.images.isEmpty }.map(firstLine) == [Doll.doneWord, "現在的畫面："])
+    #expect((await one.model.seen(3)).filter { !$0.images.isEmpty }.map(firstLine) == [fakeWindowsLine, "現在的畫面："])
     // The default keeps them all.
     let all = try await Harness()
     #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.imageTurnsKept == 0)
@@ -1084,7 +1084,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
                               ("type", [("text", "sw_vers\n")]), key("cmd+s")))
     var results = Array(try h.toolResults().suffix(3))
     // Her call is in the context; a result says only what is new (2026-11-10).
-    #expect(results.map(\.text) == [Doll.doneWord, Doll.doneWord, Doll.doneWord + "\n" + fakeWindowsLine])
+    #expect(results.map(\.text) == ["", "", fakeWindowsLine])
     #expect(results.map { $0.image != nil } == [false, false, true] && results.map { $0.window != nil } == [false, false, true])
     #expect(h.vm.actions == [.clickText("Save", button: "right", count: 2), .type("sw_vers\n"), .key("cmd+s")])
     #expect(h.last.actions == ["click", "type", "key"])
@@ -1093,13 +1093,13 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), screenshotCall,
                               ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("high")))
     results = Array(try h.toolResults().suffix(5))
-    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == [Doll.doneWord, "現在的畫面：", Doll.doneWord, Doll.doneWord, "下一回合 effort：high"])
+    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == ["", "現在的畫面：", "", fakeWindowsLine, "下一回合 effort：high"])
     #expect(results.map { $0.image != nil } == [false, true, false, true, false])
     #expect(h.last.actions == ["scroll", "screenshot", "drag", "click", "think high"])
     // A single action is unchanged: its line, the VM's answer, the observation.
     try await h.turn(Scripted("", key("Return")))
     let one = try h.toolResults().last!
-    #expect(one.text == Doll.doneWord + "\n" + fakeWindowsLine && one.image != nil && one.window != nil)
+    #expect(one.text == fakeWindowsLine && one.image != nil && one.window != nil)
     // Bad arguments alone: a text result, no screenshot, as before.
     try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("text", "A")]),
                               ("scroll", [("direction", "sideways")])))
@@ -1119,7 +1119,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     h.vm.failNext(err, after: 1)
     try await h.turn(Scripted("", key("cmd+shift+s"), ("click", [("text", "Save")]), ("type", [("text", "copy")]), screenshotCall))
     let results = Array(try h.toolResults().suffix(4))
-    #expect(results.map(\.text) == [Doll.doneWord,
+    #expect(results.map(\.text) == ["",
                                     "失敗：click「Save」\n\(err)\n" + fakeWindowsLine,
                                     "失敗：前面第 2 步（click「Save」）失敗了，這一步沒做",
                                     "現在的畫面：\n" + fakeWindowsLine])
@@ -1131,14 +1131,14 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // Bad arguments after a text-only step: the failure shows the screen, since nothing of this reply did yet.
     try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
     let bad = Array(try h.toolResults().suffix(3))
-    #expect(bad[0].text == Doll.doneWord && bad[0].image == nil)
+    #expect(bad[0].text == "" && bad[0].image == nil)
     #expect(bad[1].text.hasPrefix("失敗：沒有點：99999,1 在螢幕外") && bad[1].text.hasSuffix("\n" + fakeWindowsLine) && bad[1].image != nil)
     #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
     #expect(h.vm.actions.count == 6)
     // Outcome after actions in the same reply still ends the scenario; the action before it is the last.
     try await h.turn(Scripted("", key("cmd+s"), outcome(true, "存好了"), key("cmd+q")))
     let end = Array(try h.toolResults().suffix(3))
-    #expect(end[0].image != nil && end[0].text.hasPrefix(Doll.doneWord + "\n"))
+    #expect(end[0].image != nil && end[0].text == fakeWindowsLine)
     #expect(end[1].text.hasPrefix("記下了：達成。") && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
     #expect(h.last.outcome == "success" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+shift+s\n2. click「Save」\n3. type 「copy」\n4. key cmd+shift+s\n5. key return\n6. key cmd+s") == true)
     #expect(await h.doll.scenario == nil && h.vm.actions.count == 7)
@@ -1536,7 +1536,7 @@ private final class FakeAgentDesktop: Sendable {
     h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
     try await h.turn(Scripted("", key("Escape")))
     let r = try h.toolResults().last!
-    #expect(r.text == Doll.doneWord + "\n" + fakeWindowsLine && r.image != nil)
+    #expect(r.text == fakeWindowsLine && r.image != nil)
     #expect(r.crop == nil && r.cropNote == nil)
     let desktop = "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\n"
         + "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
@@ -2175,7 +2175,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(try h.toolResults().last!.text.hasSuffix("\n" + fakeWindowsLine))
     h.vm.failState("vmpal: exec failed")
     try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try h.toolResults().last!.text == Doll.doneWord + "\n開著的視窗和焦點讀不到：vmpal: exec failed")
+    #expect(try h.toolResults().last!.text == "開著的視窗和焦點讀不到：vmpal: exec failed")
     #expect(h.last.actions == ["key", "error windows"])
 }
 
