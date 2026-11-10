@@ -7,7 +7,7 @@ import Foundation
 ///
 ///     say(text)                          speak to the owner (2026-11-10): the only way she is heard; text
 ///                                        outside her calls is her own thought, seen by no one else
-///     think(level: none | medium | high) the next model call's thinking (that call only)
+///     think(level: medium | high)        the next model call thinks first (2026-11-11: `none` removed)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories and today's timeline
 ///     use_computer(expect)               enters the computer scenario (spec 3.1, 2026-11-08); expect: what
@@ -55,10 +55,10 @@ public enum Tools {
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: "think",
-                 description: "決定下一回合要不要先思考，只管下一回合，之後回到平常。none＝不想直接做（結果猜得到、照做就好的步驟，例如按了存檔、接下來只要確認）；medium 一般；high 更深（卡住、要想辦法的時候）。例：送出按鍵的同一則回覆裡呼叫 think(level: \"none\")，看結果的那一回合就不用想。",
+                 description: "下一回合先思考再回答，只管下一回合，之後回到平常。medium 一般；high 更深（卡住、要想辦法的時候）。",
                  parameters: [
                      "type": "object",
-                     "properties": ["level": ["type": "string", "enum": ["none", "medium", "high"]]],
+                     "properties": ["level": ["type": "string", "enum": ["medium", "high"]]],
                      "required": ["level"],
                  ], jsonParameters: []),
             Spec(name: "remember",
@@ -340,8 +340,8 @@ public enum Tools {
             return .say(try nonEmpty("text"))
         case "think":
             let level = value("level").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ["none", "medium", "high"].contains(level) else {
-                throw ToolError(description: "think 的 level 只能是 none、medium 或 high，收到 \(level)")
+            guard ["medium", "high"].contains(level) else {
+                throw ToolError(description: "think 的 level 只能是 medium 或 high，收到 \(level)")
             }
             return .think(level)
         case "remember":
