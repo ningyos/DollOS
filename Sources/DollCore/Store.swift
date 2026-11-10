@@ -324,15 +324,17 @@ struct Row {
     }
 }
 
-/// One SQLite connection; only indexes live in SQLite (the memory index, the today index).
+/// One SQLite connection; only indexes live in SQLite (the memory index on disk, the today index in memory).
 final class SQLite {
     private let db: OpaquePointer
 
-    init(path: URL, schema: String) throws {
-        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+    /// `path` nil: a private in-memory database, gone with the connection.
+    init(path: URL?, schema: String) throws {
+        if let path { try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true) }
+        let name = path?.path ?? ":memory:"
         var handle: OpaquePointer?
-        guard sqlite3_open(path.path, &handle) == SQLITE_OK, let handle else {
-            throw StoreError(description: "cannot open \(path.path)")
+        guard sqlite3_open(name, &handle) == SQLITE_OK, let handle else {
+            throw StoreError(description: "cannot open \(name)")
         }
         db = handle
         sqlite3_busy_timeout(db, 5000)   // a second connection (tests) may hold a write briefly

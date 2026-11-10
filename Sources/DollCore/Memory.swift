@@ -207,16 +207,10 @@ final class Embedder {
     }
 }
 
-/// The today index (2026-11-10): `<data_dir>/today.db`, FTS5 trigram + embedding over the current
-/// timeline segment, the same method as the memory index. Rebuildable from the segment's JSONL,
-/// never the source.
+/// The today index (2026-11-11: in memory): FTS5 trigram + embedding over the current timeline
+/// segment, the same method as the memory index. Built from the segment's JSONL at start and fed on
+/// every append; never on disk, never the source.
 private let todaySchema = """
-CREATE TABLE IF NOT EXISTS today_meta (
-    one INTEGER PRIMARY KEY CHECK (one = 1),
-    version INTEGER NOT NULL,        -- TodayIndex.version of the code that built it
-    segment TEXT NOT NULL,           -- the timeline segment it indexes
-    seq INTEGER NOT NULL             -- the newest event of that segment it has taken in
-);
 CREATE TABLE IF NOT EXISTS today_entries (
     id TEXT PRIMARY KEY,             -- <seq>-<part>: owner | say | thought | result | watch
     seq INTEGER NOT NULL,
@@ -270,15 +264,16 @@ public enum RecallHit: Sendable {
 }
 
 public final class TodayIndex {
-    /// Change it whenever entries or vectors would come out different from the same timeline, so an
-    /// index built by older code is rebuilt at start.
-    static let version = 1
     private let sql: SQLite
     private let embedder: Embedder
 
-    init(path: URL, embedder: Embedder) throws {
-        sql = try SQLite(path: path, schema: todaySchema)
+    /// Indexes every event of the timeline so far.
+    init(_ timeline: Timeline, embedder: Embedder) throws {
+        sql = try SQLite(path: nil, schema: todaySchema)
         self.embedder = embedder
+        let names = Doll.callNames(timeline.events)
+        let rows = try timeline.events.flatMap { try put($0, tool: names[$0.seq!]) }
+        try sql.transaction { try insert(rows) }
     }
 
     /// What of one event is searchable: the owner's text; her reply's `say` texts (together) and her
@@ -302,19 +297,6 @@ public final class TodayIndex {
         return out.map { ($0.0, $0.1, $0.2.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.2.isEmpty }
     }
 
-    private func meta() throws -> (version: Int, segment: String, seq: Int64)? {
-        try sql.query("SELECT version, segment, seq FROM today_meta WHERE one = 1") {
-            (Int($0.int(0)!), $0.text(1)!, $0.int(2)!)
-        }.first
-    }
-
-    private func setSeq(_ seq: Int64, segment: String) throws {
-        try sql.exec("""
-            INSERT INTO today_meta (one, version, segment, seq) VALUES (1, ?, ?, ?)
-            ON CONFLICT(one) DO UPDATE SET version = excluded.version, segment = excluded.segment, seq = excluded.seq
-            """, [.int(Int64(Self.version)), .text(segment), .int(seq)])
-    }
-
     private func put(_ ev: Event, tool: String?) throws -> [(Event, String, String, String, Data)] {
         try Self.entries(ev, tool: tool).map { (ev, $0.id, $0.label, $0.text, Memory.blob(try embedder.embed($0.text))) }
     }
@@ -328,25 +310,6 @@ public final class TodayIndex {
         }
     }
 
-    /// At start: rebuilt when it was built by other code, for another segment, or has not taken in
-    /// every event (a crash between the timeline line and the index; a deleted index file).
-    func sync(_ timeline: Timeline) throws {
-        if let m = try meta(), m.version == Self.version, m.segment == timeline.segment, m.seq == timeline.lastSeq { return }
-        try rebuild(timeline)
-    }
-
-    /// Drops every entry and indexes the segment again from its events.
-    func rebuild(_ timeline: Timeline) throws {
-        let names = Doll.callNames(timeline.events)
-        let rows = try timeline.events.flatMap { try put($0, tool: names[$0.seq!]) }
-        try sql.transaction {
-            try sql.exec("DELETE FROM today_entries")
-            try sql.exec("DELETE FROM today_fts")
-            try insert(rows)
-            try setSeq(timeline.lastSeq, segment: timeline.segment)
-        }
-    }
-
     /// Takes in the timeline's newest event, right after it was appended.
     func add(_ timeline: Timeline) throws {
         let events = timeline.events
@@ -357,10 +320,7 @@ public final class TodayIndex {
             tool = Doll.callNames(tail)[ev.seq!]
         }
         let rows = try put(ev, tool: tool)
-        try sql.transaction {
-            try insert(rows)
-            try setSeq(ev.seq!, segment: timeline.segment)
-        }
+        try sql.transaction { try insert(rows) }
     }
 
     /// FTS5 hits ordered by BM25 rank; secret events only when `secret`.

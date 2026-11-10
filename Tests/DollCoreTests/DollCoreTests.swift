@@ -3087,7 +3087,7 @@ extension Doll {
     #expect(unseen.text.contains("今天天氣很好") || unseen.text.hasSuffix("0 條"))
 }
 
-@Test func deletingTheTodayIndexRebuildsItWithTheSameAnswers() async throws {
+@Test func aRestartBuildsTheTodayIndexFromTheTimelineWithTheSameAnswers() async throws {
     let h = try await Harness()
     for (line, answer) in [("今天下午要去郵局寄包裹給阿嬤", "好"), ("晚餐想吃咖哩飯", "我也想吃"), ("明天早上九點開會", "記下了")] {
         await h.doll.ownerSaid(line)
@@ -3100,9 +3100,9 @@ extension Doll {
     let count = try await h.doll.todayCount()
     #expect(count == 9)                                                              // 3 owner lines, 3 says, 3 thoughts
     await h.doll.stop()
-    try FileManager.default.removeItem(at: h.dir.appending(path: "today.db"))
     let again = try await restarted(h)
-    #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "today.db").path))
+    // In memory only (2026-11-11): nothing of it on disk, rebuilt from the timeline file.
+    #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.path).filter { $0.hasPrefix("today") }.isEmpty)
     #expect(try await again.doll.todayCount() == count)
     var after: [String] = []
     for q in queries { after.append(try await again.doll.recall(q, seen: events).text) }

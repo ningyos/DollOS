@@ -74,7 +74,7 @@ public actor Doll {
     public nonisolated let shots: URL
     /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`.
     let timeline: Timeline
-    /// `<data_dir>/today.db`: today's events for `recall`, fed on every append.
+    /// Today's events for `recall`, in memory (2026-11-11): built from the segment at start, fed on every append.
     let today: TodayIndex
     let memory: Memory
     let model: any MainModel
@@ -180,9 +180,8 @@ public actor Doll {
         // No fallback: a missing embedding model is an error, the same as an unreachable Strata (spec 3.1).
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")))
-        // Before anything is appended: an index missing, stale or behind the file is rebuilt from it.
-        today = try TodayIndex(path: data.appending(path: "today.db"), embedder: memory.embedder)
-        try today.sync(timeline)
+        // Before anything is appended: every event of the segment so far.
+        today = try TodayIndex(timeline, embedder: memory.embedder)
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say
