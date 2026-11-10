@@ -110,6 +110,8 @@ public struct MemoryConfig: Sendable {
     public var maxCandidates = 50
     /// Confidence enters the fused score as this multiple of itself.
     public var confidenceWeight = 0.01
+    /// What a hit from today's timeline counts as in place of a memory's confidence (2026-11-10).
+    public var todayConfidence = 0.9
     /// The confidence at or above which a hit is shown as 確定 / 大概; below 大概 it is 聽說.
     public var highConfidence = 0.70
     public var mediumConfidence = 0.40
@@ -225,6 +227,7 @@ public struct Config: Sendable {
         try m.read("rrf_k", &memory.rrfK)
         try m.read("max_candidates", &memory.maxCandidates)
         try m.read("confidence_weight", &memory.confidenceWeight)
+        try m.read("today_confidence", &memory.todayConfidence)
         try m.read("high_confidence", &memory.highConfidence)
         try m.read("medium_confidence", &memory.mediumConfidence)
         try m.read("language", &memory.language)
@@ -247,8 +250,9 @@ public struct Config: Sendable {
               (0.0...1.0).contains(memory.experienceGroupSimilarity),
               memory.experienceFollowRatio > 0, memory.experienceFollowRatio <= 1,
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
+              (0.0...1.0).contains(memory.todayConfidence),
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, three distinct folder names")
+            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, three distinct folder names")
         }
         var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
         var dashboard = DashboardConfig()

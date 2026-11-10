@@ -9,7 +9,7 @@ import Foundation
 ///                                        outside her calls is her own thought, seen by no one else
 ///     think(level: none | medium | high) the next model call's thinking (that call only)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
-///     recall(query)                      search her memories
+///     recall(query)                      search her memories and today's timeline
 ///     use_computer(expect)               enters the computer scenario (spec 3.1, 2026-11-08); expect: what
 ///                                        she should see when done (2026-11-09)
 ///
@@ -82,7 +82,7 @@ public enum Tools {
                      "required": ["items"],
                  ], jsonParameters: ["items"]),
             Spec(name: "recall",
-                 description: "查記憶，最多回 \(memory.topK) 條。每條附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕；沒填 kind 的是〔確定｜public〕。",
+                 description: "查記憶和今天的時間線，最多回 \(memory.topK) 條。記憶附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕；沒填 kind 的是〔確定｜public〕。今天的事附時間和是誰的什麼，例如〔今天 14:05｜主人說〕〔今天 14:06｜你說〕〔今天 14:06｜你想〕〔今天 14:07｜click 的結果〕。",
                  parameters: [
                      "type": "object",
                      "properties": ["query": ["type": "string", "description": "要查的事"]],

@@ -1,46 +1,6 @@
 import Foundation
 import SQLite3
 
-/// One SQLite file: the append-only timeline (events) and the 【狀況】 footer each reply answered.
-///
-/// This is not a WAL. Nothing is replayed after a crash; the queue lives in memory.
-private let schema = """
-CREATE TABLE IF NOT EXISTS events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts REAL NOT NULL,
-    kind TEXT NOT NULL,              -- owner | doll | tool | watch | memory
-    source TEXT NOT NULL,            -- owner | internal
-    has_secret INTEGER NOT NULL DEFAULT 0,
-    voice INTEGER NOT NULL DEFAULT 0,  -- owner events: spoken (owner_voice) or typed (owner_text)
-    text TEXT NOT NULL,              -- her replies: raw, tool call text included, exactly as re-sent
-    image TEXT,                      -- the full-screen screenshot file under shots/, re-sent byte-identical
-    crop_note TEXT,                  -- the line before the front window's crop: where it sits, or why there is none
-    crop TEXT,                       -- the front window's crop file under shots/, re-sent byte-identical
-    window TEXT                      -- the front window's outline, or why there is none plus the menu bar and Dock; verbatim
-);
-CREATE TABLE IF NOT EXISTS footers (
-    seq INTEGER PRIMARY KEY,         -- her reply's seq
-    text TEXT NOT NULL               -- the 【狀況】 she saw right before it; a prompt artifact, not an event
-);
-CREATE TABLE IF NOT EXISTS scenarios (
-    start_seq INTEGER PRIMARY KEY,   -- her reply that entered it (called the enter tool)
-    kind TEXT NOT NULL,              -- computer
-    enter_result_seq INTEGER NOT NULL,   -- the enter call's result; rendered as her summary
-    end_seq INTEGER NOT NULL,        -- her reply that called outcome
-    last_seq INTEGER NOT NULL,       -- the last event of that turn
-    success INTEGER NOT NULL,
-    summary TEXT NOT NULL            -- hers, verbatim
-);
-CREATE TABLE IF NOT EXISTS turns (
-    seq INTEGER PRIMARY KEY,         -- her reply's seq
-    started REAL NOT NULL,           -- when the turn began (unix seconds)
-    seconds REAL NOT NULL,           -- the whole turn: model call and her tool calls
-    prompt INTEGER NOT NULL,         -- prompt tokens of the call
-    cached INTEGER,                  -- of those, served from the server's cache; NULL when the server did not say
-    effort TEXT NOT NULL             -- reasoning effort of the call
-);
-"""
-
 /// The memory index (M3a): rebuildable from the markdown files, never the source.
 /// `tokenize='trigram'` because the records are Chinese: the default tokenizer would
 /// not split them at all.
@@ -71,12 +31,12 @@ public struct StoreError: Error, CustomStringConvertible {
     public let description: String
 }
 
-public enum Principal: String, Sendable {
+public enum Principal: String, Sendable, Codable {
     case owner, `internal`
 }
 
 public struct Event: Sendable, Equatable {
-    public enum Kind: String, Sendable {
+    public enum Kind: String, Sendable, Codable {
         case owner      // the owner spoke
         case doll       // her reply, verbatim (tool call text included)
         case tool       // the result of one of her tool calls, in call order
@@ -102,7 +62,7 @@ public struct Event: Sendable, Equatable {
     public var seq: Int64?
     public var ts: Double
     /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
-    /// server's prefix cache stays valid; never part of the timeline proper.
+    /// server's prefix cache stays valid; a `footer` record in the timeline file, not an event.
     public var footer: String?
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
@@ -129,13 +89,227 @@ public struct Event: Sendable, Equatable {
     }
 }
 
-private enum Bind {
+
+// timeline ---------------------------------------------------------------------
+
+/// Her raw timeline (2026-11-10): one append-only JSONL file per segment, `<data_dir>/timeline/<segment>.jsonl`.
+/// A segment is one day, from waking to falling asleep; sleep does not exist yet, so a process
+/// continues the newest segment and a data dir has one. The file is the only source of the events,
+/// the footers, the turn stats and the closed scenarios; `TodayIndex` is a rebuildable index of it.
+///
+/// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
+///
+///     {"type":"event","seq":1,"ts":…,"kind":"owner|doll|tool|watch|memory","source":"owner|internal",
+///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…"}
+///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
+///     {"type":"scenario","kind":"computer","start_seq":…,"enter_result_seq":…,"end_seq":…,
+///      "last_seq":…,"success":true,"summary":"…"}                   a scenario she left with `outcome`
+///     {"type":"turn","seq":2,"started":…,"seconds":…,"prompt":…,"cached":…,"effort":"medium"}
+///                                                                   what the turn of reply `seq` took
+///
+/// Her replies are stored raw (tool call text included) and re-sent byte-identical. Each line is
+/// written and synced before `append` returns, so a crash loses at most the line being written; a
+/// cut-off last line is dropped when the file is next opened. The whole file is read once at start
+/// and kept in memory, appended to as lines are written.
+public final class Timeline {
+    public let file: URL
+    /// The segment's id: the file name without `.jsonl` (local time it began, `yyyyMMdd-HHmmss`).
+    public let segment: String
+    /// Every event, oldest first, footers attached to her replies.
+    public private(set) var events: [Event] = []
+    /// Every closed scenario, oldest first.
+    public private(set) var closedScenarios: [ClosedScenario] = []
+    /// Every recorded turn by her reply's seq.
+    public private(set) var turnStats: [Int64: TurnStats] = [:]
+    private var position: [Int64: Int] = [:]
+    private var handle: FileHandle?
+
+    /// What one turn took, keyed by her reply's seq; for the dashboard, not the prompt.
+    public struct TurnStats: Sendable, Equatable, Codable {
+        public var seq: Int64
+        public var started: Double
+        public var seconds: Double
+        public var prompt: Int
+        public var cached: Int?
+        public var effort: String
+    }
+
+    private struct Line: Decodable { var type: String }
+    private struct EventLine: Codable {
+        var type = "event"
+        var seq: Int64
+        var ts: Double
+        var kind: Event.Kind
+        var source: Principal
+        var secret: Bool
+        var voice: Bool
+        var text: String
+        var image: String?
+        var cropNote: String?
+        var crop: String?
+        var window: String?
+    }
+    private struct FooterLine: Codable {
+        var type = "footer"
+        var seq: Int64
+        var text: String
+    }
+    private struct ScenarioLine: Codable {
+        var type = "scenario"
+        var kind: ScenarioKind
+        var startSeq: Int64
+        var enterResultSeq: Int64
+        var endSeq: Int64
+        var lastSeq: Int64
+        var success: Bool
+        var summary: String
+    }
+    private struct TurnLine: Codable {
+        var type = "turn"
+        var seq: Int64
+        var started: Double
+        var seconds: Double
+        var prompt: Int
+        var cached: Int?
+        var effort: String
+    }
+
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.keyEncodingStrategy = .convertToSnakeCase
+        e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return e
+    }()
+    private static let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }()
+
+    /// Opens the newest segment under `dir`, or starts one when there is none.
+    public init(dir: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let names = try fm.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }.sorted()
+        if let newest = names.last {
+            segment = String(newest.dropLast(".jsonl".count))
+        } else {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyyMMdd-HHmmss"
+            segment = f.string(from: Date())
+        }
+        file = dir.appending(path: segment + ".jsonl")
+        if !fm.fileExists(atPath: file.path) {
+            guard fm.createFile(atPath: file.path, contents: nil) else {
+                throw StoreError(description: "cannot create \(file.path)")
+            }
+        }
+        try load()
+    }
+
+    deinit { try? handle?.close() }
+
+    private func load() throws {
+        var data = try Data(contentsOf: file)
+        if let end = data.last, end != UInt8(ascii: "\n") {
+            // A crash cut the last line short: drop it, so the next line starts on its own.
+            let keep = (data.lastIndex(of: UInt8(ascii: "\n")).map { $0 + 1 }) ?? 0
+            data = data.prefix(keep)
+            let h = try FileHandle(forWritingTo: file)
+            try h.truncate(atOffset: UInt64(keep))
+            try h.close()
+        }
+        for (n, line) in data.split(separator: UInt8(ascii: "\n")).enumerated() {
+            let raw = Data(line)
+            func bad(_ e: Error) -> StoreError { StoreError(description: "\(file.path) line \(n + 1): \(e)") }
+            do {
+                switch try Self.decoder.decode(Line.self, from: raw).type {
+                case "event": take(try Self.decoder.decode(EventLine.self, from: raw))
+                case "footer":
+                    let f = try Self.decoder.decode(FooterLine.self, from: raw)
+                    guard let i = position[f.seq] else { throw StoreError(description: "footer for unknown seq \(f.seq)") }
+                    events[i].footer = f.text
+                case "scenario": closedScenarios.append(Self.scenario(try Self.decoder.decode(ScenarioLine.self, from: raw)))
+                case "turn":
+                    let t = try Self.decoder.decode(TurnLine.self, from: raw)
+                    turnStats[t.seq] = TurnStats(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt,
+                                                 cached: t.cached, effort: t.effort)
+                case let other: throw StoreError(description: "unknown record type \(other)")
+                }
+            } catch { throw bad(error) }
+        }
+    }
+
+    private func take(_ l: EventLine) {
+        var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, cropNote: l.cropNote,
+                      crop: l.crop, window: l.window)
+        e.seq = l.seq
+        e.ts = l.ts
+        position[l.seq] = events.count
+        events.append(e)
+    }
+
+    private static func scenario(_ l: ScenarioLine) -> ClosedScenario {
+        ClosedScenario(kind: l.kind, startSeq: l.startSeq, enterResultSeq: l.enterResultSeq, endSeq: l.endSeq,
+                       lastSeq: l.lastSeq, success: l.success, summary: l.summary)
+    }
+
+    /// Writes one line and syncs it to disk.
+    private func write<T: Encodable>(_ record: T) throws {
+        if handle == nil {
+            let h = try FileHandle(forWritingTo: file)
+            try h.seekToEnd()
+            handle = h
+        }
+        try handle!.write(contentsOf: try Self.encoder.encode(record) + Data([UInt8(ascii: "\n")]))
+        try handle!.synchronize()
+    }
+
+    /// The newest event's seq; 0 for an empty timeline.
+    public var lastSeq: Int64 { events.last?.seq ?? 0 }
+
+    /// Appends one event and returns it with its seq.
+    @discardableResult
+    public func append(_ ev: Event) throws -> Event {
+        let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
+                             voice: ev.voice, text: ev.text, image: ev.image, cropNote: ev.cropNote, crop: ev.crop,
+                             window: ev.window)
+        try write(line)
+        take(line)
+        return events[events.count - 1]
+    }
+
+    public func attachFooter(_ seq: Int64, _ text: String) throws {
+        guard let i = position[seq] else { throw StoreError(description: "no event \(seq) to attach a footer to") }
+        try write(FooterLine(seq: seq, text: text))
+        events[i].footer = text
+    }
+
+    /// Records a scenario she left with `outcome`; requests render its span from then on.
+    public func closeScenario(_ s: ClosedScenario) throws {
+        let line = ScenarioLine(kind: s.kind, startSeq: s.startSeq, enterResultSeq: s.enterResultSeq, endSeq: s.endSeq,
+                                lastSeq: s.lastSeq, success: s.success, summary: s.summary)
+        try write(line)
+        closedScenarios.append(Self.scenario(line))
+    }
+
+    public func recordTurn(_ t: TurnStats) throws {
+        try write(TurnLine(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt, cached: t.cached,
+                           effort: t.effort))
+        turnStats[t.seq] = t
+    }
+}
+
+// SQLite -----------------------------------------------------------------------
+
+enum Bind {
     case text(String), int(Int64), real(Double), null, blob(Data)
 }
 
 private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-private struct Row {
+struct Row {
     let stmt: OpaquePointer
     func text(_ i: Int32) -> String? {
         sqlite3_column_type(stmt, i) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(stmt, i))
@@ -150,19 +324,19 @@ private struct Row {
     }
 }
 
-public final class Store {
+/// One SQLite connection; only indexes live in SQLite (the memory index, the today index).
+final class SQLite {
     private let db: OpaquePointer
 
-    public init(path: URL) throws {
+    init(path: URL, schema: String) throws {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         var handle: OpaquePointer?
         guard sqlite3_open(path.path, &handle) == SQLITE_OK, let handle else {
             throw StoreError(description: "cannot open \(path.path)")
         }
         db = handle
-        sqlite3_busy_timeout(db, 5000)   // a second connection (dollctl, tests) may hold a write briefly
-        guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK,
-              sqlite3_exec(db, memorySchema, nil, nil, nil) == SQLITE_OK else { throw error() }
+        sqlite3_busy_timeout(db, 5000)   // a second connection (tests) may hold a write briefly
+        guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { throw error() }
     }
 
     deinit { sqlite3_close(db) }
@@ -170,7 +344,7 @@ public final class Store {
     private func error() -> StoreError { StoreError(description: String(cString: sqlite3_errmsg(db))) }
 
     @discardableResult
-    private func query<T>(_ sql: String, _ args: [Bind] = [], _ each: (Row) -> T) throws -> [T] {
+    func query<T>(_ sql: String, _ args: [Bind] = [], _ each: (Row) -> T) throws -> [T] {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw error() }
         defer { sqlite3_finalize(stmt) }
@@ -194,103 +368,36 @@ public final class Store {
         }
     }
 
-    private func exec(_ sql: String, _ args: [Bind]) throws {
+    func exec(_ sql: String, _ args: [Bind] = []) throws {
         try query(sql, args) { _ in () }
     }
 
-    // events -----------------------------------------------------------------
-    private static let eventColumns =
-        "SELECT e.seq, e.ts, e.kind, e.source, e.has_secret, e.text, f.text, e.voice, e.image, e.window, e.crop_note, e.crop"
-        + " FROM events e LEFT JOIN footers f ON f.seq = e.seq"
-
-    private static func event(_ r: Row) -> Event {
-        var e = Event(Event.Kind(rawValue: r.text(2)!)!, Principal(rawValue: r.text(3)!)!, r.text(5)!,
-                      secret: r.int(4)! != 0, voice: r.int(7)! != 0, image: r.text(8), cropNote: r.text(10),
-                      crop: r.text(11), window: r.text(9))
-        e.seq = r.int(0)
-        e.ts = r.real(1)
-        e.footer = r.text(6)
-        return e
-    }
-
-    public func attachFooter(_ seq: Int64, _ text: String) throws {
-        try exec("INSERT INTO footers (seq, text) VALUES (?, ?)", [.int(seq), .text(text)])
-    }
-
-    public func footer(_ seq: Int64) throws -> String? {
-        try query("SELECT text FROM footers WHERE seq = ?", [.int(seq)]) { $0.text(0)! }.first
-    }
-
-    // scenarios --------------------------------------------------------------
-    /// Records a scenario she left with `outcome`; requests render its span from then on.
-    public func closeScenario(_ s: ClosedScenario) throws {
-        try exec("INSERT INTO scenarios (start_seq, kind, enter_result_seq, end_seq, last_seq, success, summary)"
-                 + " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 [.int(s.startSeq), .text(s.kind.rawValue), .int(s.enterResultSeq), .int(s.endSeq), .int(s.lastSeq),
-                  .int(s.success ? 1 : 0), .text(s.summary)])
-    }
-
-    /// Every closed scenario, oldest first.
-    public func closedScenarios() throws -> [ClosedScenario] {
-        try query("SELECT kind, start_seq, enter_result_seq, end_seq, last_seq, success, summary FROM scenarios ORDER BY start_seq") {
-            ClosedScenario(kind: ScenarioKind(rawValue: $0.text(0)!)!, startSeq: $0.int(1)!, enterResultSeq: $0.int(2)!,
-                           endSeq: $0.int(3)!, lastSeq: $0.int(4)!, success: $0.int(5)! != 0, summary: $0.text(6)!)
+    /// Runs `body` in one transaction: all of it lands, or none.
+    func transaction(_ body: () throws -> Void) throws {
+        try exec("BEGIN")
+        do {
+            try body()
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
         }
     }
+}
 
-    /// The newest event's seq; 0 for an empty timeline.
-    public func lastSeq() throws -> Int64 {
-        try query("SELECT coalesce(max(seq), 0) FROM events") { $0.int(0)! }.first ?? 0
+/// `<data_dir>/doll.db`: the memory index only (the timeline is in `Timeline`'s files).
+public final class Store {
+    private let sql: SQLite
+
+    public init(path: URL) throws {
+        sql = try SQLite(path: path, schema: memorySchema)
     }
 
-    /// Appends one event and returns it with its seq.
-    @discardableResult
-    public func append(_ ev: Event) throws -> Event {
-        try exec("INSERT INTO events (ts, kind, source, has_secret, voice, text, image, crop_note, crop, window)"
-                 + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                 [.real(ev.ts), .text(ev.kind.rawValue), .text(ev.principal.rawValue),
-                  .int(ev.secret ? 1 : 0), .int(ev.voice ? 1 : 0), .text(ev.text), ev.image.map { .text($0) } ?? .null,
-                  ev.cropNote.map { .text($0) } ?? .null, ev.crop.map { .text($0) } ?? .null,
-                  ev.window.map { .text($0) } ?? .null])
-        var out = ev
-        out.seq = sqlite3_last_insert_rowid(db)
-        onAppend?()
-        return out
+    private func query<T>(_ s: String, _ args: [Bind] = [], _ each: (Row) -> T) throws -> [T] {
+        try sql.query(s, args, each)
     }
 
-    /// Called after every appended event (the dashboard's live feed).
-    var onAppend: (() -> Void)?
-
-    // turns --------------------------------------------------------------------
-    /// What one turn took, keyed by her reply's seq; for the dashboard, not the prompt.
-    public struct TurnStats: Sendable, Equatable {
-        public var seq: Int64
-        public var started: Double
-        public var seconds: Double
-        public var prompt: Int
-        public var cached: Int?
-        public var effort: String
-    }
-
-    public func recordTurn(_ t: TurnStats) throws {
-        try exec("INSERT INTO turns (seq, started, seconds, prompt, cached, effort) VALUES (?, ?, ?, ?, ?, ?)",
-                 [.int(t.seq), .real(t.started), .real(t.seconds), .int(Int64(t.prompt)),
-                  t.cached.map { .int(Int64($0)) } ?? .null, .text(t.effort)])
-    }
-
-    /// Every recorded turn by her reply's seq.
-    public func turnStats() throws -> [Int64: TurnStats] {
-        let rows = try query("SELECT seq, started, seconds, prompt, cached, effort FROM turns") {
-            TurnStats(seq: $0.int(0)!, started: $0.real(1), seconds: $0.real(2), prompt: Int($0.int(3)!),
-                      cached: $0.int(4).map(Int.init), effort: $0.text(5)!)
-        }
-        return Dictionary(uniqueKeysWithValues: rows.map { ($0.seq, $0) })
-    }
-
-    /// The whole timeline, oldest first. Only the owner exists so far, so there is one projection.
-    public func events() throws -> [Event] {
-        try query(Self.eventColumns + " ORDER BY e.seq", [], Self.event)
-    }
+    private func exec(_ s: String, _ args: [Bind]) throws { try sql.exec(s, args) }
 
     // memory index (M3a) ------------------------------------------------------
     public struct MemoryMeta {
@@ -351,14 +458,14 @@ public final class Store {
                  [.int(Int64(v))])
     }
 
-    /// FTS5 hits ordered by BM25 rank, from the given folders only; the id/folder columns are
-    /// UNINDEXED so the MATCH only sees text. The id tiebreak matters: equal BM25 scores otherwise
-    /// order arbitrarily, and RRF ranks would change between a run and an index rebuild.
-    public func memoryFTS(match: String, folders: [String], limit: Int) throws -> [String] {
+    /// FTS5 hits ordered by BM25 rank (lower is better), from the given folders only; the id/folder
+    /// columns are UNINDEXED so the MATCH only sees text. The id tiebreak matters: equal BM25 scores
+    /// otherwise order arbitrarily, and RRF ranks would change between a run and an index rebuild.
+    public func memoryFTS(match: String, folders: [String], limit: Int) throws -> [(id: String, rank: Double)] {
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
         return try query("""
-            SELECT id FROM memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks)) ORDER BY rank, id LIMIT ?
-            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit))]) { $0.text(0)! }
+            SELECT id, rank FROM memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks)) ORDER BY rank, id LIMIT ?
+            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit))]) { ($0.text(0)!, $0.real(1)) }
     }
 
     public func memoryVectors(folders: [String]) throws -> [MemoryVectorRow] {
@@ -378,3 +485,5 @@ public final class Store {
         }.first
     }
 }
+
+extension ScenarioKind: Codable {}

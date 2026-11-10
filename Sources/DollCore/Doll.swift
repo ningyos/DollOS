@@ -1,7 +1,8 @@
 import Foundation
 
 /// The skeleton: one queue, one consumer, one timeline, one line (the owner's).
-/// The actor is the single serial owner of Doll state; everything durable is in `Store`.
+/// The actor is the single serial owner of Doll state; everything durable is in the timeline
+/// files (`Timeline`) and the memory files, SQLite only holds their indexes.
 ///
 /// A turn = one model call. The loop only takes a turn when the queue holds an event
 /// (owner voice, owner text, a watch wake) or her tool results await her; otherwise it sleeps
@@ -71,7 +72,10 @@ public actor Doll {
     let memoryConfig: MemoryConfig
     /// Screenshot files; events name them, and each is re-sent byte-identical every turn.
     public nonisolated let shots: URL
-    let store: Store
+    /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`.
+    let timeline: Timeline
+    /// `<data_dir>/today.db`: today's events for `recall`, fed on every append.
+    let today: TodayIndex
     let memory: Memory
     let model: any MainModel
     let computer: any ComputerDriver
@@ -172,11 +176,13 @@ public actor Doll {
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
-        store = try Store(path: data.appending(path: "doll.db"))
-        store.onAppend = { [feed] in feed.notify(.event) }
+        timeline = try Timeline(dir: data.appending(path: "timeline"))
         // No fallback: a missing embedding model is an error, the same as an unreachable Strata (spec 3.1).
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
-        memory = try Memory(config: memoryConfig, root: memRoot, store: store)
+        memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")))
+        // Before anything is appended: an index missing, stale or behind the file is rebuilt from it.
+        today = try TodayIndex(path: data.appending(path: "today.db"), embedder: memory.embedder)
+        try today.sync(timeline)
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say
@@ -202,6 +208,18 @@ public actor Doll {
 
     /// Rebuilds the memory index from the markdown files (spec 6: SQLite is a rebuildable index).
     public func rebuildMemory() throws { try memory.rebuild() }
+
+    /// The whole timeline, oldest first, footers attached to her replies.
+    public func timelineEvents() -> [Event] { timeline.events }
+
+    /// Appends one event to the timeline file, then to the today index, then tells the dashboard.
+    @discardableResult
+    func append(_ ev: Event) throws -> Event {
+        let stored = try timeline.append(ev)
+        try today.add(timeline)
+        feed.notify(.event)
+        return stored
+    }
 
     func log(_ level: String, _ msg: String) {
         Log.write(level, msg)
@@ -302,7 +320,7 @@ public actor Doll {
         }.map(\.element)
         queue.removeAll()
         for ev in batch {
-            try store.append(ev)
+            try append(ev)
         }
         if batch.contains(where: { $0.kind == .owner || $0.kind == .watch }) { taskTurn = true }
         if batch.contains(where: { $0.kind == .owner }) { ownerArrived = true }
@@ -336,7 +354,7 @@ public actor Doll {
     /// program's 【相關記憶】 and 【快捷鍵】, her replies in between, the exit reply's results) stays in
     /// the timeline but is not sent. The open scenario renders in full.
     func context(_ events: [Event]) throws -> [ChatMessage] {
-        let closed = try store.closedScenarios()
+        let closed = timeline.closedScenarios
         enum Mode { case full, enterResult(ClosedScenario), exitSpeech }
         var plan: [(Event, Mode)] = []
         var i = 0
@@ -450,7 +468,7 @@ public actor Doll {
     }
 
     func estimateContext() throws -> Int {
-        estimate(try context(store.events()))
+        estimate(try context(timeline.events))
     }
 
     // one turn ---------------------------------------------------------------
@@ -484,7 +502,7 @@ public actor Doll {
             cheatsheetSent = []
             attachMemories(trigger: "主人的新訊息")
         }
-        let events = try store.events()
+        let events = timeline.events
         var messages = try context(events)
         let guess = estimate(messages)
         let footerText = footer(contextTokens: Int(Double(guess) * tokenRatio))
@@ -522,8 +540,8 @@ public actor Doll {
         var actions: [String] = []
 
         // She saw every event, so a secret seen marks her reply (5.1). Stored raw: re-sent byte-identical.
-        let stored = try store.append(Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret)))
-        try store.attachFooter(stored.seq!, footerText)
+        let stored = try append(Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret)))
+        try timeline.attachFooter(stored.seq!, footerText)
 
         // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with `say`.
         let parsed = ParsedReply(reply.content)
@@ -559,8 +577,8 @@ public actor Doll {
                     }
                 }
             }
-            let result = try store.append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
-                                                cropNote: out.cropNote, crop: out.crop, window: out.window))
+            let result = try append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
+                                          cropNote: out.cropNote, crop: out.crop, window: out.window))
             if out.enters { scenario?.enterResultSeq = result.seq }
             actions += out.actions
             if !out.background {
@@ -585,8 +603,8 @@ public actor Doll {
         // The scenario she left this turn: from now on its span renders as her summary.
         if var c = closing {
             closing = nil
-            c.lastSeq = try store.lastSeq()
-            try store.closeScenario(c)
+            c.lastSeq = timeline.lastSeq
+            try timeline.closeScenario(c)
         }
 
         let usedTool = !parsed.calls.isEmpty
@@ -607,9 +625,9 @@ public actor Doll {
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
-        try store.recordTurn(Store.TurnStats(seq: stored.seq!, started: started,
-                                             seconds: Date().timeIntervalSince1970 - started,
-                                             prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
+        try timeline.recordTurn(Timeline.TurnStats(seq: stored.seq!, started: started,
+                                                   seconds: Date().timeIntervalSince1970 - started,
+                                                   prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
     }
 
     // tools ------------------------------------------------------------------
@@ -857,7 +875,7 @@ public actor Doll {
                 return
             }
             let text = Self.cheatsheetText(app, shortcuts)
-            try store.append(Event(.memory, .internal, text))
+            try append(Event(.memory, .internal, text))
             cheatsheetSent.insert(app.bundleID)
             cheatsheetNow.append(text)
             log("INFO", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version): \(shortcuts.count) lines, \(text.count) chars")
@@ -1177,15 +1195,16 @@ public actor Doll {
     }
 
     /// Folders by `Memory.visible`: `secret` only if the turn saw secret events (5.1), `own` in the
-    /// owner's turns and hers.
+    /// owner's turns and hers. Her memories and today's timeline in one ranked list (2026-11-10);
+    /// today's secret events only where the secret folder is visible.
     func recall(_ query: String, seen events: [Event]) throws -> Outcome {
         let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-        let hits = try memory.search(query, visible: visible)
+        let hits = try memory.recall(query, visible: visible, today: today)
         var out = "\(query)：\(hits.count) 條"
         for hit in hits {
-            out += "\n\n〔\(hit.label)｜\(hit.folder)〕\n\(hit.text)"
+            out += "\n\n" + hit.rendered
         }
-        // A hit from secret/ makes the result a secret event (5.1: what the turn saw is what it may say).
+        // A secret hit makes the result a secret event (5.1: what the turn saw is what it may say).
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
     }
 
@@ -1202,7 +1221,7 @@ public actor Doll {
         let k = memoryConfig.autoAttachK
         guard k > 0 else { return }
         do {
-            let events = try store.events()
+            let events = timeline.events
             guard let owner = events.last(where: { $0.kind == .owner }) else { return }
             let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
@@ -1227,7 +1246,7 @@ public actor Doll {
             for e in fresh {
                 text += "\n〔\(e.level)｜\(e.folder)〕\n\(e.attachedText)"
             }
-            try store.append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
+            try append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
             attachedNow.append(text)
         } catch {
             log("ERROR", "turn \(turnIndex): 相關記憶（\(trigger)）failed: \(error)")

@@ -207,11 +207,193 @@ final class Embedder {
     }
 }
 
+/// The today index (2026-11-10): `<data_dir>/today.db`, FTS5 trigram + embedding over the current
+/// timeline segment, the same method as the memory index. Rebuildable from the segment's JSONL,
+/// never the source.
+private let todaySchema = """
+CREATE TABLE IF NOT EXISTS today_meta (
+    one INTEGER PRIMARY KEY CHECK (one = 1),
+    version INTEGER NOT NULL,        -- TodayIndex.version of the code that built it
+    segment TEXT NOT NULL,           -- the timeline segment it indexes
+    seq INTEGER NOT NULL             -- the newest event of that segment it has taken in
+);
+CREATE TABLE IF NOT EXISTS today_entries (
+    id TEXT PRIMARY KEY,             -- <seq>-<part>: owner | say | thought | result | watch
+    seq INTEGER NOT NULL,
+    ts REAL NOT NULL,
+    label TEXT NOT NULL,             -- 主人說 | 你說 | 你想 | <tool> 的結果 | watch
+    secret INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    vector BLOB NOT NULL             -- Float32, L2-normalized
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS today_fts USING fts5(
+    text, id UNINDEXED, secret UNINDEXED, tokenize='trigram'
+);
+"""
+
+/// One of today's events as recall shows it.
+public struct TodayHit: Sendable {
+    public var id: String
+    public var seq: Int64
+    public var ts: Double
+    /// 主人說 / 你說 / 你想 / `<tool> 的結果` / watch.
+    public var label: String
+    public var secret: Bool
+    public var text: String
+
+    /// What she sees in the bracket: 「今天 14:05｜主人說」.
+    public var tag: String {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: ts))
+        return String(format: "今天 %02d:%02d｜", c.hour!, c.minute!) + label
+    }
+}
+
+/// One recall result: a long-term memory or one of today's events.
+public enum RecallHit: Sendable {
+    case memory(MemoryHit)
+    case today(TodayHit)
+
+    public var secret: Bool {
+        switch self {
+        case .memory(let h): h.secret
+        case .today(let h): h.secret
+        }
+    }
+
+    /// 〔確定的打算｜public〕 or 〔今天 14:05｜主人說〕, then the text.
+    public var rendered: String {
+        switch self {
+        case .memory(let h): "〔\(h.label)｜\(h.folder)〕\n\(h.text)"
+        case .today(let h): "〔\(h.tag)〕\n\(h.text)"
+        }
+    }
+}
+
+public final class TodayIndex {
+    /// Change it whenever entries or vectors would come out different from the same timeline, so an
+    /// index built by older code is rebuilt at start.
+    static let version = 1
+    private let sql: SQLite
+    private let embedder: Embedder
+
+    init(path: URL, embedder: Embedder) throws {
+        sql = try SQLite(path: path, schema: todaySchema)
+        self.embedder = embedder
+    }
+
+    /// What of one event is searchable: the owner's text; her reply's `say` texts (together) and her
+    /// thought; a tool result's text (computer results are already trimmed to what changed and the
+    /// open windows; never images); a watch wake's text. Not the program's 【快捷鍵】 and 【相關記憶】,
+    /// and not `recall` results: those are copies of other data. Empty texts are left out.
+    static func entries(_ ev: Event, tool: String?) -> [(id: String, label: String, text: String)] {
+        let seq = ev.seq!
+        var out: [(String, String, String)] = []
+        switch ev.kind {
+        case .owner: out = [("\(seq)-owner", "主人說", ev.text)]
+        case .doll:
+            let parsed = ParsedReply(ev.text)
+            out = [("\(seq)-say", "你說", parsed.said.joined(separator: "\n")), ("\(seq)-thought", "你想", parsed.thought)]
+        case .tool:
+            let name = (tool ?? "").isEmpty ? "tool_call" : tool!
+            if name != "recall" { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }
+        case .watch: out = [("\(seq)-watch", "watch", ev.text)]
+        case .memory: break
+        }
+        return out.map { ($0.0, $0.1, $0.2.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.2.isEmpty }
+    }
+
+    private func meta() throws -> (version: Int, segment: String, seq: Int64)? {
+        try sql.query("SELECT version, segment, seq FROM today_meta WHERE one = 1") {
+            (Int($0.int(0)!), $0.text(1)!, $0.int(2)!)
+        }.first
+    }
+
+    private func setSeq(_ seq: Int64, segment: String) throws {
+        try sql.exec("""
+            INSERT INTO today_meta (one, version, segment, seq) VALUES (1, ?, ?, ?)
+            ON CONFLICT(one) DO UPDATE SET version = excluded.version, segment = excluded.segment, seq = excluded.seq
+            """, [.int(Int64(Self.version)), .text(segment), .int(seq)])
+    }
+
+    private func put(_ ev: Event, tool: String?) throws -> [(Event, String, String, String, Data)] {
+        try Self.entries(ev, tool: tool).map { (ev, $0.id, $0.label, $0.text, Memory.blob(try embedder.embed($0.text))) }
+    }
+
+    private func insert(_ rows: [(Event, String, String, String, Data)]) throws {
+        for (ev, id, label, text, vector) in rows {
+            try sql.exec("INSERT INTO today_entries (id, seq, ts, label, secret, text, vector) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         [.text(id), .int(ev.seq!), .real(ev.ts), .text(label), .int(ev.secret ? 1 : 0), .text(text), .blob(vector)])
+            try sql.exec("INSERT INTO today_fts (text, id, secret) VALUES (?, ?, ?)",
+                         [.text(text), .text(id), .int(ev.secret ? 1 : 0)])
+        }
+    }
+
+    /// At start: rebuilt when it was built by other code, for another segment, or has not taken in
+    /// every event (a crash between the timeline line and the index; a deleted index file).
+    func sync(_ timeline: Timeline) throws {
+        if let m = try meta(), m.version == Self.version, m.segment == timeline.segment, m.seq == timeline.lastSeq { return }
+        try rebuild(timeline)
+    }
+
+    /// Drops every entry and indexes the segment again from its events.
+    func rebuild(_ timeline: Timeline) throws {
+        let names = Doll.callNames(timeline.events)
+        let rows = try timeline.events.flatMap { try put($0, tool: names[$0.seq!]) }
+        try sql.transaction {
+            try sql.exec("DELETE FROM today_entries")
+            try sql.exec("DELETE FROM today_fts")
+            try insert(rows)
+            try setSeq(timeline.lastSeq, segment: timeline.segment)
+        }
+    }
+
+    /// Takes in the timeline's newest event, right after it was appended.
+    func add(_ timeline: Timeline) throws {
+        let events = timeline.events
+        guard let ev = events.last else { return }
+        var tool: String?
+        if ev.kind == .tool {
+            let tail = Array(events[(events.lastIndex { $0.kind == .doll } ?? 0)...])
+            tool = Doll.callNames(tail)[ev.seq!]
+        }
+        let rows = try put(ev, tool: tool)
+        try sql.transaction {
+            try insert(rows)
+            try setSeq(ev.seq!, segment: timeline.segment)
+        }
+    }
+
+    /// FTS5 hits ordered by BM25 rank; secret events only when `secret`.
+    func fts(match: String, secret: Bool, limit: Int) throws -> [(id: String, rank: Double)] {
+        try sql.query("""
+            SELECT id, rank FROM today_fts WHERE today_fts MATCH ? AND (? OR secret = 0) ORDER BY rank, id LIMIT ?
+            """, [.text(match), .int(secret ? 1 : 0), .int(Int64(limit))]) { ($0.text(0)!, $0.real(1)) }
+    }
+
+    func vectors(secret: Bool) throws -> [(id: String, vector: Data)] {
+        try sql.query("SELECT id, vector FROM today_entries WHERE (? OR secret = 0)", [.int(secret ? 1 : 0)]) {
+            ($0.text(0)!, $0.blob(1))
+        }
+    }
+
+    func entry(_ id: String) throws -> TodayHit? {
+        try sql.query("SELECT id, seq, ts, label, secret, text FROM today_entries WHERE id = ?", [.text(id)]) {
+            TodayHit(id: $0.text(0)!, seq: $0.int(1)!, ts: $0.real(2), label: $0.text(3)!, secret: $0.int(4)! != 0,
+                     text: $0.text(5)!)
+        }.first
+    }
+
+    /// Number of entries; for tests.
+    func count() throws -> Int {
+        try sql.query("SELECT count(*) FROM today_entries") { Int($0.int(0)!) }.first ?? 0
+    }
+}
+
 public final class Memory {
     let config: MemoryConfig
     private let root: URL
     private let store: Store
-    private let embedder: Embedder
+    let embedder: Embedder
 
     init(config: MemoryConfig, root: URL, store: Store) throws {
         self.config = config
@@ -529,46 +711,72 @@ public final class Memory {
     /// ranked by vector, not just the first `max_candidates`, so a few among many others are not lost.
     public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int? = nil,
                        tiers: Set<SourceTier>? = nil) throws -> [MemoryHit] {
+        try rank(query, visible: visible, limit: limit ?? config.topK, tiers: tiers, today: nil).compactMap {
+            if case .memory(let h) = $0 { h } else { nil }
+        }
+    }
+
+    /// `recall` (2026-11-10): her memories and today's events in one list, top `top_k`. Today's
+    /// secret events only where the secret folder is visible.
+    public func recall(_ query: String, visible: Set<MemoryFolder>, today: TodayIndex) throws -> [RecallHit] {
+        try rank(query, visible: visible, limit: config.topK, tiers: nil, today: today)
+    }
+
+    /// FTS5 and cosine lists over the memories (and today's events when `today` is given), fused by
+    /// RRF, plus `confidence_weight` × confidence (a today hit counts as `today_confidence`). The two
+    /// corpora are one list per method: FTS hits by BM25 score, vector hits by cosine.
+    private func rank(_ query: String, visible: Set<MemoryFolder>, limit: Int, tiers: Set<SourceTier>?,
+                      today: TodayIndex?) throws -> [RecallHit] {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
+        let todaySecret = visible.contains(.secret)
+        // Keys: "m:<memory id>" and "t:<today entry id>".
         var ftsRanked: [String] = []
         let phrases = Self.queryPhrases(query, maxPhrases: config.maxQueryPhrases)
         if !phrases.isEmpty {
             let match = phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")
-            ftsRanked = try store.memoryFTS(match: match, folders: names, limit: config.maxCandidates)
+            var found = try store.memoryFTS(match: match, folders: names, limit: config.maxCandidates).map { ("m:" + $0.id, $0.rank) }
+            if let today {
+                found += try today.fts(match: match, secret: todaySecret, limit: config.maxCandidates).map { ("t:" + $0.id, $0.rank) }
+            }
+            ftsRanked = found.sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 < $1.0 }.prefix(config.maxCandidates).map(\.0)
         }
         let qv = try embedder.embed(query)
-        let scored = try store.memoryVectors(folders: names).map { row -> (String, Double) in
+        func cosine(_ vector: Data) -> Double {
             var dot = 0.0
-            row.vector.withUnsafeBytes { raw in
+            vector.withUnsafeBytes { raw in
                 let v = raw.bindMemory(to: Float.self)
                 for i in 0..<min(v.count, qv.count) { dot += Double(v[i]) * Double(qv[i]) }
             }
-            return (row.id, dot)
+            return dot
         }
-        let vectorRanked = scored.sorted { $0.1 > $1.1 }.prefix(tiers == nil ? config.maxCandidates : scored.count).map(\.0)
+        var scored = try store.memoryVectors(folders: names).map { ("m:" + $0.id, cosine($0.vector)) }
+        if let today { scored += try today.vectors(secret: todaySecret).map { ("t:" + $0.id, cosine($0.vector)) } }
+        let vectorRanked = scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
+            .prefix(tiers == nil ? config.maxCandidates : scored.count).map(\.0)
 
         // RRF over both lists, then confidence as an extra weighted term (spec 6).
         var fused: [String: Double] = [:]
-        for (rank, id) in ftsRanked.enumerated() { fused[id, default: 0] += 1.0 / Double(config.rrfK + rank + 1) }
-        for (rank, id) in vectorRanked.enumerated() { fused[id, default: 0] += 1.0 / Double(config.rrfK + rank + 1) }
-        var hits: [MemoryHit] = []
-        for (id, var score) in fused {
+        for (rank, key) in ftsRanked.enumerated() { fused[key, default: 0] += 1.0 / Double(config.rrfK + rank + 1) }
+        for (rank, key) in vectorRanked.enumerated() { fused[key, default: 0] += 1.0 / Double(config.rrfK + rank + 1) }
+        var hits: [(key: String, score: Double, hit: RecallHit)] = []
+        for (key, score) in fused {
+            let id = String(key.dropFirst(2))
+            if key.hasPrefix("t:") {
+                guard let today, let hit = try today.entry(id) else { continue }
+                hits.append((key, score + config.confidenceWeight * config.todayConfidence, .today(hit)))
+                continue
+            }
             guard let meta = try store.memoryMeta(id) else { continue }
             if !names.contains(meta.folder) { continue }
-            score += config.confidenceWeight * meta.confidence
             guard let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { continue }
             let parsed = try Self.parseFile(body)
             guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { continue }
-            let level = self.level(meta.confidence)
-            hits.append(MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
-                                  confidence: meta.confidence, level: level,
-                                  kind: MemoryKind(rawValue: parsed.kind), text: parsed.body))
-            fused[id] = score
+            let hit = MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
+                                confidence: meta.confidence, level: level(meta.confidence),
+                                kind: MemoryKind(rawValue: parsed.kind), text: parsed.body)
+            hits.append((key, score + config.confidenceWeight * meta.confidence, .memory(hit)))
         }
-        return hits.sorted {
-            let a = fused[$0.id] ?? 0, b = fused[$1.id] ?? 0
-            return a != b ? a > b : $0.id < $1.id
-        }.prefix(limit ?? config.topK).map { $0 }
+        return hits.sorted { $0.score != $1.score ? $0.score > $1.score : $0.key < $1.key }.prefix(limit).map(\.hit)
     }
 }

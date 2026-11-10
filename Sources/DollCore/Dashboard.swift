@@ -151,10 +151,10 @@ extension Doll {
     /// The newest `limit` items, newest first. Her reply's calls are read back from its raw text and
     /// matched in order to the results stored after it, the way `callNames` does.
     public func dashboardTimeline(limit: Int) throws -> [DashboardItem] {
-        let stats = try store.turnStats()
+        let stats = timeline.turnStats
         var items: [DashboardItem] = []
         var open: Int?   // the index of the turn whose results are still coming
-        for e in try store.events() {
+        for e in timeline.events {
             let seq = e.seq!
             switch e.kind {
             case .doll:
@@ -195,7 +195,7 @@ extension Doll {
     }
 
     public func dashboardVision() throws -> DashboardVision {
-        let events = try store.events()
+        let events = timeline.events
         var out = DashboardVision()
         if let e = events.last(where: { $0.image != nil }) {
             out = DashboardVision(seq: e.seq, ts: e.ts, image: e.image, cropNote: e.cropNote, crop: e.crop, window: e.window)
@@ -219,7 +219,7 @@ extension Doll {
         let attached = try attachedIDs.sorted().compactMap { id in
             try memory.experience(id).map { entry($0.id, $0.folder, $0.file) }
         }
-        let events = try store.events()
+        let events = timeline.events
         let since = events.last { $0.kind == .owner }?.seq ?? 0
         let sheets = events.filter { $0.kind == .memory && $0.seq! > since && $0.text.hasPrefix("【快捷鍵】") }.map {
             DashboardMemory.Sheet(seq: $0.seq!, title: String($0.text.split(separator: "\n").first ?? ""), text: $0.text)

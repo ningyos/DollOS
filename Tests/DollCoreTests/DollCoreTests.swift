@@ -231,7 +231,7 @@ private struct Harness {
     let vm: FakeComputer
     let rec: Recorder
     let dir: URL
-    let store: Store      // a second connection to the same database, for checks
+    let store: Store      // a second connection to the memory index, for checks
 
     init(_ replies: [Scripted] = [], tune: (inout Config) -> Void = { _ in }) async throws {
         dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
@@ -264,8 +264,12 @@ private struct Harness {
         try await doll.runOnce()
     }
 
+    /// The timeline as a new process reads it from the file.
+    func timeline() throws -> Timeline { try Timeline(dir: dir.appending(path: "timeline")) }
+    func events() throws -> [Event] { try timeline().events }
+
     /// Her tool results, oldest first.
-    func toolResults() throws -> [Event] { try store.events().filter { $0.kind == .tool } }
+    func toolResults() throws -> [Event] { try events().filter { $0.kind == .tool } }
 
     /// Waits until the queue has drained into the timeline `count` events of `kind`, or gives up.
     func waitFor(_ kind: Event.Kind, count: Int = 1, seconds: Double = 5) async throws {
@@ -427,9 +431,11 @@ private struct Harness {
     await h.doll.ownerSaid("做三件事")
     try await h.turn(Scripted("好，一次做完", recall("一"), think("medium"), recall("二")))
     #expect(h.said.isEmpty)                                              // text outside her calls is her thought: never said
-    #expect(h.last.actions == ["recall 0", "think medium", "recall 0"] && h.last.usedTool)
+    // recall also searches today's timeline (2026-11-10): her thought and the owner's line, then the think result too
+    #expect(h.last.actions == ["recall 2", "think medium", "recall 3"] && h.last.usedTool)
     let results = try h.toolResults()
-    #expect(results.map(\.text) == ["一：0 條", "下一回合 effort：medium", "二：0 條"])
+    #expect(results[0].text.hasPrefix("一：2 條\n\n〔今天 ") && results[1].text == "下一回合 effort：medium"
+            && results[2].text.hasPrefix("二：3 條\n\n〔今天 "))
     #expect(await h.doll.followUp)                                       // the results give her the next turn
     try await h.turn("都好了")
     let msgs = await h.model.seen(1)
@@ -448,9 +454,9 @@ private struct Harness {
         + "<tool_call>\n<function=think>\n<parameter=level>\nmedium\n</parameter>\n</function>\n</tool_call>"
     try await h.turn(Scripted(stringLiteral: raw))
     #expect(h.said.isEmpty)
-    #expect(h.last.actions == ["recall 0", "think medium"])
-    #expect(try h.toolResults().map(\.text) == ["目錄：0 條", "下一回合 effort：medium"])
-    let doll = try #require(try h.store.events().first { $0.kind == .doll })
+    #expect(h.last.actions == ["recall 2", "think medium"])                // the owner's line and her thought, from today
+    #expect(try h.toolResults().map { $0.text.hasPrefix("目錄：2 條\n\n〔今天 ") || $0.text == "下一回合 effort：medium" } == [true, true])
+    let doll = try #require(try h.events().first { $0.kind == .doll })
     #expect(doll.text == raw)                                            // stored byte-identical
 }
 
@@ -552,7 +558,7 @@ private struct Harness {
     await h.doll.ownerSaid("text")
     await h.doll.ownerSaid("voice", voice: true)
     try await h.turn("好")
-    let events = try h.store.events()
+    let events = try h.events()
     #expect(events.map(\.text) == ["voice", "text", "r", "好"])
     #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .watch, .watch])
 }
@@ -576,7 +582,7 @@ private struct Harness {
     #expect(reqs[2].messages.contains { $0.content.contains("等等不用算了") })
     #expect(h.reports.map(\.index) == [1, 2] && h.said == ["等我", "好"])
     #expect(h.logs.contains { $0.contains("turn 2 interrupted") })
-    let later = try h.store.events().filter { $0.kind == .owner }.map(\.text)
+    let later = try h.events().filter { $0.kind == .owner }.map(\.text)
     #expect(later == ["這題難", "開始算", "等等不用算了"])
 }
 
@@ -587,7 +593,7 @@ private struct Harness {
     try await Task.sleep(for: .milliseconds(500))
     #expect(await h.model.requests.isEmpty)
     await h.doll.ownerSaid("嗨")
-    try await Task.sleep(for: .milliseconds(300))
+    try await waitUntil { await h.model.requests.count == 1 && h.said == ["哈囉"] }
     #expect(await h.model.requests.count == 1 && h.said == ["哈囉"])
     try await Task.sleep(for: .milliseconds(300))
     #expect(await h.model.requests.count == 1)        // her reply alone is not an event
@@ -604,15 +610,14 @@ private struct Harness {
     let first = h.last.footer
     #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）")
             && first.contains("- watch：沒有") && first.contains("下一回合 effort：medium"))
-    let seq = try h.store.events().last!.seq!
-    #expect(try h.store.footer(seq) == first)
+    #expect(try h.events().last!.footer == first)
     await h.doll.ownerSaid("再來")
     try await h.turn("好")
     let msgs = await h.model.seen(1)
     let i = msgs.firstIndex { $0.content == first }!
     #expect(msgs[i].role == "user" && msgs[i + 1] == ChatMessage(role: "assistant", content: "哈囉"))
     #expect(msgs.last!.content == h.last.footer && msgs.last!.content != first)
-    #expect(try h.store.events().filter { $0.text.contains("【狀況】") }.isEmpty)   // footers are not events
+    #expect(try h.events().filter { $0.text.contains("【狀況】") }.isEmpty)   // footers are not events
 }
 
 @Test func thinkSetsTheNextCallsEffortOnceEitherWayAndShowsInTheFooter() async throws {
@@ -699,14 +704,14 @@ private struct Harness {
     #expect(try h.store.countMemoryIndex() == 1)
     await again.doll.ownerSaid("我的伺服器叫什麼？")
     try await again.turn()
-    #expect(again.last.actions == ["recall 1"])
+    #expect(again.last.actions.count == 1 && again.last.actions[0].hasPrefix("recall "))
     // the indexed row is the one that answers: FTS finds it, public, from the owner
-    let ids = try h.store.memoryFTS(match: "\"Strata\"", folders: ["public"], limit: 5)
+    let ids = try h.store.memoryFTS(match: "\"Strata\"", folders: ["public"], limit: 5).map(\.id)
     #expect(ids.count == 1)
     let meta = try #require(try h.store.memoryMeta(ids[0]))
     #expect(meta.folder == "public" && meta.confidence > 0.8)
     // the tool result in her timeline carries the indexed text
-    #expect(try h.toolResults().last!.text.contains("主人的伺服器叫 Strata"))
+    #expect(try h.toolResults().last!.text.contains("〔確定｜public〕\n主人的伺服器叫 Strata"))
     await h.doll.stop()
 }
 
@@ -1023,7 +1028,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
     #expect(try enc(next).starts(with: enc(after).dropLast()))
     // The timeline still holds every event of the scenario.
-    #expect(try h.store.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
+    #expect(try h.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
 }
 
 @Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
@@ -1050,7 +1055,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(Array(three.prefix(a)) == Array(two.prefix(a)) && three[a] != two[a])
     #expect(three[a].content == two[a].content && three[a + 1...a + 2].map(\.content) == two[a + 1...a + 2].map(\.content))
     // The files stay.
-    #expect(try h.store.events().filter { $0.image != nil }.count == 5)
+    #expect(try h.events().filter { $0.image != nil }.count == 5)
     // image_turns_kept = 1: in request 3 only C's results carry images.
     let one = try await Harness(tune: { $0.computer.imageTurnsKept = 1 })
     await one.doll.ownerSaid("用電腦")
@@ -1841,7 +1846,7 @@ private final class FakeVMPal: Sendable {
     // Her own turn (her watch woke her): own is still visible.
     await h.doll.put(Event(.watch, .internal, "盯著的整個畫面變了。"))
     try await h.turn(Scripted("", recall("VM 登入密碼")))
-    #expect(Doll.audience(try h.store.events()) == .doll)
+    #expect(Doll.audience(try h.events()) == .doll)
     #expect(try h.toolResults().last!.text.contains("fish123"))
     // A stranger's turn (no such input until M6; the projection is Memory's): never.
     var cfg = try Config.load(root.appending(path: "dollcore.example.toml")).memory
@@ -1936,7 +1941,7 @@ private func seedMemory(_ h: Harness, _ folder: String, _ text: String, tier: St
     try await h.doll.rebuildMemory()
 }
 
-private func memoryEvents(_ h: Harness) throws -> [Event] { try h.store.events().filter { $0.kind == .memory } }
+private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filter { $0.kind == .memory } }
 
 @Test func anOwnerLineAttachesRelatedExperiencesWholeBeforeHerTurn() async throws {
     let h = try await Harness()
@@ -2100,7 +2105,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(h.logs.contains { $0.contains("outcome unknown: computer scenario ended without her outcome") })
     #expect(try experiences(h).count == 1)
     // Nothing is stored for it (no summary of hers), so its turns stay in requests in full.
-    #expect(try h.store.closedScenarios().map(\.success) == [false, true])
+    #expect(try h.timeline().closedScenarios.map(\.success) == [false, true])
 }
 
 @Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
@@ -2118,7 +2123,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(await h.doll.scenario == nil)
     #expect(h.last.outcome == "success" && h.vm.actions == [.key("cmd+s")])
     // The result is still in the timeline, right after her reply.
-    let events = try h.store.events()
+    let events = try h.events()
     #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
     #expect(events.dropLast(3).last?.kind == .doll)
     await h.doll.stop()
@@ -2388,7 +2393,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     // The first result shows TextEdit: its whole list, in the reader's order, after the result.
     #expect(try sheets(h) == [textEditSheet])
     #expect(h.last.cheatsheets == [textEditSheet])
-    let tail = try h.store.events().suffix(2).map(\.kind)
+    let tail = try h.events().suffix(2).map(\.kind)
     #expect(tail == [.tool, .memory])
     // Learning and the cheatsheet share one read.
     #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
@@ -2462,7 +2467,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     try await h.turn(Scripted("", key("cmd+s")))
     #expect(try sheets(h).isEmpty && h.last.cheatsheets.isEmpty)
     #expect(h.logs.contains { $0.hasPrefix("ERROR") && $0.contains("快捷鍵 of com.apple.TextEdit 1.21 failed") && $0.contains("no accessibility access") })
-    #expect(try h.store.events().allSatisfy { !$0.text.contains("快捷鍵") && !$0.text.contains("accessibility") })
+    #expect(try h.events().allSatisfy { !$0.text.contains("快捷鍵") && !$0.text.contains("accessibility") })
     // Not counted as sent: the next switch to it tries again.
     h.vm.failMenus(nil)
     h.vm.setApp(finder, finderKeys)
@@ -2823,12 +2828,12 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(m.attached.isEmpty && m.cheatsheets.isEmpty)
 
     // Every route, the page and the stream excepted, changes neither the timeline nor a memory file.
-    let before = (try h.store.events(), try memoryFiles(h))
+    let before = (try h.events(), try memoryFiles(h))
     for r in Dashboard.routes where r.kind != .events {
         _ = await d.respond(method: r.method, target: r.path)
     }
     _ = await d.respond(method: "POST", target: "/api/resume")
-    let after = (try h.store.events(), try memoryFiles(h))
+    let after = (try h.events(), try memoryFiles(h))
     #expect(after.0 == before.0 && after.1 == before.1)
     #expect(await d.respond(method: "GET", target: "/api/pause").status == 405)
     #expect(await d.respond(method: "POST", target: "/api/status").status == 405)
@@ -2870,7 +2875,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(try json([String: Bool].self, await d.respond(method: "POST", target: "/api/interrupt")) == ["interrupted": true])
     try await Task.sleep(for: .milliseconds(300))
     #expect(await h.model.requests.count == 1 && h.said.isEmpty)                    // not rerun
-    #expect(try h.store.events().map(\.kind) == [.owner])                           // no reply stored
+    #expect(try h.events().map(\.kind) == [.owner])                           // no reply stored
     let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
     #expect(s.state == "asleep" && s.turn == 0 && s.lastInterrupt != nil)
     #expect(h.logs.contains { $0.contains("turn 1 interrupted from the dashboard") })
@@ -2956,4 +2961,151 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(Doll.condense("Done: 1 action in 1.4 s. Screen 1280×800 (screenshot pixels), frame 8479.\nTyped 24 characters.\nChanged: 1,2–3,4.") == "Changed: 1,2–3,4.")
     #expect(Doll.condense("Done: 1 action in 0.6 s.\ndouble_click on “notes.txt” at (441, 235).") == "")
     #expect(Doll.condense("something VMPal says that is not bookkeeping") == "something VMPal says that is not bookkeeping")
+}
+
+// timeline files and today's recall (2026-11-10) ------------------------------------
+
+/// A second Doll on the same data dir: a new process.
+private func restarted(_ h: Harness, _ replies: [Scripted] = []) async throws -> Harness {
+    try await Harness(replies) {
+        $0.core.dataDir = h.dir.path
+        $0.memory.dir = h.dir.appending(path: "memory").path
+    }
+}
+
+private func hhmm(_ ts: Double) -> String {
+    let c = Calendar.current.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: ts))
+    return String(format: "%02d:%02d", c.hour!, c.minute!)
+}
+
+@Test func aRestartedDollRebuildsTheSameRequestFromTheTimelineFile() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("把 notes 存檔")
+    try await h.turn(Scripted("好，我來", useComputer))
+    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn(Scripted("", say("存好了。"), outcome(true, "按 ⌘S 存了檔。")))
+    await h.doll.ownerSaid("謝謝")
+    try await h.turn(Scripted("", say("不客氣")))
+    await h.doll.ownerSaid("再開一次電腦")
+    try await h.turn(Scripted("", useComputer))                                    // an open scenario, with images
+    let events = await h.doll.timelineEvents()
+    let before = try await h.doll.context(events)
+    #expect(before.contains { !$0.images.isEmpty })                                // screenshots in it
+    #expect(before.filter { $0.content.hasPrefix("【狀況】") }.count == 3)          // the footers of replies outside the closed span
+    #expect(before.contains { $0.content == "成功。你自己記下的經過：\n按 ⌘S 存了檔。" })   // the closed span
+
+    // The file: one JSON object per line, every record type.
+    let file = try h.timeline().file
+    let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+    let types = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }.map { $0["type"] as! String }
+    #expect(Set(types) == ["event", "footer", "turn", "scenario"])
+    #expect(file.deletingLastPathComponent().lastPathComponent == "timeline" && file.pathExtension == "jsonl")
+
+    let again = try await restarted(h, [Scripted("", say("回來了"))])
+    #expect(await again.doll.timelineEvents() == events)
+    let after = try await again.doll.context(await again.doll.timelineEvents())
+    #expect(try ChatMessage.encoder.encode(after) == ChatMessage.encoder.encode(before))
+    #expect(try h.timeline().closedScenarios.count == 1)
+    // Its first request continues the old one byte for byte.
+    await again.doll.ownerSaid("在嗎")
+    try await again.turn()
+    let sent = await again.model.seen(0)
+    #expect(try ChatMessage.encoder.encode(Array(sent.prefix(before.count))) == ChatMessage.encoder.encode(before))
+    let kinds = try h.events().map(\.kind)
+    // One timeline: the owner's line, the experience her outcome wrote (attached again), her reply, its result.
+    #expect(kinds.count == events.count + 4 && kinds.suffix(4) == [.owner, .memory, .doll, .tool])
+    await h.doll.stop()
+}
+
+@Test func aLineCutShortByACrashIsDroppedAndTheNextOneStartsClean() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("你好")
+    try await h.turn(Scripted("", say("嗨")))
+    let file = try h.timeline().file
+    let whole = try Data(contentsOf: file)
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(#"{"type":"event","seq":99,"te"#.utf8))
+    try handle.close()
+    let t = try h.timeline()                                                        // reopening drops the cut line
+    #expect(try Data(contentsOf: file) == whole)
+    _ = try t.append(Event(.owner, .owner, "再一句"))
+    #expect(try h.events().last?.text == "再一句" && h.events().last?.seq == t.events.count.int64)
+}
+
+private extension Int { var int64: Int64 { Int64(self) } }
+
+extension Doll {
+    func todayCount() throws -> Int { try today.count() }
+    func todayFTS(_ match: String) throws -> [String] { try today.fts(match: match, secret: true, limit: 10).map(\.id) }
+}
+
+@Test func recallFindsTodaysEventsByWordsAndByMeaningWithTheirLabels() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("今天下午要去郵局寄包裹給阿嬤")
+    try await h.turn(Scripted("要記得提醒主人帶身分證", say("好，出門前我提醒你"), think("medium")))
+    await h.doll.ownerSaid("晚餐想吃咖哩飯")
+    try await h.turn(Scripted("", say("我也想吃")))
+    await h.doll.ownerSaid("明天早上九點開會")
+    try await h.turn(Scripted("", say("記下了")))
+    await h.doll.put(Event(.watch, .internal, "盯著的區域變了：下載完成"))
+    try await h.turn(Scripted("", say("下載好了")))
+    let events = await h.doll.timelineEvents()
+    func ts(_ text: String) -> String { hhmm(events.first { $0.text.contains(text) }!.ts) }
+
+    // By words: shared trigrams.
+    let words = try await h.doll.recall("郵局寄包裹", seen: events).text
+    #expect(words.hasPrefix("郵局寄包裹："))
+    #expect(words.contains("〔今天 \(ts("郵局寄包裹"))｜主人說〕\n今天下午要去郵局寄包裹給阿嬤"))
+    let reply = events.first { $0.kind == .doll }!
+    #expect(try await h.doll.recall("提醒主人帶身分證", seen: events).text.contains("〔今天 \(hhmm(reply.ts))｜你想〕\n要記得提醒主人帶身分證"))
+    #expect(try await h.doll.recall("出門前提醒", seen: events).text.contains("〔今天 \(hhmm(reply.ts))｜你說〕\n好，出門前我提醒你"))
+    #expect(try await h.doll.recall("下一回合 effort", seen: events).text.contains("｜think 的結果〕\n下一回合 effort：medium"))
+    #expect(try await h.doll.recall("下載完成", seen: events).text.contains("〔今天 \(ts("下載完成"))｜watch〕\n盯著的區域變了：下載完成"))
+    // By meaning: no trigram in common, the embedding finds it.
+    #expect(try await h.doll.todayFTS("\"寄東西\" OR \"東西給\" OR \"給奶奶\"").isEmpty)
+    let meaning = try await h.doll.recall("寄東西給奶奶", seen: events).text
+    #expect(meaning.contains("〔今天 \(ts("郵局寄包裹"))｜主人說〕\n今天下午要去郵局寄包裹給阿嬤"))
+    // Results of recall itself are not indexed (copies of other data).
+    try await h.turn(Scripted("", recall("咖哩")))
+    #expect(try await h.doll.recall("咖哩", seen: await h.doll.timelineEvents()).text.components(separatedBy: "｜recall 的結果〕").count == 1)
+}
+
+@Test func aSecretEventOfTodayIsHiddenFromATurnThatSawNoSecret() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("保險箱密碼是 7391，別說出去", secret: true)
+    try await h.turn(Scripted("", say("好")))
+    await h.doll.ownerSaid("今天天氣很好")
+    try await h.turn(Scripted("", say("對啊")))
+    let events = await h.doll.timelineEvents()
+    // A turn that saw a secret (this timeline's): the secret line is there and marks the result.
+    let seen = try await h.doll.recall("保險箱密碼", seen: events)
+    #expect(seen.text.contains("｜主人說〕\n保險箱密碼是 7391，別說出去") && seen.secret)
+    // A turn that saw none: neither the line nor her reply that saw it (also secret) comes back.
+    let unseen = try await h.doll.recall("保險箱密碼", seen: events.filter { !$0.secret })
+    #expect(!unseen.text.contains("7391") && !unseen.secret)
+    #expect(unseen.text.contains("今天天氣很好") || unseen.text.hasSuffix("0 條"))
+}
+
+@Test func deletingTheTodayIndexRebuildsItWithTheSameAnswers() async throws {
+    let h = try await Harness()
+    for (line, answer) in [("今天下午要去郵局寄包裹給阿嬤", "好"), ("晚餐想吃咖哩飯", "我也想吃"), ("明天早上九點開會", "記下了")] {
+        await h.doll.ownerSaid(line)
+        try await h.turn(Scripted("想一下", say(answer)))
+    }
+    let queries = ["郵局", "寄東西給奶奶", "晚上吃什麼", "開會時間"]
+    let events = await h.doll.timelineEvents()
+    var before: [String] = []
+    for q in queries { before.append(try await h.doll.recall(q, seen: events).text) }
+    let count = try await h.doll.todayCount()
+    #expect(count == 9)                                                              // 3 owner lines, 3 says, 3 thoughts
+    await h.doll.stop()
+    try FileManager.default.removeItem(at: h.dir.appending(path: "today.db"))
+    let again = try await restarted(h)
+    #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "today.db").path))
+    #expect(try await again.doll.todayCount() == count)
+    var after: [String] = []
+    for q in queries { after.append(try await again.doll.recall(q, seen: events).text) }
+    #expect(before == after)
+    #expect(before.allSatisfy { $0.contains("〔今天 ") })
 }
