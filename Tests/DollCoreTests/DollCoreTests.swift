@@ -1989,7 +1989,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     #expect(found.contains("TextEdit 存檔按 cmd+s") && found.contains("＝⌘S（TextEdit"))
     // The owner's next line starts over: the same experience comes again.
     await h.doll.ownerSaid("再存一次 TextEdit")
-    try await h.turn("好")
+    try await h.turn(Scripted("", say("好")))
     #expect(try memoryEvents(h).count == 2)
 }
 
@@ -3132,4 +3132,21 @@ extension Doll {
     #expect(ParsedReply.rescued(content: "<tool_call>\n<function=think>\n<parameter=level>\nnone\n</parameter>\n</function>\n</tool_call>", reasoning: thinking) == nil)
     #expect(ParsedReply.rescued(content: "", reasoning: "just thinking") == nil && ParsedReply.rescued(content: "", reasoning: nil) == nil)
     #expect(ParsedReply.rescued(content: "", reasoning: "```\n<tool_call>\n```\nI would write <tool_call> here") == nil)
+}
+
+@Test func aMenuReplyWithoutACallIsRemindedUntilTheIdleLimit() async throws {
+    // 2026-11-11: she had only thought (or written nothing) and the task stopped.
+    let h = try await menuHarness { $0.idle.maxTurnsWithoutTool = 3 }
+    try await h.turn("")
+    #expect(await h.doll.followUp && h.last.actions == ["reminded"])
+    #expect(try h.events().last?.text == Doll.noCallReminder)
+    try await h.turn("我想想")
+    #expect(await h.doll.followUp)
+    try await h.turn("")                                                // the third in a row: the log line, no reminder
+    #expect(!(await h.doll.followUp) && h.last.actions.isEmpty)
+    #expect(h.logs.contains("INFO idle: 3 turns in a row without a tool call"))
+    // A call resets the count.
+    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn("")
+    #expect(await h.doll.followUp)
 }

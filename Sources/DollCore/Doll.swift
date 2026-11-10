@@ -610,6 +610,9 @@ public actor Doll {
             try timeline.closeScenario(c)
         }
 
+        // A reply without a call (2026-11-11): every reply calls at least one tool. With a menu open she
+        // is reminded and woken again (she had only thought, or wrote nothing, and the task stopped);
+        // the `max_turns_without_tool`-th one in a row writes the log line instead and lets her rest.
         let usedTool = !parsed.calls.isEmpty
         if usedTool {
             idleTurns = 0
@@ -618,6 +621,10 @@ public actor Doll {
             if idleTurns >= idle.maxTurnsWithoutTool {
                 log("INFO", "idle: \(idleTurns) turns in a row without a tool call")
                 idleTurns = 0
+            } else if scenario != nil {
+                try append(Event(.memory, .internal, Self.noCallReminder))
+                followUp = true
+                actions.append("reminded")
             }
         }
 
@@ -632,6 +639,9 @@ public actor Doll {
                                                    seconds: Date().timeIntervalSince1970 - started,
                                                    prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
     }
+
+    /// The program's line after a reply without a call while a menu is open (fixed bytes).
+    static let noCallReminder = "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生。每一則回覆都至少要呼叫一個工具：要跟主人說話用 say，要做事就呼叫那個工具。"
 
     // tools ------------------------------------------------------------------
     /// One call's result: the tool message text, its screenshots (full screen, then the front

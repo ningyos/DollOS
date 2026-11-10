@@ -90,7 +90,8 @@ public struct DashboardConfig: Sendable {
 }
 
 public struct IdleConfig: Sendable {
-    /// N: this many consecutive turns without a tool call writes one log line.
+    /// N: this many consecutive turns without a tool call writes one log line. With a menu open, the
+    /// ones before it are answered by a reminder and another turn (2026-11-11); the N-th is not.
     public var maxTurnsWithoutTool = 3
 }
 
