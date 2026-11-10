@@ -690,12 +690,12 @@ public actor Doll {
                 watchIdle = 0
                 return await withScreenshot("現在的畫面：", actions: [name])
             case .act(let action):
-                return await perform(action, said: Self.describe(action), name: name, chain: chain)
+                return await perform(action, said: Self.describe(action), note: nil, name: name, chain: chain)
             case .clickAt(let x, let y, let onWindow, let button, let count):
                 let p = try screenPoint(x, y, onWindow: onWindow)
                 let action = ComputerAction.click(x: p.x, y: p.y, button: button, count: count)
                 let line = onWindow ? "click 視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" + Self.extra(button, count) : Self.describe(action)
-                return await perform(action, said: line, name: name, chain: chain)
+                return await perform(action, said: line, note: onWindow ? "視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" : nil, name: name, chain: chain)
             case .watch(let region, let maxWait):
                 let replaced = watch != nil
                 let w = startWatch(region, maxWait: maxWait ?? computerConfig.watchDefaultMaxWaitS)
@@ -886,10 +886,13 @@ public actor Doll {
         return file
     }
 
-    /// Runs one action and returns `said` and the VM's text, or the failure. The last action of her
-    /// reply (and every failure) comes with fresh screenshots; an earlier one with its line only.
-    /// The action's own time, screenshots excluded, goes to the log (M2 round 6: element-click latency).
-    func perform(_ action: ComputerAction, said: String, name: String, chain: Chain) async -> Outcome {
+    /// Runs one action. A success says only what she does not already have (2026-11-10: her call is in
+    /// the context, so it is not echoed): `note` (what the program worked out, e.g. a window-crop point's
+    /// screen point), then VMPal's words without its bookkeeping, or 「做了」 when nothing is left. A
+    /// failure names the step (`said`) and the reason. The last action of her reply (and every failure)
+    /// comes with fresh screenshots; an earlier one with its text only. The action's own time,
+    /// screenshots excluded, goes to the log (M2 round 6: element-click latency).
+    func perform(_ action: ComputerAction, said: String, note: String?, name: String, chain: Chain) async -> Outcome {
         watchIdle = 0
         let start = ContinuousClock.now
         let result: Result<String, Error>
@@ -899,7 +902,8 @@ public actor Doll {
         switch result {
         case .success(let answer):
             scenario?.steps.append(Self.step(action))
-            let text = [said, Self.condense(answer)].filter { !$0.isEmpty }.joined(separator: "\n")
+            let parts = [note ?? "", Self.condense(answer)].filter { !$0.isEmpty }
+            let text = parts.isEmpty ? Self.doneWord : parts.joined(separator: "\n")
             guard chain.last else { return Outcome(text: text, actions: [name]) }
             return await withScreenshot(text, actions: [name])
         case .failure(let error):
@@ -911,6 +915,9 @@ public actor Doll {
             return out
         }
     }
+
+    /// A successful action with nothing new to say (fixed bytes).
+    static let doneWord = "做了"
 
     /// A successful action's answer as she reads it (2026-11-10): VMPal's bookkeeping lines are left
     /// out: `Done: 1 action in 0.7 s. Screen 1280×800 (screenshot pixels), frame 8386.`, the echo of

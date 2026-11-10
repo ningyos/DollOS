@@ -829,25 +829,24 @@ enum ElementClick {
         return (ok, why.isEmpty && !ok ? String(decoding: data.prefix(300), as: UTF8.self) : why, disposition)
     }
 
-    /// The click's answer, what she reads (2026-11-10, trimmed): what was clicked and which way got
-    /// through, and the reminder that the screenshot, not the press, is the proof. agent-desktop's
-    /// disposition codes and the point are left out (they were ~60 tokens of every result and told
-    /// her nothing the screenshot does not). A click neither way got through throws, with agent-desktop's words.
+    /// The click's answer, what she reads (2026-11-10, trimmed): her call already says what she clicked,
+    /// so only what she does not know: the reminder that the screenshot, not the press, is the proof,
+    /// and, when the press was not delivered, that real pointer input went instead. agent-desktop's
+    /// disposition codes and the point are left out. A click neither way got through throws, with
+    /// agent-desktop's words.
     static func clicked(_ m: Match, verb: String, at: (x: Int, y: Int)?, semantic: Data, headed: Data?) throws -> String {
         let what = line(m, at)
-        let named = "\(m.role)" + (m.name.isEmpty ? "" : " \"\(m.name)\"")
-        let done = ["click": "點了", "double-click": "雙擊了", "right-click": "右鍵點了"][verb] ?? verb
         let press = answer(semantic)
         let pressSaid = (press.words.isEmpty ? "" : "\(press.words)；") + press.disposition
         guard let headed else {
             guard press.ok else { throw ComputerError("\(verb) \(what) 失敗（無障礙按壓）：\(press.words)（agent-desktop：\(press.disposition)）") }
-            return "\(done) \(named)。不代表真的點到，看下面的截圖。"
+            return "不代表真的點到，看下面的截圖。"
         }
         let mouse = answer(headed)
         guard mouse.ok else {
             throw ComputerError("沒有點成 \(what)：無障礙按壓沒送出（agent-desktop：\(pressSaid)），實體滑鼠（headed）也沒有（agent-desktop：\((mouse.words.isEmpty ? "" : "\(mouse.words)；") + mouse.disposition)）。")
         }
-        return "\(done) \(named)（無障礙按壓沒送出，改用實體滑鼠）。不代表真的點到，看下面的截圖。"
+        return "無障礙按壓沒送出，改用實體滑鼠。不代表真的點到，看下面的截圖。"
     }
 }
 
