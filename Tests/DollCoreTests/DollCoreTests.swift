@@ -1303,7 +1303,7 @@ private final class FakeAgentDesktop: Sendable {
     // the way it went and the disposition.
     let one = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
     let said = try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-    #expect(said == "不代表真的點到，看下面的截圖。")
+    #expect(said == "")
     let calls = one.calls.withLock { $0 }
     #expect(calls.count == 3 && calls.allSatisfy { Array($0.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] })
     #expect(Array(calls[1].suffix(5)) == ["sh", cfg.agentDesktop, "w-2", "--name", "notes.txt"]
@@ -1317,7 +1317,7 @@ private final class FakeAgentDesktop: Sendable {
     // Exact name beats a name that only contains it; the role narrows.
     let exact = FakeAgentDesktop(found: [("statictext", "notes.txt backup", "@s:e3"), ("image", "Notes.txt", "@s:e1")])
     #expect(try await VMPalDriver(cfg, vmpal: { try exact.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
-                == "不代表真的點到，看下面的截圖。")
+                == "")
     #expect(exact.scripts.last!.contains(#"a=$("$1" click "$2")"#) && exact.calls.withLock { $0.last!.last } == "@s:e1")
 
     // Several: no click; each candidate with its role, name and center. The cell at its row's exact
@@ -1337,7 +1337,7 @@ private final class FakeAgentDesktop: Sendable {
     // The same row and cell alone are one target: clicked.
     let same = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4")])
     #expect(try await VMPalDriver(cfg, vmpal: { try same.run($0) }).act(.clickElement(role: nil, name: "Documents", button: "right", count: 1))
-                == "不代表真的點到，看下面的截圖。")
+                == "")
     #expect(same.scripts.last!.contains(#"a=$("$1" right-click "$2")"#) && same.calls.withLock { $0.last!.last } == "@s:e2")
 
     // None: no click; the window's similar names with their centers.
@@ -1365,7 +1365,7 @@ private final class FakeAgentDesktop: Sendable {
     // One: `find --role` in the focused window; it has no name and is said by its role.
     let one = FakeAgentDesktop(found: [("textfield", "", "@s:e1")])
     #expect(try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
-                == "不代表真的點到，看下面的截圖。")
+                == "")
     #expect(Array(one.calls.withLock { $0[1] }.suffix(4)) == [cfg.agentDesktop, "w-2", "--role", "textfield"])
     // Several: no click, each with its center.
     let two = FakeAgentDesktop(found: [("textfield", "", "@s:e1"), ("textfield", "Save As:", "@s:e3")])
@@ -1399,14 +1399,14 @@ private final class FakeAgentDesktop: Sendable {
     // when its bounds cannot be read again: (48 + 27, 825 + 35) × 1280/1440.
     let finder = FakeAgentDesktop(found: [], focused: false)
     #expect(try await driver(finder).act(.clickElement(role: nil, name: "finder", button: "left", count: 1))
-            == "不代表真的點到，看下面的截圖。")
+            == "")
     let scripts = finder.scripts
     #expect(scripts.count == 3 && scripts[1].contains("menubar menu-bar-extras dock") && !scripts.contains { $0.contains(" find ") })
     #expect(finder.calls.withLock { $0[2].last } == "@d:e2")
     // The role narrows, the same way as in a window.
     let clock = FakeAgentDesktop(found: [], focused: false)
     #expect(try await driver(clock).act(.clickElement(role: "menuitem", name: "clock", button: "left", count: 1))
-                == "不代表真的點到，看下面的截圖。")
+                == "")
     #expect(clock.calls.withLock { $0[2].last } == "@m:e2")
     // Several: no click; candidates from the menu bar and the Dock with their centers.
     let text = FakeAgentDesktop(found: [], focused: false)
@@ -1446,7 +1446,7 @@ private final class FakeAgentDesktop: Sendable {
     // A Finder icon's double-click: the press is not delivered, the pointer is.
     let icon = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied)
     #expect(try await VMPalDriver(cfg, vmpal: { try icon.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-            == "無障礙按壓沒送出，改用實體滑鼠。不代表真的點到，看下面的截圖。")
+            == "無障礙按壓沒送出，改用實體滑鼠。")
     #expect(icon.calls.withLock { $0.count } == 3)
     // Neither way: an error with both answers.
     let neither = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied, headed: FakeAgentDesktop.noWindow)
