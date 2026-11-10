@@ -4,6 +4,11 @@
 //     voice <text>        owner voice: interrupts a model call in flight, then higher priority (the real voice path is M6)
 //     status              print the 【狀況】 footer
 //     quit
+//
+// `dollcore --config <file.toml> consolidate <data_dir> [--memory <dir>]` (2026-11-11) consolidates
+// that data dir's newest timeline segment into her memory (the config's `[memory] dir`, or `--memory`;
+// relative paths from the current directory), starts a new segment, prints what it applied and exits.
+// Run it only while her process is not running.
 
 import DollCore
 import Foundation
@@ -18,7 +23,23 @@ func fail(_ msg: String) -> Never {
 }
 
 let argv = CommandLine.arguments
-guard argv.count == 3, argv[1] == "--config" else { fail("usage: dollcore --config <file.toml>") }
+let usage = "usage: dollcore --config <file.toml> [consolidate <data_dir> [--memory <dir>]]"
+guard argv.count >= 3, argv[1] == "--config" else { fail(usage) }
+
+if argv.count > 3 {
+    guard argv[3] == "consolidate", argv.count == 5 || (argv.count == 7 && argv[5] == "--memory") else { fail(usage) }
+    do {
+        var cfg = try Config.load(URL(filePath: argv[2]))
+        cfg.core.dataDir = argv[4]
+        if argv.count == 7 { cfg.memory.dir = argv[6] }
+        let result = try await Consolidation.run(config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath),
+                                                 model: Consolidation.model(cfg))
+        out(result.report)
+    } catch {
+        fail("consolidate: \(error)")
+    }
+    exit(0)
+}
 
 let doll: Doll
 let dashboard: Dashboard?

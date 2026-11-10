@@ -93,8 +93,9 @@ public struct Event: Sendable, Equatable {
 // timeline ---------------------------------------------------------------------
 
 /// Her raw timeline (2026-11-10): one append-only JSONL file per segment, `<data_dir>/timeline/<segment>.jsonl`.
-/// A segment is one day, from waking to falling asleep; sleep does not exist yet, so a process
-/// continues the newest segment and a data dir has one. The file is the only source of the events,
+/// A segment is one day, from waking to falling asleep; a process continues the newest segment.
+/// Consolidation (2026-11-11, manual; sleep does not exist yet) ends the day: it starts a new, empty
+/// segment (`startSegment`), so the next process begins a fresh today. The file is the only source of the events,
 /// the footers, the turn stats and the closed scenarios; `TodayIndex` is a rebuildable index of it.
 ///
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
@@ -191,14 +192,7 @@ public final class Timeline {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let names = try fm.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }.sorted()
-        if let newest = names.last {
-            segment = String(newest.dropLast(".jsonl".count))
-        } else {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = "yyyyMMdd-HHmmss"
-            segment = f.string(from: Date())
-        }
+        segment = names.last.map { String($0.dropLast(".jsonl".count)) } ?? Self.newName(after: nil)
         file = dir.appending(path: segment + ".jsonl")
         if !fm.fileExists(atPath: file.path) {
             guard fm.createFile(atPath: file.path, contents: nil) else {
@@ -206,6 +200,32 @@ public final class Timeline {
             }
         }
         try load()
+    }
+
+    /// The local time now as `yyyyMMdd-HHmmss`; when that does not sort after `newest` (same second),
+    /// `newest` with `-1` appended, which does.
+    private static func newName(after newest: String?) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        let now = f.string(from: Date())
+        guard let newest, now <= newest else { return now }
+        return newest + "-1"
+    }
+
+    /// Starts a new, empty segment under `dir` (it becomes the newest, so the next `init` opens it);
+    /// returns its id. A process holding the old segment open keeps writing there: call this only
+    /// when none runs.
+    @discardableResult
+    public static func startSegment(dir: URL) throws -> String {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let names = try fm.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }.sorted()
+        let name = newName(after: names.last.map { String($0.dropLast(".jsonl".count)) })
+        guard fm.createFile(atPath: dir.appending(path: name + ".jsonl").path, contents: nil) else {
+            throw StoreError(description: "cannot create \(dir.appending(path: name + ".jsonl").path)")
+        }
+        return name
     }
 
     deinit { try? handle?.close() }

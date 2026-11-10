@@ -137,6 +137,21 @@ public struct MemoryConfig: Sendable {
     public var experienceFollowRatio = 0.5
 }
 
+/// Consolidation (2026-11-11): a separate, persona-free model request turns the day's timeline into
+/// long-term memories, then a new timeline segment begins (as if she slept). Manual only.
+public struct ConsolidateConfig: Sendable {
+    /// `reasoning_effort` of the consolidation request.
+    public var effort = "high"
+    /// `max_tokens` of the consolidation request (thinking plus the operations).
+    public var maxTokens = 16384
+    /// Seconds before the consolidation request gives up.
+    public var timeoutS = 900.0
+    /// Per task, per query: how many related existing memories are recalled to show it.
+    public var recallK = 8
+    /// A memory retired longer than this many days is deleted by the next consolidation.
+    public var retiredKeepDays = 30
+}
+
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
@@ -145,10 +160,11 @@ public struct Config: Sendable {
     public var idle: IdleConfig
     public var memory: MemoryConfig
     public var dashboard: DashboardConfig
+    public var consolidate: ConsolidateConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "consolidate"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -265,7 +281,20 @@ public struct Config: Sendable {
         guard (1...65535).contains(dashboard.port), !dashboard.bind.isEmpty, dashboard.timelineItems >= 1 else {
             throw TOMLError(description: "[dashboard] port 1…65535, bind not empty, timeline_items at least 1")
         }
-        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard)
+        var k = Section(name: "consolidate", raw: raw["consolidate"] ?? [:])
+        var consolidate = ConsolidateConfig()
+        try k.read("effort", &consolidate.effort)
+        try k.read("max_tokens", &consolidate.maxTokens)
+        try k.read("timeout_s", &consolidate.timeoutS)
+        try k.read("recall_k", &consolidate.recallK)
+        try k.read("retired_keep_days", &consolidate.retiredKeepDays)
+        try k.finish()
+        guard Effort.levels.contains(consolidate.effort), consolidate.maxTokens >= 1, consolidate.timeoutS > 0,
+              consolidate.recallK >= 0, consolidate.retiredKeepDays >= 0 else {
+            throw TOMLError(description: "[consolidate] effort one of \(Effort.levels); max_tokens at least 1; timeout_s positive; recall_k and retired_keep_days 0 or more")
+        }
+        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
+                      consolidate: consolidate)
     }
 }
 

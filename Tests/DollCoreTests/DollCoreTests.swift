@@ -3160,3 +3160,225 @@ extension Doll {
     let last = await h.model.requests.last!.messages
     #expect(last.contains { $0.role == "assistant" && $0.content == Scripted("", say("存好了喔")).raw })
 }
+
+// consolidation (2026-11-11) -----------------------------------------------------
+
+/// The config a harness runs with, for consolidating its data dir.
+private func consolidationConfig(_ h: Harness) throws -> Config {
+    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    cfg.core.dataDir = h.dir.path
+    cfg.memory.dir = h.dir.appending(path: "memory").path
+    return cfg
+}
+
+/// An event as the timeline stores it, a minute after the one before.
+private func stamped(_ kind: Event.Kind, _ text: String, _ seq: Int64, secret: Bool = false, image: String? = nil,
+                     cropNote: String? = nil, crop: String? = nil, window: String? = nil) -> Event {
+    var e = Event(kind, kind == .owner ? .owner : .internal, text, secret: secret, image: image, cropNote: cropNote,
+                  crop: crop, window: window)
+    e.seq = seq
+    e.ts = 1794337154 + Double(seq) * 60
+    return e
+}
+
+/// Every memory file under the harness's memory dir, parsed, by id.
+private func memoryFilesByID(_ h: Harness) throws -> [String: (folder: String, file: MemoryFile)] {
+    var out: [String: (String, MemoryFile)] = [:]
+    for folder in ["secret", "own", "public"] {
+        let dir = h.dir.appending(path: "memory/\(folder)")
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasSuffix(".md") {
+            out[String(name.dropLast(3))] = (folder, try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8)))
+        }
+    }
+    return out
+}
+
+/// A retired consolidated memory file, retired `days` ago.
+private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String) throws {
+    let f = MemoryFile(sourceSeq: 9, ts: 0, confidence: 0.6, kind: "", tier: .consolidated,
+                       retired: Retirement(ts: Date().timeIntervalSince1970 - days * 86400, supersededBy: "x", reason: "舊"), body: body)
+    let dir = h.dir.appending(path: "memory/public")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try f.text.write(to: dir.appending(path: "\(id).md"), atomically: true, encoding: .utf8)
+}
+
+@Test func consolidationRendersTheDayAsTextWithoutImagesOrProgramLines() {
+    let events = [
+        stamped(.owner, "用 TextEdit 另存一份", 1),
+        stamped(.doll, Scripted("我先打開電腦。", useComputer).raw, 2),
+        stamped(.tool, "電腦選單打開了，現在多了這些工具：…", 3, image: "a.jpg"),
+        stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
+        stamped(.doll, Scripted("", say("好"), key("cmd+shift+alt+s")).raw, 5),
+        stamped(.tool, "", 6),
+        stamped(.tool, "開著的視窗：TextEdit「另存」；焦點：textfield", 7, image: "b.jpg", cropNote: "視窗圖在 10,20",
+                crop: "c.jpg", window: "前景 app：TextEdit\nwindow \"Save\""),
+        stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
+        stamped(.doll, Scripted("", recall("另存")).raw, 9),
+        stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
+        stamped(.doll, Scripted("", outcome(true, "按 ⇧⌥⌘S 另存好了")).raw, 11),
+        stamped(.tool, "記下了：達成。", 12),
+        stamped(.owner, "我的密碼是 1234", 13, secret: true),
+        stamped(.watch, "盯著的畫面變了。", 14, image: "d.jpg"),
+    ]
+    func t(_ seq: Int) -> String { hhmm(events[seq - 1].ts) }
+    let tasks = Consolidation.tasks(events)
+    #expect(tasks.count == 2 && tasks.allSatisfy(\.owner))
+    #expect(tasks[0].text == """
+        [\(t(1)) 主人] 用 TextEdit 另存一份
+        [\(t(2)) 她想] 我先打開電腦。
+        [\(t(2)) 她呼叫] use_computer(expect: 畫面上看得到結果)
+        [\(t(5)) 她說] 好
+        [\(t(5)) 她呼叫] key(key: s; modifiers: ["cmd", "shift", "alt"])
+        [\(t(7)) key 的結果] 開著的視窗：TextEdit「另存」；焦點：textfield
+        [\(t(9)) 她呼叫] recall(query: 另存)
+        [\(t(11)) 她呼叫] outcome(success: true; summary: 按 ⇧⌥⌘S 另存好了)
+        [\(t(12)) outcome 的結果] 記下了：達成。
+        """)
+    #expect(tasks[0].queries == ["用 TextEdit 另存一份", "按 ⇧⌥⌘S 另存好了"])
+    #expect(tasks[1].text == "[\(t(13)) 主人｜秘密] 我的密碼是 1234\n[\(t(14)) watch] 盯著的畫面變了。")
+    // Nothing of the images, the window outline, the program's lines, recall's copy or the menu text.
+    let all = tasks.map(\.text).joined(separator: "\n")
+    for gone in [".jpg", "視窗圖在", "window \"Save\"", "【快捷鍵】", "【相關記憶】", "另存：1 條", "電腦選單打開了"] {
+        #expect(!all.contains(gone), "\(gone)")
+    }
+    // Events before the first owner line are a task of their own.
+    let early = Consolidation.tasks([stamped(.watch, "醒了", 1), stamped(.owner, "嗨", 2)])
+    #expect(early.map(\.owner) == [false, true] && early[0].queries.isEmpty)
+}
+
+@Test func consolidationAppliesAddUpdateRetireAndTheNextStartIsANewDay() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil)
+    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
+    let shortcut = try memory.write("TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
+    let experience = try memory.write("經驗：另存\n步驟：\n1. key cmd+shift+alt+s", folder: .public, sourceSeq: 1, tier: .selfReported,
+                                      kind: nil, experience: (task: "另存", stats: ExperienceStats(turns: 3, seconds: 20)))
+    try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
+    try writeRetired(h, "9-new000", days: 5, body: "剛退休的")
+    await h.doll.ownerSaid("用 TextEdit 另存一份")
+    try await h.turn(Scripted("", say("好")))
+    let before = try h.timeline().segment
+    let reply = """
+        整理好了。
+        ```json
+        {"operations": [
+          {"op": "add", "ref": "n1", "text": "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", "folder": "public", "kind": ""},
+          {"op": "add", "ref": "n2", "text": "主人今天要了一份副本", "folder": "secret", "kind": "happened"},
+          {"op": "update", "id": "\(cat)", "text": "主人養貓，是橘貓"},
+          {"op": "retire", "id": "\(saveAs)", "superseded_by": "n1", "reason": "有更短的走法"}
+        ]}
+        ```
+        """
+    let model = FakeModel([Scripted(reply)])
+    let r = try await Consolidation.run(config: cfg, root: root, model: model)
+
+    // The request: no persona, high effort, the day as text, only memories she or consolidation wrote.
+    let sent = await model.requests[0]
+    #expect(sent.effort == "high" && sent.messages.map(\.role) == ["system", "user"])
+    #expect(!sent.messages[0].content.contains("你是") && sent.messages[1].content.contains("[id: \(cat)｜public｜kind: ]\n主人養貓"))
+    #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說] 好"))
+    #expect(!sent.messages[1].content.contains(shortcut) && !sent.messages[1].content.contains(experience))
+    #expect(Set(r.related) == [saveAs, cat] && r.operations.count == 4 && r.segment == before && r.newSegment > before)
+
+    let files = try memoryFilesByID(h)
+    let added = files.filter { $0.value.file.tier == .consolidated && $0.value.file.retired == nil }
+    let n1 = try #require(added.first { $0.value.file.body == "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取" })
+    let n2 = try #require(added.first { $0.value.file.body == "主人今天要了一份副本" })
+    #expect(n1.value.folder == "public" && n1.value.file.kind == "" && n1.value.file.confidence == cfg.memory.confidence[.consolidated]!)
+    #expect(n2.value.folder == "secret" && n2.value.file.kind == "happened")
+    #expect(files[cat]?.file.body == "主人養貓，是橘貓" && files[cat]?.file.tier == .owner)
+    let retired = try #require(files[saveAs]?.file.retired)
+    #expect(retired.supersededBy == n1.key && retired.reason == "有更短的走法" && abs(retired.ts - Date().timeIntervalSince1970) < 60)
+    #expect(files[saveAs]?.file.body == "TextEdit 另存要從 File 選單點 Save As…")
+    // Retired longer than retired_keep_days: deleted; retired 5 days ago: kept.
+    #expect(files["9-old000"] == nil && files["9-new000"] != nil)
+    #expect(r.applied.first == "deleted 9-old000 (retired more than 30 days ago)")
+    #expect(r.applied.contains("add public/\(n1.key) (ref n1, kind none): TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"))
+    #expect(r.applied.contains("retire \(saveAs) (superseded by \(n1.key)): 有更短的走法"))
+    // Retired: out of recall; the update and the new one are in (the index follows the files).
+    let found = try memory.search("TextEdit 另存 Save As", visible: Set(MemoryFolder.allCases), limit: 50).map(\.id)
+    #expect(!found.contains(saveAs) && found.contains(n1.key))
+    #expect(try memory.search("橘貓", visible: [.public], limit: 50).first?.id == cat)
+    let retiredFile = try String(contentsOf: h.dir.appending(path: "memory/public/\(saveAs).md"), encoding: .utf8)
+    #expect(try Memory.parseFile(retiredFile).text == retiredFile)
+
+    // The next start is a new day: a new, empty segment and an empty today; long-term memory stays.
+    let next = try await restarted(h)
+    #expect(try next.timeline().segment == r.newSegment)
+    #expect(await next.doll.timelineEvents().isEmpty)
+    #expect(try await next.doll.todayCount() == 0)
+    #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "timeline/\(before).jsonl").path))
+}
+
+@Test func aFailedOrMalformedConsolidationWritesNothingAndKeepsTheDay() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    // Nothing in the timeline yet: nothing to consolidate.
+    await #expect(throws: ConsolidationError.self) { try await Consolidation.run(config: cfg, root: root, model: FakeModel([])) }
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
+    let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
+    try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
+    await h.doll.ownerSaid("主人的貓叫什麼")
+    try await h.turn(Scripted("", say("不知道")))
+    let files = try memoryFiles(h)
+    let segments = try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted()
+    func block(_ json: String) -> String { "```json\n\(json)\n```" }
+    let add = #"{"op": "add", "ref": "n1", "text": "主人的貓叫咪咪", "folder": "public", "kind": ""}"#
+    let bad: [String] = [
+        "沒有區塊",
+        block(#"{"operations": [\#(add)]}"#) + "\n" + block(#"{"operations": []}"#),
+        block("not json"),
+        block(#"{"operations": [], "note": "x"}"#),
+        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "public"}]}"#),
+        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "private", "kind": ""}]}"#),
+        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "public", "kind": "fact"}]}"#),
+        block(#"{"operations": [{"op": "add", "ref": "n1", "text": " ", "folder": "public", "kind": ""}]}"#),
+        block(#"{"operations": [\#(add), \#(add)]}"#),
+        block(#"{"operations": [{"op": "forget", "id": "\#(cat)"}]}"#),
+        block(#"{"operations": [{"op": "update", "id": "\#(shortcut)", "text": "x"}]}"#),
+        block(#"{"operations": [{"op": "update", "id": "\#(cat)", "text": "a"}, {"op": "update", "id": "\#(cat)", "text": "b"}]}"#),
+        block(#"{"operations": [{"op": "retire", "id": "\#(cat)", "superseded_by": "n9", "reason": "x"}]}"#),
+        block(#"{"operations": [{"op": "retire", "id": "\#(cat)", "superseded_by": "\#(cat)", "reason": "x"}]}"#),
+        block(#"{"operations": [\#(add), {"op": "retire", "id": "\#(cat)", "superseded_by": "n1", "reason": ""}]}"#),
+    ]
+    for reply in bad {
+        await #expect(throws: ConsolidationError.self, "\(reply)") {
+            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]))
+        }
+    }
+    // The model failing is an error too.
+    await #expect(throws: ModelError.self) { try await Consolidation.run(config: cfg, root: root, model: FakeModel([])) }
+    #expect(try memoryFiles(h) == files)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
+    #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
+    // The same reply, valid: applied.
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(block(#"{"operations": [\#(add)]}"#))]))
+    #expect(ok.applied.count == 2 && ok.applied[1].hasSuffix("主人的貓叫咪咪"))
+}
+
+@Test func consolidatedMemoriesAreAttachedAndRetiredOnesAreNot() async throws {
+    let h = try await Harness()
+    try writeRetired(h, "1-retire", days: 1, body: "TextEdit 另存要從 File 選單點 Save As…")
+    try await seedMemory(h, "public", "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", tier: "consolidated", confidence: 0.6)
+    await h.doll.ownerSaid("用 TextEdit 另存一份")
+    try await h.turn("好")
+    #expect(try memoryEvents(h).map(\.text) == ["【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
+    try await h.turn(Scripted("", recall("File 選單 Save As")))
+    let result = try h.toolResults().last!.text
+    #expect(result.contains("跳出另存對話框") && !result.contains("File 選單點"))
+}
+
+@Test func consolidateConfigIsValidated() throws {
+    let c = try Config.load(root.appending(path: "dollcore.example.toml")).consolidate
+    #expect(c.effort == "high" && c.retiredKeepDays == 30 && c.recallK >= 1)
+    let file = FileManager.default.temporaryDirectory.appending(path: "consolidate-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+        + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    for bad in ["effort = \"max\"", "max_tokens = 0", "timeout_s = 0", "recall_k = -1", "retired_keep_days = -1", "bogus = 1"] {
+        try (head + "[consolidate]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+}

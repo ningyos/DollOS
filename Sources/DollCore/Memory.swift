@@ -17,6 +17,7 @@ public enum SourceTier: String, Sendable, CaseIterable {
     case doll        // her own guess
     case program     // read by the program itself, no model in between (an app's menu shortcuts)
     case selfReported = "self_reported"   // her computer actions, kept after she said the session reached what she expected
+    case consolidated   // written by consolidation (2026-11-11): a separate model request over the day's timeline
 }
 
 /// What a memory says about its event (spec 6), given by her on `remember`. Facts and
@@ -92,9 +93,25 @@ public struct ExperienceStats: Sendable, Equatable {
     }
 }
 
+/// Why and when a memory stopped counting (consolidation, 2026-11-11): its file stays, with these in
+/// the front-matter, out of the index (so out of recall and attaching); consolidation deletes it once
+/// it has been retired longer than `[consolidate] retired_keep_days`.
+public struct Retirement: Sendable, Equatable {
+    public var ts: Double
+    /// The id of the memory that took its place.
+    public var supersededBy: String
+    public var reason: String
+
+    public init(ts: Double, supersededBy: String, reason: String) {
+        self.ts = ts
+        self.supersededBy = supersededBy
+        self.reason = reason
+    }
+}
+
 /// One memory file: a `+++` front-matter block, then the text verbatim. A record about one app at
 /// one version (a menu shortcut the program read) also names the app's bundle id and version; an
-/// experience, the owner's line it was for (JSON string) and its stats.
+/// experience, the owner's line it was for (JSON string) and its stats; a retired one, its `Retirement`.
 public struct MemoryFile: Sendable, Equatable {
     public var sourceSeq: Int64
     public var ts: Double
@@ -105,6 +122,7 @@ public struct MemoryFile: Sendable, Equatable {
     public var appVersion = ""
     public var task: String?
     public var stats: ExperienceStats?
+    public var retired: Retirement?
     public var body: String
 
     /// The file's bytes; `Memory.parseFile` of them gives this value back.
@@ -112,20 +130,27 @@ public struct MemoryFile: Sendable, Equatable {
         var lines = ["+++", "kind = \"\(kind)\"", "confidence = \(confidence)", "created_ts = \(ts)",
                      "source_event_seq = \(sourceSeq)", "source_tier = \"\(tier.rawValue)\""]
         if !app.isEmpty { lines += ["app = \"\(app)\"", "app_version = \"\(appVersion)\""] }
-        if let task {
-            let enc = JSONEncoder()
-            enc.outputFormatting = .withoutEscapingSlashes
-            lines.append("task = " + String(decoding: (try? enc.encode(task)) ?? Data("\"\"".utf8), as: UTF8.self))
-        }
+        if let task { lines.append("task = " + Self.json(task)) }
         if let s = stats {
             lines += ["turns = \(s.turns)", "seconds = \(s.seconds)", "attached_followed = \(s.attachedFollowed)",
                       "attached_success = \(s.attachedSuccess)", "attached_failed = \(s.attachedFailed)"]
         }
+        if let r = retired {
+            lines += ["retired_ts = \(r.ts)", "superseded_by = \"\(r.supersededBy)\"", "retired_reason = " + Self.json(r.reason)]
+        }
         return (lines + ["+++", body]).joined(separator: "\n")
+    }
+
+    /// A string as a one-line JSON string (front-matter values that may hold quotes or newlines).
+    static func json(_ s: String) -> String {
+        let enc = JSONEncoder()
+        enc.outputFormatting = .withoutEscapingSlashes
+        return String(decoding: (try? enc.encode(s)) ?? Data("\"\"".utf8), as: UTF8.self)
     }
 }
 
-/// An experience memory as the program attaches it.
+/// An experience memory as the program attaches it (and, 2026-11-11, a consolidated memory: no
+/// stats, no steps).
 public struct Experience: Sendable {
     public var id: String
     public var folder: String
@@ -155,6 +180,8 @@ public struct Experience: Sendable {
     }
     /// What she is shown: the stats line (when it has stats), then the text verbatim.
     public var attachedText: String { (stats.map { $0.line + "\n" } ?? "") + file.body }
+    /// The bracket's label: the level, with the kind when the file has one (consolidated memories may).
+    public var label: String { MemoryKind(rawValue: file.kind).map { "\(level)的\($0.label)" } ?? level }
 }
 
 /// `NLContextualEmbedding`, mean-pooled over L2-normalized token vectors (Apple's
@@ -415,6 +442,7 @@ public final class Memory {
         }
         var f = MemoryFile(sourceSeq: 0, ts: 0, confidence: 0, kind: "", tier: .doll, body: "")
         var turns: Int?, seconds = 0, followed = 0, succeeded = 0, failed = 0
+        var retiredTS: Double?, supersededBy = "", reason = ""
         for line in lines[1..<end] {
             let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2 else { continue }
@@ -436,11 +464,15 @@ public final class Memory {
             case "attached_followed": followed = Int(bare) ?? 0
             case "attached_success": succeeded = Int(bare) ?? 0
             case "attached_failed": failed = Int(bare) ?? 0
+            case "retired_ts": retiredTS = Double(bare)
+            case "superseded_by": supersededBy = bare
+            case "retired_reason": reason = (try? JSONDecoder().decode(String.self, from: Data(value.utf8))) ?? ""
             default: break
             }
         }
         f.stats = turns.map { ExperienceStats(turns: $0, seconds: seconds, attachedFollowed: followed,
                                               attachedSuccess: succeeded, attachedFailed: failed) }
+        f.retired = retiredTS.map { Retirement(ts: $0, supersededBy: supersededBy, reason: reason) }
         f.body = lines[(end + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         return f
     }
@@ -510,7 +542,7 @@ public final class Memory {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
             for name in names.sorted() where name.hasSuffix(".md") {
                 let parsed = try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8))
-                guard parsed.tier == .selfReported, !parsed.body.isEmpty else { continue }
+                guard parsed.tier == .selfReported, parsed.retired == nil, !parsed.body.isEmpty else { continue }
                 out.append(Experience(id: String(name.dropLast(3)), folder: dirName(f), secret: f == .secret,
                                       level: level(parsed.confidence), file: parsed))
             }
@@ -525,6 +557,63 @@ public final class Memory {
         guard parsed.tier == .selfReported else { return nil }
         let folder = url.deletingLastPathComponent().lastPathComponent
         return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
+    }
+
+    /// A memory by id, when consolidation wrote it and it is not retired: what attaching shows for a
+    /// consolidated hit (2026-11-11, provisional).
+    func consolidated(_ id: String) throws -> Experience? {
+        guard let url = url(of: id) else { return nil }
+        let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.tier == .consolidated, parsed.retired == nil, !parsed.body.isEmpty else { return nil }
+        let folder = url.deletingLastPathComponent().lastPathComponent
+        return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
+    }
+
+    /// One memory file by id: its folder and parsed contents; nil when no folder holds it.
+    func file(_ id: String) throws -> (folder: MemoryFolder, file: MemoryFile)? {
+        guard let url = url(of: id) else { return nil }
+        let dir = url.deletingLastPathComponent().lastPathComponent
+        guard let folder = MemoryFolder.allCases.first(where: { dirName($0) == dir }) else { return nil }
+        return (folder, try Self.parseFile(String(contentsOf: url, encoding: .utf8)))
+    }
+
+    /// Replaces a memory's text (consolidation's update); its front-matter stays, the index follows.
+    func update(_ id: String, text: String) throws {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { throw MemoryError(description: "update of \(id) with no text") }
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
+        parsed.body = body
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try store.putMemoryIndex(id: id, path: url.path, folder: url.deletingLastPathComponent().lastPathComponent,
+                                 confidence: parsed.confidence, ts: parsed.ts, sourceSeq: parsed.sourceSeq, kind: parsed.kind,
+                                 text: body, vector: Self.blob(try embedder.embed(body)))
+    }
+
+    /// Marks a memory retired in its front-matter and takes it out of the index; the file stays.
+    func retire(_ id: String, _ r: Retirement) throws {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is already retired") }
+        parsed.retired = r
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try store.deleteMemoryIndex(id: id)
+    }
+
+    /// Deletes every file retired before `cutoff` (seconds since 1970); returns their ids.
+    func deleteRetired(before cutoff: Double) throws -> [String] {
+        var gone: [String] = []
+        for f in MemoryFolder.allCases {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
+            for name in names.sorted() where name.hasSuffix(".md") {
+                let url = directory(f).appending(path: name)
+                guard let r = try Self.parseFile(String(contentsOf: url, encoding: .utf8)).retired, r.ts < cutoff else { continue }
+                try FileManager.default.removeItem(at: url)
+                gone.append(String(name.dropLast(3)))
+            }
+        }
+        return gone
     }
 
     /// Every memory file in folder `f`, newest first (ties by id), read from the markdown files; for
@@ -588,13 +677,17 @@ public final class Memory {
         }
     }
 
-    /// Number of records on disk (the source of truth).
-    private func fileCount() -> Int {
-        let fm = FileManager.default
-        return MemoryFolder.allCases.reduce(0) { n, f in
-            n + ((try? fm.contentsOfDirectory(atPath: directory(f).path)) ?? [])
-                .filter { $0.hasSuffix(".md") }.count
+    /// Number of records on disk that belong in the index: not retired, not empty.
+    private func fileCount() throws -> Int {
+        var n = 0
+        for f in MemoryFolder.allCases {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
+            for name in names where name.hasSuffix(".md") {
+                let parsed = try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8))
+                if parsed.retired == nil, !parsed.body.isEmpty { n += 1 }
+            }
         }
+        return n
     }
 
     /// The index's version: change it whenever vectors or index rows would come out different from
@@ -607,7 +700,7 @@ public final class Memory {
     /// index (`indexVersion`), the whole index is rebuilt — records are small and few, a full
     /// rebuild is cheaper than tracking which are missing.
     func syncOnBoot() throws {
-        if try store.memoryIndexVersion() != Self.indexVersion || fileCount() != (try store.countMemoryIndex()) {
+        if try store.memoryIndexVersion() != Self.indexVersion || (try fileCount()) != (try store.countMemoryIndex()) {
             try rebuild()
         }
     }
@@ -625,7 +718,7 @@ public final class Memory {
                 let url = dir.appending(path: name)
                 let raw = try String(contentsOf: url, encoding: .utf8)
                 let parsed = try Self.parseFile(raw)
-                guard !parsed.body.isEmpty else { continue }
+                guard !parsed.body.isEmpty, parsed.retired == nil else { continue }
                 let id = String(name.dropLast(3))
                 let vector = try embedder.embed(parsed.body)
                 try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: parsed.confidence,

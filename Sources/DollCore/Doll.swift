@@ -1226,12 +1226,13 @@ public actor Doll {
     /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): the owner's last line plus
     /// the front app's name as the query, the turn's visible folders (`recall`'s rule), experiences
     /// only (tier self_reported; her other memories and the program's shortcuts stay for `recall`,
-    /// 2026-11-09). Experiences for the same task are one group (`Memory.experienceGroups`); the top
-    /// `auto_attach_k` groups by relevance each give their best-ranked one (`Memory.ranked`), minus
-    /// those attached since the owner's last line. Anything left becomes one 【相關記憶】 event in the
-    /// timeline, re-sent byte-identical like every event; nothing left, no event. Each experience goes
-    /// in whole (its length is capped when written), its stats line first.
-    /// A failed search is logged and attaches nothing; the turn goes on.
+    /// 2026-11-09) and, provisionally (2026-11-11, the owner may reverse it), consolidated memories.
+    /// Experiences for the same task are one group (`Memory.experienceGroups`); a consolidated memory
+    /// is a group of its own. The top `auto_attach_k` groups by relevance each give their best-ranked
+    /// one (`Memory.ranked`), minus those attached since the owner's last line. Anything left becomes
+    /// one 【相關記憶】 event in the timeline, re-sent byte-identical like every event; nothing left, no
+    /// event. Each goes in whole (an experience's length is capped when written), an experience's
+    /// stats line first. A failed search is logged and attaches nothing; the turn goes on.
     func attachMemories(trigger: String) {
         let k = memoryConfig.autoAttachK
         guard k > 0 else { return }
@@ -1240,17 +1241,22 @@ public actor Doll {
             guard let owner = events.last(where: { $0.kind == .owner }) else { return }
             let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-            let found = try memory.search(query, visible: visible, limit: memoryConfig.maxCandidates, tiers: [.selfReported])
+            let found = try memory.search(query, visible: visible, limit: memoryConfig.maxCandidates,
+                                          tiers: [.selfReported, .consolidated])
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
             var picked: [[Experience]] = []
             for hit in found where picked.count < k {
-                guard let g = groups.first(where: { $0.contains { $0.id == hit.id } }),
-                      !picked.contains(where: { $0.contains { $0.id == hit.id } }) else { continue }
+                guard !picked.contains(where: { $0.contains { $0.id == hit.id } }) else { continue }
+                if let c = try memory.consolidated(hit.id) {
+                    picked.append([c])
+                    continue
+                }
+                guard let g = groups.first(where: { $0.contains { $0.id == hit.id } }) else { continue }
                 picked.append(Memory.ranked(g))
             }
             let fresh = picked.map { $0[0] }.filter { !attachedIDs.contains($0.id) }
             let ranking = picked.map { g in "[" + g.map { e in
-                e.id + (e.stats.map { "(\($0.turns) 回合, 照做 \($0.attachedFollowed), 成功 \($0.attachedSuccess), 失敗 \($0.attachedFailed))" } ?? "(no stats)")
+                e.id + (e.file.tier == .consolidated ? "(consolidated)" : e.stats.map { "(\($0.turns) 回合, 照做 \($0.attachedFollowed), 成功 \($0.attachedSuccess), 失敗 \($0.attachedFailed))" } ?? "(no stats)")
             }.joined(separator: " > ") + "]" }
             log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found in \(picked.count) groups "
                 + "\(ranking.joined(separator: " ")), attached \(fresh.map(\.id)), already attached \(picked.count - fresh.count)")
@@ -1259,7 +1265,7 @@ public actor Doll {
             let from = frontAppName.map { "主人的話和前景 app「\($0)」" } ?? "主人的話"
             var text = "【相關記憶】程式用\(from)查到的過去經驗："
             for e in fresh {
-                text += "\n〔\(e.level)｜\(e.folder)〕\n\(e.attachedText)"
+                text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
             }
             try append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
             attachedNow.append(text)
