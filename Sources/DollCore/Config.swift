@@ -85,7 +85,7 @@ public struct DashboardConfig: Sendable {
     /// loopback only unless the owner chooses otherwise.
     public var bind = "127.0.0.1"
     /// The timeline endpoint returns this many of the newest items (a turn, an owner line, a watch
-    /// wake, a program event); the database keeps every run.
+    /// wake, a program event); the timeline file keeps every one.
     public var timelineItems = 200
 }
 
