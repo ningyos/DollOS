@@ -60,10 +60,12 @@ confidence_doll = 0.3         # 她自己的推測：最弱，要查證才講
 confidence_program = 0.95     # 程式直接讀到的事實（選單上的快捷鍵）：沒經過模型判斷，比工具輸出（0.85）高；不是 1.0，app 自己的選單也可能不準
 confidence_self_reported = 0.4   # 經驗（2026-11-09）：她自己說這次達成了，程式才把這次的動作存下來；成功只是她的自評、沒有外部檢查，所以落在「大概」的下緣
 confidence_consolidated = 0.6   # 整理寫的記憶（2026-11-11）：另一個模型讀當天時間線的原文寫的，有來源可查（比她自評的經驗 0.4 高），但經過模型的摘要、沒有外部檢查（比工具輸出 0.85 低）；落在「大概」
-language = "zh-Hant"          # NLContextualEmbedding 的語言；zh-Hans／zh-Hant 在本機是同一個模型（實測同一 modelIdentifier）
+embedding_model = "Qwen/Qwen3-Embedding-0.6B"   # 決定（主人，2026-11-11）：記憶的 embedding 換成 Qwen3-Embedding-0.6B，在 Swift 裡用 MLX 跑（MLXEmbedders）。Hugging Face id（第一次下載到 ~/.cache/huggingface/hub，之後讀快取）或模型資料夾的絕對路徑。載不起來＝開機失敗，沒有退路。理由（fmscore，4 個情境 20 條）：舊的 NLContextualEmbedding 分數跟著文字系統和符號走、不是意思，無關的 Safari 情境最高 0.887 比相關的平均（0.82–0.85）還高；Qwen3 無關的最高 0.47、相關的平均 0.61–0.73
+embedding_query_instruction = "Given a web search query, retrieve relevant passages that answer the query"   # 查詢前面加「Instruct: <這個>\nQuery:」（模型卡的格式），記憶、登記簿條目、今天的事件不加。初始值理由：sentence-transformers 的 query prompt，fmscore 量的就是這個
+embedding_max_tokens = 2048  # 一段文字超過這麼多 token 只取前面這麼多再 embed。初始值理由：記憶最多 experience_max_chars 字（中文約一字一 token），今天的工具結果可能很長；長度越長越慢（注意力是平方）
 max_query_phrases = 16        # 初始值理由：中文查句切三連字窗，30 字以內的句子不會超過 28 個；16 個已經蓋住整句，再多重複字不增加命中
 experience_max_chars = 800   # 一條經驗最多幾個字（超過從中間的步驟砍起）。初始值理由：E 一次 9–16 個動作、一步約 30–50 字，800 字蓋得住；中文約一字一 token，附一次不到兩張截圖的量
-experience_group_similarity = 0.97   # 主人那句話的 embedding 相似度 ≥ 這個＝同一個目標，一組只附成績最好的一條（2026-11-09）。初始值理由：實測 E 跟改寫過的 E 0.984，E 跟 F（也是 notes.txt＋TextEdit）0.940，其他任務 0.72–0.88
+experience_group_similarity = 0.9   # 主人那句話的 embedding 相似度 ≥ 這個＝同一個目標，一組只附成績最好的一條（2026-11-09）。理由（2026-11-11 換 Qwen3-Embedding 後實測，兩邊都當文件、不加 instruction）：E 跟改寫過的 E 0.977，E 跟 F（也是 notes.txt＋TextEdit）0.780，其他任務兩兩 0.31–0.75；0.9 在 0.78 和 0.977 中間（舊模型時是 0.97：E/E' 0.984、E/F 0.940）
 experience_follow_ratio = 0.5        # 附上的經驗有這麼多比例的步驟依序出現在她這次的動作裡＝照做了，照做才記成功／失敗。初始值理由：Experience2 P 對上 4–10 步，一半以上算照做
 
 [dashboard]
@@ -84,7 +86,7 @@ retired_keep_days = 30        # 決定（主人，2026-11-11）：被取代的�
 
 [select]
 # 選記憶（2026-11-11，登記簿＋逐條打分）：【相關記憶】和 recall 走同一條路：觸發的名字（主人那句／recall 查詢裡的、前景 app、視窗標題、焦點）對到登記簿 → 找出所有相關的（FTS 命中、embedding ≥ similarity、跟觸發或跟 FTS/embedding 命中的記憶共用一個登記簿實體）→ 便宜分數取前 prefilter 條 → Apple 本機模型（Foundation Models）每條一次打 0–10 分 → ≥ threshold 的全給（可能 0 條＝不附）。本機模型不能用＝開機失敗，沒有退路
-similarity = 0.7              # embedding 頻道：跟查詢的餘弦 ≥ 這個才算相關。理由（2026-11-11 實測）：這個 embedding 在真的記憶上分不開相關和無關——合併的 E/F 記憶對無關的 Safari 情境 0.74–0.84，對相關的 recall「另存對話框怎麼換到桌面」0.52–0.67；短句的單元測試語料答案 0.72–0.94、最近的非答案到 0.76。所以它只當多撈的頻道（撈多了由 prefilter 和本機模型打分擋），0.7 讓短句的答案都進得來
+similarity = 0.55             # 決定（主人，2026-11-11）：embedding 頻道：跟查詢的餘弦 ≥ 這個才算相關。理由（fmscore，Qwen3-Embedding，Swift/MLX 實測）：無關的 Safari 情境 20 條最高 0.464，相關情境裡有用的那些平均 0.606–0.736，0.55 分得開。舊的 NLContextualEmbedding 分不開（無關的最高 0.887 比相關的平均 0.82–0.85 還高），當時只能用 0.7 當多撈的頻道
 entity_weight = 0.2           # 便宜分數＝跟查詢的餘弦＋這個×（它有幾個觸發的實體）。理由：上面那種餘弦的雜訊幅度約 0.1–0.3，一個共用的觸發實體加 0.2 才排得過大部分雜訊；同一條記憶對到越多觸發實體越前面
 prefilter = 8                 # 決定（主人，2026-11-11）：便宜分數前幾條給本機模型打分。實測（fmscore）一條約 0.5 秒、平行不會更快，8 條約 4 秒
 threshold = 7                 # 決定（主人，2026-11-11）：本機模型打分 ≥ 這個才給。實測（fmscore，4 個情境 20 條）≥7：有用 14/19、必要 7/8、誤選 5；無關的情境全部 ≤2

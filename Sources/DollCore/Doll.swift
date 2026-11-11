@@ -179,8 +179,10 @@ public actor Doll {
     /// The effort of the model call in flight.
     var inflightEffort: String?
 
+    /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
+    /// index embeds the segment's events here.
     public init(config: Config, root: URL, model: any MainModel, selector: any SelectionModel,
-                computer: (any ComputerDriver)? = nil,
+                embedder: any Embedder, computer: (any ComputerDriver)? = nil,
                 say: @escaping Say) throws {
         core = config.core
         llm = config.llm
@@ -194,12 +196,12 @@ public actor Doll {
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timeline = try Timeline(dir: data.appending(path: "timeline"))
-        // No fallback: a missing embedding model is an error, the same as an unreachable Strata (spec 3.1).
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
-        memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")))
+        memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
+                            embedder: embedder)
         pipeline = Selector(memory: memory, model: selector, config: config.select)
         // Before anything is appended: every event of the segment so far.
-        today = try TodayIndex(timeline, embedder: memory.embedder)
+        today = try TodayIndex(timeline, embedder: embedder)
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say

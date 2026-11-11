@@ -1,5 +1,4 @@
 import Foundation
-import NaturalLanguage
 
 /// M3a memory (spec 6): the markdown files under `<memory.dir>/<secret_dir>/`, `<own_dir>/` and
 /// `<public_dir>/` are the source of truth. The SQLite tables in `Store`
@@ -247,56 +246,6 @@ public struct Experience: Sendable {
     public var label: String { MemoryKind(rawValue: file.kind).map { "\(level)的\($0.label)" } ?? level }
 }
 
-/// `NLContextualEmbedding`, mean-pooled over L2-normalized token vectors (Apple's
-/// documented pooling for subword embeddings), then L2-normalized again.
-final class Embedder {
-    let language: NLLanguage
-    private let model: NLContextualEmbedding
-
-    init(language: String) throws {
-        guard #available(macOS 13.0, *) else {
-            throw MemoryError(description: "NLContextualEmbedding is unavailable on this system")
-        }
-        let lang = NLLanguage(rawValue: language)
-        guard let m = NLContextualEmbedding(language: lang) else {
-            throw MemoryError(description: "no contextual embedding model for \(language)")
-        }
-        guard m.hasAvailableAssets else {
-            throw MemoryError(description: "embedding model assets for \(language) are not on this device")
-        }
-        do { try m.load() } catch {
-            throw MemoryError(description: "cannot load the embedding model for \(language): \(error)")
-        }
-        self.language = lang
-        model = m
-    }
-
-    func embed(_ s: String) throws -> [Float] {
-        guard #available(macOS 13.0, *) else {
-            throw MemoryError(description: "NLContextualEmbedding is unavailable on this system")
-        }
-        let result: NLContextualEmbeddingResult
-        do { result = try model.embeddingResult(for: s, language: language) } catch {
-            throw MemoryError(description: "embedding failed: \(error)")
-        }
-        var sums: [Double] = []
-        // The block returns whether to go on: true visits every token (false stopped after the first).
-        result.enumerateTokenVectors(in: result.string.startIndex..<result.string.endIndex) { token, _ in
-            let norm = token.reduce(0) { $0 + Double($1) * Double($1) }.squareRoot()
-            guard norm > 0 else { return true }
-            if sums.isEmpty { sums = token.map { Double($0) / norm } }
-            else { for i in 0..<token.count { sums[i] += Double(token[i]) / norm } }
-            return true
-        }
-        guard !sums.isEmpty else { throw MemoryError(description: "embedding of an empty string") }
-        let n = Double(sums.count)
-        let mean = sums.map { $0 / n }
-        let norm = mean.reduce(0) { $0 + $1 * $1 }.squareRoot()
-        guard norm > 0 else { throw MemoryError(description: "embedding of an unembeddable string") }
-        return mean.map { Float($0 / norm) }
-    }
-}
-
 /// The today index (2026-11-11: in memory): FTS5 trigram + embedding over the current timeline
 /// segment, the same method as the memory index. Built from the segment's JSONL at start and fed on
 /// every append; never on disk, never the source.
@@ -355,14 +304,14 @@ public enum RecallHit: Sendable {
 
 public final class TodayIndex {
     private let sql: SQLite
-    private let embedder: Embedder
+    private let embedder: any Embedder
 
     /// Indexes every event of the timeline so far.
-    init(_ timeline: Timeline, embedder: Embedder) throws {
+    init(_ timeline: Timeline, embedder: any Embedder) throws {
         sql = try SQLite(path: nil, schema: todaySchema)
         self.embedder = embedder
         let names = Doll.callNames(timeline.events)
-        let rows = try timeline.events.flatMap { try put($0, tool: names[$0.seq!]) }
+        let rows = try put(timeline.events.map { ($0, names[$0.seq!]) })
         try sql.transaction { try insert(rows) }
     }
 
@@ -392,8 +341,11 @@ public final class TodayIndex {
     /// Tools whose results the today index leaves out.
     static let unindexedResults: Set<String> = Set(["recall"] + ScenarioKind.allCases.map(\.enterTool))
 
-    private func put(_ ev: Event, tool: String?) throws -> [(Event, String, String, String, Data)] {
-        try Self.entries(ev, tool: tool).map { (ev, $0.id, $0.label, $0.text, Memory.blob(try embedder.embed($0.text))) }
+    /// The rows of `events`, their texts embedded in one call.
+    private func put(_ events: [(Event, String?)]) throws -> [(Event, String, String, String, Data)] {
+        let list = events.flatMap { ev, tool in Self.entries(ev, tool: tool).map { (ev, $0) } }
+        let vectors = try embedder.embed(list.map(\.1.text), as: .document)
+        return zip(list, vectors).map { (item, v) in (item.0, item.1.id, item.1.label, item.1.text, Memory.blob(v)) }
     }
 
     private func insert(_ rows: [(Event, String, String, String, Data)]) throws {
@@ -414,7 +366,7 @@ public final class TodayIndex {
             let tail = Array(events[(events.lastIndex { $0.kind == .doll } ?? 0)...])
             tool = Doll.callNames(tail)[ev.seq!]
         }
-        let rows = try put(ev, tool: tool)
+        let rows = try put([(ev, tool)])
         try sql.transaction { try insert(rows) }
     }
 
@@ -448,15 +400,15 @@ public final class Memory {
     let config: MemoryConfig
     private let root: URL
     private let store: Store
-    let embedder: Embedder
+    let embedder: any Embedder
     /// The entity registry the memories' entities name (`<memory.dir>/<registry_dir>/`).
     public let registry: Registry
 
-    init(config: MemoryConfig, root: URL, store: Store) throws {
+    init(config: MemoryConfig, root: URL, store: Store, embedder: any Embedder) throws {
         self.config = config
         self.root = root
         self.store = store
-        embedder = try Embedder(language: config.language)
+        self.embedder = embedder
         let fm = FileManager.default
         for dir in [config.secretDir, config.ownDir, config.publicDir] {
             try fm.createDirectory(at: root.appending(path: dir), withIntermediateDirectories: true)
@@ -609,12 +561,13 @@ public final class Memory {
         }
     }
 
-    /// One file's index rows: metadata, FTS text, vector, registry entity ids.
-    private func index(_ id: String, url: URL, folder: String, _ file: MemoryFile) throws {
+    /// One file's index rows: metadata, FTS text, vector (of its text, `vector` when the caller
+    /// already has it), registry entity ids.
+    private func index(_ id: String, url: URL, folder: String, _ file: MemoryFile, vector: [Float]? = nil) throws {
         try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: file.confidence, ts: file.ts,
                                  sourceSeq: file.sourceSeq, kind: file.kind, tier: file.tier.rawValue,
                                  entities: file.entities.map(\.id), text: file.body,
-                                 vector: Self.blob(try embedder.embed(file.body)))
+                                 vector: Self.blob(try vector ?? embedder.embed(file.body, as: .document)))
     }
 
     // experiences -------------------------------------------------------------
@@ -730,7 +683,7 @@ public final class Memory {
     /// Experiences in groups: two whose owner lines embed at least `experience_group_similarity`
     /// alike are in one group, and so is anything linked through a chain of such pairs.
     func experienceGroups(_ list: [Experience]) throws -> [[Experience]] {
-        let vectors = try list.map { try embedder.embed($0.task) }
+        let vectors = try embedder.embed(list.map(\.task), as: .document)
         let groups = Self.groups(list.count) { i, j in
             zip(vectors[i], vectors[j]).reduce(0.0) { $0 + Double($1.0) * Double($1.1) } >= config.experienceGroupSimilarity
         }
@@ -782,8 +735,9 @@ public final class Memory {
     /// The index's version: change it whenever vectors or index rows would come out different from
     /// the same files, so an index built by older code is rebuilt at boot. 2: vectors are the mean
     /// of every token (1 stopped after the first token, 2026-11-09). 3: entity keys (2026-11-11).
-    /// 4: registry entity ids and the registry's own index (2026-11-11).
-    static let indexVersion = 4
+    /// 4: registry entity ids and the registry's own index (2026-11-11). 5: Qwen3-Embedding in place
+    /// of `NLContextualEmbedding` (2026-11-11).
+    static let indexVersion = 5
 
     /// Called at boot: files written by a previous process (or by hand) are not in the index,
     /// and a new process would not find them. If the counts disagree (memories or registry
@@ -802,19 +756,20 @@ public final class Memory {
         try store.clearMemoryIndex()
         try store.setMemoryIndexVersion(Self.indexVersion)
         try registry.rebuild()
-        let fm = FileManager.default
+        var files: [(id: String, url: URL, folder: String, file: MemoryFile)] = []
         for f in MemoryFolder.allCases {
             let dir = directory(f)
-            let folder = dirName(f)
-            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names.sorted() where name.hasSuffix(".md") {
                 let url = dir.appending(path: name)
                 let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
                 guard !parsed.body.isEmpty, parsed.retired == nil else { continue }
                 do { try checkEntities(parsed.entities) } catch { throw MemoryError(description: "\(url.path): \(error)") }
-                try index(String(name.dropLast(3)), url: url, folder: folder, parsed)
+                files.append((String(name.dropLast(3)), url, dirName(f), parsed))
             }
         }
+        let vectors = try embedder.embed(files.map(\.file.body), as: .document)
+        for (f, v) in zip(files, vectors) { try index(f.id, url: f.url, folder: f.folder, f.file, vector: v) }
     }
 
     // retrieval ---------------------------------------------------------------
@@ -859,7 +814,7 @@ public final class Memory {
     /// related memories; her recall and the 【相關記憶】 go through `related` and `Selector`.)
     public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int,
                        tiers: Set<SourceTier>? = nil) throws -> [MemoryHit] {
-        try rank(query, vector: try embedder.embed(query), visible: visible, limit: limit, tiers: tiers)
+        try rank(query, vector: try embedder.embed(query, as: .query), visible: visible, limit: limit, tiers: tiers)
     }
 
     /// Everything related to a trigger (2026-11-11), with no count limit: in `visible` folders,
@@ -874,7 +829,7 @@ public final class Memory {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
         let tierNames = tiers.map { $0.map(\.rawValue).sorted() }
-        let qv = try embedder.embed(query)
+        let qv = try embedder.embed(query, as: .query)
         let phrases = Self.queryPhrases(query, maxPhrases: config.maxQueryPhrases)
         let match = phrases.isEmpty ? nil
             : phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")

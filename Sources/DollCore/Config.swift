@@ -118,8 +118,14 @@ public struct MemoryConfig: Sendable {
     public var mediumConfidence = 0.40
     /// Starting confidence per source tier (spec 6: evidence count stays at 1 in M3a).
     public var confidence: [SourceTier: Double] = [:]
-    /// `NLContextualEmbedding` language tag.
-    public var language = "zh-Hant"
+    /// The embedding model (2026-11-11): a Hugging Face id (downloaded once into the Hugging Face
+    /// cache) or an absolute path to its directory. Qwen3-Embedding: last-token pooling.
+    public var embeddingModel = "Qwen/Qwen3-Embedding-0.6B"
+    /// What a query's embedding is asked to find (Qwen3-Embedding's `Instruct:` line); documents
+    /// (memories, registry entries, today's events) have none.
+    public var embeddingQueryInstruction = "Given a web search query, retrieve relevant passages that answer the query"
+    /// A text longer than this many tokens is cut to its first this-many before it is embedded.
+    public var embeddingMaxTokens = 2048
     /// Cap on how many phrases one recall query turns into FTS MATCH terms.
     public var maxQueryPhrases = 16
     /// An experience memory (her actions in a computer session she said reached what she expected,
@@ -127,7 +133,7 @@ public struct MemoryConfig: Sendable {
     public var experienceMaxChars = 1200
     /// Experiences whose owner-line embeddings are at least this similar are one group (the same
     /// task); from each group only the best-ranked is attached (spec 3.1, 2026-11-09).
-    public var experienceGroupSimilarity = 0.97
+    public var experienceGroupSimilarity = 0.9
     /// An attached experience counts as followed when at least this share of its steps appear, in
     /// order, among her actions of the session.
     public var experienceFollowRatio = 0.5
@@ -159,7 +165,7 @@ public struct ConsolidateConfig: Sendable {
 /// given.
 public struct SelectConfig: Sendable {
     /// The embedding channel: a memory (or today's event) whose cosine to the query is at least this.
-    public var similarity = 0.7
+    public var similarity = 0.55
     /// The cheap score: cosine to the query plus this much per registry entity of the trigger it has.
     public var entityWeight = 0.2
     /// How many of the related go to the on-device model, best cheap score first.
@@ -272,7 +278,9 @@ public struct Config: Sendable {
         try m.read("today_confidence", &memory.todayConfidence)
         try m.read("high_confidence", &memory.highConfidence)
         try m.read("medium_confidence", &memory.mediumConfidence)
-        try m.read("language", &memory.language)
+        try m.read("embedding_model", &memory.embeddingModel)
+        try m.read("embedding_query_instruction", &memory.embeddingQueryInstruction)
+        try m.read("embedding_max_tokens", &memory.embeddingMaxTokens)
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
         try m.read("experience_max_chars", &memory.experienceMaxChars)
         try m.read("experience_group_similarity", &memory.experienceGroupSimilarity)
@@ -289,10 +297,11 @@ public struct Config: Sendable {
         guard memory.rrfK >= 1, memory.maxCandidates >= 1, memory.experienceMaxChars >= 100,
               (0.0...1.0).contains(memory.experienceGroupSimilarity),
               memory.experienceFollowRatio > 0, memory.experienceFollowRatio <= 1,
-              memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
+              memory.highConfidence > memory.mediumConfidence, !memory.embeddingModel.isEmpty,
+              !memory.embeddingQueryInstruction.isEmpty, memory.embeddingMaxTokens >= 1,
               (0.0...1.0).contains(memory.todayConfidence),
               Set([memory.secretDir, memory.ownDir, memory.publicDir, memory.registryDir]).count == 4 else {
-            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, four distinct folder names (secret, own, public, registry)")
+            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, embedding_model and embedding_query_instruction not empty, embedding_max_tokens at least 1, today_confidence from 0 to 1, four distinct folder names (secret, own, public, registry)")
         }
         var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
         var dashboard = DashboardConfig()

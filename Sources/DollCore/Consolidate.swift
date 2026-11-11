@@ -83,8 +83,9 @@ public enum Consolidation {
     }
 
     /// Consolidates the newest segment of `config.core.dataDir` into `config.memory.dir` (both
-    /// relative to `root` unless absolute).
-    public static func run(config: Config, root: URL, model: any MainModel) async throws -> ConsolidationResult {
+    /// relative to `root` unless absolute), embedding with `embedder`.
+    public static func run(config: Config, root: URL, model: any MainModel,
+                           embedder: any Embedder) async throws -> ConsolidationResult {
         func path(_ p: String) -> URL { p.hasPrefix("/") ? URL(filePath: p) : root.appending(path: p) }
         let data = path(config.core.dataDir)
         let timelineDir = data.appending(path: "timeline")
@@ -92,7 +93,8 @@ public enum Consolidation {
         guard !timeline.events.isEmpty else {
             throw ConsolidationError("segment \(timeline.segment) is empty: nothing to consolidate")
         }
-        let memory = try Memory(config: config.memory, root: path(config.memory.dir), store: try Store(path: data.appending(path: "doll.db")))
+        let memory = try Memory(config: config.memory, root: path(config.memory.dir), store: try Store(path: data.appending(path: "doll.db")),
+                                embedder: embedder)
         try memory.syncOnBoot()
         try await model.check()
 

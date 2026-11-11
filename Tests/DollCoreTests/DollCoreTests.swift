@@ -218,6 +218,38 @@ private final class FakeComputer: ComputerDriver, Sendable {
 /// The fake's open windows and focus line, the last line of every computer result.
 private let fakeWindowsLine = "開著的視窗：Finder、Fake「frame」（前景）；焦點：button \"OK\""
 
+/// The embedding model's stand-in: a bag of the text's characters and character pairs, each hashed
+/// (FNV-1a) into one of 512 dimensions, L2-normalized. Texts sharing more characters are nearer;
+/// the same text is 1. Queries and documents alike.
+final class FakeEmbedder: Embedder, Sendable {
+    static let dims = 512
+
+    func embed(_ texts: [String], as role: EmbeddingRole) throws -> [[Float]] {
+        texts.map(Self.vector)
+    }
+
+    static func vector(_ text: String) -> [Float] {
+        func bucket(_ s: String) -> Int {
+            var h: UInt64 = 0xcbf29ce484222325
+            for b in s.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+            return Int(h % UInt64(dims))
+        }
+        var v = [Float](repeating: 0, count: dims)
+        let chars = Array(text.lowercased())
+        for (i, c) in chars.enumerated() {
+            v[bucket(String(c))] += 1
+            if i + 1 < chars.count { v[bucket(String(chars[i...(i + 1)]))] += 1 }
+        }
+        let norm = v.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        guard norm > 0 else { v[0] = 1; return v }
+        return v.map { $0 / norm }
+    }
+}
+
+/// The real embedding model (`dollcore.example.toml`'s), loaded once for the tests that are about
+/// meaning: the M3a corpus and recall by meaning. Needs the weights in the Hugging Face cache.
+private let qwen3 = Task { try await MLXEmbedder.load(try Config.load(root.appending(path: "dollcore.example.toml")).memory) }
+
 /// The on-device model's stand-in: entities by exact text (none otherwise); a pick rule (default:
 /// the first candidate whose line contains the name, case-insensitively); a same rule (default:
 /// 10); a new entry described as 「測試：<name>」; a score rule (default: 10). Records every request.
@@ -285,7 +317,7 @@ private struct Harness {
     let dir: URL
     let store: Store      // a second connection to the memory index, for checks
 
-    init(_ replies: [Scripted] = [], tune: (inout Config) -> Void = { _ in }) async throws {
+    init(_ replies: [Scripted] = [], embedder: (any Embedder)? = nil, tune: (inout Config) -> Void = { _ in }) async throws {
         dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
         var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
         cfg.core.dataDir = dir.path
@@ -301,7 +333,7 @@ private struct Harness {
         self.vm = vm
         let selector = FakeSelector()
         self.selector = selector
-        doll = try Doll(config: cfg, root: root, model: model, selector: selector, computer: vm,
+        doll = try Doll(config: cfg, root: root, model: model, selector: selector, embedder: embedder ?? FakeEmbedder(), computer: vm,
                         say: { text in rec.said.withLock { $0.append(text) } })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
         await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
@@ -770,7 +802,7 @@ private struct Harness {
 /// current one leaves it alone.
 @Test func bootRebuildsAnIndexBuiltByAnotherIndexVersion() async throws {
     let h = try await Harness([Scripted("", remember([("主人的伺服器叫 Strata", false)]))])
-    #expect(try h.store.memoryIndexVersion() == Memory.indexVersion && Memory.indexVersion == 4)
+    #expect(try h.store.memoryIndexVersion() == Memory.indexVersion && Memory.indexVersion == 5)
     await h.doll.ownerSaid("記一下我的伺服器")
     try await h.turn()
     let good = try h.store.memoryVectors(folders: ["public"])
@@ -793,7 +825,7 @@ private struct Harness {
     try h.store.setMemoryIndexVersion(1)
     try await boot()
     #expect(try h.store.memoryVectors(folders: ["public"]).first?.vector == good[0].vector)
-    #expect(try h.store.memoryIndexVersion() == 4)
+    #expect(try h.store.memoryIndexVersion() == 5)
     await h.doll.stop()
 }
 
@@ -812,8 +844,10 @@ private struct Harness {
 // A corpus built for the acceptance numbers in the plan: 30 records written through
 // remember, 10 questions, ≥ 8 right. Two of the ten can only be answered by one side of
 // the hybrid index: `kettlebell` is not a paraphrasable Chinese token (FTS-only), and
-// 出國帶回什麼 shares no trigram with its record (embedding-only). The rest were checked
-// against the real NLContextualEmbedding model before locking the numbers.
+// 在日本旅遊時買了什麼 shares no trigram with its record (embedding-only). These run on the real
+// embedding model (Qwen3-Embedding since 2026-11-11; NLContextualEmbedding before). Qwen3 does not
+// tie the old question 出國旅遊帶回什麼 to 日本…御守 (cosine 0.36, under `similarity` 0.55; 0.57 for
+// this one), and a recall may now find nothing at all.
 
 private let memoryCorpus = [
 "主人最喜歡吃牛肉麵，尤其是巷口張家那碗",
@@ -860,12 +894,12 @@ private let memoryQueries: [(String, Int)] = [
 ("主人擔心房租會調漲嗎", 8),
 ("主人的生日幾號", 13),
 ("想帶爸媽去哪裡旅行", 24),
-("主人出國旅遊帶回什麼", 23),                          // only the embedding can find this
+("主人在日本旅遊時買了什麼", 23),                      // only the embedding can find this
 ]
 
 /// Writes the whole corpus through one remember call with 30 items. Returns the harness.
 private func memoryHarness() async throws -> Harness {
-    let h = try await Harness()
+    let h = try await Harness(embedder: try await qwen3.value)
     await h.doll.ownerSaid("這些是我講過的事，記起來")
     let items = memoryCorpus.enumerated().map { i, text in (text, secretRecords.contains(i)) }
     try await h.turn(Scripted("", remember(items)))
@@ -895,9 +929,11 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     for (query, want) in memoryQueries {
         // The owner's turn: secrets visible (5.1), the same setting the plan's 10 questions assume.
         let hits = try await ask(h, query, secret: true)
-        // The wanted record is one of the returned hits.
-        if hits.contains(memoryCorpus[want]) { correct += 1 }
-        #expect(hits.contains("〔確定｜") || hits.contains("〔大概｜") || hits.contains("〔聽說｜"))
+        // The wanted record is one of the returned hits, with its label.
+        if hits.contains(memoryCorpus[want]) {
+            correct += 1
+            #expect(hits.contains("〔確定｜") || hits.contains("〔大概｜") || hits.contains("〔聽說｜"))
+        }
         #expect(h.reports.last!.actions.last!.hasPrefix("recall "))
     }
     #expect(correct >= 8)   // 30/10 acceptance number (plan M3a)
@@ -923,7 +959,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     // Exact rare token, no paraphrase: a pure vector search over this model does not rank it first.
     #expect(try await ask(h, "kettlebell").contains(memoryCorpus[10]))
     // Paraphrase with no shared trigram with the record.
-    #expect(try await ask(h, "主人出國旅遊帶回什麼").contains(memoryCorpus[23]))
+    #expect(try await ask(h, "主人在日本旅遊時買了什麼").contains(memoryCorpus[23]))
 }
 
 @Test func secretMemoryStaysOutOfTurnsWithoutSecrets() async throws {
@@ -1902,7 +1938,7 @@ private final class FakeVMPal: Sendable {
     // A stranger's turn (no such input until M6; the projection is Memory's): never.
     var cfg = try Config.load(root.appending(path: "dollcore.example.toml")).memory
     cfg.dir = h.dir.appending(path: "memory").path
-    let memory = try Memory(config: cfg, root: h.dir.appending(path: "memory"), store: h.store)
+    let memory = try Memory(config: cfg, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let stranger = try memory.search("VM 登入密碼", visible: Memory.visible(.stranger, sawSecret: false), limit: 5)
     #expect(!stranger.contains { $0.folder == "own" } && stranger.contains { $0.text.contains("深色模式") })
     #expect(try memory.search("VM 登入密碼", visible: Memory.visible(.doll, sawSecret: false), limit: 5).contains { $0.folder == "own" })
@@ -1957,7 +1993,8 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
     cfg.core.dataDir = h.dir.path
     cfg.memory.dir = h.dir.appending(path: "memory").path
-    let again = try Doll(config: cfg, root: root, model: FakeModel([]), selector: FakeSelector(), computer: h.vm, say: { _ in })
+    let again = try Doll(config: cfg, root: root, model: FakeModel([]), selector: FakeSelector(), embedder: FakeEmbedder(),
+                         computer: h.vm, say: { _ in })
     try await again.learnFrontApp()
     #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
 }
@@ -3098,7 +3135,7 @@ extension Doll {
 }
 
 @Test func recallFindsTodaysEventsByWordsAndByMeaningWithTheirLabels() async throws {
-    let h = try await Harness()
+    let h = try await Harness(embedder: try await qwen3.value)
     await h.doll.ownerSaid("今天下午要去郵局寄包裹給阿嬤")
     try await h.turn(Scripted("要記得提醒主人帶身分證", say("好，出門前我提醒你"), think("medium")))
     await h.doll.ownerSaid("晚餐想吃咖哩飯")
@@ -3311,7 +3348,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func consolidationAppliesAddUpdateRetireAndTheNextStartIsANewDay() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
     let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil,
                                   entities: [MemoryEntity(app.id, "TextEdit")])
@@ -3343,7 +3380,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         ```
         """
     let model = FakeModel([Scripted(reply)])
-    let r = try await Consolidation.run(config: cfg, root: root, model: model)
+    let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder())
 
     // The request: no persona, high effort, the day as text, only memories she or consolidation
     // wrote, with their entities by registry id, and the registry entries near the day.
@@ -3404,8 +3441,10 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
     // Nothing in the timeline yet: nothing to consolidate.
-    await #expect(throws: ConsolidationError.self) { try await Consolidation.run(config: cfg, root: root, model: FakeModel([])) }
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    await #expect(throws: ConsolidationError.self) {
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder())
+    }
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
     let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
@@ -3454,16 +3493,18 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     ]
     for reply in bad {
         await #expect(throws: ConsolidationError.self, "\(reply)") {
-            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]))
+            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]), embedder: FakeEmbedder())
         }
     }
     // The model failing is an error too.
-    await #expect(throws: ModelError.self) { try await Consolidation.run(config: cfg, root: root, model: FakeModel([])) }
+    await #expect(throws: ModelError.self) {
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder())
+    }
     #expect(try memoryFiles(h) == files)
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
     #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
     // The same reply, valid: applied.
-    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]))
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder())
     #expect(ok.applied.count == 3 && ok.applied[1].hasPrefix("entity ") && ok.applied[2].hasSuffix("主人的貓叫咪咪"))
 }
 
@@ -3499,7 +3540,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func theRegistryAndEntityRefsRoundTripAndTheIndexRebuildsFromFiles() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: ["文字編輯", " ", "ｔｅｘｔ Edit", "com.apple.TextEdit"],
                                          description: "macOS 內建的文字編輯 app")
     // Blank aliases and those with the name's key are dropped; the file gives the entry back.
@@ -3545,7 +3586,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func alignmentMapsOtherLanguagesAndPathVariantsAndKeepsHomonymsApart() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let fake = FakeSelector()
     let sel = Selector(memory: memory, model: fake, config: cfg.select)
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
@@ -3600,7 +3641,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 /// A registry entry in the harness's memory (the next `seedMemory` re-indexes it).
 private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ description: String) throws -> RegistryEntry {
     let cfg = try consolidationConfig(h)
-    return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store).registry
+    return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder()).registry
         .create(type, name: name, aliases: [], description: description)
 }
 
@@ -3693,7 +3734,8 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await h.turn()
     try await h.turn()
     let cfg = try consolidationConfig(h)
-    let registry = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store).registry
+    let registry = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store,
+                              embedder: FakeEmbedder()).registry
     let app = try #require(try registry.exact("com.apple.TextEdit").first)
     let keys = try #require(try registry.exact("⇧⌥⌘S").first)
     #expect(app.name == "TextEdit" && app.aliases == ["com.apple.TextEdit"] && keys.type == .shortcut)

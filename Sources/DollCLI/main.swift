@@ -33,7 +33,7 @@ if argv.count > 3 {
         cfg.core.dataDir = argv[4]
         if argv.count == 7 { cfg.memory.dir = argv[6] }
         let result = try await Consolidation.run(config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath),
-                                                 model: Consolidation.model(cfg))
+                                                 model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory))
         out(result.report)
     } catch {
         fail("consolidate: \(error)")
@@ -45,9 +45,11 @@ let doll: Doll
 let dashboard: Dashboard?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
+    // Boot: the embedding model loads first (the today index embeds at start); no fallback.
+    let embedder = try await MLXEmbedder.load(cfg.memory)
     doll = try Doll(
         config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
-        selector: FoundationSelectionModel(), say: { text in out("\n[Doll] \(text)\n") })
+        selector: FoundationSelectionModel(), embedder: embedder, say: { text in out("\n[Doll] \(text)\n") })
     try await doll.boot()
     if cfg.dashboard.enabled {
         let d = Dashboard(doll: doll, config: cfg.dashboard)

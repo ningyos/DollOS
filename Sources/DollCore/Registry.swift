@@ -51,13 +51,13 @@ public struct Mention: Sendable, Equatable, Hashable {
 public final class Registry {
     let dir: URL
     private let store: Store
-    private let embedder: Embedder
+    private let embedder: any Embedder
     private let maxQueryPhrases: Int
     private let rrfK: Int
     /// Bumped on every change, so what was aligned before is looked up again (`Selector`'s cache).
     public private(set) var generation = 0
 
-    init(dir: URL, store: Store, embedder: Embedder, config: MemoryConfig) throws {
+    init(dir: URL, store: Store, embedder: any Embedder, config: MemoryConfig) throws {
         self.dir = dir
         self.store = store
         self.embedder = embedder
@@ -125,15 +125,17 @@ public final class Registry {
         ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".md") }.count
     }
 
-    /// Re-indexes every file (the caller cleared the index).
+    /// Re-indexes every file (the caller cleared the index), their lines embedded in one call.
     func rebuild() throws {
-        for e in try all() { try index(e) }
+        let entries = try all()
+        let vectors = try embedder.embed(entries.map(\.line), as: .document)
+        for (e, v) in zip(entries, vectors) { try index(e, vector: v) }
         generation += 1
     }
 
-    private func index(_ e: RegistryEntry) throws {
+    private func index(_ e: RegistryEntry, vector: [Float]? = nil) throws {
         try store.putRegistryIndex(id: e.id, type: e.type.rawValue, keys: e.keys, text: e.line,
-                                   vector: Memory.blob(try embedder.embed(e.line)))
+                                   vector: Memory.blob(try vector ?? embedder.embed(e.line, as: .document)))
     }
 
     private func save(_ e: RegistryEntry) throws {
@@ -192,7 +194,7 @@ public final class Registry {
                 fused[hit.id, default: 0] += 1.0 / Double(rrfK + rank + 1)
             }
         }
-        let qv = try embedder.embed(text)
+        let qv = try embedder.embed(text, as: .query)
         let byCosine = try store.registryVectors().map { ($0.id, Memory.dot($0.vector, qv)) }
             .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
         for (rank, (id, _)) in byCosine.enumerated() { fused[id, default: 0] += 1.0 / Double(rrfK + rank + 1) }
