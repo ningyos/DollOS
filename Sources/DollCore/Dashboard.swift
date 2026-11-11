@@ -74,16 +74,18 @@ public struct DashboardCall: Codable, Sendable, Equatable {
     public var crop: String?
     public var window: String?
     public var secret: Bool
+    /// A `say` call's addressee (2026-11-12): owner | developer; nil for other calls and before its result.
+    public var to: String?
 }
 
-/// One timeline item: a turn (her reply with its calls and their results), an owner line, a watch
-/// wake, or a program event (【相關記憶】, 【快捷鍵】).
+/// One timeline item: a turn (her reply with its calls and their results), an owner or developer
+/// line, a watch wake, or a program event (【相關記憶】, 【快捷鍵】).
 public struct DashboardItem: Codable, Sendable, Equatable {
-    public var type: String          // turn | owner | watch | program
+    public var type: String          // turn | owner | developer | watch | program
     public var seq: Int64
     public var ts: Double
     public var secret: Bool
-    public var text: String?         // owner / watch / program: the event text
+    public var text: String?         // owner / developer / watch / program: the event text
     public var voice: Bool?          // owner: spoken or typed
     public var image: String?        // watch: its screenshot
     public var thought: String?      // turn: her own thought, the text outside her calls (her words to the owner are say calls)
@@ -180,9 +182,11 @@ extension Doll {
                 items[i].calls![at].crop = e.crop
                 items[i].calls![at].window = e.window
                 items[i].calls![at].secret = e.secret
+                items[i].calls![at].to = e.to?.rawValue
                 items[i].secret = items[i].secret || e.secret
-            case .owner:
-                items.append(DashboardItem(type: "owner", seq: seq, ts: e.ts, secret: e.secret, text: e.text, voice: e.voice))
+            case .owner, .developer:
+                items.append(DashboardItem(type: e.kind.rawValue, seq: seq, ts: e.ts, secret: e.secret, text: e.text,
+                                           voice: e.kind == .owner ? e.voice : nil))
                 open = nil
             case .watch:
                 items.append(DashboardItem(type: "watch", seq: seq, ts: e.ts, secret: e.secret, text: e.text, image: e.image))
@@ -220,7 +224,7 @@ extension Doll {
             try memory.experience(id).map { entry($0.id, $0.folder, $0.file) }
         }
         let events = timeline.events
-        let since = events.last { $0.kind == .owner }?.seq ?? 0
+        let since = events.last { $0.speaker != nil }?.seq ?? 0
         let sheets = events.filter { $0.kind == .memory && $0.seq! > since && $0.text.hasPrefix("【快捷鍵】") }.map {
             DashboardMemory.Sheet(seq: $0.seq!, title: String($0.text.split(separator: "\n").first ?? ""), text: $0.text)
         }

@@ -1,9 +1,9 @@
-// Terminal front end: runs the core and reads commands on stdin. Only the owner exists in M1.
+// dollcore (2026-11-12): her process. `dollcore --config <file.toml>` boots her and keeps running
+// until SIGINT (Ctrl-C) or SIGTERM; no stdin. The owner starts and stops it (no launchd).
 //
-//     say <text>          owner text
-//     voice <text>        owner voice: interrupts a model call in flight, then higher priority (the real voice path is M6)
-//     status              print the 【狀況】 footer
-//     quit
+// Front ends: the local API on 127.0.0.1 (`[api] port`): `dollctl chat` (the developer) and the
+// Discord bridge (the owner), which this process starts and watches when `[bridge] enabled`; the
+// dashboard (`[dashboard]`) as before.
 //
 // `dollcore --config <file.toml> consolidate <data_dir> [--memory <dir>]` (2026-11-11) consolidates
 // that data dir's newest timeline segment into her memory (the config's `[memory] dir`, or `--memory`;
@@ -41,16 +41,37 @@ if argv.count > 3 {
     exit(0)
 }
 
+// SIGINT / SIGTERM end the process cleanly; set up before boot so Ctrl-C during boot is handled too.
+let (signals, signalled) = AsyncStream.makeStream(of: Int32.self)
+let signalSources = [SIGINT, SIGTERM].map { sig in
+    signal(sig, SIG_IGN)
+    let s = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    s.setEventHandler { signalled.yield(sig) }
+    s.resume()
+    return s
+}
+
+let root = URL(filePath: FileManager.default.currentDirectoryPath)
 let doll: Doll
+let api: LocalAPI
+let bridge: Bridge?
 let dashboard: Dashboard?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
     // Boot: the embedding model loads first (the today index embeds at start); no fallback.
     let embedder = try await MLXEmbedder.load(cfg.memory)
+    let a = LocalAPI(config: cfg.api)
+    api = a
     doll = try Doll(
-        config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
-        selector: FoundationSelectionModel(), embedder: embedder, say: { text in out("\n[Doll] \(text)\n") })
+        config: cfg, root: root, model: HTTPMainModel(cfg.llm), selector: FoundationSelectionModel(), embedder: embedder,
+        say: { text, to in
+            let failed = a.deliver(text, to: to)
+            out("[say → \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
+            return failed
+        })
     try await doll.boot()
+    let port = try await api.start(doll: doll)
+    out("api: http://127.0.0.1:\(port)/ (dollctl, bridge)")
     if cfg.dashboard.enabled {
         let d = Dashboard(doll: doll, config: cfg.dashboard)
         let port = try await d.start()
@@ -59,39 +80,39 @@ do {
     } else {
         dashboard = nil
     }
-} catch {
-    fail("\(error)")
-}
-
-out("\(doll.name) is up. say <text>, voice <text>, status, quit")
-let runner = Task { try await doll.run() }
-
-do {
-    for try await raw in FileHandle.standardInput.bytes.lines {
-        let line = raw.trimmingCharacters(in: .whitespaces)
-        if line.isEmpty { continue }
-        if line == "quit" { break }
-        if line == "status" {
-            out(try await doll.status())
-        } else if line.hasPrefix("say ") {
-            await doll.ownerSaid(String(line.dropFirst(4)))
-        } else if line.hasPrefix("voice ") {
-            await doll.ownerSaid(String(line.dropFirst(6)), voice: true)
-        } else {
-            out("unknown command; say <text>, voice <text>, status, quit")
-        }
+    if cfg.bridge.enabled {
+        let b = Bridge(config: cfg.bridge, api: api, root: root)
+        bridge = b
+        try await b.start()
+        out("bridge: \(api.bridge)")
+    } else {
+        bridge = nil
+        out("bridge: disabled ([bridge] enabled = false)")
     }
 } catch {
     fail("\(error)")
 }
 
-// quit or end of input: stop the consumer, interrupting a model call in flight.
+out("\(doll.name) is up. Ctrl-C stops her.")
+let runner = Task {
+    do {
+        try await doll.run()
+    } catch is CancellationError {
+    } catch {
+        fail("\(error)")
+    }
+}
+
+for await sig in signals {
+    out("signal \(sig): stopping")
+    break
+}
+// Stop the front ends, then the consumer, interrupting a model call in flight.
+bridge?.stop()
+api.stop()
 dashboard?.stop()
 await doll.stop()
+await bridge?.waitUntilExit(seconds: 5)
 runner.cancel()
-do {
-    try await runner.value
-} catch is CancellationError {
-} catch {
-    fail("\(error)")
-}
+await runner.value
+_ = signalSources

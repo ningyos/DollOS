@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import ImageIO
+import Network
 import Synchronization
 import Testing
 @testable import DollCore
@@ -91,6 +92,10 @@ private actor FakeModel: MainModel {
 
 private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
+    /// Who each `said` went to.
+    let saidTo = Mutex<[Addressee]>([])
+    /// Set: every say fails with this reason (the bridge is down, no chat open).
+    let undelivered = Mutex<String?>(nil)
     let reports = Mutex<[TurnReport]>([])
     let logs = Mutex<[String]>([])
 }
@@ -334,13 +339,18 @@ private struct Harness {
         let selector = FakeSelector()
         self.selector = selector
         doll = try Doll(config: cfg, root: root, model: model, selector: selector, embedder: embedder ?? FakeEmbedder(), computer: vm,
-                        say: { text in rec.said.withLock { $0.append(text) } })
+                        say: { text, to in
+                            rec.said.withLock { $0.append(text) }
+                            rec.saidTo.withLock { $0.append(to) }
+                            return rec.undelivered.withLock { $0 }
+                        })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
         await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
         store = try Store(path: dir.appending(path: "doll.db"))
     }
 
     var said: [String] { rec.said.withLock { $0 } }
+    var saidTo: [Addressee] { rec.saidTo.withLock { $0 } }
     var reports: [TurnReport] { rec.reports.withLock { $0 } }
     var logs: [String] { rec.logs.withLock { $0 } }
     var last: TurnReport { reports.last! }
@@ -642,12 +652,14 @@ private struct Harness {
 @Test func drainOrdersByConfiguredPriority() async throws {
     let h = try await Harness()
     await h.doll.put(Event(.watch, .internal, "r"))
+    await h.doll.developerSaid("dev")
     await h.doll.ownerSaid("text")
     await h.doll.ownerSaid("voice", voice: true)
     try await h.turn("好")
     let events = try h.events()
-    #expect(events.map(\.text) == ["voice", "text", "r", "好"])
-    #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .watch, .watch])
+    // Developer text sits just below owner text by default (2026-11-12).
+    #expect(events.map(\.text) == ["voice", "text", "dev", "r", "好"])
+    #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .developerText, .watch, .watch])
 }
 
 @Test func ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort() async throws {
@@ -1994,7 +2006,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     cfg.core.dataDir = h.dir.path
     cfg.memory.dir = h.dir.appending(path: "memory").path
     let again = try Doll(config: cfg, root: root, model: FakeModel([]), selector: FakeSelector(), embedder: FakeEmbedder(),
-                         computer: h.vm, say: { _ in })
+                         computer: h.vm, say: { _, _ in nil })
     try await again.learnFrontApp()
     #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
 }
@@ -3759,4 +3771,209 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     }
     try (head + "auto_attach_k = 5\n").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
+}
+
+// developer, say routing, local API, bridge (2026-11-12) ------------------------------------
+
+@Test func developerLinesRenderAsDeveloperAndNeverSeeTheSecretFolder() async throws {
+    #expect(Memory.visible(.developer, sawSecret: true) == [.public, .own])
+    let h = try await Harness()
+    await h.doll.ownerSaid("記一下：我的銀行密碼是 bank4321", secret: true)
+    try await h.turn(Scripted("", remember(folders: [("主人的銀行密碼是 bank4321", "secret", nil)])))
+    // The owner, in a turn that saw a secret: the secret folder is visible.
+    await h.doll.ownerSaid("銀行密碼是什麼")
+    try await h.turn(Scripted("", recall("銀行密碼")))
+    #expect(try h.toolResults().last!.text.contains("bank4321"))
+    // The developer: 開發者 in her prompt, never 主人; the same question finds nothing secret, neither
+    // the secret memory nor the owner's secret line from today.
+    await h.doll.developerSaid("開發者想知道銀行密碼")
+    try await h.turn(Scripted("", recall("銀行密碼")))
+    let prompt = await h.model.seen(2).map(\.content)
+    #expect(prompt.contains { $0.hasPrefix("[") && $0.hasSuffix(" 開發者] 開發者想知道銀行密碼") })
+    #expect(!prompt.contains { $0.contains("主人] 開發者想知道") })
+    #expect(Doll.audience(try h.events()) == .developer)
+    #expect(!(try h.toolResults().last!.text.contains("bank4321")))
+    // Her work after the developer's line (a watch wake) is still the developer's task.
+    await h.doll.put(Event(.watch, .internal, "盯著的整個畫面變了。"))
+    try await h.turn(Scripted("", recall("銀行密碼")))
+    #expect(!(try h.toolResults().last!.text.contains("bank4321")))
+    // The timeline file keeps who spoke.
+    #expect(try h.events().filter { $0.kind == .developer }.map(\.principal) == [.developer])
+}
+
+@Test func sayGoesToWhoeverSpokeLastAndTheTimelineRecordsIt() async throws {
+    #expect(Doll.addressee([]) == .owner)   // nobody has spoken yet: the owner
+    let h = try await Harness()
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", say("在")))
+    await h.doll.developerSaid("測試一下")
+    try await h.turn(Scripted("", say("收到")))
+    await h.doll.put(Event(.watch, .internal, "變了"))   // a wake in the developer's task
+    try await h.turn(Scripted("", say("畫面變了")))
+    await h.doll.ownerSaid("我回來了")
+    try await h.turn(Scripted("", say("歡迎回來")))
+    #expect(h.saidTo == [.owner, .developer, .developer, .owner])
+    // Recorded with each say result, as a new process reads the file.
+    #expect(try h.toolResults().map(\.to) == [.owner, .developer, .developer, .owner])
+    // The dashboard shows the developer's line and each say's addressee.
+    let items = try await h.doll.dashboardTimeline(limit: 50)
+    #expect(items.contains { $0.type == "developer" && $0.text == "測試一下" })
+    #expect(Array(items.compactMap { $0.calls?.first?.to }.reversed()) == ["owner", "developer", "developer", "owner"])
+    // Not delivered: her result says to whom and why; nothing wakes her for it.
+    h.rec.undelivered.withLock { $0 = "沒有開著的 dollctl chat" }
+    await h.doll.developerSaid("還在嗎")
+    try await h.turn(Scripted("", say("在")))
+    #expect(try h.toolResults().last!.text == "失敗：開發者沒收到：沒有開著的 dollctl chat")
+    #expect(h.last.actions == ["error say"])
+    #expect(await h.doll.followUp == false)
+}
+
+@Test func apiAndBridgeConfigAreValidated() throws {
+    let example = try Config.load(root.appending(path: "dollcore.example.toml"))
+    #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
+    #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "watch"])
+    let file = FileManager.default.temporaryDirectory.appending(path: "api-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
+        + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    try head.write(to: file, atomically: true, encoding: .utf8)
+    #expect(try Config.load(file).api.port == 8791)
+    for bad in ["[api]\nport = 8790\n",                                                   // the dashboard's
+                "[api]\nport = 0\n",
+                "[bridge]\nenabled = true\ncommand = [\"uv\", \"run\"]\n",                // not absolute
+                "[bridge]\nenabled = true\n",                                          // no command
+                "[bridge]\nready_timeout_s = 0\n",
+                "[bridge]\ntoken = \"x\"\n"] {                                         // secrets never live here
+        try (head + bad).write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }   // developer_text must be placed
+    // The tracked experiment configs that loaded before (automem and shortcuts predate the
+    // self_reported and consolidated tiers and did not load already).
+    for tracked in ["experiments/dashboard/dollcore.toml", "experiments/m2/cheatsheet/cheatsheet.toml",
+                    "experiments/m2/experience/experience.toml", "experiments/m2/experience2/experience2.toml",
+                    "experiments/m2/expstats/expstats.toml"] {
+        _ = try Config.load(root.appending(path: tracked))
+    }
+}
+
+/// A started local API on a free port over the harness's doll.
+private func localAPI(_ h: Harness) async throws -> LocalAPI {
+    var c = ApiConfig()
+    c.port = 0
+    let api = LocalAPI(config: c)
+    _ = try await api.start(doll: h.doll)
+    return api
+}
+
+private func post(_ api: LocalAPI, _ path: String, _ text: String, key: String? = nil) async throws -> Int {
+    var req = URLRequest(url: URL(string: api.baseURL + path)!)
+    req.httpMethod = "POST"
+    req.httpBody = try JSONSerialization.data(withJSONObject: ["text": text])
+    if let key { req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+    return (try await URLSession.shared.data(for: req).1 as! HTTPURLResponse).statusCode
+}
+
+/// This machine's first non-loopback IPv4 address, if it has one.
+private func otherIPv4() -> String? {
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return nil }
+    defer { freeifaddrs(list) }
+    for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+        let s = String(decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        if !s.hasPrefix("127.") { return s }
+    }
+    return nil
+}
+
+@Test func localAPIIsLoopbackOnlyAndOnlyTheBridgeSpeaksAsTheOwner() async throws {
+    #expect(LocalAPI.isLoopback(.hostPort(host: "127.0.0.1", port: 1)))
+    #expect(LocalAPI.isLoopback(.hostPort(host: "::1", port: 1)))
+    #expect(!LocalAPI.isLoopback(.hostPort(host: "192.168.1.20", port: 1)))
+    #expect(!LocalAPI.isLoopback(.hostPort(host: "192.0.2.11", port: 1)))
+    let h = try await Harness()
+    let api = try await localAPI(h)
+    defer { api.stop() }
+    // Bound to 127.0.0.1 only: the machine's other address does not answer.
+    if let ip = otherIPv4() {
+        var req = URLRequest(url: URL(string: "http://\(ip):\(api.port)/api/status")!)
+        req.timeoutInterval = 3
+        await #expect(throws: (any Error).self) { _ = try await URLSession.shared.data(for: req) }
+    }
+    #expect(try await post(api, "/api/developer", "嗨") == 200)
+    #expect(try await post(api, "/api/developer", "  ") == 400)
+    #expect(try await post(api, "/api/owner", "我是主人") == 401)
+    #expect(try await post(api, "/api/owner", "我是主人", key: "0" + api.ownerKey.dropFirst()) == 401)
+    #expect(try await post(api, "/api/owner", "主人真的來了", key: api.ownerKey) == 200)
+    #expect(await h.doll.queue.map(\.kind) == [.developer, .owner])
+    #expect(await h.doll.queue.map(\.text) == ["嗨", "主人真的來了"])
+    // The owner stream needs the key too.
+    let (_, refused) = try await URLSession.shared.data(from: URL(string: api.baseURL + "/api/listen?to=owner")!)
+    #expect((refused as! HTTPURLResponse).statusCode == 401)
+    // Nobody listening: delivery says why.
+    #expect(api.deliver("x", to: .developer) == "沒有開著的 dollctl chat")
+    #expect(api.deliver("x", to: .owner)!.contains("disabled"))
+    let (data, _) = try await URLSession.shared.data(from: URL(string: api.baseURL + "/api/status")!)
+    let dec = JSONDecoder()
+    dec.keyDecodingStrategy = .convertFromSnakeCase
+    let status = try dec.decode(ApiStatus.self, from: data)
+    #expect(status.queued == 2 && status.state == "asleep" && status.footer.hasPrefix("【狀況】") && status.developerStreams == 0)
+}
+
+@Test func aDeveloperStreamGetsHerSayAndTypingWhileHerTurnRuns() async throws {
+    let h = try await Harness(["好"])
+    let api = try await localAPI(h)
+    defer { api.stop() }
+    var req = URLRequest(url: URL(string: api.baseURL + "/api/listen?to=developer")!)
+    req.timeoutInterval = 10
+    let (bytes, response) = try await URLSession.shared.bytes(for: req)
+    #expect((response as! HTTPURLResponse).statusCode == 200)
+    var lines = bytes.lines.makeAsyncIterator()
+    #expect(try await lines.next() == "{\"type\":\"hello\"}")
+    #expect(api.listening(.developer) == 1)
+    #expect(api.deliver("早安", to: .developer) == nil)
+    #expect(try await lines.next() == "{\"text\":\"早安\",\"type\":\"say\"}")
+    // A turn that would speak to the developer: typing on while it runs, off when it ends.
+    await h.model.stall()
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    #expect(try await post(api, "/api/developer", "在嗎") == 200)
+    #expect(try await lines.next() == "{\"on\":true,\"type\":\"typing\"}")
+    try await waitUntil { await h.doll.interrupt() }
+    #expect(try await lines.next() == "{\"on\":false,\"type\":\"typing\"}")
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func theBridgeMustComeUpAndItsExitIsASystemError() async throws {
+    let h = try await Harness()
+    let api = try await localAPI(h)
+    defer { api.stop() }
+    var c = BridgeConfig()
+    c.enabled = true
+    c.readyTimeoutS = 10
+    // Exits before it is ready: boot fails, saying how.
+    c.command = ["/bin/sh", "-c", "echo 'ERROR config: no token' >&2; exit 2"]
+    let early = await #expect(throws: StoreError.self) { try await Bridge(config: c, api: api, root: root).start() }
+    #expect(early?.description == "bridge exited before it was ready: exit status 2")
+    // Never ready: boot fails after ready_timeout_s and the process is stopped.
+    c.command = ["/bin/sleep", "30"]
+    c.readyTimeoutS = 0.3
+    let late = await #expect(throws: StoreError.self) { try await Bridge(config: c, api: api, root: root).start() }
+    #expect(late?.description.contains("not ready within 0.3 s") == true)
+    // Up (it opened the owner stream with the key it was given), then gone: down, not restarted,
+    // and her say to the owner fails with the reason.
+    c.readyTimeoutS = 10
+    c.command = ["/bin/sh", "-c", "exec /usr/bin/curl -sN --max-time 1.5 -H \"Authorization: Bearer $DOLL_BRIDGE_TOKEN\" \"$DOLL_API/api/listen?to=owner\" > /dev/null"]
+    let bridge = Bridge(config: c, api: api, root: root)
+    try await bridge.start()
+    #expect(api.bridge.hasPrefix("up (pid "))
+    #expect(api.deliver("在嗎", to: .owner) == nil)
+    try await waitUntil(seconds: 5) { api.bridge.hasPrefix("down") }
+    #expect(api.bridge.contains("exit status 28") && api.bridge.contains("not restarted"))
+    #expect(api.listening(.owner) == 0)
+    #expect(api.deliver("在嗎", to: .owner)!.contains("bridge down: exit status 28"))
 }

@@ -72,7 +72,7 @@ public enum Consolidation {
     /// Tiers consolidation may see and change: what she or consolidation wrote. The program's own
     /// records stay the program's: shortcuts (re-read per app version) and experiences (their stats
     /// are kept by the program, and the experience mechanism is unchanged).
-    static let revisable: Set<SourceTier> = [.owner, .tool, .stranger, .doll, .consolidated]
+    static let revisable: Set<SourceTier> = [.owner, .developer, .tool, .stranger, .doll, .consolidated]
 
     /// The main model with `[consolidate]`'s max_tokens and timeout.
     public static func model(_ config: Config) -> HTTPMainModel {
@@ -187,8 +187,8 @@ public enum Consolidation {
 
     // rendering ---------------------------------------------------------------
 
-    /// One task of the day: its rendered lines, whether an owner line began it, and what to recall
-    /// for it (the owner's line and her `outcome` summaries).
+    /// One task of the day: its rendered lines, whether an owner or developer line began it, and what
+    /// to recall for it (that line and her `outcome` summaries).
     public struct DayTask: Sendable, Equatable {
         public var text: String
         public var owner: Bool
@@ -219,10 +219,10 @@ public enum Consolidation {
                 if !t.isEmpty { lines.append(String(format: "[%02d:%02d ", c.hour!, c.minute!) + who + mark + "] " + t) }
             }
             switch ev.kind {
-            case .owner:
+            case .owner, .developer:
                 flush()
                 owner = true
-                line("主人", ev.text)
+                line(ev.kind == .owner ? "主人" : "開發者", ev.text)
                 queries.append(ev.text)
             case .doll:
                 let parsed = ParsedReply(ev.text)

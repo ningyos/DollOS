@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v26)],
     products: [
         .executable(name: "dollcore", targets: ["DollCLI"]),
+        .executable(name: "dollctl", targets: ["DollCtl"]),
     ],
     dependencies: [
         // The memory embedding (Qwen3-Embedding-0.6B) runs on MLX.
@@ -22,6 +23,7 @@ let package = Package(
                 ],
                 linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "DollCLI", dependencies: ["DollCore"]),
+        .executableTarget(name: "DollCtl", dependencies: ["DollCore"]),
         .executableTarget(name: "m2-computer", dependencies: ["DollCore"], path: "experiments/m2/Runner"),
         .testTarget(name: "DollCoreTests", dependencies: ["DollCore"]),
     ]

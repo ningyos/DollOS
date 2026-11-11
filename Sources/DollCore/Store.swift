@@ -58,12 +58,27 @@ public struct StoreError: Error, CustomStringConvertible {
 }
 
 public enum Principal: String, Sendable, Codable {
-    case owner, `internal`
+    case owner, developer, `internal`
+}
+
+/// Who her `say` went to (2026-11-12): whoever spoke to her last, the owner (Discord) or the developer
+/// (`dollctl chat`); the owner when nobody has spoken yet.
+public enum Addressee: String, Sendable, Codable, CaseIterable {
+    case owner, developer
+
+    /// How the prompt, the dashboard and the logs name them.
+    public var label: String {
+        switch self {
+        case .owner: "主人"
+        case .developer: "開發者"
+        }
+    }
 }
 
 public struct Event: Sendable, Equatable {
     public enum Kind: String, Sendable, Codable {
         case owner      // the owner spoke
+        case developer  // the developer typed in `dollctl chat` (2026-11-12): renders 開發者, never sees the secret folder
         case doll       // her reply, verbatim (tool call text included)
         case tool       // the result of one of her tool calls, in call order
         case watch      // her watch woke her: the region changed, or max_wait passed
@@ -85,6 +100,8 @@ public struct Event: Sendable, Equatable {
     /// The front window's outline taken with those screenshots, or why there is none followed by the
     /// menu bar's and Dock's items; rendered verbatim as the last text part.
     public var window: String?
+    /// For the result of her `say` call: who it went to (2026-11-12).
+    public var to: Addressee?
     public var seq: Int64?
     public var ts: Double
     /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
@@ -109,8 +126,18 @@ public struct Event: Sendable, Equatable {
     public var priority: Priority {
         switch kind {
         case .owner: voice ? .ownerVoice : .ownerText
+        case .developer: .developerText
         case .watch: .watch
         case .doll, .tool, .memory: .watch   // never queued; these go straight to the timeline
+        }
+    }
+
+    /// The person this event is from, for owner and developer lines; nil for everything else.
+    public var speaker: Addressee? {
+        switch kind {
+        case .owner: .owner
+        case .developer: .developer
+        case .doll, .tool, .watch, .memory: nil
         }
     }
 }
@@ -126,8 +153,8 @@ public struct Event: Sendable, Equatable {
 ///
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
 ///
-///     {"type":"event","seq":1,"ts":…,"kind":"owner|doll|tool|watch|memory","source":"owner|internal",
-///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…"}
+///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
+///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","to":"owner|developer"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
 ///     {"type":"scenario","kind":"computer","start_seq":…,"enter_result_seq":…,"end_seq":…,
 ///      "last_seq":…,"success":true,"summary":"…"}                   a scenario she left with `outcome`
@@ -175,6 +202,7 @@ public final class Timeline {
         var cropNote: String?
         var crop: String?
         var window: String?
+        var to: Addressee?
     }
     private struct FooterLine: Codable {
         var type = "footer"
@@ -290,6 +318,7 @@ public final class Timeline {
     private func take(_ l: EventLine) {
         var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, cropNote: l.cropNote,
                       crop: l.crop, window: l.window)
+        e.to = l.to
         e.seq = l.seq
         e.ts = l.ts
         position[l.seq] = events.count
@@ -320,7 +349,7 @@ public final class Timeline {
     public func append(_ ev: Event) throws -> Event {
         let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image, cropNote: ev.cropNote, crop: ev.crop,
-                             window: ev.window)
+                             window: ev.window, to: ev.to)
         try write(line)
         take(line)
         return events[events.count - 1]

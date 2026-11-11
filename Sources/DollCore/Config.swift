@@ -19,7 +19,7 @@ public struct CoreConfig: Sendable {
     public var dataDir = "data"
     public var pack = "character_packs/doll2/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
-    public var priority = ["owner_voice", "owner_text", "watch"]
+    public var priority = ["owner_voice", "owner_text", "developer_text", "watch"]
 }
 
 /// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
@@ -87,6 +87,28 @@ public struct DashboardConfig: Sendable {
     /// The timeline endpoint returns this many of the newest items (a turn, an owner line, a watch
     /// wake, a program event); the timeline file keeps every one.
     public var timelineItems = 200
+}
+
+/// The local API (2026-11-12): what `dollctl` and the Discord bridge talk to. It listens on
+/// 127.0.0.1 only (not configurable) and refuses any connection whose peer is not loopback.
+public struct ApiConfig: Sendable {
+    public var port = 8791
+
+    public init() {}
+}
+
+/// The Discord bridge (2026-11-12): a Python process dollcore starts at boot and watches. It reads
+/// its own secrets file (bot token, owner id); dollcore never sees them.
+public struct BridgeConfig: Sendable {
+    public var enabled = false
+    /// The bridge's argv; the first element is an absolute path. Runs in the current directory with
+    /// `DOLL_API` (the local API's base URL) and `DOLL_BRIDGE_TOKEN` (this launch's owner key) added.
+    public var command: [String] = []
+    /// Boot fails when the bridge has not connected its owner stream (it does so once Discord says
+    /// ready) within this many seconds.
+    public var readyTimeoutS = 60.0
+
+    public init() {}
 }
 
 public struct IdleConfig: Sendable {
@@ -190,12 +212,15 @@ public struct Config: Sendable {
     public var idle: IdleConfig
     public var memory: MemoryConfig
     public var dashboard: DashboardConfig
+    public var api: ApiConfig
+    public var bridge: BridgeConfig
     public var consolidate: ConsolidateConfig
     public var select: SelectConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "consolidate", "select"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
+                                                 "consolidate", "select"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -313,6 +338,22 @@ public struct Config: Sendable {
         guard (1...65535).contains(dashboard.port), !dashboard.bind.isEmpty, dashboard.timelineItems >= 1 else {
             throw TOMLError(description: "[dashboard] port 1…65535, bind not empty, timeline_items at least 1")
         }
+        var a = Section(name: "api", raw: raw["api"] ?? [:])
+        var api = ApiConfig()
+        try a.read("port", &api.port)
+        try a.finish()
+        guard (1...65535).contains(api.port), !(dashboard.enabled && dashboard.port == api.port) else {
+            throw TOMLError(description: "[api] port 1…65535 and not the dashboard's port")
+        }
+        var b = Section(name: "bridge", raw: raw["bridge"] ?? [:])
+        var bridge = BridgeConfig()
+        try b.read("enabled", &bridge.enabled)
+        try b.read("command", &bridge.command)
+        try b.read("ready_timeout_s", &bridge.readyTimeoutS)
+        try b.finish()
+        guard bridge.readyTimeoutS > 0, !bridge.enabled || bridge.command.first?.hasPrefix("/") == true else {
+            throw TOMLError(description: "[bridge] ready_timeout_s positive; command (when enabled) an array whose first element is an absolute path")
+        }
         var k = Section(name: "consolidate", raw: raw["consolidate"] ?? [:])
         var consolidate = ConsolidateConfig()
         try k.read("effort", &consolidate.effort)
@@ -342,7 +383,7 @@ public struct Config: Sendable {
             throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; prefilter at least 1; threshold and align_threshold 0…10; candidate_max_chars at least 100; lookup_k at least 1")
         }
         return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      consolidate: consolidate, select: select)
+                      api: api, bridge: bridge, consolidate: consolidate, select: select)
     }
 }
 
@@ -352,7 +393,7 @@ public enum Effort {
 
 /// Event sources, named as in `[core] priority`.
 public enum Priority: String, CaseIterable, Sendable {
-    case ownerVoice = "owner_voice", ownerText = "owner_text", watch
+    case ownerVoice = "owner_voice", ownerText = "owner_text", developerText = "developer_text", watch
 }
 
 /// Reads typed keys out of one section and rejects keys nobody read.

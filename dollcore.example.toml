@@ -9,8 +9,8 @@ max_tokens = 4096             # 初始值理由：一回合一個動作，回覆
 [core]
 data_dir = "data"
 pack = "character_packs/doll2/doll.toml"
-# 佇列排進時間線的優先序，高→低（spec 3.1；M2 的三種來源：主人說話、主人打字、watch 叫醒）
-priority = ["owner_voice", "owner_text", "watch"]
+# 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、watch 叫醒）
+priority = ["owner_voice", "owner_text", "developer_text", "watch"]   # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
 
 [computer]
 # M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
@@ -54,6 +54,7 @@ today_confidence = 0.9       # 決定（2026-11-10）：recall 也查今天的�
 high_confidence = 0.70        # ≥ 講「確定」：主人的原話或工具輸出（0.9）過，她自己猜的（0.3）不過
 medium_confidence = 0.40      # ≥ 講「大概」，不然「聽說」；0.4 卡在陌生人轉述（0.5）之下界附近，M6 再調
 confidence_owner = 0.9        # 主人的原話：最可信，但不是 1.0（她可能講錯、之後改）
+confidence_developer = 0.8    # 開發者在 dollctl chat 講的（2026-11-12）：做這套程式的人，可信，但不是主人的原話（0.9）
 confidence_tool = 0.85        # 命令／job 的輸出：事實但可能是錯的命令產的
 confidence_stranger = 0.5     # 陌生人講的（M6 才有這種輸入）：一面之詞
 confidence_doll = 0.3         # 她自己的推測：最弱，要查證才講
@@ -74,6 +75,16 @@ enabled = true
 port = 8790                   # 初始值理由：跟 Strata 的 8080、舊 MCP server 的埠都不撞；只要沒被占用都可以
 bind = "127.0.0.1"            # 只給本機看：頁面上有主人的秘密（secret）和她的密碼（own）；要從別台看就自己改，風險自負
 timeline_items = 200          # 時間線一次只回最新這麼多項（一個回合、主人一句、一次 watch、一則程式事件各算一項）。初始值理由：一個任務 10–30 回合、每回合 1–5 項，200 項蓋得住最近幾個任務；時間線檔留著全部，不限的話每次更新都要傳越來越大的 JSON
+
+[api]
+# 本機 API（2026-11-12）：dollctl（開發者）和 Discord bridge（主人）連這裡。只聽 127.0.0.1、不是本機連進來的直接斷掉，不能改；主人的路由要 dollcore 每次開機隨機產生、只交給 bridge 的金鑰
+port = 8791                   # 初始值理由：dashboard 8790 的下一個；只要沒被占用都可以
+
+[bridge]
+# Discord bridge（2026-11-12）：dollcore 開機時啟動、看著它。只轉主人的私訊；她 say 給主人的話回到主人的私訊
+enabled = false               # 決定：範例預設關，先照 DEMO.md 放好 bridge/discord.toml（token、主人的 Discord user ID）再改 true；開著但起不來＝開機失敗
+command = ["~/.local/bin/uv", "run", "--quiet", "--frozen", "--project", "bridge", "python", "-m", "dollbridge", "--config", "bridge/discord.toml"]   # 從目前目錄跑；dollcore 另外給 DOLL_API 和 DOLL_BRIDGE_TOKEN 兩個環境變數
+ready_timeout_s = 60.0        # bridge 連上 Discord、開好主人的串流要在這麼多秒內。初始值理由：登入加 on_ready 一般幾秒；第一次 uv 要建 venv，留餘裕
 
 [consolidate]
 # 整理（2026-11-11）：手動（dollcore --config … consolidate <data_dir>；m2 runner --consolidate on）。另開一個乾淨的請求（沒有人設、不在她的 context 裡）把今天的時間線整理成長期記憶，再開新的 segment（像睡了一覺）

@@ -5,7 +5,7 @@ import Foundation
 /// program parses her content itself, in the order she wrote it). This file is the only place that
 /// defines them: the tool block in the system prompt, the parser, and argument decoding.
 ///
-///     say(text)                          speak to the owner (2026-11-10): the only way she is heard; text
+///     say(text)                          speak (2026-11-10) to whoever spoke last, owner or developer (2026-11-12): the only way she is heard; text
 ///                                        outside her calls is her own thought, seen by no one else
 ///     think(level: medium | high)        the next model call thinks first (2026-11-11: `none` removed)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
@@ -48,10 +48,10 @@ public enum Tools {
     static func specs(memory: MemoryConfig) -> [Spec] {
         [
             Spec(name: "say",
-                 description: "跟主人說話。主人只聽得到你用 say 說的話；回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到。說完，程式等下一件事發生（主人說話、工具結果、watch）才叫你；同一則回覆裡還有別的工具，就照常等它們的結果。",
+                 description: "說話。誰最後跟你說話（主人或開發者），say 就說給誰聽；他們只聽得到你用 say 說的話；回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到。說完，程式等下一件事發生（有人說話、工具結果、watch）才叫你；同一則回覆裡還有別的工具，就照常等它們的結果。",
                  parameters: [
                      "type": "object",
-                     "properties": ["text": ["type": "string", "description": "要對主人說的話"]],
+                     "properties": ["text": ["type": "string", "description": "要說的話"]],
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: "think",
@@ -736,6 +736,8 @@ enum Instructions {
         ## 你怎麼運作
 
         你跟主人在同一條時間線上。有事情發生（主人說話、工具的結果回來、你設的 watch 叫你）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
+
+        時間線上的 [開發者] 是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。你用 say 說的話，給最後跟你說話的那個人。
 
         每個回合的最後一則訊息是【狀況】，裡面只有事實：你在哪個選單、有沒有 watch、context 大約多長、下一回合的 effort。
 

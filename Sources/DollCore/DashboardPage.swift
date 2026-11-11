@@ -29,7 +29,7 @@ enum DashboardPage {
   pre { white-space: pre-wrap; word-break: break-word; margin: 3px 0; font: 12px/1.4 ui-monospace, Menlo, monospace; color: #c9d2dc; }
   .muted { color: #8794a3; } .secret { color: #e39b5b; }
   .item { border-left: 3px solid #3a4452; padding: 4px 8px; margin: 0 0 8px; }
-  .item.owner { border-color: #4f9d69; } .item.turn { border-color: #4f7fb8; } .item.watch { border-color: #b89a4f; } .item.program { border-color: #6d5f8a; }
+  .item.owner { border-color: #4f9d69; } .item.developer { border-color: #4fa3a3; } .item.turn { border-color: #4f7fb8; } .item.watch { border-color: #b89a4f; } .item.program { border-color: #6d5f8a; }
   .speech { font-size: 14px; color: #fff; margin: 3px 0; }
   .call { margin: 3px 0 3px 6px; }
   .call summary, .mem summary { cursor: pointer; }
@@ -152,6 +152,8 @@ function renderTimeline(items) {
     div.append(head);
     if (it.type === "owner") {
       div.append(el("div", "speech", `主人（${it.voice ? "語音" : "打字"}）：${it.text}`));
+    } else if (it.type === "developer") {
+      div.append(el("div", "speech", `開發者（dollctl）：${it.text}`));
     } else if (it.type === "watch") {
       div.append(el("pre", null, "watch：" + it.text));
       if (it.image) div.append(shot(it.image, "thumb"));
@@ -168,7 +170,10 @@ function renderTimeline(items) {
       if (it.thought) div.append(el("div", "muted", "（心裡）" + it.thought));
       for (const c of it.calls) {
         const text = c.name === "say" && !c.malformed && c.parameters.find(p => p.name === "text");
-        div.append(text ? el("div", "speech", "說：" + text.value.trim()) : renderCall(c));
+        if (!text) { div.append(renderCall(c)); continue; }
+        const to = { owner: "主人", developer: "開發者" }[c.to];
+        div.append(el("div", "speech", (to ? `說（給${to}）：` : "說：") + text.value.trim()));
+        if (c.result) div.append(el("div", "muted", c.result));
       }
       if (it.footer) div.append(details("她看到的【狀況】", el("pre", "muted", it.footer)));
     }

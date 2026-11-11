@@ -11,6 +11,7 @@ public struct MemoryError: Error, CustomStringConvertible {
 /// Where a record's content came from; decides its starting confidence (config `memory.confidence_*`).
 public enum SourceTier: String, Sendable, CaseIterable {
     case owner       // the owner's own words
+    case developer   // the developer's words in `dollctl chat` (2026-11-12)
     case tool        // command / job output
     case stranger    // someone other than the owner (no such input until M6; reserved)
     case doll        // her own guess
@@ -49,6 +50,8 @@ public enum Audience: Sendable {
     case owner
     /// Her own work, woken by something she set up (a watch).
     case doll
+    /// Answering the developer (`dollctl chat`, 2026-11-12), or her own work in a task the developer gave.
+    case developer
     /// Answering someone other than the owner (no such input until M6).
     case stranger
 }
@@ -326,6 +329,7 @@ public final class TodayIndex {
         var out: [(String, String, String)] = []
         switch ev.kind {
         case .owner: out = [("\(seq)-owner", "主人說", ev.text)]
+        case .developer: out = [("\(seq)-developer", "開發者說", ev.text)]
         case .doll:
             let parsed = ParsedReply(ev.text)
             out = [("\(seq)-say", "你說", parsed.said.joined(separator: "\n")), ("\(seq)-thought", "你想", parsed.thought)]
@@ -435,11 +439,13 @@ public final class Memory {
     private func directory(_ f: MemoryFolder) -> URL { root.appending(path: dirName(f)) }
 
     /// Which folders a turn may read (spec 6, 2026-11-08). `secret` keeps the 5.1 rule: only a turn
-    /// that already saw a secret event, and never a stranger's. `own` (her own passwords, tokens) is
-    /// for the owner's turns and her own, never a stranger's. `public` is for everyone.
+    /// that already saw a secret event, and never a stranger's or the developer's. `own` (her own
+    /// passwords, tokens) is for the owner's turns, the developer's and her own, never a stranger's.
+    /// `public` is for everyone.
     public static func visible(_ audience: Audience, sawSecret: Bool) -> Set<MemoryFolder> {
         switch audience {
         case .stranger: [.public]
+        case .developer: [.public, .own]
         case .owner, .doll: sawSecret ? [.public, .own, .secret] : [.public, .own]
         }
     }

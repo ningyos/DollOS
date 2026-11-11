@@ -8,8 +8,9 @@ import Foundation
 /// (owner voice, owner text, a watch wake) or her tool results await her; otherwise it sleeps
 /// and makes no model call.
 
-/// One sentence for the owner.
-public typealias Say = @Sendable (String) -> Void
+/// One sentence for whoever spoke to her last (2026-11-12): delivers it, and returns nil, or says
+/// why it could not be delivered (her `say` result then tells her so).
+public typealias Say = @Sendable (String, Addressee) -> String?
 
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
@@ -272,6 +273,23 @@ public actor Doll {
         if voice { inflight?.cancel() }
     }
 
+    /// The developer typed a line in `dollctl chat` (2026-11-12). Never secret; never cancels a call.
+    public func developerSaid(_ text: String) {
+        put(Event(.developer, .developer, text))
+    }
+
+    /// Who her `say` goes to (2026-11-12): whoever spoke to her last in `events`; the owner when
+    /// nobody has.
+    public static func addressee(_ events: [Event]) -> Addressee {
+        events.last { $0.speaker != nil }?.speaker ?? .owner
+    }
+
+    /// While a turn runs: who it would speak to (the local API shows that person "typing"); nil
+    /// while she sleeps.
+    public func speakingTo() -> Addressee? {
+        inTurn ? Self.addressee(timeline.events) : nil
+    }
+
     /// Ends `run()` after the current turn.
     public func stop() {
         stopped = true
@@ -343,8 +361,8 @@ public actor Doll {
         for ev in batch {
             try append(ev)
         }
-        if batch.contains(where: { $0.kind == .owner || $0.kind == .watch }) { taskTurn = true }
-        if batch.contains(where: { $0.kind == .owner }) { ownerArrived = true }
+        if batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) { taskTurn = true }
+        if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }
     }
 
     /// A scenario still open when the program stops (turn cap, stop) never got her outcome: it ends
@@ -384,7 +402,7 @@ public actor Doll {
             while i < closed.count, closed[i].lastSeq < seq { i += 1 }
             guard i < closed.count, seq > closed[i].startSeq else { plan.append((ev, .full)); continue }
             let c = closed[i]
-            if seq < c.enterResultSeq || ev.kind == .owner { plan.append((ev, .full)) }
+            if seq < c.enterResultSeq || ev.speaker != nil { plan.append((ev, .full)) }
             else if seq == c.enterResultSeq { plan.append((ev, .enterResult(c))) }
             else if seq == c.endSeq { plan.append((ev, .exitSpeech)) }
         }
@@ -440,6 +458,7 @@ public actor Doll {
             return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
                 + [ChatMessage(role: "assistant", content: ev.text)]
         case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
+        case .developer: return [ChatMessage(role: "user", content: "[\(t) 開發者] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
         case .memory: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
@@ -517,12 +536,12 @@ public actor Doll {
         experienceNow = nil
         followsNow = []
         selectionsNow = []
-        // A new owner line starts a task: what was attached before may be attached again.
+        // A new owner or developer line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
             attachedIDs = []
             cheatsheetSent = []
-            await attachMemories(trigger: "主人的新訊息")
+            await attachMemories(trigger: "\(Self.addressee(timeline.events).label)的新訊息")
         }
         let events = timeline.events
         var messages = try context(events)
@@ -605,8 +624,10 @@ public actor Doll {
                     }
                 }
             }
-            let result = try append(Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
-                                          cropNote: out.cropNote, crop: out.crop, window: out.window))
+            var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
+                                    cropNote: out.cropNote, crop: out.crop, window: out.window)
+            resultEvent.to = out.to
+            let result = try append(resultEvent)
             if out.enters { scenario?.enterResultSeq = result.seq }
             actions += out.actions
             if !out.background {
@@ -685,6 +706,8 @@ public actor Doll {
         var enters = false
         /// This computer action failed (before or in the VM): its line, for the refusals after it.
         var failedStep: String?
+        /// A `say` call: who it went to (2026-11-12).
+        var to: Addressee?
     }
 
     /// Where a reply's computer actions stand (2026-11-09): whether this call is the last action she
@@ -703,9 +726,14 @@ public actor Doll {
                                            locked: scenarioTools.filter { $0.0 != scenario?.kind })
             switch request {
             case .say(let text):
-                // Spoken to the owner; nothing new for her to read, and nothing to wake her for.
-                say(text)
-                return Outcome(text: "", actions: ["said"], background: true)
+                // Spoken to whoever spoke last; nothing new for her to read, and nothing to wake her
+                // for. Not delivered (the bridge is down, no dollctl chat is open): her result says why.
+                let to = Self.addressee(timeline.events)
+                if let why = say(text, to) {
+                    log("ERROR", "turn \(turnIndex): say to \(to.rawValue) not delivered: \(why)")
+                    return Outcome(text: "失敗：\(to.label)沒收到：\(why)", actions: ["error say"], background: true, to: to)
+                }
+                return Outcome(text: "", actions: ["said"], background: true, to: to)
             case .think(let level):
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
@@ -718,7 +746,7 @@ public actor Doll {
                     throw ToolError(description: "\(open.kind.menuName)選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
                 }
                 scenario = Scenario(kind: kind, startSeq: reply.seq!, tools: scenarioTools.first { $0.0 == kind }!.1,
-                                    expect: expect, task: events.last { $0.kind == .owner }?.text ?? "")
+                                    expect: expect, task: events.last { $0.speaker != nil }?.text ?? "")
                 var out = await entered(kind)
                 out.enters = true
                 return out
@@ -736,8 +764,8 @@ public actor Doll {
                 }
                 let text = Self.experienceText(task: s.task, summary: summary, steps: s.steps,
                                                maxChars: memoryConfig.experienceMaxChars)
-                // Its run: from the owner's last line to this reply, her turns counted with this one.
-                let owner = events.last { $0.kind == .owner }
+                // Its run: from the last owner or developer line to this reply, her turns counted with this one.
+                let owner = events.last { $0.speaker != nil }
                 let turns = events.filter { $0.kind == .doll && $0.seq! > (owner?.seq ?? 0) }.count + 1
                 let stats = ExperienceStats(turns: turns, seconds: Int((reply.ts - (owner?.ts ?? reply.ts)).rounded()))
                 // Its entities: the apps it went through (what the program knows of it, 2026-11-11),
@@ -1204,10 +1232,11 @@ public actor Doll {
     func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) async -> Outcome {
         let names = Self.callNames(events)
         let source = events.last { e in
-            e.kind == .owner || e.kind == .watch || (e.kind == .tool && Self.observingTools.contains(names[e.seq!] ?? ""))
+            e.speaker != nil || e.kind == .watch || (e.kind == .tool && Self.observingTools.contains(names[e.seq!] ?? ""))
         }
         let tier: SourceTier = switch source?.kind {
         case .owner?: .owner
+        case .developer?: .developer
         case .tool?, .watch?: .tool
         default: .doll
         }
@@ -1250,18 +1279,20 @@ public actor Doll {
             switch e.kind {
             case .doll: pending = ParsedReply(e.text).calls[...]
             case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
-            case .owner, .watch, .memory: break
+            case .owner, .developer, .watch, .memory: break
             }
         }
         return out
     }
 
-    /// Whose turn this is: answering the owner, or her own work (woken by her watch). There is no
-    /// stranger input yet (M6), so this timeline never yields `.stranger`.
+    /// Whose turn this is: answering the developer or working on a task the developer gave (the
+    /// developer spoke last, 2026-11-12), answering the owner, or her own work (woken by her watch).
+    /// There is no stranger input yet (M6), so this timeline never yields `.stranger`.
     static func audience(_ events: [Event]) -> Audience {
+        if addressee(events) == .developer { return .developer }
         switch events.last(where: { $0.kind == .owner || $0.kind == .watch })?.kind {
-        case .owner?: .owner
-        default: .doll
+        case .owner?: return .owner
+        default: return .doll
         }
     }
 
@@ -1299,11 +1330,11 @@ public actor Doll {
         }
     }
 
-    /// What the on-device model is told about now: why memories are being looked up, the owner's
-    /// last line, and the front app, window title and focused element of the last computer result.
+    /// What the on-device model is told about now: why memories are being looked up, the last owner
+    /// or developer line, and the front app, window title and focused element of the last computer result.
     func situation(_ why: String, events: [Event]) -> String {
         var lines = ["- 為什麼查記憶：\(why)"]
-        if let owner = events.last(where: { $0.kind == .owner }) { lines.append("- 主人最後說：「\(owner.text)」") }
+        if let line = events.last(where: { $0.speaker != nil }) { lines.append("- \(line.speaker!.label)最後說：「\(line.text)」") }
         if let app = frontApp { lines.append("- 前景 app：\(app.name)") }
         if let t = frontTitle { lines.append("- 前景視窗：「\(t)」") }
         if let f = frontFocus { lines.append("- 焦點：\(f)") }
@@ -1332,7 +1363,7 @@ public actor Doll {
     func attachMemories(trigger label: String) async {
         do {
             let events = timeline.events
-            guard let owner = events.last(where: { $0.kind == .owner }) else { return }
+            guard let owner = events.last(where: { $0.speaker != nil }) else { return }
             let query = [owner.text, frontApp?.name].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
             var clock = ContinuousClock.now
