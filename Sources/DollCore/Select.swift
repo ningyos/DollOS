@@ -64,11 +64,20 @@ public struct FoundationSelectionModel: SelectionModel {
         回答所有有用的候選編號；都沒用就回空列表。
         """
 
+    /// Available, then warmed (2026-11-11): one tiny request at boot, so her first triggered turn does
+    /// not pay the cold start (measured: first call 2.9–4.2 s cold, 2.2 s after this, 1.9 s warm;
+    /// `prewarm()` alone was not reliable: 2.8 and 3.9 s).
     public func check() async throws {
         switch SystemLanguageModel.default.availability {
-        case .available: return
+        case .available: break
         case .unavailable(let reason):
             throw SelectionError("Apple Foundation Models (on-device) is unavailable: \(reason); the memory pipeline needs it")
+        }
+        do {
+            _ = try await LanguageModelSession(instructions: Self.selectInstructions)
+                .respond(to: "（暖機，回空列表）", generating: FMPicks.self, options: Self.options)
+        } catch {
+            throw SelectionError("on-device model warm-up failed: \(error)")
         }
     }
 

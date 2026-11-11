@@ -13,7 +13,7 @@ swift run dollcore --config dollcore.toml
 swift run dollcore --config dollcore.toml consolidate data
 ```
 
-開機檢查主模型（`/health`、`/v1/models`）和 Apple 本機模型（Foundation Models，`SystemLanguageModel.default` 可用）；Strata 連不到、或本機模型不能用（沒開 Apple Intelligence、裝置不支援、模型還沒下載好）就報錯結束，沒有 fallback。VM 要先開著、VMPal 的 agent control 要開；`vmpal` 不在 PATH 上，路徑在 `[computer] vmpal`。
+開機檢查主模型（`/health`、`/v1/models`）和 Apple 本機模型（Foundation Models，`SystemLanguageModel.default` 可用）；Strata 連不到、或本機模型不能用（沒開 Apple Intelligence、裝置不支援、模型還沒下載好）就報錯結束，沒有 fallback。本機模型可用時，開機順便送一個很小的請求暖機（2026-11-11：冷的第一次呼叫 2.9–4.2 s，暖機後 2.2 s，熱的 1.9 s；只呼叫 `prewarm()` 不穩，2.8／3.9 s）。VM 要先開著、VMPal 的 agent control 要開；`vmpal` 不在 PATH 上，路徑在 `[computer] vmpal`。
 
 設定檔是 TOML 的嚴格子集：`[section]`、`key = value`、`#` 註解、字串（含 `"""` 多行）、整數、小數、true/false、單行陣列。不認得的 key 直接報錯。角色包 `doll.toml` 用同一個 parser。每個行為數字都在 `dollcore.example.toml`，旁邊一行理由。
 

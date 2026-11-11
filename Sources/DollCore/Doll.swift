@@ -241,7 +241,8 @@ public actor Doll {
     }
 
     // boot -------------------------------------------------------------------
-    /// Checks the model and the on-device model (unreachable or unavailable = error, no fallback).
+    /// Checks the model and the on-device model (unreachable or unavailable = error, no fallback); the
+    /// on-device model's check also warms it.
     public func boot() async throws {
         // Memories written by a previous process exist only as markdown until indexed (spec 6).
         try memory.syncOnBoot()
