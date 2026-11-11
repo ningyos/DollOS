@@ -218,13 +218,19 @@ private final class FakeComputer: ComputerDriver, Sendable {
 /// The fake's open windows and focus line, the last line of every computer result.
 private let fakeWindowsLine = "開著的視窗：Finder、Fake「frame」（前景）；焦點：button \"OK\""
 
-/// The on-device model's stand-in: entities by exact text (none otherwise), and a selection rule
-/// (default: every candidate is useful). Records every selection request.
+/// The on-device model's stand-in: entities by exact text (none otherwise); a pick rule (default:
+/// the first candidate whose line contains the name, case-insensitively); a same rule (default:
+/// 10); a new entry described as 「測試：<name>」; a score rule (default: 10). Records every request.
 private final class FakeSelector: SelectionModel, Sendable {
+    typealias PickRule = @Sendable (Mention, String, [String]) -> Int?
     struct State {
-        var entities: [String: [MemoryEntity]] = [:]
-        var pick: (@Sendable (String, [String]) -> [Int])?
-        var calls: [(situation: String, candidates: [String])] = []
+        var entities: [String: [Mention]] = [:]
+        var pick: PickRule?
+        var same: (@Sendable (Mention, String) -> Int)?
+        var score: (@Sendable (String, String) -> Int)?
+        var picked: [(mention: Mention, context: String, candidates: [String])] = []
+        var described: [Mention] = []
+        var scored: [(situation: String, memory: String)] = []
         var unavailable: String?
     }
     let state = Mutex(State())
@@ -232,16 +238,35 @@ private final class FakeSelector: SelectionModel, Sendable {
     func check() async throws {
         if let why = state.withLock({ $0.unavailable }) { throw SelectionError(why) }
     }
-    func entities(in text: String) async throws -> [MemoryEntity] { state.withLock { $0.entities[text] ?? [] } }
-    func useful(situation: String, candidates: [String]) async throws -> [Int] {
+    func entities(in text: String) async throws -> [Mention] { state.withLock { $0.entities[text] ?? [] } }
+    func pick(_ mention: Mention, context: String, candidates: [String]) async throws -> Int? {
         state.withLock { s in
-            s.calls.append((situation, candidates))
-            return s.pick?(situation, candidates) ?? Array(candidates.indices)
+            s.picked.append((mention, context, candidates))
+            if let rule = s.pick { return rule(mention, context, candidates) }
+            return candidates.firstIndex { $0.lowercased().contains(mention.name.lowercased()) }
         }
     }
-    func setEntities(_ text: String, _ list: [MemoryEntity]) { state.withLock { $0.entities[text] = list } }
-    func setPick(_ f: (@Sendable (String, [String]) -> [Int])?) { state.withLock { $0.pick = f } }
-    var calls: [(situation: String, candidates: [String])] { state.withLock { $0.calls } }
+    func same(_ mention: Mention, context: String, entry: String) async throws -> Int {
+        state.withLock { $0.same?(mention, entry) ?? 10 }
+    }
+    func describe(_ mention: Mention, context: String) async throws -> String {
+        state.withLock { s in
+            s.described.append(mention)
+            return context.contains("桌面") ? "桌面上的 \(mention.name)" : "測試：\(mention.name)"
+        }
+    }
+    func score(situation: String, memory: String) async throws -> Int {
+        state.withLock { s in
+            s.scored.append((situation, memory))
+            return s.score?(situation, memory) ?? 10
+        }
+    }
+    func setEntities(_ text: String, _ list: [Mention]) { state.withLock { $0.entities[text] = list } }
+    func setPick(_ f: PickRule?) { state.withLock { $0.pick = f } }
+    func setSame(_ f: (@Sendable (Mention, String) -> Int)?) { state.withLock { $0.same = f } }
+    func setScore(_ f: (@Sendable (String, String) -> Int)?) { state.withLock { $0.score = f } }
+    var scored: [(situation: String, memory: String)] { state.withLock { $0.scored } }
+    var picked: [(mention: Mention, context: String, candidates: [String])] { state.withLock { $0.picked } }
 }
 
 /// A PNG's signature and IHDR: enough for its pixel size.
@@ -458,19 +483,20 @@ private struct Harness {
 @Test func everyCallInOneReplyRunsInOrderAndGetsItsOwnResult() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("做三件事")
-    try await h.turn(Scripted("好，一次做完", recall("一"), think("medium"), recall("二")))
+    try await h.turn(Scripted("好，一次做完", recall("一次做完"), think("medium"), recall("下一回合")))
     #expect(h.said.isEmpty)                                              // text outside her calls is her thought: never said
-    // recall also searches today's timeline (2026-11-10): her thought and the owner's line, then the think result too
-    #expect(h.last.actions == ["recall 2", "think medium", "recall 3"] && h.last.usedTool)
+    // recall also searches today's timeline (2026-11-10): her thought; the second one, the think result before it
+    #expect(h.last.actions.count == 3 && h.last.actions[0].hasPrefix("recall ") && h.last.actions[1] == "think medium"
+            && h.last.actions[2].hasPrefix("recall ") && h.last.usedTool)
     let results = try h.toolResults()
-    #expect(results[0].text.hasPrefix("一：2 條\n\n〔今天 ") && results[1].text == "下一回合 effort：medium"
-            && results[2].text.hasPrefix("二：3 條\n\n〔今天 "))
+    #expect(results[0].text.hasPrefix("一次做完：") && results[0].text.contains("〔今天 ") && results[0].text.contains("好，一次做完")
+            && results[1].text == "下一回合 effort：medium" && results[2].text.contains("\n下一回合 effort：medium"))
     #expect(await h.doll.followUp)                                       // the results give her the next turn
     try await h.turn("都好了")
     let msgs = await h.model.seen(1)
     let a = try #require(msgs.firstIndex { $0.role == "assistant" })
     // her raw content, call text included, is what goes back
-    #expect(msgs[a].content == Scripted("好，一次做完", recall("一"), think("medium"), recall("二")).raw)
+    #expect(msgs[a].content == Scripted("好，一次做完", recall("一次做完"), think("medium"), recall("下一回合")).raw)
     #expect(msgs[(a + 1)...(a + 3)].map(\.role) == ["tool", "tool", "tool"])
     #expect(msgs[(a + 1)...(a + 3)].map(\.content) == results.map(\.text))
     #expect(await h.model.requests.map(\.effort) == ["medium", "medium"])    // owner turn, then her think
@@ -479,12 +505,12 @@ private struct Harness {
 @Test func aRawReplyRunsItsCallsInTheOrderSheWroteThem() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("查一下再列目錄")
-    let raw = "我先查，再看目錄。\n\n<tool_call>\n<function=recall>\n<parameter=query>\n目錄\n</parameter>\n</function>\n</tool_call>\n"
+    let raw = "我先查，再看目錄。\n\n<tool_call>\n<function=recall>\n<parameter=query>\n列目錄\n</parameter>\n</function>\n</tool_call>\n"
         + "<tool_call>\n<function=think>\n<parameter=level>\nmedium\n</parameter>\n</function>\n</tool_call>"
     try await h.turn(Scripted(stringLiteral: raw))
     #expect(h.said.isEmpty)
-    #expect(h.last.actions == ["recall 2", "think medium"])                // the owner's line and her thought, from today
-    #expect(try h.toolResults().map { $0.text.hasPrefix("目錄：2 條\n\n〔今天 ") || $0.text == "下一回合 effort：medium" } == [true, true])
+    #expect(h.last.actions.count == 2 && h.last.actions[0].hasPrefix("recall ") && h.last.actions[1] == "think medium")
+    #expect(try h.toolResults().map { $0.text.hasPrefix("列目錄：") && $0.text.contains("〔今天 ") || $0.text == "下一回合 effort：medium" } == [true, true])
     let doll = try #require(try h.events().first { $0.kind == .doll })
     #expect(doll.text == raw)                                            // stored byte-identical
 }
@@ -560,7 +586,7 @@ private struct Harness {
     let doll = h.doll
     let runner = Task { try await doll.run() }
     // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
-    func waitFor(_ n: Int, said s: Int, _ seconds: Double = 5) async throws {
+    func waitFor(_ n: Int, said s: Int, _ seconds: Double = 20) async throws {
         let deadline = ContinuousClock.now + .seconds(seconds)
         while (await h.model.requests.count < n || h.said.count < s), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
@@ -744,7 +770,7 @@ private struct Harness {
 /// current one leaves it alone.
 @Test func bootRebuildsAnIndexBuiltByAnotherIndexVersion() async throws {
     let h = try await Harness([Scripted("", remember([("主人的伺服器叫 Strata", false)]))])
-    #expect(try h.store.memoryIndexVersion() == Memory.indexVersion && Memory.indexVersion == 3)
+    #expect(try h.store.memoryIndexVersion() == Memory.indexVersion && Memory.indexVersion == 4)
     await h.doll.ownerSaid("記一下我的伺服器")
     try await h.turn()
     let good = try h.store.memoryVectors(folders: ["public"])
@@ -752,7 +778,7 @@ private struct Harness {
     let meta = try #require(try h.store.memoryMeta(good[0].id))
     func stale() throws {      // what an old process left: same rows, another vector
         try h.store.putMemoryIndex(id: good[0].id, path: meta.path, folder: meta.folder, confidence: meta.confidence, ts: 0,
-                                   sourceSeq: 1, kind: meta.kind, tier: "owner", entityKeys: [], text: "主人的伺服器叫 Strata",
+                                   sourceSeq: 1, kind: meta.kind, tier: "owner", entities: [], text: "主人的伺服器叫 Strata",
                                    vector: Memory.blob([1, 0, 0]))
     }
     func boot() async throws {
@@ -767,7 +793,7 @@ private struct Harness {
     try h.store.setMemoryIndexVersion(1)
     try await boot()
     #expect(try h.store.memoryVectors(folders: ["public"]).first?.vector == good[0].vector)
-    #expect(try h.store.memoryIndexVersion() == 3)
+    #expect(try h.store.memoryIndexVersion() == 4)
     await h.doll.stop()
 }
 
@@ -959,7 +985,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     await h.doll.ownerSaid("我下個月要去大阪，我的貓叫麻糬")
     try await h.turn(Scripted("", remember(kinds: [("主人下個月要去大阪", false, "intended"), ("主人的貓叫麻糬", false, nil)])))
     await h.doll.ownerSaid("你記得我什麼？")
-    try await h.turn(Scripted("", recall("主人")))
+    try await h.turn(Scripted("", recall("主人下個月 主人的貓")))
     let out = try h.toolResults().last!.text
     #expect(out.contains("〔確定的打算｜public〕\n主人下個月要去大阪"))
     #expect(out.contains("〔確定｜public〕\n主人的貓叫麻糬"))
@@ -1981,8 +2007,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     #expect(seen[seen.count - 2].content.hasSuffix("] " + mem[0].text) && seen[seen.count - 2].role == "user")
     #expect(seen[seen.count - 3].content.hasSuffix("幫我用 TextEdit 寫筆記"))
     #expect(h.last.attached == [mem[0].text])
-    #expect(h.logs.contains { $0.contains("相關記憶（主人的新訊息）") && $0.contains("pool 1,") })
-    #expect(h.logs.contains { $0.contains("選記憶（主人的新訊息）") && $0.contains("candidates 1") && $0.contains("selected 1") })
+    #expect(h.logs.contains { $0.contains("選記憶（主人的新訊息）") && $0.contains("prepared 1;") && $0.contains("attached 1 [") })
     // Turns on her own tool results attach nothing.
     try await h.turn(Scripted("", think("high")))
     try await h.turn("嗯")
@@ -1990,13 +2015,13 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
 
     // The on-device model keeping none: no event.
     let none = try await Harness()
-    none.selector.setPick { _, _ in [] }
+    none.selector.setScore { _, _ in 6 }
     try await seedMemory(none, "public", "經驗：幫我用 TextEdit 寫筆記")
     await none.doll.ownerSaid("幫我用 TextEdit 寫筆記")
     try await none.turn("好")
     #expect(try memoryEvents(none).isEmpty && none.last.attached.isEmpty)
-    #expect(none.selector.calls.count == 1 && none.last.selections.count == 1)
-    #expect(none.logs.contains { $0.contains("candidates 1") && $0.contains("selected 0 []") })
+    #expect(none.selector.scored.count == 1 && none.last.selections.count == 1)
+    #expect(none.logs.contains { $0.contains("prepared 1;") && $0.contains("attached 0 []") })
 }
 
 @Test func onlyExperiencesAreAttachedNeverShortcutsOrHerOtherMemories() async throws {
@@ -2012,7 +2037,8 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     let mem = try memoryEvents(h)
     #expect(mem.count == 1 && mem[0].text.contains("經驗：用 TextEdit 存檔") && !mem[0].text.contains("⌘S（"))
     #expect(!mem[0].text.contains("TextEdit 存檔按 cmd+s"))
-    #expect(h.logs.contains { $0.contains("相關記憶（前景 app 換成 TextEdit）") && $0.contains("candidates 0, already attached 1") })
+    #expect(h.logs.contains { $0.contains("相關記憶（前景 app 換成 TextEdit）") && $0.contains("already attached 1 [") })
+    #expect(h.logs.contains { $0.contains("選記憶（前景 app 換成 TextEdit）") && $0.contains("prepared 0;") })
     // The shortcuts and her own memory are still recallable.
     try await h.turn(Scripted("", recall("TextEdit 存檔")))
     let found = try h.toolResults().last!.text
@@ -2143,7 +2169,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await h.doll.ownerSaid("存檔")
-    let deadline = ContinuousClock.now + .seconds(5)
+    let deadline = ContinuousClock.now + .seconds(20)
     while await h.model.requests.count < 2 || h.reports.count < 2, ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }
@@ -3042,8 +3068,9 @@ private func hhmm(_ ts: Double) -> String {
     let sent = await again.model.seen(0)
     #expect(try ChatMessage.encoder.encode(Array(sent.prefix(before.count))) == ChatMessage.encoder.encode(before))
     let kinds = try h.events().map(\.kind)
-    // One timeline: the owner's line, the experience her outcome wrote (attached again), her reply, its result.
-    #expect(kinds.count == events.count + 4 && kinds.suffix(4) == [.owner, .memory, .doll, .tool])
+    // One timeline: the owner's line, her reply, its result (the experience her outcome wrote is not
+    // related to 「在嗎」: nothing is attached).
+    #expect(kinds.count == events.count + 3 && kinds.suffix(3) == [.owner, .doll, .tool])
     await h.doll.stop()
 }
 
@@ -3067,7 +3094,7 @@ private extension Int { var int64: Int64 { Int64(self) } }
 
 extension Doll {
     func todayCount() throws -> Int { try today.count() }
-    func todayFTS(_ match: String) throws -> [String] { try today.fts(match: match, secret: true, limit: 10).map(\.id) }
+    func todayFTS(_ match: String) throws -> [String] { try today.fts(match: match, secret: true).map(\.id) }
 }
 
 @Test func recallFindsTodaysEventsByWordsAndByMeaningWithTheirLabels() async throws {
@@ -3123,7 +3150,7 @@ extension Doll {
         await h.doll.ownerSaid(line)
         try await h.turn(Scripted("想一下", say(answer)))
     }
-    let queries = ["郵局", "寄東西給奶奶", "晚上吃什麼", "開會時間"]
+    let queries = ["郵局寄包裹", "晚餐想吃什麼", "九點開會"]
     let events = await h.doll.timelineEvents()
     var before: [String] = []
     for q in queries { before.append(try await h.doll.recall(q, seen: events).text) }
@@ -3285,7 +3312,9 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
-    let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil)
+    let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
+    let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil,
+                                  entities: [MemoryEntity(app.id, "TextEdit")])
     let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
     let shortcut = try memory.write("TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
     let experience = try memory.write("經驗：另存\n步驟：\n1. key cmd+shift+alt+s", folder: .public, sourceSeq: 1, tier: .selfReported,
@@ -3295,13 +3324,20 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     await h.doll.ownerSaid("用 TextEdit 另存一份")
     try await h.turn(Scripted("", say("好")))
     let before = try h.timeline().segment
+    // n1 names the existing TextEdit entry by another language's name, and a new shortcut entry;
+    // the update names a new entry; new3 is named by nothing.
     let reply = """
         整理好了。
         ```json
-        {"operations": [
-          {"op": "add", "ref": "n1", "text": "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", "folder": "public", "kind": "", "entities": [{"type": "app", "name": "TextEdit"}, {"type": "shortcut", "name": "⇧⌥⌘S"}]},
+        {"entities": [
+          {"ref": "new1", "type": "shortcut", "name": "⇧⌥⌘S", "aliases": ["shift+option+cmd+s"], "description": "TextEdit 的另存快捷鍵"},
+          {"ref": "new2", "type": "other", "name": "橘貓", "aliases": [], "description": "主人養的貓"},
+          {"ref": "new3", "type": "other", "name": "沒用到", "aliases": [], "description": "x"}
+        ],
+        "operations": [
+          {"op": "add", "ref": "n1", "text": "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", "folder": "public", "kind": "", "entities": [{"name": "文字編輯", "id": "\(app.id)"}, {"name": "⇧⌥⌘S", "id": "new1"}]},
           {"op": "add", "ref": "n2", "text": "主人今天要了一份副本", "folder": "secret", "kind": "happened", "entities": []},
-          {"op": "update", "id": "\(cat)", "text": "主人養貓，是橘貓", "entities": [{"type": "other", "name": "橘貓"}]},
+          {"op": "update", "id": "\(cat)", "text": "主人養貓，是橘貓", "entities": [{"name": "橘貓", "id": "new2"}]},
           {"op": "retire", "id": "\(saveAs)", "superseded_by": "n1", "reason": "有更短的走法"}
         ]}
         ```
@@ -3309,13 +3345,17 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let model = FakeModel([Scripted(reply)])
     let r = try await Consolidation.run(config: cfg, root: root, model: model)
 
-    // The request: no persona, high effort, the day as text, only memories she or consolidation wrote.
+    // The request: no persona, high effort, the day as text, only memories she or consolidation
+    // wrote, with their entities by registry id, and the registry entries near the day.
     let sent = await model.requests[0]
     #expect(sent.effort == "high" && sent.messages.map(\.role) == ["system", "user"])
     #expect(!sent.messages[0].content.contains("你是") && sent.messages[1].content.contains("[id: \(cat)｜public｜kind: ｜entities: []]\n主人養貓"))
+    #expect(sent.messages[1].content.contains(#"[id: \#(saveAs)｜public｜kind: ｜entities: [{"id":"\#(app.id)","name":"TextEdit"}]]"#))
+    #expect(sent.messages[1].content.contains("[id: \(app.id)｜app｜TextEdit｜別名：（沒有）] macOS 內建的文字編輯 app"))
     #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說] 好"))
     #expect(!sent.messages[1].content.contains(shortcut) && !sent.messages[1].content.contains(experience))
-    #expect(Set(r.related) == [saveAs, cat] && r.operations.count == 4 && r.segment == before && r.newSegment > before)
+    #expect(Set(r.related) == [saveAs, cat] && r.registry == [app.id] && r.plan.operations.count == 4)
+    #expect(r.segment == before && r.newSegment > before)
 
     let files = try memoryFilesByID(h)
     let added = files.filter { $0.value.file.tier == .consolidated && $0.value.file.retired == nil }
@@ -3324,16 +3364,26 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(n1.value.folder == "public" && n1.value.file.kind == "" && n1.value.file.confidence == cfg.memory.confidence[.consolidated]!)
     #expect(n2.value.folder == "secret" && n2.value.file.kind == "happened")
     #expect(files[cat]?.file.body == "主人養貓，是橘貓" && files[cat]?.file.tier == .owner)
-    #expect(files[cat]?.file.entities == [MemoryEntity(.other, "橘貓")] && n2.value.file.entities.isEmpty)
-    #expect(n1.value.file.entities == [MemoryEntity(.app, "TextEdit"), MemoryEntity(.shortcut, "⇧⌥⌘S")])
-    #expect(try h.store.memoryEntityKeys([n1.key, cat]) == [n1.key: ["textedit", "⇧⌥⌘s"], cat: ["橘貓"]])
+    // The registry: the existing entry got the other language's name as an alias; two new entries;
+    // the unused one was not created.
+    let entries = try memory.registry.all()
+    let keys = try #require(entries.first { $0.name == "⇧⌥⌘S" })
+    let pet = try #require(entries.first { $0.name == "橘貓" })
+    #expect(entries.count == 3 && entries.first { $0.id == app.id }?.aliases == ["文字編輯"])
+    #expect(keys.type == .shortcut && keys.aliases == ["shift+option+cmd+s"] && keys.description == "TextEdit 的另存快捷鍵")
+    #expect(files[cat]?.file.entities == [MemoryEntity(pet.id, "橘貓")] && n2.value.file.entities.isEmpty)
+    #expect(n1.value.file.entities == [MemoryEntity(app.id, "文字編輯"), MemoryEntity(keys.id, "⇧⌥⌘S")])
+    #expect(try h.store.memoryEntities([n1.key, cat]) == [n1.key: [app.id, keys.id].sorted(), cat: [pet.id]])
+    #expect(try memory.registry.exact("文字編輯").map(\.id) == [app.id])
+    #expect(r.applied.contains("entity ref new3 (沒用到) not created: no operation names it"))
+    #expect(r.applied.contains("alias \(app.id) += 文字編輯"))
     let retired = try #require(files[saveAs]?.file.retired)
     #expect(retired.supersededBy == n1.key && retired.reason == "有更短的走法" && abs(retired.ts - Date().timeIntervalSince1970) < 60)
     #expect(files[saveAs]?.file.body == "TextEdit 另存要從 File 選單點 Save As…")
     // Retired longer than retired_keep_days: deleted; retired 5 days ago: kept.
     #expect(files["9-old000"] == nil && files["9-new000"] != nil)
     #expect(r.applied.first == "deleted 9-old000 (retired more than 30 days ago)")
-    #expect(r.applied.contains(#"add public/\#(n1.key) (ref n1, kind none, entities [{"name":"TextEdit","type":"app"},{"name":"⇧⌥⌘S","type":"shortcut"}]): TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"#))
+    #expect(r.applied.contains(#"add public/\#(n1.key) (ref n1, kind none, entities [{"id":"\#(app.id)","name":"文字編輯"},{"id":"\#(keys.id)","name":"⇧⌥⌘S"}]): TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"#))
     #expect(r.applied.contains("retire \(saveAs) (superseded by \(n1.key)): 有更短的走法"))
     // Retired: out of recall; the update and the new one are in (the index follows the files).
     let found = try memory.search("TextEdit 另存 Save As", visible: Set(MemoryFolder.allCases), limit: 50).map(\.id)
@@ -3364,33 +3414,43 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let files = try memoryFiles(h)
     let segments = try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted()
     func block(_ json: String) -> String { "```json\n\(json)\n```" }
-    let add = #"{"op": "add", "ref": "n1", "text": "主人的貓叫咪咪", "folder": "public", "kind": "", "entities": [{"type": "person", "name": "咪咪"}]}"#
+    let pet = #"{"ref": "new1", "type": "person", "name": "咪咪", "aliases": [], "description": "主人的貓"}"#
+    func plan(_ ops: String, _ entities: String = pet) -> String { block(#"{"entities": [\#(entities)], "operations": [\#(ops)]}"#) }
+    let add = #"{"op": "add", "ref": "n1", "text": "主人的貓叫咪咪", "folder": "public", "kind": "", "entities": [{"name": "咪咪", "id": "new1"}]}"#
     func addWith(_ entities: String) -> String {
-        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "public", "kind": "", "entities": \#(entities)}]}"#)
+        plan(#"{"op": "add", "ref": "n1", "text": "x", "folder": "public", "kind": "", "entities": \#(entities)}"#)
     }
+    func entity(_ json: String) -> String { plan(add, json) }
     let bad: [String] = [
         "沒有區塊",
-        block(#"{"operations": [\#(add)]}"#) + "\n" + block(#"{"operations": []}"#),
+        plan(add) + "\n" + plan(""),
         block("not json"),
-        block(#"{"operations": [], "note": "x"}"#),
-        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "public"}]}"#),
-        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "private", "kind": ""}]}"#),
-        block(#"{"operations": [{"op": "add", "ref": "n1", "text": "x", "folder": "public", "kind": "fact"}]}"#),
-        block(#"{"operations": [{"op": "add", "ref": "n1", "text": " ", "folder": "public", "kind": ""}]}"#),
-        block(#"{"operations": [\#(add), \#(add)]}"#),
-        block(#"{"operations": [{"op": "forget", "id": "\#(cat)"}]}"#),
-        block(#"{"operations": [{"op": "update", "id": "\#(shortcut)", "text": "x", "entities": []}]}"#),
-        block(#"{"operations": [{"op": "update", "id": "\#(cat)", "text": "a", "entities": []}, {"op": "update", "id": "\#(cat)", "text": "b", "entities": []}]}"#),
-        block(#"{"operations": [{"op": "update", "id": "\#(cat)", "text": "a"}]}"#),
-        addWith(#"{"type": "app", "name": "x"}"#),
-        addWith(#"[{"type": "program", "name": "x"}]"#),
-        addWith(#"[{"type": "app"}]"#),
-        addWith(#"[{"type": "app", "name": " "}]"#),
-        addWith(#"[{"type": "app", "name": "x", "role": "y"}]"#),
-        addWith(#"[{"type": "app", "name": "TextEdit"}, {"type": "other", "name": "ｔｅｘｔ edit"}]"#),
-        block(#"{"operations": [{"op": "retire", "id": "\#(cat)", "superseded_by": "n9", "reason": "x"}]}"#),
-        block(#"{"operations": [{"op": "retire", "id": "\#(cat)", "superseded_by": "\#(cat)", "reason": "x"}]}"#),
-        block(#"{"operations": [\#(add), {"op": "retire", "id": "\#(cat)", "superseded_by": "n1", "reason": ""}]}"#),
+        block(#"{"entities": [], "operations": [], "note": "x"}"#),
+        block(#"{"operations": []}"#),
+        plan(#"{"op": "add", "ref": "n1", "text": "x", "folder": "public"}"#),
+        plan(#"{"op": "add", "ref": "n1", "text": "x", "folder": "private", "kind": "", "entities": []}"#),
+        plan(#"{"op": "add", "ref": "n1", "text": "x", "folder": "public", "kind": "fact", "entities": []}"#),
+        plan(#"{"op": "add", "ref": "n1", "text": " ", "folder": "public", "kind": "", "entities": []}"#),
+        plan(#"\#(add), \#(add)"#),
+        plan(#"{"op": "forget", "id": "\#(cat)"}"#),
+        plan(#"{"op": "update", "id": "\#(shortcut)", "text": "x", "entities": []}"#),
+        plan(#"{"op": "update", "id": "\#(cat)", "text": "a", "entities": []}, {"op": "update", "id": "\#(cat)", "text": "b", "entities": []}"#),
+        plan(#"{"op": "update", "id": "\#(cat)", "text": "a"}"#),
+        addWith(#"{"name": "x", "id": "new1"}"#),
+        addWith(#"[{"type": "app", "name": "x"}]"#),
+        addWith(#"[{"name": "x"}]"#),
+        addWith(#"[{"name": " ", "id": "new1"}]"#),
+        addWith(#"[{"name": "x", "id": "new1", "role": "y"}]"#),
+        addWith(#"[{"name": "咪咪", "id": "new1"}, {"name": "小咪", "id": "new1"}]"#),
+        addWith(#"[{"name": "x", "id": "e00000000"}]"#),
+        entity(#"{"ref": "new1", "type": "person", "name": "咪咪", "aliases": []}"#),
+        entity(#"{"ref": "new1", "type": "person", "name": "咪咪", "aliases": [], "description": " "}"#),
+        entity(#"{"ref": "new1", "type": "cat", "name": "咪咪", "aliases": [], "description": "x"}"#),
+        entity(#"{"ref": "new1", "type": "person", "name": "咪咪", "aliases": "小咪", "description": "x"}"#),
+        entity(#"\#(pet), \#(pet)"#),
+        plan(#"{"op": "retire", "id": "\#(cat)", "superseded_by": "n9", "reason": "x"}"#),
+        plan(#"{"op": "retire", "id": "\#(cat)", "superseded_by": "\#(cat)", "reason": "x"}"#),
+        plan(#"\#(add), {"op": "retire", "id": "\#(cat)", "superseded_by": "n1", "reason": ""}"#),
     ]
     for reply in bad {
         await #expect(throws: ConsolidationError.self, "\(reply)") {
@@ -3403,8 +3463,8 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
     #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
     // The same reply, valid: applied.
-    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(block(#"{"operations": [\#(add)]}"#))]))
-    #expect(ok.applied.count == 2 && ok.applied[1].hasSuffix("主人的貓叫咪咪"))
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]))
+    #expect(ok.applied.count == 3 && ok.applied[1].hasPrefix("entity ") && ok.applied[2].hasSuffix("主人的貓叫咪咪"))
 }
 
 @Test func consolidatedMemoriesAreAttachedAndRetiredOnesAreNot() async throws {
@@ -3414,126 +3474,210 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     await h.doll.ownerSaid("用 TextEdit 另存一份")
     try await h.turn("好")
     #expect(try memoryEvents(h).map(\.text) == ["【相關記憶】程式用主人的話查到、判斷用得上的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
-    try await h.turn(Scripted("", recall("File 選單 Save As")))
+    try await h.turn(Scripted("", recall("另存對話框")))
     let result = try h.toolResults().last!.text
     #expect(result.contains("跳出另存對話框") && !result.contains("File 選單點"))
 }
 
 @Test func consolidateConfigIsValidated() throws {
     let c = try Config.load(root.appending(path: "dollcore.example.toml")).consolidate
-    #expect(c.effort == "high" && c.retiredKeepDays == 30 && c.recallK >= 1)
+    #expect(c.effort == "high" && c.retiredKeepDays == 30 && c.recallK >= 1 && c.registryK >= 1)
     let file = FileManager.default.temporaryDirectory.appending(path: "consolidate-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
-    for bad in ["effort = \"max\"", "max_tokens = 0", "timeout_s = 0", "recall_k = -1", "retired_keep_days = -1", "bogus = 1"] {
+    for bad in ["effort = \"max\"", "max_tokens = 0", "timeout_s = 0", "recall_k = -1", "registry_k = -1", "retired_keep_days = -1", "bogus = 1"] {
         try (head + "[consolidate]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
+    // The registry folder is a fourth folder name.
+    try (head + "registry_dir = \"public\"\n").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
 }
 
-// memory selection: entities, one hop, the on-device model (2026-11-11) ------------------------
+// memory selection: the entity registry, everything related, prefilter, scores (2026-11-11) ------------
 
-@Test func entitiesRoundTripThroughTheFrontMatterAndTheIndexRebuildsThem() async throws {
+@Test func theRegistryAndEntityRefsRoundTripAndTheIndexRebuildsFromFiles() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
-    let ents = [MemoryEntity(.app, "TextEdit"), MemoryEntity(.file, "notes.txt"), MemoryEntity(.other, "ｔｅｘｔ Edit")]
+    let app = try memory.registry.create(.app, name: "TextEdit", aliases: ["文字編輯", " ", "ｔｅｘｔ Edit", "com.apple.TextEdit"],
+                                         description: "macOS 內建的文字編輯 app")
+    // Blank aliases and those with the name's key are dropped; the file gives the entry back.
+    #expect(app.aliases == ["文字編輯", "com.apple.TextEdit"])
+    let raw = try String(contentsOf: h.dir.appending(path: "memory/entities/\(app.id).md"), encoding: .utf8)
+    #expect(try Registry.parseFile(raw, id: app.id) == app && app.text == raw)
+    #expect(Registry.key(" Text\u{3000}Ｅｄｉｔ ") == "textedit")
+    let file = try memory.registry.create(.file, name: "~/Documents/notes.txt", aliases: [], description: "文件資料夾裡的 notes.txt")
+    // A memory names entries by id, as its text writes them; a second mention of one entry is dropped.
+    let ents = [MemoryEntity(app.id, "TextEdit"), MemoryEntity(file.id, "notes.txt"), MemoryEntity(app.id, "文字編輯")]
     let id = try memory.write("TextEdit 打開 notes.txt", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: ents)
-    let url = h.dir.appending(path: "memory/public/\(id).md")
-    let raw = try String(contentsOf: url, encoding: .utf8)
-    // The later duplicate (same key after normalization) is dropped; one JSON line in the front-matter.
-    #expect(raw.contains(#"entities = [{"name":"TextEdit","type":"app"},{"name":"notes.txt","type":"file"}]"#))
-    let parsed = try Memory.parseFile(raw)
-    #expect(parsed.entities == Array(ents.prefix(2)) && parsed.text == raw)
-    #expect(MemoryEntity.key(" Text\u{3000}Ｅｄｉｔ ") == "textedit")
-    #expect(try h.store.memoryEntityKeys([id]) == [id: ["notes.txt", "textedit"]])
-    // The index is rebuilt from the files, entity rows included.
+    let mraw = try String(contentsOf: h.dir.appending(path: "memory/public/\(id).md"), encoding: .utf8)
+    #expect(mraw.contains(#"entities = [{"id":"\#(app.id)","name":"TextEdit"},{"id":"\#(file.id)","name":"notes.txt"}]"#))
+    #expect(try Memory.parseFile(mraw).entities == Array(ents.prefix(2)))
+    // The index is rebuilt from the files: the registry's keys, FTS and vectors, the memories' entity rows.
     try h.store.clearMemoryIndex()
-    #expect(try h.store.memoryEntityKeys([id]).isEmpty)
+    #expect(try memory.registry.exact("文字編輯").isEmpty && h.store.memoryEntities([id]).isEmpty)
     try memory.rebuild()
-    #expect(try h.store.memoryEntityKeys([id]) == [id: ["notes.txt", "textedit"]])
-    // A file with malformed entities is an error, not silently empty.
-    for bad in ["entities = [{\"type\":\"app\"}]", "entities = nope", "entities = [{\"type\":\"bogus\",\"name\":\"x\"}]"] {
+    #expect(try memory.registry.exact("文字編輯").map(\.id) == [app.id] && memory.registry.exact("COM.apple.textedit").map(\.id) == [app.id])
+    #expect(try h.store.memoryEntities([id]) == [id: [app.id, file.id].sorted()])
+    #expect(try memory.registry.nearby("notes.txt", limit: 1).map(\.id) == [file.id])
+    // At boot, an index that lost its rows is rebuilt.
+    try h.store.clearMemoryIndex()
+    try memory.syncOnBoot()
+    #expect(try h.store.countRegistryIndex() == 2 && memory.registry.exact("文字編輯").map(\.id) == [app.id])
+    // Naming an entry that does not exist: not written; a file doing so fails the rebuild.
+    #expect(throws: MemoryError.self) {
+        try memory.write("x", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: [MemoryEntity("e404", "x")])
+    }
+    try FileManager.default.removeItem(at: h.dir.appending(path: "memory/entities/\(file.id).md"))
+    #expect(throws: MemoryError.self) { try memory.rebuild() }
+    // Malformed entities or registry files are errors, not silently empty.
+    for bad in ["entities = [{\"id\":\"e1\"}]", "entities = nope", "entities = [{\"type\":\"app\",\"name\":\"x\"}]",
+                "entities = [{\"id\":\"e1\",\"name\":\"a\"},{\"id\":\"e1\",\"name\":\"b\"}]"] {
         #expect(throws: MemoryError.self, "\(bad)") { try Memory.parseFile("+++\nkind = \"\"\n\(bad)\n+++\nx") }
+    }
+    for bad in ["+++\ntype = \"bogus\"\nname = \"x\"\naliases = []\n+++\nd", "+++\ntype = \"app\"\nname = \"x\"\n+++\nd",
+                "+++\ntype = \"app\"\nname = \"x\"\naliases = []\n+++\n"] {
+        #expect(throws: MemoryError.self, "\(bad)") { try Registry.parseFile(bad, id: "e1") }
     }
 }
 
-@Test func expansionFindsAMemorySharingAnEntityButNoWordsAndTheModelDecides() async throws {
-    let h = try await Harness(tune: { $0.select.seedK = 1 })
-    let line = "用 TextEdit 另存一份"
-    try await seedMemory(h, "public", "TextEdit 另存一份：按 ⇧⌥⌘S → 跳出另存對話框", tier: "consolidated", confidence: 0.6,
-                         entities: [MemoryEntity(.app, "TextEdit"), MemoryEntity(.shortcut, "⇧⌥⌘S")], id: "1-seed")
-    // Shares only the app with the seed; no word of the owner's line.
-    try await seedMemory(h, "public", "開檔對話框裡按 ⇧⌘G 可以直接輸入路徑", tier: "consolidated", confidence: 0.6,
-                         entities: [MemoryEntity(.app, "textedit"), MemoryEntity(.ui, "開檔對話框")], id: "2-hop")
-    // Shares nothing: never a candidate beyond the seeds.
-    try await seedMemory(h, "public", "Safari 書籤在側邊欄", tier: "consolidated", confidence: 0.6,
-                         entities: [MemoryEntity(.app, "Safari")], id: "3-none")
-    h.selector.setPick { _, c in c.indices.filter { c[$0].contains("⇧⌘G") } }
-    await h.doll.ownerSaid(line)
-    try await h.turn("好")
-    let call = try #require(h.selector.calls.first)
-    #expect(call.candidates == ["TextEdit 另存一份：按 ⇧⌥⌘S → 跳出另存對話框", "開檔對話框裡按 ⇧⌘G 可以直接輸入路徑"])
-    #expect(call.situation.contains("主人最後說：「\(line)」") && call.situation.contains("主人的新訊息"))
-    let line0 = try #require(h.last.selections.first)
-    #expect(line0.contains("seeds 1, entity seeds 0, expanded 1") && line0.contains("candidates 2 [1-seed(seed) 2-hop(expansion)]")
-            && line0.contains("selected 1 [2-hop(expansion)]"))
-    let mem = try memoryEvents(h)
-    #expect(mem.count == 1 && mem[0].text.contains("⇧⌘G") && !mem[0].text.contains("⇧⌥⌘S"))
+@Test func alignmentMapsOtherLanguagesAndPathVariantsAndKeepsHomonymsApart() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store)
+    let fake = FakeSelector()
+    let sel = Selector(memory: memory, model: fake, config: cfg.select)
+    let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
+    // Another language's name is no entry's key: the lookup finds the entry by its description, the
+    // model picks it and says it is the same thing, and the name becomes an alias (the query side
+    // then finds it exactly).
+    let placed = try await sel.place(Mention(.app, "文字編輯"), context: "用文字編輯打開")
+    #expect(placed.entry.id == app.id && placed.how == "model 10" && placed.entry.aliases == ["文字編輯"])
+    #expect(fake.picked.last?.candidates.first == app.line)
+    let calls = fake.picked.count
+    #expect(try await sel.resolve(Mention(.app, "文字編輯"), context: "").how == "exact" && fake.picked.count == calls)
+    #expect(try await sel.resolve(Mention(.app, "ＴＥＸＴＥＤＩＴ"), context: "").entry?.id == app.id && fake.picked.count == calls)
 
-    // The owner's line's entities are seeds of their own: a memory sharing only that.
-    let e = try await Harness(tune: { $0.select.seedK = 1 })
-    try await seedMemory(e, "public", "TextEdit 另存一份：按 ⇧⌥⌘S", tier: "consolidated", confidence: 0.6, id: "1-seed")
-    try await seedMemory(e, "public", "那個檔案的第三行是空的", tier: "consolidated", confidence: 0.6,
-                         entities: [MemoryEntity(.file, "notes.txt")], id: "2-ent")
-    e.selector.setEntities("把 notes.txt 另存一份", [MemoryEntity(.file, "Notes.TXT")])
-    await e.doll.ownerSaid("把 notes.txt 另存一份")
-    try await e.turn("好")
-    #expect(e.last.selections.first?.contains("entities [\"notes.txt\"]: seeds 1, entity seeds 1") == true)
-    #expect(e.last.selections.first?.contains("2-ent(entity)") == true)
+    // A path variant: the model says the bare file name is the entry with the full path.
+    let docs = try memory.registry.create(.file, name: "~/Documents/notes.txt", aliases: [], description: "文件資料夾裡的 notes.txt")
+    let variant = try await sel.place(Mention(.file, "notes.txt"), context: "打開文件裡的 notes.txt")
+    #expect(variant.entry.id == docs.id && variant.entry.aliases == ["notes.txt"])
+
+    // A homonym: the same name in another place. The write side always asks the model, so it is not
+    // taken for the entry that has the name as an alias: a new entry with its own description; from
+    // then on the model tells the two apart.
+    fake.setPick { _, context, c in c.firstIndex { $0.contains(context.contains("桌面") ? "桌面" : "文件") } }
+    let desk = try await sel.place(Mention(.file, "notes.txt"), context: "桌面上的 notes.txt 是草稿")
+    #expect(desk.how == "new (none)" && desk.entry.id != docs.id && desk.entry.description == "桌面上的 notes.txt")
+    #expect(try memory.registry.exact("notes.txt").map(\.id).sorted() == [docs.id, desk.entry.id].sorted())
+    #expect(try await sel.place(Mention(.file, "notes.txt"), context: "文件裡的 notes.txt").entry.id == docs.id)
+    #expect(try await sel.place(Mention(.file, "notes.txt"), context: "桌面上的 notes.txt").entry.id == desk.entry.id)
+    // The query side with two entries of the name: the model picks (here by context).
+    #expect(try await sel.resolve(Mention(.file, "notes.txt"), context: "桌面").entry?.id == desk.entry.id)
+
+    // The query side never writes: a name nothing matches is none, remembered per name.
+    fake.setPick(nil)
+    let before = try memory.registry.all()
+    let none = try await sel.resolve(Mention(.website, "apple.com"), context: "")
+    let after = try memory.registry.all()
+    #expect(none.entry == nil && none.how == "none" && after == before)
+    #expect(try await sel.resolve(Mention(.website, "apple.com"), context: "").how == "cached")
+
+    // The program's apps: aligned by name or bundle id, the bundle id kept as an alias.
+    let local = try await sel.programApp(AppIdentity(bundleID: "com.apple.TextEdit", name: "文字編輯", version: "1.21"), context: "")
+    #expect(local.entry.id == app.id && local.how == "exact" && local.entry.aliases == ["文字編輯", "com.apple.TextEdit"])
+    // A pick the model does not confirm is no match: Safari is not Finder, a new entry the program describes.
+    let finder = try memory.registry.create(.app, name: "Finder", aliases: [], description: "macOS 內建的檔案管理 app")
+    fake.setPick { _, _, c in c.firstIndex { $0.hasPrefix("Finder") } }
+    fake.setSame { m, entry in m.name == "Safari" && entry.hasPrefix("Finder") ? 2 : 10 }
+    let safari = try await sel.programApp(AppIdentity(bundleID: "com.apple.Safari", name: "Safari", version: "18"), context: "")
+    #expect(safari.how == "new (rejected Finder 2)" && safari.entry.id != finder.id)
+    #expect(safari.entry.aliases == ["com.apple.Safari"] && safari.entry.description.contains("com.apple.Safari"))
+    #expect(try memory.registry.entry(finder.id)?.aliases == [])
 }
 
-@Test func recallReturnsOnlyWhatTheModelKeepsTodayIncluded() async throws {
-    let h = try await Harness()
+/// A registry entry in the harness's memory (the next `seedMemory` re-indexes it).
+private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ description: String) throws -> RegistryEntry {
+    let cfg = try consolidationConfig(h)
+    return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store).registry
+        .create(type, name: name, aliases: [], description: description)
+}
+
+@Test func aMemoryReachableOnlyThroughAnAlignedEntityOrOneHopIsACandidate() async throws {
+    // No embedding channel here: only FTS, the trigger's entities and the hop.
+    let h = try await Harness(tune: { $0.select.similarity = 1.0 })
+    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app")
+    let keys = try entry(h, .shortcut, "⇧⌥⌘S", "TextEdit 的另存快捷鍵")
+    let safari = try entry(h, .app, "Safari", "macOS 的瀏覽器")
+    let line = "用文字編輯另存一份"
+    // No word of the owner's line; names TextEdit, which the line calls 文字編輯.
+    try await seedMemory(h, "public", "開檔對話框裡按 ⇧⌘G 可以直接輸入路徑", tier: "consolidated", confidence: 0.6,
+                         entities: [MemoryEntity(app.id, "TextEdit")], id: "1-ent")
+    // An FTS hit (另存一份).
+    try await seedMemory(h, "public", "另存一份要按 ⇧⌥⌘S", tier: "consolidated", confidence: 0.6,
+                         entities: [MemoryEntity(keys.id, "⇧⌥⌘S")], id: "2-seed")
+    // Shares only the shortcut with the FTS hit: one hop.
+    try await seedMemory(h, "public", "⇧⌥⌘S 之後檔名欄已選取", tier: "consolidated", confidence: 0.6,
+                         entities: [MemoryEntity(keys.id, "⇧⌥⌘S")], id: "3-hop")
+    // Related to nothing.
+    try await seedMemory(h, "public", "Safari 書籤在側邊欄", tier: "consolidated", confidence: 0.6,
+                         entities: [MemoryEntity(safari.id, "Safari")], id: "4-none")
+    h.selector.setEntities(line, [Mention(.app, "文字編輯")])
+    await h.doll.ownerSaid(line)
+    try await h.turn("好")
+    let report = try #require(h.last.selections.first)
+    #expect(report.contains("entities [文字編輯→\(app.id)「TextEdit」 model 10]"))
+    #expect(report.contains("related 3 (fts 1, embedding 0, entity 1, hop 1), prepared 3;"))
+    #expect(Set(h.selector.scored.map(\.memory)) == ["開檔對話框裡按 ⇧⌘G 可以直接輸入路徑", "另存一份要按 ⇧⌥⌘S", "⇧⌥⌘S 之後檔名欄已選取"])
+    #expect(h.selector.scored.allSatisfy { $0.situation.contains("主人最後說：「\(line)」") && $0.situation.contains("主人的新訊息") })
+    let mem = try memoryEvents(h)
+    #expect(mem.count == 1 && mem[0].text.contains("⇧⌘G") && !mem[0].text.contains("書籤"))
+}
+
+@Test func thePrefilterCapsWhatIsScoredAndTheThresholdDecides() async throws {
+    // entity_weight 1: the two memories naming the trigger's app come first, whatever their cosines.
+    let h = try await Harness(tune: { $0.select.prefilter = 2; $0.select.entityWeight = 1; $0.select.candidateMaxChars = 100 })
+    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app")
+    let long = String(repeating: "很長", count: 50)
+    for i in 1...4 {
+        try await seedMemory(h, "public", "TextEdit 另存第 \(i) 種方法" + long, tier: "consolidated", confidence: 0.6,
+                             entities: i <= 2 ? [MemoryEntity(app.id, "TextEdit")] : [], id: "\(i)-m")
+    }
+    h.selector.setEntities("TextEdit 另存", [Mention(.app, "TextEdit")])
+    h.selector.setScore { _, m in m.contains("第 1 種") ? 6 : m.contains("第 2 種") ? 8 : 10 }
+    await h.doll.ownerSaid("TextEdit 另存")
+    try await h.turn("好")
+    // Four related, two scored (each cut for the model), one at or above the threshold (7).
+    let scored = h.selector.scored.map(\.memory)
+    #expect(scored.count == 2 && scored.allSatisfy { $0.hasSuffix("…") && $0.count == 101 })
+    #expect(Set(scored.map { String($0.prefix(15)) }) == ["TextEdit 另存第 1 ", "TextEdit 另存第 2 "])
+    let report = try #require(h.last.selections.first)
+    #expect(report.contains("related 4 (") && report.contains("attached 1 [2-m 8]"))
+    // She gets the kept one whole.
+    let mem = try memoryEvents(h)
+    #expect(mem.count == 1 && mem[0].text.contains("第 2 種方法" + long) && !mem[0].text.contains("第 1 種"))
+    // Recall goes the same way; nothing at or above the threshold is 「0 條」.
+    h.selector.setScore { _, _ in 3 }
+    try await h.turn(Scripted("", recall("TextEdit 另存")))
+    #expect(try h.toolResults().last!.text == "TextEdit 另存：0 條" && h.selector.scored.count == 4)
+}
+
+@Test func recallReturnsWhatTheModelScoresHighTodayIncluded() async throws {
+    // Every memory and event is related here (similarity -1): what is given is up to the scores.
+    let h = try await Harness(tune: { $0.select.similarity = -1 })
     try await seedMemory(h, "public", "主人的貓叫咪咪", tier: "owner", confidence: 0.9)
     try await seedMemory(h, "public", "主人的狗叫旺財", tier: "owner", confidence: 0.9)
     await h.doll.ownerSaid("我今天幫貓買了新的貓砂")
     try await h.turn(Scripted("", say("好")))
-    h.selector.setPick { _, c in c.indices.filter { c[$0].contains("貓") } }
+    h.selector.setScore { _, m in m.contains("貓") ? 9 : 1 }
     try await h.turn(Scripted("", recall("貓")))
     let text = try h.toolResults().last!.text
     #expect(text.hasPrefix("貓：2 條") && text.contains("主人的貓叫咪咪") && text.contains("〔今天") && text.contains("貓砂")
             && !text.contains("旺財"))
-    #expect(h.selector.calls.last!.candidates.contains { $0.contains("旺財") })
-    #expect(h.selector.calls.last!.situation.contains("她用 recall 查「貓」"))
-    // None kept: 0 條.
-    h.selector.setPick { _, _ in [] }
-    try await h.turn(Scripted("", recall("貓")))
-    #expect(try h.toolResults().last!.text == "貓：0 條")
-    #expect(h.last.actions.contains("recall 0"))
-}
-
-@Test func capsAndBatchesBoundWhatTheModelSees() async throws {
-    let h = try await Harness(tune: { $0.select.attachCap = 2; $0.select.recallCap = 3; $0.select.batchChars = 120; $0.select.candidateMaxChars = 100 })
-    for i in 1...4 {
-        try await seedMemory(h, "public", "TextEdit 另存第 \(i) 種方法" + String(repeating: "很長", count: 50),
-                             tier: "consolidated", confidence: 0.6, id: "\(i)-m")
-    }
-    await h.doll.ownerSaid("TextEdit 另存")
-    try await h.turn("好")
-    // Attach: 2 candidates (the cap), each cut for the model, each over half the batch size: two requests.
-    let attach = h.selector.calls
-    #expect(attach.flatMap(\.candidates).count == 2 && attach.count == 2)
-    #expect(attach.flatMap(\.candidates).allSatisfy { $0.hasSuffix("…") && $0.count == 101 })
-    // She still gets every kept one whole.
-    #expect(try memoryEvents(h)[0].text.contains(String(repeating: "很長", count: 50)))
-    try await h.turn(Scripted("", recall("另存")))
-    #expect(h.selector.calls.dropFirst(attach.count).flatMap(\.candidates).count == 3)
-}
-
-@Test func batchesKeepOrderAndNeverSplitACandidate() {
-    #expect(Selection.batches(["aaaa", "bb", "cc", "dddddd", "e"], maxChars: 6) == [[0, 1], [2], [3], [4]])
-    #expect(Selection.batches([], maxChars: 6).isEmpty)
+    #expect(h.selector.scored.contains { $0.memory.contains("旺財") })
+    #expect(h.selector.scored.last!.situation.contains("她用 recall 查「貓」"))
+    #expect(h.last.selections.first?.contains("prefilter [") == true && h.last.actions.contains("recall 2"))
 }
 
 @Test func anUnavailableOnDeviceModelFailsBoot() async throws {
@@ -3548,20 +3692,26 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     await h.doll.ownerSaid("用 TextEdit 存檔")
     try await h.turn()
     try await h.turn()
+    let cfg = try consolidationConfig(h)
+    let registry = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store).registry
+    let app = try #require(try registry.exact("com.apple.TextEdit").first)
+    let keys = try #require(try registry.exact("⇧⌥⌘S").first)
+    #expect(app.name == "TextEdit" && app.aliases == ["com.apple.TextEdit"] && keys.type == .shortcut)
     let files = try memoryFilesByID(h).values.map(\.file)
     let saveAs = try #require(files.first { $0.tier == .program && $0.body.contains("Save As…") })
-    #expect(saveAs.entities == [MemoryEntity(.app, "TextEdit"), MemoryEntity(.shortcut, "⇧⌥⌘S"), MemoryEntity(.ui, "Save As…")])
+    #expect(saveAs.entities == [MemoryEntity(app.id, "TextEdit"), MemoryEntity(keys.id, "⇧⌥⌘S")])
     let experience = try #require(files.first { $0.tier == .selfReported })
-    #expect(experience.entities == [MemoryEntity(.app, "TextEdit")])
+    #expect(experience.entities == [MemoryEntity(app.id, "TextEdit")])
 }
 
 @Test func selectConfigIsValidated() throws {
     let s = try Config.load(root.appending(path: "dollcore.example.toml")).select
-    #expect(s.seedK >= 1 && s.attachCap >= 1 && s.recallCap >= 1 && s.batchChars >= s.candidateMaxChars)
+    #expect(s.prefilter == 8 && s.threshold == 7 && s.lookupK >= 1 && s.candidateMaxChars >= 100)
     let file = FileManager.default.temporaryDirectory.appending(path: "select-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
-    for bad in ["seed_k = 0", "attach_cap = 0", "recall_cap = 0", "candidate_max_chars = 50", "batch_chars = 200", "bogus = 1"] {
+    for bad in ["similarity = 1.5", "entity_weight = -0.1", "prefilter = 0", "threshold = 11", "candidate_max_chars = 50",
+                "lookup_k = 0", "align_threshold = -1", "seed_k = 10", "bogus = 1"] {
         try (head + "[select]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }

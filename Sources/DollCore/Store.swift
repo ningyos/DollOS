@@ -21,14 +21,32 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
     id TEXT PRIMARY KEY,
     vector BLOB NOT NULL             -- Float32, L2-normalized
 );
-CREATE TABLE IF NOT EXISTS memory_entities (
+-- Before 2026-11-11 (registry): entity names per memory; the index rebuilds into memory_entity_refs.
+DROP TABLE IF EXISTS memory_entities;
+CREATE TABLE IF NOT EXISTS memory_entity_refs (
     id TEXT NOT NULL,                -- the memory's id
-    key TEXT NOT NULL,               -- MemoryEntity.key: the name normalized
+    entity TEXT NOT NULL,            -- the registry entry's id
     folder TEXT NOT NULL,
     tier TEXT NOT NULL,              -- the memory's source_tier
-    PRIMARY KEY (id, key)
+    PRIMARY KEY (id, entity)
 );
-CREATE INDEX IF NOT EXISTS memory_entities_key ON memory_entities (key);
+CREATE INDEX IF NOT EXISTS memory_entity_refs_entity ON memory_entity_refs (entity);
+CREATE TABLE IF NOT EXISTS registry_index (
+    id TEXT PRIMARY KEY,             -- the registry entry's id (its file name)
+    type TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS registry_keys (
+    key TEXT NOT NULL,               -- Registry.key of the canonical name or an alias
+    id TEXT NOT NULL,
+    PRIMARY KEY (key, id)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS registry_fts USING fts5(
+    text, id UNINDEXED, tokenize='trigram'
+);
+CREATE TABLE IF NOT EXISTS registry_vectors (
+    id TEXT PRIMARY KEY,
+    vector BLOB NOT NULL             -- Float32, L2-normalized, of RegistryEntry.line
+);
 CREATE TABLE IF NOT EXISTS memory_index_version (
     one INTEGER PRIMARY KEY CHECK (one = 1),
     version INTEGER NOT NULL         -- Memory.indexVersion of the code that built the index
@@ -443,10 +461,10 @@ public final class Store {
         public let vector: Data
     }
 
-    /// Inserts or replaces one index entry (the markdown file was already written), its entity keys
-    /// with it.
+    /// Inserts or replaces one index entry (the markdown file was already written), its registry
+    /// entity ids with it.
     public func putMemoryIndex(id: String, path: String, folder: String, confidence: Double,
-                               ts: Double, sourceSeq: Int64, kind: String, tier: String, entityKeys: [String],
+                               ts: Double, sourceSeq: Int64, kind: String, tier: String, entities: [String],
                                text: String, vector: Data) throws {
         try exec("""
             INSERT INTO memory_index (id, path, folder, confidence, ts, source_seq, kind)
@@ -461,10 +479,10 @@ public final class Store {
                  [.text(text), .text(id), .text(folder)])
         try exec("INSERT INTO memory_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
                  [.text(id), .blob(vector)])
-        try exec("DELETE FROM memory_entities WHERE id = ?", [.text(id)])
-        for key in Set(entityKeys) {
-            try exec("INSERT INTO memory_entities (id, key, folder, tier) VALUES (?, ?, ?, ?)",
-                     [.text(id), .text(key), .text(folder), .text(tier)])
+        try exec("DELETE FROM memory_entity_refs WHERE id = ?", [.text(id)])
+        for entity in Set(entities) {
+            try exec("INSERT INTO memory_entity_refs (id, entity, folder, tier) VALUES (?, ?, ?, ?)",
+                     [.text(id), .text(entity), .text(folder), .text(tier)])
         }
     }
 
@@ -474,44 +492,83 @@ public final class Store {
 
     /// Removes one entry from every index table (its markdown file is already gone).
     public func deleteMemoryIndex(id: String) throws {
-        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entities"] {
+        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entity_refs"] {
             try exec("DELETE FROM \(table) WHERE id = ?", [.text(id)])
         }
     }
 
+    /// Empties the memory index and the registry index.
     public func clearMemoryIndex() throws {
-        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entities"] {
+        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entity_refs",
+                      "registry_index", "registry_keys", "registry_fts", "registry_vectors"] {
             try exec("DELETE FROM \(table)", [])
         }
     }
 
-    /// The entity keys of each of `ids` that has any.
-    public func memoryEntityKeys(_ ids: [String]) throws -> [String: [String]] {
+    /// The registry entity ids of each of `ids` that has any.
+    public func memoryEntities(_ ids: [String]) throws -> [String: [String]] {
         guard !ids.isEmpty else { return [:] }
         let marks = ids.map { _ in "?" }.joined(separator: ", ")
         var out: [String: [String]] = [:]
-        for (id, key) in try query("SELECT id, key FROM memory_entities WHERE id IN (\(marks)) ORDER BY id, key",
-                                   ids.map { .text($0) }, { ($0.text(0)!, $0.text(1)!) }) {
-            out[id, default: []].append(key)
+        for (id, entity) in try query("SELECT id, entity FROM memory_entity_refs WHERE id IN (\(marks)) ORDER BY id, entity",
+                                      ids.map { .text($0) }, { ($0.text(0)!, $0.text(1)!) }) {
+            out[id, default: []].append(entity)
         }
         return out
     }
 
-    /// Every memory in `folders` (and of `tiers`, when given) with any of `keys`: id → the keys it has.
-    public func memoriesWithEntities(_ keys: [String], folders: [String], tiers: [String]?) throws -> [String: [String]] {
-        guard !keys.isEmpty, !folders.isEmpty else { return [:] }
+    /// Every memory in `folders` (and of `tiers`, when given) with any of the registry entities
+    /// `entities`: id → the ones it has.
+    public func memoriesWithEntities(_ entities: [String], folders: [String], tiers: [String]?) throws -> [String: [String]] {
+        guard !entities.isEmpty, !folders.isEmpty else { return [:] }
         func marks(_ n: Int) -> String { Array(repeating: "?", count: n).joined(separator: ", ") }
-        var sql = "SELECT id, key FROM memory_entities WHERE key IN (\(marks(keys.count))) AND folder IN (\(marks(folders.count)))"
-        var args: [Bind] = keys.map { .text($0) } + folders.map { .text($0) }
+        var sql = "SELECT id, entity FROM memory_entity_refs WHERE entity IN (\(marks(entities.count))) AND folder IN (\(marks(folders.count)))"
+        var args: [Bind] = entities.map { .text($0) } + folders.map { .text($0) }
         if let tiers {
             sql += " AND tier IN (\(marks(tiers.count)))"
             args += tiers.map { .text($0) }
         }
         var out: [String: [String]] = [:]
-        for (id, key) in try query(sql + " ORDER BY id, key", args, { ($0.text(0)!, $0.text(1)!) }) {
-            out[id, default: []].append(key)
+        for (id, entity) in try query(sql + " ORDER BY id, entity", args, { ($0.text(0)!, $0.text(1)!) }) {
+            out[id, default: []].append(entity)
         }
         return out
+    }
+
+    // entity registry index (2026-11-11) -------------------------------------------
+    /// Inserts or replaces one registry entry's index rows: its keys (canonical name and aliases),
+    /// its FTS text and its vector.
+    public func putRegistryIndex(id: String, type: String, keys: [String], text: String, vector: Data) throws {
+        try exec("INSERT INTO registry_index (id, type) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET type = excluded.type",
+                 [.text(id), .text(type)])
+        try exec("DELETE FROM registry_keys WHERE id = ?", [.text(id)])
+        for key in Set(keys) {
+            try exec("INSERT INTO registry_keys (key, id) VALUES (?, ?)", [.text(key), .text(id)])
+        }
+        try exec("DELETE FROM registry_fts WHERE id = ?", [.text(id)])
+        try exec("INSERT INTO registry_fts (text, id) VALUES (?, ?)", [.text(text), .text(id)])
+        try exec("INSERT INTO registry_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
+                 [.text(id), .blob(vector)])
+    }
+
+    public func countRegistryIndex() throws -> Int {
+        try query("SELECT count(*) FROM registry_index", []) { Int($0.int(0)!) }.first ?? 0
+    }
+
+    /// The ids of the entries with `key` as their canonical name's or an alias's key, by id.
+    public func registryByKey(_ key: String) throws -> [String] {
+        try query("SELECT id FROM registry_keys WHERE key = ? ORDER BY id", [.text(key)]) { $0.text(0)! }
+    }
+
+    /// Registry FTS5 hits by BM25 rank (lower is better), then id.
+    public func registryFTS(match: String) throws -> [(id: String, rank: Double)] {
+        try query("SELECT id, rank FROM registry_fts WHERE registry_fts MATCH ? ORDER BY rank, id", [.text(match)]) {
+            ($0.text(0)!, $0.real(1))
+        }
+    }
+
+    public func registryVectors() throws -> [MemoryVectorRow] {
+        try query("SELECT id, vector FROM registry_vectors", []) { MemoryVectorRow(id: $0.text(0)!, vector: $0.blob(1)) }
     }
 
     /// The `Memory.indexVersion` the index was built with; nil for an index from before versions.
@@ -527,11 +584,12 @@ public final class Store {
     /// FTS5 hits ordered by BM25 rank (lower is better), from the given folders only; the id/folder
     /// columns are UNINDEXED so the MATCH only sees text. The id tiebreak matters: equal BM25 scores
     /// otherwise order arbitrarily, and RRF ranks would change between a run and an index rebuild.
-    public func memoryFTS(match: String, folders: [String], limit: Int) throws -> [(id: String, rank: Double)] {
+    /// `limit` nil: every hit.
+    public func memoryFTS(match: String, folders: [String], limit: Int?) throws -> [(id: String, rank: Double)] {
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
         return try query("""
             SELECT id, rank FROM memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks)) ORDER BY rank, id LIMIT ?
-            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit))]) { ($0.text(0)!, $0.real(1)) }
+            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit ?? -1))]) { ($0.text(0)!, $0.real(1)) }
     }
 
     public func memoryVectors(folders: [String]) throws -> [MemoryVectorRow] {

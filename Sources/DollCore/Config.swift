@@ -103,6 +103,8 @@ public struct MemoryConfig: Sendable {
     public var secretDir = "secret"
     public var ownDir = "own"
     public var publicDir = "public"
+    /// The entity registry's files (2026-11-11), under `dir` like the three folders.
+    public var registryDir = "entities"
     /// RRF's k: the constant in 1/(k + rank).
     public var rrfK = 60
     /// Per list: how many FTS hits and how many vector hits become candidates.
@@ -142,27 +144,36 @@ public struct ConsolidateConfig: Sendable {
     public var timeoutS = 900.0
     /// Per task, per query: how many related existing memories are recalled to show it.
     public var recallK = 8
+    /// Per task, per query: how many registry entries (`Registry.nearby`) the request shows, besides
+    /// those the shown memories name, so the reply can align its entities to them.
+    public var registryK = 10
     /// A memory retired longer than this many days is deleted by the next consolidation.
     public var retiredKeepDays = 30
 }
 
-/// Which memories she gets (2026-11-11, SAG's shape): the 【相關記憶】 the program attaches and her
-/// `recall` results both come from one pipeline: seeds (fused FTS + embedding, and memories having
-/// the trigger's entities), one hop through shared entities, a cap, then Apple's on-device model
-/// keeps the useful ones (no fixed count).
+/// Which memories she gets (2026-11-11, registry and scoring): the 【相關記憶】 the program attaches
+/// and her `recall` results both come from one pipeline (`Selector`): the trigger's names aligned
+/// to the registry, everything related (FTS, embedding at least `similarity`, a shared registry
+/// entity with the trigger or one hop from an FTS/embedding hit), the `prefilter` best by a cheap
+/// score, then Apple's on-device model scores each 0–10 and every one at or above `threshold` is
+/// given.
 public struct SelectConfig: Sendable {
-    /// How many of the fused FTS + embedding ranking are seeds.
-    public var seedK = 10
-    /// At most this many candidates go to the on-device model for one 【相關記憶】.
-    public var attachCap = 20
-    /// At most this many candidates go to the on-device model for one `recall`.
-    public var recallCap = 30
-    /// One request to the on-device model holds candidates up to this many characters in total;
-    /// more go in further requests.
-    public var batchChars = 6000
+    /// The embedding channel: a memory (or today's event) whose cosine to the query is at least this.
+    public var similarity = 0.7
+    /// The cheap score: cosine to the query plus this much per registry entity of the trigger it has.
+    public var entityWeight = 0.2
+    /// How many of the related go to the on-device model, best cheap score first.
+    public var prefilter = 8
+    /// The on-device model's score (0–10) at or above which a candidate is given.
+    public var threshold = 7
     /// A candidate longer than this many characters is cut for the on-device model (only for its
     /// judgment; what she gets is whole).
     public var candidateMaxChars = 1500
+    /// How many registry entries (`Registry.nearby`) the on-device model sees when it aligns one name.
+    public var lookupK = 5
+    /// The on-device model's 0–10 that a name and the entry it picked are the same thing, at or
+    /// above which they are aligned.
+    public var alignThreshold = 7
 }
 
 public struct Config: Sendable {
@@ -254,6 +265,7 @@ public struct Config: Sendable {
         try m.read("secret_dir", &memory.secretDir)
         try m.read("own_dir", &memory.ownDir)
         try m.read("public_dir", &memory.publicDir)
+        try m.read("registry_dir", &memory.registryDir)
         try m.read("rrf_k", &memory.rrfK)
         try m.read("max_candidates", &memory.maxCandidates)
         try m.read("confidence_weight", &memory.confidenceWeight)
@@ -279,8 +291,8 @@ public struct Config: Sendable {
               memory.experienceFollowRatio > 0, memory.experienceFollowRatio <= 1,
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
               (0.0...1.0).contains(memory.todayConfidence),
-              Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, three distinct folder names")
+              Set([memory.secretDir, memory.ownDir, memory.publicDir, memory.registryDir]).count == 4 else {
+            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, four distinct folder names (secret, own, public, registry)")
         }
         var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
         var dashboard = DashboardConfig()
@@ -298,23 +310,27 @@ public struct Config: Sendable {
         try k.read("max_tokens", &consolidate.maxTokens)
         try k.read("timeout_s", &consolidate.timeoutS)
         try k.read("recall_k", &consolidate.recallK)
+        try k.read("registry_k", &consolidate.registryK)
         try k.read("retired_keep_days", &consolidate.retiredKeepDays)
         try k.finish()
         guard Effort.levels.contains(consolidate.effort), consolidate.maxTokens >= 1, consolidate.timeoutS > 0,
-              consolidate.recallK >= 0, consolidate.retiredKeepDays >= 0 else {
-            throw TOMLError(description: "[consolidate] effort one of \(Effort.levels); max_tokens at least 1; timeout_s positive; recall_k and retired_keep_days 0 or more")
+              consolidate.recallK >= 0, consolidate.registryK >= 0, consolidate.retiredKeepDays >= 0 else {
+            throw TOMLError(description: "[consolidate] effort one of \(Effort.levels); max_tokens at least 1; timeout_s positive; recall_k, registry_k and retired_keep_days 0 or more")
         }
         var s = Section(name: "select", raw: raw["select"] ?? [:])
         var select = SelectConfig()
-        try s.read("seed_k", &select.seedK)
-        try s.read("attach_cap", &select.attachCap)
-        try s.read("recall_cap", &select.recallCap)
-        try s.read("batch_chars", &select.batchChars)
+        try s.read("similarity", &select.similarity)
+        try s.read("entity_weight", &select.entityWeight)
+        try s.read("prefilter", &select.prefilter)
+        try s.read("threshold", &select.threshold)
         try s.read("candidate_max_chars", &select.candidateMaxChars)
+        try s.read("lookup_k", &select.lookupK)
+        try s.read("align_threshold", &select.alignThreshold)
         try s.finish()
-        guard select.seedK >= 1, select.attachCap >= 1, select.recallCap >= 1, select.candidateMaxChars >= 100,
-              select.batchChars >= select.candidateMaxChars else {
-            throw TOMLError(description: "[select] seed_k, attach_cap, recall_cap at least 1; candidate_max_chars at least 100; batch_chars at least candidate_max_chars")
+        guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.prefilter >= 1,
+              (0...10).contains(select.threshold), select.candidateMaxChars >= 100, select.lookupK >= 1,
+              (0...10).contains(select.alignThreshold) else {
+            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; prefilter at least 1; threshold and align_threshold 0…10; candidate_max_chars at least 100; lookup_k at least 1")
         }
         return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
                       consolidate: consolidate, select: select)
