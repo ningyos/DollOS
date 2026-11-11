@@ -1,0 +1,4 @@
+# Copy to bridge/discord.toml (gitignored) and fill in. dollcore never reads this file; only the
+# bridge does, and it never logs the token.
+token = "PASTE-THE-BOT-TOKEN"   # Developer Portal → your application → Bot → Reset Token
+owner_id = 123456789012345678   # the owner's Discord user id (Discord: Settings → Advanced → Developer Mode on, then right-click yourself → Copy User ID)

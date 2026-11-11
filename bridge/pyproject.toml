@@ -1,0 +1,29 @@
+[project]
+name = "dollbridge"
+version = "0.1.0"
+description = "Discord text bridge for dollcore: the owner's DMs in, her say out"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Pinned to the PR #3159 commit (fix/voice-rec-2, "DAVE Support (rec)") that the 2026-11-06 voice
+    # spike ran as 2.8.2.dev91+g10a5e8cf1 on macOS 27: text needs nothing from it, but voice will,
+    # and one py-cord for both avoids a second migration. Move the pin only together with voice.
+    "py-cord",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
+
+[tool.uv.sources]
+py-cord = { git = "https://github.com/Pycord-Development/pycord", rev = "10a5e8cf13bd8db21f95baf62cf866056d1e1091" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dollbridge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
