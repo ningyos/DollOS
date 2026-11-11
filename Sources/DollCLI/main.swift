@@ -47,7 +47,7 @@ do {
     let cfg = try Config.load(URL(filePath: argv[2]))
     doll = try Doll(
         config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath), model: HTTPMainModel(cfg.llm),
-        say: { text in out("\n[Doll] \(text)\n") })
+        selector: FoundationSelectionModel(), say: { text in out("\n[Doll] \(text)\n") })
     try await doll.boot()
     if cfg.dashboard.enabled {
         let d = Dashboard(doll: doll, config: cfg.dashboard)

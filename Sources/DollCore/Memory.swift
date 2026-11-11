@@ -93,6 +93,78 @@ public struct ExperienceStats: Sendable, Equatable {
     }
 }
 
+/// What a memory is about, as an index key (2026-11-11, SAG's shape): consolidation names them per
+/// memory, the program gives its own records the ones it knows, her `remember` items get them from
+/// the on-device model. Two memories sharing one are neighbours: the candidate pipeline expands one
+/// hop through them (`Memory.pool`).
+public enum EntityType: String, Sendable, CaseIterable, Codable {
+    /// An application.
+    case app
+    /// A UI element, dialog or menu item.
+    case ui
+    /// A keyboard shortcut.
+    case shortcut
+    /// A file or path.
+    case file
+    case website
+    case person
+    case other
+}
+
+public struct MemoryEntity: Sendable, Equatable, Codable {
+    public var type: EntityType
+    /// As it appears in the text.
+    public var name: String
+
+    public init(_ type: EntityType, _ name: String) { (self.type, self.name) = (type, name) }
+
+    /// What two entities are matched by: the name only (the type is a label; two models may type
+    /// one name differently), compatibility-normalized (full-width and half-width alike), lowercased,
+    /// without any whitespace.
+    public var key: String { Self.key(name) }
+
+    public static func key(_ name: String) -> String {
+        String(name.precomposedStringWithCompatibilityMapping.lowercased().unicodeScalars
+            .filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(Character.init))
+    }
+
+    /// `entities` as one line of JSON in the front-matter.
+    static func json(_ list: [MemoryEntity]) -> String {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        return String(decoding: (try? enc.encode(list)) ?? Data("[]".utf8), as: UTF8.self)
+    }
+
+    /// A list as given (front-matter, a consolidation reply): each an object with exactly `type`
+    /// (one of `EntityType`) and a non-blank `name`; no two with one key. Anything else names what is wrong.
+    static func validated(_ value: Any) throws -> [MemoryEntity] {
+        guard let items = value as? [Any] else { throw MemoryError(description: "entities must be an array") }
+        var out: [MemoryEntity] = []
+        var keys = Set<String>()
+        for (i, item) in items.enumerated() {
+            guard let o = item as? [String: Any], Set(o.keys) == ["type", "name"],
+                  let typeName = o["type"] as? String, let name = o["name"] as? String else {
+                throw MemoryError(description: "entity \(i + 1) must be an object with exactly type and name, both strings")
+            }
+            guard let type = EntityType(rawValue: typeName) else {
+                throw MemoryError(description: "entity \(i + 1): type must be one of \(EntityType.allCases.map(\.rawValue)); got \(typeName)")
+            }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let e = MemoryEntity(type, trimmed)
+            guard !e.key.isEmpty else { throw MemoryError(description: "entity \(i + 1): name is empty") }
+            guard keys.insert(e.key).inserted else { throw MemoryError(description: "entity \(i + 1): \(trimmed) is listed twice") }
+            out.append(e)
+        }
+        return out
+    }
+
+    /// Drops later entities whose key an earlier one has, and blank names (program-built lists).
+    static func unique(_ list: [MemoryEntity]) -> [MemoryEntity] {
+        var seen = Set<String>()
+        return list.filter { !$0.key.isEmpty && seen.insert($0.key).inserted }
+    }
+}
+
 /// Why and when a memory stopped counting (consolidation, 2026-11-11): its file stays, with these in
 /// the front-matter, out of the index (so out of recall and attaching); consolidation deletes it once
 /// it has been retired longer than `[consolidate] retired_keep_days`.
@@ -111,7 +183,8 @@ public struct Retirement: Sendable, Equatable {
 
 /// One memory file: a `+++` front-matter block, then the text verbatim. A record about one app at
 /// one version (a menu shortcut the program read) also names the app's bundle id and version; an
-/// experience, the owner's line it was for (JSON string) and its stats; a retired one, its `Retirement`.
+/// experience, the owner's line it was for (JSON string) and its stats; a retired one, its
+/// `Retirement`; any, its entities (one JSON line, absent when none).
 public struct MemoryFile: Sendable, Equatable {
     public var sourceSeq: Int64
     public var ts: Double
@@ -123,6 +196,7 @@ public struct MemoryFile: Sendable, Equatable {
     public var task: String?
     public var stats: ExperienceStats?
     public var retired: Retirement?
+    public var entities: [MemoryEntity] = []
     public var body: String
 
     /// The file's bytes; `Memory.parseFile` of them gives this value back.
@@ -138,6 +212,7 @@ public struct MemoryFile: Sendable, Equatable {
         if let r = retired {
             lines += ["retired_ts = \(r.ts)", "superseded_by = \"\(r.supersededBy)\"", "retired_reason = " + Self.json(r.reason)]
         }
+        if !entities.isEmpty { lines.append("entities = " + MemoryEntity.json(entities)) }
         return (lines + ["+++", body]).joined(separator: "\n")
     }
 
@@ -467,6 +542,11 @@ public final class Memory {
             case "retired_ts": retiredTS = Double(bare)
             case "superseded_by": supersededBy = bare
             case "retired_reason": reason = (try? JSONDecoder().decode(String.self, from: Data(value.utf8))) ?? ""
+            case "entities":
+                guard let list = try? JSONSerialization.jsonObject(with: Data(value.utf8)) else {
+                    throw MemoryError(description: "entities is not JSON: \(value)")
+                }
+                f.entities = try MemoryEntity.validated(list)
             default: break
             }
         }
@@ -509,7 +589,8 @@ public final class Memory {
     /// embedded text stays what she did (spec 3.1, 2026-11-09).
     @discardableResult
     public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?,
-                      app: AppIdentity? = nil, experience: (task: String, stats: ExperienceStats)? = nil) throws -> String {
+                      app: AppIdentity? = nil, experience: (task: String, stats: ExperienceStats)? = nil,
+                      entities: [MemoryEntity] = []) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -517,16 +598,22 @@ public final class Memory {
         }
         let ts = Date().timeIntervalSince1970
         let id = "\(sourceSeq)-\(Self.hex(6))"
-        let folder = dirName(f)
         let url = directory(f).appending(path: "\(id).md")
         let file = MemoryFile(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier,
                               app: app?.bundleID ?? "", appVersion: app?.version ?? "",
-                              task: experience?.task, stats: experience?.stats, body: body)
+                              task: experience?.task, stats: experience?.stats, entities: MemoryEntity.unique(entities),
+                              body: body)
         try file.text.write(to: url, atomically: true, encoding: .utf8)
-        let vector = try embedder.embed(body)
-        try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: confidence,
-                                ts: ts, sourceSeq: sourceSeq, kind: kind?.rawValue ?? "", text: body, vector: Self.blob(vector))
+        try index(id, url: url, folder: dirName(f), file)
         return id
+    }
+
+    /// One file's index rows: metadata, FTS text, vector, entity keys.
+    private func index(_ id: String, url: URL, folder: String, _ file: MemoryFile) throws {
+        try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: file.confidence, ts: file.ts,
+                                 sourceSeq: file.sourceSeq, kind: file.kind, tier: file.tier.rawValue,
+                                 entityKeys: file.entities.map(\.key), text: file.body,
+                                 vector: Self.blob(try embedder.embed(file.body)))
     }
 
     // experiences -------------------------------------------------------------
@@ -577,18 +664,18 @@ public final class Memory {
         return (folder, try Self.parseFile(String(contentsOf: url, encoding: .utf8)))
     }
 
-    /// Replaces a memory's text (consolidation's update); its front-matter stays, the index follows.
-    func update(_ id: String, text: String) throws {
+    /// Replaces a memory's text and entities (consolidation's update); the rest of its front-matter
+    /// stays, the index follows.
+    func update(_ id: String, text: String, entities: [MemoryEntity]) throws {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "update of \(id) with no text") }
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
         var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
         parsed.body = body
+        parsed.entities = MemoryEntity.unique(entities)
         try parsed.text.write(to: url, atomically: true, encoding: .utf8)
-        try store.putMemoryIndex(id: id, path: url.path, folder: url.deletingLastPathComponent().lastPathComponent,
-                                 confidence: parsed.confidence, ts: parsed.ts, sourceSeq: parsed.sourceSeq, kind: parsed.kind,
-                                 text: body, vector: Self.blob(try embedder.embed(body)))
+        try index(id, url: url, folder: url.deletingLastPathComponent().lastPathComponent, parsed)
     }
 
     /// Marks a memory retired in its front-matter and takes it out of the index; the file stays.
@@ -692,8 +779,8 @@ public final class Memory {
 
     /// The index's version: change it whenever vectors or index rows would come out different from
     /// the same files, so an index built by older code is rebuilt at boot. 2: vectors are the mean
-    /// of every token (1 stopped after the first token, 2026-11-09).
-    static let indexVersion = 2
+    /// of every token (1 stopped after the first token, 2026-11-09). 3: entity keys (2026-11-11).
+    static let indexVersion = 3
 
     /// Called at boot: files written by a previous process (or by hand) are not in the index,
     /// and a new process would not find them. If the counts disagree, or older code built the
@@ -716,14 +803,9 @@ public final class Memory {
             guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names.sorted() where name.hasSuffix(".md") {
                 let url = dir.appending(path: name)
-                let raw = try String(contentsOf: url, encoding: .utf8)
-                let parsed = try Self.parseFile(raw)
+                let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
                 guard !parsed.body.isEmpty, parsed.retired == nil else { continue }
-                let id = String(name.dropLast(3))
-                let vector = try embedder.embed(parsed.body)
-                try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: parsed.confidence,
-                                        ts: parsed.ts, sourceSeq: parsed.sourceSeq, kind: parsed.kind,
-                                        text: parsed.body, vector: Self.blob(vector))
+                try index(String(name.dropLast(3)), url: url, folder: folder, parsed)
             }
         }
     }
@@ -765,51 +847,117 @@ public final class Memory {
     }
 
     /// Searches only the folders `visible` lets this turn read (`Memory.visible`); at most `limit`
-    /// hits (default `top_k`). With `tiers`, only records of those source tiers: every record is
-    /// ranked by vector, not just the first `max_candidates`, so a few among many others are not lost.
-    public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int? = nil,
+    /// hits. With `tiers`, only records of those source tiers: every record is ranked by vector, not
+    /// just the first `max_candidates`, so a few among many others are not lost.
+    public func search(_ query: String, visible: Set<MemoryFolder>, limit: Int,
                        tiers: Set<SourceTier>? = nil) throws -> [MemoryHit] {
-        try rank(query, visible: visible, limit: limit ?? config.topK, tiers: tiers, today: nil).compactMap {
-            if case .memory(let h) = $0 { h } else { nil }
-        }
+        var timing = PoolTiming()
+        return try rank(query, vector: try embedder.embed(query), visible: visible, limit: limit, tiers: tiers, today: nil,
+                        timing: &timing)
+            .compactMap { if case .memory(let h) = $0.hit { h } else { nil } }
     }
 
-    /// `recall` (2026-11-10): her memories and today's events in one list, top `top_k`. Today's
-    /// secret events only where the secret folder is visible.
-    public func recall(_ query: String, visible: Set<MemoryFolder>, today: TodayIndex) throws -> [RecallHit] {
-        try rank(query, visible: visible, limit: config.topK, tiers: nil, today: today)
+    /// The candidate pool (2026-11-11, SAG's shape), before any cap or selection:
+    /// 1. seeds: the top `seed_k` of the fused FTS + embedding ranking for `query` (with today's
+    ///    events when `today` is given), in rank order;
+    /// 2. entity seeds: memories having any of `entityKeys` (the trigger's entities), most keys matched first;
+    /// 3. expansion: memories sharing an entity with any seed or entity seed (one hop), most shared first.
+    /// Within 2 and 3, ties go by cosine to `query`, then id. Only `visible` folders, only `tiers`
+    /// when given; each memory once, at its first place. Today's events have no entities: seeds only.
+    /// With the seconds each stage took.
+    public func pool(_ query: String, entityKeys: Set<String>, visible: Set<MemoryFolder>, tiers: Set<SourceTier>?,
+                     today: TodayIndex?, seedK: Int) throws -> (entries: [PoolEntry], timing: PoolTiming) {
+        var timing = PoolTiming()
+        let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
+        guard !names.isEmpty else { return ([], timing) }
+        var clock = ContinuousClock.now
+        let qv = try embedder.embed(query)
+        timing.embedQuery = PoolTiming.lap(&clock)
+        var out = try rank(query, vector: qv, visible: visible, limit: seedK, tiers: tiers, today: today, timing: &timing).map {
+            PoolEntry(key: $0.key, source: .seed, shared: [], hit: $0.hit)
+        }
+        clock = ContinuousClock.now
+        var taken = Set(out.map(\.key))
+        let tierNames = tiers.map { $0.map(\.rawValue).sorted() }
+        var cosines: [String: Double]?
+        func cosine(_ id: String) throws -> Double {
+            if cosines == nil {
+                cosines = Dictionary(uniqueKeysWithValues: try store.memoryVectors(folders: names).map { ($0.id, Self.dot($0.vector, qv)) })
+            }
+            return cosines?[id] ?? 0
+        }
+        /// Memories with any of `keys`, not taken yet, in pool order.
+        func neighbours(_ keys: Set<String>, _ source: PoolEntry.Source) throws -> [PoolEntry] {
+            let found = try store.memoriesWithEntities(keys.sorted(), folders: names, tiers: tierNames)
+                .filter { !taken.contains("m:" + $0.key) }
+            var scored: [(id: String, shared: [String], cos: Double)] = []
+            for (id, shared) in found { scored.append((id, shared, try cosine(id))) }
+            scored.sort { ($0.shared.count, $0.cos, $1.id) > ($1.shared.count, $1.cos, $0.id) }
+            var entries: [PoolEntry] = []
+            for s in scored {
+                guard let hit = try memoryHit(s.id, folders: names, tiers: tiers) else { continue }
+                entries.append(PoolEntry(key: "m:" + s.id, source: source, shared: s.shared, hit: .memory(hit)))
+            }
+            taken.formUnion(entries.map(\.key))
+            return entries
+        }
+        out += try neighbours(entityKeys, .entity)
+        let seedIDs = out.compactMap { if case .memory(let h) = $0.hit { h.id } else { nil } }
+        let hop = Set(try store.memoryEntityKeys(seedIDs).values.flatMap { $0 })
+        out += try neighbours(hop, .expansion)
+        timing.expansion = PoolTiming.lap(&clock)
+        return (out, timing)
+    }
+
+    /// One memory as a hit, when its index row is in `folders`, its file is not empty and (with
+    /// `tiers`) its tier is one of them.
+    private func memoryHit(_ id: String, folders: [String], tiers: Set<SourceTier>?) throws -> MemoryHit? {
+        guard let meta = try store.memoryMeta(id), folders.contains(meta.folder),
+              let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { return nil }
+        let parsed = try Self.parseFile(body)
+        guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { return nil }
+        return MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
+                         confidence: meta.confidence, level: level(meta.confidence),
+                         kind: MemoryKind(rawValue: parsed.kind), text: parsed.body)
+    }
+
+    static func dot(_ vector: Data, _ qv: [Float]) -> Double {
+        var dot = 0.0
+        vector.withUnsafeBytes { raw in
+            let v = raw.bindMemory(to: Float.self)
+            for i in 0..<min(v.count, qv.count) { dot += Double(v[i]) * Double(qv[i]) }
+        }
+        return dot
     }
 
     /// FTS5 and cosine lists over the memories (and today's events when `today` is given), fused by
     /// RRF, plus `confidence_weight` × confidence (a today hit counts as `today_confidence`). The two
-    /// corpora are one list per method: FTS hits by BM25 score, vector hits by cosine.
-    private func rank(_ query: String, visible: Set<MemoryFolder>, limit: Int, tiers: Set<SourceTier>?,
-                      today: TodayIndex?) throws -> [RecallHit] {
+    /// corpora are one list per method: FTS hits by BM25 score, vector hits by cosine. Keys:
+    /// "m:<memory id>" and "t:<today entry id>". Adds each stage's seconds to `timing`.
+    private func rank(_ query: String, vector qv: [Float], visible: Set<MemoryFolder>, limit: Int, tiers: Set<SourceTier>?,
+                      today: TodayIndex?, timing: inout PoolTiming) throws -> [(key: String, hit: RecallHit)] {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
         let todaySecret = visible.contains(.secret)
-        // Keys: "m:<memory id>" and "t:<today entry id>".
-        var ftsRanked: [String] = []
+        var clock = ContinuousClock.now
         let phrases = Self.queryPhrases(query, maxPhrases: config.maxQueryPhrases)
+        var found: [(String, Double)] = []
+        var match: String?
         if !phrases.isEmpty {
-            let match = phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")
-            var found = try store.memoryFTS(match: match, folders: names, limit: config.maxCandidates).map { ("m:" + $0.id, $0.rank) }
-            if let today {
+            match = phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")
+            found = try store.memoryFTS(match: match!, folders: names, limit: config.maxCandidates).map { ("m:" + $0.id, $0.rank) }
+        }
+        timing.fts += PoolTiming.lap(&clock)
+        var scored = try store.memoryVectors(folders: names).map { ("m:" + $0.id, Self.dot($0.vector, qv)) }
+        timing.vectors += PoolTiming.lap(&clock)
+        if let today {
+            if let match {
                 found += try today.fts(match: match, secret: todaySecret, limit: config.maxCandidates).map { ("t:" + $0.id, $0.rank) }
             }
-            ftsRanked = found.sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 < $1.0 }.prefix(config.maxCandidates).map(\.0)
+            scored += try today.vectors(secret: todaySecret).map { ("t:" + $0.id, Self.dot($0.vector, qv)) }
+            timing.today += PoolTiming.lap(&clock)
         }
-        let qv = try embedder.embed(query)
-        func cosine(_ vector: Data) -> Double {
-            var dot = 0.0
-            vector.withUnsafeBytes { raw in
-                let v = raw.bindMemory(to: Float.self)
-                for i in 0..<min(v.count, qv.count) { dot += Double(v[i]) * Double(qv[i]) }
-            }
-            return dot
-        }
-        var scored = try store.memoryVectors(folders: names).map { ("m:" + $0.id, cosine($0.vector)) }
-        if let today { scored += try today.vectors(secret: todaySecret).map { ("t:" + $0.id, cosine($0.vector)) } }
+        let ftsRanked = found.sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.0 < $1.0 }.prefix(config.maxCandidates).map(\.0)
         let vectorRanked = scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
             .prefix(tiers == nil ? config.maxCandidates : scored.count).map(\.0)
 
@@ -825,16 +973,52 @@ public final class Memory {
                 hits.append((key, score + config.confidenceWeight * config.todayConfidence, .today(hit)))
                 continue
             }
-            guard let meta = try store.memoryMeta(id) else { continue }
-            if !names.contains(meta.folder) { continue }
-            guard let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { continue }
-            let parsed = try Self.parseFile(body)
-            guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { continue }
-            let hit = MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
-                                confidence: meta.confidence, level: level(meta.confidence),
-                                kind: MemoryKind(rawValue: parsed.kind), text: parsed.body)
-            hits.append((key, score + config.confidenceWeight * meta.confidence, .memory(hit)))
+            guard let hit = try memoryHit(id, folders: names, tiers: tiers) else { continue }
+            hits.append((key, score + config.confidenceWeight * hit.confidence, .memory(hit)))
         }
-        return hits.sorted { $0.score != $1.score ? $0.score > $1.score : $0.key < $1.key }.prefix(limit).map(\.hit)
+        let out = hits.sorted { $0.score != $1.score ? $0.score > $1.score : $0.key < $1.key }.prefix(limit).map { ($0.key, $0.hit) }
+        timing.fuse += PoolTiming.lap(&clock)
+        return out
+    }
+}
+
+/// One candidate of `Memory.pool`.
+public struct PoolEntry: Sendable {
+    public enum Source: String, Sendable {
+        /// The fused FTS + embedding ranking.
+        case seed
+        /// Has one of the trigger's entities.
+        case entity
+        /// Shares an entity with a seed or an entity seed.
+        case expansion
+    }
+    /// "m:<memory id>" or "t:<today entry id>".
+    public var key: String
+    public var source: Source
+    /// The entity keys that brought it in (entity seeds and expansion).
+    public var shared: [String]
+    public var hit: RecallHit
+}
+
+/// Seconds per stage of one `Memory.pool`: the query's embedding, the memory FTS, the memory
+/// cosines, today's index (FTS and cosines), the RRF fusion with reading the hits' files, and the
+/// entity seeds plus the one-hop expansion.
+public struct PoolTiming: Sendable {
+    public var embedQuery = 0.0, fts = 0.0, vectors = 0.0, today = 0.0, fuse = 0.0, expansion = 0.0
+
+    public var total: Double { embedQuery + fts + vectors + today + fuse + expansion }
+
+    public var line: String {
+        func ms(_ s: Double) -> String { String(format: "%.1f", s * 1000) }
+        return "embed \(ms(embedQuery)) ms, fts \(ms(fts)) ms, cosine \(ms(vectors)) ms, today \(ms(today)) ms, "
+            + "fuse \(ms(fuse)) ms, entities+expansion \(ms(expansion)) ms"
+    }
+
+    /// Seconds since `clock`, which moves to now.
+    static func lap(_ clock: inout ContinuousClock.Instant) -> Double {
+        let now = ContinuousClock.now
+        let d = clock.duration(to: now)
+        clock = now
+        return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
     }
 }

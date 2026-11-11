@@ -32,6 +32,9 @@ public struct TurnReport: Sendable {
     public var follows: [String] = []
     /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var cheatsheets: [String]
+    /// One line per memory selection this turn (【相關記憶】 and `recall`, 2026-11-11): seeds, entity
+    /// seeds, expansion, candidates, what the on-device model kept, its seconds (`SelectionReport.line`).
+    public var selections: [String] = []
 }
 
 enum Log {
@@ -70,6 +73,7 @@ public actor Doll {
     let filesConfig: FilesConfig
     let idle: IdleConfig
     let memoryConfig: MemoryConfig
+    let selectConfig: SelectConfig
     /// Screenshot files; events name them, and each is re-sent byte-identical every turn.
     public nonisolated let shots: URL
     /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`.
@@ -78,6 +82,8 @@ public actor Doll {
     let today: TodayIndex
     let memory: Memory
     let model: any MainModel
+    /// Apple's on-device model (tests: a fake): entities and which candidate memories are useful.
+    let selector: any SelectionModel
     let computer: any ComputerDriver
     let say: Say
 
@@ -117,6 +123,11 @@ public actor Doll {
     var learnedApps: [String: String]?
     /// The front app's name in the last computer result; nil before the first.
     var frontAppName: String?
+    /// The front window's title and the focused element's name in the last computer result.
+    var frontTitle: String?
+    var frontFocus: String?
+    /// The entities of the owner's line (by its seq), extracted once per line.
+    var ownerEntities: (seq: Int64, list: [MemoryEntity])?
     /// A computer result this turn showed a front app other than the one before: attach memories.
     var appSwitched = false
     /// An owner line was drained since her last turn: attach memories, after forgetting what was attached.
@@ -125,6 +136,8 @@ public actor Doll {
     var attachedIDs: Set<String> = []
     /// This turn's 【相關記憶】 events, for its report.
     var attachedNow: [String] = []
+    /// This turn's selection lines, for its report.
+    var selectionsNow: [String] = []
     /// Menu shortcuts per app version (`bundle id` + version), read once per process and shared by
     /// shortcut learning and the cheatsheet.
     var shortcutCache: [String: [MenuShortcut]] = [:]
@@ -164,7 +177,7 @@ public actor Doll {
     /// The effort of the model call in flight.
     var inflightEffort: String?
 
-    public init(config: Config, root: URL, model: any MainModel,
+    public init(config: Config, root: URL, model: any MainModel, selector: any SelectionModel,
                 computer: (any ComputerDriver)? = nil,
                 say: @escaping Say) throws {
         core = config.core
@@ -173,6 +186,8 @@ public actor Doll {
         filesConfig = config.files
         idle = config.idle
         memoryConfig = config.memory
+        selectConfig = config.select
+        self.selector = selector
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
@@ -226,11 +241,12 @@ public actor Doll {
     }
 
     // boot -------------------------------------------------------------------
-    /// Checks the model (unreachable = error, no fallback).
+    /// Checks the model and the on-device model (unreachable or unavailable = error, no fallback).
     public func boot() async throws {
         // Memories written by a previous process exist only as markdown until indexed (spec 6).
         try memory.syncOnBoot()
         try await model.check()
+        try await selector.check()
     }
 
     // inputs -----------------------------------------------------------------
@@ -494,12 +510,13 @@ public actor Doll {
         outcomeNow = nil
         experienceNow = nil
         followsNow = []
+        selectionsNow = []
         // A new owner line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
             attachedIDs = []
             cheatsheetSent = []
-            attachMemories(trigger: "主人的新訊息")
+            await attachMemories(trigger: "主人的新訊息")
         }
         let events = timeline.events
         var messages = try context(events)
@@ -603,7 +620,7 @@ public actor Doll {
         cheatsheetDue = []
         if appSwitched {
             appSwitched = false
-            attachMemories(trigger: "前景 app 換成 \(frontAppName ?? "?")")
+            await attachMemories(trigger: "前景 app 換成 \(frontAppName ?? "?")")
         }
         // The scenario she left this turn: from now on its span renders as her summary.
         if var c = closing {
@@ -633,7 +650,7 @@ public actor Doll {
         let report = TurnReport(index: turnIndex, actions: actions, reply: content, toolCalls: parsed.calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
                                 attached: attachedNow, outcome: outcomeNow, experience: experienceNow, follows: followsNow,
-                                cheatsheets: cheatsheetNow)
+                                cheatsheets: cheatsheetNow, selections: selectionsNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
@@ -687,9 +704,9 @@ public actor Doll {
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
             case .remember(let items):
-                return remember(items, seen: events, reply: reply)
+                return await remember(items, seen: events, reply: reply)
             case .recall(let query):
-                return try recall(query, seen: events)
+                return try await recall(query, seen: events)
             case .enter(let kind, let expect):
                 if let open = scenario {
                     throw ToolError(description: "\(open.kind.menuName)選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
@@ -717,8 +734,9 @@ public actor Doll {
                 let owner = events.last { $0.kind == .owner }
                 let turns = events.filter { $0.kind == .doll && $0.seq! > (owner?.seq ?? 0) }.count + 1
                 let stats = ExperienceStats(turns: turns, seconds: Int((reply.ts - (owner?.ts ?? reply.ts)).rounded()))
+                // Its entities: the apps it went through (what the program knows of it, 2026-11-11).
                 let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil,
-                                          experience: (task: s.task, stats: stats))
+                                          experience: (task: s.task, stats: stats), entities: s.apps.map { MemoryEntity(.app, $0) })
                 experienceNow = text
                 log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars, "
                     + "\(stats.turns) turns, \(stats.seconds) s")
@@ -825,6 +843,8 @@ public actor Doll {
         do {
             let state = try await computer.frontState()
             add(state.line)
+            frontTitle = state.title
+            frontFocus = state.focus
             if let app = state.app {
                 if computerConfig.learnShortcuts { await learnShortcuts(app) }
                 if app.name != frontAppName {
@@ -835,6 +855,7 @@ public actor Doll {
                     }
                 }
                 frontAppName = app.name
+                if scenario != nil, !scenario!.apps.contains(app.name) { scenario!.apps.append(app.name) }
             }
         } catch {
             log("ERROR", "turn \(turnIndex): open windows and focus failed: \(error)")
@@ -847,7 +868,8 @@ public actor Doll {
     /// The program's own shortcut memories (spec 3.1, 2026-11-09): the first time the front app is
     /// one not recorded at its version, every menu shortcut it has becomes one public memory, tier
     /// program, no kind; the app's records from another version are deleted first. She is not told:
-    /// they are in her memory for `recall`. A failed read is logged and tried again next time.
+    /// they are in her memory for `recall`. A failed read is logged and tried again next time. Its
+    /// entities (2026-11-11): the app, the keys, the menu item.
     func learnShortcuts(_ app: AppIdentity) async {
         do {
             if learnedApps == nil { learnedApps = try memory.learnedApps() }
@@ -857,8 +879,10 @@ public actor Doll {
             guard learnedApps?[app.bundleID] != app.version else { return }
             let removed = try memory.forgetApp(app.bundleID)
             for s in shortcuts {
+                let item = s.path.components(separatedBy: "›").last?.trimmingCharacters(in: .whitespaces) ?? ""
                 try memory.write("\(app.name)：\(s.path)＝\(s.keys)（\(app.name) \(app.version)）", folder: .public,
-                                 sourceSeq: 0, tier: .program, kind: nil, app: app)
+                                 sourceSeq: 0, tier: .program, kind: nil, app: app,
+                                 entities: [MemoryEntity(.app, app.name), MemoryEntity(.shortcut, s.keys), MemoryEntity(.ui, item)])
             }
             learnedApps?[app.bundleID] = app.version
             log("INFO", "shortcuts of \(app.bundleID) \(app.version): \(shortcuts.count) written, \(removed) old removed")
@@ -1090,6 +1114,8 @@ public actor Doll {
         switch kind {
         case .computer:
             frontAppName = nil
+            frontTitle = nil
+            frontFocus = nil
             cheatsheetSent = []
             return await withScreenshot(Tools.menu(scenario!.tools), actions: [kind.enterTool])
         }
@@ -1152,8 +1178,9 @@ public actor Doll {
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her
-    /// own memory and think calls are not sources.
-    func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) -> Outcome {
+    /// own memory and think calls are not sources. Each item's entities come from the on-device
+    /// model (2026-11-11); if it fails, that item is not stored.
+    func remember(_ items: [Tools.Request.Item], seen events: [Event], reply: Event) async -> Outcome {
         let names = Self.callNames(events)
         let source = events.last { e in
             e.kind == .owner || e.kind == .watch || (e.kind == .tool && Self.observingTools.contains(names[e.seq!] ?? ""))
@@ -1172,7 +1199,9 @@ public actor Doll {
                 if let bad = item.badKind {
                     throw ToolError(description: "kind 只能是 happened、intended、uncertain，或不填；收到 \(bad)")
                 }
-                let id = try memory.write(item.text, folder: item.folder, sourceSeq: seq, tier: tier, kind: item.kind)
+                let entities = try await selector.entities(in: item.text)
+                let id = try memory.write(item.text, folder: item.folder, sourceSeq: seq, tier: tier, kind: item.kind,
+                                          entities: entities)
                 let kind = item.kind.map { "，kind \($0.rawValue)" } ?? ""
                 lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)\(kind)）")
                 actions.append("remember \(folder)")
@@ -1210,11 +1239,23 @@ public actor Doll {
     }
 
     /// Folders by `Memory.visible`: `secret` only if the turn saw secret events (5.1), `own` in the
-    /// owner's turns and hers. Her memories and today's timeline in one ranked list (2026-11-10);
-    /// today's secret events only where the secret folder is visible.
-    func recall(_ query: String, seen events: [Event]) throws -> Outcome {
+    /// owner's turns and hers. Her memories and today's events (today's secret events only where the
+    /// secret folder is visible) through the selection pipeline (2026-11-11, `select`): seeds for her
+    /// query and its entities, one hop, at most `[select] recall_cap` candidates, the on-device model
+    /// keeps the useful ones, in pool order. No fixed count; none kept is 「0 條」.
+    func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
         let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-        let hits = try memory.recall(query, visible: visible, today: today)
+        var clock = ContinuousClock.now
+        let keys = try await selector.entities(in: query)
+        let entitySeconds = PoolTiming.lap(&clock)
+        let (pool, timing) = try memory.pool(query, entityKeys: Set(keys.map(\.key)), visible: visible, tiers: nil, today: today,
+                                             seedK: selectConfig.seedK)
+        let candidates = Array(pool.prefix(selectConfig.recallCap))
+        let selected = try await select(trigger: "recall「\(query)」", entityKeys: keys.map(\.key), pool: pool,
+                                        candidates: candidates, texts: candidates.map { Self.selectionText($0.hit) },
+                                        situation: situation("她用 recall 查「\(query)」", events: events),
+                                        stages: String(format: "entities FM %.0f ms, ", entitySeconds * 1000) + timing.line)
+        let hits = selected.map(\.hit)
         var out = "\(query)：\(hits.count) 條"
         for hit in hits {
             out += "\n\n" + hit.rendered
@@ -1223,47 +1264,116 @@ public actor Doll {
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
     }
 
-    /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): the owner's last line plus
-    /// the front app's name as the query, the turn's visible folders (`recall`'s rule), experiences
-    /// only (tier self_reported; her other memories and the program's shortcuts stay for `recall`,
-    /// 2026-11-09) and, provisionally (2026-11-11, the owner may reverse it), consolidated memories.
-    /// Experiences for the same task are one group (`Memory.experienceGroups`); a consolidated memory
-    /// is a group of its own. The top `auto_attach_k` groups by relevance each give their best-ranked
-    /// one (`Memory.ranked`), minus those attached since the owner's last line. Anything left becomes
-    /// one 【相關記憶】 event in the timeline, re-sent byte-identical like every event; nothing left, no
-    /// event. Each goes in whole (an experience's length is capped when written), an experience's
-    /// stats line first. A failed search is logged and attaches nothing; the turn goes on.
-    func attachMemories(trigger: String) {
-        let k = memoryConfig.autoAttachK
-        guard k > 0 else { return }
+    /// A candidate as the on-device model reads it.
+    static func selectionText(_ hit: RecallHit) -> String {
+        switch hit {
+        case .memory(let h): h.text
+        case .today(let h): "（\(h.tag)）\(h.text)"
+        }
+    }
+
+    /// What the on-device model is told about now: why memories are being looked up, the owner's
+    /// last line, and the front app, window title and focused element of the last computer result.
+    func situation(_ why: String, events: [Event]) -> String {
+        var lines = ["- 為什麼查記憶：\(why)"]
+        if let owner = events.last(where: { $0.kind == .owner }) { lines.append("- 主人最後說：「\(owner.text)」") }
+        if let app = frontAppName { lines.append("- 前景 app：\(app)") }
+        if let t = frontTitle { lines.append("- 前景視窗：「\(t)」") }
+        if let f = frontFocus { lines.append("- 焦點：\(f)") }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The on-device model over `candidates` (`texts` as it reads them); logs one line and adds it
+    /// to the turn's report. Returns the selected candidates in candidate order.
+    func select(trigger: String, entityKeys: [String], pool: [PoolEntry], candidates: [PoolEntry], texts: [String],
+                situation: String, stages: String) async throws -> [PoolEntry] {
+        let run = try await Selection.run(selector, situation: situation, texts: texts, config: selectConfig)
+        let report = SelectionReport(trigger: trigger, entityKeys: entityKeys.sorted(),
+                                     seeds: pool.filter { $0.source == .seed }.count,
+                                     entitySeeds: pool.filter { $0.source == .entity }.count,
+                                     expanded: pool.filter { $0.source == .expansion }.count,
+                                     candidates: candidates, selected: run.picked.map { candidates[$0] },
+                                     seconds: run.seconds, batches: run.batches, stages: stages)
+        log("INFO", "turn \(turnIndex): " + report.line)
+        selectionsNow.append(report.line)
+        return report.selected
+    }
+
+    /// The trigger's entity keys for a 【相關記憶】: the owner's line's (on-device model, once per
+    /// line), the front app's name, the front window's title, the focused element's name. With the
+    /// seconds the model took (0 when the line's were already known).
+    func triggerEntities(_ owner: Event) async throws -> (keys: [String], seconds: Double) {
+        var clock = ContinuousClock.now
+        if ownerEntities?.seq != owner.seq {
+            ownerEntities = (owner.seq!, try await selector.entities(in: owner.text))
+        }
+        let seconds = PoolTiming.lap(&clock)
+        var list = ownerEntities!.list
+        if let a = frontAppName { list.append(MemoryEntity(.app, a)) }
+        if let t = frontTitle { list.append(MemoryEntity(.other, t)) }
+        if let f = frontFocus { list.append(MemoryEntity(.ui, f)) }
+        return (MemoryEntity.unique(list).map(\.key), seconds)
+    }
+
+    /// The program's own recall (spec 3.1, 2026-11-09; selection 2026-11-11): on a new owner line and
+    /// when a computer result's front app changed. The pool (`Memory.pool`): seeds for the owner's last
+    /// line plus the front app's name, and for the trigger's entities (`triggerEntities`), one hop
+    /// through shared entities; experiences (tier self_reported) and consolidated memories only (her
+    /// other memories and the program's shortcuts stay for `recall`), in the turn's visible folders.
+    /// Experiences for one task are one group (`Memory.experienceGroups`): only its best-ranked one
+    /// (`Memory.ranked`) is a candidate, at the group's first place; a consolidated memory is its own
+    /// group. Those attached since the owner's last line are left out; the first `[select]
+    /// attach_cap` go to the on-device model, and every one it keeps becomes part of one 【相關記憶】
+    /// event, in pool order, re-sent byte-identical like every event. None kept, no event. Each goes
+    /// in whole (an experience's length is capped when written), an experience's stats line first.
+    /// A failure is logged and attaches nothing; the turn goes on.
+    func attachMemories(trigger: String) async {
         do {
             let events = timeline.events
             guard let owner = events.last(where: { $0.kind == .owner }) else { return }
             let query = [owner.text, frontAppName].compactMap { $0 }.joined(separator: " ")
             let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-            let found = try memory.search(query, visible: visible, limit: memoryConfig.maxCandidates,
-                                          tiers: [.selfReported, .consolidated])
+            let (keys, entitySeconds) = try await triggerEntities(owner)
+            let (pool, timing) = try memory.pool(query, entityKeys: Set(keys), visible: visible, tiers: [.selfReported, .consolidated],
+                                                 today: nil, seedK: selectConfig.seedK)
+            var clock = ContinuousClock.now
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
-            var picked: [[Experience]] = []
-            for hit in found where picked.count < k {
-                guard !picked.contains(where: { $0.contains { $0.id == hit.id } }) else { continue }
+            var candidates: [(entry: PoolEntry, memory: Experience)] = []
+            var seen = Set<String>(), already: [String] = [], merged: [String] = []
+            for entry in pool where candidates.count < selectConfig.attachCap {
+                guard case .memory(let hit) = entry.hit else { continue }
+                let pick: Experience
                 if let c = try memory.consolidated(hit.id) {
-                    picked.append([c])
-                    continue
-                }
-                guard let g = groups.first(where: { $0.contains { $0.id == hit.id } }) else { continue }
-                picked.append(Memory.ranked(g))
+                    pick = c
+                } else if let g = groups.first(where: { $0.contains { $0.id == hit.id } }) {
+                    let ranked = Memory.ranked(g)
+                    pick = ranked[0]
+                    if ranked.count > 1, !seen.contains(pick.id) {
+                        merged.append("[" + ranked.map { e in
+                            e.id + (e.stats.map { "(\($0.turns) 回合, 照做 \($0.attachedFollowed), 成功 \($0.attachedSuccess), 失敗 \($0.attachedFailed))" } ?? "(no stats)")
+                        }.joined(separator: " > ") + "]")
+                    }
+                } else { continue }
+                guard seen.insert(pick.id).inserted else { continue }
+                if attachedIDs.contains(pick.id) { already.append(pick.id); continue }
+                var e = entry
+                e.key = "m:" + pick.id
+                candidates.append((e, pick))
             }
-            let fresh = picked.map { $0[0] }.filter { !attachedIDs.contains($0.id) }
-            let ranking = picked.map { g in "[" + g.map { e in
-                e.id + (e.file.tier == .consolidated ? "(consolidated)" : e.stats.map { "(\($0.turns) 回合, 照做 \($0.attachedFollowed), 成功 \($0.attachedSuccess), 失敗 \($0.attachedFailed))" } ?? "(no stats)")
-            }.joined(separator: " > ") + "]" }
-            log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: \(found.count) found in \(picked.count) groups "
-                + "\(ranking.joined(separator: " ")), attached \(fresh.map(\.id)), already attached \(picked.count - fresh.count)")
+            let groupSeconds = PoolTiming.lap(&clock)
+            log("INFO", "turn \(turnIndex): 相關記憶（\(trigger)）query「\(query)」: pool \(pool.count), task groups \(merged.joined(separator: " ")), "
+                + "candidates \(candidates.count), already attached \(already.count) \(already)")
+            guard !candidates.isEmpty else { return }
+            let selected = try await select(trigger: trigger, entityKeys: keys, pool: pool, candidates: candidates.map(\.entry),
+                                            texts: candidates.map(\.memory.file.body),
+                                            situation: situation(trigger, events: events),
+                                            stages: String(format: "entities FM %.0f ms, ", entitySeconds * 1000) + timing.line
+                                                + String(format: ", task groups %.1f ms", groupSeconds * 1000))
+            let fresh = selected.compactMap { s in candidates.first { $0.entry.key == s.key }?.memory }
             guard !fresh.isEmpty else { return }
             attachedIDs.formUnion(fresh.map(\.id))
             let from = frontAppName.map { "主人的話和前景 app「\($0)」" } ?? "主人的話"
-            var text = "【相關記憶】程式用\(from)查到的過去經驗："
+            var text = "【相關記憶】程式用\(from)查到、判斷用得上的過去經驗："
             for e in fresh {
                 text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
             }

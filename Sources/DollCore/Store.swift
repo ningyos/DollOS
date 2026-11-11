@@ -21,6 +21,14 @@ CREATE TABLE IF NOT EXISTS memory_vectors (
     id TEXT PRIMARY KEY,
     vector BLOB NOT NULL             -- Float32, L2-normalized
 );
+CREATE TABLE IF NOT EXISTS memory_entities (
+    id TEXT NOT NULL,                -- the memory's id
+    key TEXT NOT NULL,               -- MemoryEntity.key: the name normalized
+    folder TEXT NOT NULL,
+    tier TEXT NOT NULL,              -- the memory's source_tier
+    PRIMARY KEY (id, key)
+);
+CREATE INDEX IF NOT EXISTS memory_entities_key ON memory_entities (key);
 CREATE TABLE IF NOT EXISTS memory_index_version (
     one INTEGER PRIMARY KEY CHECK (one = 1),
     version INTEGER NOT NULL         -- Memory.indexVersion of the code that built the index
@@ -435,9 +443,11 @@ public final class Store {
         public let vector: Data
     }
 
-    /// Inserts or replaces one index entry (the markdown file was already written).
+    /// Inserts or replaces one index entry (the markdown file was already written), its entity keys
+    /// with it.
     public func putMemoryIndex(id: String, path: String, folder: String, confidence: Double,
-                               ts: Double, sourceSeq: Int64, kind: String, text: String, vector: Data) throws {
+                               ts: Double, sourceSeq: Int64, kind: String, tier: String, entityKeys: [String],
+                               text: String, vector: Data) throws {
         try exec("""
             INSERT INTO memory_index (id, path, folder, confidence, ts, source_seq, kind)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -451,6 +461,11 @@ public final class Store {
                  [.text(text), .text(id), .text(folder)])
         try exec("INSERT INTO memory_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
                  [.text(id), .blob(vector)])
+        try exec("DELETE FROM memory_entities WHERE id = ?", [.text(id)])
+        for key in Set(entityKeys) {
+            try exec("INSERT INTO memory_entities (id, key, folder, tier) VALUES (?, ?, ?, ?)",
+                     [.text(id), .text(key), .text(folder), .text(tier)])
+        }
     }
 
     public func countMemoryIndex() throws -> Int {
@@ -459,15 +474,44 @@ public final class Store {
 
     /// Removes one entry from every index table (its markdown file is already gone).
     public func deleteMemoryIndex(id: String) throws {
-        for table in ["memory_index", "memory_fts", "memory_vectors"] {
+        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entities"] {
             try exec("DELETE FROM \(table) WHERE id = ?", [.text(id)])
         }
     }
 
     public func clearMemoryIndex() throws {
-        for sql in ["DELETE FROM memory_index", "DELETE FROM memory_fts", "DELETE FROM memory_vectors"] {
-            try exec(sql, [])
+        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entities"] {
+            try exec("DELETE FROM \(table)", [])
         }
+    }
+
+    /// The entity keys of each of `ids` that has any.
+    public func memoryEntityKeys(_ ids: [String]) throws -> [String: [String]] {
+        guard !ids.isEmpty else { return [:] }
+        let marks = ids.map { _ in "?" }.joined(separator: ", ")
+        var out: [String: [String]] = [:]
+        for (id, key) in try query("SELECT id, key FROM memory_entities WHERE id IN (\(marks)) ORDER BY id, key",
+                                   ids.map { .text($0) }, { ($0.text(0)!, $0.text(1)!) }) {
+            out[id, default: []].append(key)
+        }
+        return out
+    }
+
+    /// Every memory in `folders` (and of `tiers`, when given) with any of `keys`: id → the keys it has.
+    public func memoriesWithEntities(_ keys: [String], folders: [String], tiers: [String]?) throws -> [String: [String]] {
+        guard !keys.isEmpty, !folders.isEmpty else { return [:] }
+        func marks(_ n: Int) -> String { Array(repeating: "?", count: n).joined(separator: ", ") }
+        var sql = "SELECT id, key FROM memory_entities WHERE key IN (\(marks(keys.count))) AND folder IN (\(marks(folders.count)))"
+        var args: [Bind] = keys.map { .text($0) } + folders.map { .text($0) }
+        if let tiers {
+            sql += " AND tier IN (\(marks(tiers.count)))"
+            args += tiers.map { .text($0) }
+        }
+        var out: [String: [String]] = [:]
+        for (id, key) in try query(sql + " ORDER BY id, key", args, { ($0.text(0)!, $0.text(1)!) }) {
+            out[id, default: []].append(key)
+        }
+        return out
     }
 
     /// The `Memory.indexVersion` the index was built with; nil for an index from before versions.

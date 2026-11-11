@@ -18,8 +18,9 @@ public struct ConsolidationError: Error, CustomStringConvertible {
 
 public enum ConsolidationOp: Sendable, Equatable {
     /// `ref`: the reply's own name for it, so a retire in the same reply can point at it.
-    case add(ref: String, text: String, folder: MemoryFolder, kind: MemoryKind?)
-    case update(id: String, text: String)
+    case add(ref: String, text: String, folder: MemoryFolder, kind: MemoryKind?, entities: [MemoryEntity])
+    /// The new text and the new entities (they replace the old).
+    case update(id: String, text: String, entities: [MemoryEntity])
     /// `supersededBy`: an existing memory's id or an add's ref, as the reply gave it.
     case retire(id: String, supersededBy: String, reason: String)
 }
@@ -84,8 +85,9 @@ public enum Consolidation {
                 for h in hits where seen.insert(h.id).inserted { related.append(h) }
             }
         }
+        let shown = try related.map { h in (h, try memory.file(h.id)?.file.entities ?? []) }
         let messages = [ChatMessage(role: "system", content: instructions),
-                        ChatMessage(role: "user", content: input(segment: timeline.segment, tasks: tasks, related: related))]
+                        ChatMessage(role: "user", content: input(segment: timeline.segment, tasks: tasks, related: shown))]
         let started = Date()
         let reply = try await model.chat(messages, effort: config.consolidate.effort)
         let seconds = Date().timeIntervalSince(started)
@@ -98,14 +100,15 @@ public enum Consolidation {
         var refs: [String: String] = [:]
         for op in ops {
             switch op {
-            case .add(let ref, let text, let folder, let kind):
-                let id = try memory.write(text, folder: folder, sourceSeq: timeline.lastSeq, tier: .consolidated, kind: kind)
+            case .add(let ref, let text, let folder, let kind, let entities):
+                let id = try memory.write(text, folder: folder, sourceSeq: timeline.lastSeq, tier: .consolidated, kind: kind,
+                                          entities: entities)
                 refs[ref] = id
-                applied.append("add \(memory.dirName(folder))/\(id) (ref \(ref), kind \(kind?.rawValue ?? "none")): \(text)")
-            case .update(let id, let text):
+                applied.append("add \(memory.dirName(folder))/\(id) (ref \(ref), kind \(kind?.rawValue ?? "none"), entities \(MemoryEntity.json(entities))): \(text)")
+            case .update(let id, let text, let entities):
                 let before = try memory.file(id)?.file.body ?? ""
-                try memory.update(id, text: text)
-                applied.append("update \(id): \(before) ⇒ \(text)")
+                try memory.update(id, text: text, entities: entities)
+                applied.append("update \(id) (entities \(MemoryEntity.json(entities))): \(before) ⇒ \(text)")
             case .retire(let id, let by, let reason):
                 let target = refs[by] ?? by
                 try memory.retire(id, Retirement(ts: now, supersededBy: target, reason: reason))
@@ -181,10 +184,11 @@ public enum Consolidation {
         return out
     }
 
-    /// The request's user message: the related existing memories with their ids, then the day by task.
-    static func input(segment: String, tasks: [DayTask], related: [MemoryHit]) -> String {
-        let memories = related.isEmpty ? ["（沒有）"] : related.map { h in
-            "[id: \(h.id)｜\(h.folder)｜kind: \(h.kind?.rawValue ?? "")]\n\(h.text)"
+    /// The request's user message: the related existing memories with their ids and entities, then
+    /// the day by task.
+    static func input(segment: String, tasks: [DayTask], related: [(hit: MemoryHit, entities: [MemoryEntity])]) -> String {
+        let memories = related.isEmpty ? ["（沒有）"] : related.map { h, entities in
+            "[id: \(h.id)｜\(h.folder)｜kind: \(h.kind?.rawValue ?? "")｜entities: \(MemoryEntity.json(entities))]\n\(h.text)"
         }
         var n = 0
         let days = tasks.map { t in
@@ -200,7 +204,7 @@ public enum Consolidation {
         你負責整理一個 AI 助理一天的經歷：把今天時間線裡值得長期記住的東西，寫成她的長期記憶。你不是她，不用扮演誰，只輸出整理結果。
 
         輸入有兩部分：
-        1. 既有的長期記憶：每條有 id、資料夾、kind 和內容。
+        1. 既有的長期記憶：每條有 id、資料夾、kind、entities 和內容。
         2. 今天的時間線，依主人的每一句話分成任務。每行開頭是時間和誰：主人說的話、她想的、她說的、她呼叫的工具和參數、工具的結果、watch 叫醒。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
 
         要寫的記憶：
@@ -208,13 +212,14 @@ public enum Consolidation {
         - 其他記憶：主人的事實、偏好、今天發生的事、說好要做的事。kind：已經發生的事 happened，打算或約好要做的 intended，沒證實的 uncertain，事實和偏好給空字串。
         - 資料夾 folder：主人的秘密、和在含秘密的事件裡得知的事放 secret；她自己的密碼、帳號、token 放 own；其他放 public。
         - 不要寫時間線上沒有的東西，不要猜。不要抄快捷鍵清單（程式另外記了）。既有記憶已經寫了的不要再寫一次。用繁體中文。
-        - 既有記憶：今天的經歷讓它更完整或要修正它時用 update，給新的全文；被今天的新記憶取代時（例如找到更短的走法、事實變了）用 retire，superseded_by 填取代它的那條：既有記憶的 id，或你這次 add 的 ref。跟今天無關的不要動。
+        - 既有記憶：今天的經歷讓它更完整或要修正它時用 update，給新的全文和新的 entities；被今天的新記憶取代時（例如找到更短的走法、事實變了）用 retire，superseded_by 填取代它的那條：既有記憶的 id，或你這次 add 的 ref。跟今天無關的不要動。
+        - entities：每條 add 和 update 都列出這條記憶提到的具體東西，之後用來把提到同一個東西的記憶連起來。每個是 {"type": 種類, "name": 名字}，種類只能是：app（應用程式）、ui（畫面元素、對話框、選單項目）、shortcut（快捷鍵）、file（檔案、資料夾或路徑）、website（網站）、person（人）、other（其他具體的東西）。名字照記憶內文裡的寫法，同一個名字只列一次；抽象的動作不算。沒有就給 []。
 
         輸出格式：只輸出一個 ```json 區塊，內容是一個物件：
         ```json
         {"operations": [
-          {"op": "add", "ref": "n1", "text": "…", "folder": "public", "kind": ""},
-          {"op": "update", "id": "既有記憶的 id", "text": "新的全文"},
+          {"op": "add", "ref": "n1", "text": "…", "folder": "public", "kind": "", "entities": [{"type": "app", "name": "TextEdit"}, {"type": "shortcut", "name": "⇧⌥⌘S"}]},
+          {"op": "update", "id": "既有記憶的 id", "text": "新的全文", "entities": [{"type": "file", "name": "notes.txt"}]},
           {"op": "retire", "id": "既有記憶的 id", "superseded_by": "n1", "reason": "…"}
         ]}
         ```
@@ -244,13 +249,18 @@ public enum Consolidation {
             guard let s = o[key] as? String else { throw ConsolidationError("operation \(n): \(key) must be a string") }
             return s
         }
+        func entities(_ o: [String: Any], _ n: Int) throws -> [MemoryEntity] {
+            do { return try MemoryEntity.validated(o["entities"] as Any) } catch {
+                throw ConsolidationError("operation \(n): \(error)")
+            }
+        }
         for (i, item) in list.enumerated() {
             let n = i + 1
             guard let o = item as? [String: Any] else { throw ConsolidationError("operation \(n) is not an object") }
             let op = try string(o, "op", n)
             let fields: Set<String> = switch op {
-            case "add": ["op", "ref", "text", "folder", "kind"]
-            case "update": ["op", "id", "text"]
+            case "add": ["op", "ref", "text", "folder", "kind", "entities"]
+            case "update": ["op", "id", "text", "entities"]
             case "retire": ["op", "id", "superseded_by", "reason"]
             default: throw ConsolidationError("operation \(n): op must be add, update or retire; got \(op)")
             }
@@ -272,14 +282,14 @@ public enum Consolidation {
                 guard kind != nil || kindName.isEmpty else {
                     throw ConsolidationError("operation \(n): kind must be happened, intended, uncertain or empty; got \(kindName)")
                 }
-                ops.append(.add(ref: ref, text: text, folder: folder, kind: kind))
+                ops.append(.add(ref: ref, text: text, folder: folder, kind: kind, entities: try entities(o, n)))
             case "update":
                 let id = try string(o, "id", n), text = try string(o, "text", n).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard known.contains(id), touched.insert(id).inserted else {
                     throw ConsolidationError("operation \(n): id \(id) is not one of the existing memories shown, or is used twice")
                 }
                 guard !text.isEmpty else { throw ConsolidationError("operation \(n): text is empty") }
-                ops.append(.update(id: id, text: text))
+                ops.append(.update(id: id, text: text, entities: try entities(o, n)))
             default:
                 let id = try string(o, "id", n), by = try string(o, "superseded_by", n)
                 let reason = try string(o, "reason", n).trimmingCharacters(in: .whitespacesAndNewlines)

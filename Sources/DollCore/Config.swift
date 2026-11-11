@@ -103,8 +103,6 @@ public struct MemoryConfig: Sendable {
     public var secretDir = "secret"
     public var ownDir = "own"
     public var publicDir = "public"
-    /// How many records recall returns.
-    public var topK = 5
     /// RRF's k: the constant in 1/(k + rank).
     public var rrfK = 60
     /// Per list: how many FTS hits and how many vector hits become candidates.
@@ -122,10 +120,6 @@ public struct MemoryConfig: Sendable {
     public var language = "zh-Hant"
     /// Cap on how many phrases one recall query turns into FTS MATCH terms.
     public var maxQueryPhrases = 16
-    /// The program's own recall (spec 3.1, 2026-11-09, Qwen Code's shape): on a new owner line, and
-    /// when a computer result's front app differs from the last one's, at most this many records not
-    /// yet attached since the owner's last line go into the timeline as one 【相關記憶】 event. 0: off.
-    public var autoAttachK = 5
     /// An experience memory (her actions in a computer session she said reached what she expected,
     /// spec 3.1, 2026-11-09) is cut to at most this many characters, steps from the middle first.
     public var experienceMaxChars = 1200
@@ -152,6 +146,25 @@ public struct ConsolidateConfig: Sendable {
     public var retiredKeepDays = 30
 }
 
+/// Which memories she gets (2026-11-11, SAG's shape): the 【相關記憶】 the program attaches and her
+/// `recall` results both come from one pipeline: seeds (fused FTS + embedding, and memories having
+/// the trigger's entities), one hop through shared entities, a cap, then Apple's on-device model
+/// keeps the useful ones (no fixed count).
+public struct SelectConfig: Sendable {
+    /// How many of the fused FTS + embedding ranking are seeds.
+    public var seedK = 10
+    /// At most this many candidates go to the on-device model for one 【相關記憶】.
+    public var attachCap = 20
+    /// At most this many candidates go to the on-device model for one `recall`.
+    public var recallCap = 30
+    /// One request to the on-device model holds candidates up to this many characters in total;
+    /// more go in further requests.
+    public var batchChars = 6000
+    /// A candidate longer than this many characters is cut for the on-device model (only for its
+    /// judgment; what she gets is whole).
+    public var candidateMaxChars = 1500
+}
+
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
@@ -161,10 +174,11 @@ public struct Config: Sendable {
     public var memory: MemoryConfig
     public var dashboard: DashboardConfig
     public var consolidate: ConsolidateConfig
+    public var select: SelectConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "consolidate"])
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "consolidate", "select"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -240,7 +254,6 @@ public struct Config: Sendable {
         try m.read("secret_dir", &memory.secretDir)
         try m.read("own_dir", &memory.ownDir)
         try m.read("public_dir", &memory.publicDir)
-        try m.read("top_k", &memory.topK)
         try m.read("rrf_k", &memory.rrfK)
         try m.read("max_candidates", &memory.maxCandidates)
         try m.read("confidence_weight", &memory.confidenceWeight)
@@ -249,7 +262,6 @@ public struct Config: Sendable {
         try m.read("medium_confidence", &memory.mediumConfidence)
         try m.read("language", &memory.language)
         try m.read("max_query_phrases", &memory.maxQueryPhrases)
-        try m.read("auto_attach_k", &memory.autoAttachK)
         try m.read("experience_max_chars", &memory.experienceMaxChars)
         try m.read("experience_group_similarity", &memory.experienceGroupSimilarity)
         try m.read("experience_follow_ratio", &memory.experienceFollowRatio)
@@ -262,14 +274,13 @@ public struct Config: Sendable {
             memory.confidence[tier] = v
         }
         try m.finish()
-        guard memory.topK >= 1, memory.rrfK >= 1, memory.maxCandidates >= memory.topK,
-              (0...memory.maxCandidates).contains(memory.autoAttachK), memory.experienceMaxChars >= 100,
+        guard memory.rrfK >= 1, memory.maxCandidates >= 1, memory.experienceMaxChars >= 100,
               (0.0...1.0).contains(memory.experienceGroupSimilarity),
               memory.experienceFollowRatio > 0, memory.experienceFollowRatio <= 1,
               memory.highConfidence > memory.mediumConfidence, !memory.language.isEmpty,
               (0.0...1.0).contains(memory.todayConfidence),
               Set([memory.secretDir, memory.ownDir, memory.publicDir]).count == 3 else {
-            throw TOMLError(description: "[memory] top_k/rrf_k/max_candidates (max_candidates >= top_k), auto_attach_k from 0 to max_candidates, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, three distinct folder names")
+            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, today_confidence from 0 to 1, three distinct folder names")
         }
         var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
         var dashboard = DashboardConfig()
@@ -293,8 +304,20 @@ public struct Config: Sendable {
               consolidate.recallK >= 0, consolidate.retiredKeepDays >= 0 else {
             throw TOMLError(description: "[consolidate] effort one of \(Effort.levels); max_tokens at least 1; timeout_s positive; recall_k and retired_keep_days 0 or more")
         }
+        var s = Section(name: "select", raw: raw["select"] ?? [:])
+        var select = SelectConfig()
+        try s.read("seed_k", &select.seedK)
+        try s.read("attach_cap", &select.attachCap)
+        try s.read("recall_cap", &select.recallCap)
+        try s.read("batch_chars", &select.batchChars)
+        try s.read("candidate_max_chars", &select.candidateMaxChars)
+        try s.finish()
+        guard select.seedK >= 1, select.attachCap >= 1, select.recallCap >= 1, select.candidateMaxChars >= 100,
+              select.batchChars >= select.candidateMaxChars else {
+            throw TOMLError(description: "[select] seed_k, attach_cap, recall_cap at least 1; candidate_max_chars at least 100; batch_chars at least candidate_max_chars")
+        }
         return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      consolidate: consolidate)
+                      consolidate: consolidate, select: select)
     }
 }
 

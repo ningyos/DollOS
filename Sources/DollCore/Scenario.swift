@@ -48,6 +48,9 @@ struct Scenario {
     /// Her actions that went through, one short line each (`Doll.step`); no answer text. Kinds
     /// without actions leave it empty.
     var steps: [String] = []
+    /// The front apps her computer results showed while it was open, first seen first: an
+    /// experience's entities (2026-11-11).
+    var apps: [String] = []
 
     /// What the enter call's result says once she has left: how it ended, then her summary, as a
     /// function's return value. Fixed bytes, so every later request re-sends it identically.
