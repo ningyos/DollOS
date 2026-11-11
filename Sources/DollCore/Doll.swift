@@ -268,14 +268,25 @@ public actor Doll {
 
     /// Owner voice is the only input that cancels a model call in flight (3.1); the event is
     /// queued first so the rerun sees it.
-    public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false) {
-        put(Event(.owner, .owner, text, secret: secret, voice: voice))
+    public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM) {
+        var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
+        ev.channel = channel
+        put(ev)
         if voice { inflight?.cancel() }
     }
 
     /// The developer typed a line in `dollctl chat` (2026-11-12). Never secret; never cancels a call.
     public func developerSaid(_ text: String) {
-        put(Event(.developer, .developer, text))
+        var ev = Event(.developer, .developer, text)
+        ev.channel = .dollctl
+        put(ev)
+    }
+
+    /// A person's line as she sees it (2026-11-12): time, who, where it came from, spoken or typed —
+    /// `14:32 主人｜Discord 私訊｜文字`. Lines from before channels were recorded have no place part.
+    static func speakerTag(_ ev: Event, time: String) -> String {
+        let who = ev.speaker?.label ?? "?"
+        return ([time + " " + who] + [ev.channel?.label].compactMap { $0 } + [ev.voice ? "語音" : "文字"]).joined(separator: "｜")
     }
 
     /// Who her `say` goes to (2026-11-12): whoever spoke to her last in `events`; the owner when
@@ -457,8 +468,7 @@ public actor Doll {
         case .doll:
             return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
                 + [ChatMessage(role: "assistant", content: ev.text)]
-        case .owner: return [ChatMessage(role: "user", content: "[\(t) 主人] \(ev.text)")]
-        case .developer: return [ChatMessage(role: "user", content: "[\(t) 開發者] \(ev.text)")]
+        case .owner, .developer: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
         case .memory: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]

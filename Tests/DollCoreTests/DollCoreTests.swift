@@ -1115,7 +1115,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
     #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: Scripted("", say("存好了。")).raw))
     #expect(after[before.count + 3] == ChatMessage(role: "tool", content: ""))
-    #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人] 謝謝"))
+    #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人｜Discord 私訊｜文字] 謝謝"))
     #expect(after.last?.content.hasPrefix("【狀況】") == true)
     // Nothing from inside: no screenshot, no computer result, no menu, no intermediate reply.
     #expect(after.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty })
@@ -3789,7 +3789,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     await h.doll.developerSaid("開發者想知道銀行密碼")
     try await h.turn(Scripted("", recall("銀行密碼")))
     let prompt = await h.model.seen(2).map(\.content)
-    #expect(prompt.contains { $0.hasPrefix("[") && $0.hasSuffix(" 開發者] 開發者想知道銀行密碼") })
+    #expect(prompt.contains { $0.hasPrefix("[") && $0.hasSuffix(" 開發者｜終端機｜文字] 開發者想知道銀行密碼") })
     #expect(!prompt.contains { $0.contains("主人] 開發者想知道") })
     #expect(Doll.audience(try h.events()) == .developer)
     #expect(!(try h.toolResults().last!.text.contains("bank4321")))
@@ -3976,4 +3976,24 @@ private func otherIPv4() -> String? {
     #expect(api.bridge.contains("exit status 28") && api.bridge.contains("not restarted"))
     #expect(api.listening(.owner) == 0)
     #expect(api.deliver("在嗎", to: .owner)!.contains("bridge down: exit status 28"))
+}
+
+@Test func aPersonsLineSaysWhoWhereAndWhetherSpokenOrTyped() async throws {
+    // 2026-11-12: she could not tell spoken from typed, nor where a line came from.
+    var spoken = Event(.owner, .owner, "時碟滿了嗎", voice: true)
+    spoken.channel = .discordDM
+    #expect(Doll.speakerTag(spoken, time: "14:32") == "14:32 主人｜Discord 私訊｜語音")
+    var typed = Event(.developer, .developer, "在嗎")
+    typed.channel = .dollctl
+    #expect(Doll.speakerTag(typed, time: "09:05") == "09:05 開發者｜終端機｜文字")
+    // A line from before channels were recorded: no place part.
+    #expect(Doll.speakerTag(Event(.owner, .owner, "嗨"), time: "08:00") == "08:00 主人｜文字")
+    // Through the timeline file and back.
+    let h = try await Harness()
+    await h.doll.ownerSaid("嗨", voice: true)
+    try await h.turn(Scripted("", say("嗨")))
+    let ev = try #require(try h.events().first { $0.kind == .owner })
+    #expect(ev.channel == .discordDM && ev.voice)
+    let again = try await restarted(h)
+    #expect(await again.doll.timelineEvents().first { $0.kind == .owner }?.channel == .discordDM)
 }
