@@ -130,17 +130,7 @@ device = "cpu"
 # block below. `engine` here is the global default for packs that don't
 # declare their own.
 [voice.tts]
-engine = "luxtts-onnx"
-
-# luxtts-onnx — low-latency flow-matching. device: "auto" = CUDA if
-# available, else CPU; "cpu" / "cuda" force one. Measured RTF 0.27 (English)
-# on an Apple M5 CPU.
-[voice.tts.luxtts-onnx]
-model_dir = "data/voice/tts/luxtts"
-device = "auto"
-num_steps = 8
-t_shift = 0.9
-guidance_scale = 3.0
+engine = "qwen3-tts"
 
 # qwen3-tts — in-process voice cloning + emotion (Chinese-capable; RTF ~2).
 [voice.tts.qwen3-tts]

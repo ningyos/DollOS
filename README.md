@@ -22,7 +22,7 @@ Agenda, diary      ─┘             ├─ context: identity + memory + state
 
 - **Memory**: markdown files are the source of truth, indexed with SQLite FTS5 + jieba. No vector store.
 - **Self**: mood, a slowly evolving `current_self`, a self-directed agenda and a daily diary are her own inner state. Her self comes from the architecture and her own memories, not from behavior commands in the prompt (Self-First).
-- **Voice**: ASR with sherpa-onnx (SenseVoice). TTS engines are pluggable (`luxtts-onnx`, `qwen3-tts`, `fish-tts`, `piper-vits`, `openai-compat-tts`).
+- **Voice**: ASR with sherpa-onnx (SenseVoice). TTS engines are pluggable (`qwen3-tts`, `fish-tts`, `piper-vits`, `openai-compat-tts`).
 - **Permissions**: what a turn may do depends on who triggered it. Strangers' turns only see memory written in strangers' turns.
 
 ## What's changing
@@ -50,7 +50,7 @@ DollOS/
 | Repo | Status | Role |
 |------|--------|------|
 | [fish-tts](https://github.com/ningyos/fish-tts) | Active | TTS engine (DualARTransformer + DAC) |
-| [luxtts-onnx](https://github.com/ningyos/luxtts-onnx) | Active | TTS engine (ONNX Runtime, no PyTorch) |
+| voice-mlx, voice-train (local only) | Active | Doll's TTS: Qwen3-TTS 0.6B on MLX, and its nightly fine-tune |
 | [tuna](https://github.com/ningyos/tuna) | Active | Fine-tuning tools |
 | piper-finetune | Bootstrap | Piper VITS fine-tuning for character voices |
 
