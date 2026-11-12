@@ -233,7 +233,7 @@ public actor Doll {
     }
 
     /// The line before a pack's example dialogues in the system prompt (fixed bytes).
-    static let examplesHeader = "說話的樣子（範例，示範語氣和長短，不是固定台詞，也不是真的發生過的對話）："
+    static let examplesHeader = "說話的樣子（範例，只示範語氣和長短，不是固定台詞，也不是真的發生過的對話；「我：」後面那句，真的回話時一樣要用 say 說出來，不然沒人聽得到）："
 
     public func setObserver(_ f: (@Sendable (TurnReport) -> Void)?) { observer = f }
     public func setLogSink(_ f: (@Sendable (String) -> Void)?) { logSink = f }
