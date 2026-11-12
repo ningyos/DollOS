@@ -3997,3 +3997,13 @@ private func otherIPv4() -> String? {
     let again = try await restarted(h)
     #expect(await again.doll.timelineEvents().first { $0.kind == .owner }?.channel == .discordDM)
 }
+
+@Test func aPacksExampleDialoguesFollowItsIdentityUnderAFixedHeader() async throws {
+    // 2026-11-12: a list of traits alone made her recite them; examples show tone and length.
+    let h = try await Harness { $0.core.pack = "character_packs/doll/doll.toml" }
+    let sys = await h.doll.systemPrompt()
+    let taboos = try #require(sys.range(of: "只寫繁體字"))
+    let examples = try #require(sys.range(of: Doll.examplesHeader + "\nSeith：你好，自我介紹一下"))
+    #expect(taboos.upperBound < examples.lowerBound)
+    #expect(sys.contains("你是Doll。") && !sys.contains("Bloop"))
+}

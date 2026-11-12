@@ -215,13 +215,25 @@ public actor Doll {
             throw TOMLError(description: "\(packPath.path): [meta].name must be a string")
         }
         self.name = name
-        identity = try ["self", "personality", "taboos"].map { key in
+        let parts = try ["self", "personality", "taboos"].map { key in
             guard case .string(let s)? = pack["identity"]?[key] else {
                 throw TOMLError(description: "\(packPath.path): [identity].\(key) must be a string")
             }
             return s.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.joined(separator: "\n\n")
+        }
+        // Optional example dialogues (2026-11-12): a list of traits alone made her recite them.
+        var examples: [String] = []
+        if let value = pack["identity"]?["examples"] {
+            guard case .string(let s) = value else {
+                throw TOMLError(description: "\(packPath.path): [identity].examples must be a string")
+            }
+            examples = [Self.examplesHeader + "\n" + s.trimmingCharacters(in: .whitespacesAndNewlines)]
+        }
+        identity = (parts + examples).joined(separator: "\n\n")
     }
+
+    /// The line before a pack's example dialogues in the system prompt (fixed bytes).
+    static let examplesHeader = "說話的樣子（範例，示範語氣和長短，不是固定台詞，也不是真的發生過的對話）："
 
     public func setObserver(_ f: (@Sendable (TurnReport) -> Void)?) { observer = f }
     public func setLogSink(_ f: (@Sendable (String) -> Void)?) { logSink = f }
