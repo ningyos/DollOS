@@ -8,14 +8,15 @@ import Foundation
 /// (owner voice, owner text, a watch wake) or her tool results await her; otherwise it sleeps
 /// and makes no model call.
 
-/// One sentence for whoever spoke to her last (2026-11-12): delivers it, and returns nil, or says
-/// why it could not be delivered (her `say` result then tells her so).
-public typealias Say = @Sendable (String, Addressee) -> String?
+/// Delivers one text of hers to a person's stream (the owner's Discord DM through the bridge, the
+/// developer's `dollctl chat`): returns nil, or says why it could not be delivered (her
+/// `discord.dm` / `dollctl.reply` result then tells her so).
+public typealias Deliver = @Sendable (String, Addressee) -> String?
 
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
     public var index: Int
-    public var actions: [String]       // "said" (a say call) | "<tool>" | "think <level>" | "remember <folder>" | "recall <n>" | "error <tool>"
+    public var actions: [String]       // "said <channel>" (discord_dm | dollctl | discord_voice, " (cut)" when the owner cut it) | "<tool>" | "think <level>" | "remember <folder>" | "recall <n>" | "error <tool>"
     public var reply: String
     public var toolCalls: [ToolCall]
     public var footer: String
@@ -88,13 +89,13 @@ public actor Doll {
     /// The registry alignment and the memory selection over `memory` with `selector`.
     let pipeline: Selector
     let computer: any ComputerDriver
-    let say: Say
+    let deliver: Deliver
     /// `[voice] enabled` (M6): the voice tools and the voice part of the system prompt.
     let voiceEnabled: Bool
     /// The voice channel (`setVoice`); nil while voice is disabled or not wired yet.
     var voice: (any VoicePort)?
-    /// A `say` in the voice channel was cut by the owner this turn: her later `say` calls in the
-    /// same reply are not spoken (she would talk over him).
+    /// A `voice.say` was cut by the owner this turn: her later `voice.say` calls in the same reply
+    /// are not spoken (she would talk over him).
     var voiceCut = false
 
     var queue: [Event] = []
@@ -191,7 +192,7 @@ public actor Doll {
     /// index embeds the segment's events here.
     public init(config: Config, root: URL, model: any MainModel, selector: any SelectionModel,
                 embedder: any Embedder, computer: (any ComputerDriver)? = nil,
-                say: @escaping Say) throws {
+                deliver: @escaping Deliver) throws {
         core = config.core
         llm = config.llm
         computerConfig = config.computer
@@ -212,7 +213,7 @@ public actor Doll {
         today = try TodayIndex(timeline, embedder: embedder)
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
-        self.say = say
+        self.deliver = deliver
         tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled)
         voiceEnabled = config.voice.enabled
         scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer, config.files) + [Tools.exitSpec]) }
@@ -241,7 +242,7 @@ public actor Doll {
     }
 
     /// The line before a pack's example dialogues in the system prompt (fixed bytes).
-    static let examplesHeader = "說話的樣子（範例，只示範語氣和長短，不是固定台詞，也不是真的發生過的對話；「我：」後面那句，真的回話時一樣要用 say 說出來，不然沒人聽得到）："
+    static let examplesHeader = "說話的樣子（範例，只示範語氣和長短，不是固定台詞，也不是真的發生過的對話；「我：」後面那句，真的回話時一樣要用回話的工具說出來，不然沒人聽得到）："
 
     public func setObserver(_ f: (@Sendable (TurnReport) -> Void)?) { observer = f }
     public func setLogSink(_ f: (@Sendable (String) -> Void)?) { logSink = f }
@@ -317,16 +318,17 @@ public actor Doll {
         return ([time + " " + who] + [ev.channel?.label].compactMap { $0 } + [ev.voice ? "語音" : "文字"]).joined(separator: "｜")
     }
 
-    /// Who her `say` goes to (2026-11-12): whoever spoke to her last in `events`; the owner when
-    /// nobody has.
-    public static func addressee(_ events: [Event]) -> Addressee {
+    /// Whoever spoke to her last in `events`; the owner when nobody has. She picks where she
+    /// answers herself (2026-11-14); this decides what the turn may see (`audience`) and who is
+    /// shown "typing".
+    public static func lastSpeaker(_ events: [Event]) -> Addressee {
         events.last { $0.speaker != nil }?.speaker ?? .owner
     }
 
-    /// While a turn runs: who it would speak to (the local API shows that person "typing"); nil
+    /// While a turn runs: whose line it follows (the local API shows that person "typing"); nil
     /// while she sleeps.
-    public func speakingTo() -> Addressee? {
-        inTurn ? Self.addressee(timeline.events) : nil
+    public func answering() -> Addressee? {
+        inTurn ? Self.lastSpeaker(timeline.events) : nil
     }
 
     /// Ends `run()` after the current turn.
@@ -417,7 +419,7 @@ public actor Doll {
     /// same text the template would render from `tools` plus a system message, so the prompt opens
     /// the way she was trained on.
     func systemPrompt() -> String {
-        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
@@ -427,7 +429,7 @@ public actor Doll {
     /// A scenario she left with `outcome` (spec 3.1, 2026-11-09): everything up to and including her
     /// reply that entered it renders as before (with the results of calls she wrote ahead of the
     /// enter call); the enter call's result becomes `Scenario.result` (how it ended and her summary);
-    /// owner lines that came in meanwhile stay; her `say` calls in the reply that left it follow as
+    /// owner lines that came in meanwhile stay; her speaking calls in the reply that left it follow as
     /// her message (with their empty results). Every other event of the span (results, screenshots, crops, watch wakes, the
     /// program's 【相關記憶】 and 【快捷鍵】, her replies in between, the exit reply's results) stays in
     /// the timeline but is not sent. The open scenario renders in full.
@@ -465,8 +467,8 @@ public actor Doll {
             case .enterResult(let c):
                 out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
             case .exitSpeech:
-                // What she said to the owner in the reply that left: her say calls and their (empty) results.
-                let says = ParsedReply(ev.text).calls.filter { $0.name == "say" && $0.malformed == nil }
+                // What she said in the reply that left: her speaking calls and their (empty) results.
+                let says = ParsedReply(ev.text).calls.filter { Tools.speaking[$0.name] != nil && $0.malformed == nil }
                 if !says.isEmpty {
                     out.append(ChatMessage(role: "assistant", content: says.map(\.text).joined(separator: "\n")))
                     out += says.map { _ in ChatMessage(role: "tool", content: "") }
@@ -580,7 +582,7 @@ public actor Doll {
             ownerArrived = false
             attachedIDs = []
             cheatsheetSent = []
-            await attachMemories(trigger: "\(Self.addressee(timeline.events).label)的新訊息")
+            await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
         }
         let events = timeline.events
         var messages = try context(events)
@@ -639,12 +641,12 @@ public actor Doll {
         let stored = try append(Event(.doll, .internal, content, secret: events.contains(where: \.secret)))
         try timeline.attachFooter(stored.seq!, footerText)
 
-        // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with `say`.
+        // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with the speaking tools.
         let parsed = ParsedReply(content)
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
-        // Her `outcome` ends the scenario: the calls after it are refused, except `say` (2026-11-11: she
-        // wrote it after the outcome and the owner heard nothing; speaking touches no computer), and
+        // Her `outcome` ends the scenario: the calls after it are refused, except the speaking tools (2026-11-11: she
+        // wrote her words after the outcome and the owner heard nothing; speaking touches no computer), and
         // nothing wakes her for it.
         // Her computer actions (click, type, key, scroll, drag) run in order and stop at the first
         // failure (2026-11-09): only the last one done carries the observation, the ones before it
@@ -657,7 +659,7 @@ public actor Doll {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
             let out: Outcome
-            if outcomeNow != nil, call.name != "say" {
+            if outcomeNow != nil, Tools.speaking[call.name] == nil {
                 out = Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
                               actions: ["error \(name)"], background: true)
             } else if isAction, let failed {
@@ -677,7 +679,7 @@ public actor Doll {
             }
             var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
                                     cropNote: out.cropNote, crop: out.crop, window: out.window)
-            resultEvent.to = out.to
+            resultEvent.channel = out.channel
             let result = try append(resultEvent)
             if out.enters { scenario?.enterResultSeq = result.seq }
             actions += out.actions
@@ -738,7 +740,9 @@ public actor Doll {
     }
 
     /// The program's line after a reply without a call while a menu is open (fixed bytes).
-    static let noCallReminder = "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生。每一則回覆都至少要呼叫一個工具：要跟主人說話用 say，要做事就呼叫那個工具。"
+    static let noCallReminder = "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生。每一則回覆都至少要呼叫一個工具：要回話用回話的工具（看對方從哪裡來），要做事就呼叫那個工具。"
+    /// A voice tool's result when `[voice] enabled` but no voice link is wired (fixed bytes).
+    static let voiceUnwired = "語音還沒接上，語音頻道現在用不了；要跟主人說話用 \(Tools.Name.dm)。"
 
     // tools ------------------------------------------------------------------
     /// One call's result: the tool message text, its screenshots (full screen, then the front
@@ -757,8 +761,8 @@ public actor Doll {
         var enters = false
         /// This computer action failed (before or in the VM): its line, for the refusals after it.
         var failedStep: String?
-        /// A `say` call: who it went to (2026-11-12).
-        var to: Addressee?
+        /// A speaking call that went out: the channel it went to (2026-11-14).
+        var channel: Channel?
     }
 
     /// Where a reply's computer actions stand (2026-11-09): whether this call is the last action she
@@ -776,40 +780,40 @@ public actor Doll {
             let request = try Tools.decode(call, specs: tools + (scenario?.tools ?? []),
                                            locked: scenarioTools.filter { $0.0 != scenario?.kind })
             switch request {
-            case .say(let text):
-                // Spoken to whoever spoke last; nothing new for her to read, and nothing to wake her
-                // for. Not delivered (the bridge is down, no dollctl chat is open): her result says why.
-                let to = Self.addressee(timeline.events)
-                // In the voice channel (M6), the owner hears it: sentence by sentence through the TTS.
-                if to == .owner, let voice, await voice.channel() != nil {
-                    guard !voiceCut else {
-                        return Outcome(text: "沒有念：前面一句被主人打斷了，這句沒說出口。", actions: ["error say"], background: true, to: to)
+            case .speak(let text, .discordVoice):
+                // The owner hears it in the voice channel (M6): sentence by sentence through the TTS.
+                // Refused when she is not in one (`VoicePort.speak` says so).
+                guard let voice else { throw ToolError(description: Self.voiceUnwired) }
+                guard !voiceCut else {
+                    return Outcome(text: "沒有念：前面一句被主人打斷了，這句沒說出口。", actions: ["error \(name)"], background: true)
+                }
+                let report = try await voice.speak(text)
+                if report.interrupted, report.heard.cut != nil { voiceCut = true }
+                log("INFO", "turn \(turnIndex): said in voice「\(report.heardText)」" + (report.interrupted ? "（被打斷）" : ""))
+                return Outcome(text: report.resultText, actions: ["said \(Channel.discordVoice.rawValue)" + (report.interrupted ? " (cut)" : "")],
+                               background: true, channel: .discordVoice)
+            case .speak(let text, let channel):
+                // Text to the owner's Discord DM or the developer's terminal: nothing new for her to
+                // read, and nothing to wake her for. Not delivered (the bridge is down, no dollctl
+                // chat is open): her result says why and what she can do.
+                let to: Addressee = channel == .dollctl ? .developer : .owner
+                if let why = deliver(text, to) {
+                    log("ERROR", "turn \(turnIndex): \(name) not delivered: \(why)")
+                    let next = switch to {
+                    case .owner: "這段話主人沒看到；Discord 連上之前 \(Tools.Name.dm) 都傳不出去，連上以後再傳一次。"
+                    case .developer: "開發者開著 dollctl chat 才收得到 \(Tools.Name.reply)；要跟主人說話用 \(Tools.Name.dm)。"
                     }
-                    let report = try await voice.speak(text)
-                    if report.interrupted, report.heard.cut != nil { voiceCut = true }
-                    log("INFO", "turn \(turnIndex): said in voice「\(report.heardText)」" + (report.interrupted ? "（被打斷）" : ""))
-                    return Outcome(text: report.resultText, actions: [report.interrupted ? "said voice (cut)" : "said voice"],
-                                   background: true, to: to)
+                    return Outcome(text: "失敗：\(to.label)沒收到：\(why)。\(next)", actions: ["error \(name)"], background: true)
                 }
-                if let why = say(text, to) {
-                    log("ERROR", "turn \(turnIndex): say to \(to.rawValue) not delivered: \(why)")
-                    return Outcome(text: "失敗：\(to.label)沒收到：\(why)", actions: ["error say"], background: true, to: to)
-                }
-                return Outcome(text: "", actions: ["said"], background: true, to: to)
-            case .sendText(let text):
-                if let why = say(text, .owner) {
-                    log("ERROR", "turn \(turnIndex): send_text not delivered: \(why)")
-                    throw ToolError(description: "主人沒收到：\(why)")
-                }
-                return Outcome(text: "", actions: ["sent text"], background: true, to: .owner)
-            case .joinVoice:
-                guard let voice else { throw ToolError(description: "語音還沒接上") }
+                return Outcome(text: "", actions: ["said \(channel.rawValue)"], background: true, channel: channel)
+            case .voiceJoin:
+                guard let voice else { throw ToolError(description: Self.voiceUnwired) }
                 let ch = try await voice.join()
-                return Outcome(text: "進了語音頻道「\(ch)」。你只聽得到主人；對主人 say 的話會念出來。", actions: ["join_voice"], background: true)
-            case .leaveVoice:
-                guard let voice else { throw ToolError(description: "語音還沒接上") }
+                return Outcome(text: "進了語音頻道「\(ch)」。你只聽得到主人；在裡面說話用 \(Tools.Name.voiceSay)。", actions: [name], background: true)
+            case .voiceLeave:
+                guard let voice else { throw ToolError(description: Self.voiceUnwired) }
                 try await voice.leave()
-                return Outcome(text: "離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", actions: ["leave_voice"], background: true)
+                return Outcome(text: "離開語音頻道了。之後跟主人說話用 \(Tools.Name.dm)。", actions: [name], background: true)
             case .think(let level):
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
@@ -1365,7 +1369,7 @@ public actor Doll {
     /// developer spoke last, 2026-11-12), answering the owner, or her own work (woken by her watch).
     /// There is no stranger input yet (M6), so this timeline never yields `.stranger`.
     static func audience(_ events: [Event]) -> Audience {
-        if addressee(events) == .developer { return .developer }
+        if lastSpeaker(events) == .developer { return .developer }
         switch events.last(where: { $0.kind == .owner || $0.kind == .watch })?.kind {
         case .owner?: return .owner
         default: return .doll

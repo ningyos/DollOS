@@ -43,7 +43,11 @@ private func outcome(_ success: Bool, _ summary: String) -> (String, [(String, S
     ("outcome", [("success", "\(success)"), ("summary", summary)])
 }
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
-private func say(_ text: String) -> (String, [(String, String)]) { ("say", [("text", text)]) }
+private func dm(_ text: String) -> (String, [(String, String)]) { ("discord.dm", [("text", text)]) }
+private func reply(_ text: String) -> (String, [(String, String)]) { ("dollctl.reply", [("text", text)]) }
+private func voiceSay(_ text: String) -> (String, [(String, String)]) { ("voice.say", [("text", text)]) }
+private let voiceJoin: (String, [(String, String)]) = ("voice.join", [])
+private let voiceLeave: (String, [(String, String)]) = ("voice.leave", [])
 private func think(_ level: String) -> (String, [(String, String)]) { ("think", [("level", level)]) }
 private func recall(_ q: String) -> (String, [(String, String)]) { ("recall", [("query", q)]) }
 private func remember(_ items: [(String, Bool)]) -> (String, [(String, String)]) {
@@ -93,9 +97,9 @@ private actor FakeModel: MainModel {
 
 private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
-    /// Who each `said` went to.
+    /// Who each `said` was delivered to (`discord.dm` → owner, `dollctl.reply` → developer).
     let saidTo = Mutex<[Addressee]>([])
-    /// Set: every say fails with this reason (the bridge is down, no chat open).
+    /// Set: every delivery fails with this reason (the bridge is down, no chat open).
     let undelivered = Mutex<String?>(nil)
     let reports = Mutex<[TurnReport]>([])
     let logs = Mutex<[String]>([])
@@ -340,7 +344,7 @@ private struct Harness {
         let selector = FakeSelector()
         self.selector = selector
         doll = try Doll(config: cfg, root: root, model: model, selector: selector, embedder: embedder ?? FakeEmbedder(), computer: vm,
-                        say: { text, to in
+                        deliver: { text, to in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
                             return rec.undelivered.withLock { $0 }
@@ -509,12 +513,12 @@ private struct Harness {
 @Test func systemPromptOpensWithTheTemplateToolBlockThenThePersona() async throws {
     let h = try await Harness()
     let sys = await h.doll.systemPrompt()
-    #expect(sys.hasPrefix("# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"say\""))
+    #expect(sys.hasPrefix("# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"discord.dm\""))
     #expect(sys.contains("\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:"))
     #expect(sys.contains("</IMPORTANT>\n\n你是"))
     let listed = sys.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    #expect(listed.count == 5)
-    for (line, name) in zip(listed, ["say", "think", "remember", "recall", "use_computer"]) {
+    #expect(listed.count == 6)
+    for (line, name) in zip(listed, ["discord.dm", "dollctl.reply", "think", "remember", "recall", "use_computer"]) {
         #expect(line.contains("\"name\": \"\(name)\""))
         #expect((try? JSONSerialization.jsonObject(with: Data(line.utf8))) != nil)   // valid JSON
     }
@@ -625,7 +629,7 @@ private struct Harness {
 }
 
 @Test func toolResultsGiveHerTheNextTurnButAWatchAckAloneDoesNot() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("", say("好了")), Scripted("", say("盯著"), watch("window", 1)), Scripted("", say("沒變"))])
+    let h = try await Harness([Scripted("", useComputer), Scripted("", dm("好了")), Scripted("", dm("盯著"), watch("window", 1)), Scripted("", dm("沒變"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
@@ -666,9 +670,9 @@ private struct Harness {
 @Test func ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("", say("等我"), think("high")))         // next call is high
+    try await h.turn(Scripted("", dm("等我"), think("high")))         // next call is high
     await h.model.stall()
-    await h.model.add([Scripted("", say("好"))])
+    await h.model.add([Scripted("", dm("好"))])
     await h.doll.ownerSaid("開始算")
     let doll = h.doll
     let running = Task { try await doll.runOnce() }
@@ -687,7 +691,7 @@ private struct Harness {
 }
 
 @Test func noEventMeansNoTurn() async throws {
-    let h = try await Harness([Scripted("", say("哈囉"))])
+    let h = try await Harness([Scripted("", dm("哈囉"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     try await Task.sleep(for: .milliseconds(500))
@@ -723,9 +727,9 @@ private struct Harness {
 @Test func thinkSetsTheNextCallsEffortOnceAndShowsInTheFooter() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("", say("等我"), think("high")))
+    try await h.turn(Scripted("", dm("等我"), think("high")))
     let status = try await h.doll.status()
-    #expect(h.last.actions == ["said", "think high"] && status.contains("effort：high"))
+    #expect(h.last.actions == ["said discord_dm", "think high"] && status.contains("effort：high"))
     await h.doll.ownerSaid("嗯")
     try await h.turn("想好了")
     await h.doll.ownerSaid("嗯")
@@ -1100,7 +1104,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let enter = Scripted("好，我來", useComputer)
     try await h.turn(enter)                                                        // request 0: before entering
     try await h.turn(Scripted("", key("cmd+s")))                                   // request 1: inside
-    try await h.turn(Scripted("", say("存好了。"), outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
+    try await h.turn(Scripted("", dm("存好了。"), outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
     // While it was open, its turns went out in full: the menu's screenshot, the key's result.
     let inside = await h.model.seen(2)
     #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.role == "tool" && $0.content == fakeWindowsLine })
@@ -1114,7 +1118,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // result is her summary; then what she said when she left; then what came after.
     #expect(Array(after.prefix(before.count + 1)) == before + [ChatMessage(role: "assistant", content: enter.raw)])
     #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
-    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: Scripted("", say("存好了。")).raw))
+    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: Scripted("", dm("存好了。")).raw))
     #expect(after[before.count + 3] == ChatMessage(role: "tool", content: ""))
     #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人｜Discord 私訊｜文字] 謝謝"))
     #expect(after.last?.content.hasPrefix("【狀況】") == true)
@@ -2007,7 +2011,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     cfg.core.dataDir = h.dir.path
     cfg.memory.dir = h.dir.appending(path: "memory").path
     let again = try Doll(config: cfg, root: root, model: FakeModel([]), selector: FakeSelector(), embedder: FakeEmbedder(),
-                         computer: h.vm, say: { _, _ in nil })
+                         computer: h.vm, deliver: { _, _ in nil })
     try await again.learnFrontApp()
     #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
 }
@@ -2095,7 +2099,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     #expect(found.contains("TextEdit 存檔按 cmd+s") && found.contains("＝⌘S（TextEdit"))
     // The owner's next line starts over: the same experience comes again.
     await h.doll.ownerSaid("再存一次 TextEdit")
-    try await h.turn(Scripted("", say("好")))
+    try await h.turn(Scripted("", dm("好")))
     #expect(try memoryEvents(h).count == 2)
 }
 
@@ -2215,7 +2219,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 }
 
 @Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("", say("存好了"), key("cmd+s"), outcome(true, "看到了"))])
+    let h = try await Harness([Scripted("", useComputer), Scripted("", dm("存好了"), key("cmd+s"), outcome(true, "看到了"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await h.doll.ownerSaid("存檔")
@@ -2969,7 +2973,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 }
 
 @Test func interruptCancelsTheCallInFlightAndNothingRerunsIt() async throws {
-    let h = try await Harness([Scripted("", say("好"))])
+    let h = try await Harness([Scripted("", dm("好"))])
     let d = dashboard(h)
     let doll = h.doll
     #expect(await d.respond(method: "POST", target: "/api/interrupt").status == 409)   // nothing in flight
@@ -2993,7 +2997,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 }
 
 @Test func pauseStopsNewTurnsWhileEventsQueueAndResumeRunsThem() async throws {
-    let h = try await Harness([Scripted("", say("兩件都收到"))])
+    let h = try await Harness([Scripted("", dm("兩件都收到"))])
     let d = dashboard(h)
     let doll = h.doll
     let runner = Task { try await doll.run() }
@@ -3089,9 +3093,9 @@ private func hhmm(_ ts: Double) -> String {
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn(Scripted("好，我來", useComputer))
     try await h.turn(Scripted("", key("cmd+s")))
-    try await h.turn(Scripted("", say("存好了。"), outcome(true, "按 ⌘S 存了檔。")))
+    try await h.turn(Scripted("", dm("存好了。"), outcome(true, "按 ⌘S 存了檔。")))
     await h.doll.ownerSaid("謝謝")
-    try await h.turn(Scripted("", say("不客氣")))
+    try await h.turn(Scripted("", dm("不客氣")))
     await h.doll.ownerSaid("再開一次電腦")
     try await h.turn(Scripted("", useComputer))                                    // an open scenario, with images
     let events = await h.doll.timelineEvents()
@@ -3107,7 +3111,7 @@ private func hhmm(_ ts: Double) -> String {
     #expect(Set(types) == ["event", "footer", "turn", "scenario"])
     #expect(file.deletingLastPathComponent().lastPathComponent == "timeline" && file.pathExtension == "jsonl")
 
-    let again = try await restarted(h, [Scripted("", say("回來了"))])
+    let again = try await restarted(h, [Scripted("", dm("回來了"))])
     #expect(await again.doll.timelineEvents() == events)
     let after = try await again.doll.context(await again.doll.timelineEvents())
     #expect(try ChatMessage.encoder.encode(after) == ChatMessage.encoder.encode(before))
@@ -3127,7 +3131,7 @@ private func hhmm(_ ts: Double) -> String {
 @Test func aLineCutShortByACrashIsDroppedAndTheNextOneStartsClean() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("你好")
-    try await h.turn(Scripted("", say("嗨")))
+    try await h.turn(Scripted("", dm("嗨")))
     let file = try h.timeline().file
     let whole = try Data(contentsOf: file)
     let handle = try FileHandle(forWritingTo: file)
@@ -3150,13 +3154,13 @@ extension Doll {
 @Test func recallFindsTodaysEventsByWordsAndByMeaningWithTheirLabels() async throws {
     let h = try await Harness(embedder: try await qwen3.value)
     await h.doll.ownerSaid("今天下午要去郵局寄包裹給阿嬤")
-    try await h.turn(Scripted("要記得提醒主人帶身分證", say("好，出門前我提醒你"), think("medium")))
+    try await h.turn(Scripted("要記得提醒主人帶身分證", dm("好，出門前我提醒你"), think("medium")))
     await h.doll.ownerSaid("晚餐想吃咖哩飯")
-    try await h.turn(Scripted("", say("我也想吃")))
+    try await h.turn(Scripted("", dm("我也想吃")))
     await h.doll.ownerSaid("明天早上九點開會")
-    try await h.turn(Scripted("", say("記下了")))
+    try await h.turn(Scripted("", dm("記下了")))
     await h.doll.put(Event(.watch, .internal, "盯著的區域變了：下載完成"))
-    try await h.turn(Scripted("", say("下載好了")))
+    try await h.turn(Scripted("", dm("下載好了")))
     let events = await h.doll.timelineEvents()
     func ts(_ text: String) -> String { hhmm(events.first { $0.text.contains(text) }!.ts) }
 
@@ -3166,7 +3170,7 @@ extension Doll {
     #expect(words.contains("〔今天 \(ts("郵局寄包裹"))｜主人說〕\n今天下午要去郵局寄包裹給阿嬤"))
     let reply = events.first { $0.kind == .doll }!
     #expect(try await h.doll.recall("提醒主人帶身分證", seen: events).text.contains("〔今天 \(hhmm(reply.ts))｜你想〕\n要記得提醒主人帶身分證"))
-    #expect(try await h.doll.recall("出門前提醒", seen: events).text.contains("〔今天 \(hhmm(reply.ts))｜你說〕\n好，出門前我提醒你"))
+    #expect(try await h.doll.recall("出門前提醒", seen: events).text.contains("〔今天 \(hhmm(reply.ts))｜你說｜Discord 私訊〕\n好，出門前我提醒你"))
     #expect(try await h.doll.recall("下一回合 effort", seen: events).text.contains("｜think 的結果〕\n下一回合 effort：medium"))
     #expect(try await h.doll.recall("下載完成", seen: events).text.contains("〔今天 \(ts("下載完成"))｜watch〕\n盯著的區域變了：下載完成"))
     // By meaning: no trigram in common, the embedding finds it.
@@ -3181,9 +3185,9 @@ extension Doll {
 @Test func aSecretEventOfTodayIsHiddenFromATurnThatSawNoSecret() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("保險箱密碼是 7391，別說出去", secret: true)
-    try await h.turn(Scripted("", say("好")))
+    try await h.turn(Scripted("", dm("好")))
     await h.doll.ownerSaid("今天天氣很好")
-    try await h.turn(Scripted("", say("對啊")))
+    try await h.turn(Scripted("", dm("對啊")))
     let events = await h.doll.timelineEvents()
     // A turn that saw a secret (this timeline's): the secret line is there and marks the result.
     let seen = try await h.doll.recall("保險箱密碼", seen: events)
@@ -3198,7 +3202,7 @@ extension Doll {
     let h = try await Harness()
     for (line, answer) in [("今天下午要去郵局寄包裹給阿嬤", "好"), ("晚餐想吃咖哩飯", "我也想吃"), ("明天早上九點開會", "記下了")] {
         await h.doll.ownerSaid(line)
-        try await h.turn(Scripted("想一下", say(answer)))
+        try await h.turn(Scripted("想一下", dm(answer)))
     }
     let queries = ["郵局寄包裹", "晚餐想吃什麼", "九點開會"]
     let events = await h.doll.timelineEvents()
@@ -3230,9 +3234,9 @@ extension Doll {
 
 @Test func callsWrittenInsideTheThinkingAreHerReply() {
     // A real reply (2026-11-11, replaying F-1 turn 3): no </think>, so content was null and the call sat in the thinking.
-    let thinking = "I found the file in ~/Documents/notes.txt, so now I need to open it in TextEdit and save a copy to the Desktop as requested. I'll use the Terminal to launch TextEdit with the file path, then use Save As to create the copy on the Desktop.\n\n<tool_call>\n<function=say>\n<parameter=text>\n找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。\n</parameter>\n</function>\n</tool_call>"
+    let thinking = "I found the file in ~/Documents/notes.txt, so now I need to open it in TextEdit and save a copy to the Desktop as requested. I'll use the Terminal to launch TextEdit with the file path, then use Save As to create the copy on the Desktop.\n\n<tool_call>\n<function=discord.dm>\n<parameter=text>\n找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。\n</parameter>\n</function>\n</tool_call>"
     let reply = ParsedReply(ParsedReply.rescued(content: "", reasoning: thinking)!)
-    #expect(reply.said == ["找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。"] && reply.thought.isEmpty)
+    #expect(reply.said.map(\.text) == ["找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。"] && reply.said.map(\.channel) == [.discordDM] && reply.thought.isEmpty)
     // Her content's own text stays her thought, the calls after it.
     #expect(ParsedReply(ParsedReply.rescued(content: "嗯", reasoning: thinking)!).thought == "嗯")
     // Not when the content has a call, the thinking has none, or the only one is in a code fence or mid-line.
@@ -3261,16 +3265,16 @@ extension Doll {
 @Test func aSayAfterOutcomeIsStillSaidAndKeptWhenTheMenuCloses() async throws {
     // 2026-11-11: she wrote say after outcome; the owner heard nothing.
     let h = try await menuHarness()
-    try await h.turn(Scripted("", outcome(true, "存好了"), say("存好了喔"), key("cmd+q")))
+    try await h.turn(Scripted("", outcome(true, "存好了"), dm("存好了喔"), key("cmd+q")))
     #expect(h.said == ["存好了喔"] && h.vm.actions.isEmpty)
     let end = Array(try h.toolResults().suffix(3))
     #expect(end[1].text == "" && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
     #expect(!(await h.doll.followUp))
     // After the menu closes, the say stays in her context.
     await h.doll.ownerSaid("謝謝")
-    try await h.turn(Scripted("", say("不客氣")))
+    try await h.turn(Scripted("", dm("不客氣")))
     let last = await h.model.requests.last!.messages
-    #expect(last.contains { $0.role == "assistant" && $0.content == Scripted("", say("存好了喔")).raw })
+    #expect(last.contains { $0.role == "assistant" && $0.content == Scripted("", dm("存好了喔")).raw })
 }
 
 // consolidation (2026-11-11) -----------------------------------------------------
@@ -3320,7 +3324,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         stamped(.doll, Scripted("我先打開電腦。", useComputer).raw, 2),
         stamped(.tool, "電腦選單打開了，現在多了這些工具：…", 3, image: "a.jpg"),
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
-        stamped(.doll, Scripted("", say("好"), key("cmd+shift+alt+s")).raw, 5),
+        stamped(.doll, Scripted("", dm("好"), key("cmd+shift+alt+s")).raw, 5),
         stamped(.tool, "", 6),
         stamped(.tool, "開著的視窗：TextEdit「另存」；焦點：textfield", 7, image: "b.jpg", cropNote: "視窗圖在 10,20",
                 crop: "c.jpg", window: "前景 app：TextEdit\nwindow \"Save\""),
@@ -3339,7 +3343,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         [\(t(1)) 主人] 用 TextEdit 另存一份
         [\(t(2)) 她想] 我先打開電腦。
         [\(t(2)) 她呼叫] use_computer(expect: 畫面上看得到結果)
-        [\(t(5)) 她說] 好
+        [\(t(5)) 她說｜Discord 私訊] 好
         [\(t(5)) 她呼叫] key(key: s; modifiers: ["cmd", "shift", "alt"])
         [\(t(7)) key 的結果] 開著的視窗：TextEdit「另存」；焦點：textfield
         [\(t(9)) 她呼叫] recall(query: 另存)
@@ -3372,7 +3376,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
     try writeRetired(h, "9-new000", days: 5, body: "剛退休的")
     await h.doll.ownerSaid("用 TextEdit 另存一份")
-    try await h.turn(Scripted("", say("好")))
+    try await h.turn(Scripted("", dm("好")))
     let before = try h.timeline().segment
     // n1 names the existing TextEdit entry by another language's name, and a new shortcut entry;
     // the update names a new entry; new3 is named by nothing.
@@ -3402,7 +3406,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(!sent.messages[0].content.contains("你是") && sent.messages[1].content.contains("[id: \(cat)｜public｜kind: ｜entities: []]\n主人養貓"))
     #expect(sent.messages[1].content.contains(#"[id: \#(saveAs)｜public｜kind: ｜entities: [{"id":"\#(app.id)","name":"TextEdit"}]]"#))
     #expect(sent.messages[1].content.contains("[id: \(app.id)｜app｜TextEdit｜別名：（沒有）] macOS 內建的文字編輯 app"))
-    #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說] 好"))
+    #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說｜Discord 私訊] 好"))
     #expect(!sent.messages[1].content.contains(shortcut) && !sent.messages[1].content.contains(experience))
     #expect(Set(r.related) == [saveAs, cat] && r.registry == [app.id] && r.plan.operations.count == 4)
     #expect(r.segment == before && r.newSegment > before)
@@ -3462,7 +3466,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
     await h.doll.ownerSaid("主人的貓叫什麼")
-    try await h.turn(Scripted("", say("不知道")))
+    try await h.turn(Scripted("", dm("不知道")))
     let files = try memoryFiles(h)
     let segments = try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted()
     func block(_ json: String) -> String { "```json\n\(json)\n```" }
@@ -3723,7 +3727,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await seedMemory(h, "public", "主人的貓叫咪咪", tier: "owner", confidence: 0.9)
     try await seedMemory(h, "public", "主人的狗叫旺財", tier: "owner", confidence: 0.9)
     await h.doll.ownerSaid("我今天幫貓買了新的貓砂")
-    try await h.turn(Scripted("", say("好")))
+    try await h.turn(Scripted("", dm("好")))
     h.selector.setScore { _, m in m.contains("貓") ? 9 : 1 }
     try await h.turn(Scripted("", recall("貓")))
     let text = try h.toolResults().last!.text
@@ -3802,45 +3806,70 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(try h.events().filter { $0.kind == .developer }.map(\.principal) == [.developer])
 }
 
-@Test func sayGoesToWhoeverSpokeLastAndTheTimelineRecordsIt() async throws {
-    #expect(Doll.addressee([]) == .owner)   // nobody has spoken yet: the owner
+@Test func eachSpeakingToolGoesToItsChannelAndTheTimelineRecordsIt() async throws {
+    #expect(Doll.lastSpeaker([]) == .owner)   // nobody has spoken yet: the owner
     let h = try await Harness()
     await h.doll.ownerSaid("在嗎")
-    try await h.turn(Scripted("", say("在")))
+    try await h.turn(Scripted("", dm("在")))
     await h.doll.developerSaid("測試一下")
-    try await h.turn(Scripted("", say("收到")))
-    await h.doll.put(Event(.watch, .internal, "變了"))   // a wake in the developer's task
-    try await h.turn(Scripted("", say("畫面變了")))
-    await h.doll.ownerSaid("我回來了")
-    try await h.turn(Scripted("", say("歡迎回來")))
+    try await h.turn(Scripted("", reply("收到")))
+    await h.doll.put(Event(.watch, .internal, "變了"))   // a wake in the developer's task: she still picks the channel
+    try await h.turn(Scripted("", reply("畫面變了"), dm("主人，畫面變了")))
+    #expect(h.said == ["在", "收到", "畫面變了", "主人，畫面變了"])
     #expect(h.saidTo == [.owner, .developer, .developer, .owner])
-    // Recorded with each say result, as a new process reads the file.
-    #expect(try h.toolResults().map(\.to) == [.owner, .developer, .developer, .owner])
-    // The dashboard shows the developer's line and each say's addressee.
+    #expect(h.reports.map(\.actions) == [["said discord_dm"], ["said dollctl"], ["said dollctl", "said discord_dm"]])
+    // Recorded with each result, as a new process reads the file.
+    #expect(try h.toolResults().map(\.channel) == [.discordDM, .dollctl, .dollctl, .discordDM])
+    // The dashboard shows the developer's line and where she said each thing.
     let items = try await h.doll.dashboardTimeline(limit: 50)
     #expect(items.contains { $0.type == "developer" && $0.text == "測試一下" })
-    #expect(Array(items.compactMap { $0.calls?.first?.to }.reversed()) == ["owner", "developer", "developer", "owner"])
-    // Not delivered: her result says to whom and why; nothing wakes her for it.
+    #expect(Array(items.compactMap(\.calls).reversed()).flatMap { $0.map(\.channel) } == ["Discord 私訊", "終端機", "終端機", "Discord 私訊"])
+    // The today index keeps what she said per channel.
+    let both = try #require(try h.events().last { $0.kind == .doll })
+    #expect(TodayIndex.entries(both, tool: nil).map(\.label) == ["你說｜Discord 私訊", "你說｜終端機"])
+    #expect(TodayIndex.entries(both, tool: nil).map(\.text) == ["主人，畫面變了", "畫面變了"])
+    // Consolidation reads who heard it.
+    let day = Consolidation.tasks(try h.events()).map(\.text).joined(separator: "\n")
+    #expect(day.contains("她說｜Discord 私訊] 在") && day.contains("她說｜終端機] 收到"))
+}
+
+@Test func theSpeakingToolsAreRefusedWithAReasonWhenTheirChannelIsNotThere() async throws {
+    let h = try await Harness()
+    // No dollctl chat open: the developer did not get it; nothing wakes her for it.
     h.rec.undelivered.withLock { $0 = "沒有開著的 dollctl chat" }
     await h.doll.developerSaid("還在嗎")
-    try await h.turn(Scripted("", say("在")))
-    #expect(try h.toolResults().last!.text == "失敗：開發者沒收到：沒有開著的 dollctl chat")
-    #expect(h.last.actions == ["error say"])
+    try await h.turn(Scripted("", reply("在")))
+    #expect(try h.toolResults().last!.text == "失敗：開發者沒收到：沒有開著的 dollctl chat。開發者開著 dollctl chat 才收得到 dollctl.reply；要跟主人說話用 discord.dm。")
+    #expect(h.last.actions == ["error dollctl.reply"])
+    #expect(try h.toolResults().last!.channel == nil)
     #expect(await h.doll.followUp == false)
+    // The bridge is down: the owner did not get it.
+    h.rec.undelivered.withLock { $0 = "Discord 送不出去：bridge down: exit status 1" }
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", dm("在")))
+    #expect(try h.toolResults().last!.text == "失敗：主人沒收到：Discord 送不出去：bridge down: exit status 1。這段話主人沒看到；Discord 連上之前 discord.dm 都傳不出去，連上以後再傳一次。")
+    #expect(h.last.actions == ["error discord.dm"])
+    #expect(await h.doll.followUp == false)
+    #expect(h.logs.contains { $0.hasPrefix("ERROR") && $0.contains("discord.dm not delivered") })
+    // The voice tools do not exist without `[voice] enabled`, and the removed names are unknown tools.
+    h.rec.undelivered.withLock { $0 = nil }
+    try await h.turn(Scripted("", voiceSay("在"), ("say", [("text", "在")]), ("send_text", [("text", "在")]), ("join_voice", []), ("leave_voice", [])))
+    #expect(try h.toolResults().suffix(5).map(\.text) == ["voice.say", "say", "send_text", "join_voice", "leave_voice"].map { "失敗：沒有 \($0) 這個工具" })
+    #expect(h.said == ["在", "在"])   // only the two attempts above reached the delivery
 }
 
 @Test func aReplyThatStopsInsideItsLastCallIsAskedForAgainUnseen() async throws {
-    let cut = "<tool_call>\n<function=say>\n<parameter=text>\n在啊。你這麼晚還沒睡？"
+    let cut = "<tool_call>\n<function=discord.dm>\n<parameter=text>\n在啊。你這麼晚還沒睡？"
     #expect(ParsedReply(cut).endsUnterminated)
-    #expect(!ParsedReply(Scripted("", say("在")).raw).endsUnterminated)
-    #expect(!ParsedReply(cut + "\n" + Scripted("", say("在")).raw).endsUnterminated)   // only the last call counts
+    #expect(!ParsedReply(Scripted("", dm("在")).raw).endsUnterminated)
+    #expect(!ParsedReply(cut + "\n" + Scripted("", dm("在")).raw).endsUnterminated)   // only the last call counts
 
     // Retried once: the cut reply never reaches the timeline; the same messages are sent again.
     let h = try await Harness()
     await h.doll.ownerSaid("在嗎")
-    try await h.turn(Scripted(cut), Scripted("", say("在啊")))
+    try await h.turn(Scripted(cut), Scripted("", dm("在啊")))
     #expect(h.said == ["在啊"])
-    #expect(try h.events().filter { $0.kind == .doll }.map(\.text) == [Scripted("", say("在啊")).raw])
+    #expect(try h.events().filter { $0.kind == .doll }.map(\.text) == [Scripted("", dm("在啊")).raw])
     #expect(await h.model.requests.count == 2)
     #expect(await h.model.seen(0).map(\.content) == h.model.seen(1).map(\.content))
     #expect(h.logs.contains { $0.contains("WARN") && $0.contains("asking again") })
@@ -4021,7 +4050,7 @@ private func otherIPv4() -> String? {
     // Through the timeline file and back.
     let h = try await Harness()
     await h.doll.ownerSaid("嗨", voice: true)
-    try await h.turn(Scripted("", say("嗨")))
+    try await h.turn(Scripted("", dm("嗨")))
     let ev = try #require(try h.events().first { $0.kind == .owner })
     #expect(ev.channel == .discordDM && ev.voice)
     let again = try await restarted(h)
@@ -4169,21 +4198,27 @@ private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
 
 @Test func voiceToolsAndPromptOnlyWithVoiceEnabled() async throws {
     let mem = try Config.load(root.appending(path: "dollcore.example.toml")).memory
-    #expect(!Tools.specs(memory: mem, voice: false).contains { ["join_voice", "leave_voice", "send_text"].contains($0.name) })
+    #expect(!Tools.specs(memory: mem, voice: false).contains { $0.name.hasPrefix("voice.") })
     let on = Tools.specs(memory: mem, voice: true)
-    #expect(on.suffix(3).map(\.name) == ["join_voice", "leave_voice", "send_text"])
-    #expect(on.first { $0.name == "say" }!.description.contains("send_text"))
+    #expect(on.suffix(3).map(\.name) == ["voice.join", "voice.say", "voice.leave"])
+    #expect(on.first { $0.name == "discord.dm" }!.description.contains("你在語音頻道裡的時候"))
     let off = try await Harness()
-    #expect(!(await off.doll.systemPrompt()).contains("## 語音頻道"))
+    let plain = await off.doll.systemPrompt()
+    #expect(!plain.contains("## 語音頻道") && !plain.contains("voice.say"))
+    #expect(plain.contains("- 主人｜Discord 私訊 → discord.dm：") && plain.contains("- 開發者｜終端機 → dollctl.reply："))
     let h = try await Harness { $0.voice.enabled = true }
     let sys = await h.doll.systemPrompt()
-    #expect(sys.contains("## 語音頻道") && sys.contains("\"name\": \"join_voice\"") && sys.contains("send_text"))
+    #expect(sys.contains("## 語音頻道") && sys.contains("\"name\": \"voice.join\""))
+    #expect(sys.contains("- 主人｜Discord 私訊 → discord.dm：傳文字到他的私訊。\n- 主人｜Discord 語音 → voice.say：在語音頻道裡說出口（你要先在頻道裡）。\n- 開發者｜終端機 → dollctl.reply：印在他的終端機上。"))
     #expect(sys.contains("連結、網址、公式、程式碼"))
-    // The tools decode; with no voice wired they fail with a reason.
-    try await h.turn(Scripted("", ("join_voice", []), ("send_text", [("text", "https://example.com")])))
+    // The removed generic names are nowhere in what she reads.
+    for old in ["用 say", "\"name\": \"say\"", "send_text", "join_voice", "leave_voice"] { #expect(!sys.contains(old)) }
+    // The tools decode; with no voice wired each fails with the reason and what to use instead.
+    try await h.turn(Scripted("", voiceJoin, voiceSay("嗨"), voiceLeave, dm("https://example.com")))
     let results = try h.toolResults()
-    #expect(results[0].text == "失敗：語音還沒接上")
-    #expect(results[1].text == "" && h.said == ["https://example.com"] && h.saidTo == [.owner])
+    #expect(results.prefix(3).map(\.text) == Array(repeating: "失敗：語音還沒接上，語音頻道現在用不了；要跟主人說話用 discord.dm。", count: 3))
+    #expect(h.last.actions == ["error voice.join", "error voice.say", "error voice.leave", "said discord_dm"])
+    #expect(results[3].text == "" && h.said == ["https://example.com"] && h.saidTo == [.owner])
 }
 
 /// The bridge's side of `/api/voice` for tests: a raw TCP client doing the handshake and masked
@@ -4375,6 +4410,17 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     let r = try await voiceRig(rec)
     defer { r.api.stop() }
     let h = r.h
+    // Not in a voice channel, and the owner is in none: each voice tool is refused with the reason
+    // and what she can use now; nothing reaches the bridge.
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", voiceJoin, voiceSay("在"), voiceLeave))
+    #expect(try h.toolResults().map(\.text) == [
+        "失敗：主人不在語音頻道裡，進不去。等他進了語音頻道、叫你進去再用 voice.join；現在跟他說話用 discord.dm。",
+        "失敗：你不在語音頻道裡，這句沒說出口。主人叫你進去才用 voice.join；現在要跟主人說話用 discord.dm。",
+        "失敗：你不在語音頻道裡，不用離開；要跟主人說話用 discord.dm。",
+    ])
+    #expect(h.last.actions == ["error voice.join", "error voice.say", "error voice.leave"])
+    #expect(r.bridge.log.isEmpty && h.said.isEmpty)
     // The owner entering a voice channel is not an event to her; he asks her in a DM.
     try await r.bridge.json(["type": "owner_joined", "channel": "General"])
     try await Task.sleep(for: .milliseconds(200))
@@ -4382,18 +4428,22 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     await h.doll.ownerSaid("進語音一下")
     // She joins and speaks: three sentences; the owner talks over the second one, half-way through.
     r.bridge.lock.withLock { $0.interruptAt = 9600 + 10800 }
-    try await h.turn(Scripted("", ("join_voice", []), say("第一句。第二句話說到這裡。第三句。"), say("還有這句。")))
-    let results = try h.toolResults()
-    #expect(results[0].text == "進了語音頻道「General」。你只聽得到主人；對主人 say 的話會念出來。")
+    try await h.turn(Scripted("", voiceJoin, voiceSay("第一句。第二句話說到這裡。第三句。"), voiceSay("還有這句。"), voiceJoin))
+    let results = Array(try h.toolResults().dropFirst(3))
+    #expect(results[0].text == "進了語音頻道「General」。你只聽得到主人；在裡面說話用 voice.say。")
     #expect(results[1].text == "說到「第一句。第二句話說」被主人打斷了（第 2 句「第二句話說到這裡。」大約說到第 5 個字），後面「到這裡。第三句。」沒說出口。")
     #expect(results[2].text == "沒有念：前面一句被主人打斷了，這句沒說出口。")
+    // Already inside: joining again is refused.
+    #expect(results[3].text == "失敗：你已經在語音頻道「General」裡了，不用再進；在裡面說話用 voice.say，要出來用 voice.leave。")
+    #expect(h.last.actions == ["voice.join", "said discord_voice (cut)", "error voice.say", "error voice.join"])
+    #expect(results.map(\.channel) == [nil, .discordVoice, nil, nil])
     #expect(h.said.isEmpty)   // nothing went to the DM
     r.bridge.lock.withLock { $0.interruptAt = nil; $0.interrupted = false }
-    #expect(await !h.model.seen(0).contains { $0.role == "user" && $0.content.contains("【語音】") })
+    #expect(await !h.model.seen(1).contains { $0.role == "user" && $0.content.contains("【語音】") })
     // On the wire: start, audio, the owner's burst, stop, and after the stop no audio and no end.
     let log = r.bridge.log
     let stop = try #require(log.firstIndex(of: "stop"))
-    #expect(log.first == "join" && log.contains("utterance_start") && log.prefix(stop).contains { $0.hasPrefix("audio") })
+    #expect(log.first == "join" && log.filter { $0 == "join" }.count == 1 && log.contains("utterance_start") && log.prefix(stop).contains { $0.hasPrefix("audio") })
     #expect(!log.suffix(from: stop).contains { $0.hasPrefix("audio") || $0 == "utterance_end" })
     // The manifest keeps every generated sentence, the cut one marked.
     let entries = try r.manifest.entries()
@@ -4409,11 +4459,13 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     let fin = try #require(await rec.finalizes.first)
     #expect(fin.through == 1.0 && fin.fed == 16000 + 4800)
     #expect(fin.at - sent >= .milliseconds(250))
-    try await h.turn(Scripted("", say("嗯。")))
-    let heard = try #require(await h.model.seen(1).last { $0.content.contains("你好嗎") })
+    // In the channel she still picks: `voice.say` is heard, `discord.dm` is text in his DM.
+    try await h.turn(Scripted("", voiceSay("嗯。"), dm("https://example.com")))
+    #expect(h.said == ["https://example.com"] && h.last.actions == ["said discord_voice", "said discord_dm"])
+    let heard = try #require(await h.model.seen(2).last { $0.content.contains("你好嗎") })
     #expect(heard.content.contains("主人｜Discord 語音｜語音] 你好嗎"))
     // Not interrupted: played to the end, an empty result.
-    #expect(try h.toolResults().last!.text == "")
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["", ""])
     #expect(r.bridge.log.last == "utterance_end" || r.bridge.log.contains("utterance_end"))
     // The bridge's final `played` for the utterance that just ended arrives after `speak` returned:
     // a race, not a violation (2026-11-14 live: it closed the socket and the bridge exited).
@@ -4421,14 +4473,18 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     try await r.bridge.json(["type": "played", "utterance": 2, "samples": 0])
     try await Task.sleep(for: .milliseconds(200))
     #expect(!r.bridge.log.contains("error"))
-    // She leaves: say goes back to the DM.
     // He leaves while she is inside: that one reaches her.
     try await r.bridge.json(["type": "owner_left"])
     try await waitUntil { await h.doll.queue.contains { $0.kind == .memory } }
-    try await h.turn(Scripted("", ("leave_voice", []), say("掰")))
-    #expect(try h.events().contains { $0.kind == .memory && $0.text == "【語音】主人離開語音頻道「General」了。你還在「General」裡；要出來用 leave_voice。" })
-    #expect(try h.toolResults().suffix(2).map(\.text) == ["離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", ""])
-    #expect(h.said == ["掰"])
+    // She leaves; after that `voice.say` is refused and `discord.dm` still reaches him.
+    try await h.turn(Scripted("", voiceLeave, voiceSay("掰"), dm("掰")))
+    #expect(try h.events().contains { $0.kind == .memory && $0.text == "【語音】主人離開語音頻道「General」了。你還在「General」裡；要出來用 voice.leave。" })
+    #expect(try h.toolResults().suffix(3).map(\.text) == [
+        "離開語音頻道了。之後跟主人說話用 discord.dm。",
+        "失敗：你不在語音頻道裡，這句沒說出口。主人叫你進去才用 voice.join；現在要跟主人說話用 discord.dm。",
+        "",
+    ])
+    #expect(h.said == ["https://example.com", "掰"])
 }
 
 @Test func voiceLinkRejectsASecondBridgeAndProtocolViolations() async throws {
@@ -4467,7 +4523,7 @@ func realVoiceThroughTheLoopback() async throws {
     defer { r.api.stop() }
     _ = try embedder.embed("今天天氣很好", as: .document)
     try await r.bridge.json(["type": "owner_joined", "channel": "General"])
-    try await r.h.turn(Scripted("", ("join_voice", []), say("好，我看一下。今天的天氣還不錯，我們等一下出去走走吧！")))
+    try await r.h.turn(Scripted("", voiceJoin, voiceSay("好，我看一下。今天的天氣還不錯，我們等一下出去走走吧！")))
     let reports = try r.h.toolResults().map(\.text)
     note("say results \(reports)")
     let s = r.bridge.lock.withLock { $0 }

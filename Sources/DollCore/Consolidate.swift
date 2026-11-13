@@ -197,7 +197,7 @@ public enum Consolidation {
 
     /// The segment as plain text, a new task at each owner line (events before the first one are a
     /// task of their own). Each line starts with the local time `HH:MM` and who: the owner's words, her
-    /// thought, her `say` texts, her other calls (name and arguments), tool results' text, watch wakes;
+    /// thought, what she said and where (她說｜Discord 私訊 / 她說｜終端機 / 她說｜Discord 語音), her other calls (name and arguments), tool results' text, watch wakes;
     /// 「｜秘密」 marks a secret event. Left out: images (only the result text is shown, not the window
     /// outline), the program's 【快捷鍵】 and 【相關記憶】, `recall` results and a scenario's enter
     /// result (copies of other data and the program's fixed menu text, as in `TodayIndex`).
@@ -228,8 +228,8 @@ public enum Consolidation {
                 let parsed = ParsedReply(ev.text)
                 line("她想", parsed.thought)
                 for call in parsed.calls {
-                    if call.name == "say", call.malformed == nil {
-                        line("她說", call.parameters.first { $0.name == "text" }?.value ?? "")
+                    if call.malformed == nil, let channel = Tools.speaking[call.name] {
+                        line("她說｜\(channel.label)", call.parameters.first { $0.name == "text" }?.value ?? "")
                         continue
                     }
                     let args = call.parameters.map { "\($0.name): \($0.value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: "⏎"))" }
@@ -275,7 +275,7 @@ public enum Consolidation {
         輸入有三部分：
         1. 既有的長期記憶：每條有 id、資料夾、kind、entities 和內容。
         2. 登記簿裡可能相關的東西：登記簿記著記憶提到的每個具體東西，每條有 id、種類、正式名字、別名和說明（它是什麼、在哪裡）。
-        3. 今天的時間線，依主人的每一句話分成任務。每行開頭是時間和誰：主人說的話、她想的、她說的、她呼叫的工具和參數、工具的結果、watch 叫醒。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
+        3. 今天的時間線，依主人的每一句話分成任務。每行開頭是時間和誰：主人說的話、她想的、她說的（「她說｜」後面是她說在哪裡：Discord 私訊、終端機、Discord 語音）、她呼叫的工具和參數、工具的結果、watch 叫醒。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
 
         要寫的記憶：
         - 技能：一條一個片段：情境＋動作＋結果，例如「TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取」。寫具體的 app、按鍵或點的元素、之後畫面或檔案變成什麼。只寫時間線上真的做了、結果看得到的。走了冤枉路的，寫走通的那條路；從今天的經過看得出更短的走法，也可以把一串動作寫成一條（情境＋一串動作＋結果）。值得避開的失敗寫成「做 X → 失敗：原因」。

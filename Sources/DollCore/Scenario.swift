@@ -4,7 +4,7 @@ import Foundation
 /// its enter tool and leaves with `outcome(success, summary)`, one at a time (no nesting). While it is
 /// open its tools work, she still sees the main context, and its turns follow it in every request in
 /// full. Once she leaves, the request keeps the main context up to and including her reply that
-/// entered it, the enter call's result becomes her summary (`Scenario.result`), and her `say` calls in
+/// entered it, the enter call's result becomes her summary (`Scenario.result`), and her speaking calls in
 /// the reply that left follow as her message; the turns in between stay in the timeline only
 /// (`Doll.context`). The computer is the one kind so far.
 public enum ScenarioKind: String, Sendable, CaseIterable {
@@ -66,7 +66,7 @@ public struct ClosedScenario: Sendable, Equatable {
     public var startSeq: Int64
     /// The enter call's result: rendered as `Scenario.result` instead of what it said.
     public var enterResultSeq: Int64
-    /// Her reply that called `outcome`; its `say` calls stay.
+    /// Her reply that called `outcome`; its speaking calls stay.
     public var endSeq: Int64
     /// The last event of the turn that left it (the exit reply's results, anything the program
     /// appended that turn). Events after `enterResultSeq` up to here are not rendered, except owner lines.

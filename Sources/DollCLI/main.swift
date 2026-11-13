@@ -66,9 +66,9 @@ do {
     api = a
     let d = try Doll(
         config: cfg, root: root, model: HTTPMainModel(cfg.llm), selector: FoundationSelectionModel(), embedder: embedder,
-        say: { text, to in
+        deliver: { text, to in
             let failed = a.deliver(text, to: to)
-            out("[say → \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
+            out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
             return failed
         })
     doll = d

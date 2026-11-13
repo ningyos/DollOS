@@ -61,8 +61,7 @@ public enum Principal: String, Sendable, Codable {
     case owner, developer, `internal`
 }
 
-/// Who her `say` went to (2026-11-12): whoever spoke to her last, the owner (Discord) or the developer
-/// (`dollctl chat`); the owner when nobody has spoken yet.
+/// A person she hears and answers: the owner (Discord) or the developer (`dollctl chat`).
 public enum Addressee: String, Sendable, Codable, CaseIterable {
     case owner, developer
 
@@ -117,9 +116,8 @@ public struct Event: Sendable, Equatable {
     /// The front window's outline taken with those screenshots, or why there is none followed by the
     /// menu bar's and Dock's items; rendered verbatim as the last text part.
     public var window: String?
-    /// For the result of her `say` call: who it went to (2026-11-12).
-    public var to: Addressee?
-    /// For an owner or developer line: where it came from (2026-11-12).
+    /// For an owner or developer line: where it came from (2026-11-12). For the result of her
+    /// `discord.dm` / `dollctl.reply` / `voice.say` call that went out: where it went (2026-11-14).
     public var channel: Channel?
     public var seq: Int64?
     public var ts: Double
@@ -173,7 +171,7 @@ public struct Event: Sendable, Equatable {
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
 ///
 ///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
-///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","to":"owner|developer","channel":"discord_dm|discord_voice|dollctl"}
+///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","channel":"discord_dm|discord_voice|dollctl"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
 ///     {"type":"scenario","kind":"computer","start_seq":…,"enter_result_seq":…,"end_seq":…,
 ///      "last_seq":…,"success":true,"summary":"…"}                   a scenario she left with `outcome`
@@ -221,7 +219,6 @@ public final class Timeline {
         var cropNote: String?
         var crop: String?
         var window: String?
-        var to: Addressee?
         var channel: Channel?
     }
     private struct FooterLine: Codable {
@@ -338,7 +335,6 @@ public final class Timeline {
     private func take(_ l: EventLine) {
         var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, cropNote: l.cropNote,
                       crop: l.crop, window: l.window)
-        e.to = l.to
         e.channel = l.channel
         e.seq = l.seq
         e.ts = l.ts
@@ -370,7 +366,7 @@ public final class Timeline {
     public func append(_ ev: Event) throws -> Event {
         let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image, cropNote: ev.cropNote, crop: ev.crop,
-                             window: ev.window, to: ev.to, channel: ev.channel)
+                             window: ev.window, channel: ev.channel)
         try write(line)
         take(line)
         return events[events.count - 1]

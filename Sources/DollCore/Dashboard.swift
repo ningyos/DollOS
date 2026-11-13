@@ -74,8 +74,9 @@ public struct DashboardCall: Codable, Sendable, Equatable {
     public var crop: String?
     public var window: String?
     public var secret: Bool
-    /// A `say` call's addressee (2026-11-12): owner | developer; nil for other calls and before its result.
-    public var to: String?
+    /// A well-formed speaking call's channel (2026-11-14), from its name: Discord 私訊 | Discord 語音 |
+    /// 終端機; nil for other calls. Whether it was delivered is in `result`.
+    public var channel: String?
 }
 
 /// One timeline item: a turn (her reply with its calls and their results), an owner or developer
@@ -88,7 +89,7 @@ public struct DashboardItem: Codable, Sendable, Equatable {
     public var text: String?         // owner / developer / watch / program: the event text
     public var voice: Bool?          // owner: spoken or typed
     public var image: String?        // watch: its screenshot
-    public var thought: String?      // turn: her own thought, the text outside her calls (her words to the owner are say calls)
+    public var thought: String?      // turn: her own thought, the text outside her calls (her words to people are the speaking calls)
     public var footer: String?       // turn: the 【狀況】 she answered
     public var calls: [DashboardCall]?
     public var seconds: Double?      // turn: model call and tool calls
@@ -166,7 +167,8 @@ extension Doll {
                     type: "turn", seq: seq, ts: e.ts, secret: e.secret, thought: parsed.thought, footer: e.footer,
                     calls: parsed.calls.map {
                         DashboardCall(name: $0.name, parameters: $0.parameters.map { .init(name: $0.name, value: $0.value) },
-                                      malformed: $0.malformed, secret: false)
+                                      malformed: $0.malformed, secret: false,
+                                      channel: $0.malformed == nil ? Tools.speaking[$0.name]?.label : nil)
                     },
                     seconds: s?.seconds, prompt: s?.prompt, cached: s?.cached, effort: s?.effort))
                 open = items.count - 1
@@ -182,7 +184,6 @@ extension Doll {
                 items[i].calls![at].crop = e.crop
                 items[i].calls![at].window = e.window
                 items[i].calls![at].secret = e.secret
-                items[i].calls![at].to = e.to?.rawValue
                 items[i].secret = items[i].secret || e.secret
             case .owner, .developer:
                 items.append(DashboardItem(type: e.kind.rawValue, seq: seq, ts: e.ts, secret: e.secret, text: e.text,

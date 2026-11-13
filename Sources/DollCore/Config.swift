@@ -14,7 +14,7 @@ public struct LlmConfig: Sendable {
     public var timeoutS = 300.0
     public var maxTokens = 4096
     /// A reply whose last tool call has no `</tool_call>` (the model stopped right after the
-    /// argument, ~5–10% of `say` replies on 2026-11-14) is dropped unseen and the same request is
+    /// argument, ~5–10% of her speaking replies on 2026-11-14) is dropped unseen and the same request is
     /// sent again this many times; a reply still unterminated after that is stored as it is.
     public var unterminatedRetries = 1
 }
@@ -212,7 +212,7 @@ public struct SelectConfig: Sendable {
 }
 
 /// Her voice in a Discord voice channel (2026-11-13, M6): the bridge streams the owner's audio over
-/// `/api/voice`; Apple SpeechTranscriber hears him, Qwen3-TTS 0.6B (voice-mlx) speaks her `say`.
+/// `/api/voice`; Apple SpeechTranscriber hears him, Qwen3-TTS 0.6B (voice-mlx) speaks her `voice.say`.
 public struct VoiceConfig: Sendable {
     public var enabled = false
     /// SpeechTranscriber's locale (its assets must be installed).

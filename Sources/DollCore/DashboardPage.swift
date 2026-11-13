@@ -169,10 +169,9 @@ function renderTimeline(items) {
       head.append(document.createTextNode(" · 她的回合 · " + stats.join(" · ")));
       if (it.thought) div.append(el("div", "muted", "（心裡）" + it.thought));
       for (const c of it.calls) {
-        const text = c.name === "say" && !c.malformed && c.parameters.find(p => p.name === "text");
+        const text = c.channel && c.parameters.find(p => p.name === "text");
         if (!text) { div.append(renderCall(c)); continue; }
-        const to = { owner: "主人", developer: "開發者" }[c.to];
-        div.append(el("div", "speech", (to ? `說（給${to}）：` : "說：") + text.value.trim()));
+        div.append(el("div", "speech", `說（${c.channel}）：` + text.value.trim()));
         if (c.result) div.append(el("div", "muted", c.result));
       }
       if (it.footer) div.append(details("她看到的【狀況】", el("pre", "muted", it.footer)));

@@ -25,7 +25,7 @@ extension Config {
 
 // sentences --------------------------------------------------------------------
 
-/// How `say` text becomes the sentences the TTS speaks one after another.
+/// How `voice.say` text becomes the sentences the TTS speaks one after another.
 ///
 /// - A sentence ends after 。！？!?；; or a newline, after an ellipsis (… or ... of any length), and
 ///   after a "." followed by whitespace or the end (so 3.14, v1.2 and example.com stay whole).
@@ -182,7 +182,7 @@ public struct Endpointer: Sendable {
 
 // what was heard -----------------------------------------------------------------
 
-/// One `say` in the voice channel: its sentences, how many samples each produced, how many the
+/// One `voice.say`: its sentences, how many samples each produced, how many the
 /// bridge played, and what she is told.
 public struct SpokenReport: Sendable, Equatable {
     public var sentences: [String]
@@ -223,7 +223,7 @@ public struct SpokenReport: Sendable, Equatable {
         return s
     }
 
-    /// Her `say` result: empty when everything was heard (like a delivered text `say`); otherwise
+    /// Her `voice.say` result: empty when everything was heard (like a delivered text); otherwise
     /// what was heard and what was not, the cut position marked 大約.
     public var resultText: String {
         let h = heard
@@ -343,12 +343,16 @@ public struct VoiceEvents: Sendable {
     }
 }
 
-/// What Doll calls.
+/// What Doll calls. A call in the wrong state throws a `VoiceFailure` that says why and what she
+/// can do now; it becomes her tool result.
 public protocol VoicePort: Sendable {
     /// The voice channel she is in; nil when she is not in one.
     func channel() async -> String?
+    /// Refused when the owner is not in a voice channel, or she already is in one.
     func join() async throws -> String
+    /// Refused when she is not in a voice channel.
     func leave() async throws
+    /// Refused when she is not in a voice channel.
     func speak(_ text: String) async throws -> SpokenReport
 }
 
@@ -366,7 +370,7 @@ final class UtteranceShared: Sendable {
 }
 
 /// The `/api/voice` peer: one bridge connection at a time; the owner's audio into the recognizer
-/// with our endpointing, her `say` through the synthesizer to the bridge, and the interruption.
+/// with our endpointing, her `voice.say` through the synthesizer to the bridge, and the interruption.
 public actor VoiceLink: VoicePort {
     let config: VoiceConfig
     let recognizer: any SpeechRecognizer
@@ -540,7 +544,7 @@ public actor VoiceLink: VoicePort {
         guard hello else { throw await violation("\(type) before hello") }
         switch type {
         // The owner coming and going is not an event to her (owner, 2026-11-14: she joined every
-        // time he did); `join_voice` reports it when he is not there. Only his leaving while she
+        // time he did); `voice.join` says so when he is not there. Only his leaving while she
         // is inside reaches her, or she would stay in an empty channel without knowing.
         case "owner_joined":
             let ch = try await need(m.channel, "channel")
@@ -551,7 +555,7 @@ public actor VoiceLink: VoicePort {
             ownerChannel = nil
             log("INFO", "owner left the voice channel")
             if let hers = herChannel {
-                await events?.notice("【語音】主人離開語音頻道" + (was.map { "「\($0)」" } ?? "") + "了。你還在「\(hers)」裡；要出來用 leave_voice。")
+                await events?.notice("【語音】主人離開語音頻道" + (was.map { "「\($0)」" } ?? "") + "了。你還在「\(hers)」裡；要出來用 \(Tools.Name.voiceLeave)。")
             }
         case "owner_speaking":
             ownerStarted()
@@ -650,7 +654,12 @@ public actor VoiceLink: VoicePort {
     public func channel() -> String? { herChannel }
 
     public func join() async throws -> String {
-        if let ch = herChannel { return ch }
+        if let ch = herChannel {
+            throw VoiceFailure("你已經在語音頻道「\(ch)」裡了，不用再進；在裡面說話用 \(Tools.Name.voiceSay)，要出來用 \(Tools.Name.voiceLeave)。")
+        }
+        guard ownerChannel != nil else {
+            throw VoiceFailure("主人不在語音頻道裡，進不去。等他進了語音頻道、叫你進去再用 \(Tools.Name.voiceJoin)；現在跟他說話用 \(Tools.Name.dm)。")
+        }
         guard pendingJoin == nil else { throw VoiceFailure("已經在進語音頻道了") }
         try await send(["type": "join"])
         return try await withCheckedThrowingContinuation { c in
@@ -670,7 +679,9 @@ public actor VoiceLink: VoicePort {
     }
 
     public func leave() async throws {
-        guard herChannel != nil else { throw VoiceFailure("你不在語音頻道裡") }
+        guard herChannel != nil else {
+            throw VoiceFailure("你不在語音頻道裡，不用離開；要跟主人說話用 \(Tools.Name.dm)。")
+        }
         guard pendingLeave == nil else { throw VoiceFailure("已經在離開語音頻道了") }
         try await send(["type": "leave"])
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
@@ -717,10 +728,12 @@ public actor VoiceLink: VoicePort {
         return d
     }
 
-    /// One `say` in the voice channel: sentence by sentence through the TTS to the bridge, then
+    /// One `voice.say`: sentence by sentence through the TTS to the bridge, then
     /// until the bridge played it all or the owner cut it. Every sentence generated is kept.
     public func speak(_ text: String) async throws -> SpokenReport {
-        guard herChannel != nil else { throw VoiceFailure("你不在語音頻道裡") }
+        guard herChannel != nil else {
+            throw VoiceFailure("你不在語音頻道裡，這句沒說出口。主人叫你進去才用 \(Tools.Name.voiceJoin)；現在要跟主人說話用 \(Tools.Name.dm)。")
+        }
         guard current == nil else { throw VoiceFailure("上一句還在說") }
         let sentences = Sentences.split(text, maxChars: config.sentenceMaxChars)
         guard !sentences.isEmpty else { throw VoiceFailure("沒有要念的字") }

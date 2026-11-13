@@ -254,10 +254,10 @@ public struct Experience: Sendable {
 /// every append; never on disk, never the source.
 private let todaySchema = """
 CREATE TABLE IF NOT EXISTS today_entries (
-    id TEXT PRIMARY KEY,             -- <seq>-<part>: owner | say | thought | result | watch
+    id TEXT PRIMARY KEY,             -- <seq>-<part>: owner | developer | say-<channel> | thought | result | watch
     seq INTEGER NOT NULL,
     ts REAL NOT NULL,
-    label TEXT NOT NULL,             -- 主人說 | 你說 | 你想 | <tool> 的結果 | watch
+    label TEXT NOT NULL,             -- 主人說 | 開發者說 | 你說｜<channel> | 你想 | <tool> 的結果 | watch
     secret INTEGER NOT NULL,
     text TEXT NOT NULL,
     vector BLOB NOT NULL             -- Float32, L2-normalized
@@ -272,7 +272,7 @@ public struct TodayHit: Sendable {
     public var id: String
     public var seq: Int64
     public var ts: Double
-    /// 主人說 / 你說 / 你想 / `<tool> 的結果` / watch.
+    /// 主人說 / 開發者說 / 你說｜`<channel>` / 你想 / `<tool> 的結果` / watch.
     public var label: String
     public var secret: Bool
     public var text: String
@@ -318,7 +318,8 @@ public final class TodayIndex {
         try sql.transaction { try insert(rows) }
     }
 
-    /// What of one event is searchable: the owner's text; her reply's `say` texts (together) and her
+    /// What of one event is searchable: the owner's text; what her reply said with the speaking tools
+    /// (one entry per channel, labelled 你說｜Discord 私訊 / 你說｜終端機 / 你說｜Discord 語音) and her
     /// thought; a tool result's text (computer results are already trimmed to what changed and the
     /// open windows; never images); a watch wake's text. Not the program's 【快捷鍵】 and 【相關記憶】,
     /// not `recall` results (copies of other data), and not a scenario's enter result such as
@@ -332,7 +333,10 @@ public final class TodayIndex {
         case .developer: out = [("\(seq)-developer", "開發者說", ev.text)]
         case .doll:
             let parsed = ParsedReply(ev.text)
-            out = [("\(seq)-say", "你說", parsed.said.joined(separator: "\n")), ("\(seq)-thought", "你想", parsed.thought)]
+            let said = parsed.said
+            out = Channel.allCases.map { ch in
+                ("\(seq)-say-\(ch.rawValue)", "你說｜\(ch.label)", said.filter { $0.channel == ch }.map(\.text).joined(separator: "\n"))
+            } + [("\(seq)-thought", "你想", parsed.thought)]
         case .tool:
             let name = (tool ?? "").isEmpty ? "tool_call" : tool!
             if !unindexedResults.contains(name) { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }

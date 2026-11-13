@@ -15,7 +15,7 @@ import Synchronization
 ///                                         needs the owner key; one at a time; 503 when `[voice] enabled = false`
 ///
 /// Stream lines: `{"type":"hello"}` first, then `{"type":"say","text":…}` and
-/// `{"type":"typing","on":true|false}` (a turn that would speak to that person started or ended).
+/// `{"type":"typing","on":true|false}` (a turn that follows that person's line started or ended).
 /// The owner key is random per launch and handed to the bridge in its environment, so nothing else
 /// on this machine can speak as the owner.
 public final class LocalAPI: @unchecked Sendable {
@@ -27,7 +27,7 @@ public final class LocalAPI: @unchecked Sendable {
     private var listener: NWListener?
     private let doll = Mutex<Doll?>(nil)
     private let streams = Mutex<[Addressee: [UUID: AsyncStream<Data>.Continuation]]>([:])
-    /// The Discord bridge, as `Bridge` reports it; also why a say to the owner had no stream.
+    /// The Discord bridge, as `Bridge` reports it; also why a `discord.dm` had no stream.
     private let bridgeState = Mutex<String>("disabled（[bridge] enabled = false）")
     private var typingTask: Task<Void, Never>?
     /// The voice channel's peer (`[voice] enabled`); nil = `/api/voice` answers 503.
@@ -51,7 +51,8 @@ public final class LocalAPI: @unchecked Sendable {
     /// Open streams for `to`.
     public func listening(_ to: Addressee) -> Int { streams.withLock { $0[to]?.count ?? 0 } }
 
-    /// Her `say` (2026-11-12): queued on every open stream for `to`; nil, or why it went nowhere.
+    /// Her `discord.dm` (owner) or `dollctl.reply` (developer): queued on every open stream for `to`
+    /// as a `say` line; nil, or why it went nowhere.
     public func deliver(_ text: String, to: Addressee) -> String? {
         let sent = send(.say(text), to: to)
         guard sent == 0 else { return nil }
@@ -174,7 +175,7 @@ public final class LocalAPI: @unchecked Sendable {
     func status(_ doll: Doll) async throws -> ApiStatus {
         let d = try await doll.dashboardStatus()
         return ApiStatus(name: doll.name, footer: try await doll.status(), state: d.state, paused: d.paused, queued: d.queued,
-                         turn: d.turn, speakingTo: await doll.speakingTo()?.rawValue, bridge: bridge,
+                         turn: d.turn, answering: await doll.answering()?.rawValue, bridge: bridge,
                          ownerStreams: listening(.owner), developerStreams: listening(.developer))
     }
 
@@ -226,13 +227,13 @@ public final class LocalAPI: @unchecked Sendable {
         }
     }
 
-    /// Typing on while a turn that would speak to someone runs, off when it ends.
+    /// Typing on for whoever spoke last while a turn runs, off when it ends.
     private func followTurns(_ d: Doll) async {
         let (id, changes) = d.feed.subscribe()
         defer { d.feed.unsubscribe(id) }
         var shown: Addressee?
         for await change in changes where change == .turn {
-            let now = await d.speakingTo()
+            let now = await d.answering()
             guard now != shown else { continue }
             if let s = shown { send(.typing(false), to: s) }
             if let n = now { send(.typing(true), to: n) }
@@ -376,14 +377,14 @@ public struct ApiStatus: Codable, Sendable, Equatable {
     public var paused: Bool
     public var queued: Int
     public var turn: Int
-    /// While a turn runs: owner | developer.
-    public var speakingTo: String?
+    /// While a turn runs: whose line it follows, owner | developer.
+    public var answering: String?
     /// The Discord bridge: disabled, starting, up (pid), or down and why.
     public var bridge: String
     public var ownerStreams: Int
     public var developerStreams: Int
 
-    public init(name: String, footer: String, state: String, paused: Bool, queued: Int, turn: Int, speakingTo: String?,
+    public init(name: String, footer: String, state: String, paused: Bool, queued: Int, turn: Int, answering: String?,
                 bridge: String, ownerStreams: Int, developerStreams: Int) {
         self.name = name
         self.footer = footer
@@ -391,7 +392,7 @@ public struct ApiStatus: Codable, Sendable, Equatable {
         self.paused = paused
         self.queued = queued
         self.turn = turn
-        self.speakingTo = speakingTo
+        self.answering = answering
         self.bridge = bridge
         self.ownerStreams = ownerStreams
         self.developerStreams = developerStreams
@@ -401,7 +402,7 @@ public struct ApiStatus: Codable, Sendable, Equatable {
     public var text: String {
         var lines = ["\(name)：\(["thinking": "在想", "acting": "在做事", "asleep": "睡著（等下一件事）"][state] ?? state)"
                      + (paused ? "（暫停中）" : "") + "，第 \(turn) 回合，佇列 \(queued) 件"]
-        if let s = speakingTo { lines.append("這回合說話對象：\(Addressee(rawValue: s)?.label ?? s)") }
+        if let s = answering { lines.append("這回合接在誰的話後面：\(Addressee(rawValue: s)?.label ?? s)") }
         lines.append("Discord bridge：\(bridge)（owner stream \(ownerStreams)）")
         lines.append("dollctl chat：\(developerStreams) 個開著")
         lines.append(footer)

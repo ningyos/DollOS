@@ -7,7 +7,7 @@ import Synchronization
 /// Ready = it opened the owner stream on the local API (it does that once Discord says ready and
 /// the owner's DM channel is known). Boot fails if it exits first or is not ready within
 /// `[bridge] ready_timeout_s`. Once up, an exit is a system error: logged as ERROR, shown by
-/// `dollctl status`, and every `say` to the owner from then on fails with the reason in her result.
+/// `dollctl status`, and every `discord.dm` from then on fails with the reason in her result.
 /// It is not restarted: py-cord already reconnects to the gateway on its own, so an exit means
 /// something a restart would not fix (bad token, missing intent, a crash), and a silent restart
 /// would hide it. Restart dollcore after fixing the cause.
