@@ -4414,6 +4414,12 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     // Not interrupted: played to the end, an empty result.
     #expect(try h.toolResults().last!.text == "")
     #expect(r.bridge.log.last == "utterance_end" || r.bridge.log.contains("utterance_end"))
+    // The bridge's final `played` for the utterance that just ended arrives after `speak` returned:
+    // a race, not a violation (2026-11-14 live: it closed the socket and the bridge exited).
+    #expect(r.bridge.log.filter { $0 == "utterance_start" }.count == 2)
+    try await r.bridge.json(["type": "played", "utterance": 2, "samples": 0])
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(!r.bridge.log.contains("error"))
     // She leaves: say goes back to the DM.
     try await h.turn(Scripted("", ("leave_voice", []), say("掰")))
     #expect(try h.toolResults().suffix(2).map(\.text) == ["離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", ""])

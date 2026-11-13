@@ -571,8 +571,10 @@ public actor VoiceLink: VoicePort {
         case "played":
             let id = try await need(m.utterance, "utterance"), n = try await need(m.samples, "samples")
             guard var u = current, u.id == id else {
-                // A late report for the utterance before this one is a race, not a violation.
-                guard id < utteranceSerial, id >= 1 else { throw await violation("played: unknown utterance \(id)") }
+                // A late report for an utterance that already finished (the one just done, or an
+                // earlier one) is a race, not a violation: `speak` ends when played reaches what was
+                // sent, and the bridge's final `played` can still be on its way (2026-11-14, live).
+                guard id <= utteranceSerial, id >= 1 else { throw await violation("played: unknown utterance \(id)") }
                 return
             }
             guard n >= 0, n <= u.sent else { throw await violation("played: \(n) samples of utterance \(id), only \(u.sent) sent") }
