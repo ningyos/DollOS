@@ -1,13 +1,17 @@
 [project]
 name = "dollbridge"
 version = "0.1.0"
-description = "Discord text bridge for dollcore: the owner's DMs in, her say out"
+description = "Discord bridge for dollcore: the owner's DMs and voice in, her say and voice out"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     # Pinned to the PR #3159 commit (fix/voice-rec-2, "DAVE Support (rec)") that the 2026-11-06 voice
-    # spike ran as 2.8.2.dev91+g10a5e8cf1 on macOS 27: text needs nothing from it, but voice will,
-    # and one py-cord for both avoids a second migration. Move the pin only together with voice.
-    "py-cord",
+    # spike ran as 2.8.2.dev91+g10a5e8cf1 on macOS 27 (DAVE voice receive). Move the pin only
+    # together with davey and a live voice test.
+    "py-cord[voice]",
+    # The PR is written against davey 0.1.x: with 0.2.0 `dave.ready` stays False (0.2.0 needs an
+    # extra `prepare_transition` after a commit) and every received packet decodes to noise.
+    "davey==0.1.7",
+    "numpy>=2.0",   # resampling (48 kHz stereo <-> 16/24 kHz mono)
 ]
 
 [dependency-groups]
