@@ -2,3 +2,15 @@
 # bridge does, and it never logs the token.
 token = "PASTE-THE-BOT-TOKEN"   # Developer Portal → your application → Bot → Reset Token
 owner_id = 123456789012345678   # the owner's Discord user id (Discord: Settings → Advanced → Developer Mode on, then right-click yourself → Copy User ID)
+
+# Voice (M6, `/api/voice`). Every key is optional; the values below are the defaults.
+# The bot needs Connect and Speak in the owner's voice channel; she joins only when she decides to
+# (dollcore's `join`), and only the owner's voice is decoded and passed on.
+[voice]
+opus_library = "/opt/homebrew/lib/libopus.dylib"   # `brew install opus`; loaded at startup, a failure ends the bridge
+owner_burst_gap_ms = 200      # the owner's first packet after this long without packets starts a talk burst (`owner_speaking`)
+played_interval_ms = 100      # `played` progress at most this far apart while she speaks (contract: at most 100)
+idle_hold_ms = 500            # after her last queued sentence, keep the player sending silence this long before stopping it
+connect_timeout_s = 15.0      # Discord's voice connect on `join`
+dave_ready_timeout_s = 10.0   # DAVE (voice E2EE) must be ready this soon after joining, else the bridge ends
+udp_keepalive_s = 5.0         # UDP keep-alive period while receiving (a send failure ends the bridge)

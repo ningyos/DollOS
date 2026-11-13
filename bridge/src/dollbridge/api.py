@@ -1,4 +1,4 @@
-"""dollcore's local API over HTTP (aiohttp, which py-cord already depends on)."""
+"""dollcore's local API over HTTP and one WebSocket (aiohttp, which py-cord already depends on)."""
 
 from __future__ import annotations
 
@@ -30,3 +30,10 @@ class CoreAPI:
                 line = raw.strip()
                 if line:
                     yield json.loads(line)
+
+    async def voice(self) -> aiohttp.ClientWebSocketResponse:
+        """The `/api/voice` WebSocket (see voice.py). dollcore allows one at a time."""
+        try:
+            return await self.session.ws_connect(f"{self.base}/api/voice", headers=self.auth, autoping=True)
+        except aiohttp.WSServerHandshakeError as e:
+            raise RuntimeError(f"dollcore refused /api/voice: {e.status} {e.message}") from None

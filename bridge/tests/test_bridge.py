@@ -15,6 +15,7 @@ from aiohttp import web
 from dollbridge.__main__ import intents, load_config
 from dollbridge.api import CoreAPI
 from dollbridge.core import DISCORD_LIMIT, Bridge, owner_text, pump, split_message
+from dollbridge.voice import VoiceConfig
 
 OWNER, OTHER, BOT = 111, 222, 999
 
@@ -133,9 +134,10 @@ async def test_typing_shows_while_her_turn_runs() -> None:
 def test_config(tmp_path: Any) -> None:
     f = tmp_path / "discord.toml"
     f.write_text('token = "abc"\nowner_id = 123\n')
-    assert load_config(f) == ("abc", 123)
+    c = load_config(f)
+    assert (c.token, c.owner_id, c.voice) == ("abc", 123, VoiceConfig())
     f.write_text('token = "abc"\nowner_id = "123"\n')
-    assert load_config(f) == ("abc", 123)
+    assert (load_config(f).token, load_config(f).owner_id) == ("abc", 123)
     for bad in ['token = ""\nowner_id = 1\n', 'token = "a"\n', 'token = "a"\nowner_id = 1\nx = 2\n']:
         f.write_text(bad)
         with pytest.raises(ValueError):
@@ -145,6 +147,7 @@ def test_config(tmp_path: Any) -> None:
 def test_intents() -> None:
     i = intents()
     assert i.dm_messages and i.message_content and i.guild_messages and not i.members and not i.presences
+    assert i.voice_states
 
 
 # The HTTP contract against a fake dollcore -------------------------------------------------------
