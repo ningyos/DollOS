@@ -4375,9 +4375,11 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     let r = try await voiceRig(rec)
     defer { r.api.stop() }
     let h = r.h
-    // The owner is in a voice channel: a program notice wakes her.
+    // The owner entering a voice channel is not an event to her; he asks her in a DM.
     try await r.bridge.json(["type": "owner_joined", "channel": "General"])
-    try await waitUntil { await h.doll.queue.contains { $0.kind == .memory } }
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(await h.doll.queue.isEmpty)
+    await h.doll.ownerSaid("進語音一下")
     // She joins and speaks: three sentences; the owner talks over the second one, half-way through.
     r.bridge.lock.withLock { $0.interruptAt = 9600 + 10800 }
     try await h.turn(Scripted("", ("join_voice", []), say("第一句。第二句話說到這裡。第三句。"), say("還有這句。")))
@@ -4387,8 +4389,7 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     #expect(results[2].text == "沒有念：前面一句被主人打斷了，這句沒說出口。")
     #expect(h.said.isEmpty)   // nothing went to the DM
     r.bridge.lock.withLock { $0.interruptAt = nil; $0.interrupted = false }
-    let first = try #require(await h.model.seen(0).last { $0.content.contains("【語音】") })
-    #expect(first.content.contains("主人在語音頻道「General」裡。你不在裡面；要進去用 join_voice。"))
+    #expect(await !h.model.seen(0).contains { $0.role == "user" && $0.content.contains("【語音】") })
     // On the wire: start, audio, the owner's burst, stop, and after the stop no audio and no end.
     let log = r.bridge.log
     let stop = try #require(log.firstIndex(of: "stop"))
@@ -4421,7 +4422,11 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     try await Task.sleep(for: .milliseconds(200))
     #expect(!r.bridge.log.contains("error"))
     // She leaves: say goes back to the DM.
+    // He leaves while she is inside: that one reaches her.
+    try await r.bridge.json(["type": "owner_left"])
+    try await waitUntil { await h.doll.queue.contains { $0.kind == .memory } }
     try await h.turn(Scripted("", ("leave_voice", []), say("掰")))
+    #expect(try h.events().contains { $0.kind == .memory && $0.text == "【語音】主人離開語音頻道「General」了。你還在「General」裡；要出來用 leave_voice。" })
     #expect(try h.toolResults().suffix(2).map(\.text) == ["離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", ""])
     #expect(h.said == ["掰"])
 }

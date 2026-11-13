@@ -539,17 +539,20 @@ public actor VoiceLink: VoicePort {
         }
         guard hello else { throw await violation("\(type) before hello") }
         switch type {
+        // The owner coming and going is not an event to her (owner, 2026-11-14: she joined every
+        // time he did); `join_voice` reports it when he is not there. Only his leaving while she
+        // is inside reaches her, or she would stay in an empty channel without knowing.
         case "owner_joined":
             let ch = try await need(m.channel, "channel")
             ownerChannel = ch
             log("INFO", "owner joined voice channel \(ch)")
-            await events?.notice("【語音】主人在語音頻道「\(ch)」裡。" + (herChannel == nil ? "你不在裡面；要進去用 join_voice。" : ""))
         case "owner_left":
             let was = ownerChannel
             ownerChannel = nil
             log("INFO", "owner left the voice channel")
-            await events?.notice("【語音】主人離開語音頻道" + (was.map { "「\($0)」" } ?? "") + "了。"
-                                 + (herChannel.map { "你還在「\($0)」裡；要出來用 leave_voice。" } ?? ""))
+            if let hers = herChannel {
+                await events?.notice("【語音】主人離開語音頻道" + (was.map { "「\($0)」" } ?? "") + "了。你還在「\(hers)」裡；要出來用 leave_voice。")
+            }
         case "owner_speaking":
             ownerStarted()
         case "joined":
