@@ -11,6 +11,7 @@ data_dir = "data"
 pack = "character_packs/doll2/doll.toml"
 # 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、watch 叫醒）
 priority = ["owner_voice", "owner_text", "developer_text", "watch"]   # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
+mlx_cache_limit_mb = 256      # MLX 的 buffer cache 上限（整個 process 一個：記憶的 embedding 和她的聲音共用同一個 MLX）。初始值理由：voice-mlx 量測用 256 MB，串流 TTS 峰值 3.0 GB；0＝不留 cache
 
 [computer]
 # M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
@@ -104,3 +105,23 @@ threshold = 7                 # 決定（主人，2026-11-11）：本機模型�
 candidate_max_chars = 1500    # 一條候選超過這麼多字，給本機模型打分時截掉（她拿到的還是全文）。初始值理由：經驗最多 experience_max_chars（800）字，整理寫的記憶更短；今天的工具結果可能很長
 lookup_k = 5                  # 把一個名字對到登記簿時，本機模型看登記簿裡相近的幾條（同名的一定在內）。初始值理由：同一個東西的寫法差異（語言、路徑）在 FTS／embedding 前幾名內；少一點本機模型比較不會選錯
 align_threshold = 7           # 本機模型先選一條，再打 0–10「是同一個東西」，≥ 這個才算對到。實測（2026-11-11，合併的 E/F 登記簿 12 個手做的名字）：只選不打分 6/12（Safari→Finder、apple.com→copy.txt）；選＋打分 ≥7 10/12（錯：文件→沒有、⌘S→⇧⌥⌘S），一個名字約 1.4 秒；跟 threshold 同一個刻度
+
+[voice]
+# M6 語音（2026-11-13）：她自己決定進不進主人在的 Discord 語音頻道（join_voice／leave_voice）；bridge 從 /api/voice 把主人的聲音送來（Apple SpeechTranscriber 聽），她的 say 在語音頻道裡用 Qwen3-TTS 0.6B（voice-mlx，同一個 process）念出來
+enabled = false               # 範例預設關；開著時開機要載 TTS、編好參考聲音、熱身一句，載不起來＝開機失敗
+asr_locale = "zh-TW"          # SpeechTranscriber 的語言（資產要裝好；系統提供下載時開機會裝）
+silence_ms = 700              # 主人停了這麼多毫秒＝一句話說完，呼叫 finalize(through: 最後有聲音的地方)。初始值理由：SpeechTranscriber 自己的 final 約 12 秒一次、不看停頓；/tmp/asrlat 量 finalize 後約 30 ms 出 final
+silence_rms = 300.0           # 一個 16-bit 音框的 RMS 低於這個算沒聲音（按著 push-to-talk 但沒說話）。初始值理由：Discord 的靜音框是 0；講話一般上千
+endpoint_poll_ms = 20         # 多久檢查一次停頓的時鐘。初始值理由：bridge 一個音框 20 ms
+asr_final_timeout_ms = 1500   # finalize 之後等 final 最多這麼久；沒等到＝這段沒有字。初始值理由：量到的約 30 ms，留很大餘裕
+tts_model = "aufklarer/Qwen3-TTS-12Hz-0.6B-Base-MLX-8bit"   # Hugging Face id（快取在 ~/Library/Caches/qwen3-speech）或資料夾絕對路徑；之後換成夜間微調的 bundle
+tts_codec = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
+tts_precision = "int8"        # 決定（主人）：8-bit；bf16 要未量化的 bundle
+reference_audio = "character_packs/doll/voice/qwen3/ref_plus_zh.wav"   # ICL 參考聲音（相對目前目錄或絕對路徑）；開機編一次
+reference_text = "character_packs/doll/voice/qwen3/ref_plus_zh.txt"    # 參考聲音的逐字稿
+tts_language = "detect"       # 每句給 TTS 的語言：detect＝有假名 ja、有漢字 zh、有英文字母 en、其他 auto；或固定一個 voice-mlx 收的代碼
+warmup_text = "嗯。"          # 開機念一次（丟掉）：編譯 talker、用參考聲音種好串流解碼器的狀態，第一句真的話就不用付這些
+sentence_max_chars = 60       # say 切成句子（。！？；… 換行，小數點不切），一句超過這麼多字再從逗號切。初始值理由：一句越長，主人打斷時「大約說到哪」越不準；60 字約 10 秒
+data_dir = "voice"            # 每一句念過的話（24 kHz wav＋manifest.jsonl 一行：文字、語言、seed、時間、有沒有被打斷），給夜間微調；在 [core] data_dir 底下，除非是絕對路徑
+stop_settle_ms = 150          # 送出 stop 之後，再收這麼久的 played 才算最後播到哪。初始值理由：bridge 每 ≤100 ms 回報一次
+bridge_timeout_s = 10.0       # bridge 這麼久沒回 joined／left 或播放進度＝錯誤。初始值理由：進語音頻道一般 1–2 秒

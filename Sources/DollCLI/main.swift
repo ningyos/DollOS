@@ -58,18 +58,41 @@ let bridge: Bridge?
 let dashboard: Dashboard?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
+    // One MLX runtime for the embedding model and her voice: one cache limit, set before either loads.
+    MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
     // Boot: the embedding model loads first (the today index embeds at start); no fallback.
     let embedder = try await MLXEmbedder.load(cfg.memory)
     let a = LocalAPI(config: cfg.api)
     api = a
-    doll = try Doll(
+    let d = try Doll(
         config: cfg, root: root, model: HTTPMainModel(cfg.llm), selector: FoundationSelectionModel(), embedder: embedder,
         say: { text, to in
             let failed = a.deliver(text, to: to)
             out("[say → \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
             return failed
         })
+    doll = d
     try await doll.boot()
+    // Her voice (M6): TTS loaded, reference encoded and the streaming decoder seeded, then the
+    // speech recognizer started; any failure stops the boot.
+    if cfg.voice.enabled {
+        let t0 = Date()
+        let synth = try await QwenSynthesizer.load(cfg.voice, root: root)
+        let tts = Date().timeIntervalSince(t0)
+        let recognizer = try await AppleSpeechRecognizer.start(locale: cfg.voice.asrLocale, finalTimeoutMs: cfg.voice.asrFinalTimeoutMs)
+        let link = VoiceLink(config: cfg.voice, recognizer: recognizer, synthesizer: synth,
+                             manifest: try VoiceManifest(dir: cfg.voiceDirectory(root: root), writeWAV: writeVoiceWAV))
+        await link.setEvents(VoiceEvents(ownerSaid: { await d.ownerSaid($0, voice: true, channel: .discordVoice) },
+                                         notice: { await d.voiceNotice($0) }))
+        await d.setVoice(link)
+        a.setVoice(link)
+        let mem = MLXProcess.footprint()
+        out(String(format: "voice: ready in %.1f s (TTS load + reference + warm-up %.1f s, speech recognizer %.1f s); footprint %.2f GB, peak %.2f GB",
+                   Date().timeIntervalSince(t0), tts, Date().timeIntervalSince(t0) - tts,
+                   Double(mem.current) / 1_073_741_824, Double(mem.peak) / 1_073_741_824))
+    } else {
+        out("voice: disabled ([voice] enabled = false)")
+    }
     let port = try await api.start(doll: doll)
     out("api: http://127.0.0.1:\(port)/ (dollctl, bridge)")
     if cfg.dashboard.enabled {

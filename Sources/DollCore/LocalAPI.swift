@@ -11,6 +11,8 @@ import Synchronization
 ///     GET  /api/listen?to=developer       NDJSON stream: what she says to the developer
 ///     POST /api/owner       {"text":…}    an owner line (the bridge); needs `Authorization: Bearer <owner key>`
 ///     GET  /api/listen?to=owner           NDJSON stream for the bridge; needs the owner key; one at a time
+///     GET  /api/voice                     WebSocket for the bridge's voice channel (2026-11-13, M6; `Voice.swift`);
+///                                         needs the owner key; one at a time; 503 when `[voice] enabled = false`
 ///
 /// Stream lines: `{"type":"hello"}` first, then `{"type":"say","text":…}` and
 /// `{"type":"typing","on":true|false}` (a turn that would speak to that person started or ended).
@@ -28,6 +30,8 @@ public final class LocalAPI: @unchecked Sendable {
     /// The Discord bridge, as `Bridge` reports it; also why a say to the owner had no stream.
     private let bridgeState = Mutex<String>("disabled（[bridge] enabled = false）")
     private var typingTask: Task<Void, Never>?
+    /// The voice channel's peer (`[voice] enabled`); nil = `/api/voice` answers 503.
+    private let voiceLink = Mutex<VoiceLink?>(nil)
 
     public init(config: ApiConfig) {
         port = config.port
@@ -41,6 +45,8 @@ public final class LocalAPI: @unchecked Sendable {
 
     public func setBridgeState(_ s: String) { bridgeState.withLock { $0 = s } }
     public var bridge: String { bridgeState.withLock { $0 } }
+
+    public func setVoice(_ v: VoiceLink) { voiceLink.withLock { $0 = v } }
 
     /// Open streams for `to`.
     public func listening(_ to: Addressee) -> Int { streams.withLock { $0[to]?.count ?? 0 } }
@@ -271,6 +277,7 @@ public final class LocalAPI: @unchecked Sendable {
                 }
                 let r = Request(method: String(parts[0]), target: String(parts[1]), headers: headers, body: Data(body.prefix(length)))
                 if r.method == "GET", r.path == "/api/listen" { return self.listen(c, r) }
+                if r.method == "GET", r.path == "/api/voice" { return self.upgrade(c, r, leftover: Data(body.dropFirst(length))) }
                 Task { self.send(c, await self.respond(r)) }
             } else if error != nil || done || buf.count > Self.maxRequest {
                 c.cancel()
@@ -282,6 +289,7 @@ public final class LocalAPI: @unchecked Sendable {
 
     private static func reason(_ status: Int) -> String {
         switch status {
+        case 101: "Switching Protocols"
         case 200: "OK"
         case 400: "Bad Request"
         case 401: "Unauthorized"
@@ -296,6 +304,26 @@ public final class LocalAPI: @unchecked Sendable {
         let head = "HTTP/1.1 \(r.status) \(Self.reason(r.status))\r\nContent-Type: application/json; charset=utf-8\r\n"
             + "Content-Length: \(r.body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         c.send(content: Data(head.utf8) + r.body, completion: .contentProcessed { _ in c.cancel() })
+    }
+
+    /// The largest WebSocket message the bridge may send (audio frames are ~640 bytes, control lines short).
+    static let maxVoiceMessage = 1 << 20
+
+    /// `/api/voice`: the bridge's WebSocket, handed to the voice link after the handshake.
+    private func upgrade(_ c: NWConnection, _ r: Request, leftover: Data) {
+        guard let link = voiceLink.withLock({ $0 }) else { return send(c, .error(503, "voice disabled ([voice] enabled = false)")) }
+        guard authorized(r) else { return send(c, .error(401, "owner key required")) }
+        let response: Data
+        do {
+            response = try WebSocket.handshake(headers: r.headers)
+        } catch {
+            return send(c, .error(400, "\(error)"))
+        }
+        Task {
+            guard await link.claim() else { return self.send(c, .error(409, "a voice connection is already open")) }
+            c.send(content: response, completion: .contentProcessed { _ in })
+            await link.attach(WebSocketSession(connection: c, leftover: leftover, maxMessage: Self.maxVoiceMessage))
+        }
     }
 
     /// One listener's stream: the response has no length and ends when either side closes.

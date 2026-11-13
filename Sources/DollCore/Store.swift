@@ -79,11 +79,14 @@ public enum Addressee: String, Sendable, Codable, CaseIterable {
 /// spoken or typed, so she knows where each line comes from once there is more than one place.
 public enum Channel: String, Sendable, Codable, CaseIterable {
     case discordDM = "discord_dm"
+    /// The owner's speech in a Discord voice channel, transcribed (2026-11-13, M6).
+    case discordVoice = "discord_voice"
     case dollctl
 
     public var label: String {
         switch self {
         case .discordDM: "Discord 私訊"
+        case .discordVoice: "Discord 語音"
         case .dollctl: "終端機"
         }
     }
@@ -144,7 +147,7 @@ public struct Event: Sendable, Equatable {
         case .owner: voice ? .ownerVoice : .ownerText
         case .developer: .developerText
         case .watch: .watch
-        case .doll, .tool, .memory: .watch   // never queued; these go straight to the timeline
+        case .doll, .tool, .memory: .watch   // only program notices (【語音】, M6) are queued; the rest go straight to the timeline
         }
     }
 
@@ -170,7 +173,7 @@ public struct Event: Sendable, Equatable {
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
 ///
 ///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
-///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","to":"owner|developer","channel":"discord_dm|dollctl"}
+///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","to":"owner|developer","channel":"discord_dm|discord_voice|dollctl"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
 ///     {"type":"scenario","kind":"computer","start_seq":…,"enter_result_seq":…,"end_seq":…,
 ///      "last_seq":…,"success":true,"summary":"…"}                   a scenario she left with `outcome`

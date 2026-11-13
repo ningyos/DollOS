@@ -20,6 +20,9 @@ public struct CoreConfig: Sendable {
     public var pack = "character_packs/doll2/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
     public var priority = ["owner_voice", "owner_text", "developer_text", "watch"]
+    /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
+    /// voice share one MLX runtime, so one limit covers both. Set before either loads.
+    public var mlxCacheLimitMB = 256
 }
 
 /// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
@@ -204,6 +207,47 @@ public struct SelectConfig: Sendable {
     public var alignThreshold = 7
 }
 
+/// Her voice in a Discord voice channel (2026-11-13, M6): the bridge streams the owner's audio over
+/// `/api/voice`; Apple SpeechTranscriber hears him, Qwen3-TTS 0.6B (voice-mlx) speaks her `say`.
+public struct VoiceConfig: Sendable {
+    public var enabled = false
+    /// SpeechTranscriber's locale (its assets must be installed).
+    public var asrLocale = "zh-TW"
+    /// After this much owner silence the utterance ends (`finalize(through:)`).
+    public var silenceMs = 700
+    /// A 16-bit PCM frame whose RMS is below this is silence (the owner holds push-to-talk but says nothing).
+    public var silenceRms = 300.0
+    /// How often the endpointer checks the silence clock.
+    public var endpointPollMs = 20
+    /// After `finalize(through:)`, how long to wait for the final result before the utterance is
+    /// taken as no words.
+    public var asrFinalTimeoutMs = 1500
+    /// Talker bundle: a Hugging Face id (cached under ~/Library/Caches/qwen3-speech) or an absolute directory.
+    public var ttsModel = "aufklarer/Qwen3-TTS-12Hz-0.6B-Base-MLX-8bit"
+    /// Codec bundle, same forms.
+    public var ttsCodec = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
+    /// int8 | bf16 (voice-mlx `WeightPrecision`).
+    public var ttsPrecision = "int8"
+    /// The ICL reference voice and its transcript file (relative to the working directory or absolute).
+    public var referenceAudio = "character_packs/doll/voice/qwen3/ref_plus_zh.wav"
+    public var referenceText = "character_packs/doll/voice/qwen3/ref_plus_zh.txt"
+    /// The language passed to the TTS per sentence: "detect" (Han → zh, kana → ja, else en) or one
+    /// fixed code voice-mlx accepts.
+    public var ttsLanguage = "detect"
+    /// The line spoken once at startup: it compiles the talker and seeds the streaming decoder
+    /// from the reference.
+    public var warmupText = "嗯。"
+    /// A sentence longer than this many characters is split again at commas, then hard.
+    public var sentenceMaxChars = 60
+    /// Where every spoken sentence is kept for the nightly fine-tune (wav + manifest.jsonl), under
+    /// `[core] data_dir` unless absolute.
+    public var dataDir = "voice"
+    /// After `stop`, how long to keep taking `played` reports before the last one counts.
+    public var stopSettleMs = 150
+    /// The bridge must report `played` (and answer join/leave) within this.
+    public var bridgeTimeoutS = 10.0
+}
+
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
@@ -216,11 +260,12 @@ public struct Config: Sendable {
     public var bridge: BridgeConfig
     public var consolidate: ConsolidateConfig
     public var select: SelectConfig
+    public var voice: VoiceConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select"])
+                                                 "consolidate", "select", "voice"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -242,11 +287,13 @@ public struct Config: Sendable {
         try c.read("data_dir", &core.dataDir)
         try c.read("pack", &core.pack)
         try c.read("priority", &core.priority)
+        try c.read("mlx_cache_limit_mb", &core.mlxCacheLimitMB)
         try c.finish()
         let known = Set(Priority.allCases.map(\.rawValue))
         guard Set(core.priority) == known, core.priority.count == known.count else {
             throw TOMLError(description: "[core] priority must list each of \(known.sorted()) exactly once")
         }
+        guard core.mlxCacheLimitMB >= 0 else { throw TOMLError(description: "[core] mlx_cache_limit_mb must be 0 or more") }
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])
         var computer = ComputerConfig()
@@ -382,8 +429,35 @@ public struct Config: Sendable {
               (0...10).contains(select.alignThreshold) else {
             throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; prefilter at least 1; threshold and align_threshold 0…10; candidate_max_chars at least 100; lookup_k at least 1")
         }
+        var o = Section(name: "voice", raw: raw["voice"] ?? [:])
+        var voice = VoiceConfig()
+        try o.read("enabled", &voice.enabled)
+        try o.read("asr_locale", &voice.asrLocale)
+        try o.read("silence_ms", &voice.silenceMs)
+        try o.read("silence_rms", &voice.silenceRms)
+        try o.read("endpoint_poll_ms", &voice.endpointPollMs)
+        try o.read("asr_final_timeout_ms", &voice.asrFinalTimeoutMs)
+        try o.read("tts_model", &voice.ttsModel)
+        try o.read("tts_codec", &voice.ttsCodec)
+        try o.read("tts_precision", &voice.ttsPrecision)
+        try o.read("reference_audio", &voice.referenceAudio)
+        try o.read("reference_text", &voice.referenceText)
+        try o.read("tts_language", &voice.ttsLanguage)
+        try o.read("warmup_text", &voice.warmupText)
+        try o.read("sentence_max_chars", &voice.sentenceMaxChars)
+        try o.read("data_dir", &voice.dataDir)
+        try o.read("stop_settle_ms", &voice.stopSettleMs)
+        try o.read("bridge_timeout_s", &voice.bridgeTimeoutS)
+        try o.finish()
+        guard voice.silenceMs >= 100, voice.silenceRms >= 0, voice.endpointPollMs >= 1, voice.asrFinalTimeoutMs >= 1,
+              ["int8", "bf16"].contains(voice.ttsPrecision), !voice.ttsModel.isEmpty, !voice.ttsCodec.isEmpty,
+              !voice.referenceAudio.isEmpty, !voice.referenceText.isEmpty, !voice.ttsLanguage.isEmpty,
+              !voice.warmupText.isEmpty, voice.sentenceMaxChars >= 10, !voice.dataDir.isEmpty, voice.stopSettleMs >= 0,
+              voice.bridgeTimeoutS > 0 else {
+            throw TOMLError(description: "[voice] silence_ms at least 100; silence_rms 0 or more; endpoint_poll_ms and asr_final_timeout_ms at least 1; tts_precision int8 or bf16; tts_model, tts_codec, reference_audio, reference_text, tts_language, warmup_text, data_dir not empty; sentence_max_chars at least 10; stop_settle_ms 0 or more; bridge_timeout_s positive")
+        }
         return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select)
+                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice)
     }
 }
 

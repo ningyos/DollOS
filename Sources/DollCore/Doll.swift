@@ -89,6 +89,13 @@ public actor Doll {
     let pipeline: Selector
     let computer: any ComputerDriver
     let say: Say
+    /// `[voice] enabled` (M6): the voice tools and the voice part of the system prompt.
+    let voiceEnabled: Bool
+    /// The voice channel (`setVoice`); nil while voice is disabled or not wired yet.
+    var voice: (any VoicePort)?
+    /// A `say` in the voice channel was cut by the owner this turn: her later `say` calls in the
+    /// same reply are not spoken (she would talk over him).
+    var voiceCut = false
 
     var queue: [Event] = []
     var waiter: CheckedContinuation<Bool, Never>?
@@ -206,7 +213,8 @@ public actor Doll {
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.say = say
-        tools = Tools.specs(memory: memoryConfig)
+        tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled)
+        voiceEnabled = config.voice.enabled
         scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer, config.files) + [Tools.exitSpec]) }
 
         let packPath = root.appending(path: core.pack)
@@ -237,6 +245,8 @@ public actor Doll {
 
     public func setObserver(_ f: (@Sendable (TurnReport) -> Void)?) { observer = f }
     public func setLogSink(_ f: (@Sendable (String) -> Void)?) { logSink = f }
+    /// The voice channel (`[voice] enabled`, M6), wired before `run()`.
+    public func setVoice(_ v: any VoicePort) { voice = v }
 
     /// Rebuilds the memory index from the markdown files (spec 6: SQLite is a rebuildable index).
     public func rebuildMemory() throws { try memory.rebuild() }
@@ -292,6 +302,12 @@ public actor Doll {
         var ev = Event(.developer, .developer, text)
         ev.channel = .dollctl
         put(ev)
+    }
+
+    /// A program notice from the voice channel (M6): the owner joined or left, she was removed, the
+    /// link dropped. Queued like a person's line, so it gives her a turn; renders as 程式.
+    public func voiceNotice(_ text: String) {
+        put(Event(.memory, .internal, text))
     }
 
     /// A person's line as she sees it (2026-11-12): time, who, where it came from, spoken or typed —
@@ -401,7 +417,7 @@ public actor Doll {
     /// same text the template would render from `tools` plus a system message, so the prompt opens
     /// the way she was trained on.
     func systemPrompt() -> String {
-        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text
+        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
@@ -558,6 +574,7 @@ public actor Doll {
         experienceNow = nil
         followsNow = []
         selectionsNow = []
+        voiceCut = false
         // A new owner or developer line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
@@ -751,11 +768,36 @@ public actor Doll {
                 // Spoken to whoever spoke last; nothing new for her to read, and nothing to wake her
                 // for. Not delivered (the bridge is down, no dollctl chat is open): her result says why.
                 let to = Self.addressee(timeline.events)
+                // In the voice channel (M6), the owner hears it: sentence by sentence through the TTS.
+                if to == .owner, let voice, await voice.channel() != nil {
+                    guard !voiceCut else {
+                        return Outcome(text: "沒有念：前面一句被主人打斷了，這句沒說出口。", actions: ["error say"], background: true, to: to)
+                    }
+                    let report = try await voice.speak(text)
+                    if report.interrupted, report.heard.cut != nil { voiceCut = true }
+                    log("INFO", "turn \(turnIndex): said in voice「\(report.heardText)」" + (report.interrupted ? "（被打斷）" : ""))
+                    return Outcome(text: report.resultText, actions: [report.interrupted ? "said voice (cut)" : "said voice"],
+                                   background: true, to: to)
+                }
                 if let why = say(text, to) {
                     log("ERROR", "turn \(turnIndex): say to \(to.rawValue) not delivered: \(why)")
                     return Outcome(text: "失敗：\(to.label)沒收到：\(why)", actions: ["error say"], background: true, to: to)
                 }
                 return Outcome(text: "", actions: ["said"], background: true, to: to)
+            case .sendText(let text):
+                if let why = say(text, .owner) {
+                    log("ERROR", "turn \(turnIndex): send_text not delivered: \(why)")
+                    throw ToolError(description: "主人沒收到：\(why)")
+                }
+                return Outcome(text: "", actions: ["sent text"], background: true, to: .owner)
+            case .joinVoice:
+                guard let voice else { throw ToolError(description: "語音還沒接上") }
+                let ch = try await voice.join()
+                return Outcome(text: "進了語音頻道「\(ch)」。你只聽得到主人；對主人 say 的話會念出來。", actions: ["join_voice"], background: true)
+            case .leaveVoice:
+                guard let voice else { throw ToolError(description: "語音還沒接上") }
+                try await voice.leave()
+                return Outcome(text: "離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", actions: ["leave_voice"], background: true)
             case .think(let level):
                 effortNext = level
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
