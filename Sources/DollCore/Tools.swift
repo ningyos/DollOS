@@ -53,17 +53,17 @@ public enum Tools {
     /// system prompt never changes between turns and the server's prefix cache keeps hitting.
     /// `voice` (`[voice] enabled`, M6): the voice tools follow the others.
     static func specs(memory: MemoryConfig, voice: Bool) -> [Spec] {
-        let dmVoice = voice ? "你在語音頻道裡的時候，念出來沒意義的東西（連結、網址、程式碼、數字、表情符號）也用這個傳給他。" : ""
+        let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
         return [
             Spec(name: Name.dm,
-                 description: "傳文字到主人的 Discord 私訊。主人從 Discord 私訊跟你說話（括號裡是 主人｜Discord 私訊），就用這個回。" + dmVoice + "回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到。傳完，程式等下一件事發生（有人說話、工具結果、watch）才叫你；同一則回覆裡還有別的工具，就照常等它們的結果。Discord 連不上的時候傳不出去，結果會寫原因。",
+                 description: "跟主人說話：傳文字到主人的 Discord 私訊。主人從 Discord 私訊跟你說話，就用 \(Name.dm) 回；他在私訊只看得到你用 \(Name.dm) 傳的字；回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到。傳完，程式等下一件事發生（有人說話、工具結果、watch）才叫你；同一則回覆裡還有別的工具，就照常等它們的結果。" + dmVoice + "Discord 連不上的時候 \(Name.dm) 傳不出去，結果會寫原因。",
                  parameters: [
                      "type": "object",
                      "properties": ["text": ["type": "string", "description": "要傳給主人的話"]],
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: Name.reply,
-                 description: "把文字印在開發者的終端機上（dollctl chat）。開發者從終端機跟你說話（括號裡是 開發者｜終端機），就用這個回；跟 \(Name.dm) 一樣，傳完程式等下一件事發生才叫你。開發者沒開著 dollctl chat 就送不到，結果會寫原因。",
+                 description: "跟開發者說話：把文字印在開發者的終端機（dollctl chat）。開發者從終端機跟你說話，就用 \(Name.reply) 回；他只看得到你用 \(Name.reply) 傳的字。傳完跟 \(Name.dm) 一樣，程式等下一件事發生才叫你。開發者沒開著 dollctl chat 的時候 \(Name.reply) 送不到，結果會寫原因。",
                  parameters: [
                      "type": "object",
                      "properties": ["text": ["type": "string", "description": "要回開發者的話"]],
@@ -129,10 +129,10 @@ public enum Tools {
     /// The voice channel's tools (M6), after the others when `[voice] enabled`.
     static let voiceSpecs: [Spec] = [
         Spec(name: Name.voiceJoin,
-             description: "進主人現在在的 Discord 語音頻道。主人叫你進去才用。進去以後你只聽得到主人；他說的話照常出現在時間線上（括號裡是 主人｜Discord 語音｜語音），你用 \(Name.voiceSay) 在裡面說話。主人不在語音頻道、或你已經在裡面，就進不去，結果會寫原因。",
+             description: "進主人現在在的 Discord 語音頻道。主人叫你進去才用 \(Name.voiceJoin)。進去以後你只聽得到主人；他說的話照常出現在時間線上（Discord 語音｜語音），你用 \(Name.voiceSay) 在裡面說話。主人不在語音頻道、或你已經在裡面，\(Name.voiceJoin) 就進不去，結果會寫原因。",
              parameters: ["type": "object", "properties": [:], "required": []], jsonParameters: []),
         Spec(name: Name.voiceSay,
-             description: "在語音頻道裡用你的聲音說話；主人只聽得到，沒有文字。主人在語音頻道裡跟你說話（括號裡是 主人｜Discord 語音），就用這個回。你要先在語音頻道裡（\(Name.voiceJoin)），不在裡面就說不出去。連結、網址、公式、程式碼、表情符號這些不要放進來，要給主人就用 \(Name.dm)。主人開口你就會停下來，結果會寫你說到哪裡。",
+             description: "在語音頻道裡跟主人說話：用你的聲音說出口，主人只聽得到，沒有文字。主人在語音頻道裡跟你說話，就用 \(Name.voiceSay) 回。你要先在語音頻道裡（\(Name.voiceJoin)），不在裡面 \(Name.voiceSay) 說不出去。連結、網址、公式、程式碼、表情符號這些不要放進 \(Name.voiceSay)，要給主人就用 \(Name.dm)。主人開口你就會停下來，結果會寫你說到哪裡。",
              parameters: [
                  "type": "object",
                  "properties": ["text": ["type": "string", "description": "要說出口的話"]],
@@ -794,7 +794,7 @@ enum Instructions {
     /// How she works, after the pack in the system prompt. The tool block above carries the details.
     /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
     static func text(voice: Bool) -> String {
-        let voiceLine = voice ? "\n- 主人｜Discord 語音 → \(Tools.Name.voiceSay)：在語音頻道裡說出口（你要先在頻道裡）。" : ""
+        let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""
         return """
         ## 你怎麼運作
 
@@ -803,20 +803,17 @@ enum Instructions {
         別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字（同音字、聽錯的詞），看起來怪就先猜原意，猜不出來就問；回語音要短、口語，因為會被念出來。
         時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
 
-        回話用哪個工具，看那句話的括號裡寫從哪裡來：
-        - 主人｜Discord 私訊 → \(Tools.Name.dm)：傳文字到他的私訊。\(voiceLine)
-        - 開發者｜終端機 → \(Tools.Name.reply)：印在他的終端機上。
-        這幾個就是你回話的工具，沒有別的說話方式；從哪裡來的話就從哪裡回，用錯地方對方收不到。工具現在用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
+        回話要自己選地方，看那句話的括號裡寫從哪裡來：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；從哪裡來就從哪裡回，用錯地方對方收不到。工具現在用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
 
         每個回合的最後一則訊息是【狀況】，裡面只有事實：你在哪個選單、有沒有 watch、context 大約多長、下一回合的 effort。
 
         ## 怎麼做事
 
-        做事只能透過工具：說話用上面那幾個回話的工具，要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
+        做事只能透過工具：回主人的私訊用 \(Tools.Name.dm)，回開發者用 \(Tools.Name.reply)，要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
 
-        回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。要讓誰知道的事，一定要用回話的工具說出來。
+        回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。要讓主人知道的事，一定要用 \(Tools.Name.dm) 說出來；要回開發者，用 \(Tools.Name.reply)。
 
-        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；動作做完會回一行結果，一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話用回話的工具寫在同一則回覆裡。同一則回覆裡寫在 outcome 後面的呼叫，除了回話的工具都不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
+        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；動作做完會回一行結果，一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話用 \(Tools.Name.dm) 寫在同一則回覆裡。同一則回覆裡寫在 outcome 後面的呼叫，除了回話的工具都不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
 
         卡住的時候可以找主人：人機驗證（拼圖、選圖、滑塊）不要自己試，要手機號、要付錢、要主人才有的東西也一樣——跟主人說清楚卡在哪、要主人做什麼，這則回覆就不要再呼叫電腦工具，等主人回話；電腦選單會一直開著，主人處理完說一聲你再接著做。
 

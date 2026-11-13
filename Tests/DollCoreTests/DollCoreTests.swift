@@ -4205,11 +4205,11 @@ private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
     let off = try await Harness()
     let plain = await off.doll.systemPrompt()
     #expect(!plain.contains("## 語音頻道") && !plain.contains("voice.say"))
-    #expect(plain.contains("- 主人｜Discord 私訊 → discord.dm：") && plain.contains("- 開發者｜終端機 → dollctl.reply："))
+    #expect(plain.contains("主人從 Discord 私訊來的話，用 discord.dm 回；開發者從終端機來的話，用 dollctl.reply 回。"))
     let h = try await Harness { $0.voice.enabled = true }
     let sys = await h.doll.systemPrompt()
     #expect(sys.contains("## 語音頻道") && sys.contains("\"name\": \"voice.join\""))
-    #expect(sys.contains("- 主人｜Discord 私訊 → discord.dm：傳文字到他的私訊。\n- 主人｜Discord 語音 → voice.say：在語音頻道裡說出口（你要先在頻道裡）。\n- 開發者｜終端機 → dollctl.reply：印在他的終端機上。"))
+    #expect(sys.contains("主人從 Discord 私訊來的話，用 discord.dm 回；主人在 Discord 語音說的話，用 voice.say 回（你要先在語音頻道裡）；開發者從終端機來的話，用 dollctl.reply 回。"))
     #expect(sys.contains("連結、網址、公式、程式碼"))
     // The removed generic names are nowhere in what she reads.
     for old in ["用 say", "\"name\": \"say\"", "send_text", "join_voice", "leave_voice"] { #expect(!sys.contains(old)) }
