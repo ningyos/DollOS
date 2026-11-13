@@ -5,6 +5,7 @@ default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 t
 task_turn_effort = "medium"  # 決定（2026-11-08）：做事的回合（含新主人事件、她的工具結果、watch 叫醒）用 medium。理由：none 時第 1 回合常只說一句就停（B 同一請求重送 5／8 有呼叫工具），medium 10/10；M2 medium 輪 C 有 2 次在工具結果回合（none）只說一句就停。她用 think 指定的仍優先
 timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
 max_tokens = 4096             # 初始值理由：一回合一個動作，回覆很少超過 1k token；4k 夠 high 的思考
+unterminated_retries = 1      # 回覆停在最後一個工具呼叫裡（沒有 </tool_call>）＝丟掉、同一個請求再送幾次；還是一樣就照原樣存（她看到錯誤）。理由（2026-11-14 重送 20 次）：say 約 5–10% 會停在參數後面；壞的那則留在 context 裡會讓下一則更容易壞（原樣 18/20，歷史補好 20/20）
 
 [core]
 data_dir = "data"

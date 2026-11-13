@@ -3829,6 +3829,35 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(await h.doll.followUp == false)
 }
 
+@Test func aReplyThatStopsInsideItsLastCallIsAskedForAgainUnseen() async throws {
+    let cut = "<tool_call>\n<function=say>\n<parameter=text>\n在啊。你這麼晚還沒睡？"
+    #expect(ParsedReply(cut).endsUnterminated)
+    #expect(!ParsedReply(Scripted("", say("在")).raw).endsUnterminated)
+    #expect(!ParsedReply(cut + "\n" + Scripted("", say("在")).raw).endsUnterminated)   // only the last call counts
+
+    // Retried once: the cut reply never reaches the timeline; the same messages are sent again.
+    let h = try await Harness()
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted(cut), Scripted("", say("在啊")))
+    #expect(h.said == ["在啊"])
+    #expect(try h.events().filter { $0.kind == .doll }.map(\.text) == [Scripted("", say("在啊")).raw])
+    #expect(await h.model.requests.count == 2)
+    #expect(await h.model.seen(0).map(\.content) == h.model.seen(1).map(\.content))
+    #expect(h.logs.contains { $0.contains("WARN") && $0.contains("asking again") })
+
+    // Still cut after the retries: stored as written, and the say fails with what was wrong.
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted(cut), Scripted(cut))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：<tool_call> 沒有 </tool_call> 收尾"))
+    #expect(await h.model.requests.count == 4)
+
+    // unterminated_retries = 0: the first one is kept.
+    let h0 = try await Harness { $0.llm.unterminatedRetries = 0 }
+    await h0.doll.ownerSaid("在嗎")
+    try await h0.turn(Scripted(cut))
+    #expect(await h0.model.requests.count == 1 && h0.said.isEmpty)
+}
+
 @Test func apiAndBridgeConfigAreValidated() throws {
     let example = try Config.load(root.appending(path: "dollcore.example.toml"))
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)

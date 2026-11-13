@@ -589,40 +589,52 @@ public actor Doll {
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = nextEffort
 
-        let task = Task { try await model.chat(messages, effort: effort) }
-        inflight = task
-        inflightEffort = effort
-        feed.notify(.turn)
-        let reply: ModelReply
-        do {
-            reply = try await task.value
-            inflight = nil
-            inflightEffort = nil
-        } catch is CancellationError {
-            inflight = nil
-            inflightEffort = nil
-            if stopped { throw CancellationError() }
-            turnIndex -= 1
-            if interruptRequested {
-                interruptRequested = false
-                lastInterrupt = Date().timeIntervalSince1970
-                feed.notify(.interrupt)
-                log("INFO", "turn \(turnIndex + 1) interrupted from the dashboard; no reply, she waits for the next event")
-                return
+        // A reply that stops inside its last tool call is dropped unseen and asked for again
+        // (2026-11-14): kept, it fails and, left in her context, makes the next one likelier to stop
+        // the same way (replayed 20×: 18/20 complete as it was, 20/20 with the history's ones closed).
+        var retriesLeft = llm.unterminatedRetries
+        var reply: ModelReply
+        var content: String
+        var rescued: String?
+        while true {
+            let task = Task { try await model.chat(messages, effort: effort) }
+            inflight = task
+            inflightEffort = effort
+            feed.notify(.turn)
+            do {
+                reply = try await task.value
+                inflight = nil
+                inflightEffort = nil
+            } catch is CancellationError {
+                inflight = nil
+                inflightEffort = nil
+                if stopped { throw CancellationError() }
+                turnIndex -= 1
+                if interruptRequested {
+                    interruptRequested = false
+                    lastInterrupt = Date().timeIntervalSince1970
+                    feed.notify(.interrupt)
+                    log("INFO", "turn \(turnIndex + 1) interrupted from the dashboard; no reply, she waits for the next event")
+                    return
+                }
+                log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
+                try drain()
+                return try await turn()
             }
-            log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
-            try drain()
-            return try await turn()
+            // Calls the model wrote inside its thinking (no `</think>`) are her reply (2026-11-11).
+            rescued = ParsedReply.rescued(content: reply.content, reasoning: reply.reasoning)
+            content = rescued ?? reply.content
+            guard retriesLeft > 0, ParsedReply(content).endsUnterminated else { break }
+            retriesLeft -= 1
+            log("WARN", "turn \(turnIndex): reply stopped inside its last tool call (no </tool_call>); dropped, asking again: "
+                + String(content.suffix(120)).replacingOccurrences(of: "\n", with: "⏎"))
         }
         effortNext = nil
         taskTurn = false
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
-        // Calls the model wrote inside its thinking (no `</think>`) are her reply (2026-11-11).
-        let rescued = ParsedReply.rescued(content: reply.content, reasoning: reply.reasoning)
         if rescued != nil { log("INFO", "turn \(turnIndex): her calls were inside the thinking (no </think>); taken as her reply") }
-        let content = rescued ?? reply.content
         // She saw every event, so a secret seen marks her reply (5.1). Stored raw: re-sent byte-identical.
         let stored = try append(Event(.doll, .internal, content, secret: events.contains(where: \.secret)))
         try timeline.attachFooter(stored.seq!, footerText)

@@ -615,7 +615,7 @@ public struct ParsedReply: Sendable, Equatable {
                 let end = next?.lowerBound ?? after.endIndex
                 let head = after[..<end].drop { $0.isWhitespace }
                 let name = head.hasPrefix(fn) ? Self.name(head.dropFirst(fn.count)) : ""
-                calls.append(ToolCall(name: name, malformed: "<tool_call> 沒有 </tool_call> 收尾"))
+                calls.append(ToolCall(name: name, malformed: Self.unterminated))
                 rest = after[end...]
             }
         }
@@ -625,6 +625,11 @@ public struct ParsedReply: Sendable, Equatable {
 
     /// The one call format, appended to every malformed call's result.
     public static let format = "正確格式：\n<tool_call>\n<function=工具名>\n<parameter=參數名>\n值\n</parameter>\n</function>\n</tool_call>"
+    static let unterminated = "<tool_call> 沒有 </tool_call> 收尾"
+
+    /// The reply ended inside its last tool call (no `</tool_call>` after it): the model stopped
+    /// mid-call. Such a reply is asked for again rather than kept (2026-11-14).
+    public var endsUnterminated: Bool { calls.last?.malformed == Self.unterminated }
 
     /// Her reply when the model wrote its calls inside the thinking (2026-11-11): it left out
     /// `</think>`, so the server put everything, calls included, in `reasoning_content` and the content
