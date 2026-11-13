@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import ImageIO
@@ -432,7 +433,7 @@ private struct Harness {
 }
 
 @Test func jsonParametersDecodeFromTheirText() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory)
+    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
     let raw = "<tool_call>\n<function=remember>\n<parameter=items>\n"
         + "[{\"text\": \"主人養貓\", \"folder\": \"public\"},\n {\"text\": \"我的 VM 密碼\", \"folder\": \"own\"}, {\"text\": \"姐姐的事\", \"folder\": \"secret\"}]\n</parameter>\n</function>\n</tool_call>"
     guard case .remember(let items) = try Tools.decode(ParsedReply(raw).calls[0], specs: specs) else {
@@ -497,7 +498,7 @@ private struct Harness {
 }
 
 @Test func aMalformedCallsResultTellsTheFormat() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory)
+    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
     let call = ParsedReply("<invoke name=\"use_computer\">\n</invoke>").calls[0]
     #expect(throws: ToolError.self) { try Tools.decode(call, specs: specs) }
     do { _ = try Tools.decode(call, specs: specs) } catch {
@@ -4006,4 +4007,495 @@ private func otherIPv4() -> String? {
     let examples = try #require(sys.range(of: Doll.examplesHeader + "\nSeith：你好，自我介紹一下"))
     #expect(taboos.upperBound < examples.lowerBound)
     #expect(sys.contains("你是Doll。") && !sys.contains("Bloop"))
+}
+
+// voice (M6) ---------------------------------------------------------------------
+
+@Test func webSocketFramesRoundTripAndViolationsAreErrors() throws {
+    // RFC 6455 1.3's example key.
+    #expect(WebSocket.accept(key: "dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+    let mask: [UInt8] = [0x37, 0xfa, 0x21, 0x3d]
+    var server = WebSocket.Parser(expectMasked: true, maxMessage: 1 << 20)
+    // Short, 16-bit and 64-bit lengths, text and binary, split at every byte boundary of the stream.
+    let big = Data((0..<70000).map { UInt8($0 & 0xFF) })
+    let mid = Data(repeating: 7, count: 300)
+    let stream = WebSocket.message(.text("{\"type\":\"hello\",\"version\":1}"), mask: mask) + WebSocket.message(.binary(mid), mask: mask)
+        + WebSocket.message(.binary(big), mask: mask) + WebSocket.message(.ping(Data("p".utf8)), mask: mask)
+    var got: [DollCore.WebSocket.Message] = []
+    for b in stream { got += try server.feed(Data([b])) }
+    #expect(got == [.text("{\"type\":\"hello\",\"version\":1}"), .binary(mid), .binary(big), .ping(Data("p".utf8))])
+    // A fragmented text message with a ping between its fragments.
+    let frags = WebSocket.frame(.text, Data("ab".utf8), fin: false, mask: mask) + WebSocket.frame(.ping, Data(), mask: mask)
+        + WebSocket.frame(.continuation, Data("cd".utf8), fin: true, mask: mask)
+    let fragmented = try server.feed(frags)
+    #expect(fragmented == [.ping(Data()), .text("abcd")])
+    // Close with a code and a reason.
+    let closed = try server.feed(WebSocket.message(.close(code: 1000, reason: "bye"), mask: mask))
+    #expect(closed == [.close(code: 1000, reason: "bye")])
+    // A client frame without a mask, an oversized frame, a continuation out of nowhere: errors.
+    func parse(_ d: Data, max: Int = 1 << 20, masked: Bool = true) throws -> [DollCore.WebSocket.Message] {
+        var p = WebSocket.Parser(expectMasked: masked, maxMessage: max)
+        return try p.feed(d)
+    }
+    #expect(throws: WebSocket.ProtocolError.self) { try parse(WebSocket.message(.text("x"))) }
+    #expect(throws: WebSocket.ProtocolError.self) { try parse(WebSocket.message(.binary(mid), mask: mask), max: 100) }
+    #expect(throws: WebSocket.ProtocolError.self) { try parse(WebSocket.frame(.continuation, Data("x".utf8), mask: mask)) }
+    // The client side reads unmasked server frames.
+    #expect(try parse(WebSocket.message(.binary(big)), masked: false) == [.binary(big)])
+    // The handshake checks the upgrade headers.
+    let ok = try WebSocket.handshake(headers: ["upgrade": "websocket", "connection": "keep-alive, Upgrade",
+                                               "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="])
+    #expect(String(decoding: ok, as: UTF8.self).contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"))
+    #expect(throws: WebSocket.ProtocolError.self) { try WebSocket.handshake(headers: ["upgrade": "websocket"]) }
+}
+
+@Test func sayTextSplitsIntoSentences() {
+    func s(_ t: String, _ max: Int = 60) -> [String] { Sentences.split(t, maxChars: max) }
+    #expect(s("好，我看一下。等我一下！真的嗎？") == ["好，我看一下。", "等我一下！", "真的嗎？"])
+    // Runs of marks and closing quotes stay with their sentence; a lone ellipsis joins the one before.
+    #expect(s("「真的？！」他說。嗯……那好吧") == ["「真的？！」", "他說。", "嗯……", "那好吧"])
+    #expect(s("你確定嗎……") == ["你確定嗎……"])
+    // Decimals, versions and domains stay whole; a period before a space ends an English sentence.
+    #expect(s("圓周率是 3.14，版本 v1.2 在 example.com 上。OK. Wait... what?") == ["圓周率是 3.14，版本 v1.2 在 example.com 上。", "OK.", "Wait...", "what?"])
+    #expect(s("第一行\n第二行") == ["第一行", "第二行"])
+    #expect(s("   ") == [])
+    // Too long: cut after commas, then hard.
+    #expect(s("一二三四五六，七八九十一二，三四五", 10) == ["一二三四五六，", "七八九十一二，三四五"])
+    #expect(s("一二三四五六七八九十一二三", 5) == ["一二三四五", "六七八九十", "一二三"])
+    #expect(Sentences.language("好喔") == "zh" && Sentences.language("OK then") == "en" && Sentences.language("ありがとう") == "ja"
+            && Sentences.language("123") == "auto")
+}
+
+private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
+    (0..<Int(seconds * 16000)).map { Int16(amplitude * sin(2 * .pi * 440 * Double($0) / 16000)) }
+}
+
+@Test func endpointingClosesTheUtteranceAfterTheConfiguredSilence() {
+    var e = Endpointer(silenceMs: 700, silenceRms: 300)
+    // 1 s of voice in 20 ms frames, arriving at 20 ms steps from t = 10.
+    let voice = tone(seconds: 1)
+    var t = 10.0
+    for i in stride(from: 0, to: voice.count, by: 320) {
+        let voiced = e.frame(Array(voice[i..<i + 320]), now: t)
+        #expect(voiced)
+        t += 0.02
+    }
+    let lastVoiced = t - 0.02
+    // Push-to-talk held but quiet for 300 ms: frames come, all under the threshold.
+    for _ in 0..<15 {
+        let voiced = e.frame([Int16](repeating: 3, count: 320), now: t)
+        #expect(!voiced)
+        t += 0.02
+    }
+    let early = e.tick(now: lastVoiced + 0.699)
+    #expect(early == nil)
+    // 700 ms after the last voiced frame: finalize through the end of voice (1.0 s on the
+    // recognizer's clock), after padding the fed audio to 1.7 s.
+    let end = e.tick(now: lastVoiced + 0.7001)
+    #expect(end == Endpointer.End(pad: 16000 + 11200 - (16000 + 4800), through: 1.0))
+    #expect(e.fed == 16000 + 11200)
+    // Nothing open: no second end; the next utterance starts on the same clock.
+    let again = e.tick(now: lastVoiced + 5)
+    #expect(again == nil)
+    e.frame(Array(voice[0..<320]), now: 20)
+    let next = e.tick(now: 20.71)
+    #expect(next?.through == Double(16000 + 11200 + 320) / 16000)
+}
+
+@Test func anInterruptedSayReportsWhatWasHeard() {
+    let sentences = ["第一句。", "第二句話說到這裡。", "第三句。"]
+    // Played half of sentence 2 (9 chars → about 5), sentence 3 generated or not.
+    let cut = SpokenReport(sentences: sentences, samples: [9600, 21600], played: 9600 + 10800, interrupted: true)
+    #expect(cut.heard.full == 1 && cut.heard.cut! == (1, 5))
+    #expect(cut.heardText == "第一句。第二句話說")
+    #expect(cut.resultText == "說到「第一句。第二句話說」被主人打斷了（第 2 句「第二句話說到這裡。」大約說到第 5 個字），後面「到這裡。第三句。」沒說出口。")
+    // Cut before anything was heard.
+    let none = SpokenReport(sentences: sentences, samples: [9600], played: 0, interrupted: true)
+    #expect(none.resultText == "還沒說出口就被主人打斷了：「第一句。第二句話說到這裡。第三句。」主人都沒聽到。")
+    // Cut exactly at a sentence boundary: the next sentence unheard from its start.
+    let edge = SpokenReport(sentences: sentences, samples: [9600, 21600, 9600], played: 9600, interrupted: true)
+    #expect(edge.heardText == "第一句。" && edge.resultText.contains("後面「第二句話說到這裡。第三句。」沒說出口"))
+    // All heard: empty, like a delivered text say.
+    let all = SpokenReport(sentences: sentences, samples: [9600, 21600, 9600], played: 40800, interrupted: false)
+    #expect(all.resultText == "" && all.heardText == sentences.joined())
+}
+
+@Test func everySpokenSentenceGoesToTheManifest() throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "voice-manifest-\(UUID().uuidString)")
+    let m = try VoiceManifest(dir: dir, writeWAV: writeVoiceWAV)
+    let e = VoiceManifest.Entry(file: "a-u1-s1.wav", text: "好。", language: "zh", seed: 42, session: 1, utterance: 1, sentence: 1,
+                                startTs: 2, endTs: 3, sampleRate: 24000, samples: 4, generationComplete: true, playedSamples: 2,
+                                interrupted: true)
+    try m.append(e, audio: [0, 0.5, -0.5, 0])
+    var e2 = e
+    e2.file = "a-u1-s2.wav"
+    e2.sentence = 2
+    try m.append(e2, audio: [0.1])
+    #expect(try m.entries() == [e, e2])
+    let line = try String(contentsOf: dir.appending(path: "manifest.jsonl"), encoding: .utf8).split(separator: "\n")[0]
+    #expect(line.contains("\"generation_complete\":true") && line.contains("\"played_samples\":2") && line.contains("\"seed\":42"))
+    let clip = try AVAudioFile(forReading: dir.appending(path: "a-u1-s1.wav"))
+    #expect(clip.fileFormat.sampleRate == 24000 && clip.length == 4)
+}
+
+@Test func voiceToolsAndPromptOnlyWithVoiceEnabled() async throws {
+    let mem = try Config.load(root.appending(path: "dollcore.example.toml")).memory
+    #expect(!Tools.specs(memory: mem, voice: false).contains { ["join_voice", "leave_voice", "send_text"].contains($0.name) })
+    let on = Tools.specs(memory: mem, voice: true)
+    #expect(on.suffix(3).map(\.name) == ["join_voice", "leave_voice", "send_text"])
+    #expect(on.first { $0.name == "say" }!.description.contains("send_text"))
+    let off = try await Harness()
+    #expect(!(await off.doll.systemPrompt()).contains("## 語音頻道"))
+    let h = try await Harness { $0.voice.enabled = true }
+    let sys = await h.doll.systemPrompt()
+    #expect(sys.contains("## 語音頻道") && sys.contains("\"name\": \"join_voice\"") && sys.contains("send_text"))
+    #expect(sys.contains("連結、網址、公式、程式碼"))
+    // The tools decode; with no voice wired they fail with a reason.
+    try await h.turn(Scripted("", ("join_voice", []), ("send_text", [("text", "https://example.com")])))
+    let results = try h.toolResults()
+    #expect(results[0].text == "失敗：語音還沒接上")
+    #expect(results[1].text == "" && h.said == ["https://example.com"] && h.saidTo == [.owner])
+}
+
+/// The bridge's side of `/api/voice` for tests: a raw TCP client doing the handshake and masked
+/// frames, with a scripted Discord: join → joined, playback faster than real time in `step`-sample
+/// reports, `owner_speaking` once `interruptAt` samples were played.
+private final class FakeBridge: @unchecked Sendable {
+    let connection: NWConnection
+    let lock = Mutex(State())
+    struct State {
+        var log: [String] = []          // control lines received, and "audio <n>" per binary frame
+        var received: [Int: Int] = [:]  // samples per utterance
+        var played: [Int: Int] = [:]
+        var open: Int?
+        var ended: Set<Int> = []
+        var stopped: Set<Int> = []
+        var interruptAt: Int?
+        var interrupted = false
+        var firstAudio: ContinuousClock.Instant?
+        var startedAt: ContinuousClock.Instant?
+    }
+    var parser = WebSocket.Parser(expectMasked: false, maxMessage: 1 << 22)
+    let step: Int
+
+    init(port: Int, key: String, step: Int = 1200) async throws {
+        self.step = step
+        connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        connection.start(queue: .global())
+        let req = "GET /api/voice HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer \(key)\r\n\r\n"
+        try await send(Data(req.utf8))
+        var head = Data()
+        while head.range(of: Data("\r\n\r\n".utf8)) == nil { head += try await receive() }
+        let end = head.range(of: Data("\r\n\r\n".utf8))!
+        let status = String(decoding: head[..<end.lowerBound], as: UTF8.self)
+        guard status.hasPrefix("HTTP/1.1 101") else { throw VoiceFailure("handshake: \(status)") }
+        let rest = Data(head[end.upperBound...])
+        Task { await self.loop(rest) }
+        Task { await self.playback() }
+    }
+
+    func send(_ d: Data) async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            connection.send(content: d, completion: .contentProcessed { e in if let e { c.resume(throwing: e) } else { c.resume() } })
+        }
+    }
+    func receive() async throws -> Data {
+        try await withCheckedThrowingContinuation { c in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, e in
+                if let e { c.resume(throwing: e) } else if let d, !d.isEmpty { c.resume(returning: d) } else if done { c.resume(throwing: VoiceFailure("closed")) } else { c.resume(returning: Data()) }
+            }
+        }
+    }
+    func json(_ obj: [String: Any]) async throws {
+        try await send(WebSocket.message(.text(String(decoding: try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), as: UTF8.self)), mask: [9, 8, 7, 6]))
+    }
+    func audio(_ samples: [Int16]) async throws {
+        var d = Data()
+        for s in samples { withUnsafeBytes(of: s.littleEndian) { d.append(contentsOf: $0) } }
+        try await send(WebSocket.message(.binary(d), mask: [1, 2, 3, 4]))
+    }
+
+    func loop(_ first: Data) async {
+        var data = first
+        while true {
+            do {
+                for m in try parser.feed(data) { try await handle(m) }
+                data = try await receive()
+            } catch { return }
+        }
+    }
+
+    func handle(_ m: DollCore.WebSocket.Message) async throws {
+        switch m {
+        case .binary(let d):
+            lock.withLock { s in
+                s.log.append("audio \(d.count / 2)")
+                if s.firstAudio == nil { s.firstAudio = .now }
+                if let u = s.open { s.received[u, default: 0] += d.count / 2 }
+            }
+        case .text(let t):
+            let obj = try JSONSerialization.jsonObject(with: Data(t.utf8)) as! [String: Any]
+            let type = obj["type"] as! String
+            lock.withLock { $0.log.append(type) }
+            switch type {
+            case "join": try await json(["type": "joined", "channel": "General"])
+            case "leave": try await json(["type": "left"])
+            case "utterance_start":
+                lock.withLock { $0.open = obj["utterance"] as? Int; $0.startedAt = .now }
+            case "utterance_end": lock.withLock { s in s.ended.insert(obj["utterance"] as! Int); s.open = nil }
+            case "stop":
+                let u = obj["utterance"] as! Int
+                let p = lock.withLock { s -> Int in s.stopped.insert(u); s.open = nil; return s.played[u] ?? 0 }
+                try await json(["type": "played", "utterance": u, "samples": p])
+            default: break
+            }
+        default: break
+        }
+    }
+
+    /// Plays every utterance at `step` samples per 5 ms tick, reports each step, and speaks over her
+    /// once `interruptAt` samples of the current one were played.
+    func playback() async {
+        while true {
+            try? await Task.sleep(for: .milliseconds(5))
+            let (reports, speak) = lock.withLock { s -> ([(Int, Int)], Bool) in
+                var out: [(Int, Int)] = []
+                var speak = false
+                // Once the owner spoke over her, playback holds until her stop (a real bridge keeps
+                // playing a few ms; holding makes the cut point exact for the test).
+                for (u, got) in s.received where !s.stopped.contains(u) && !s.interrupted {
+                    let p = s.played[u] ?? 0
+                    guard p < got else { continue }
+                    var next = min(got, p + step)
+                    if let at = s.interruptAt, !s.interrupted, next >= at { next = at; s.interrupted = true; speak = true }
+                    s.played[u] = next
+                    out.append((u, next))
+                }
+                return (out, speak)
+            }
+            for (u, p) in reports { try? await json(["type": "played", "utterance": u, "samples": p]) }
+            if speak { try? await json(["type": "owner_speaking"]) }
+        }
+    }
+
+    var log: [String] { lock.withLock { $0.log } }
+}
+
+/// A recognizer that returns `text` for every finalize and records what it was given.
+private actor FakeRecognizer: SpeechRecognizer {
+    var fed = 0
+    var finalizes: [(through: Double, fed: Int, at: ContinuousClock.Instant)] = []
+    let text: String
+    init(_ text: String) { self.text = text }
+    func feed(_ samples: [Int16]) { fed += samples.count }
+    func finalize(through: Double) -> String {
+        finalizes.append((through, fed, .now))
+        return text
+    }
+}
+
+/// 0.1 s (2400 samples) per character, in 2400-sample chunks, 2 ms apart.
+private final class FakeSynth: SpeechSynthesizer, Sendable {
+    var sampleRate: Int { 24000 }
+    func synthesize(_ text: String, language: String, shouldStop: @escaping @Sendable () -> Bool,
+                    onChunk: @escaping @Sendable ([Float]) -> Void) async throws -> Synthesized {
+        var all: [Float] = []
+        for _ in 0..<text.count {
+            if shouldStop() { return Synthesized(seed: 7, samples: all, complete: false) }
+            try await Task.sleep(for: .milliseconds(2))
+            let chunk = [Float](repeating: 0.25, count: 2400)
+            all += chunk
+            onChunk(chunk)
+        }
+        return Synthesized(seed: 7, samples: all, complete: true)
+    }
+}
+
+private struct VoiceRig {
+    let h: Harness
+    let api: LocalAPI
+    let link: VoiceLink
+    let bridge: FakeBridge
+    let manifest: VoiceManifest
+}
+
+private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynthesizer = FakeSynth(),
+                      tune: (inout VoiceConfig) -> Void = { _ in }) async throws -> VoiceRig {
+    let h = try await Harness { $0.voice.enabled = true }
+    var vc = VoiceConfig()
+    vc.enabled = true
+    vc.silenceMs = 300
+    vc.bridgeTimeoutS = 5
+    tune(&vc)
+    let manifest = try VoiceManifest(dir: h.dir.appending(path: "voice"), writeWAV: writeVoiceWAV)
+    let link = VoiceLink(config: vc, recognizer: recognizer, synthesizer: synth, manifest: manifest)
+    let doll = h.doll
+    await link.setEvents(VoiceEvents(ownerSaid: { await doll.ownerSaid($0, voice: true, channel: .discordVoice) },
+                                     notice: { await doll.voiceNotice($0) }))
+    await doll.setVoice(link)
+    let api = try await localAPI(h)
+    api.setVoice(link)
+    let bridge = try await FakeBridge(port: api.port, key: api.ownerKey)
+    try await bridge.json(["type": "hello", "version": 1])
+    return VoiceRig(h: h, api: api, link: link, bridge: bridge, manifest: manifest)
+}
+
+@Test func voiceLoopbackHearsTheOwnerSpeaksAndStopsWhenHeTalks() async throws {
+    let rec = FakeRecognizer("你好嗎")
+    let r = try await voiceRig(rec)
+    defer { r.api.stop() }
+    let h = r.h
+    // The owner is in a voice channel: a program notice wakes her.
+    try await r.bridge.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await h.doll.queue.contains { $0.kind == .memory } }
+    // She joins and speaks: three sentences; the owner talks over the second one, half-way through.
+    r.bridge.lock.withLock { $0.interruptAt = 9600 + 10800 }
+    try await h.turn(Scripted("", ("join_voice", []), say("第一句。第二句話說到這裡。第三句。"), say("還有這句。")))
+    let results = try h.toolResults()
+    #expect(results[0].text == "進了語音頻道「General」。你只聽得到主人；對主人 say 的話會念出來。")
+    #expect(results[1].text == "說到「第一句。第二句話說」被主人打斷了（第 2 句「第二句話說到這裡。」大約說到第 5 個字），後面「到這裡。第三句。」沒說出口。")
+    #expect(results[2].text == "沒有念：前面一句被主人打斷了，這句沒說出口。")
+    #expect(h.said.isEmpty)   // nothing went to the DM
+    r.bridge.lock.withLock { $0.interruptAt = nil; $0.interrupted = false }
+    let first = try #require(await h.model.seen(0).last { $0.content.contains("【語音】") })
+    #expect(first.content.contains("主人在語音頻道「General」裡。你不在裡面；要進去用 join_voice。"))
+    // On the wire: start, audio, the owner's burst, stop, and after the stop no audio and no end.
+    let log = r.bridge.log
+    let stop = try #require(log.firstIndex(of: "stop"))
+    #expect(log.first == "join" && log.contains("utterance_start") && log.prefix(stop).contains { $0.hasPrefix("audio") })
+    #expect(!log.suffix(from: stop).contains { $0.hasPrefix("audio") || $0 == "utterance_end" })
+    // The manifest keeps every generated sentence, the cut one marked.
+    let entries = try r.manifest.entries()
+    #expect(entries.count >= 2 && entries[0].text == "第一句。" && !entries[0].interrupted && entries[0].playedSamples == 9600)
+    #expect(entries[1].interrupted && entries[1].playedSamples == 10800 && entries[1].seed == 7 && entries[1].language == "zh")
+    for e in entries { #expect(FileManager.default.fileExists(atPath: r.manifest.dir.appending(path: e.file).path)) }
+
+    // The owner speaks: 1 s of voice frames, then silence; 300 ms later the utterance is final.
+    let voice = tone(seconds: 1)
+    for i in stride(from: 0, to: voice.count, by: 320) { try await r.bridge.audio(Array(voice[i..<i + 320])) }
+    let sent = ContinuousClock.now
+    try await h.waitFor(.owner)
+    let fin = try #require(await rec.finalizes.first)
+    #expect(fin.through == 1.0 && fin.fed == 16000 + 4800)
+    #expect(fin.at - sent >= .milliseconds(250))
+    try await h.turn(Scripted("", say("嗯。")))
+    let heard = try #require(await h.model.seen(1).last { $0.content.contains("你好嗎") })
+    #expect(heard.content.contains("主人｜Discord 語音｜語音] 你好嗎"))
+    // Not interrupted: played to the end, an empty result.
+    #expect(try h.toolResults().last!.text == "")
+    #expect(r.bridge.log.last == "utterance_end" || r.bridge.log.contains("utterance_end"))
+    // She leaves: say goes back to the DM.
+    try await h.turn(Scripted("", ("leave_voice", []), say("掰")))
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["離開語音頻道了。對主人 say 的話回到 Discord 私訊的文字。", ""])
+    #expect(h.said == ["掰"])
+}
+
+@Test func voiceLinkRejectsASecondBridgeAndProtocolViolations() async throws {
+    let r = try await voiceRig(FakeRecognizer(""))
+    defer { r.api.stop() }
+    // One bridge at a time.
+    await #expect(throws: (any Error).self) { _ = try await FakeBridge(port: r.api.port, key: r.api.ownerKey) }
+    // No key, no upgrade.
+    await #expect(throws: (any Error).self) { _ = try await FakeBridge(port: r.api.port, key: "nope") }
+    // A played count above what was sent: an error back, then the socket closes.
+    try await r.bridge.json(["type": "played", "utterance": 5, "samples": 1])
+    try await waitUntil { r.bridge.log.contains("error") }
+    #expect(r.bridge.log.contains("error"))
+}
+
+/// Opt-in (`DOLL_VOICE_REAL=1`): the real Qwen3-TTS, the real SpeechTranscriber and the real
+/// embedding model in this process, through the loopback with the fake bridge. Prints voice-ready
+/// time, first-audio latency, the footprint peak with embedding + TTS, and what the recognizer
+/// heard of her own sentence; writes them to /tmp/m6test/real.txt.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_REAL"] == "1"))
+func realVoiceThroughTheLoopback() async throws {
+    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    cfg.voice.enabled = true
+    var lines: [String] = []
+    func note(_ s: String) { print("M6REAL " + s); lines.append(s) }
+    MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
+    let t0 = ContinuousClock.now
+    let embedder = try await MLXEmbedder.load(cfg.memory)
+    note("embedding loaded in \(ContinuousClock.now - t0); footprint \(MLXProcess.footprint())")
+    let t1 = ContinuousClock.now
+    let synth = try await QwenSynthesizer.load(cfg.voice, root: root)
+    let tts = ContinuousClock.now - t1
+    let recognizer = try await AppleSpeechRecognizer.start(locale: cfg.voice.asrLocale, finalTimeoutMs: cfg.voice.asrFinalTimeoutMs)
+    note("voice ready in \(ContinuousClock.now - t1) (TTS load + reference + warm-up \(tts))")
+    let r = try await voiceRig(recognizer, synth: synth) { $0 = cfg.voice; $0.bridgeTimeoutS = 30 }
+    defer { r.api.stop() }
+    _ = try embedder.embed("今天天氣很好", as: .document)
+    try await r.bridge.json(["type": "owner_joined", "channel": "General"])
+    try await r.h.turn(Scripted("", ("join_voice", []), say("好，我看一下。今天的天氣還不錯，我們等一下出去走走吧！")))
+    let reports = try r.h.toolResults().map(\.text)
+    note("say results \(reports)")
+    let s = r.bridge.lock.withLock { $0 }
+    note("first audio at the bridge after utterance_start: \(s.firstAudio.flatMap { a in s.startedAt.map { a - $0 } }.map { "\($0)" } ?? "none")")
+    let entries = try r.manifest.entries()
+    note("manifest: \(entries.map { "\($0.sentence) \($0.text) \($0.samples) samples, \(String(format: "%.2f", $0.endTs - $0.startTs)) s" })")
+    let mem = MLXProcess.footprint()
+    note(String(format: "footprint now %.2f GB, peak %.2f GB (embedding + TTS + ASR)", Double(mem.current) / 1_073_741_824, Double(mem.peak) / 1_073_741_824))
+    // Her first sentence back through the recognizer, at 16 kHz, as owner audio.
+    let wav = try AVAudioFile(forReading: r.manifest.dir.appending(path: entries[0].file))
+    let buf = AVAudioPCMBuffer(pcmFormat: wav.processingFormat, frameCapacity: AVAudioFrameCount(wav.length))!
+    try wav.read(into: buf)
+    let src = Array(UnsafeBufferPointer(start: buf.floatChannelData![0], count: Int(buf.frameLength)))
+    let n16 = src.count * 2 / 3
+    let pcm: [Int16] = (0..<n16).map { i in
+        let x = Double(i) * 1.5
+        let j = Int(x), f = Float(x - Double(j))
+        let v = src[j] * (1 - f) + (j + 1 < src.count ? src[j + 1] : 0) * f
+        return Int16(max(-32768, min(32767, v * 32767)))
+    }
+    for i in stride(from: 0, to: pcm.count - 320, by: 320) {
+        try await r.bridge.audio(Array(pcm[i..<i + 320]))
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    let spoke = ContinuousClock.now
+    try await r.h.waitFor(.owner, seconds: 10)
+    let heard = await r.h.doll.queue.first { $0.kind == .owner }?.text ?? "(nothing)"
+    note("ASR of 「\(entries[0].text)」: 「\(heard)」 \(ContinuousClock.now - spoke) after the last frame")
+    try FileManager.default.createDirectory(at: URL(filePath: "/tmp/m6test"), withIntermediateDirectories: true)
+    try lines.joined(separator: "\n").write(to: URL(filePath: "/tmp/m6test/real.txt"), atomically: true, encoding: .utf8)
+    #expect(entries.count == 2 && reports.dropFirst().allSatisfy(\.isEmpty))
+}
+
+/// Opt-in (`DOLL_VOICE_REAL=1`): SpeechTranscriber alone, fed 16 kHz PCM of the pack's reference
+/// clip in 20 ms frames, then our endpointing's padding and `finalize(through:)`.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_REAL"] == "1"))
+func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
+    let rec = try await AppleSpeechRecognizer.start(locale: "zh-TW", finalTimeoutMs: 3000)
+    let file = try AVAudioFile(forReading: root.appending(path: "character_packs/doll/voice/qwen3/ref_plus_zh.wav"))
+    let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
+    let conv = AVAudioConverter(from: file.processingFormat, to: fmt)!
+    let src = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+    try file.read(into: src)
+    let out = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(Double(file.length) * 16000 / file.processingFormat.sampleRate) + 1024)!
+    var done = false
+    var err: NSError?
+    conv.convert(to: out, error: &err) { _, s in
+        if done { s.pointee = .endOfStream; return nil }
+        done = true; s.pointee = .haveData; return src
+    }
+    let all = Array(UnsafeBufferPointer(start: out.int16ChannelData![0], count: Int(out.frameLength)))
+    let tail = Array(all.suffix(16000 * 3))   // 「好，我看一下。」 at the end
+    var e = Endpointer(silenceMs: 700, silenceRms: 300)
+    let t0 = Date().timeIntervalSince1970
+    for i in stride(from: 0, to: tail.count - 320, by: 320) {
+        let f = Array(tail[i..<i + 320])
+        e.frame(f, now: Date().timeIntervalSince1970)
+        try await rec.feed(f)
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    var end: Endpointer.End?
+    while end == nil {
+        try await Task.sleep(for: .milliseconds(20))
+        end = e.tick(now: Date().timeIntervalSince1970)
+    }
+    try await rec.feed([Int16](repeating: 0, count: end!.pad))
+    let c0 = ContinuousClock.now
+    let text = try await rec.finalize(through: end!.through)
+    print("M6ASR through \(end!.through) pad \(end!.pad) fed \(e.fed): 「\(text)」 in \(ContinuousClock.now - c0), total \(Date().timeIntervalSince1970 - t0) s")
+    #expect(!text.isEmpty)
 }
