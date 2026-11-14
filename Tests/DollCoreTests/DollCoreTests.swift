@@ -3313,7 +3313,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         ]}
         ```
         """
-    let model = FakeModel([Scripted(reply)])
+    let model = FakeModel([Scripted(reply), Scripted("主人要了一份副本，你用 ⇧⌥⌘S 另存好了。")])
     let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder())
 
     // The request: no persona, high effort, the day as text, only memories she or consolidation
@@ -3363,11 +3363,15 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let retiredFile = try String(contentsOf: h.dir.appending(path: "memory/public/\(saveAs).md"), encoding: .utf8)
     #expect(try Memory.parseFile(retiredFile).text == retiredFile)
 
-    // The next start is a new day: a new, empty segment and an empty today; long-term memory stays.
+    // The summary request: clean (the instructions and the day's text), asked before anything was applied.
+    let asked = await model.seen(1)
+    #expect(asked.count == 2 && asked[0].content == Doll.talkInstructions && asked[1].content.contains("主人"))
+    // The next start is a new segment whose one event is the day's summary (2026-11-15: sleep does not
+    // empty her context, the day before is there as a summary); long-term memory stays.
     let next = try await restarted(h)
     #expect(try h.timeline().segment == r.newSegment)   // `next` runs on h's data dir
-    #expect(await next.doll.timelineEvents().isEmpty)
-    #expect(try await next.doll.todayCount() == 0)
+    #expect(await next.doll.timelineEvents().map(\.text) == [Consolidation.wakeNote + "主人要了一份副本，你用 ⇧⌥⌘S 另存好了。"])
+    #expect(await next.doll.timelineEvents().first?.kind == .memory)
     #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "timeline/\(before).jsonl").path))
 }
 
@@ -3434,11 +3438,18 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     await #expect(throws: ModelError.self) {
         try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder())
     }
+    // So is the summary request failing or coming back empty: a valid plan is not applied without it.
+    await #expect(throws: ModelError.self) {
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder())
+    }
+    await #expect(throws: ConsolidationError.self) {
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("")]), embedder: FakeEmbedder())
+    }
     #expect(try memoryFiles(h) == files)
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
     #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
     // The same reply, valid: applied.
-    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder())
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("今天的摘要。")]), embedder: FakeEmbedder())
     #expect(ok.applied.count == 3 && ok.applied[1].hasPrefix("entity ") && ok.applied[2].hasSuffix("主人的貓叫咪咪"))
 }
 
@@ -3867,7 +3878,9 @@ private func otherIPv4() -> String? {
     #expect(try await post(api, "/api/developer", "嗨") == 200)
     #expect(try await post(api, "/api/developer", "  ") == 400)
     #expect(try await post(api, "/api/owner", "我是主人") == 401)
-    #expect(try await post(api, "/api/owner", "我是主人", key: "0" + api.ownerKey.dropFirst()) == 401)
+    // A key differing in its first character (the real key starts with "0" one time in sixteen:
+    // "0" + dropFirst() was then the real key, and this test failed that often).
+    #expect(try await post(api, "/api/owner", "我是主人", key: (api.ownerKey.hasPrefix("0") ? "1" : "0") + api.ownerKey.dropFirst()) == 401)
     #expect(try await post(api, "/api/owner", "主人真的來了", key: api.ownerKey) == 200)
     #expect(await h.doll.queue.map(\.kind) == [.developer, .owner])
     #expect(await h.doll.queue.map(\.text) == ["嗨", "主人真的來了"])
@@ -4837,6 +4850,49 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     try await h.turn(Scripted("", dm("好")))
     #expect(h.last.footer.contains("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。"))
     #expect(h.last.footer.contains("其中做事的過程 0（截圖 0）") && h.last.footer.contains("／1,000（"))
+}
+
+@Test func atTheLimitTheOldestConversationBecomesASummaryWrittenByASeparateRequest() async throws {
+    let h = try await Harness(tune: { $0.context.limit = 1_000 })       // the system prompt alone is over it
+    await h.doll.ownerSaid("我叫小明，記得叫我小明")
+    try await h.turn(Scripted("", dm("好，小明")))                       // request 0: nothing before her first line to collapse
+    #expect(h.last.compacted.isEmpty && h.logs.contains { $0.contains("WARN") && $0.contains("no conversation") })
+    // The next line: everything before it is collapsed by a clean request (1), then her turn (2).
+    await h.doll.ownerSaid("今天天氣不錯")
+    try await h.turn(Scripted("主人說他叫小明，要你叫他小明；你答應了。"), Scripted("", dm("是啊")))
+    let ask = await h.model.seen(1), turn = await h.model.seen(2)
+    #expect(ask.count == 2 && ask[0].content == Doll.talkInstructions)
+    #expect(ask[1].content.contains("我叫小明，記得叫我小明") && ask[1].content.contains("discord.dm") && !ask[1].content.contains("今天天氣不錯"))
+    #expect(h.last.compacted == ["talk"])
+    // Her request: the old lines are gone, the summary block stands in their place, the new line follows.
+    #expect(!turn.contains { $0.content.contains("記得叫我小明") || $0.content == "好，小明" })
+    let block = try #require(turn.firstIndex { $0.content.contains("程式] 【之前的對話】") && $0.content.hasSuffix("主人說他叫小明，要你叫他小明；你答應了。") })
+    #expect(block == 1 && turn[2].content.contains("今天天氣不錯"))
+    // Recorded: a restart sends the same; the originals are still in the file and the index.
+    #expect(try h.timeline().compactions.map(\.kind) == [.talk])
+    #expect(try h.events().contains { $0.text == "我叫小明，記得叫我小明" })
+    // A summary request that fails leaves everything as it was; her turn still runs.
+    await h.doll.ownerSaid("晚餐吃什麼")
+    try await h.turn(Scripted(""), Scripted("", dm("拉麵")))
+    #expect(h.last.compacted.isEmpty && h.logs.contains { $0.contains("ERROR") && $0.contains("was not collapsed") })
+    #expect(h.said.last == "拉麵")
+    #expect(try h.timeline().compactions.count == 1)
+    // Never into the item in progress: with an item running, only what came before it can go.
+    await h.doll.ownerSaid("幫我存檔")
+    try await h.turn(Scripted("聊了天氣。"), Scripted("", todoSet("notes 存好檔"), screenshotCall))
+    try await h.turn(Scripted("聊了晚餐。"), Scripted("", key("cmd+s")))   // what was left before the item
+    try await h.turn(Scripted("", key("cmd+w")))                        // nothing before the item left: no summary request
+    #expect(h.logs.contains { $0.contains("no conversation before the item in progress") })
+    let t = try h.timeline()
+    #expect(t.compactions.filter { $0.kind == .talk }.count == 3)
+    // One rolling summary: each request for one carries the one before it, and her request shows only the newest.
+    let second = await h.model.requests.first { $0.messages.count == 2 && $0.messages[1].content.contains("【更早的摘要】") }
+    #expect(second?.messages[1].content.contains("主人說他叫小明，要你叫他小明；你答應了。") == true)
+    let lastRequest = await h.model.requests.last!.messages
+    #expect(lastRequest.filter { $0.content.contains("程式] 【之前的對話】") }.map { $0.content.hasSuffix("\n聊了晚餐。") } == [true])
+    #expect(t.compactions.allSatisfy { $0.toSeq <= t.todo.startSeq })
+    // The item's own steps are still in her request.
+    #expect(await h.model.requests.last!.messages.contains { $0.content.contains("幫我存檔") })
 }
 
 @Test func compactionsAndTheTodoListSurviveARestartByteForByte() async throws {

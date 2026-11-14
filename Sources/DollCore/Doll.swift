@@ -512,7 +512,13 @@ public actor Doll {
         var keep: ArraySlice<Bool> = []   // the compacted reply's calls still owed a result: kept or not
         for ev in events {
             let seq = ev.seq!
-            guard let c = comps.filter({ $0.fromSeq < seq && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) else {
+            // A collapsed stretch of conversation: nothing of it is sent, its summary stands where it ended.
+            // Each one starts at the beginning and carries the one before it, so only the newest shows.
+            if let t = comps.filter({ $0.kind == .talk && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) {
+                if seq == t.toSeq { plan.append((ev, .block(t))) }
+                continue
+            }
+            guard let c = comps.filter({ $0.kind != .talk && $0.fromSeq < seq && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) else {
                 plan.append((ev, .full))
                 continue
             }
@@ -626,7 +632,7 @@ public actor Doll {
     func processTokens() throws -> (tokens: Int, images: Int) {
         guard todo.phase == .doing || todo.phase == .waiting else { return (0, 0) }
         let start = todo.startSeq
-        let covered = timeline.compactions.filter { $0.fromSeq == start }.map(\.toSeq).max() ?? start
+        let covered = timeline.compactions.filter { $0.kind != .talk && $0.fromSeq == start }.map(\.toSeq).max() ?? start
         var tokens = 0, images = 0
         for ev in timeline.events where ev.seq! > covered && ev.speaker == nil {
             let msgs = try render(ev)
@@ -678,7 +684,8 @@ public actor Doll {
             out.append("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；"
                        + "再 \(left) 回合沒收，程式會自己收（留動作清單和最近 \(contextConfig.forceKeepTurns) 回合）。")
         case .conversation:
-            out.append("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。")
+            out.append("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。"
+                       + "到上限的時候，程式會把最舊的那一段對話換成一段摘要（【之前的對話】），原文 recall 不一定查得到。")
         }
         return out.joined(separator: "\n")
     }
@@ -746,6 +753,8 @@ public actor Doll {
         }
         // She was warned `force_after_turns` times and did not compact: the program does.
         if todo.phase == .doing, warnedTurns >= contextConfig.forceAfterTurns { try forceCompact() }
+        // At the limit the oldest conversation is collapsed into a summary (owner, 2026-11-15).
+        await compactTalk()
         let events = timeline.events
         var messages = try context(events)
         let guess = estimate(messages)
@@ -1573,7 +1582,7 @@ public actor Doll {
         let start = todo.startSeq
         let replies = timeline.events.filter { $0.kind == .doll && $0.seq! > start }
         let keep = contextConfig.forceKeepTurns
-        let prior = timeline.compactions.filter { $0.fromSeq == start }.map(\.toSeq).max() ?? start
+        let prior = timeline.compactions.filter { $0.kind != .talk && $0.fromSeq == start }.map(\.toSeq).max() ?? start
         guard replies.count > keep, case let cut = replies[replies.count - keep].seq! - 1, cut > prior else {
             log("INFO", "turn \(turnIndex): forced compaction of「\(item)」: nothing before the last \(keep) turns left to compact")
             return
@@ -1585,6 +1594,67 @@ public actor Doll {
         compactedNow.append(Compaction.Kind.forced.rawValue)
         forgetSeen()
         log("INFO", "turn \(turnIndex): forced compaction of「\(item)」events \(start + 1)…\(cut), \(steps.count) actions")
+    }
+
+    static let talkInstructions = """
+        下面是一段對話紀錄的最舊的部分，要從一個 AI 角色的 context 裡收起來。請寫一段給她自己以後看的摘要，用繁體中文、用「你」稱呼她：
+        - 誰跟她說了什麼、她答應了什麼、決定了什麼；主人交代的規矩和偏好要逐條留下，盡量用原話。
+        - 她做過的事和結果（一項一行就好）。
+        - 還沒了結的事：有人在等她回覆的、她說之後要做的。
+        紀錄開頭如果有「【更早的摘要】」，那是更早一次收起來時寫的：把它跟後面的紀錄合成一份新的摘要，裡面還有用的都要留著，已經了結的事可以縮成一句。
+        只寫紀錄裡有的，不要補、不要猜；不用寫開場白和結語。
+        """
+    static let talkHeader = "【之前的對話】context 到上限了，程式把到這裡為止最舊的一段（對話和做過的事）收起來，換成另外寫的這段摘要；原文 recall 不一定查得到。\n"
+
+    /// The context reached `[context] limit` (owner, 2026-11-15: the last resort, so it runs at once):
+    /// the oldest `talk_share` of what is still in the request, conversation included, is replaced by
+    /// a summary a separate clean request writes; an earlier summary is merged into the new one, so
+    /// there is one block however often this ran. It never cuts into the item in progress, and it
+    /// cuts just before someone's line. The originals stay in the timeline file (recall finds them).
+    /// A failed summary request leaves everything as it was and is tried again next turn.
+    func compactTalk() async {
+        do {
+            let all = timeline.events
+            let used = Int(Double(estimate(try context(all))) * tokenRatio)
+            guard used >= contextConfig.limit else { return }
+            let earlier = timeline.compactions.filter { $0.kind == .talk }.max { $0.toSeq < $1.toSeq }
+            let last = earlier?.toSeq ?? 0
+            let bound = todo.phase == .idle ? timeline.lastSeq : todo.startSeq
+            let live = all.filter { $0.seq! > last }
+            let total = live.reduce(0) { $0 + estimateTokens($1.text) }
+            var sum = 0, cut: Int64?
+            for ev in live {
+                // A cut sits just before someone's line, at most at `bound`.
+                if ev.speaker != nil, ev.seq! - 1 > last, ev.seq! - 1 <= bound {
+                    if cut != nil, Double(sum) > Double(total) * contextConfig.talkShare { break }
+                    cut = ev.seq! - 1
+                }
+                sum += estimateTokens(ev.text)
+            }
+            guard let cut else {
+                log("WARN", "turn \(turnIndex + 1): context \(used) of \(contextConfig.limit), but there is no conversation before the item in progress to collapse")
+                return
+            }
+            let span = live.filter { $0.seq! <= cut }
+            let before = earlier?.text.map { "【更早的摘要】\n" + $0.dropFirst(Self.talkHeader.count) + "\n\n【後面的紀錄】\n" } ?? ""
+            let record = try before + context(span).dropFirst().map { m in
+                let calls = m.toolCalls.map { "\($0.name)(\($0.arguments ?? ""))" }.joined(separator: "；")
+                let who = m.role == "assistant" ? "她" : m.role == "tool" ? "結果" : "事件"
+                return "\(who)：" + [m.content, calls].filter { !$0.isEmpty }.joined(separator: " ")
+            }.joined(separator: "\n")
+            let t0 = Date()
+            let reply = try await model.chat([ChatMessage(role: "system", content: Self.talkInstructions),
+                                              ChatMessage(role: "user", content: record)], tools: nil, effort: contextConfig.talkEffort)
+            let summary = reply.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !summary.isEmpty else { throw ModelError("the summary request returned no text") }
+            // One rolling summary: it starts at the beginning and replaces the one before it.
+            try timeline.compact(Compaction(kind: .talk, item: "", fromSeq: 0, toSeq: cut, text: Self.talkHeader + summary))
+            compactedNow.append(Compaction.Kind.talk.rawValue)
+            forgetSeen()
+            log("INFO", String(format: "turn \(turnIndex + 1): context \(used) of \(contextConfig.limit): events \(last + 1)…\(cut) collapsed into a summary of \(summary.count) chars (%.1f s)", Date().timeIntervalSince(t0)))
+        } catch {
+            log("ERROR", "turn \(turnIndex + 1): the oldest conversation was not collapsed: \(error)")
+        }
     }
 
     /// One step of an experience: only what she did, in full-screenshot coordinates (a click on the

@@ -55,13 +55,16 @@ public struct Compaction: Sendable, Equatable, Codable {
         case progress
         /// The program's, after she was warned `force_after_turns` times; the last turns stay.
         case forced
+        /// The program's at the context limit (2026-11-15): everything from `fromSeq` to `toSeq`,
+        /// conversation included, leaves the request; `text` is the summary block that takes its place.
+        case talk
     }
     public var kind: Kind
     /// The item's text.
     public var item: String
     public var fromSeq: Int64
     public var toSeq: Int64
-    /// The program's block after the span (forced only).
+    /// The program's block after the span (forced and talk).
     public var text: String?
 
     public init(kind: Kind, item: String, fromSeq: Int64, toSeq: Int64, text: String? = nil) {

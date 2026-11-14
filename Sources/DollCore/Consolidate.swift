@@ -10,7 +10,8 @@ import Foundation
 /// today's events), and asks for a fixed-format list of operations (`instructions`): add, update,
 /// retire. The reply is validated whole (`parse`); a failed request or any invalid operation is an
 /// error that writes nothing and keeps the segment. Then, in order: files retired longer than
-/// `[consolidate] retired_keep_days` are deleted, the operations are applied, a new segment starts.
+/// `[consolidate] retired_keep_days` are deleted, the operations are applied, a new segment starts
+/// whose first event is the day's summary (a second clean request, 2026-11-15).
 public struct ConsolidationError: Error, CustomStringConvertible {
     public let description: String
     init(_ description: String) { self.description = description }
@@ -129,6 +130,14 @@ public enum Consolidation {
         let reply = try await model.chat(messages, tools: nil, effort: config.consolidate.effort)
         let seconds = Date().timeIntervalSince(started)
         let plan = try parse(reply.content, known: Set(related.map(\.id)), registry: Set(entries.map(\.id)))
+        // What she wakes up with (owner, 2026-11-15: sleep is not a compaction, and it does not empty
+        // her context): the day, as a summary a second clean request writes. Asked for before anything
+        // is applied, so a failure here still writes nothing.
+        let day = try await model.chat([ChatMessage(role: "system", content: Doll.talkInstructions),
+                                        ChatMessage(role: "user", content: tasks.map(\.text).joined(separator: "\n\n"))],
+                                       tools: nil, effort: config.context.talkEffort)
+        let summary = day.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { throw ConsolidationError("the summary request for the new segment returned no text") }
 
         // Valid: from here on it is applied.
         let now = Date().timeIntervalSince1970
@@ -180,10 +189,14 @@ public enum Consolidation {
             }
         }
         let newSegment = try Timeline.startSegment(dir: timelineDir)
+        try Timeline(dir: timelineDir).append(Event(.memory, .internal, Self.wakeNote + summary))
         return ConsolidationResult(segment: timeline.segment, newSegment: newSegment, plan: plan, applied: applied,
                                    related: related.map(\.id), registry: entries.map(\.id), promptTokens: reply.usage.promptTokens,
                                    completionTokens: reply.usage.completionTokens, seconds: seconds, reply: reply.content)
     }
+
+    /// Opens the first event of the segment after a consolidation; the day's summary follows.
+    public static let wakeNote = "【睡前】你睡了一覺，睡前的事整理進長期記憶了。睡前的對話和做過的事不在眼前了，換成下面這段另外寫的摘要（不是你寫的）；要細節用 recall 查記憶。\n"
 
     // rendering ---------------------------------------------------------------
 

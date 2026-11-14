@@ -38,6 +38,11 @@ public struct ContextConfig: Sendable {
     public var forceAfterTurns = 3
     /// Her latest turns a forced compaction leaves intact.
     public var forceKeepTurns = 2
+    /// At `limit` the program collapses the oldest conversation into a summary written by a separate
+    /// request (owner, 2026-11-15): this share of what is still in the request, oldest first.
+    public var talkShare = 0.5
+    /// `reasoning_effort` of that summary request.
+    public var talkEffort = "medium"
 }
 
 /// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
@@ -323,10 +328,12 @@ public struct Config: Sendable {
         try x.read("warn_ratio", &context.warnRatio)
         try x.read("force_after_turns", &context.forceAfterTurns)
         try x.read("force_keep_turns", &context.forceKeepTurns)
+        try x.read("talk_share", &context.talkShare)
+        try x.read("talk_effort", &context.talkEffort)
         try x.finish()
         guard context.limit >= 1000, context.warnRatio > 0, context.warnRatio < 1, context.forceAfterTurns >= 1,
-              context.forceKeepTurns >= 1 else {
-            throw TOMLError(description: "[context] limit at least 1000, warn_ratio between 0 and 1, force_after_turns and force_keep_turns at least 1")
+              context.forceKeepTurns >= 1, context.talkShare > 0, context.talkShare < 1, Effort.levels.contains(context.talkEffort) else {
+            throw TOMLError(description: "[context] limit at least 1000, warn_ratio and talk_share between 0 and 1, force_after_turns and force_keep_turns at least 1, talk_effort one of \(Effort.levels)")
         }
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])
