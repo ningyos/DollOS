@@ -344,7 +344,7 @@ public final class Selector {
 
         let embedding: Memory.EmbeddingChannel = switch rule {
         case .attach: .atLeast(config.similarity)
-        case .recall: .best(config.recallLimit)
+        case .recall: .best(config.recallCandidates)
         }
         let related = try memory.related(t.query, entities: Set(ids), visible: visible, tiers: tiers, today: today,
                                          embedding: embedding)

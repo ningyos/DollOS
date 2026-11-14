@@ -3694,7 +3694,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 
 @Test func selectConfigIsValidated() throws {
     let s = try Config.load(root.appending(path: "dollcore.example.toml")).select
-    #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 5 && s.lookupK >= 1)
+    #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 3 && s.recallCandidates == 5 && s.lookupK >= 1)
     let file = FileManager.default.temporaryDirectory.appending(path: "select-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()

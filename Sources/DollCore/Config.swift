@@ -219,7 +219,9 @@ public struct SelectConfig: Sendable {
     /// Auto-attach: at most this many, best cheap score first.
     public var attachMax = 5
     /// Recall: this many best by cosine are the embedding channel, and this many are given.
-    public var recallLimit = 5
+    public var recallLimit = 3
+    /// recall's embedding channel: this many best by cosine, no floor (what the 31/32 was measured with).
+    public var recallCandidates = 5
     /// How many registry entries (`Registry.nearby`) the on-device model sees when it aligns one name.
     public var lookupK = 5
     /// The on-device model's 0–10 that a name and the entry it picked are the same thing, at or
@@ -460,12 +462,13 @@ public struct Config: Sendable {
         try s.read("entity_weight", &select.entityWeight)
         try s.read("attach_max", &select.attachMax)
         try s.read("recall_limit", &select.recallLimit)
+        try s.read("recall_candidates", &select.recallCandidates)
         try s.read("lookup_k", &select.lookupK)
         try s.read("align_threshold", &select.alignThreshold)
         try s.finish()
         guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.attachMax >= 1,
-              select.recallLimit >= 1, select.lookupK >= 1, (0...10).contains(select.alignThreshold) else {
-            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max, recall_limit and lookup_k at least 1; align_threshold 0…10")
+              select.recallLimit >= 1, select.recallCandidates >= select.recallLimit, select.lookupK >= 1, (0...10).contains(select.alignThreshold) else {
+            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max, recall_limit and lookup_k at least 1; recall_candidates at least recall_limit; align_threshold 0…10")
         }
         var o = Section(name: "voice", raw: raw["voice"] ?? [:])
         var voice = VoiceConfig()
