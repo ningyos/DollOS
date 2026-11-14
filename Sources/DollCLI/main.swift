@@ -112,7 +112,11 @@ do {
         bridge = nil
         out("bridge: disabled ([bridge] enabled = false)")
     }
-    try await doll.announceBoot()
+    // Her DollOS documents into her computer (2026-11-14): a failure is an ERROR and is in her boot
+    // notice, not fatal (the VM may be suspended; only her reading the docs needs it).
+    let docsFailure = await doll.syncDocs()
+    out("docs: " + (docsFailure.map { "NOT copied into \(Doll.docsVMPath): \($0)" } ?? "copied into \(Doll.docsVMPath)"))
+    try await doll.announceBoot(docsFailure: docsFailure)
 } catch {
     fail("\(error)")
 }

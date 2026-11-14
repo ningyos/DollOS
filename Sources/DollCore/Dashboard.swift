@@ -40,10 +40,12 @@ public final class ChangeFeed: Sendable {
 /// The pinned status bar.
 public struct DashboardStatus: Codable, Sendable, Equatable {
     public var name: String
-    /// The open scenario's menu name; nil at the top level.
-    public var scenario: String?
-    /// What she said she expects to see when it is done (her enter call's `expect`).
-    public var expect: String?
+    /// Her todo phase (`TodoPhase.label`).
+    public var todo: String
+    /// The item in progress, waiting or failed; nil while idle.
+    public var item: String?
+    /// The items after it.
+    public var pending: [String]
     /// "盯著 <target>，最多等 <n> 秒"; nil without a watch.
     public var watch: String?
     /// The footer's context figure: the estimate scaled by the last real prompt size.
@@ -143,7 +145,7 @@ public struct DashboardMemory: Codable, Sendable, Equatable {
 extension Doll {
     public func dashboardStatus() throws -> DashboardStatus {
         DashboardStatus(
-            name: name, scenario: scenario?.kind.menuName, expect: scenario?.expect,
+            name: name, todo: todo.phase.label, item: todo.current, pending: todo.pending,
             watch: watch.map { "盯著 \($0.target)，最多等 \(seconds($0.maxWait))" },
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : "asleep",

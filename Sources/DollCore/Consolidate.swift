@@ -188,7 +188,7 @@ public enum Consolidation {
     // rendering ---------------------------------------------------------------
 
     /// One task of the day: its rendered lines, whether an owner or developer line began it, and what
-    /// to recall for it (that line and her `outcome` summaries).
+    /// to recall for it (that line, and her `todo.done` results and `todo.fail` reasons).
     public struct DayTask: Sendable, Equatable {
         public var text: String
         public var owner: Bool
@@ -199,8 +199,8 @@ public enum Consolidation {
     /// task of their own). Each line starts with the local time `HH:MM` and who: the owner's words, her
     /// thought, what she said and where (她說｜Discord 私訊 / 她說｜終端機 / 她說｜Discord 語音), her other calls (name and arguments), tool results' text, watch wakes;
     /// 「｜秘密」 marks a secret event. Left out: images (only the result text is shown, not the window
-    /// outline), the program's 【快捷鍵】 and 【相關記憶】, `recall` results and a scenario's enter
-    /// result (copies of other data and the program's fixed menu text, as in `TodayIndex`).
+    /// outline), the program's 【快捷鍵】 and 【相關記憶】, and `recall` results (copies of other
+    /// data, as in `TodayIndex`).
     public static func tasks(_ events: [Event]) -> [DayTask] {
         let names = Doll.callNames(events)
         var out: [DayTask] = []
@@ -234,7 +234,8 @@ public enum Consolidation {
                     let args = call.parameters.map { "\($0.name): \($0.value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: "⏎"))" }
                     line("她呼叫", "\(call.name.isEmpty ? "tool_call" : call.name)(\(args.joined(separator: "; ")))"
                          + (call.malformed == nil ? "" : "（格式錯）"))
-                    if call.name == "outcome", let s = call.parameters.first(where: { $0.name == "summary" }) { queries.append(s.value) }
+                    if let key = ["todo.done": "result", "todo.fail": "reason"][call.name],
+                       let s = call.parameters.first(where: { $0.name == key }) { queries.append(s.value) }
                 }
             case .tool:
                 let name = (names[ev.seq!] ?? "").isEmpty ? "tool_call" : names[ev.seq!]!

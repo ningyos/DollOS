@@ -25,13 +25,17 @@ public struct TurnReport: Sendable {
     public var usedTool: Bool
     /// The 【相關記憶】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var attached: [String]
-    /// How a scenario ended this turn: "success" / "failure" from her `outcome`; nil when none ended.
-    public var outcome: String?
-    /// The experience memory written this turn (on her success), verbatim.
+    /// How a todo item ended this turn: 完成 / 失敗 from her `todo.done` / `todo.fail`; nil when none ended.
+    public var itemEnd: String?
+    /// The experience memory written this turn (an item that used the computer, done), verbatim.
     public var experience: String?
-    /// Per experience attached during the scenario that ended this turn: how many of its steps she
+    /// Per experience attached during the item that ended this turn: how many of its steps she
     /// did in order, and what was counted (spec 3.1, 2026-11-09).
     public var follows: [String] = []
+    /// The todo phase after this turn (`TodoPhase.label`).
+    public var todo: String = ""
+    /// The compactions recorded this turn (`Compaction.Kind` raw values), the forced one first.
+    public var compacted: [String] = []
     /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var cheatsheets: [String]
     /// One line per memory selection this turn (【相關記憶】 and `recall`, 2026-11-11): the trigger's
@@ -70,6 +74,7 @@ public actor Doll {
     public nonisolated let name: String
     let identity: String
     let core: CoreConfig
+    let contextConfig: ContextConfig
     let llm: LlmConfig
     let computerConfig: ComputerConfig
     let filesConfig: FilesConfig
@@ -117,19 +122,38 @@ public actor Doll {
     /// Her tool calls produced results she has not answered yet: she gets the next turn even with
     /// an empty queue (a watch's ack alone does not count; its wake will).
     var followUp = false
-    /// Her internal tools, built once.
+    /// Every tool, built once: the request's `tools` is the same for the life of the process (the
+    /// template puts it at the front of the prompt; a change would void the prefix cache).
     let tools: [Tools.Spec]
-    /// Each scenario kind's tools, `outcome` last; declared from the start, usable only while it is open.
-    let scenarioTools: [(ScenarioKind, [Tools.Spec])]
-    /// The request's `tools`: `tools` then every scenario's, the same for the life of the process
-    /// (the template puts them at the front of the prompt; a change would void the prefix cache).
     let toolsJSON: String
-    /// The open scenario; nil at the top level. One at a time.
-    var scenario: Scenario?
-    /// The scenario her `outcome` closed this turn; stored once the turn's results are in.
-    var closing: ClosedScenario?
-    /// This turn's scenario end and experience memory, for its report.
-    var outcomeNow: String?
+    /// Where her DollOS documents come from (`[core] docs`); `syncDocs` copies them into the VM.
+    let docsDir: URL
+    /// Her todo list (`Todo.swift`), as the timeline last recorded it.
+    var todo: TodoState
+    /// The current item's actions that went through, one short line each (`Doll.step`) with the seq
+    /// of the result that answered it: its action list and its experience's steps. In memory: a new
+    /// process starts the list of an item still in progress empty.
+    var itemSteps: [(seq: Int64, line: String)] = []
+    /// The front apps her computer results showed during the current item, first seen first: an
+    /// experience's entities (2026-11-11).
+    var itemApps: [AppIdentity] = []
+    /// The current item called a computer tool that ran.
+    var itemUsedComputer = false
+    /// The compaction her todo call made this turn; recorded once the turn's results are in (its span
+    /// ends at the turn's last event).
+    var compacting: Compaction?
+    /// Her `todo.done` / `todo.fail` / `todo.set` started an item this turn whose span begins after
+    /// the turn's last event (the turn belongs to the item before it).
+    var startAfterTurn = false
+    /// Her `todo.wait` or `watch` this reply: the item becomes 等待中 once the reply's calls ran.
+    var waitNow = false
+    /// Her empty `todo.set` ended the list this reply: nothing wakes her for it.
+    var listEndedNow = false
+    /// Turns whose 【狀況】 showed the near-full warning while the item was in progress.
+    var warnedTurns = 0
+    /// This turn's item end, compactions and experience, for its report.
+    var itemEndNow: String?
+    var compactedNow: [String] = []
     var experienceNow: String?
     var followsNow: [String] = []
     /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
@@ -197,6 +221,7 @@ public actor Doll {
                 embedder: any Embedder, computer: (any ComputerDriver)? = nil,
                 deliver: @escaping Deliver) throws {
         core = config.core
+        contextConfig = config.context
         llm = config.llm
         computerConfig = config.computer
         filesConfig = config.files
@@ -217,11 +242,11 @@ public actor Doll {
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.deliver = deliver
-        tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled)
+        tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files)
         voiceEnabled = config.voice.enabled
-        scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer, config.files) + [Tools.exitSpec]) }
-        // Every tool, the scenarios' included: one `tools` list for the life of the process.
-        toolsJSON = Tools.json(tools + scenarioTools.flatMap(\.1))
+        toolsJSON = Tools.json(tools)
+        todo = timeline.todo
+        docsDir = core.docs.hasPrefix("/") ? URL(filePath: core.docs) : root.appending(path: core.docs)
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -285,11 +310,35 @@ public actor Doll {
     }
 
     /// Tells her this process just started (owner, 2026-11-14): a program line in the timeline, no
-    /// turn of its own; she reads it with the next event.
-    public func announceBoot() throws {
-        try append(Event(.memory, .internal, Self.bootNotice))
+    /// turn of its own; she reads it with the next event. `docsFailure`: why `syncDocs` failed.
+    public func announceBoot(docsFailure: String? = nil) throws {
+        try append(Event(.memory, .internal, Self.bootNotice + (docsFailure.map {
+            "DollOS 文件這次沒有複製進你的電腦（\($0)）；\(Self.docsVMPath) 裡可能是舊的或沒有。"
+        } ?? "")))
     }
     static let bootNotice = "【開機】你剛被開機了。"
+
+    /// Where her DollOS documents are in her computer (2026-11-14, owner): she reads them with `read_file`.
+    public static let docsVMPath = "~/DollOS/docs"
+
+    /// Copies every `.md` file of `[core] docs` into her computer at `docsVMPath`, replacing what is
+    /// there (a file removed from the source stays in the VM). Returns nil, or why it failed (ERROR in
+    /// the log; the boot notice tells her). Not fatal: the VM may be suspended at boot, and nothing
+    /// but her reading the docs needs it.
+    public func syncDocs() async -> String? {
+        do {
+            let names = try FileManager.default.contentsOfDirectory(atPath: docsDir.path).filter { $0.hasSuffix(".md") }.sorted()
+            guard !names.isEmpty else { throw ToolError(description: "\(docsDir.path) 裡沒有 .md 檔") }
+            for n in names {
+                try await computer.writeFile("\(Self.docsVMPath)/\(n)", try Data(contentsOf: docsDir.appending(path: n)))
+            }
+            log("INFO", "docs: \(names.count) files copied from \(docsDir.path) into \(Self.docsVMPath)")
+            return nil
+        } catch {
+            log("ERROR", "docs: copying \(docsDir.path) into \(Self.docsVMPath) failed: \(error)")
+            return "\(error)"
+        }
+    }
 
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {
@@ -411,18 +460,28 @@ public actor Doll {
             (rank[$0.element.priority.rawValue]!, $0.offset) < (rank[$1.element.priority.rawValue]!, $1.offset)
         }.map(\.element)
         queue.removeAll()
+        var last: Event?
         for ev in batch {
-            try append(ev)
+            last = try append(ev)
         }
         if batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }
+        // Something happened: a waiting item is in progress again (its turn is this one).
+        if todo.phase == .waiting, let last {
+            todo.phase = .doing
+            try timeline.recordTodo(todo, seq: last.seq!)
+            log("INFO", "todo: 等待中 → 進行中「\(todo.current ?? "")」(event \(last.seq!))")
+        }
     }
 
-    /// A scenario still open when the program stops (turn cap, stop) never got her outcome: it ends
-    /// unknown, and nothing is stored for it, so later requests keep its turns in full (there is no
-    /// summary of hers to put in their place, and a program-written one would put words in her mouth).
+    /// An item still in progress when the program stops stays in the timeline's todo record: the next
+    /// process continues it (its action list starts empty there). The experiences attached for it
+    /// are scored as unknown (only logged); the watch stops.
     func shutdown() {
-        if let s = scenario { leave(s, outcome: "unknown") }
+        if todo.phase == .doing || todo.phase == .waiting {
+            log("INFO", "todo: stopping with「\(todo.current ?? "")」\(todo.phase.label)")
+            scoreAttached(steps: itemSteps.map(\.line), outcome: "unknown")
+        }
         stopWatch()
     }
 
@@ -430,33 +489,44 @@ public actor Doll {
     /// Fixed for the life of the process: the persona and how she works. Her tools go in the
     /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
     /// footer they were answering, her thought and her calls as the server returned them, so the
     /// prompt prefix is byte-stable turn to turn (the server caches from the last assistant turn).
     ///
-    /// A scenario she left with `outcome` (spec 3.1, 2026-11-09): everything up to and including her
-    /// reply that entered it renders as before (with the results of calls she wrote ahead of the
-    /// enter call); the enter call's result becomes `Scenario.result` (how it ended and her summary);
-    /// owner lines that came in meanwhile stay; her speaking calls in the reply that left it follow as
-    /// her message (with their empty results). Every other event of the span (results, screenshots, crops, watch wakes, the
-    /// program's 【相關記憶】 and 【快捷鍵】, her replies in between, the exit reply's results) stays in
-    /// the timeline but is not sent. The open scenario renders in full.
+    /// A compacted span (`Compaction`, 2026-11-14): owner and developer lines stay verbatim; each of
+    /// her replies keeps only its speaking and todo calls (`survivesCompaction`; no thought, no footer;
+    /// a reply with none left is not sent), followed by those calls' results. Every other event of the
+    /// span (other results, screenshots, crops, watch wakes, the program's work notices) stays in the
+    /// timeline but is not sent. A forced compaction's block follows the span's last event. Every
+    /// compaction of an item starts at the item's start, so the one reaching furthest decides.
     func context(_ events: [Event]) throws -> [ChatMessage] {
-        let closed = timeline.closedScenarios
-        enum Mode { case full, enterResult(ClosedScenario), exitSpeech }
+        enum Mode { case full, reply([ToolCall]), block(Compaction) }
+        let comps = timeline.compactions
         var plan: [(Event, Mode)] = []
-        var i = 0
+        var keep: ArraySlice<Bool> = []   // the compacted reply's calls still owed a result: kept or not
         for ev in events {
             let seq = ev.seq!
-            while i < closed.count, closed[i].lastSeq < seq { i += 1 }
-            guard i < closed.count, seq > closed[i].startSeq else { plan.append((ev, .full)); continue }
-            let c = closed[i]
-            if seq < c.enterResultSeq || ev.speaker != nil { plan.append((ev, .full)) }
-            else if seq == c.enterResultSeq { plan.append((ev, .enterResult(c))) }
-            else if seq == c.endSeq { plan.append((ev, .exitSpeech)) }
+            guard let c = comps.filter({ $0.fromSeq < seq && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) else {
+                plan.append((ev, .full))
+                continue
+            }
+            switch ev.kind {
+            case .owner, .developer: plan.append((ev, .full))
+            case .doll:
+                let flags = ev.calls.map(Self.survivesCompaction)
+                keep = flags[...]
+                let calls = zip(ev.calls, flags).filter(\.1).map(\.0)
+                if !calls.isEmpty { plan.append((ev, .reply(calls))) }
+            case .tool:
+                if keep.popFirst() == true { plan.append((ev, .full)) }
+            case .watch: break
+            case .memory:
+                if !Self.workNotice(ev.text) { plan.append((ev, .full)) }
+            }
+            if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c))) }
         }
         // Only the last `image_turns_kept` turns keep their screenshots (spec 3.1, 2026-11-09): a turn's
         // images are the ones after her reply, up to her next; a watch wake's belong to the turn before it.
@@ -475,18 +545,24 @@ public actor Doll {
             switch mode {
             case .full:
                 out += try render(ev, images: turnOfImage[ev.seq!].map(withImages.contains) ?? true)
-            case .enterResult(let c):
-                out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
-            case .exitSpeech:
-                // What she said in the reply that left: her speaking calls and their (empty) results.
-                let says = ev.calls.filter { Tools.speaking[$0.name] != nil && $0.malformed == nil }
-                if !says.isEmpty {
-                    out.append(ChatMessage(role: "assistant", content: "", toolCalls: says))
-                    out += says.map { _ in ChatMessage(role: "tool", content: "") }
-                }
+            case .reply(let calls):
+                out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
+            case .block(let c):
+                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(c.text ?? "")"))
             }
         }
         return out
+    }
+
+    /// A call of hers that stays when its reply's span is compacted: what she said to someone, and her todo calls.
+    static func survivesCompaction(_ call: ToolCall) -> Bool {
+        call.malformed == nil && (Tools.speaking[call.name] != nil || Tools.todoNames.contains(call.name))
+    }
+
+    /// The program's notices about the work at hand: they leave with a compacted span (the others,
+    /// such as 【開機】 and 【語音】, stay).
+    static func workNotice(_ text: String) -> Bool {
+        ["【相關記憶】", "【快捷鍵】", "【提醒】"].contains { text.hasPrefix($0) }
     }
 
     /// One event as prompt messages. Tool results follow her reply directly, in call order; the
@@ -541,21 +617,87 @@ public actor Doll {
 
     func seconds(_ d: Double) -> String { "\(Int(d.rounded())) 秒" }
 
-    /// The facts footer: which menu she is in, her watch, context length, effort for the next call.
-    public func footer(contextTokens: Int) -> String {
+    /// What the current item's span still takes in the request: the events after its start that no
+    /// compaction covers, people's lines left out (estimated tokens, screenshots counted as
+    /// `screenshot_tokens` each). Zero without an item.
+    func processTokens() throws -> (tokens: Int, images: Int) {
+        guard todo.phase == .doing || todo.phase == .waiting else { return (0, 0) }
+        let start = todo.startSeq
+        let covered = timeline.compactions.filter { $0.fromSeq == start }.map(\.toSeq).max() ?? start
+        var tokens = 0, images = 0
+        for ev in timeline.events where ev.seq! > covered && ev.speaker == nil {
+            let msgs = try render(ev)
+            tokens += estimate(msgs)
+            images += msgs.reduce(0) { $0 + $1.extra.filter { if case .image = $0 { true } else { false } }.count }
+        }
+        return (tokens, images * computerConfig.screenshotTokens)
+    }
+
+    /// What 【狀況】 says near the limit (one line, none before `warn_ratio`).
+    enum Advice: Equatable {
+        case none
+        /// The current item's process is a good part of it: she should compact it (`todo.progress`).
+        case compact
+        /// Mostly conversation and earlier results: compacting the item would not free much.
+        case conversation
+    }
+
+    func advice(used: Int, process: Int) -> Advice {
+        guard Double(used) >= Double(contextConfig.limit) * contextConfig.warnRatio else { return .none }
+        return todo.phase == .doing && process * 4 >= used ? .compact : .conversation
+    }
+
+    /// `n` with a comma every three digits (42,000).
+    static func grouped(_ n: Int) -> String {
+        let s = String(abs(n))
+        var out = ""
+        for (i, ch) in s.enumerated() {
+            if i > 0, (s.count - i) % 3 == 0 { out.append(",") }
+            out.append(ch)
+        }
+        return (n < 0 ? "-" : "") + out
+    }
+
+    /// The facts footer: her todo list, her watch, the context, effort for the next call, and near
+    /// the limit one warning line (2026-11-14). Figures are estimates scaled by the last real prompt size.
+    func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = Date().timeIntervalSince1970
-        var out = ["【狀況】", "- 現在 \(clock(now))"]
-        out.append(scenario.map { "- 選單：\($0.kind.menuName)（做完呼叫 outcome(success, summary) 結束）" }
-                   ?? "- 選單：頂層（" + ScenarioKind.allCases.map { "\($0.menuName)工具鎖著；\($0.enterTool)(expect) 打開" }
-                       .joined(separator: "；") + "）")
+        var out = ["【狀況】", "- 現在 \(clock(now))", "- todo：" + todoLine()]
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
-        out.append("- context 約 \(contextTokens) token；下一回合 effort：\(nextEffort)")
+        let limit = contextConfig.limit
+        out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"
+                   + "其中做事的過程 \(Self.grouped(process.tokens))（截圖 \(Self.grouped(process.images))）")
+        out.append("- 下一回合 effort：\(nextEffort)")
+        switch advice {
+        case .none: break
+        case .compact:
+            let left = max(1, contextConfig.forceAfterTurns - warnedTurns)
+            out.append("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；"
+                       + "再 \(left) 回合沒收，程式會自己收（留動作清單和最近 \(contextConfig.forceKeepTurns) 回合）。")
+        case .conversation:
+            out.append("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。")
+        }
         return out.joined(separator: "\n")
     }
 
-    /// `status` in the CLI.
+    /// The todo line of 【狀況】.
+    func todoLine() -> String {
+        let rest = todo.pending.isEmpty ? "" : "；後面還有：" + todo.pending.map { "「\($0)」" }.joined(separator: "")
+        let item = "「\(todo.current ?? "")」"
+        return switch todo.phase {
+        case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
+        case .doing: "進行中\(item)\(rest)"
+        case .waiting: "等待中\(item)（有人說話或 watch 叫你才會再有回合）\(rest)"
+        case .failed: "失敗\(item)：電腦工具鎖著，用 todo.set 決定剩下的（重寫、照原樣列，或給空的陣列結束清單）\(rest)"
+        }
+    }
+
+    /// `status` in the CLI: the footer as the next turn would see it.
     public func status() throws -> String {
-        footer(contextTokens: Int(Double(try estimateContext()) * tokenRatio))
+        let used = Int(Double(try estimateContext()) * tokenRatio)
+        let p = try processTokens()
+        let process = (Int(Double(p.tokens) * tokenRatio), Int(Double(p.images) * tokenRatio))
+        return footer(used: used, process: process, advice: advice(used: used, process: process.0))
     }
 
     func estimateContext() throws -> Int {
@@ -583,11 +725,15 @@ public actor Doll {
         followUp = false
         attachedNow = []
         cheatsheetNow = []
-        outcomeNow = nil
+        itemEndNow = nil
+        compactedNow = []
         experienceNow = nil
         followsNow = []
         selectionsNow = []
         voiceCut = false
+        waitNow = false
+        startAfterTurn = false
+        listEndedNow = false
         // A new owner or developer line starts a task: what was attached before may be attached again.
         if ownerArrived {
             ownerArrived = false
@@ -595,13 +741,20 @@ public actor Doll {
             cheatsheetSent = []
             await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
         }
+        // She was warned `force_after_turns` times and did not compact: the program does.
+        if todo.phase == .doing, warnedTurns >= contextConfig.forceAfterTurns { try forceCompact() }
         let events = timeline.events
         var messages = try context(events)
         let guess = estimate(messages)
-        let footerText = footer(contextTokens: Int(Double(guess) * tokenRatio))
+        let used = Int(Double(guess) * tokenRatio)
+        let p = try processTokens()
+        let process = (Int(Double(p.tokens) * tokenRatio), Int(Double(p.images) * tokenRatio))
+        let warn = advice(used: used, process: process.0)
+        let footerText = footer(used: used, process: process, advice: warn)
+        warnedTurns = warn == .compact ? warnedTurns + 1 : 0
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = nextEffort
-
+        let before = todo
         let reply: ModelReply
         do {
             let task = Task { try await model.chat(messages, tools: toolsJSON, effort: effort) }
@@ -645,31 +798,36 @@ public actor Doll {
         // Her text content is her own thought (2026-11-10): nobody hears it; she speaks with the speaking tools.
         let calls = reply.calls
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
-        // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
-        // Her `outcome` ends the scenario: the calls after it are refused, except the speaking tools (2026-11-11: she
-        // wrote her words after the outcome and the owner heard nothing; speaking touches no computer), and
-        // nothing wakes her for it.
+        // (spec 6, 2026-11-08); a malformed or unknown one gets a result saying what was wrong. A
+        // computer tool while no item is 進行中 is refused with what to do first (2026-11-14).
+        // Her `todo.done` / `todo.fail` / `todo.progress` ends a span: the calls after it are refused,
+        // except the speaking tools (2026-11-11: she wrote her words after the end and the owner heard
+        // nothing; speaking touches no computer).
         // Her computer actions (click, type, key, scroll, drag) run in order and stop at the first
         // failure (2026-11-09): only the last one done carries the observation, the ones before it
         // answer with their line only, and the ones after a failure are not run. Actions written
-        // after an `outcome` never run, so the one before it is the last.
-        let live = calls.prefix { $0.name != "outcome" }
+        // after an ending call never run, so the one before it is the last.
+        let live = calls.prefix { !Tools.ending.contains($0.name) }
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
-        var chain = Chain(), step = 0, failed: (step: Int, line: String)?
+        var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?
         for (i, call) in calls.enumerated() {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
             let out: Outcome
-            if outcomeNow != nil, Tools.speaking[call.name] == nil {
-                out = Outcome(text: "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。",
+            if let ended, Tools.speaking[call.name] == nil {
+                out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
+            } else if Tools.gated.contains(call.name), todo.phase != .doing {
+                out = Outcome(text: gateText(name), actions: ["refused \(name)"])
             } else if isAction, let failed {
                 out = Outcome(text: "失敗：前面第 \(failed.step) 步（\(failed.line)）失敗了，這一步沒做",
                               actions: ["skipped \(name)"], background: true)
             } else {
                 if isAction { step += 1 }
+                if Tools.gated.contains(call.name) { itemUsedComputer = true }
                 chain.last = !actionAt.contains(i) || actionAt.last == i
                 out = await execute(call, seen: events, reply: stored, chain: chain)
+                if out.ends { ended = name }
                 if isAction {
                     if let line = out.failedStep {
                         failed = (step, line)
@@ -681,17 +839,15 @@ public actor Doll {
             var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
                                     cropNote: out.cropNote, crop: out.crop, window: out.window)
             resultEvent.channel = out.channel
-            let result = try append(resultEvent)
-            if out.enters { scenario?.enterResultSeq = result.seq }
+            try append(resultEvent)
             actions += out.actions
             if !out.background {
                 followUp = true
                 taskTurn = true
             }
         }
-        if outcomeNow != nil {
-            followUp = false
-            taskTurn = false
+        if ended != nil {
+            // What the program would attach for the span she just closed would leave with it.
             cheatsheetDue = []
             appSwitched = false
         }
@@ -703,16 +859,44 @@ public actor Doll {
             appSwitched = false
             await attachMemories(trigger: "前景 app 換成 \(frontApp?.name ?? "?")")
         }
-        // The scenario she left this turn: from now on its span renders as her summary.
-        if var c = closing {
-            closing = nil
-            c.lastSeq = timeline.lastSeq
-            try timeline.closeScenario(c)
+        // The span her todo call closed this turn: from now on it renders compacted. It ends with the
+        // turn's last event; an item her call moved on to starts right after it.
+        if var c = compacting {
+            compacting = nil
+            c.toSeq = timeline.lastSeq
+            try timeline.compact(c)
+            compactedNow.append(c.kind.rawValue)
+            forgetSeen()
+            log("INFO", "turn \(turnIndex): compacted「\(c.item)」(\(c.kind.rawValue)) events \(c.fromSeq + 1)…\(c.toSeq)")
+        }
+        if startAfterTurn { todo.startSeq = timeline.lastSeq }
+        if waitNow, todo.phase == .doing { todo.phase = .waiting }
+        if todo != before {
+            try timeline.recordTodo(todo, seq: stored.seq!)
+            log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
+        }
+        // The phase decides the next turn (2026-11-14): 進行中 gets one after every reply; 等待中
+        // none until an event; the reply that ended the list (done with nothing next, or an empty
+        // `todo.set`) none, nothing wakes her for it; 失敗 the one in which she decides.
+        switch todo.phase {
+        case .doing:
+            followUp = true
+            taskTurn = true
+        case .waiting:
+            followUp = false
+            taskTurn = false
+        case .idle, .done:
+            if itemEndNow != nil || listEndedNow {
+                followUp = false
+                taskTurn = false
+            }
+        case .failed: break
         }
 
-        // A reply without a call (2026-11-11): every reply calls at least one tool. With a menu open she
-        // is reminded and woken again (she had only thought, or wrote nothing, and the task stopped);
-        // the `max_turns_without_tool`-th one in a row writes the log line instead and lets her rest.
+        // A reply without a call (2026-11-11): every reply calls at least one tool. With an item in
+        // progress she is reminded and woken again (she had only thought, or wrote nothing, and the
+        // task stopped); the `max_turns_without_tool`-th one in a row writes the log line instead and
+        // lets her rest until an event.
         let usedTool = !calls.isEmpty
         if usedTool {
             idleTurns = 0
@@ -721,7 +905,8 @@ public actor Doll {
             if idleTurns >= idle.maxTurnsWithoutTool {
                 log("INFO", "idle: \(idleTurns) turns in a row without a tool call")
                 idleTurns = 0
-            } else if scenario != nil {
+                followUp = false
+            } else if todo.phase == .doing {
                 try append(Event(.memory, .internal, Self.noCallReminder))
                 followUp = true
                 actions.append("reminded")
@@ -730,9 +915,10 @@ public actor Doll {
 
         let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
-                                attached: attachedNow, outcome: outcomeNow, experience: experienceNow, follows: followsNow,
+                                attached: attachedNow, itemEnd: itemEndNow, experience: experienceNow, follows: followsNow,
+                                todo: todo.phase.label, compacted: compactedNow,
                                 cheatsheets: cheatsheetNow, selections: selectionsNow)
-        log("INFO", "turn \(turnIndex) effort=\(effort) actions=\(actions) prompt=\(reply.usage.promptTokens) "
+        log("INFO", "turn \(turnIndex) effort=\(effort) todo=\(todo.phase.label) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
         observer?(report)
         try timeline.recordTurn(Timeline.TurnStats(seq: stored.seq!, started: started,
@@ -740,7 +926,7 @@ public actor Doll {
                                                    prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
     }
 
-    /// The program's line after a reply without a call while a menu is open (fixed bytes).
+    /// The program's line after a reply without a call while an item is in progress (fixed bytes).
     static let noCallReminder = "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生。每一則回覆都至少要呼叫一個工具：要回話用回話的工具（看對方從哪裡來），要做事就呼叫那個工具。"
     /// A voice tool's result when `[voice] enabled` but no voice link is wired (fixed bytes).
     static let voiceUnwired = "語音還沒接上，語音頻道現在用不了；要跟主人說話用 \(Tools.Name.dm)。"
@@ -758,8 +944,8 @@ public actor Doll {
         var secret = false
         var actions: [String]
         var background = false
-        /// This call entered a scenario: its result is the one her summary replaces once she leaves.
-        var enters = false
+        /// This call closed a span (`todo.done`, `todo.fail`, `todo.progress`): the calls after it do not run.
+        var ends = false
         /// This computer action failed (before or in the VM): its line, for the refusals after it.
         var failedStep: String?
         /// A speaking call that went out: the channel it went to (2026-11-14).
@@ -778,8 +964,7 @@ public actor Doll {
     func execute(_ call: ToolCall, seen events: [Event], reply: Event, chain: Chain = Chain()) async -> Outcome {
         let name = call.name.isEmpty ? "tool_call" : call.name
         do {
-            let request = try Tools.decode(call, specs: tools + (scenario?.tools ?? []),
-                                           locked: scenarioTools.filter { $0.0 != scenario?.kind })
+            let request = try Tools.decode(call, specs: tools)
             switch request {
             case .speak(let text, .discordVoice):
                 // The owner hears it in the voice channel (M6): sentence by sentence through the TTS.
@@ -822,46 +1007,23 @@ public actor Doll {
                 return await remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try await recall(query, seen: events)
-            case .enter(let kind, let expect):
-                if let open = scenario {
-                    throw ToolError(description: "\(open.kind.menuName)選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
-                }
-                scenario = Scenario(kind: kind, startSeq: reply.seq!, tools: scenarioTools.first { $0.0 == kind }!.1,
-                                    expect: expect, task: events.last { $0.speaker != nil }?.text ?? "")
-                var out = await entered(kind)
-                out.enters = true
-                return out
-            case .outcome(let success, let summary):
-                guard let s = scenario, let enterResult = s.enterResultSeq else {
-                    throw ToolError(description: "outcome 只能在打開的選單裡呼叫")
-                }
-                leave(s, outcome: success ? "success" : "failure")
-                closing = ClosedScenario(kind: s.kind, startSeq: s.startSeq, enterResultSeq: enterResult, endSeq: reply.seq!,
-                                         lastSeq: reply.seq!, success: success, summary: summary)
-                log("INFO", "turn \(turnIndex): outcome success=\(success) summary「\(summary)」")
-                guard success else {
-                    return Outcome(text: "記下了：沒達成。離開\(s.kind.menuName)選單了；\(s.kind.menuName)工具鎖回去了。",
-                                   actions: ["outcome failure"])
-                }
-                let text = Self.experienceText(task: s.task, summary: summary, steps: s.steps,
-                                               maxChars: memoryConfig.experienceMaxChars)
-                // Its run: from the last owner or developer line to this reply, her turns counted with this one.
-                let owner = events.last { $0.speaker != nil }
-                let turns = events.filter { $0.kind == .doll && $0.seq! > (owner?.seq ?? 0) }.count + 1
-                let stats = ExperienceStats(turns: turns, seconds: Int((reply.ts - (owner?.ts ?? reply.ts)).rounded()))
-                // Its entities: the apps it went through (what the program knows of it, 2026-11-11),
-                // aligned to the registry by their bundle ids.
-                var entities: [MemoryEntity] = []
-                for app in s.apps {
-                    entities.append(MemoryEntity(try await pipeline.programApp(app, context: text).entry.id, app.name))
-                }
-                let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil,
-                                          experience: (task: s.task, stats: stats), entities: entities)
-                experienceNow = text
-                log("INFO", "turn \(turnIndex): experience \(id) written, \(s.steps.count) steps, \(text.count) chars, "
-                    + "\(stats.turns) turns, \(stats.seconds) s")
-                return Outcome(text: "記下了：達成。你的經過和這次的步驟存成一條經驗。離開\(s.kind.menuName)選單了；\(s.kind.menuName)工具鎖回去了。",
-                               actions: ["outcome success"])
+            case .todoSet(let items):
+                return todoSet(items, reply: reply)
+            case .todoDone(let result):
+                return try await todoDone(result, reply: reply)
+            case .todoFail(let reason, let tried):
+                return try todoFail(reason: reason, tried: tried)
+            case .todoWait:
+                let item = try currentItem("todo.wait")
+                waitNow = true
+                return Outcome(text: "好，這則回覆的呼叫做完以後，「\(item)」就是等待中：有人說話或 watch 叫你才會再有回合。",
+                               actions: ["todo wait"], background: true)
+            case .todoProgress:
+                let item = try currentItem("todo.progress")
+                compacting = Compaction(kind: .progress, item: item, fromSeq: todo.startSeq, toSeq: 0)
+                warnedTurns = 0
+                return Outcome(text: "前面的過程收起來了，之後只留你寫的進度和這份動作清單：\(Self.actionList(itemSteps.map(\.line)))。「\(item)」還在進行中，接著做。",
+                               actions: ["todo progress"], ends: true)
             case .screenshot:
                 watchIdle = 0
                 return await withScreenshot("現在的畫面：", actions: [name])
@@ -875,25 +1037,26 @@ public actor Doll {
             case .watch(let region, let maxWait):
                 let replaced = watch != nil
                 let w = startWatch(region, maxWait: maxWait ?? computerConfig.watchDefaultMaxWaitS)
+                waitNow = true
                 return Outcome(text: "開始盯著\(w.target)，最多等 \(seconds(w.maxWait))；有變化或時間到會叫你。"
-                               + (replaced ? "（取代了上一個 watch）" : ""),
+                               + (replaced ? "（取代了上一個 watch）" : "") + "這則回覆的呼叫做完以後，這一項就是等待中。",
                                actions: [name], background: true)
             // The file tools (2026-11-09): text only, no screenshot and no window line, the screen did
             // not change. Only a success is a step, and the step never holds the content.
             case .readFile(let path, let from, let to):
                 let text = try FileText.decode(try await computer.readFile(path), path: path)
                 let out = try FileText.read(text, path: path, from: from, to: to, max: filesConfig.maxReadLines)
-                scenario?.steps.append("read_file \(path)")
+                itemSteps.append((timeline.lastSeq + 1, "read_file \(path)"))
                 return Outcome(text: out, actions: [name])
             case .writeFile(let path, let text):
                 try await computer.writeFile(path, Data(text.utf8))
-                scenario?.steps.append("write_file \(path)（\(FileText.lines(text).count) 行）")
+                itemSteps.append((timeline.lastSeq + 1, "write_file \(path)（\(FileText.lines(text).count) 行）"))
                 return Outcome(text: FileText.written(text, path: path), actions: [name])
             case .editFile(let path, let old, let new):
                 let text = try FileText.decode(try await computer.readFile(path), path: path)
                 let (changed, out) = try FileText.edit(text, path: path, old: old, new: new)
                 try await computer.writeFile(path, Data(changed.utf8))
-                scenario?.steps.append("edit_file \(path)")
+                itemSteps.append((timeline.lastSeq + 1, "edit_file \(path)"))
                 return Outcome(text: out, actions: [name])
             }
         } catch {
@@ -975,7 +1138,7 @@ public actor Doll {
                     }
                 }
                 frontApp = app
-                if scenario != nil, !scenario!.apps.contains(where: { $0.bundleID == app.bundleID }) { scenario!.apps.append(app) }
+                if !itemApps.contains(where: { $0.bundleID == app.bundleID }) { itemApps.append(app) }
             }
         } catch {
             log("ERROR", "turn \(turnIndex): open windows and focus failed: \(error)")
@@ -1094,7 +1257,7 @@ public actor Doll {
         log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
         switch result {
         case .success(let answer):
-            scenario?.steps.append(Self.step(action))
+            itemSteps.append((timeline.lastSeq + 1, Self.step(action)))
             let text = [note ?? "", Self.condense(answer)].filter { !$0.isEmpty }.joined(separator: "\n")
             guard chain.last else { return Outcome(text: text, actions: [name]) }
             return await withScreenshot(text, actions: [name])
@@ -1234,34 +1397,184 @@ public actor Doll {
         put(Event(.watch, .internal, text, image: image))
     }
 
-    // scenarios ----------------------------------------------------------------
-    /// The kind's own work on entering; its result text is what she sees first. The computer: its
-    /// menu, then a fresh screenshot. The front app at entry counts as newly seen, whatever it was
-    /// before: a previous scenario's 【快捷鍵】 and 【相關記憶】 left the context with it (2026-11-09,
-    /// chained E→F: F got no TextEdit sheet because TextEdit was already in front).
-    func entered(_ kind: ScenarioKind) async -> Outcome {
-        switch kind {
-        case .computer:
-            frontApp = nil
-            frontTitle = nil
-            frontFocus = nil
-            cheatsheetSent = []
-            return await withScreenshot(Tools.menu(scenario!.tools), actions: [kind.enterTool])
+    // todo -------------------------------------------------------------------
+    /// The item in progress; a call that needs one throws with the phase when there is none.
+    func currentItem(_ tool: String) throws -> String {
+        guard todo.phase == .doing, let item = todo.current else {
+            throw ToolError(description: "\(tool) 要有進行中的項目；現在是\(todo.phase.label)" + (todo.phase == .idle ? "，先用 todo.set 列 todo" : ""))
+        }
+        return item
+    }
+
+    /// A computer tool's result while no item is 進行中 (2026-11-14): refused, with what to do first.
+    func gateText(_ name: String) -> String {
+        switch todo.phase {
+        case .failed:
+            "失敗：「\(todo.current ?? "")」失敗了，\(name) 先鎖著。先用 todo.set 決定剩下的：重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。"
+        case .waiting:
+            "失敗：「\(todo.current ?? "")」在等待中，\(name) 沒有執行。"
+        case .idle, .done, .doing:
+            "失敗：現在沒有進行中的 todo，\(name) 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。"
         }
     }
 
-    /// Ends the open scenario as `outcome` (success / failure / unknown) and relocks its tools. The
-    /// computer: experiences attached since the owner's last line are scored against her steps, and
-    /// the watch stops.
-    func leave(_ s: Scenario, outcome: String) {
-        switch s.kind {
-        case .computer:
-            scoreAttached(steps: s.steps, outcome: outcome)
-            stopWatch()
+    /// A new item is in progress: its action list, apps and computer use start empty, and the front
+    /// app counts as newly seen (the previous item's 【快捷鍵】 and 【相關記憶】 left the request with
+    /// it; 2026-11-09, chained E→F: F got no TextEdit sheet because TextEdit was already in front).
+    func beginItem() {
+        itemSteps = []
+        itemApps = []
+        itemUsedComputer = false
+        warnedTurns = 0
+        forgetSeen()
+    }
+
+    /// After a compaction: what the program showed for the front app left the request.
+    func forgetSeen() {
+        frontApp = nil
+        frontTitle = nil
+        frontFocus = nil
+        cheatsheetSent = []
+    }
+
+    /// The action list a compaction leaves (2026-11-14): one short piece per action that went
+    /// through, no screenshots, no results.
+    static func actionList(_ steps: [String]) -> String {
+        steps.isEmpty ? "（沒有）" : steps.joined(separator: "、")
+    }
+
+    /// `todo.set`: with no item in progress (待命中, 失敗) the list is replaced and its first item is
+    /// 進行中 from her reply on (that reply is the item's first event); with one in progress only the
+    /// items after it are replaced. No items: the list ends (待命中).
+    func todoSet(_ items: [String], reply: Event) -> Outcome {
+        func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
+        switch todo.phase {
+        case .doing, .waiting:
+            todo.pending = items
+            return Outcome(text: "後面的項目改成：\(listed(items))。現在\(todo.phase.label)的還是「\(todo.current ?? "")」。",
+                           actions: ["todo set"])
+        case .idle, .done, .failed:
+            guard let first = items.first else {
+                let ended = todo.phase == .failed
+                todo = TodoState()
+                listEndedNow = true
+                return Outcome(text: ended ? "清單結束了，現在待命中。" : "沒有項目，還是待命中。", actions: ["todo end"], background: true)
+            }
+            todo.phase = .doing
+            todo.current = first
+            todo.pending = Array(items.dropFirst())
+            todo.startSeq = reply.seq! - 1
+            beginItem()
+            return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。", actions: ["todo set"])
         }
-        if outcome == "unknown" { log("INFO", "turn \(turnIndex): outcome unknown: \(s.kind.rawValue) scenario ended without her outcome") }
-        scenario = nil
-        outcomeNow = outcome
+    }
+
+    /// `todo.done`: the item is 完成. Its span is compacted once the turn's results are in; the
+    /// experiences attached are scored as a success; an item that used the computer is written as
+    /// an experience (her result and its steps; turns and seconds from the item's start); the watch
+    /// stops; the next item is 進行中 after this turn, or the list is done (待命中).
+    func todoDone(_ result: String, reply: Event) async throws -> Outcome {
+        let item = try currentItem("todo.done")
+        let steps = itemSteps.map(\.line)
+        compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
+        stopWatch()
+        scoreAttached(steps: steps, outcome: "success")
+        itemEndNow = TodoPhase.done.label
+        var note = ""
+        if itemUsedComputer {
+            do {
+                note = try await writeExperience(item: item, result: result, steps: steps, reply: reply)
+            } catch {
+                log("ERROR", "turn \(turnIndex): experience for「\(item)」not written: \(error)")
+                note = "這次的經驗沒存成：\(error)。"
+            }
+        }
+        let next = advance()
+        log("INFO", "turn \(turnIndex): todo 完成「\(item)」result「\(result)」, \(steps.count) actions")
+        return Outcome(text: "完成，記下了。\(note)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
+                       + Self.actionList(steps) + "。"
+                       + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),
+                       actions: ["todo done"], ends: true)
+    }
+
+    /// `todo.fail` (only when she is sure): the item is 失敗; its span is compacted (her reason and
+    /// what she tried stay in her call); the experiences attached are scored as a failure; the watch
+    /// stops; the computer tools stay refused until her `todo.set`.
+    func todoFail(reason: String, tried: String) throws -> Outcome {
+        let item = try currentItem("todo.fail")
+        let steps = itemSteps.map(\.line)
+        compacting = Compaction(kind: .failed, item: item, fromSeq: todo.startSeq, toSeq: 0)
+        stopWatch()
+        scoreAttached(steps: steps, outcome: "failure")
+        itemEndNow = TodoPhase.failed.label
+        todo.phase = .failed
+        log("INFO", "turn \(turnIndex): todo 失敗「\(item)」reason「\(reason)」")
+        let rest = todo.pending.isEmpty ? "（後面沒有別的項目了）" : "（剩下：" + todo.pending.map { "「\($0)」" }.joined() + "）"
+        return Outcome(text: "記下了：「\(item)」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：\(Self.actionList(steps))。"
+                       + "電腦工具先鎖著。現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
+                       actions: ["todo fail"], ends: true)
+    }
+
+    /// The next item is 進行中 (its span starts after this turn), or the list is done: 待命中. Returns the next item.
+    func advance() -> String? {
+        guard !todo.pending.isEmpty else {
+            todo = TodoState()
+            return nil
+        }
+        todo.current = todo.pending.removeFirst()
+        todo.phase = .doing
+        startAfterTurn = true
+        beginItem()
+        return todo.current
+    }
+
+    /// One experience memory for an item that used the computer and is done: the owner's last line
+    /// as its task, the item and her result as its summary, the item's steps; turns = her replies
+    /// since the item started (this one included), seconds from the item's start to this reply.
+    func writeExperience(item: String, result: String, steps: [String], reply: Event) async throws -> String {
+        let events = timeline.events
+        let task = events.last { $0.speaker != nil && $0.seq! < reply.seq! }?.text ?? item
+        let text = Self.experienceText(task: task, summary: "這一項：\(item)\n\(result)", steps: steps,
+                                       maxChars: memoryConfig.experienceMaxChars)
+        let span = events.filter { $0.seq! > todo.startSeq && $0.seq! <= reply.seq! }
+        let startTs = events.first { $0.seq! >= todo.startSeq }?.ts ?? reply.ts
+        let stats = ExperienceStats(turns: span.filter { $0.kind == .doll }.count, seconds: Int((reply.ts - startTs).rounded()))
+        // Its entities: the apps it went through (what the program knows of it, 2026-11-11),
+        // aligned to the registry by their bundle ids.
+        var entities: [MemoryEntity] = []
+        for app in itemApps {
+            entities.append(MemoryEntity(try await pipeline.programApp(app, context: text).entry.id, app.name))
+        }
+        let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil,
+                                  experience: (task: task, stats: stats), entities: entities)
+        experienceNow = text
+        log("INFO", "turn \(turnIndex): experience \(id) written, \(steps.count) steps, \(text.count) chars, "
+            + "\(stats.turns) turns, \(stats.seconds) s")
+        return "這次的經過和步驟存成一條經驗。"
+    }
+
+    /// The program compacts the item in progress itself (2026-11-14): she was warned
+    /// `force_after_turns` times and did not call `todo.progress`. Everything of the item before
+    /// her last `force_keep_turns` turns leaves the request; a block with the action list up to there
+    /// takes its place. Nothing to compact (too few turns, or already compacted that far): only logged.
+    func forceCompact() throws {
+        warnedTurns = 0
+        guard let item = todo.current else { return }
+        let start = todo.startSeq
+        let replies = timeline.events.filter { $0.kind == .doll && $0.seq! > start }
+        let keep = contextConfig.forceKeepTurns
+        let prior = timeline.compactions.filter { $0.fromSeq == start }.map(\.toSeq).max() ?? start
+        guard replies.count > keep, case let cut = replies[replies.count - keep].seq! - 1, cut > prior else {
+            log("INFO", "turn \(turnIndex): forced compaction of「\(item)」: nothing before the last \(keep) turns left to compact")
+            return
+        }
+        let steps = itemSteps.filter { $0.seq <= cut }.map(\.line)
+        let text = "【收起】context 快滿了，你沒有用 todo.progress 收，程式把「\(item)」到這裡為止的過程收起來了：截圖、每一步的結果和那幾回合你的念頭都不在了，"
+            + "最近 \(keep) 回合還在下面。到這裡做過的動作：\(Self.actionList(steps))。"
+        try timeline.compact(Compaction(kind: .forced, item: item, fromSeq: start, toSeq: cut, text: text))
+        compactedNow.append(Compaction.Kind.forced.rawValue)
+        forgetSeen()
+        log("INFO", "turn \(turnIndex): forced compaction of「\(item)」events \(start + 1)…\(cut), \(steps.count) actions")
     }
 
     /// One step of an experience: only what she did, in full-screenshot coordinates (a click on the
@@ -1303,7 +1616,7 @@ public actor Doll {
 
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
-    static let observingTools: Set<String> = ["use_computer", "click", "type", "key", "scroll", "drag", "screenshot", "read_file", "edit_file"]
+    static let observingTools: Set<String> = ["click", "type", "key", "scroll", "drag", "screenshot", "read_file", "edit_file"]
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her

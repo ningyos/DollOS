@@ -322,8 +322,7 @@ public final class TodayIndex {
     /// (one entry per channel, labelled 你說｜Discord 私訊 / 你說｜終端機 / 你說｜Discord 語音) and her
     /// thought; a tool result's text (computer results are already trimmed to what changed and the
     /// open windows; never images); a watch wake's text. Not the program's 【快捷鍵】 and 【相關記憶】,
-    /// not `recall` results (copies of other data), and not a scenario's enter result such as
-    /// `use_computer`'s (2026-11-11: the program's fixed menu text, not something that happened).
+    /// and not `recall` results (copies of other data).
     /// Empty texts are left out.
     static func entries(_ ev: Event, tool: String?) -> [(id: String, label: String, text: String)] {
         let seq = ev.seq!
@@ -346,7 +345,7 @@ public final class TodayIndex {
     }
 
     /// Tools whose results the today index leaves out.
-    static let unindexedResults: Set<String> = Set(["recall"] + ScenarioKind.allCases.map(\.enterTool))
+    static let unindexedResults: Set<String> = ["recall"]
 
     /// The rows of `events`, their texts embedded in one call.
     private func put(_ events: [(Event, String?)]) throws -> [(Event, String, String, String, Data)] {

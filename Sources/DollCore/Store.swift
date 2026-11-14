@@ -169,15 +169,17 @@ public struct Event: Sendable, Equatable {
 /// A segment is one day, from waking to falling asleep; a process continues the newest segment.
 /// Consolidation (2026-11-11, manual; sleep does not exist yet) ends the day: it starts a new, empty
 /// segment (`startSegment`), so the next process begins a fresh today. The file is the only source of the events,
-/// the footers, the turn stats and the closed scenarios; `TodayIndex` is a rebuildable index of it.
+/// the footers, the turn stats, the todo list and the compactions; `TodayIndex` is a rebuildable index of it.
 ///
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
 ///
 ///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
 ///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","channel":"discord_dm|discord_voice|dollctl"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
-///     {"type":"scenario","kind":"computer","start_seq":…,"enter_result_seq":…,"end_seq":…,
-///      "last_seq":…,"success":true,"summary":"…"}                   a scenario she left with `outcome`
+///     {"type":"todo","seq":5,"phase":"idle|doing|waiting|failed","current":"…","pending":["…"],"start_seq":4}
+///                                                                   the todo list after her reply `seq` changed it
+///     {"type":"compact","kind":"done|failed|progress|forced","item":"…","from_seq":4,"to_seq":19,"text":"…"}
+///                                                                   an item's events (from_seq, to_seq] left the request
 ///     {"type":"turn","seq":2,"started":…,"seconds":…,"prompt":…,"cached":…,"effort":"medium"}
 ///                                                                   what the turn of reply `seq` took
 ///
@@ -191,8 +193,10 @@ public final class Timeline {
     public let segment: String
     /// Every event, oldest first, footers attached to her replies.
     public private(set) var events: [Event] = []
-    /// Every closed scenario, oldest first.
-    public private(set) var closedScenarios: [ClosedScenario] = []
+    /// The todo list as last recorded; idle for a new segment.
+    public private(set) var todo = TodoState()
+    /// Every compaction, oldest first.
+    public private(set) var compactions: [Compaction] = []
     /// Every recorded turn by her reply's seq.
     public private(set) var turnStats: [Int64: TurnStats] = [:]
     private var position: [Int64: Int] = [:]
@@ -237,15 +241,21 @@ public final class Timeline {
         var seq: Int64
         var text: String
     }
-    private struct ScenarioLine: Codable {
-        var type = "scenario"
-        var kind: ScenarioKind
+    private struct TodoLine: Codable {
+        var type = "todo"
+        var seq: Int64
+        var phase: TodoPhase
+        var current: String?
+        var pending: [String]
         var startSeq: Int64
-        var enterResultSeq: Int64
-        var endSeq: Int64
-        var lastSeq: Int64
-        var success: Bool
-        var summary: String
+    }
+    private struct CompactLine: Codable {
+        var type = "compact"
+        var kind: Compaction.Kind
+        var item: String
+        var fromSeq: Int64
+        var toSeq: Int64
+        var text: String?
     }
     private struct TurnLine: Codable {
         var type = "turn"
@@ -343,7 +353,12 @@ public final class Timeline {
                     let f = try Self.decoder.decode(FooterLine.self, from: raw)
                     guard let i = position[f.seq] else { throw StoreError(description: "footer for unknown seq \(f.seq)") }
                     events[i].footer = f.text
-                case "scenario": closedScenarios.append(Self.scenario(try Self.decoder.decode(ScenarioLine.self, from: raw)))
+                case "todo":
+                    let t = try Self.decoder.decode(TodoLine.self, from: raw)
+                    todo = Self.state(t)
+                case "compact":
+                    let c = try Self.decoder.decode(CompactLine.self, from: raw)
+                    compactions.append(Compaction(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: c.text))
                 case "turn":
                     let t = try Self.decoder.decode(TurnLine.self, from: raw)
                     turnStats[t.seq] = TurnStats(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt,
@@ -368,9 +383,13 @@ public final class Timeline {
         events.append(e)
     }
 
-    private static func scenario(_ l: ScenarioLine) -> ClosedScenario {
-        ClosedScenario(kind: l.kind, startSeq: l.startSeq, enterResultSeq: l.enterResultSeq, endSeq: l.endSeq,
-                       lastSeq: l.lastSeq, success: l.success, summary: l.summary)
+    private static func state(_ l: TodoLine) -> TodoState {
+        var s = TodoState()
+        s.phase = l.phase
+        s.current = l.current
+        s.pending = l.pending
+        s.startSeq = l.startSeq
+        return s
     }
 
     /// Writes one line and syncs it to disk.
@@ -406,12 +425,16 @@ public final class Timeline {
         events[i].footer = text
     }
 
-    /// Records a scenario she left with `outcome`; requests render its span from then on.
-    public func closeScenario(_ s: ClosedScenario) throws {
-        let line = ScenarioLine(kind: s.kind, startSeq: s.startSeq, enterResultSeq: s.enterResultSeq, endSeq: s.endSeq,
-                                lastSeq: s.lastSeq, success: s.success, summary: s.summary)
-        try write(line)
-        closedScenarios.append(Self.scenario(line))
+    /// Records the todo list after her reply `seq` (or the program's change at the event `seq`).
+    public func recordTodo(_ s: TodoState, seq: Int64) throws {
+        try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq))
+        todo = s
+    }
+
+    /// Records a compaction; requests render its span from then on.
+    public func compact(_ c: Compaction) throws {
+        try write(CompactLine(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: c.text))
+        compactions.append(c)
     }
 
     public func recordTurn(_ t: TurnStats) throws {
@@ -683,5 +706,3 @@ public final class Store {
         }.first
     }
 }
-
-extension ScenarioKind: Codable {}

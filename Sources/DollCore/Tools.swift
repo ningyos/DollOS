@@ -11,8 +11,9 @@ import Foundation
 ///     think(level: medium | high)        the next model call thinks first (2026-11-11: `none` removed)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories and today's timeline
-///     use_computer(expect)               enters the computer scenario (spec 3.1, 2026-11-08); expect: what
-///                                        she should see when done (2026-11-09)
+///     todo.set(items) / todo.done(result) / todo.fail(reason, tried) / todo.wait(reason) / todo.progress(note)
+///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
+///                                        only while an item is 進行中
 ///     voice.join() / voice.leave()       ([voice] enabled, M6) enter / leave the Discord voice channel the owner is in
 ///     voice.say(text)                    ([voice] enabled, M6) speak in that voice channel through the TTS
 ///
@@ -21,11 +22,9 @@ import Foundation
 /// state is refused with the reason. Text outside her calls is her own thought, seen by no one else.
 ///
 /// The `tools` list is the same for the whole process (it opens the prompt; a change would void the
-/// server's prefix cache), so a scenario's tools (`ScenarioKind.tools`, then `outcome`) are always
-/// declared but work only while it is open, and a call while it is closed is refused with how to open
-/// it: the computer's click, type, key, scroll, drag, read_file, write_file, edit_file (text files in
-/// the VM, 2026-11-09; text results, no screenshot), screenshot, watch; `outcome(success, summary)`
-/// leaves it (her summary replaces the scenario's turns in later requests, and nothing wakes her for it).
+/// server's prefix cache). The computer's tools (click, type, key, scroll, drag, read_file,
+/// write_file, edit_file, screenshot, watch) are always declared; a call while no todo item is in
+/// progress is refused with what to do first (`Doll.gateText`).
 public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
     static let modifiers = ["cmd", "shift", "alt", "ctrl"]
@@ -54,7 +53,7 @@ public enum Tools {
     /// Every internal tool, in the order she sees them. Built once per process from config, so the
     /// `tools` list never changes between turns and the server's prefix cache keeps hitting.
     /// `voice` (`[voice] enabled`, M6): the voice tools follow the others.
-    static func specs(memory: MemoryConfig, voice: Bool) -> [Spec] {
+    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig) -> [Spec] {
         let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
         return [
             Spec(name: Name.dm,
@@ -105,15 +104,50 @@ public enum Tools {
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
                  ], jsonParameters: []),
-            Spec(name: "use_computer",
-                 description: "打開電腦選單：坐到你的電腦（一台 macOS）前面。結果會列出操作電腦的工具，附現在的全螢幕截圖、最前面視窗的視窗圖和概要。做完呼叫 outcome 結束。",
-                 parameters: [
-                     "type": "object",
-                     "properties": ["expect": ["type": "string", "description": "做完的時候畫面上、檔案裡應該看到什麼（例如：桌面有 copy.rtf，內容跟 notes.txt 一樣）"]],
-                     "required": ["expect"],
-                 ], jsonParameters: []),
-        ] + (voice ? voiceSpecs : [])
+        ] + todoSpecs + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
+
+    /// Her todo list (2026-11-14). Never gated.
+    static let todoSpecs: [Spec] = [
+        Spec(name: Name.todoSet,
+             description: "列 todo：要做事之前先列，小事就一項。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼（例：桌面有 copy.rtf，內容跟 notes.txt 一樣）。沒有進行中的項目時，第一項馬上變成進行中；有進行中的項目時，只換掉它後面還沒開始的那些。一項失敗以後也用它決定剩下的：重寫剩下的項目、照原樣再列一次就是接著做下一項；items 給空的陣列就是結束清單。",
+             parameters: [
+                 "type": "object",
+                 "properties": ["items": ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"]],
+                 "required": ["items"],
+             ], jsonParameters: ["items"]),
+        Spec(name: Name.todoDone,
+             description: "這一項做完了。先看最新的截圖或檔案、對照這一項寫的做完的樣子：跟動手前比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案）就是還沒完成，先修好。「原本就是這樣」只有你動手前親眼看過才算。呼叫以後，這一項的過程（截圖、每一步的結果、那幾回合你的念頭）就從你眼前收起來，只留下你寫的 result 和程式列的動作清單；所以 result 寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。有下一項就接著進行中；沒有了就回到待命中，程式不會再為這件事叫你，要跟主人說的話用回話的工具寫在同一則回覆裡。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
+             parameters: [
+                 "type": "object",
+                 "properties": ["result": ["type": "string", "description": "寫給以後的自己：做了什麼、怎麼做的、結果、怎麼確認的"]],
+                 "required": ["result"],
+             ], jsonParameters: []),
+        Spec(name: Name.todoFail,
+             description: "確定這一項做不到才用；還在試、或在等主人，都不是失敗。呼叫以後這一項的過程收起來，留下你寫的原因、試過什麼和動作清單；電腦工具先鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目，或跟主人說了以後用 todo.set 給空的陣列結束清單，或用 todo.set 照原樣列剩下的、接著做下一項。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("reason", ["type": "string", "description": "為什麼確定做不到"]),
+                     ("tried", ["type": "string", "description": "試過什麼、各自的結果"]),
+                 ]),
+                 "required": ["reason", "tried"],
+             ], jsonParameters: []),
+        Spec(name: Name.todoWait,
+             description: "這一項要等主人（回話、幫你做什麼）才能往下：這一項變成等待中，程式不再叫你，直到有事發生（有人說話、watch 叫你）。要主人做的事先用回話的工具跟他說清楚。",
+             parameters: [
+                 "type": "object",
+                 "properties": ["reason": ["type": "string", "description": "在等什麼"]],
+                 "required": ["reason"],
+             ], jsonParameters: []),
+        Spec(name: Name.todoProgress,
+             description: "【狀況】說 context 快滿的時候用：寫下這一項做到哪裡、接下來要做什麼。程式把這一項到現在為止的過程收起來，只留你寫的進度和動作清單；這一項還是進行中，接著做。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
+             parameters: [
+                 "type": "object",
+                 "properties": ["note": ["type": "string", "description": "做到哪裡、確認過什麼、接下來要做什麼"]],
+                 "required": ["note"],
+             ], jsonParameters: []),
+    ]
 
     /// The names of the tools that reach a person or act on a channel: written once, so the specs,
     /// the prompt text, the decoder and everything that reads her calls agree.
@@ -123,7 +157,20 @@ public enum Tools {
         static let voiceJoin = "voice.join"
         static let voiceSay = "voice.say"
         static let voiceLeave = "voice.leave"
+        static let todoSet = "todo.set"
+        static let todoDone = "todo.done"
+        static let todoFail = "todo.fail"
+        static let todoWait = "todo.wait"
+        static let todoProgress = "todo.progress"
     }
+
+    /// Her todo tools; they stay (with their results) when an item's span is compacted.
+    static let todoNames: Set<String> = [Name.todoSet, Name.todoDone, Name.todoFail, Name.todoWait, Name.todoProgress]
+    /// The todo calls that end a span (the item, or her progress compaction): the calls after one in
+    /// the same reply do not run, except the speaking tools.
+    static let ending: Set<String> = [Name.todoDone, Name.todoFail, Name.todoProgress]
+    /// The tools that run only while an item is 進行中 (2026-11-14): the computer's.
+    static let gated: Set<String> = ["click", "type", "key", "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch"]
 
     /// The tools she speaks with, and the channel each one goes to.
     static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice]
@@ -149,7 +196,7 @@ public enum Tools {
     /// order and stop at the first failure; only the last one done carries the observation (2026-11-09).
     static let actionNames: Set<String> = ["click", "type", "key", "scroll", "drag"]
 
-    /// The computer menu (spec 3.1, 2026-11-08): declared in `tools` from the start, usable only while open.
+    /// The computer tools (spec 3.1, 2026-11-08): declared in `tools` from the start, run only while an item is 進行中.
     static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
         let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
         let after = "做完會等畫面停下來，回一行結果（同一則回覆裡最後一個動作才附新的截圖、視窗圖和概要）。"
@@ -242,7 +289,7 @@ public enum Tools {
                  parameters: ["type": "object", "properties": [:], "required": []],
                  jsonParameters: []),
             Spec(name: "watch",
-                 description: "盯著畫面一塊地方，馬上返回。那裡有變化就叫你（兩次至少隔 \(Int(c.watchMinIntervalS)) 秒），max_wait_s 秒內沒變化也會叫你；叫你時附一張全螢幕截圖。再呼叫一次 watch 就取代上一個；連續 \(c.watchStopAfter) 次叫你都沒操作電腦，就自動停。",
+                 description: "盯著畫面一塊地方，馬上返回。那裡有變化就叫你（兩次至少隔 \(Int(c.watchMinIntervalS)) 秒），max_wait_s 秒內沒變化也會叫你；叫你時附一張全螢幕截圖。設了 watch，這一項就變成等待中：程式不會再叫你，等 watch（或有人說話）才叫你。再呼叫一次 watch 就取代上一個；連續 \(c.watchStopAfter) 次叫你都沒操作電腦，就自動停；這一項結束時也會停。",
                  parameters: [
                      "type": "object",
                      "properties": [
@@ -254,27 +301,7 @@ public enum Tools {
         ]
     }
 
-    /// The tool that leaves any scenario, listed last in its menu (spec 3.1, 2026-11-09).
-    static let exitSpec = Spec(
-        name: "outcome",
-        description: "結束這次用電腦。先看最新的截圖、對照 use_computer 時說的期望（expect），再回答達成了沒。跟這次要做到的事和動手前的樣子比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案），就是沒達成：先修好，修不好就報 false。「原本就是這樣」只有在你動手前親眼看過才算。結束以後，這次用電腦的過程（截圖、每一步的結果）就不在你眼前了，只留下你在 summary 寫的；所以 summary 要寫給以後的自己看：用自然的話寫你做了什麼、怎麼做的、結果怎樣、你怎麼確認的。呼叫完電腦工具就鎖回去、watch 停掉，程式不會再叫你；要跟主人說的話用回話的工具寫在同一則回覆裡（outcome 前後都可以）；outcome 後面的其他呼叫不會執行。",
-        parameters: [
-            "type": "object",
-            "properties": .object([
-                ("success", ["type": "boolean", "description": "達成就是 true，沒有就是 false"]),
-                ("summary", ["type": "string", "description": "寫給以後的自己：做了什麼、怎麼做的、結果、怎麼確認的"]),
-            ]),
-            "required": ["success", "summary"],
-        ], jsonParameters: ["success"])
-
-    /// The enter call's text, ahead of the first screenshot: which tools the menu opened.
-    static func menu(_ specs: [Spec]) -> String {
-        "電腦選單打開了，現在可以用這些工具：" + specs.map(\.name).joined(separator: "、") + "。"
-            + chaining + "下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
-    }
-
-    /// How her computer actions chain in one reply (2026-11-09): in the menu's intro and the system
-    /// prompt's computer paragraph, one text.
+    /// How her computer actions chain in one reply (2026-11-09): in the system prompt's computer paragraph.
     static let chaining = "接下來幾步的結果猜得到的話（例如：打開另存面板、打檔名、按 Save），就照順序寫在同一則回覆裡，程式會照順序做，哪一步失敗就停在那裡，後面的不做。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）會附新的全螢幕截圖、視窗圖和概要，前面的只回一行結果。結果猜不到的（找不找得到、會跳出什麼）就先做那一步、看了再說。"
 
     /// The request's `tools`: every spec's tool object, as JSON text.
@@ -319,9 +346,12 @@ public enum Tools {
         case recall(String)
         case voiceJoin
         case voiceLeave
-        case enter(ScenarioKind, expect: String)
         case act(ComputerAction)
-        case outcome(success: Bool, summary: String)
+        case todoSet([String])
+        case todoDone(String)
+        case todoFail(reason: String, tried: String)
+        case todoWait(String)
+        case todoProgress(String)
         /// `click` at x, y on the full screenshot or on the last window crop; the program converts
         /// and checks them before anything is clicked.
         case clickAt(x: Int, y: Int, onWindow: Bool, button: String, count: Int)
@@ -334,14 +364,10 @@ public enum Tools {
         case editFile(path: String, old: String, new: String)
     }
 
-    /// `specs` are the tools she may call now; `locked` are a scenario's tools while it is closed:
-    /// calling one is an error that says how to open it.
-    static func decode(_ call: ToolCall, specs: [Spec], locked: [(ScenarioKind, [Spec])] = []) throws -> Request {
+    /// `specs` are the tools she has; bad arguments throw with what was wrong.
+    static func decode(_ call: ToolCall, specs: [Spec]) throws -> Request {
         if let problem = call.malformed { throw ToolError(description: problem) }
         guard let spec = specs.first(where: { $0.name == call.name }) else {
-            if let kind = locked.first(where: { $0.1.contains { $0.name == call.name } })?.0 {
-                throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 \(kind.enterTool)(expect) 打開\(kind.menuName)選單")
-            }
             throw ToolError(description: "沒有 \(call.name) 這個工具")
         }
         guard case .object(let schema) = spec.parameters,
@@ -401,14 +427,22 @@ public enum Tools {
             return .remember(items)
         case "recall":
             return .recall(try nonEmpty("query"))
-        case "use_computer":
-            return .enter(.computer, expect: try nonEmpty("expect"))
-        case "outcome":
-            let raw = try nonEmpty("success").lowercased()
-            guard raw == "true" || raw == "false" else {
-                throw ToolError(description: "outcome 的 success 只能是 true 或 false，收到 \(raw)")
+        case Name.todoSet:
+            let raw = value("items")
+            guard let items = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else {
+                throw ToolError(description: "todo.set 的 items 要是字串的 JSON 陣列，例：[\"桌面有 copy.rtf\"]；收到 \(raw)")
             }
-            return .outcome(success: raw == "true", summary: try nonEmpty("summary"))
+            let trimmed = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard !trimmed.contains(where: \.isEmpty) else { throw ToolError(description: "todo.set 的 items 裡有空的項目") }
+            return .todoSet(trimmed)
+        case Name.todoDone:
+            return .todoDone(try nonEmpty("result"))
+        case Name.todoFail:
+            return .todoFail(reason: try nonEmpty("reason"), tried: try nonEmpty("tried"))
+        case Name.todoWait:
+            return .todoWait(try nonEmpty("reason"))
+        case Name.todoProgress:
+            return .todoProgress(try nonEmpty("note"))
         case "screenshot":
             return .screenshot
         case "click":
@@ -665,37 +699,53 @@ public func estimateTokens(_ s: String) -> Int {
 }
 
 enum Instructions {
-    /// How she works, after the pack in the system prompt. Her tools' descriptions (in `tools`) carry the details.
+    /// How she works, after the pack in the system prompt (2026-11-14, owner: the operating
+    /// principles she always needs, in plain sentences; the rest of DollOS is in her documents,
+    /// `Doll.docsVMPath`). Her tools' descriptions (in `tools`) carry the details.
     /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
-    static func text(voice: Bool) -> String {
+    static func text(voice: Bool, context c: ContextConfig) -> String {
         let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""
         return """
         ## 你怎麼運作
 
-        你跟主人在同一條時間線上。有事情發生（主人說話、工具的結果回來、你設的 watch 叫你）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
+        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
 
-        別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字（同音字、聽錯的詞），看起來怪就先猜原意，猜不出來就問；回語音要短、口語，因為會被念出來。
-        時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
+        回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。做事只能透過工具，光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
 
-        回話要自己選地方，看那句話的括號裡寫從哪裡來：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；從哪裡來就從哪裡回，用錯地方對方收不到。工具現在用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
+        別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字，看起來怪就先猜原意，猜不出來就問；回語音要短、口語。時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
 
-        每個回合的最後一則訊息是【狀況】，裡面只有事實：你在哪個選單、有沒有 watch、context 大約多長、下一回合的 effort。
+        回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
 
-        ## 怎麼做事
+        每個回合的最後一則訊息是【狀況】，裡面只有事實：你的 todo、有沒有 watch、context 用了多少、下一回合的 effort。
 
-        做事只能透過工具：回主人的私訊用 \(Tools.Name.dm)，回開發者用 \(Tools.Name.reply)，要先想再答用 think，記住事情用 remember，查記憶用 recall，用電腦先 use_computer。光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序全部執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
+        ## todo
 
-        回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。要讓主人知道的事，一定要用 \(Tools.Name.dm) 說出來；要回開發者，用 \(Tools.Name.reply)。
+        要做事之前先用 todo.set 列 todo，小事就一項。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼。一次只做一項，照順序。你的 todo 有五種狀態：
+        - 待命中：沒有 todo。只有事情發生才有回合；電腦工具不能用，呼叫會回「失敗：…先用 todo.set 列 todo」。
+        - 進行中：正在做一項。電腦工具可以用；你每回覆一次就會再有下一回合，直到這一項結束。
+        - 等待中：這一項在等主人或 watch（你呼叫了 todo.wait 或 watch）。有事發生之前不會有回合；有事發生就回到進行中。
+        - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
+        - 失敗：你確定做不到，用 todo.fail(reason, tried)。還在試、在等主人，都不是失敗。失敗以後電腦工具鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 
-        你有一台自己的電腦（macOS）。use_computer(expect) 打開電腦選單，expect 寫做完的時候應該看到什麼；結果會列出點、打字、按鍵、捲動、拖曳、截圖、watch 這些工具，附一張現在的畫面；動作做完會回一行結果，一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)做完了，看最新的截圖對照 expect，用 outcome(success, summary) 結束：電腦工具鎖回去，程式不會再為這件事叫你，所以要對主人說的話用 \(Tools.Name.dm) 寫在同一則回覆裡。同一則回覆裡寫在 outcome 後面的呼叫，除了回話的工具都不會執行。結束以後，這次用電腦的截圖和每一步的結果就收起來了，use_computer 的結果換成你在 summary 寫給以後自己的經過：做了什麼、怎麼做的、結果、怎麼確認的。
+        一項完成或失敗的時候，這一項做事的過程（每一步的呼叫和結果、截圖、那幾回合你的念頭）就從你眼前收起來了，只留下：你寫的 result（失敗時是原因和試過什麼）、程式列的動作清單（像「key cmd+shift+s、type 「copy」、click "Save"」，沒有截圖，沒有每一步的結果），和中間你跟別人說的話、別人跟你說的話（原樣留著）。所以 result 要寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。收起來的東西還在時間線檔裡，recall 查得到。
 
-        卡住的時候可以找主人：人機驗證（拼圖、選圖、滑塊）不要自己試，要手機號、要付錢、要主人才有的東西也一樣——跟主人說清楚卡在哪、要主人做什麼，這則回覆就不要再呼叫電腦工具，等主人回話；電腦選單會一直開著，主人處理完說一聲你再接著做。
+        context 用到 \(Int((c.warnRatio * 100).rounded()))% 的時候，【狀況】會多一行說快滿了。那時候用 todo.progress(note) 寫下這一項做到哪裡、接下來要做什麼：程式把這一項到現在為止的過程收起來，只留你寫的進度和動作清單，這一項還是進行中。看到那一行之後 \(c.forceAfterTurns) 回合你都沒收，程式會自己收：留動作清單和最近 \(c.forceKeepTurns) 回合，你寫的進度就沒有了。如果【狀況】說大部分是對話，收起過程也幫不了多少。
+
+        ## 你的電腦
+
+        你有一台自己的電腦（macOS），只有進行中的項目能用電腦工具。開始用之前先呼叫 screenshot 看現在的畫面。動作做完會回一行結果；一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)
+
+        卡住的時候可以找主人：人機驗證（拼圖、選圖、滑塊）不要自己試，要手機號、要付錢、要主人才有的東西也一樣——跟主人說清楚卡在哪、要主人做什麼，然後 todo.wait，等主人回話再接著做。
+
+        ## DollOS 文件
+
+        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；sleep.md 是整理（睡覺）；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
 
         ## 做事的規矩
 
-        - 主人交代一件事，那一回合就動手做第一步；不要只回「收到」。
+        - 主人交代一件事，那一回合就列 todo、動手做第一步；不要只回「收到」。
         - 按了不代表成功，做完不代表目標完成。結果要從截圖看過才知道；沒看到結果不要說做完了。
         - 檢查步驟要真的做、真的看；畫面跟預期不一樣就不是做完。
         - 主人交代、在等結果的事，做完要回報，講結果和你檢查到什麼；其他的，要不要說你自己判斷。
@@ -713,6 +763,6 @@ enum Instructions {
 
         \(Tools.Name.voiceSay) 的話用你的聲音說出口，主人只聽得到、沒有文字；你不在語音頻道裡就說不出去。所以裡面不要放念不出來或念了沒意義的東西：連結、網址、公式、程式碼、指令、檔案路徑、一長串數字、表情符號、顏文字。真的要給主人看，就用 \(Tools.Name.dm) 傳到他的 Discord 私訊，\(Tools.Name.voiceSay) 只講一聲（例如「我傳給你了」）。
 
-        主人開口的時候，你正在說的話會馬上停下來。\(Tools.Name.voiceSay) 的結果會寫你說到哪裡被打斷、後面哪些沒說出口；沒說出口的主人沒聽到，要不要再講、怎麼講，先聽完他說什麼再決定。
+        主人開口的時候，你正在說的話會馬上停下來，\(Tools.Name.voiceSay) 的結果會寫你說到哪裡；被打斷和斷線重連的細節在 \(Doll.docsVMPath)/voice.md。
         """
 }

@@ -101,7 +101,7 @@ function renderStatus(s) {
   $("state").textContent = names[s.state] || s.state;
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
-  $("menu").textContent = "選單：" + (s.scenario ? s.scenario + (s.expect ? `（expect：${s.expect}）` : "") : "頂層");
+  $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」` : "") + (s.pending.length ? `；後面 ${s.pending.length} 項` : "");
   $("watch").textContent = "watch：" + (s.watch || "沒有");
   $("ctx").textContent = `context 約 ${s.contextTokens} token`;
   $("effort").textContent = "effort：" + s.effort;

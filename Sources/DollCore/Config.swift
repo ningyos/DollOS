@@ -23,6 +23,21 @@ public struct CoreConfig: Sendable {
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
     /// voice share one MLX runtime, so one limit covers both. Set before either loads.
     public var mlxCacheLimitMB = 256
+    /// Her DollOS documents (2026-11-14): the repo folder copied into her computer at
+    /// `Doll.docsVMPath` at boot; relative paths are under the config's folder.
+    public var docs = "dolldocs"
+}
+
+/// How full her context may get and what happens near the limit (2026-11-14, owner).
+public struct ContextConfig: Sendable {
+    /// The context figure 【狀況】 measures against, in tokens.
+    public var limit = 60_000
+    /// At this share of `limit` 【狀況】 warns (one line, no earlier one).
+    public var warnRatio = 0.85
+    /// Turns that showed the warning before the program compacts the item itself.
+    public var forceAfterTurns = 3
+    /// Her latest turns a forced compaction leaves intact.
+    public var forceKeepTurns = 2
 }
 
 /// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
@@ -115,8 +130,9 @@ public struct BridgeConfig: Sendable {
 }
 
 public struct IdleConfig: Sendable {
-    /// N: this many consecutive turns without a tool call writes one log line. With a menu open, the
-    /// ones before it are answered by a reminder and another turn (2026-11-11); the N-th is not.
+    /// N: this many consecutive turns without a tool call writes one log line. With an item in
+    /// progress, the ones before it are answered by a reminder and another turn (2026-11-11); the
+    /// N-th is not, and she gets no further turn until an event.
     public var maxTurnsWithoutTool = 3
 }
 
@@ -254,6 +270,7 @@ public struct VoiceConfig: Sendable {
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
+    public var context: ContextConfig
     public var computer: ComputerConfig
     public var files: FilesConfig
     public var idle: IdleConfig
@@ -267,7 +284,7 @@ public struct Config: Sendable {
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
-        let unknown = Set(raw.keys).subtracting(["llm", "core", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
+        let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
                                                  "consolidate", "select", "voice"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
@@ -291,12 +308,26 @@ public struct Config: Sendable {
         try c.read("pack", &core.pack)
         try c.read("priority", &core.priority)
         try c.read("mlx_cache_limit_mb", &core.mlxCacheLimitMB)
+        try c.read("docs", &core.docs)
         try c.finish()
         let known = Set(Priority.allCases.map(\.rawValue))
         guard Set(core.priority) == known, core.priority.count == known.count else {
             throw TOMLError(description: "[core] priority must list each of \(known.sorted()) exactly once")
         }
         guard core.mlxCacheLimitMB >= 0 else { throw TOMLError(description: "[core] mlx_cache_limit_mb must be 0 or more") }
+        guard !core.docs.isEmpty else { throw TOMLError(description: "[core] docs must not be empty") }
+
+        var x = Section(name: "context", raw: raw["context"] ?? [:])
+        var context = ContextConfig()
+        try x.read("limit", &context.limit)
+        try x.read("warn_ratio", &context.warnRatio)
+        try x.read("force_after_turns", &context.forceAfterTurns)
+        try x.read("force_keep_turns", &context.forceKeepTurns)
+        try x.finish()
+        guard context.limit >= 1000, context.warnRatio > 0, context.warnRatio < 1, context.forceAfterTurns >= 1,
+              context.forceKeepTurns >= 1 else {
+            throw TOMLError(description: "[context] limit at least 1000, warn_ratio between 0 and 1, force_after_turns and force_keep_turns at least 1")
+        }
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])
         var computer = ComputerConfig()
@@ -460,7 +491,7 @@ public struct Config: Sendable {
               voice.bridgeTimeoutS > 0, voice.bridgeProbeMs >= 1 else {
             throw TOMLError(description: "[voice] silence_ms at least 100; silence_rms 0 or more; endpoint_poll_ms and asr_final_timeout_ms at least 1; tts_precision int8 or bf16; tts_model, tts_codec, reference_audio, reference_text, tts_language, warmup_text, data_dir not empty; sentence_max_chars at least 10; stop_settle_ms 0 or more; bridge_timeout_s positive; bridge_probe_ms at least 1")
         }
-        return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
+        return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
                       api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice)
     }
 }
