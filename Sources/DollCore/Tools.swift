@@ -8,7 +8,7 @@ import Foundation
 ///
 ///     discord.dm(text)                   text to the owner's Discord DM
 ///     dollctl.reply(text)                text to the developer's terminal (`dollctl chat`)
-///     think(level: medium | high)        the next model call thinks first (2026-11-11: `none` removed)
+///     think(level: medium)               the next model call thinks first (2026-11-11: `none` removed; 2026-11-15: `high` removed)
 ///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
 ///     recall(query)                      search her memories and today's timeline
 ///     todo.set(items) / todo.done(result) / todo.fail(reason, tried) / todo.wait(reason) / todo.progress(note)
@@ -71,10 +71,13 @@ public enum Tools {
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: "think",
-                 description: "下一回合先思考再回答，只管下一回合，之後回到平常。medium 一般；high 更深（卡住、要想辦法的時候）。",
+                 // `high` removed (owner, 2026-11-15): the chat template writes the high-effort sentence at the
+                 // very top of the prompt, so each use re-read the whole timeline twice (going and coming
+                 // back), and on 30 graded questions it answered no better than medium (27/30 both).
+                 description: "下一回合先思考再回答，只管下一回合，之後回到平常。平常聊天不用；卡住、要想辦法的時候用。",
                  parameters: [
                      "type": "object",
-                     "properties": ["level": ["type": "string", "enum": ["medium", "high"]]],
+                     "properties": ["level": ["type": "string", "enum": ["medium"]]],
                      "required": ["level"],
                  ], jsonParameters: []),
             Spec(name: "remember",
@@ -413,8 +416,8 @@ public enum Tools {
             return .voiceLeave
         case "think":
             let level = value("level").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ["medium", "high"].contains(level) else {
-                throw ToolError(description: "think 的 level 只能是 medium 或 high，收到 \(level)")
+            guard level == "medium" else {
+                throw ToolError(description: "think 的 level 只能是 medium，收到 \(level)")
             }
             return .think(level)
         case "remember":

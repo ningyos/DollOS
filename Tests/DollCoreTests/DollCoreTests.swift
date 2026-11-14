@@ -543,7 +543,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(results.count == 8)
     #expect(results[0].text == "失敗：沒有 bogus 這個工具")
     #expect(results[1].text == "失敗：recall 沒有 q 這個參數")
-    #expect(results[2].text == "失敗：think 的 level 只能是 medium 或 high，收到 low")
+    #expect(results[2].text == "失敗：think 的 level 只能是 medium，收到 low")
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
     #expect(results[5].text.hasPrefix("todo 列好了。"))                     // later calls still run
@@ -640,9 +640,9 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort() async throws {
-    let h = try await Harness()
+    let h = try await Harness { $0.llm.taskTurnEffort = "none" }       // so her think shows
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("", dm("等我"), think("high")))         // next call is high
+    try await h.turn(Scripted("", dm("等我"), think("medium")))       // next call is medium
     await h.model.stall()
     await h.model.add([Scripted("", dm("好"))])
     await h.doll.ownerSaid("開始算")
@@ -653,7 +653,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     try await running.value
     let reqs = await h.model.requests
     #expect(reqs.count == 3)
-    #expect(reqs[1].effort == "high" && reqs[2].effort == "high")    // the think survives the cancelled call
+    #expect(reqs[1].effort == "medium" && reqs[2].effort == "medium")    // the think survives the cancelled call
     #expect(!reqs[1].messages.contains { $0.content.contains("等等不用算了") })
     #expect(reqs[2].messages.contains { $0.content.contains("等等不用算了") })
     #expect(h.reports.map(\.index) == [1, 2] && h.said == ["等我", "好"])
@@ -698,36 +698,38 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func thinkSetsTheNextCallsEffortOnceAndShowsInTheFooter() async throws {
-    let h = try await Harness()
+    let h = try await Harness { $0.llm.taskTurnEffort = "none" }       // so her think shows
     await h.doll.ownerSaid("這題難")
-    try await h.turn(Scripted("", dm("等我"), think("high")))
+    try await h.turn(Scripted("", dm("等我"), think("medium")))
     let status = try await h.doll.status()
-    #expect(h.last.actions == ["said discord_dm", "think high"] && status.contains("effort：high"))
+    #expect(h.last.actions == ["said discord_dm", "think medium"] && status.contains("effort：medium"))
     await h.doll.ownerSaid("嗯")
     try await h.turn("想好了")
     await h.doll.ownerSaid("嗯")
     try await h.turn("嗯")
-    #expect(await h.model.requests.map(\.effort) == ["medium", "high", "medium"])
-    #expect(h.reports[1].footer.contains("effort：high") && h.reports[2].footer.contains("effort：medium"))
-    // Up only (2026-11-11: `none` removed; at none she repeated think(none) 16 turns in a row).
+    #expect(await h.model.requests.map(\.effort) == ["none", "medium", "none"])
+    #expect(h.reports[1].footer.contains("effort：medium") && h.reports[2].footer.contains("effort：none"))
+    // Medium only (2026-11-11: `none` removed, at none she repeated think(none) 16 turns in a row;
+    // 2026-11-15: `high` removed, each use re-read the whole timeline twice and answered no better).
     await h.doll.ownerSaid("再查")
-    try await h.turn(Scripted("", think("none")))
-    #expect(try h.toolResults().last!.text == "失敗：think 的 level 只能是 medium 或 high，收到 none")
+    try await h.turn(Scripted("", think("none"), think("high")))
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["失敗：think 的 level 只能是 medium，收到 none",
+                                                          "失敗：think 的 level 只能是 medium，收到 high"])
 }
 
 @Test func taskTurnsUseTaskTurnEffortAndOnlyAnEmptyTurnTheDefault() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("查一下")
     try await h.turn(Scripted("好", recall("一")))                     // owner line drained
-    try await h.turn(Scripted("", think("high")))                      // her tool result
-    try await h.turn("想好了")                                          // her think wins over the task effort
+    try await h.turn(Scripted("", recall("二")))                       // her tool result
+    try await h.turn("想好了")                                          // her tool result again
     try await h.turn("嗯")                                              // nothing new: the default
     await h.doll.put(Event(.watch, .internal, "盯著的整個畫面變了。"))
     try await h.turn("看到了")                                          // a watch wake
     await h.doll.ownerSaid("再說一次", voice: true)
     try await h.turn("沒有喔")                                          // owner voice
-    #expect(await h.model.requests.map(\.effort) == ["medium", "medium", "high", "none", "medium", "medium"])
-    #expect(h.reports.map(\.effort) == ["medium", "medium", "high", "none", "medium", "medium"])
+    #expect(await h.model.requests.map(\.effort) == ["medium", "medium", "medium", "none", "medium", "medium"])
+    #expect(h.reports.map(\.effort) == ["medium", "medium", "medium", "none", "medium", "medium"])
     #expect(h.reports[1].footer.contains("effort：medium") && h.reports[3].footer.contains("effort：none"))
 
     let off = try await Harness(tune: { $0.llm.taskTurnEffort = "none"; $0.llm.defaultEffort = "high" })
@@ -1099,11 +1101,11 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(await h.doll.itemSteps.map(\.line) == ["click「Save」 right 雙擊", "type 「sw_vers\n」", "key cmd+s"])
     // Every other tool between them keeps its result; the last action is the last one written, wherever it is.
     try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), screenshotCall,
-                              ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("high")))
+                              ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("medium")))
     results = Array(try h.toolResults().suffix(5))
-    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == ["", "現在的畫面：", "", fakeWindowsLine, "下一回合 effort：high"])
+    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == ["", "現在的畫面：", "", fakeWindowsLine, "下一回合 effort：medium"])
     #expect(results.map { $0.image != nil } == [false, true, false, true, false])
-    #expect(h.last.actions == ["scroll", "screenshot", "drag", "click", "think high"])
+    #expect(h.last.actions == ["scroll", "screenshot", "drag", "click", "think medium"])
     // A single action is unchanged: its line, the VM's answer, the observation.
     try await h.turn(Scripted("", key("Return")))
     let one = try h.toolResults().last!
@@ -1964,7 +1966,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     #expect(h.last.attached == [mem[0].text])
     #expect(h.logs.contains { $0.contains("選記憶（主人的新訊息）") && $0.contains("prepared 1;") && $0.contains("attached 1 [") })
     // Turns on her own tool results attach nothing.
-    try await h.turn(Scripted("", think("high")))
+    try await h.turn(Scripted("", think("medium")))
     try await h.turn("嗯")
     #expect(try memoryEvents(h).count == 1 && h.last.attached.isEmpty)
 

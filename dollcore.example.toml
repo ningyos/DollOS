@@ -1,7 +1,7 @@
 [llm]
 base_url = "http://192.0.2.10:8080"
 model = "qwen3.8-flash-next-iq3_s"
-default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 think(medium／high) 調高一次。現在每個回合都是做事的回合，這個值只在「沒有新事件」的回合用（目前不會發生）
+default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 think(medium) 調高一次（2026-11-15：high 拿掉了，模板把 high 那句寫在 prompt 最前面，每用一次整條時間線重讀兩次，30 題對答案也沒有比 medium 好）。現在每個回合都是做事的回合，這個值只在「沒有新事件」的回合用（目前不會發生）
 task_turn_effort = "medium"  # 決定（2026-11-08）：做事的回合（含新主人事件、她的工具結果、watch 叫醒）用 medium。理由：none 時第 1 回合常只說一句就停（B 同一請求重送 5／8 有呼叫工具），medium 10/10；M2 medium 輪 C 有 2 次在工具結果回合（none）只說一句就停。她用 think 指定的仍優先
 timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
 max_tokens = 4096             # 初始值理由：一回合一個動作，回覆很少超過 1k token；4k 夠 high 的思考
