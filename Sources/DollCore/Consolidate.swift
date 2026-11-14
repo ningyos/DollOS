@@ -126,7 +126,7 @@ public enum Consolidation {
         let messages = [ChatMessage(role: "system", content: instructions),
                         ChatMessage(role: "user", content: input(segment: timeline.segment, tasks: tasks, related: shown, registry: entries))]
         let started = Date()
-        let reply = try await model.chat(messages, effort: config.consolidate.effort)
+        let reply = try await model.chat(messages, tools: nil, effort: config.consolidate.effort)
         let seconds = Date().timeIntervalSince(started)
         let plan = try parse(reply.content, known: Set(related.map(\.id)), registry: Set(entries.map(\.id)))
 
@@ -225,9 +225,8 @@ public enum Consolidation {
                 line(ev.kind == .owner ? "主人" : "開發者", ev.text)
                 queries.append(ev.text)
             case .doll:
-                let parsed = ParsedReply(ev.text)
-                line("她想", parsed.thought)
-                for call in parsed.calls {
+                line("她想", ev.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                for call in ev.calls {
                     if call.malformed == nil, let channel = Tools.speaking[call.name] {
                         line("她說｜\(channel.label)", call.parameters.first { $0.name == "text" }?.value ?? "")
                         continue

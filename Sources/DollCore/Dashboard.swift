@@ -151,7 +151,7 @@ extension Doll {
             lastInterrupt: lastInterrupt)
     }
 
-    /// The newest `limit` items, newest first. Her reply's calls are read back from its raw text and
+    /// The newest `limit` items, newest first. Her reply's stored calls are
     /// matched in order to the results stored after it, the way `callNames` does.
     public func dashboardTimeline(limit: Int) throws -> [DashboardItem] {
         let stats = timeline.turnStats
@@ -161,11 +161,11 @@ extension Doll {
             let seq = e.seq!
             switch e.kind {
             case .doll:
-                let parsed = ParsedReply(e.text)
                 let s = stats[seq]
                 items.append(DashboardItem(
-                    type: "turn", seq: seq, ts: e.ts, secret: e.secret, thought: parsed.thought, footer: e.footer,
-                    calls: parsed.calls.map {
+                    type: "turn", seq: seq, ts: e.ts, secret: e.secret,
+                    thought: e.text.trimmingCharacters(in: .whitespacesAndNewlines), footer: e.footer,
+                    calls: e.calls.map {
                         DashboardCall(name: $0.name, parameters: $0.parameters.map { .init(name: $0.name, value: $0.value) },
                                       malformed: $0.malformed, secret: false,
                                       channel: $0.malformed == nil ? Tools.speaking[$0.name]?.label : nil)

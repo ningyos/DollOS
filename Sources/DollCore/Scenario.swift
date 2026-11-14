@@ -24,7 +24,7 @@ public enum ScenarioKind: String, Sendable, CaseIterable {
         }
     }
 
-    /// Its own tools, listed only in the enter call's result; `outcome` is added after them.
+    /// Its own tools, usable only while it is open (declared in `tools` from the start); `outcome` is added after them.
     func tools(_ c: ComputerConfig, _ f: FilesConfig) -> [Tools.Spec] {
         switch self {
         case .computer: Tools.computerSpecs(c, f)

@@ -1,9 +1,10 @@
 import Foundation
 
-/// Her actions are tool calls she writes as text in her reply, in the chat template's own
-/// `<tool_call>` format (spec 6, 2026-11-08: Strata's `tools` / `tool_calls` are not used; the
-/// program parses her content itself, in the order she wrote it). This file is the only place that
-/// defines them: the tool block in the system prompt, the parser, and argument decoding.
+/// Her actions are tool calls. The tools go to the server as the request's `tools` (2026-11-14,
+/// reversing 2026-11-08's tool block in the system prompt: Strata reads `<tool_call>` written in
+/// message content as plain text, so a block there made her spell calls as text and often break
+/// them); her calls come back as the response's `tool_calls`, in the order she wrote them. This file
+/// is the only place that defines them: the `tools` list, argument decoding, and her calls.
 ///
 ///     discord.dm(text)                   text to the owner's Discord DM
 ///     dollctl.reply(text)                text to the developer's terminal (`dollctl chat`)
@@ -19,11 +20,12 @@ import Foundation
 /// acts on, she picks the one that matches where a line came from, and a tool called in the wrong
 /// state is refused with the reason. Text outside her calls is her own thought, seen by no one else.
 ///
-/// A scenario's tools (`ScenarioKind.tools`, then `outcome`) are listed only in its enter call's
-/// result, never in the system prompt, and work only while it is open: the computer's click, type,
-/// key, scroll, drag, read_file, write_file, edit_file (text files in the VM, 2026-11-09; text
-/// results, no screenshot), screenshot, watch; `outcome(success, summary)` leaves it (her summary
-/// replaces the scenario's turns in later requests, and nothing wakes her for it).
+/// The `tools` list is the same for the whole process (it opens the prompt; a change would void the
+/// server's prefix cache), so a scenario's tools (`ScenarioKind.tools`, then `outcome`) are always
+/// declared but work only while it is open, and a call while it is closed is refused with how to open
+/// it: the computer's click, type, key, scroll, drag, read_file, write_file, edit_file (text files in
+/// the VM, 2026-11-09; text results, no screenshot), screenshot, watch; `outcome(success, summary)`
+/// leaves it (her summary replaces the scenario's turns in later requests, and nothing wakes her for it).
 public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
     static let modifiers = ["cmd", "shift", "alt", "ctrl"]
@@ -34,7 +36,7 @@ public enum Tools {
         (modifiers.filter(mods.contains) + [key.lowercased()]).joined(separator: "+")
     }
 
-    /// One tool as the system prompt lists it.
+    /// One tool as the request's `tools` lists it.
     struct Spec {
         let name: String
         let description: String
@@ -43,14 +45,14 @@ public enum Tools {
         /// Parameters whose value is JSON text (arrays, objects, booleans); the rest are plain strings.
         let jsonParameters: Set<String>
 
-        /// The OpenAI tool object, the shape the template renders with `tojson`.
+        /// The OpenAI tool object, sent in `tools` (keys in written order, so the bytes are stable).
         var json: JSONValue {
             ["type": "function", "function": ["name": .string(name), "description": .string(description), "parameters": parameters]]
         }
     }
 
     /// Every internal tool, in the order she sees them. Built once per process from config, so the
-    /// system prompt never changes between turns and the server's prefix cache keeps hitting.
+    /// `tools` list never changes between turns and the server's prefix cache keeps hitting.
     /// `voice` (`[voice] enabled`, M6): the voice tools follow the others.
     static func specs(memory: MemoryConfig, voice: Bool) -> [Spec] {
         let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
@@ -147,7 +149,7 @@ public enum Tools {
     /// order and stop at the first failure; only the last one done carries the observation (2026-11-09).
     static let actionNames: Set<String> = ["click", "type", "key", "scroll", "drag"]
 
-    /// The computer menu (spec 3.1, 2026-11-08): listed only in `use_computer()`'s result.
+    /// The computer menu (spec 3.1, 2026-11-08): declared in `tools` from the start, usable only while open.
     static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
         let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
         let after = "做完會等畫面停下來，回一行結果（同一則回覆裡最後一個動作才附新的截圖、視窗圖和概要）。"
@@ -265,26 +267,19 @@ public enum Tools {
             "required": ["success", "summary"],
         ], jsonParameters: ["success"])
 
-    /// The enter call's text, ahead of the first screenshot: the scenario's menu in the system
-    /// block's one-JSON-object-per-line format.
+    /// The enter call's text, ahead of the first screenshot: which tools the menu opened.
     static func menu(_ specs: [Spec]) -> String {
-        "電腦選單打開了，現在多了這些工具：\n<tools>"
-            + specs.map { "\n" + $0.json.text }.joined()
-            + "\n</tools>\n呼叫格式跟上面的工具一樣。" + chaining + "下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
+        "電腦選單打開了，現在可以用這些工具：" + specs.map(\.name).joined(separator: "、") + "。"
+            + chaining + "下面是現在的全螢幕截圖、最前面視窗的視窗圖和概要。"
     }
 
     /// How her computer actions chain in one reply (2026-11-09): in the menu's intro and the system
     /// prompt's computer paragraph, one text.
     static let chaining = "接下來幾步的結果猜得到的話（例如：打開另存面板、打檔名、按 Save），就照順序寫在同一則回覆裡，程式會照順序做，哪一步失敗就停在那裡，後面的不做。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）會附新的全螢幕截圖、視窗圖和概要，前面的只回一行結果。結果猜不到的（找不找得到、會跳出什麼）就先做那一步、看了再說。"
 
-    /// The tool block of the Strata chat template (`/props` → `chat_template`, the `tools` branch),
-    /// wording and call format copied verbatim, so she sees the format she was trained on. It opens
-    /// the system prompt; the template puts the system text right after it with one blank line.
-    static func block(_ specs: [Spec]) -> String {
-        "# Tools\n\nYou have access to the following functions:\n\n<tools>"
-            + specs.map { "\n" + $0.json.text }.joined()
-            + "\n</tools>"
-            + "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>"
+    /// The request's `tools`: every spec's tool object, as JSON text.
+    static func json(_ specs: [Spec]) -> String {
+        "[" + specs.map(\.json.text).joined(separator: ", ") + "]"
     }
 
     /// One decoded call. Bad arguments are an error the caller turns into the call's tool result.
@@ -342,7 +337,7 @@ public enum Tools {
     /// `specs` are the tools she may call now; `locked` are a scenario's tools while it is closed:
     /// calling one is an error that says how to open it.
     static func decode(_ call: ToolCall, specs: [Spec], locked: [(ScenarioKind, [Spec])] = []) throws -> Request {
-        if let problem = call.malformed { throw ToolError(description: problem + "\n" + ParsedReply.format) }
+        if let problem = call.malformed { throw ToolError(description: problem) }
         guard let spec = specs.first(where: { $0.name == call.name }) else {
             if let kind = locked.first(where: { $0.1.contains { $0.name == call.name } })?.0 {
                 throw ToolError(description: "\(call.name) 現在鎖著：先呼叫 \(kind.enterTool)(expect) 打開\(kind.menuName)選單")
@@ -545,43 +540,57 @@ public struct ToolError: Error, CustomStringConvertible {
     public let description: String
 }
 
-/// One `<tool_call>` block from her reply, in the order she wrote it. Parameter values are the text
-/// between the tags with exactly one leading and one trailing newline removed.
+/// One call of hers, in the order she wrote it: the name and the arguments exactly as the server
+/// returned them in `tool_calls` (a JSON object as text), so a later request replays the same bytes.
+/// A call the server could not read as a call of a declared tool (its text stays in her content) has
+/// no arguments and says what went wrong; it runs nothing and is not replayed as a call.
 public struct ToolCall: Sendable, Equatable {
     public struct Parameter: Sendable, Equatable {
         public var name: String
         public var value: String
         public init(_ name: String, _ value: String) { self.name = name; self.value = value }
     }
-    /// Empty when the block is too broken to name a function.
     public var name: String
+    /// `function.arguments` as the server returned it; nil for a call the server could not read.
+    public var arguments: String?
+    /// The arguments' members in key order: a string as it is, any other value as its JSON text
+    /// (`Tools.decode` reads numbers, booleans and arrays from that text). A null member is absent.
     public var parameters: [Parameter]
-    /// Set when the block is malformed: what is wrong. Such a call runs nothing; this becomes its result.
+    /// Set when the call cannot run as written: what is wrong. Such a call runs nothing; this becomes its result.
     public var malformed: String?
 
-    public init(name: String, parameters: [Parameter] = [], malformed: String? = nil) {
+    public init(name: String, arguments: String) {
         self.name = name
-        self.parameters = parameters
-        self.malformed = malformed
+        self.arguments = arguments
+        (parameters, malformed) = Self.read(name, arguments)
     }
 
-    /// The block as the template writes a call (one parameter per tag, values between newlines).
-    public var text: String {
-        "<tool_call>\n<function=\(name)>\n"
-            + parameters.map { "<parameter=\($0.name)>\n\($0.value)\n</parameter>\n" }.joined()
-            + "</function>\n</tool_call>"
+    /// A call the server returned as text instead of a call: `problem` becomes its result.
+    public init(failed name: String, _ problem: String) {
+        self.name = name
+        self.arguments = nil
+        self.parameters = []
+        self.malformed = problem
     }
-}
 
-/// Her reply split into her thought (the text outside her calls: only she sees it, 2026-11-10) and the
-/// calls she makes.
-public struct ParsedReply: Sendable, Equatable {
-    /// The content with every call block removed, trimmed: her own thought, never said to anyone.
-    public var thought: String
-    public var calls: [ToolCall]
+    private static func read(_ name: String, _ arguments: String) -> ([Parameter], String?) {
+        if arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ([], nil) }
+        guard let object = try? JSONSerialization.jsonObject(with: Data(arguments.utf8), options: [.fragmentsAllowed]) as? [String: Any] else {
+            return ([], "\(name) 的參數不是一個 JSON 物件，沒有執行：\(arguments.prefix(200))")
+        }
+        var out: [Parameter] = []
+        for key in object.keys.sorted() {
+            let value = object[key]!
+            if value is NSNull { continue }
+            if let s = value as? String { out.append(.init(key, s)); continue }
+            let data = try! JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys, .withoutEscapingSlashes])
+            out.append(.init(key, String(decoding: data, as: UTF8.self)))
+        }
+        return (out, nil)
+    }
 
     /// What she said, to whom: each well-formed speaking call's channel and text, trimmed, in order.
-    public var said: [(channel: Channel, text: String)] {
+    public static func said(_ calls: [ToolCall]) -> [(channel: Channel, text: String)] {
         calls.compactMap { c in
             guard c.malformed == nil, let channel = Tools.speaking[c.name],
                   let text = c.parameters.first(where: { $0.name == "text" })?.value.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -590,155 +599,20 @@ public struct ParsedReply: Sendable, Equatable {
         }
     }
 
-    /// Every `<tool_call>…</tool_call>` block in textual order. A bare `<function=…>` outside one, an
-    /// unclosed block, a block whose inside is not `<function=…><parameter=…>…</function>`, or any
-    /// other tool-call-like fragment (`<invoke name=…>`, a stray `<parameter=…>` or closing tag) is a
-    /// malformed call (never dropped, never spoken), so she learns what was wrong.
-    public init(_ content: String) {
-        let open = "<tool_call>", close = "</tool_call>", fn = "<function="
-        var speech = "", calls: [ToolCall] = []
-        var rest = content[...]
-        while true {
-            guard let m = Self.markers.compactMap({ rest.range(of: $0)?.lowerBound }).min() else {
-                speech += rest
-                break
-            }
-            speech += rest[..<m]
-            let at = rest[m...]
-            if at.hasPrefix(fn) {
-                // A function block with no <tool_call> around it (a `</tool_call>` right after it is
-                // part of the same mistake, not a second one).
-                var end = at.range(of: "</function>")?.upperBound ?? at.endIndex
-                let name = Self.name(at[at.index(m, offsetBy: fn.count)..<end])
-                let tail = at[end...].drop { $0.isWhitespace }
-                if tail.hasPrefix(close) { end = tail.index(tail.startIndex, offsetBy: close.count) }
-                calls.append(ToolCall(name: name, malformed: "<function=\(name)> 沒有包在 <tool_call> 和 </tool_call> 裡"))
-                rest = at[end...]
-                continue
-            }
-            guard at.hasPrefix(open) else {
-                // Tool-call-like text that is not the format: it runs to the last closing tag before
-                // the next <tool_call>, or to that <tool_call> / the end when nothing closes it.
-                let stop = at.dropFirst().range(of: open)?.lowerBound ?? at.endIndex
-                let region = at[..<stop]
-                let end = Self.closers.compactMap { region.range(of: $0, options: .backwards)?.upperBound }.max() ?? stop
-                let head = String(region.prefix { $0 != ">" && $0 != "\n" }.prefix(60))
-                let tag = head + (region.dropFirst(head.count).first == ">" ? ">" : "")
-                calls.append(ToolCall(name: Self.strayName(tag), malformed: "\(tag) 不是工具呼叫的格式，沒有執行"))
-                rest = at[end...]
-                continue
-            }
-            let after = at.dropFirst(open.count)
-            let c = after.range(of: close)
-            let next = after.range(of: open)
-            if let c, next.map({ c.lowerBound < $0.lowerBound }) ?? true {
-                calls.append(Self.block(after[..<c.lowerBound]))
-                rest = after[c.upperBound...]
-            } else {
-                // No </tool_call> before the next <tool_call> or the end.
-                let end = next?.lowerBound ?? after.endIndex
-                let head = after[..<end].drop { $0.isWhitespace }
-                let name = head.hasPrefix(fn) ? Self.name(head.dropFirst(fn.count)) : ""
-                calls.append(ToolCall(name: name, malformed: Self.unterminated))
-                rest = after[end...]
-            }
-        }
-        self.thought = speech.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.calls = calls
+    /// The calls of a reply that the server returned as text, as failed calls (never dropped
+    /// unseen). `rejected`: the names in `strata_rejected_tool_calls`, well-formed calls of a tool the
+    /// request did not declare. Call markup left in the content beyond those (a call written in a
+    /// form the server could not read, or one the output ended inside) is one failed call per opener.
+    public static func unread(content: String, rejected: [String]) -> [ToolCall] {
+        let openers = markers.map { content.components(separatedBy: $0).count - 1 }.max() ?? 0
+        return rejected.map { ToolCall(failed: $0, "沒有 \($0) 這個工具，沒有執行") }
+            + Array(repeating: ToolCall(failed: "", unreadable), count: max(0, openers - rejected.count))
     }
 
-    /// The one call format, appended to every malformed call's result.
-    public static let format = "正確格式：\n<tool_call>\n<function=工具名>\n<parameter=參數名>\n值\n</parameter>\n</function>\n</tool_call>"
-    static let unterminated = "<tool_call> 沒有 </tool_call> 收尾"
-
-    /// The reply ended inside its last tool call (no `</tool_call>` after it): the model stopped
-    /// mid-call. Such a reply is asked for again rather than kept (2026-11-14).
-    public var endsUnterminated: Bool { calls.last?.malformed == Self.unterminated }
-
-    /// Her reply when the model wrote its calls inside the thinking (2026-11-11): it left out
-    /// `</think>`, so the server put everything, calls included, in `reasoning_content` and the content
-    /// has no call (2 of 48 replays of one turn; her turn looked empty and she stopped). The same rule
-    /// as Strata's #804 rescue, which Strata applies only when a request declares `tools` (DollOS does
-    /// not): from the first `<tool_call>` that starts a line outside a code fence to the end of the
-    /// thinking is her calls; the thinking before it stays thinking. nil when the content already has
-    /// a call or the thinking has none. The result goes after her content, which stays her thought.
-    public static func rescued(content: String, reasoning: String?) -> String? {
-        guard ParsedReply(content).calls.isEmpty, let reasoning else { return nil }
-        var fenced = false
-        for line in reasoning.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.hasPrefix("```") { fenced.toggle() }
-            guard !fenced, line.hasPrefix("<tool_call>") else { continue }
-            let calls = String(reasoning[line.startIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let thought = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            return thought.isEmpty ? calls : thought + "\n\n" + calls
-        }
-        return nil
-    }
-
-    /// Where a call, or something that looks like one, starts. `<tool_call` also catches
-    /// `<tool_call name=…>`, `<function` / `<parameter` also catch `<function name=…>` /
-    /// `<parameter name=…>`; only the exact `<tool_call>` opens a block.
-    private static let markers = ["<tool_call", "</tool_call>", "<function", "</function>",
-                                  "<invoke", "</invoke>", "<parameter", "</parameter>"]
-    private static let closers = ["</tool_call>", "</function>", "</invoke>", "</parameter>"]
-
-    /// The tool a stray `<invoke …>` / `<function …>` / `<tool_call …>` tag names (`name="x"` /
-    /// `name=x`), or "". A `<parameter name=…>` names a parameter, not a tool.
-    private static func strayName(_ tag: String) -> String {
-        guard !tag.hasPrefix("<parameter"), let m = tag.firstMatch(of: /name\s*=\s*"?([A-Za-z0-9_\-]+)/) else { return "" }
-        return String(m.1)
-    }
-
-    /// The function name at the start of `s` (the text after `<function=`), or "" if there is none.
-    private static func name(_ s: Substring) -> String {
-        guard let gt = s.firstIndex(of: ">") else { return "" }
-        let n = s[..<gt]
-        return n.isEmpty || n.contains(where: \.isWhitespace) ? "" : String(n)
-    }
-
-    /// The inside of one `<tool_call>` block.
-    private static func block(_ body: Substring) -> ToolCall {
-        var s = body.drop { $0.isWhitespace }
-        guard s.hasPrefix("<function=") else {
-            return ToolCall(name: "", malformed: "<tool_call> 裡面要先寫 <function=工具名>")
-        }
-        s = s.dropFirst("<function=".count)
-        let name = Self.name(s)
-        guard !name.isEmpty else { return ToolCall(name: "", malformed: "<function=…> 的工具名讀不出來") }
-        s = s.dropFirst(name.count + 1)
-        while s.last?.isWhitespace == true { s = s.dropLast() }
-        guard s.hasSuffix("</function>") else {
-            return ToolCall(name: name, malformed: "\(name)：<function=\(name)> 沒有 </function> 收尾")
-        }
-        s = s.dropLast("</function>".count)
-        var params: [ToolCall.Parameter] = []
-        while true {
-            s = s.drop { $0.isWhitespace }
-            if s.isEmpty { break }
-            guard s.hasPrefix("<parameter=") else {
-                let junk = s.prefix(80).trimmingCharacters(in: .whitespacesAndNewlines)
-                return ToolCall(name: name, malformed: "\(name)：<function=\(name)> 裡除了 <parameter=…>…</parameter> 還有別的字：\(junk)")
-            }
-            s = s.dropFirst("<parameter=".count)
-            guard let gt = s.firstIndex(of: ">"), !s[..<gt].isEmpty, !s[..<gt].contains(where: \.isWhitespace) else {
-                return ToolCall(name: name, malformed: "\(name)：<parameter=…> 的參數名讀不出來")
-            }
-            let pname = String(s[..<gt])
-            s = s[s.index(after: gt)...]
-            guard let end = s.range(of: "</parameter>") else {
-                return ToolCall(name: name, malformed: "\(name)：參數 \(pname) 沒有 </parameter> 收尾")
-            }
-            var value = s[..<end.lowerBound]
-            if value.first == "\n" { value = value.dropFirst() }
-            if value.last == "\n" { value = value.dropLast() }
-            guard !params.contains(where: { $0.name == pname }) else {
-                return ToolCall(name: name, malformed: "\(name)：參數 \(pname) 寫了兩次")
-            }
-            params.append(.init(pname, String(value)))
-            s = s[end.upperBound...]
-        }
-        return ToolCall(name: name, parameters: params)
-    }
+    /// What opens a call written as text (the template's `<tool_call>` and `<function=`, and the
+    /// `<invoke` form other models use).
+    static let markers = ["<tool_call>", "<function=", "<invoke"]
+    static let unreadable = "這個工具呼叫寫壞了，伺服器讀不出是哪個工具、什麼參數，沒有執行。要做的事請重新呼叫一次工具。"
 }
 
 /// A JSON literal with keys in written order. `text` serializes like the template's `tojson`
@@ -791,7 +665,7 @@ public func estimateTokens(_ s: String) -> Int {
 }
 
 enum Instructions {
-    /// How she works, after the pack in the system prompt. The tool block above carries the details.
+    /// How she works, after the pack in the system prompt. Her tools' descriptions (in `tools`) carry the details.
     /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
     static func text(voice: Bool) -> String {
         let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""

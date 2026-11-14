@@ -117,10 +117,13 @@ public actor Doll {
     /// Her tool calls produced results she has not answered yet: she gets the next turn even with
     /// an empty queue (a watch's ack alone does not count; its wake will).
     var followUp = false
-    /// Her internal tools, built once; the system prompt lists them, so it never changes between turns.
+    /// Her internal tools, built once.
     let tools: [Tools.Spec]
-    /// Each scenario kind's tools, `outcome` last; listed only in its enter call's result.
+    /// Each scenario kind's tools, `outcome` last; declared from the start, usable only while it is open.
     let scenarioTools: [(ScenarioKind, [Tools.Spec])]
+    /// The request's `tools`: `tools` then every scenario's, the same for the life of the process
+    /// (the template puts them at the front of the prompt; a change would void the prefix cache).
+    let toolsJSON: String
     /// The open scenario; nil at the top level. One at a time.
     var scenario: Scenario?
     /// The scenario her `outcome` closed this turn; stored once the turn's results are in.
@@ -217,6 +220,8 @@ public actor Doll {
         tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled)
         voiceEnabled = config.voice.enabled
         scenarioTools = ScenarioKind.allCases.map { ($0, $0.tools(config.computer, config.files) + [Tools.exitSpec]) }
+        // Every tool, the scenarios' included: one `tools` list for the life of the process.
+        toolsJSON = Tools.json(tools + scenarioTools.flatMap(\.1))
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -415,16 +420,15 @@ public actor Doll {
     }
 
     // prompt -----------------------------------------------------------------
-    /// Fixed for the life of the process: the template's tool block, then the persona. This is the
-    /// same text the template would render from `tools` plus a system message, so the prompt opens
-    /// the way she was trained on.
+    /// Fixed for the life of the process: the persona and how she works. Her tools go in the
+    /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        Tools.block(tools) + "\n\n你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
-    /// footer they were answering and her raw content (tool call text included), so the prompt
-    /// prefix is byte-stable turn to turn (the server caches from the last assistant turn).
+    /// footer they were answering, her thought and her calls as the server returned them, so the
+    /// prompt prefix is byte-stable turn to turn (the server caches from the last assistant turn).
     ///
     /// A scenario she left with `outcome` (spec 3.1, 2026-11-09): everything up to and including her
     /// reply that entered it renders as before (with the results of calls she wrote ahead of the
@@ -468,9 +472,9 @@ public actor Doll {
                 out.append(ChatMessage(role: "tool", content: Scenario.result(success: c.success, summary: c.summary)))
             case .exitSpeech:
                 // What she said in the reply that left: her speaking calls and their (empty) results.
-                let says = ParsedReply(ev.text).calls.filter { Tools.speaking[$0.name] != nil && $0.malformed == nil }
+                let says = ev.calls.filter { Tools.speaking[$0.name] != nil && $0.malformed == nil }
                 if !says.isEmpty {
-                    out.append(ChatMessage(role: "assistant", content: says.map(\.text).joined(separator: "\n")))
+                    out.append(ChatMessage(role: "assistant", content: "", toolCalls: says))
                     out += says.map { _ in ChatMessage(role: "tool", content: "") }
                 }
             }
@@ -497,7 +501,7 @@ public actor Doll {
         switch ev.kind {
         case .doll:
             return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
-                + [ChatMessage(role: "assistant", content: ev.text)]
+                + [ChatMessage(role: "assistant", content: ev.text, toolCalls: ev.calls)]
         case .owner, .developer: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
@@ -591,58 +595,48 @@ public actor Doll {
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = nextEffort
 
-        // A reply that stops inside its last tool call is dropped unseen and asked for again
-        // (2026-11-14): kept, it fails and, left in her context, makes the next one likelier to stop
-        // the same way (replayed 20×: 18/20 complete as it was, 20/20 with the history's ones closed).
-        var retriesLeft = llm.unterminatedRetries
-        var reply: ModelReply
-        var content: String
-        var rescued: String?
-        while true {
-            let task = Task { try await model.chat(messages, effort: effort) }
+        let reply: ModelReply
+        do {
+            let task = Task { try await model.chat(messages, tools: toolsJSON, effort: effort) }
             inflight = task
             inflightEffort = effort
             feed.notify(.turn)
-            do {
-                reply = try await task.value
-                inflight = nil
-                inflightEffort = nil
-            } catch is CancellationError {
-                inflight = nil
-                inflightEffort = nil
-                if stopped { throw CancellationError() }
-                turnIndex -= 1
-                if interruptRequested {
-                    interruptRequested = false
-                    lastInterrupt = Date().timeIntervalSince1970
-                    feed.notify(.interrupt)
-                    log("INFO", "turn \(turnIndex + 1) interrupted from the dashboard; no reply, she waits for the next event")
-                    return
-                }
-                log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
-                try drain()
-                return try await turn()
+            reply = try await task.value
+            inflight = nil
+            inflightEffort = nil
+        } catch is CancellationError {
+            inflight = nil
+            inflightEffort = nil
+            if stopped { throw CancellationError() }
+            turnIndex -= 1
+            if interruptRequested {
+                interruptRequested = false
+                lastInterrupt = Date().timeIntervalSince1970
+                feed.notify(.interrupt)
+                log("INFO", "turn \(turnIndex + 1) interrupted from the dashboard; no reply, she waits for the next event")
+                return
             }
-            // Calls the model wrote inside its thinking (no `</think>`) are her reply (2026-11-11).
-            rescued = ParsedReply.rescued(content: reply.content, reasoning: reply.reasoning)
-            content = rescued ?? reply.content
-            guard retriesLeft > 0, ParsedReply(content).endsUnterminated else { break }
-            retriesLeft -= 1
-            log("WARN", "turn \(turnIndex): reply stopped inside its last tool call (no </tool_call>); dropped, asking again: "
-                + String(content.suffix(120)).replacingOccurrences(of: "\n", with: "⏎"))
+            log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
+            try drain()
+            return try await turn()
         }
         effortNext = nil
         taskTurn = false
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
 
-        if rescued != nil { log("INFO", "turn \(turnIndex): her calls were inside the thinking (no </think>); taken as her reply") }
-        // She saw every event, so a secret seen marks her reply (5.1). Stored raw: re-sent byte-identical.
-        let stored = try append(Event(.doll, .internal, content, secret: events.contains(where: \.secret)))
+        // She saw every event, so a secret seen marks her reply (5.1). Stored as returned: re-sent byte-identical.
+        var replyEvent = Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret))
+        replyEvent.calls = reply.calls
+        let stored = try append(replyEvent)
         try timeline.attachFooter(stored.seq!, footerText)
+        for call in reply.calls where call.arguments == nil {
+            log("WARN", "turn \(turnIndex): a call the server returned as text (\(call.name.isEmpty ? "unreadable" : call.name)): "
+                + String(reply.content.suffix(160)).replacingOccurrences(of: "\n", with: "⏎"))
+        }
 
-        // Text outside her calls is her own thought (2026-11-10): nobody hears it; she speaks with the speaking tools.
-        let parsed = ParsedReply(content)
+        // Her text content is her own thought (2026-11-10): nobody hears it; she speaks with the speaking tools.
+        let calls = reply.calls
         // Every call, in the order she wrote it, gets exactly one tool result right after her reply
         // (spec 6, 2026-11-08); a malformed, unknown or locked one gets a result saying what was wrong.
         // Her `outcome` ends the scenario: the calls after it are refused, except the speaking tools (2026-11-11: she
@@ -652,10 +646,10 @@ public actor Doll {
         // failure (2026-11-09): only the last one done carries the observation, the ones before it
         // answer with their line only, and the ones after a failure are not run. Actions written
         // after an `outcome` never run, so the one before it is the last.
-        let live = parsed.calls.prefix { $0.name != "outcome" }
+        let live = calls.prefix { $0.name != "outcome" }
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
         var chain = Chain(), step = 0, failed: (step: Int, line: String)?
-        for (i, call) in parsed.calls.enumerated() {
+        for (i, call) in calls.enumerated() {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
             let out: Outcome
@@ -712,7 +706,7 @@ public actor Doll {
         // A reply without a call (2026-11-11): every reply calls at least one tool. With a menu open she
         // is reminded and woken again (she had only thought, or wrote nothing, and the task stopped);
         // the `max_turns_without_tool`-th one in a row writes the log line instead and lets her rest.
-        let usedTool = !parsed.calls.isEmpty
+        let usedTool = !calls.isEmpty
         if usedTool {
             idleTurns = 0
         } else {
@@ -727,7 +721,7 @@ public actor Doll {
             }
         }
 
-        let report = TurnReport(index: turnIndex, actions: actions, reply: content, toolCalls: parsed.calls,
+        let report = TurnReport(index: turnIndex, actions: actions, reply: reply.content, toolCalls: calls,
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
                                 attached: attachedNow, outcome: outcomeNow, experience: experienceNow, follows: followsNow,
                                 cheatsheets: cheatsheetNow, selections: selectionsNow)
@@ -1357,7 +1351,7 @@ public actor Doll {
         var pending: ArraySlice<ToolCall> = []
         for e in events {
             switch e.kind {
-            case .doll: pending = ParsedReply(e.text).calls[...]
+            case .doll: pending = e.calls[...]
             case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
             case .owner, .developer, .watch, .memory: break
             }

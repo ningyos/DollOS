@@ -13,10 +13,6 @@ public struct LlmConfig: Sendable {
     public var taskTurnEffort = "medium"
     public var timeoutS = 300.0
     public var maxTokens = 4096
-    /// A reply whose last tool call has no `</tool_call>` (the model stopped right after the
-    /// argument, ~5–10% of her speaking replies on 2026-11-14) is dropped unseen and the same request is
-    /// sent again this many times; a reply still unterminated after that is stored as it is.
-    public var unterminatedRetries = 1
 }
 
 public struct CoreConfig: Sendable {
@@ -279,8 +275,6 @@ public struct Config: Sendable {
         try l.read("task_turn_effort", &llm.taskTurnEffort)
         try l.read("timeout_s", &llm.timeoutS)
         try l.read("max_tokens", &llm.maxTokens)
-        try l.read("unterminated_retries", &llm.unterminatedRetries)
-        guard llm.unterminatedRetries >= 0 else { throw TOMLError(description: "[llm] unterminated_retries must be 0 or more") }
         try l.finish()
         for (key, value) in [("default_effort", llm.defaultEffort), ("task_turn_effort", llm.taskTurnEffort)] {
             guard Effort.levels.contains(value) else {

@@ -332,11 +332,10 @@ public final class TodayIndex {
         case .owner: out = [("\(seq)-owner", "主人說", ev.text)]
         case .developer: out = [("\(seq)-developer", "開發者說", ev.text)]
         case .doll:
-            let parsed = ParsedReply(ev.text)
-            let said = parsed.said
+            let said = ToolCall.said(ev.calls)
             out = Channel.allCases.map { ch in
                 ("\(seq)-say-\(ch.rawValue)", "你說｜\(ch.label)", said.filter { $0.channel == ch }.map(\.text).joined(separator: "\n"))
-            } + [("\(seq)-thought", "你想", parsed.thought)]
+            } + [("\(seq)-thought", "你想", ev.text)]
         case .tool:
             let name = (tool ?? "").isEmpty ? "tool_call" : tool!
             if !unindexedResults.contains(name) { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }

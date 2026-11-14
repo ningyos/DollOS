@@ -6,10 +6,14 @@ import Synchronization
 /// messages are rendered from events every step.
 public struct ChatMessage: Encodable, Sendable, Equatable {
     public var role: String
-    /// Her assistant messages are her raw reply, tool call text included, so a re-render is
-    /// byte-identical. A `role: "tool"` message is one call's result; the template renders it as a
-    /// `<tool_response>` block and needs no call id.
+    /// Her assistant messages are her thought (the reply's text content) and her calls, each with the
+    /// arguments text the server returned, so a re-render is byte-identical. A `role: "tool"` message
+    /// is one call's result, in call order; the template renders it as a `<tool_response>` block and
+    /// pairs results with calls by position, so no call id is sent.
     public var content: String
+    /// Her calls in an assistant message, sent as `tool_calls`; only calls with arguments (the ones
+    /// the server read as calls) are listed.
+    public var toolCalls: [ToolCall]
     /// What follows `content` in the same message, in order: screenshots as `data:` URIs built from
     /// the stored files' bytes (so every turn re-sends the same bytes), and text (the crop's place,
     /// the front window's outline). With any, `content` goes out as a list of parts, text first.
@@ -21,16 +25,22 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
         case text(String)
     }
 
-    public init(role: String, content: String, extra: [Extra] = []) {
+    public init(role: String, content: String, extra: [Extra] = [], toolCalls: [ToolCall] = []) {
         self.role = role
         self.content = content
         self.extra = extra
+        self.toolCalls = toolCalls.filter { $0.arguments != nil }
     }
 
     /// The `data:` URIs among `extra`, in order.
     public var images: [String] { extra.compactMap { if case .image(let u) = $0 { u } else { nil } } }
 
-    enum CodingKeys: String, CodingKey { case role, content }
+    enum CodingKeys: String, CodingKey { case role, content, tool_calls }
+    private struct Call: Encodable {
+        struct Function: Encodable { let name: String; let arguments: String }
+        let type = "function"
+        let function: Function
+    }
     private struct Part: Encodable {
         struct URL: Encodable { let url: String }
         let type: String
@@ -50,6 +60,9 @@ public struct ChatMessage: Encodable, Sendable, Equatable {
                 case .text(let t): Part(type: "text", text: "\n" + t)
                 }
             }, forKey: .content)
+        }
+        if !toolCalls.isEmpty {
+            try c.encode(toolCalls.map { Call(function: .init(name: $0.name, arguments: $0.arguments!)) }, forKey: .tool_calls)
         }
     }
 
@@ -93,13 +106,17 @@ public struct ModelUsage: Sendable, Equatable {
 }
 
 public struct ModelReply: Sendable, Equatable {
-    /// Her reply verbatim, tool call text included; `ParsedReply` reads the calls out of it.
+    /// Her text content: her own thought (a call the server could not read stays in it as text).
     public var content: String
     public var reasoning: String?
+    /// Her calls in the order she wrote them: the response's `tool_calls`, then one failed call per
+    /// call the server returned as text (`ToolCall.unread`).
+    public var calls: [ToolCall]
     public var usage: ModelUsage
-    public init(content: String, reasoning: String? = nil, usage: ModelUsage) {
+    public init(content: String, reasoning: String? = nil, calls: [ToolCall] = [], usage: ModelUsage) {
         self.content = content
         self.reasoning = reasoning
+        self.calls = calls
         self.usage = usage
     }
 }
@@ -107,13 +124,13 @@ public struct ModelReply: Sendable, Equatable {
 /// The main model: an OpenAI chat-completions endpoint.
 public protocol MainModel: Sendable {
     func check() async throws
-    /// `effort` is the Strata `reasoning_effort` value for this one call. No `tools` are sent: her
-    /// tools are listed in the system prompt and her calls come back as text in `content`.
-    func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply
+    /// `effort` is the Strata `reasoning_effort` value for this one call. `tools`: the request's
+    /// `tools` as JSON text (an array), or nil for a request without tools.
+    func chat(_ messages: [ChatMessage], tools: String?, effort: String) async throws -> ModelReply
 }
 
 /// DollOS does not know which model sits behind the URL. The only Strata dialect
-/// field sent is `reasoning_effort`; `timings` is read when present.
+/// field sent is `reasoning_effort`; `timings` and `strata_rejected_tool_calls` are read when present.
 ///
 /// Pictures by reference (spec 3.1, 2026-11-09): when `/health` says `image_hash_refs`, a picture this
 /// process has already uploaded goes out as `hash:<key>` (the server's cache key: the first 32 hex of
@@ -172,9 +189,15 @@ public final class HTTPMainModel: MainModel {
 
     private struct Reply: Decodable {
         struct Msg: Decodable {
+            struct Call: Decodable {
+                struct Function: Decodable { let name: String; let arguments: String? }
+                let function: Function
+            }
             let content: String?
             let reasoning_content: String?
+            let tool_calls: [Call]?
         }
+        struct Rejected: Decodable { let name: String }
         struct Choice: Decodable { let message: Msg; let finish_reason: String? }
         struct Usage: Decodable { let prompt_tokens: Int; let completion_tokens: Int }
         struct Timings: Decodable {
@@ -183,6 +206,8 @@ public final class HTTPMainModel: MainModel {
         let choices: [Choice]
         let usage: Usage?
         let timings: Timings?
+        /// Strata (#3796): well-formed calls of a tool the request did not declare, returned as text.
+        let strata_rejected_tool_calls: [Rejected]?
     }
 
     /// The server's cache key of a `data:` picture: the first 32 hex digits of the sha256 of its bytes
@@ -215,7 +240,7 @@ public final class HTTPMainModel: MainModel {
         }
     }
 
-    private func post(_ messages: [ChatMessage], effort: String, maxTokens: Int) async throws -> (Reply, Int) {
+    private func post(_ messages: [ChatMessage], tools: String?, effort: String, maxTokens: Int) async throws -> (Reply, Int) {
         struct Body: Encodable {
             let model: String
             let messages: [ChatMessage]
@@ -229,8 +254,14 @@ public final class HTTPMainModel: MainModel {
             req.httpMethod = "POST"
             req.timeoutInterval = cfg.timeoutS
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try ChatMessage.encoder.encode(Body(
+            var body = try ChatMessage.encoder.encode(Body(
                 model: cfg.model, messages: sendable, max_tokens: maxTokens, reasoning_effort: effort))
+            if let tools {
+                // `tools` goes in as written (JSONValue keeps each tool's keys in their order); the
+                // encoded body is one object, so it is spliced in before its closing brace.
+                body = body.dropLast() + Data(",\"tools\":\(tools)}".utf8)
+            }
+            req.httpBody = body
             let bytes = req.httpBody!.count
             let data: Data, status: Int
             do {
@@ -256,15 +287,19 @@ public final class HTTPMainModel: MainModel {
         throw ModelError("main model still reports image_not_cached after the pictures were sent again")
     }
 
-    public func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
-        let (reply, bytes) = try await post(messages, effort: effort, maxTokens: cfg.maxTokens)
+    public func chat(_ messages: [ChatMessage], tools: String?, effort: String) async throws -> ModelReply {
+        let (reply, bytes) = try await post(messages, tools: tools, effort: effort, maxTokens: cfg.maxTokens)
         guard let choice = reply.choices.first else { throw ModelError("main model returned no choices") }
         if choice.finish_reason == "length" { throw ModelError("main model hit max_tokens") }
         guard let u = reply.usage else { throw ModelError("main model returned no usage") }
         let t = reply.timings
+        let content = choice.message.content ?? ""
+        let calls = (choice.message.tool_calls ?? []).map { ToolCall(name: $0.function.name, arguments: $0.function.arguments ?? "") }
+            + ToolCall.unread(content: content, rejected: (reply.strata_rejected_tool_calls ?? []).map(\.name))
         return ModelReply(
-            content: choice.message.content ?? "",
+            content: content,
             reasoning: choice.message.reasoning_content,
+            calls: calls,
             usage: ModelUsage(promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens,
                               prefilled: t?.prompt_n, cached: t?.cache_n, promptMs: t?.prompt_ms,
                               predictedMs: t?.predicted_ms, requestBytes: bytes))

@@ -9,24 +9,23 @@ import Testing
 
 private let root = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-/// One scripted reply: what she says plus her tool calls (name, parameters), rendered as raw
-/// `<tool_call>` text in the template's format, the way Strata returns it with no `tools` sent. A
-/// string literal is a reply used verbatim (raw call text included, if any).
+/// One scripted reply: her text content plus her tool calls (name, parameters), returned the way
+/// Strata returns them with `tools` sent: the calls in `tool_calls`, every argument a JSON string
+/// (`Tools.decode` reads numbers, booleans and arrays from the text). A string literal is a reply
+/// with no `tool_calls`; call markup in it comes back as failed calls (`ToolCall.unread`), the way
+/// the server leaves a call it could not read in the content.
 private struct Scripted: ExpressibleByStringLiteral {
     var content: String
     var calls: [(String, [(String, String)])]
     init(_ content: String = "", _ calls: (String, [(String, String)])...) { self.content = content; self.calls = calls }
     init(stringLiteral value: String) { self.init(value) }
 
-    var raw: String {
-        let blocks = calls.map { name, params in
-            "<tool_call>\n<function=\(name)>\n"
-                + params.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined()
-                + "</function>\n</tool_call>"
-        }.joined(separator: "\n")
-        if blocks.isEmpty { return content }
-        return content.isEmpty ? blocks : content + "\n\n" + blocks
+    var toolCalls: [ToolCall] {
+        calls.map { name, params in ToolCall(name: name, arguments: JSONValue.object(params.map { ($0.0, .string($0.1)) }).text) }
+            + ToolCall.unread(content: content, rejected: [])
     }
+    /// Her message as a later request replays it.
+    var message: ChatMessage { ChatMessage(role: "assistant", content: content, toolCalls: toolCalls) }
 }
 
 /// `key("cmd+s")` → key(key: "s", modifiers: ["cmd"]); a lone key has no modifiers.
@@ -68,6 +67,8 @@ private actor FakeModel: MainModel {
     var requests: [(messages: [ChatMessage], effort: String)] = []
     /// When each request reached the model.
     var starts: [ContinuousClock.Instant] = []
+    /// Each request's `tools`.
+    var tools: [String?] = []
 
     init(_ replies: [Scripted]) { self.replies = replies }
 
@@ -76,8 +77,9 @@ private actor FakeModel: MainModel {
     /// When set, the next request hangs until the call is cancelled (a long model call).
     var stallNext = false
 
-    func chat(_ messages: [ChatMessage], effort: String) async throws -> ModelReply {
+    func chat(_ messages: [ChatMessage], tools: String?, effort: String) async throws -> ModelReply {
         requests.append((messages, effort))
+        self.tools.append(tools)
         starts.append(.now)
         if stallNext {
             stallNext = false
@@ -86,7 +88,7 @@ private actor FakeModel: MainModel {
         guard !replies.isEmpty else { throw ModelError("script ran out at request \(requests.count)") }
         let r = replies.removeFirst()
         let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 }
-        return ModelReply(content: r.raw, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
+        return ModelReply(content: r.content, calls: r.toolCalls, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
     }
 
     func stall() { stallNext = true }
@@ -382,41 +384,39 @@ private struct Harness {
     }
 }
 
-// tool calls -----------------------------------------------------------------
+// her calls ------------------------------------------------------------------
 
-// parser ---------------------------------------------------------------------
+/// One call as the server returns it in `tool_calls`, every argument a JSON string.
+private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Scripted("", (name, params)).toolCalls[0] }
 
-@Test func parserReadsOneCall() {
-    let p = ParsedReply("<tool_call>\n<function=recall>\n<parameter=query>\n主人的貓\n</parameter>\n</function>\n</tool_call>")
-    #expect(p.thought == "")
-    #expect(p.calls == [ToolCall(name: "recall", parameters: [.init("query", "主人的貓")])])
+@Test func argumentsReadAsParametersStringsAsTheyAreOthersAsJSONText() {
+    let c = ToolCall(name: "x", arguments: "{\"text\": \"\\n  echo a\\n\", \"x\": 120, \"ok\": true, \"mods\": [\"cmd\", \"shift\"], \"gone\": null}")
+    #expect(c.malformed == nil && c.arguments != nil)
+    #expect(c.parameters == [.init("mods", "[\"cmd\",\"shift\"]"), .init("ok", "true"), .init("text", "\n  echo a\n"), .init("x", "120")])
+    #expect(ToolCall(name: "voice.join", arguments: "").parameters.isEmpty && ToolCall(name: "voice.join", arguments: "").malformed == nil)
+    #expect(ToolCall(name: "voice.join", arguments: "{}").malformed == nil)
+    for bad in ["[1]", "\"text\"", "{\"text\": "] {
+        #expect(ToolCall(name: "recall", arguments: bad).malformed?.hasPrefix("recall 的參數不是一個 JSON 物件，沒有執行") == true, "\(bad)")
+    }
 }
 
-@Test func parserKeepsCallsInTextualOrderAndSpeechBeforeThem() {
-    let raw = "好，我查一下再跑。\n\n<tool_call>\n<function=recall>\n<parameter=query>\nA\n</parameter>\n</function>\n</tool_call>\n"
-        + "<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>\n</tool_call>\n"
-        + "<tool_call><function=think><parameter=level>high</parameter></function></tool_call>"
-    let p = ParsedReply(raw)
-    #expect(p.thought == "好，我查一下再跑。")
-    #expect(p.calls.map(\.name) == ["recall", "key", "think"])
-    #expect(p.calls.map { $0.parameters[0].value } == ["A", "ls", "high"])
-    #expect(p.calls.allSatisfy { $0.malformed == nil })
-    #expect(ParsedReply("就聊聊，沒有呼叫。\n").calls.isEmpty && ParsedReply("就聊聊，沒有呼叫。\n").thought == "就聊聊，沒有呼叫。")
-}
-
-@Test func parserStripsExactlyOneNewlineEachSideAndKeepsTheRest() {
-    let raw = "<tool_call>\n<function=type>\n<parameter=text>\n\n  echo a\n  echo b  \n\n</parameter>\n</function>\n</tool_call>"
-    #expect(ParsedReply(raw).calls[0].parameters == [.init("text", "\n  echo a\n  echo b  \n")])
-    let tight = "<tool_call><function=key><parameter=key>Return</parameter></function></tool_call>"
-    #expect(ParsedReply(tight).calls[0].parameters == [.init("key", "Return")])
+@Test func callsTheServerReturnedAsTextBecomeFailedCalls() {
+    // strata_rejected_tool_calls first (one per name), then the markup left beyond them
+    let content = "嗯\n<tool_call>\n<function=bogus>\n</function>\n</tool_call>\n<tool_call>\n<parameter=level>\nhigh\n</parameter>\n</tool_call>"
+    let calls = ToolCall.unread(content: content, rejected: ["bogus"])
+    #expect(calls.map(\.name) == ["bogus", ""])
+    #expect(calls.map(\.malformed) == ["沒有 bogus 這個工具，沒有執行", ToolCall.unreadable])
+    #expect(calls.allSatisfy { $0.arguments == nil })
+    #expect(ToolCall.unread(content: "<invoke name=\"use_computer\">\n</invoke>", rejected: []).count == 1)
+    #expect(ToolCall.unread(content: "<function=recall>\n</function>", rejected: []).count == 1)
+    #expect(ToolCall.unread(content: "就聊聊，沒有呼叫。", rejected: []).isEmpty)
 }
 
 @Test func keyIsOneKeyWithModifiersInAFixedOrder() throws {
     let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
     let specs = Tools.computerSpecs(cfg.computer, cfg.files)
     func decode(_ params: [(String, String)]) throws -> Tools.Request {
-        let body = params.map { "<parameter=\($0.0)>\n\($0.1)\n</parameter>\n" }.joined()
-        return try Tools.decode(ParsedReply("<tool_call>\n<function=key>\n\(body)</function>\n</tool_call>").calls[0], specs: specs)
+        try Tools.decode(call("key", params), specs: specs)
     }
     func chord(_ params: [(String, String)]) throws -> String? {
         guard case .act(.key(let k)) = try decode(params) else { return nil }
@@ -438,91 +438,47 @@ private struct Harness {
 
 @Test func jsonParametersDecodeFromTheirText() throws {
     let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
-    let raw = "<tool_call>\n<function=remember>\n<parameter=items>\n"
-        + "[{\"text\": \"主人養貓\", \"folder\": \"public\"},\n {\"text\": \"我的 VM 密碼\", \"folder\": \"own\"}, {\"text\": \"姐姐的事\", \"folder\": \"secret\"}]\n</parameter>\n</function>\n</tool_call>"
-    guard case .remember(let items) = try Tools.decode(ParsedReply(raw).calls[0], specs: specs) else {
-        Issue.record("not remember"); return
+    let items = "[{\"text\": \"主人養貓\", \"folder\": \"public\"},\n {\"text\": \"我的 VM 密碼\", \"folder\": \"own\"}, {\"text\": \"姐姐的事\", \"folder\": \"secret\"}]"
+    // as a JSON string (the text of the array) and as the array itself
+    for c in [call("remember", [("items", items)]), ToolCall(name: "remember", arguments: "{\"items\": \(items)}")] {
+        guard case .remember(let got) = try Tools.decode(c, specs: specs) else {
+            Issue.record("not remember"); return
+        }
+        #expect(got.map(\.text) == ["主人養貓", "我的 VM 密碼", "姐姐的事"] && got.map(\.folder) == [.public, .own, .secret])
     }
-    #expect(items.map(\.text) == ["主人養貓", "我的 VM 密碼", "姐姐的事"] && items.map(\.folder) == [.public, .own, .secret])
-    let wrongFolder = ParsedReply("<tool_call>\n<function=remember>\n<parameter=items>\n[{\"text\": \"x\", \"folder\": \"private\"}]\n</parameter>\n</function>\n</tool_call>")
-    #expect(throws: ToolError.self) { try Tools.decode(wrongFolder.calls[0], specs: specs) }
-    let bad = ParsedReply("<tool_call>\n<function=remember>\n<parameter=items>\n主人養貓\n</parameter>\n</function>\n</tool_call>")
-    #expect(throws: ToolError.self) { try Tools.decode(bad.calls[0], specs: specs) }
+    let wrongFolder = call("remember", [("items", "[{\"text\": \"x\", \"folder\": \"private\"}]")])
+    #expect(throws: ToolError.self) { try Tools.decode(wrongFolder, specs: specs) }
+    let bad = call("remember", [("items", "主人養貓")])
+    #expect(throws: ToolError.self) { try Tools.decode(bad, specs: specs) }
+    // a boolean and an integer as JSON values
+    guard case .outcome(let ok, _) = try Tools.decode(ToolCall(name: "outcome", arguments: "{\"success\": true, \"summary\": \"好\"}"), specs: [Tools.exitSpec]) else {
+        Issue.record("not outcome"); return
+    }
+    #expect(ok)
 }
 
-@Test func malformedBlocksBecomeCallsThatSayWhatIsWrong() {
-    // unclosed <tool_call>, then a good one
-    let a = ParsedReply("嗯\n<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>\n"
-                        + "<tool_call>\n<function=think>\n<parameter=level>\nhigh\n</parameter>\n</function>\n</tool_call>")
-    #expect(a.thought == "嗯")
-    #expect(a.calls.map(\.name) == ["key", "think"])
-    #expect(a.calls[0].malformed == "<tool_call> 沒有 </tool_call> 收尾" && a.calls[1].malformed == nil)
-    // <function> outside <tool_call>
-    let b = ParsedReply("<function=key>\n<parameter=keys>\nls\n</parameter>\n</function>")
-    #expect(b.calls == [ToolCall(name: "key", malformed: "<function=key> 沒有包在 <tool_call> 和 </tool_call> 裡")])
-    #expect(b.thought == "")
-    // missing </function>, missing </parameter>, junk inside, no function, duplicate parameter
-    let cases: [(String, String)] = [
-        ("<tool_call>\n<function=key>\n<parameter=keys>\nls\n</parameter>\n</tool_call>", "key：<function=key> 沒有 </function> 收尾"),
-        ("<tool_call>\n<function=key>\n<parameter=keys>\nls\n</function>\n</tool_call>", "key：參數 keys 沒有 </parameter> 收尾"),
-        ("<tool_call>\n<function=key>\nkeys: ls\n</function>\n</tool_call>", "key：<function=key> 裡除了 <parameter=…>…</parameter> 還有別的字：keys: ls"),
-        ("<tool_call>\n{\"name\": \"key\"}\n</tool_call>", "<tool_call> 裡面要先寫 <function=工具名>"),
-        ("<tool_call><function=key><parameter=keys>a</parameter><parameter=keys>b</parameter></function></tool_call>", "key：參數 keys 寫了兩次"),
-    ]
-    for (raw, problem) in cases {
-        #expect(ParsedReply(raw).calls.map(\.malformed) == [problem], "\(raw)")
-    }
-}
-
-@Test func toolCallLikeTextThatIsNotTheFormatIsAnErrorNeverSpeech() {
-    // <invoke name=…> (seen from iq2_xs, /tmp/m2why/replay1.log), then a good call
-    let a = ParsedReply("好，我開電腦看一下。\n<invoke name=\"use_computer\">\n</invoke>\n"
-                        + "<tool_call>\n<function=think>\n<parameter=level>\nhigh\n</parameter>\n</function>\n</tool_call>")
-    #expect(a.thought == "好，我開電腦看一下。")
-    #expect(a.calls.map(\.name) == ["use_computer", "think"])
-    #expect(a.calls[0].malformed == "<invoke name=\"use_computer\"> 不是工具呼叫的格式，沒有執行" && a.calls[1].malformed == nil)
-    // a stray <parameter=…> with nothing around it: the rest is part of the broken call
-    let b = ParsedReply("我開電腦。\n<parameter=level>\nmedium\n</parameter>\n")
-    #expect(b.thought == "我開電腦。")
-    #expect(b.calls == [ToolCall(name: "", malformed: "<parameter=level> 不是工具呼叫的格式，沒有執行")])
-    let unclosed = ParsedReply("嗯<parameter=x>\nabc")
-    #expect(unclosed.thought == "嗯" && unclosed.calls.count == 1)
-    // <tool_call …> with attributes, lone closing tags, and two replies seen from iq2_xs at effort
-    // medium (/tmp/m2why/latency.log): `<parameter name=…>…</invoke>`, and a <function=…> whose
-    // only wrapper is a trailing </tool_call> (one mistake, one error)
-    for raw in ["<tool_call name=\"key\">ls</tool_call>", "好</invoke>", "好\n</function>\n</tool_call>",
-                "<parameter name=\"level\">\nmedium\n</parameter>\n\n</invoke>",
-                "<function=use_computer>\n</function>\n</tool_call>"] {
-        let p = ParsedReply(raw)
-        #expect(p.calls.count == 1 && p.calls[0].malformed != nil && !p.thought.contains("<") , "\(raw)")
-    }
-    #expect(ParsedReply("<tool_call name=\"key\">ls</tool_call>").calls[0].name == "key")
-    #expect(ParsedReply("<parameter name=\"level\">\nmedium\n</parameter>").calls[0].name == "")
-    #expect(ParsedReply("<function name=\"use_computer\"></function>").calls.map(\.name) == ["use_computer"])
-}
-
-@Test func aMalformedCallsResultTellsTheFormat() throws {
+@Test func aFailedCallsResultIsItsProblem() throws {
     let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
-    let call = ParsedReply("<invoke name=\"use_computer\">\n</invoke>").calls[0]
-    #expect(throws: ToolError.self) { try Tools.decode(call, specs: specs) }
-    do { _ = try Tools.decode(call, specs: specs) } catch {
-        #expect("\(error)" == "<invoke name=\"use_computer\"> 不是工具呼叫的格式，沒有執行\n" + ParsedReply.format)
+    let failed = ToolCall.unread(content: "<invoke name=\"use_computer\">\n</invoke>", rejected: [])[0]
+    do { _ = try Tools.decode(failed, specs: specs); Issue.record("accepted") } catch {
+        #expect("\(error)" == ToolCall.unreadable)
     }
 }
 
-@Test func systemPromptOpensWithTheTemplateToolBlockThenThePersona() async throws {
+@Test func theSystemPromptIsThePersonaAndEveryToolGoesInTools() async throws {
     let h = try await Harness()
     let sys = await h.doll.systemPrompt()
-    #expect(sys.hasPrefix("# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"discord.dm\""))
-    #expect(sys.contains("\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:"))
-    #expect(sys.contains("</IMPORTANT>\n\n你是"))
-    let listed = sys.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    #expect(listed.count == 6)
-    for (line, name) in zip(listed, ["discord.dm", "dollctl.reply", "think", "remember", "recall", "use_computer"]) {
-        #expect(line.contains("\"name\": \"\(name)\""))
-        #expect((try? JSONSerialization.jsonObject(with: Data(line.utf8))) != nil)   // valid JSON
-    }
-    #expect(!sys.contains("\"name\": \"click\""))                       // the computer menu is not in it
+    #expect(sys.hasPrefix("你是") && !sys.contains("<tools>") && !sys.contains("<tool_call>"))
+    let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
+    let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+    // her tools, then the computer menu's (declared from the start so the list never changes), outcome last
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "use_computer", "click", "type", "key",
+                      "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch", "outcome"])
+    #expect(tools.allSatisfy { $0["type"] as? String == "function" })
+    // every request sends the same list
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", dm("在")))
+    #expect(await h.model.tools == [Optional(await h.doll.toolsJSON)])
 }
 
 // tool calls -----------------------------------------------------------------
@@ -542,24 +498,28 @@ private struct Harness {
     try await h.turn("都好了")
     let msgs = await h.model.seen(1)
     let a = try #require(msgs.firstIndex { $0.role == "assistant" })
-    // her raw content, call text included, is what goes back
-    #expect(msgs[a].content == Scripted("好，一次做完", recall("一次做完"), think("medium"), recall("下一回合")).raw)
+    // her thought and her calls, arguments as the server returned them, are what goes back
+    #expect(msgs[a] == Scripted("好，一次做完", recall("一次做完"), think("medium"), recall("下一回合")).message)
     #expect(msgs[(a + 1)...(a + 3)].map(\.role) == ["tool", "tool", "tool"])
     #expect(msgs[(a + 1)...(a + 3)].map(\.content) == results.map(\.text))
     #expect(await h.model.requests.map(\.effort) == ["medium", "medium"])    // owner turn, then her think
 }
 
-@Test func aRawReplyRunsItsCallsInTheOrderSheWroteThem() async throws {
+@Test func callMarkupTheServerLeftInHerContentFailsAndIsStoredAsReturned() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("查一下再列目錄")
-    let raw = "我先查，再看目錄。\n\n<tool_call>\n<function=recall>\n<parameter=query>\n列目錄\n</parameter>\n</function>\n</tool_call>\n"
-        + "<tool_call>\n<function=think>\n<parameter=level>\nmedium\n</parameter>\n</function>\n</tool_call>"
-    try await h.turn(Scripted(stringLiteral: raw))
+    let raw = "我先查，再看目錄。\n\n<tool_call>\n<function=recall>\n<parameter=query>\n列目錄\n</parameter>\n"
+    try await h.turn(Scripted(raw, think("medium")))
     #expect(h.said.isEmpty)
-    #expect(h.last.actions.count == 2 && h.last.actions[0].hasPrefix("recall ") && h.last.actions[1] == "think medium")
-    #expect(try h.toolResults().map { $0.text.hasPrefix("列目錄：") && $0.text.contains("〔今天 ") || $0.text == "下一回合 effort：medium" } == [true, true])
+    #expect(h.last.actions == ["think medium", "error tool_call"])
+    #expect(try h.toolResults().map(\.text) == ["下一回合 effort：medium", "失敗：" + ToolCall.unreadable])
     let doll = try #require(try h.events().first { $0.kind == .doll })
-    #expect(doll.text == raw)                                            // stored byte-identical
+    #expect(doll.text == raw && doll.calls.map(\.name) == ["think", ""])   // stored as returned
+    try await h.turn("好")
+    let msgs = await h.model.seen(1)
+    let a = try #require(msgs.firstIndex { $0.role == "assistant" })
+    #expect(msgs[a].content == raw && msgs[a].toolCalls.map(\.name) == ["think"])   // only real calls replay as calls
+    #expect(msgs[(a + 1)...(a + 2)].map(\.role) == ["tool", "tool"])
 }
 
 @Test func failedCallsStillGetAToolResult() async throws {
@@ -582,13 +542,13 @@ private struct Harness {
     #expect(await h.doll.effortNext == nil)
 }
 
-@Test func aMalformedCallGetsAResultSayingWhatWasWrong() async throws {
+@Test func aCallTheServerCouldNotReadGetsAResultSayingSo() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("試試")
     try await h.turn("<function=recall>\n<parameter=query>\nls\n</parameter>\n</function>")
     #expect(h.said.isEmpty)
-    #expect(try h.toolResults().map(\.text) == ["失敗：<function=recall> 沒有包在 <tool_call> 和 </tool_call> 裡\n" + ParsedReply.format])
-    #expect(h.last.actions == ["error recall"] && h.last.usedTool)
+    #expect(try h.toolResults().map(\.text) == ["失敗：" + ToolCall.unreadable])
+    #expect(h.last.actions == ["error tool_call"] && h.last.usedTool)
 }
 
 @Test func aPastToolRoundRendersByteIdenticallyOnLaterTurnsImagesIncluded() async throws {
@@ -623,9 +583,10 @@ private struct Harness {
             && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},"#
                              + #"{"text":"\n視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。","type":"text"},"#
                              + #"{"image_url":{"url":"\#(uris[1])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
-    // The system prompt, tool block included, is the same on every turn.
+    // The system prompt is the same on every turn, and so is `tools`.
     #expect(Set(reqs.map { $0[0] }.map { "\($0.role)|\($0.content)" }).count == 1)
-    #expect(reqs[0][0].role == "system" && reqs[0][0].content.hasPrefix("# Tools\n"))
+    let toolLists = Set(await h.model.tools)
+    #expect(reqs[0][0].role == "system" && reqs[0][0].content.hasPrefix("你是") && toolLists.count == 1)
 }
 
 @Test func toolResultsGiveHerTheNextTurnButAWatchAckAloneDoesNot() async throws {
@@ -1078,13 +1039,8 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     try await h.turn(Scripted("", useComputer))
     let menu = try h.toolResults().last!
     #expect(menu.text.hasPrefix("電腦選單打開了") && menu.image != nil)
-    let listed = menu.text.components(separatedBy: "\n").filter { $0.hasPrefix("{\"type\": \"function\"") }
-    let names = ["click", "type", "key", "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch", "outcome"]
-    #expect(listed.count == names.count)
-    for (line, name) in zip(listed, names) {
-        #expect(line.contains("\"name\": \"\(name)\""))
-        #expect((try? JSONSerialization.jsonObject(with: Data(line.utf8))) != nil)
-    }
+    // The menu's tools were declared in `tools` all along; its text names the ones it opened.
+    #expect(menu.text.hasPrefix("電腦選單打開了，現在可以用這些工具：click、type、key、scroll、drag、read_file、write_file、edit_file、screenshot、watch、outcome。"))
     try await h.turn(Scripted("", key("Return")))
     #expect(h.last.actions == ["key"] && h.vm.actions == [.key("return")])
     #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, summary) 結束）"))
@@ -1116,9 +1072,9 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let before = await h.model.seen(0), after = await h.model.seen(3)
     // The main context up to and including her entering reply, unchanged; then the enter call's
     // result is her summary; then what she said when she left; then what came after.
-    #expect(Array(after.prefix(before.count + 1)) == before + [ChatMessage(role: "assistant", content: enter.raw)])
+    #expect(Array(after.prefix(before.count + 1)) == before + [enter.message])
     #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
-    #expect(after[before.count + 2] == ChatMessage(role: "assistant", content: Scripted("", dm("存好了。")).raw))
+    #expect(after[before.count + 2] == Scripted("", dm("存好了。")).message)
     #expect(after[before.count + 3] == ChatMessage(role: "tool", content: ""))
     #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人｜Discord 私訊｜文字] 謝謝"))
     #expect(after.last?.content.hasPrefix("【狀況】") == true)
@@ -2849,15 +2805,15 @@ private final class FakeStrata: Sendable {
     let model = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: server.transport)
     try await model.check()
     #expect(model.imageHashRefs)
-    _ = try await model.chat(turn([a, b]), effort: "none")
-    let two = try await model.chat(turn([a, b, c]), effort: "none")
+    _ = try await model.chat(turn([a, b]), tools: nil, effort: "none")
+    let two = try await model.chat(turn([a, b, c]), tools: nil, effort: "none")
     // Turn 1: both as bytes. Turn 2: a and b by reference, c as bytes; the body is smaller than all three.
     #expect(server.s.withLock { $0.requests } == [[a, b], ["hash:\(key(a))", "hash:\(key(b))", c]])
     #expect(two.usage.requestBytes! < server.s.withLock { $0.bodies[0] } + c.count)
     // The server drops a and b (an eviction or a restart): one 400 naming them, then the same request
     // with a and b as bytes and c still by reference.
     server.forget([key(a), key(b)])
-    _ = try await model.chat(turn([a, b, c]), effort: "none")
+    _ = try await model.chat(turn([a, b, c]), tools: nil, effort: "none")
     #expect(server.s.withLock { Array($0.requests.suffix(2)) }
             == [["hash:\(key(a))", "hash:\(key(b))", "hash:\(key(c))"], [a, b, "hash:\(key(c))"]])
 
@@ -2865,9 +2821,40 @@ private final class FakeStrata: Sendable {
     let plain = FakeStrata(hashRefs: false)
     let old = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: plain.transport)
     try await old.check()
-    _ = try await old.chat(turn([a, b]), effort: "none")
-    _ = try await old.chat(turn([a, b, c]), effort: "none")
+    _ = try await old.chat(turn([a, b]), tools: nil, effort: "none")
+    _ = try await old.chat(turn([a, b, c]), tools: nil, effort: "none")
     #expect(!old.imageHashRefs && plain.s.withLock { $0.requests } == [[a, b], [a, b, c]])
+}
+
+@Test func toolsGoOutAsWrittenAndHerCallsComeBackFromToolCalls() async throws {
+    let sent = Mutex<[String: Any]>([:])
+    let reply = #"{"choices":[{"message":{"content":"嗯\n<tool_call>\n<function=bogus>\n</function>\n</tool_call>\n<tool_call>\n<parameter=x>\n1\n</parameter>","#
+        + #""tool_calls":[{"id":"a","type":"function","function":{"name":"discord.dm","arguments":"{\"text\": \"在\"}"}},"#
+        + #"{"id":"b","type":"function","function":{"name":"voice.join","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"#
+        + #""usage":{"prompt_tokens":5,"completion_tokens":3},"strata_rejected_tool_calls":[{"name":"bogus","reason":"undeclared"}]}"#
+    let model = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: { req in
+        sent.withLock { $0 = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any] }
+        return (Data(reply.utf8), 200)
+    })
+    let tools = Tools.json([Tools.exitSpec])
+    let history = [ChatMessage(role: "system", content: "s"),
+                   ChatMessage(role: "assistant", content: "想", toolCalls: [ToolCall(name: "recall", arguments: "{\"query\": \"貓\"}"),
+                                                                           ToolCall(failed: "", ToolCall.unreadable)]),
+                   ChatMessage(role: "tool", content: "r")]
+    let r = try await model.chat(history, tools: tools, effort: "none")
+    #expect(r.content.hasPrefix("嗯\n<tool_call>"))
+    #expect(r.calls.map(\.name) == ["discord.dm", "voice.join", "bogus", ""])
+    #expect(r.calls[0].arguments == "{\"text\": \"在\"}" && r.calls[0].parameters == [.init("text", "在")])
+    #expect(r.calls[2].malformed == "沒有 bogus 這個工具，沒有執行" && r.calls[3].malformed == ToolCall.unreadable)
+    let body = sent.withLock { $0 }
+    // `tools` as written; her calls as `tool_calls`, arguments verbatim; the failed one not sent
+    #expect((body["tools"] as? NSArray) == (try JSONSerialization.jsonObject(with: Data(tools.utf8)) as? NSArray))
+    let assistant = (body["messages"] as! [[String: Any]])[1]
+    let calls = assistant["tool_calls"] as! [[String: Any]]
+    #expect(calls.count == 1 && (calls[0]["function"] as! [String: Any])["arguments"] as? String == "{\"query\": \"貓\"}")
+    // no tools: the key is absent (the consolidation call)
+    _ = try await model.chat(history, tools: nil, effort: "none")
+    #expect(sent.withLock { $0["tools"] } == nil)
 }
 
 // dashboard (2026-11-09) -------------------------------------------------------
@@ -3232,19 +3219,6 @@ extension Doll {
     #expect(result("read_file") == ["read_file 的結果"])
 }
 
-@Test func callsWrittenInsideTheThinkingAreHerReply() {
-    // A real reply (2026-11-11, replaying F-1 turn 3): no </think>, so content was null and the call sat in the thinking.
-    let thinking = "I found the file in ~/Documents/notes.txt, so now I need to open it in TextEdit and save a copy to the Desktop as requested. I'll use the Terminal to launch TextEdit with the file path, then use Save As to create the copy on the Desktop.\n\n<tool_call>\n<function=discord.dm>\n<parameter=text>\n找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。\n</parameter>\n</function>\n</tool_call>"
-    let reply = ParsedReply(ParsedReply.rescued(content: "", reasoning: thinking)!)
-    #expect(reply.said.map(\.text) == ["找到notes.txt在Documents裡，內容三行。我開TextEdit弄一下。"] && reply.said.map(\.channel) == [.discordDM] && reply.thought.isEmpty)
-    // Her content's own text stays her thought, the calls after it.
-    #expect(ParsedReply(ParsedReply.rescued(content: "嗯", reasoning: thinking)!).thought == "嗯")
-    // Not when the content has a call, the thinking has none, or the only one is in a code fence or mid-line.
-    #expect(ParsedReply.rescued(content: "<tool_call>\n<function=think>\n<parameter=level>\nnone\n</parameter>\n</function>\n</tool_call>", reasoning: thinking) == nil)
-    #expect(ParsedReply.rescued(content: "", reasoning: "just thinking") == nil && ParsedReply.rescued(content: "", reasoning: nil) == nil)
-    #expect(ParsedReply.rescued(content: "", reasoning: "```\n<tool_call>\n```\nI would write <tool_call> here") == nil)
-}
-
 @Test func aMenuReplyWithoutACallIsRemindedUntilTheIdleLimit() async throws {
     // 2026-11-11: she had only thought (or written nothing) and the task stopped.
     let h = try await menuHarness { $0.idle.maxTurnsWithoutTool = 3 }
@@ -3274,7 +3248,7 @@ extension Doll {
     await h.doll.ownerSaid("謝謝")
     try await h.turn(Scripted("", dm("不客氣")))
     let last = await h.model.requests.last!.messages
-    #expect(last.contains { $0.role == "assistant" && $0.content == Scripted("", dm("存好了喔")).raw })
+    #expect(last.contains { $0 == Scripted("", dm("存好了喔")).message })
 }
 
 // consolidation (2026-11-11) -----------------------------------------------------
@@ -3294,6 +3268,11 @@ private func stamped(_ kind: Event.Kind, _ text: String, _ seq: Int64, secret: B
                   crop: crop, window: window)
     e.seq = seq
     e.ts = 1794337154 + Double(seq) * 60
+    return e
+}
+private func stamped(_ reply: Scripted, _ seq: Int64) -> Event {
+    var e = stamped(.doll, reply.content, seq)
+    e.calls = reply.toolCalls
     return e
 }
 
@@ -3321,17 +3300,17 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func consolidationRendersTheDayAsTextWithoutImagesOrProgramLines() {
     let events = [
         stamped(.owner, "用 TextEdit 另存一份", 1),
-        stamped(.doll, Scripted("我先打開電腦。", useComputer).raw, 2),
+        stamped(Scripted("我先打開電腦。", useComputer), 2),
         stamped(.tool, "電腦選單打開了，現在多了這些工具：…", 3, image: "a.jpg"),
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
-        stamped(.doll, Scripted("", dm("好"), key("cmd+shift+alt+s")).raw, 5),
+        stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
         stamped(.tool, "", 6),
         stamped(.tool, "開著的視窗：TextEdit「另存」；焦點：textfield", 7, image: "b.jpg", cropNote: "視窗圖在 10,20",
                 crop: "c.jpg", window: "前景 app：TextEdit\nwindow \"Save\""),
         stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
-        stamped(.doll, Scripted("", recall("另存")).raw, 9),
+        stamped(Scripted("", recall("另存")), 9),
         stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
-        stamped(.doll, Scripted("", outcome(true, "按 ⇧⌥⌘S 另存好了")).raw, 11),
+        stamped(Scripted("", outcome(true, "按 ⇧⌥⌘S 另存好了")), 11),
         stamped(.tool, "記下了：達成。", 12),
         stamped(.owner, "我的密碼是 1234", 13, secret: true),
         stamped(.watch, "盯著的畫面變了。", 14, image: "d.jpg"),
@@ -3448,7 +3427,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 
     // The next start is a new day: a new, empty segment and an empty today; long-term memory stays.
     let next = try await restarted(h)
-    #expect(try next.timeline().segment == r.newSegment)
+    #expect(try h.timeline().segment == r.newSegment)   // `next` runs on h's data dir
     #expect(await next.doll.timelineEvents().isEmpty)
     #expect(try await next.doll.todayCount() == 0)
     #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "timeline/\(before).jsonl").path))
@@ -3858,35 +3837,6 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(h.said == ["在", "在"])   // only the two attempts above reached the delivery
 }
 
-@Test func aReplyThatStopsInsideItsLastCallIsAskedForAgainUnseen() async throws {
-    let cut = "<tool_call>\n<function=discord.dm>\n<parameter=text>\n在啊。你這麼晚還沒睡？"
-    #expect(ParsedReply(cut).endsUnterminated)
-    #expect(!ParsedReply(Scripted("", dm("在")).raw).endsUnterminated)
-    #expect(!ParsedReply(cut + "\n" + Scripted("", dm("在")).raw).endsUnterminated)   // only the last call counts
-
-    // Retried once: the cut reply never reaches the timeline; the same messages are sent again.
-    let h = try await Harness()
-    await h.doll.ownerSaid("在嗎")
-    try await h.turn(Scripted(cut), Scripted("", dm("在啊")))
-    #expect(h.said == ["在啊"])
-    #expect(try h.events().filter { $0.kind == .doll }.map(\.text) == [Scripted("", dm("在啊")).raw])
-    #expect(await h.model.requests.count == 2)
-    #expect(await h.model.seen(0).map(\.content) == h.model.seen(1).map(\.content))
-    #expect(h.logs.contains { $0.contains("WARN") && $0.contains("asking again") })
-
-    // Still cut after the retries: stored as written, and the say fails with what was wrong.
-    await h.doll.ownerSaid("在嗎")
-    try await h.turn(Scripted(cut), Scripted(cut))
-    #expect(try h.toolResults().last!.text.hasPrefix("失敗：<tool_call> 沒有 </tool_call> 收尾"))
-    #expect(await h.model.requests.count == 4)
-
-    // unterminated_retries = 0: the first one is kept.
-    let h0 = try await Harness { $0.llm.unterminatedRetries = 0 }
-    await h0.doll.ownerSaid("在嗎")
-    try await h0.turn(Scripted(cut))
-    #expect(await h0.model.requests.count == 1 && h0.said.isEmpty)
-}
-
 @Test func apiAndBridgeConfigAreValidated() throws {
     let example = try Config.load(root.appending(path: "dollcore.example.toml"))
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
@@ -4208,11 +4158,13 @@ private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
     #expect(plain.contains("主人從 Discord 私訊來的話，用 discord.dm 回；開發者從終端機來的話，用 dollctl.reply 回。"))
     let h = try await Harness { $0.voice.enabled = true }
     let sys = await h.doll.systemPrompt()
-    #expect(sys.contains("## 語音頻道") && sys.contains("\"name\": \"voice.join\""))
+    let tools = await h.doll.toolsJSON
+    #expect(sys.contains("## 語音頻道") && tools.contains("\"name\": \"voice.join\""))
+    #expect(!(await off.doll.toolsJSON).contains("voice."))
     #expect(sys.contains("主人從 Discord 私訊來的話，用 discord.dm 回；主人在 Discord 語音說的話，用 voice.say 回（你要先在語音頻道裡）；開發者從終端機來的話，用 dollctl.reply 回。"))
     #expect(sys.contains("連結、網址、公式、程式碼"))
     // The removed generic names are nowhere in what she reads.
-    for old in ["用 say", "\"name\": \"say\"", "send_text", "join_voice", "leave_voice"] { #expect(!sys.contains(old)) }
+    for old in ["用 say", "\"name\": \"say\"", "send_text", "join_voice", "leave_voice"] { #expect(!sys.contains(old) && !tools.contains(old)) }
     // The tools decode; with no voice wired each fails with the reason and what to use instead.
     try await h.turn(Scripted("", voiceJoin, voiceSay("嗨"), voiceLeave, dm("https://example.com")))
     let results = try h.toolResults()

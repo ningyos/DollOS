@@ -95,7 +95,7 @@ public struct Event: Sendable, Equatable {
     public enum Kind: String, Sendable, Codable {
         case owner      // the owner spoke
         case developer  // the developer typed in `dollctl chat` (2026-11-12): renders 開發者, never sees the secret folder
-        case doll       // her reply, verbatim (tool call text included)
+        case doll       // her reply: her thought (the text content) and her calls
         case tool       // the result of one of her tool calls, in call order
         case watch      // her watch woke her: the region changed, or max_wait passed
         case memory     // 【相關記憶】: records the program attached for her (spec 3.1, 2026-11-09)
@@ -124,6 +124,9 @@ public struct Event: Sendable, Equatable {
     /// For her replies: the footer that preceded it in the prompt. Kept in the prompt so the
     /// server's prefix cache stays valid; a `footer` record in the timeline file, not an event.
     public var footer: String?
+    /// For her replies: her calls in the order she wrote them (2026-11-14: the response's
+    /// `tool_calls`, arguments text as returned, then the calls the server returned as text).
+    public var calls: [ToolCall] = []
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
                 image: String? = nil, cropNote: String? = nil, crop: String? = nil, window: String? = nil) {
@@ -220,6 +223,14 @@ public final class Timeline {
         var crop: String?
         var window: String?
         var channel: Channel?
+        /// Her reply's calls; present on every `doll` event since 2026-11-14.
+        var calls: [StoredCall]?
+    }
+    /// One call as stored: `arguments` nil and `malformed` set for a call the server returned as text.
+    private struct StoredCall: Codable {
+        var name: String
+        var arguments: String?
+        var malformed: String?
     }
     private struct FooterLine: Codable {
         var type = "footer"
@@ -262,8 +273,7 @@ public final class Timeline {
     public init(dir: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let names = try fm.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }.sorted()
-        segment = names.last.map { String($0.dropLast(".jsonl".count)) } ?? Self.newName(after: nil)
+        segment = try Self.segments(dir).last ?? Self.newName(after: nil)
         file = dir.appending(path: segment + ".jsonl")
         if !fm.fileExists(atPath: file.path) {
             guard fm.createFile(atPath: file.path, contents: nil) else {
@@ -291,12 +301,18 @@ public final class Timeline {
     public static func startSegment(dir: URL) throws -> String {
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let names = try fm.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }.sorted()
-        let name = newName(after: names.last.map { String($0.dropLast(".jsonl".count)) })
+        let name = newName(after: try segments(dir).last)
         guard fm.createFile(atPath: dir.appending(path: name + ".jsonl").path, contents: nil) else {
             throw StoreError(description: "cannot create \(dir.appending(path: name + ".jsonl").path)")
         }
         return name
+    }
+
+    /// The segment ids under `dir`, oldest first. Sorted without the `.jsonl` suffix: with it,
+    /// `x-1.jsonl` sorts before `x.jsonl` ('-' < '.') and a same-second new segment was not the newest.
+    private static func segments(_ dir: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".jsonl") }
+            .map { String($0.dropLast(".jsonl".count)) }.sorted()
     }
 
     deinit { try? handle?.close() }
@@ -316,7 +332,13 @@ public final class Timeline {
             func bad(_ e: Error) -> StoreError { StoreError(description: "\(file.path) line \(n + 1): \(e)") }
             do {
                 switch try Self.decoder.decode(Line.self, from: raw).type {
-                case "event": take(try Self.decoder.decode(EventLine.self, from: raw))
+                case "event":
+                    let l = try Self.decoder.decode(EventLine.self, from: raw)
+                    if l.kind == .doll, l.calls == nil {
+                        // Before 2026-11-14 her reply was stored as raw text with her calls inside it.
+                        throw StoreError(description: "her reply \(l.seq) has no calls record: a timeline from before native tool calls (2026-11-14); start a new data dir")
+                    }
+                    take(l)
                 case "footer":
                     let f = try Self.decoder.decode(FooterLine.self, from: raw)
                     guard let i = position[f.seq] else { throw StoreError(description: "footer for unknown seq \(f.seq)") }
@@ -336,6 +358,10 @@ public final class Timeline {
         var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, cropNote: l.cropNote,
                       crop: l.crop, window: l.window)
         e.channel = l.channel
+        e.calls = (l.calls ?? []).map { c in
+            if let arguments = c.arguments { ToolCall(name: c.name, arguments: arguments) }
+            else { ToolCall(failed: c.name, c.malformed ?? ToolCall.unreadable) }
+        }
         e.seq = l.seq
         e.ts = l.ts
         position[l.seq] = events.count
@@ -366,7 +392,9 @@ public final class Timeline {
     public func append(_ ev: Event) throws -> Event {
         let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image, cropNote: ev.cropNote, crop: ev.crop,
-                             window: ev.window, channel: ev.channel)
+                             window: ev.window, channel: ev.channel,
+                             calls: ev.kind == .doll ? ev.calls.map { StoredCall(name: $0.name, arguments: $0.arguments,
+                                                                                  malformed: $0.arguments == nil ? $0.malformed : nil) } : nil)
         try write(line)
         take(line)
         return events[events.count - 1]

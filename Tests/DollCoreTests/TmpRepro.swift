@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import DollCore
 
-@Test func tmpDumpEmptyReplyRequest() async throws {
+@Test(.disabled("/tmp/emptyrepro holds a timeline from before native tool calls (2026-11-14); it no longer loads"))
+func tmpDumpEmptyReplyRequest() async throws {
     var cfg = try Config.load(URL(filePath: "~/Desktop/DollOS/DollOS/.worktrees/rewrite/experiments/m2/expstats/expstats.toml"))
     cfg.core.dataDir = "/tmp/emptyrepro/data"
     cfg.memory.dir = "/tmp/emptyrepro/data/memory"
