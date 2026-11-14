@@ -5137,3 +5137,83 @@ private func day(_ days: Double) -> Double {
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
 }
+
+
+/// End to end with the real embedding model (2026-11-15): three sleeps over two weeks with scripted
+/// consolidation plans, the clock moved by hand; then auto-attach and recall at later days. An
+/// unconfirmed memory drops out of auto-attach after about three weeks, one confirmed on three
+/// different days settles and stays, a deep one never fades, recall finds all. Prints its table.
+@Test func endToEndUnconfirmedMemoriesFadeConfirmedAndDeepOnesStayRecallFindsAll() async throws {
+    let embedder = try await qwen3.value
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-strength-\(UUID().uuidString)")
+    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    cfg.core.dataDir = dir.path
+    cfg.memory.dir = dir.appending(path: "memory").path
+    let timeline = dir.appending(path: "timeline")
+    func live(_ n: Double, _ lines: [String]) throws {
+        let t = try Timeline(dir: timeline)
+        for (i, line) in lines.enumerated() {
+            var e = Event(.owner, .owner, line)
+            e.ts = day(n) + Double(i) * 120
+            try t.append(e)
+            var r = Event(.doll, .internal, "好，記住了")
+            r.ts = e.ts + 30
+            try t.append(r)
+        }
+    }
+    func sleep(_ n: Double, _ ops: String) async throws -> [String] {
+        let reply = "```json\n{\"entities\": [], \"operations\": [\(ops)]}\n```"
+        return try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply), Scripted("摘要。")]),
+                                           embedder: embedder, now: day(n) + 10 * 3600).applied
+    }
+    func ids() throws -> [String: String] {
+        let pub = dir.appending(path: "memory/public")
+        var out: [String: String] = [:]
+        for name in try FileManager.default.contentsOfDirectory(atPath: pub.path) where name.hasSuffix(".md") {
+            out[try Memory.parseFile(String(contentsOf: pub.appending(path: name), encoding: .utf8)).body] = String(name.dropLast(3))
+        }
+        return out
+    }
+    var log: [String] = []
+    // Day 0: the owner says two things; sleep writes them. She marks one of her own deep.
+    try live(0, ["我喜歡喝無糖綠茶", "我們公司搬到信義區了"])
+    log += try await sleep(0, #"{"op": "add", "ref": "n1", "text": "主人喜歡喝無糖綠茶", "folder": "public", "kind": "", "entities": []}, {"op": "add", "ref": "n2", "text": "主人的公司在信義區", "folder": "public", "kind": "", "entities": []}"#)
+    do {
+        let memory = try Memory(config: cfg.memory, root: URL(filePath: cfg.memory.dir), store: try Store(path: dir.appending(path: "doll.db")),
+                                embedder: embedder)
+        try memory.write("主人對花生過敏", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, deep: true, now: day(0) + 60)
+    }
+    let tea = try ids()["主人喜歡喝無糖綠茶"]!, office = try ids()["主人的公司在信義區"]!, peanut = try ids()["主人對花生過敏"]!
+    // Days 7 and 14: the tea again, from new events; the office never comes up again.
+    try live(7, ["幫我買一箱無糖綠茶"])
+    log += try await sleep(7, #"{"op": "confirm", "id": "\#(tea)", "task": 1}"#)
+    try live(14, ["綠茶一樣要無糖的喔"])
+    log += try await sleep(14, #"{"op": "confirm", "id": "\#(tea)", "task": 1}"#)
+    let memory = try Memory(config: cfg.memory, root: URL(filePath: cfg.memory.dir), store: try Store(path: dir.appending(path: "doll.db")),
+                            embedder: embedder)
+    let selector = Selector(memory: memory, config: cfg.select)
+    let name = [tea: "tea", office: "office", peanut: "peanut"]
+    let queries = ["tea": "下午幫我買一杯無糖綠茶", "office": "我們公司在哪一區", "peanut": "這塊蛋糕有花生，我能吃嗎"]
+    var attached: [Double: [String: [String]]] = [:]
+    for d in [3.0, 20, 30, 60, 180] {
+        for (what, q) in queries.sorted(by: { $0.key < $1.key }) {
+            let a = try selector.run(.init(label: "day \(Int(d))", query: q, app: nil), rule: .attach, visible: [.public],
+                                     tiers: Memory.strengthTiers.union([.selfReported]), today: nil, now: day(d)) { c in
+                try memory.attachable(c.id) == nil ? nil : c.key
+            }
+            let r = try selector.run(.init(label: "recall", query: q, app: nil), rule: .recall, visible: [.public], tiers: nil,
+                                     today: nil, now: day(d)) { $0.key }
+            let cos = a.ranked.map { "\(name[$0.id] ?? $0.id) \(String(format: "%.2f", $0.cosine))" }
+            attached[d, default: [:]][what] = a.selected.map { name[$0.id] ?? $0.id }
+            log.append("day \(Int(d)) 「\(q)」 attach \(a.selected.map { name[$0.id] ?? $0.id }) faded \(a.faded.map { name[$0] ?? $0 }) "
+                       + "(cos \(cos)); recall \(r.selected.map { name[$0.id] ?? $0.id })")
+            #expect(r.selected.contains { $0.id == [ "tea": tea, "office": office, "peanut": peanut ][what]! }, "recall day \(d) \(what)")
+        }
+    }
+    print("END-TO-END MEMORY STRENGTH\n" + log.joined(separator: "\n"))
+    let f = try memory.file(tea)!.file
+    #expect(f.evidence.count == 3 && f.settled == f.evidence[2].ts)
+    #expect(attached[3]!["office"]!.contains("office") && attached[20]!["office"]!.contains("office"))
+    #expect(!attached[30]!["office"]!.contains("office") && !attached[180]!["office"]!.contains("office"))
+    #expect(attached[180]!["tea"]!.contains("tea") && attached[180]!["peanut"]!.contains("peanut"))
+}
