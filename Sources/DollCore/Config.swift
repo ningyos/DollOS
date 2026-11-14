@@ -217,7 +217,7 @@ public struct SelectConfig: Sendable {
     /// trigger it has.
     public var entityWeight = 0.2
     /// Auto-attach: at most this many, best cheap score first.
-    public var attachMax = 3
+    public var attachMax = 5
     /// Recall: this many best by cosine are the embedding channel, and this many are given.
     public var recallLimit = 5
     /// How many registry entries (`Registry.nearby`) the on-device model sees when it aligns one name.
