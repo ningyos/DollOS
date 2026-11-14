@@ -289,6 +289,7 @@ public enum Consolidation {
                 if !TodayIndex.unindexedResults.contains(name) { line("\(name) 的結果", ev.text) }
             case .watch: line("watch", ev.text)
             case .memory: break
+            case .calendar: line("行事曆", ev.text)
             }
         }
         flush()

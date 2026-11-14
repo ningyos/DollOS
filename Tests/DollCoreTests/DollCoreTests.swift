@@ -287,8 +287,10 @@ private struct Harness {
     let dir: URL
     let store: Store      // a second connection to the memory index, for checks
 
-    init(_ replies: [Scripted] = [], embedder: (any Embedder)? = nil, tune: (inout Config) -> Void = { _ in }) async throws {
-        dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    /// `dir`: reuse a data dir (a restart); a fresh one by default.
+    init(_ replies: [Scripted] = [], dir reuse: URL? = nil, embedder: (any Embedder)? = nil, clock: (any DollClock)? = nil,
+         tune: (inout Config) -> Void = { _ in }) async throws {
+        dir = reuse ?? FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
         var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
         cfg.core.dataDir = dir.path
         cfg.computer.watchPollS = 0.02
@@ -308,6 +310,7 @@ private struct Harness {
                             return rec.undelivered.withLock { $0 }
                         })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
+        if let clock { await doll.setClock(clock) }
         await doll.setLogSink { line in rec.logs.withLock { $0.append(line) } }
         store = try Store(path: dir.appending(path: "doll.db"))
     }
@@ -429,7 +432,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
     #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
-                      "todo.wait", "todo.progress", "click", "type", "key", "scroll", "drag", "read_file", "write_file",
+                      "todo.wait", "todo.progress", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "click", "type", "key", "scroll", "drag", "read_file", "write_file",
                       "edit_file", "screenshot", "watch"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
     // every request sends the same list
@@ -2818,9 +2821,9 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
 }
 
-@Test func theOnlyPostRoutesAreInterruptPauseResumeAndTheDeepMark() {
+@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkAndTheCalendar() {
     #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
-            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/"])
+            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/calendar/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
 
@@ -3776,7 +3779,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 @Test func apiAndBridgeConfigAreValidated() throws {
     let example = try Config.load(root.appending(path: "dollcore.example.toml"))
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
-    #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "watch"])
+    #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "calendar", "watch"])
     let file = FileManager.default.temporaryDirectory.appending(path: "api-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
@@ -3791,8 +3794,11 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
         try (head + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
-    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
+    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"calendar\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }   // developer_text must be placed
+    // So must calendar (2026-11-15): a config from before it says so instead of guessing its place.
+    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"developer_text\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
     // The tracked experiment configs that loaded before (automem and shortcuts predate the
     // self_reported and consolidated tiers and did not load already).
     for tracked in ["experiments/dashboard/dollcore.toml", "experiments/m2/cheatsheet/cheatsheet.toml",
@@ -4929,7 +4935,7 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     h.vm.failNext("vm is asleep")
     let why = try #require(await h.doll.syncDocs())
     try await h.doll.announceBoot(docsFailure: why)
-    #expect(try h.events().last!.text == "【開機】你剛被開機了。DollOS 文件這次沒有複製進你的電腦（\(why)）；~/DollOS/docs 裡可能是舊的或沒有。")
+    #expect(try h.events().last!.text == "【開機】你剛被開機了。DollOS 文件這次沒有複製進你的電腦（\(why)）；~/DollOS/docs 裡可能是舊的或沒有。今天的行事曆：沒有。")
     #expect(h.logs.contains { $0.hasPrefix("ERROR docs: copying") })
 }
 
@@ -5216,4 +5222,245 @@ private func day(_ days: Double) -> Double {
     #expect(attached[3]!["office"]!.contains("office") && attached[20]!["office"]!.contains("office"))
     #expect(!attached[30]!["office"]!.contains("office") && !attached[180]!["office"]!.contains("office"))
     #expect(attached[180]!["tea"]!.contains("tea") && attached[180]!["peanut"]!.contains("peanut"))
+}
+
+// calendar (2026-11-15) ------------------------------------------------------------
+
+/// "Now" the test sets; a sleeper wakes when the time passes its instant.
+final class ManualClock: DollClock, Sendable {
+    struct Sleeper { let id: UUID; let t: Double; let c: CheckedContinuation<Void, any Error> }
+    let state: Mutex<(now: Double, sleepers: [Sleeper])>
+    init(_ t: Double) { state = Mutex((t, [])) }
+    func now() -> Double { state.withLock { $0.now } }
+    var sleepers: Int { state.withLock { $0.sleepers.count } }
+    func sleep(until t: Double) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, any Error>) in
+                let ready: Bool? = state.withLock { s in
+                    if Task.isCancelled { return nil }
+                    if s.now >= t { return true }
+                    s.sleepers.append(Sleeper(id: id, t: t, c: c))
+                    return false
+                }
+                if ready == nil { c.resume(throwing: CancellationError()) } else if ready! { c.resume() }
+            }
+        } onCancel: {
+            let s = state.withLock { s -> Sleeper? in
+                guard let i = s.sleepers.firstIndex(where: { $0.id == id }) else { return nil }
+                return s.sleepers.remove(at: i)
+            }
+            s?.c.resume(throwing: CancellationError())
+        }
+    }
+    func set(_ t: Double) {
+        let due = state.withLock { s -> [Sleeper] in
+            s.now = t
+            let d = s.sleepers.filter { $0.t <= t }
+            s.sleepers.removeAll { $0.t <= t }
+            return d
+        }
+        for s in due { s.c.resume() }
+    }
+}
+
+/// Local time `2026-11-16 10:00` (a Monday) as seconds.
+private func at(_ day: String, _ time: String) -> Double { Day(day)!.at(TimeOfDay(time)!) }
+
+private func cal(_ name: String, _ params: [(String, String)]) -> (String, [(String, String)]) { (name, params) }
+
+@Test func calendarDaysAndWeekdaysAreLocalAndStrict() {
+    #expect(Day("2026-11-16")!.label == "2026-11-16（星期一）" && Day("2026-11-22")!.weekday == 7)
+    #expect(Day("2026-11-31") == nil && Day("2026-1-05") == nil && Day("下週三") == nil)
+    #expect(Day("2026-12-31")!.adding(1).description == "2027-01-01")
+    #expect(TimeOfDay("9:05")?.description == "09:05" && TimeOfDay("24:00") == nil && TimeOfDay("10") == nil)
+    #expect(Repeat("1,3,5") == .weekdays([1, 3, 5]) && Repeat("daily") == .daily && Repeat("0,8") == nil)
+}
+
+@Test func calendarDailyAndWeekdaySeriesWithOneDayChangesLeaveTheOtherDays() async throws {
+    let h = try await Harness(clock: ManualClock(at("2026-11-16", "08:00")))
+    try await h.turn(Scripted("", cal("calendar.add", [("title", "吃藥"), ("date", "2026-11-16"), ("start", "09:00"), ("end", "09:10"), ("repeat", "daily")]),
+                              cal("calendar.add", [("title", "主人上健身房"), ("date", "2026-11-16"), ("start", "19:00"), ("repeat", "2,4")]),
+                              cal("calendar.change", [("id", "1"), ("on", "2026-11-17"), ("start", "15:00")]),
+                              cal("calendar.delete", [("id", "1"), ("on", "2026-11-18")]),
+                              cal("calendar.list", [("from", "2026-11-16"), ("to", "2026-11-19")])))
+    let r = try h.toolResults().map(\.text)
+    #expect(r[0] == "加好了：從 2026-11-16（星期一） 09:00–09:10 吃藥（#1，每天）。下一次是 2026-11-16（星期一） 09:00，到時候會給你一個回合。")
+    // A weekday series echoes its first real day (Tuesday), not the date she gave.
+    #expect(r[1].hasPrefix("加好了：從 2026-11-17（星期二） 19:00 主人上健身房（#2，每週二、四）"))
+    #expect(r[2] == "改好了：2026-11-17（星期二） 15:00–15:10 吃藥（#1，每天，這天改過）。只改 2026-11-17（星期二） 這一次，其他天照舊。下一次是 2026-11-16（星期一） 09:00，到時候會給你一個回合。")
+    #expect(r[3].hasPrefix("2026-11-18（星期三） 這一次取消了，其他天照舊"))
+    #expect(r[4] == """
+        2026-11-16（星期一） 到 2026-11-19（星期四）：
+        2026-11-16（星期一）
+        - 09:00–09:10 吃藥（#1，每天）
+        2026-11-17（星期二）
+        - 15:00–15:10 吃藥（#1，每天，這天改過）
+        - 19:00 主人上健身房（#2，每週二、四）
+        2026-11-19（星期四）
+        - 09:00–09:10 吃藥（#1，每天）
+        - 19:00 主人上健身房（#2，每週二、四）
+        """)
+    // Refusals say what to do.
+    try await h.turn(Scripted("", cal("calendar.add", [("title", "x"), ("date", "下週三")]),
+                              cal("calendar.change", [("id", "9"), ("title", "y")]),
+                              cal("calendar.change", [("id", "1"), ("on", "2026-11-15"), ("start", "10:00")]),
+                              cal("calendar.add", [("title", "x"), ("date", "2026-11-20"), ("end", "10:00")]),
+                              cal("calendar.list", [("from", "2026-11-01"), ("to", "2026-12-31")])))
+    let bad = try h.toolResults().suffix(5).map(\.text)
+    #expect(bad[0] == "失敗：calendar.add 的 date 要是 YYYY-MM-DD 的日期，例：2026-11-18；收到 下週三")
+    #expect(bad[1] == "失敗：沒有 #9 這個行事曆項目；用 calendar.list 看現有的編號")
+    #expect(bad[2].hasPrefix("失敗：#1（每天，從 2026-11-16（星期一） 起）在 2026-11-15（星期日） 沒有"))
+    #expect(bad[3] == "失敗：calendar.add 有 end 就要有 start；全天的事兩個都不給")
+    #expect(bad[4] == "失敗：calendar.list 一次最多 31 天，收到 61 天；分段查")
+}
+
+@Test func aTimedStartGivesATurnAnAllDayItemDoesNotAndEditsMoveTheTimer() async throws {
+    let clock = ManualClock(at("2026-11-16", "09:00"))
+    let h = try await Harness(clock: clock)
+    let doll = h.doll
+    try await h.turn(Scripted("", cal("calendar.add", [("title", "主人看牙醫"), ("date", "2026-11-16"), ("start", "10:00"), ("end", "11:00")]),
+                              cal("calendar.add", [("title", "主人生日"), ("date", "2026-11-16")]),
+                              cal("calendar.add", [("title", "倒垃圾"), ("date", "2026-11-16"), ("start", "10:15")]),
+                              cal("calendar.change", [("id", "1"), ("start", "10:30")]),
+                              cal("calendar.delete", [("id", "3")])),
+                     Scripted("", dm("記好了")))
+    #expect(try h.toolResults().map(\.text)[3] == "改好了：2026-11-16（星期一） 10:30–11:30 主人看牙醫（#1）。下一次是 2026-11-16（星期一） 10:30，到時候會給你一個回合。")
+    let runner = Task { try await doll.run() }
+    try await waitUntil { await h.model.requests.count == 2 && clock.sleepers == 1 }
+    let before = await h.model.requests.count
+    await h.model.add([Scripted("", dm("十點半了，該出門看牙醫囉"))])
+    clock.set(at("2026-11-16", "10:20"))       // the old 10:00 and the deleted 10:15 do not fire
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.count == before)
+    clock.set(at("2026-11-16", "10:30"))
+    try await waitUntil { h.said.last == "十點半了，該出門看牙醫囉" }
+    let fired = try h.events().filter { $0.kind == .calendar }.map(\.text)
+    #expect(fired == ["【行事曆】現在 10:30：主人看牙醫（#1，到 11:30）"])
+    #expect(await h.model.requests.count == before + 1)
+    let lastSeen = await h.model.requests.last!.messages
+    #expect(lastSeen.contains { $0.role == "user" && $0.content.hasSuffix(" 程式] 【行事曆】現在 10:30：主人看牙醫（#1，到 11:30）") })
+    clock.set(at("2026-11-17", "12:00"))       // the all-day item never fires
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.count == before + 1 && clock.sleepers == 0)
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func statusListsTodaysItemsStillToComeAndSaysHowManyMore() async throws {
+    let clock = ManualClock(at("2026-11-16", "09:30"))
+    let h = try await Harness(clock: clock) { $0.calendar.statusItems = 3 }
+    try await h.turn(Scripted("", cal("calendar.add", [("title", "主人生日"), ("date", "2026-11-16")]),
+                              cal("calendar.add", [("title", "吃藥"), ("date", "2026-11-16"), ("start", "09:00")]),
+                              cal("calendar.add", [("title", "開會"), ("date", "2026-11-16"), ("start", "09:00"), ("end", "10:00")]),
+                              cal("calendar.add", [("title", "看牙醫"), ("date", "2026-11-16"), ("start", "15:00")]),
+                              cal("calendar.add", [("title", "晚餐"), ("date", "2026-11-16"), ("start", "19:00")]),
+                              cal("calendar.add", [("title", "明天的事"), ("date", "2026-11-17"), ("start", "09:00")])))
+    let status = try await h.doll.status()
+    #expect(status.contains("- 現在 2026-11-16（星期一）09:30:00"))
+    #expect(status.contains("- 今天的行事曆：全天 主人生日（#1）；09:00–10:00 開會（#3）（進行中）；15:00 看牙醫（#4）；還有 1 件（calendar.list 看全部）"))
+    clock.set(at("2026-11-16", "20:00"))
+    #expect(try await h.doll.status().contains("- 今天的行事曆：全天 主人生日（#1）\n"))
+    clock.set(at("2026-11-18", "08:00"))
+    #expect(try await h.doll.status().contains("- 今天的行事曆：沒有\n"))
+}
+
+@Test func theOwnersDashboardEditIsAProgramEventWithoutATurn() async throws {
+    let clock = ManualClock(at("2026-11-16", "09:00"))
+    let h = try await Harness([Scripted("", dm("好"))], clock: clock)
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    let d = dashboard(h)
+    let r = await d.respond(method: "POST", target: "/api/calendar/add?title=%E4%B8%BB%E4%BA%BA%E7%9C%8B%E7%89%99%E9%86%AB&date=2026-11-18&start=10:00")
+    #expect(r.status == 200)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.isEmpty)
+    let notice = try h.events().filter { $0.kind == .memory }.map(\.text)
+    #expect(notice == ["【行事曆】主人在 dashboard 加了：2026-11-18（星期三） 10:00 主人看牙醫（#1）"])
+    #expect(await d.respond(method: "POST", target: "/api/calendar/change?id=1&start=25:00").status == 409)
+    #expect(await d.respond(method: "POST", target: "/api/calendar/list?from=2026-11-18").status == 404)
+    let c = try json(DashboardCalendar.self, await d.respond(method: "GET", target: "/api/calendar"))
+    #expect(c.today == "2026-11-16" && c.entries.map(\.title) == ["主人看牙醫"] && c.items.map(\.by) == ["owner"])
+    // She reads it with the next event.
+    await h.doll.ownerSaid("嗨")
+    try await waitUntil { await h.model.requests.count == 1 }
+    let seen = await h.model.seen(0)
+    #expect(seen.contains { $0.content.contains("【行事曆】主人在 dashboard 加了") })
+    try await waitUntil { h.said == ["好"] && !h.logs.isEmpty }
+    #expect(await d.respond(method: "POST", target: "/api/calendar/delete?id=1").status == 200)
+    try await waitUntil { (try? h.events().last!.text.hasPrefix("【行事曆】主人在 dashboard 刪掉了")) == true }
+    #expect(try h.events().last!.text == "【行事曆】主人在 dashboard 刪掉了：2026-11-18（星期三） 10:00 主人看牙醫（#1）")
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func aStartDuringHerTurnFiresOnceAndOwnerEditsWaitForTheTurnToEnd() async throws {
+    let clock = ManualClock(at("2026-11-16", "09:59"))
+    let h = try await Harness(clock: clock)
+    let doll = h.doll
+    try await h.turn(Scripted("", cal("calendar.add", [("title", "十點的事"), ("date", "2026-11-16"), ("start", "10:00")])), Scripted("", dm("好")))
+    let runner = Task { try await doll.run() }
+    try await waitUntil { h.said == ["好"] }
+    await h.model.stall()
+    await h.model.add([Scripted("", dm("提醒你十點的事"))])
+    await h.doll.ownerSaid("在嗎")
+    try await waitUntil { await h.model.requests.count == 3 }
+    clock.set(at("2026-11-16", "10:00"))                       // fires while the call is in flight
+    try await waitUntil { await h.doll.queue.count == 1 }
+    _ = try await h.doll.dashboardCalendarEdit("add", ["title": "晚餐", "date": "2026-11-16", "start": "19:00"])
+    #expect(try !h.events().contains { $0.text.hasPrefix("【行事曆】主人") })   // held while the turn runs
+    #expect(await h.doll.interrupt())
+    try await waitUntil { h.said.last == "提醒你十點的事" }
+    let evs = try h.events()
+    #expect(evs.filter { $0.kind == .calendar }.count == 1)
+    let owner = evs.firstIndex { $0.text.hasPrefix("【行事曆】主人") }!, fire = evs.firstIndex { $0.kind == .calendar }!
+    #expect(owner < fire)
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func missedStartsAreListedAtBootAndARestartNeverFiresAgain() async throws {
+    let clock = ManualClock(at("2026-11-16", "07:00"))
+    let a = try await Harness(clock: clock)
+    try await a.turn(Scripted("", cal("calendar.add", [("title", "看牙醫"), ("date", "2026-11-16"), ("start", "10:00")]),
+                              cal("calendar.add", [("title", "吃藥"), ("date", "2026-11-16"), ("start", "08:00"), ("repeat", "daily")]),
+                              cal("calendar.add", [("title", "主人生日"), ("date", "2026-11-16")])), Scripted("", dm("好")), Scripted("", dm("八點了，吃藥")))
+    try await a.doll.announceBoot()
+    let ra = Task { [doll = a.doll] in try await doll.run() }
+    clock.set(at("2026-11-16", "08:00"))
+    try await waitUntil { await a.model.requests.count == 3 }
+    clock.set(at("2026-11-16", "08:01"))
+    await a.doll.stop()
+    try await ra.value
+    #expect(try a.events().filter { $0.kind == .calendar }.map(\.text) == ["【行事曆】現在 08:00：吃藥（#2，每天）"])
+
+    // Down from 08:01 to 10:30: 10:00 was missed; 08:00 was already fired.
+    clock.set(at("2026-11-16", "10:30"))
+    let b = try await Harness([], dir: a.dir, clock: clock)
+    try await b.doll.announceBoot()
+    let boot = try b.events().last!.text
+    #expect(boot == "【開機】你剛被開機了。今天的行事曆：全天 主人生日（#3）；08:00 吃藥（#2，每天）；10:00 看牙醫（#1）。沒開機的時候過了這些（沒有叫你）：2026-11-16（星期一） 10:00 看牙醫（#1）。")
+    let rb = Task { [doll = b.doll] in try await doll.run() }
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await b.model.requests.isEmpty)
+    await b.doll.stop()
+    try await rb.value
+
+    // A third process at the same time: nothing missed, nothing fired.
+    let c = try await Harness([], dir: a.dir, clock: clock)
+    try await c.doll.announceBoot()
+    #expect(try !c.events().last!.text.contains("沒開機"))
+}
+
+@Test func aMalformedCalendarFileIsAnError() async throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    for (bytes, says) in [("{not json", "not a calendar file"),
+                          (#"{"next_id": 2, "items": [{"id": 1, "title": "x", "date": "2026-11-31", "by": "doll"}]}"#, "date 2026-11-31 is not YYYY-MM-DD"),
+                          (#"{"next_id": 3, "items": [{"id": 1, "title": "x", "date": "2026-11-16", "by": "doll"}, {"id": 1, "title": "y", "date": "2026-11-16", "by": "doll"}]}"#, "id 1 appears twice")] {
+        try Data(bytes.utf8).write(to: dir.appending(path: "calendar.json"))
+        do { _ = try await Harness(dir: dir); Issue.record("accepted \(bytes)") } catch let e as CalendarError {
+            #expect(e.description.contains(says), "\(e)")
+        }
+    }
 }

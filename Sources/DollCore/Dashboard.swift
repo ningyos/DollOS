@@ -5,14 +5,15 @@ import Synchronization
 /// The owner's dashboard (2026-11-09): a web page served by this process, her vision, memory and
 /// actions updated live over SSE, plus the system operations, interrupt (cancel the model call in
 /// flight) and pause/resume (no new turns; events keep queueing), and (2026-11-15) marking a memory
-/// deep or not. Nothing here can say anything to her or change a memory's text: the only POST
-/// routes are those operations.
+/// deep or not, and editing her calendar (each edit a 【行事曆】 program event in her timeline, no
+/// turn). Nothing here can say anything to her or change a memory's text: the only POST routes
+/// are those operations.
 
 /// Wakes the dashboard's live connections: every appended event, a turn starting or ending, the
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
 /// change only, and refetches everything anyway.
 public final class ChangeFeed: Sendable {
-    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt }
+    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar }
 
     private let subscribers = Mutex<[UUID: AsyncStream<Change>.Continuation]>([:])
 
@@ -205,7 +206,7 @@ extension Doll {
             case .watch:
                 items.append(DashboardItem(type: "watch", seq: seq, ts: e.ts, secret: e.secret, text: e.text, image: e.image))
                 open = nil
-            case .memory:
+            case .memory, .calendar:
                 items.append(DashboardItem(type: "program", seq: seq, ts: e.ts, secret: e.secret, text: e.text))
             }
         }
@@ -266,7 +267,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -283,6 +284,10 @@ public final class Dashboard: @unchecked Sendable {
         ("POST", "/api/resume", .resume),
         ("POST", "/api/memory/deep/", .deep),
         ("POST", "/api/memory/undeep/", .undeep),
+        ("GET", "/api/calendar", .calendar),
+        // The owner's calendar edits (2026-11-15): `add`, `change`, `delete`, with her tool's
+        // parameters in the query string (`?title=…&date=2026-11-18&start=10:00`).
+        ("POST", "/api/calendar/", .calendarEdit),
     ]
 
     public struct Response: Sendable {
@@ -327,6 +332,17 @@ public final class Dashboard: @unchecked Sendable {
         return nil
     }
 
+    /// The query string's parameters, percent-decoded (`+` is a space, as a form sends it).
+    public static func query(_ target: String) -> [String: String] {
+        guard let q = target.firstIndex(of: "?") else { return [:] }
+        var out: [String: String] = [:]
+        for pair in target[target.index(after: q)...].split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1).map { $0.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String($0) }
+            if let k = kv.first, !k.isEmpty { out[k] = kv.count > 1 ? kv[1] : "" }
+        }
+        return out
+    }
+
     /// A screenshot's file name as the page asks for it: one plain name, nothing that climbs or roots.
     public static func validShotName(_ raw: String) -> String? {
         guard let name = raw.removingPercentEncoding, !name.isEmpty, !name.hasPrefix("."), !name.contains(".."),
@@ -368,6 +384,13 @@ public final class Dashboard: @unchecked Sendable {
                 guard let id = Self.validShotName(rest) else { return .text(400, "bad memory id") }
                 do { try await doll.dashboardSetDeep(id, kind == .deep) } catch let e as MemoryError { return .text(409, e.description) }
                 return .json(["id": id, "deep": kind == .deep ? "true" : "false"])
+            case .calendar: return .json(await doll.dashboardCalendar())
+            case .calendarEdit:
+                guard ["add", "change", "delete"].contains(rest) else { return .text(404, "not found") }
+                do {
+                    let line = try await doll.dashboardCalendarEdit(rest, Self.query(target))
+                    return .json(["done": rest, "item": line])
+                } catch let e as CalendarError { return .text(409, e.description) }
             case .events:
                 return .text(400, "/events is a stream")
             }

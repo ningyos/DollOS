@@ -14,6 +14,8 @@ import Foundation
 ///     todo.set(items) / todo.done(result) / todo.fail(reason, tried) / todo.wait(reason) / todo.progress(note)
 ///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
 ///                                        only while an item is 進行中
+///     calendar.add / calendar.change / calendar.delete / calendar.list
+///                                        her calendar (2026-11-15, `Calendar.swift`); never gated
 ///     voice.join() / voice.leave()       ([voice] enabled, M6) enter / leave the Discord voice channel the owner is in
 ///     voice.say(text)                    ([voice] enabled, M6) speak in that voice channel through the TTS
 ///
@@ -109,7 +111,7 @@ public enum Tools {
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
                  ], jsonParameters: []),
-        ] + todoSpecs + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
+        ] + todoSpecs + calendarSpecs + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
 
     /// Her todo list (2026-11-14). Never gated.
@@ -153,6 +155,64 @@ public enum Tools {
                  "required": ["note"],
              ], jsonParameters: []),
     ]
+
+    /// Her calendar (2026-11-15). Never gated. Dates and times are explicit ISO text: she works out
+    /// 「下週三」 from 【狀況】's date and weekday, and the result echoes the weekday back.
+    static let calendarSpecs: [Spec] = {
+        let date = "YYYY-MM-DD，例：2026-11-18"
+        let time = "24 小時制 HH:MM，例：15:00"
+        return [
+            Spec(name: "calendar.add",
+                 description: "在行事曆加一件事。「下週三」這種說法，先照【狀況】的今天日期和星期算出日期再填。有 start 是定時的：開始的時間到了，程式會給你一個回合（【行事曆】）；沒有 start 是全天的，不會叫你，當天的【狀況】會列出來。結果會寫是星期幾，對一下有沒有算錯。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("title", ["type": "string", "description": "什麼事，寫清楚是誰的，例：主人看牙醫"]),
+                         ("date", ["type": "string", "description": .string("哪天，\(date)；重複的事是第一天")]),
+                         ("start", ["type": "string", "description": .string("開始時間，\(time)；全天的事不填")]),
+                         ("end", ["type": "string", "description": "結束時間，HH:MM；不知道就不填"]),
+                         ("repeat", ["type": "string", "description": "重複：daily，或星期幾的數字用逗號分開（1＝星期一…7＝星期日，例：1,3,5）；不重複不填"]),
+                         ("until", ["type": "string", "description": "重複到哪天為止，YYYY-MM-DD；不填就一直重複"]),
+                     ]),
+                     "required": ["title", "date"],
+                 ], jsonParameters: []),
+            Spec(name: "calendar.change",
+                 description: "改行事曆的一件事，只給要改的欄位。重複的事給 on，就只改那一天，其他天照舊；不給 on 是整個改。只改 start 會保持原本的長度。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("id", ["type": "integer", "description": "編號（#4 就填 4）"]),
+                         ("on", ["type": "string", "description": "重複的事只改這一天：它原本那天，YYYY-MM-DD"]),
+                         ("title", ["type": "string"]),
+                         ("date", ["type": "string", "description": .string("改到哪天，\(date)")]),
+                         ("start", ["type": "string", "description": .string(time)]),
+                         ("end", ["type": "string", "description": "HH:MM"]),
+                         ("all_day", ["type": "boolean", "description": "true＝改成全天（不給 start、end）"]),
+                     ]),
+                     "required": ["id"],
+                 ], jsonParameters: ["all_day"]),
+            Spec(name: "calendar.delete",
+                 description: "刪行事曆的一件事。重複的事給 on，就只取消那一天。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("id", ["type": "integer", "description": "編號（#4 就填 4）"]),
+                         ("on", ["type": "string", "description": "重複的事只取消這一天，YYYY-MM-DD"]),
+                     ]),
+                     "required": ["id"],
+                 ], jsonParameters: []),
+            Spec(name: "calendar.list",
+                 description: "列出行事曆 from 到 to 每一天的事（含頭尾），每件附編號。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("from", ["type": "string", "description": .string(date)]),
+                         ("to", ["type": "string", "description": "YYYY-MM-DD；不填就只列 from 那天"]),
+                     ]),
+                     "required": ["from"],
+                 ], jsonParameters: []),
+        ]
+    }()
 
     /// The names of the tools that reach a person or act on a channel: written once, so the specs,
     /// the prompt text, the decoder and everything that reads her calls agree.
@@ -370,6 +430,8 @@ public enum Tools {
         case readFile(path: String, from: Int?, to: Int?)
         case writeFile(path: String, text: String)
         case editFile(path: String, old: String, new: String)
+        /// `calendar.*` (2026-11-15), parsed by `CalendarRequest.parse`.
+        case calendar(CalendarRequest)
     }
 
     /// `specs` are the tools she has; bad arguments throw with what was wrong.
@@ -534,6 +596,10 @@ public enum Tools {
             guard !old.isEmpty else { throw ToolError(description: "edit_file 的 old 是空的；要加字就把它旁邊現有的那段當 old，new 填那段加上新的字") }
             guard old != new else { throw ToolError(description: "edit_file 的 old 和 new 一樣，沒有要改什麼") }
             return .editFile(path: path, old: old, new: new)
+        case let n where CalendarRequest.names.contains(n):
+            do {
+                return .calendar(try CalendarRequest.parse(n, Dictionary(call.parameters.map { ($0.name, $0.value) }, uniquingKeysWith: { $1 })))
+            } catch let e as CalendarError { throw ToolError(description: e.description) }
         default:
             fatalError("tool \(call.name) listed but not decoded")
         }
@@ -716,7 +782,7 @@ enum Instructions {
         return """
         ## 你怎麼運作
 
-        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
+        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、行事曆上的時間到了、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
 
         回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。做事只能透過工具，光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
 
@@ -724,7 +790,7 @@ enum Instructions {
 
         回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
 
-        每個回合的最後一則訊息是【狀況】，裡面只有事實：你的 todo、有沒有 watch、context 用了多少、下一回合的 effort。
+        每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、有沒有 watch、今天的行事曆、context 用了多少、下一回合的 effort。
 
         ## todo
 
@@ -739,6 +805,10 @@ enum Instructions {
 
         context 用到 \(Int((c.warnRatio * 100).rounded()))% 的時候，【狀況】會多一行說快滿了。那時候用 todo.progress(note) 寫下這一項做到哪裡、接下來要做什麼：程式把這一項到現在為止的過程收起來，只留你寫的進度和動作清單，這一項還是進行中。看到那一行之後 \(c.forceAfterTurns) 回合你都沒收，程式會自己收：留動作清單和最近 \(c.forceKeepTurns) 回合，你寫的進度就沒有了。如果【狀況】說大部分是對話，收起過程也幫不了多少。context 真的到上限的時候，程式會把最舊的那一段（對話和做過的事）換成另外寫的一段摘要，開頭是【之前的對話】；那不是你寫的，細節可以試著用 recall 查，不一定查得到。
 
+        ## 行事曆
+
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。
+
         ## 你的電腦
 
         你有一台自己的電腦（macOS），只有進行中的項目能用電腦工具。開始用之前先呼叫 screenshot 看現在的畫面。動作做完會回一行結果；一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)
@@ -747,7 +817,7 @@ enum Instructions {
 
         ## DollOS 文件
 
-        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；sleep.md 是整理（睡覺）；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
+        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；sleep.md 是整理（睡覺）；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
 

@@ -62,6 +62,22 @@ enum DashboardPage {
   <section id="memory"><h2>記憶</h2>
     <label class="muted"><input type="checkbox" id="show-program"> 顯示程式讀的快捷鍵（tier program）</label>
     <div id="memory-body"></div></section>
+  <section id="calendar"><h2>行事曆</h2>
+    <form id="cal-form">
+      <select id="cal-op"><option value="add">加</option><option value="change">改</option><option value="delete">刪</option></select>
+      <input id="cal-id" placeholder="編號（改／刪）" size="6">
+      <input id="cal-on" placeholder="只這一天 YYYY-MM-DD" size="12">
+      <input id="cal-title" placeholder="什麼事">
+      <input id="cal-date" placeholder="日期 YYYY-MM-DD" size="12">
+      <input id="cal-start" placeholder="開始 HH:MM" size="6">
+      <input id="cal-end" placeholder="結束 HH:MM" size="6">
+      <input id="cal-repeat" placeholder="重複 daily 或 1,3,5" size="10">
+      <input id="cal-until" placeholder="重複到 YYYY-MM-DD" size="12">
+      <label class="muted"><input type="checkbox" id="cal-allday"> 改成全天</label>
+      <button>送出</button>
+    </form>
+    <div class="muted">主人改的每一筆，她的時間線上都會多一則【行事曆】通知（不會叫醒她）。</div>
+    <div id="calendar-body"></div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -244,6 +260,46 @@ function renderMemory(m) {
   box.querySelectorAll("details").forEach(d => { if (open.has(d.dataset.key)) d.open = true; });
 }
 
+function renderCalendar(c) {
+  const box = $("calendar-body");
+  box.replaceChildren();
+  box.append(el("h3", null, `今天起 ${c.days} 天（今天 ${c.today}）`));
+  let day = null;
+  for (const e of c.entries) {
+    if (e.day !== day) { day = e.day; box.append(el("h4", null, e.label)); }
+    const time = e.start ? (e.end ? `${e.start}–${e.end}` : e.start) : "全天";
+    const notes = [`#${e.id}`, e.repeat ? `重複 ${e.repeat}` : null, e.changed ? "這天改過" : null].filter(Boolean).join("，");
+    const row = el("div", e.past ? "muted" : null, `${time} ${e.title}（${notes}） `);
+    const del = el("button", null, e.repeat ? "取消這天" : "刪");
+    del.onclick = () => calPost("delete", e.repeat ? { id: e.id, on: e.original } : { id: e.id });
+    row.append(del);
+    box.append(row);
+  }
+  box.append(el("h3", null, `所有項目（${c.items.length}）`));
+  for (const it of c.items) {
+    const time = it.start ? (it.end ? `${it.start}–${it.end}` : it.start) : "全天";
+    box.append(el("div", null, `#${it.id} ${it.date} ${time} ${it.title}` + (it.repeat ? ` · 重複 ${it.repeat}` : "")
+      + (it.until ? ` 到 ${it.until}` : "") + (it.exceptions ? ` · ${it.exceptions} 天另外改過` : "") + ` · ${it.by === "owner" ? "主人加的" : "她加的"}`));
+  }
+}
+
+async function calPost(op, params) {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
+  const r = await fetch(`/api/calendar/${op}?${q}`, { method: "POST" });
+  if (!r.ok) alert(await r.text());
+  refresh();
+}
+$("cal-form").onsubmit = ev => {
+  ev.preventDefault();
+  const v = id => $(id).value.trim();
+  const op = v("cal-op");
+  const p = { id: v("cal-id"), on: v("cal-on"), title: v("cal-title"), date: v("cal-date"), start: v("cal-start"), end: v("cal-end") };
+  if (op === "add") { delete p.id; delete p.on; p.repeat = v("cal-repeat"); p.until = v("cal-until"); }
+  if (op === "change" && $("cal-allday").checked) p.all_day = "true";
+  if (op === "delete") { for (const k of ["title", "date", "start", "end"]) delete p[k]; }
+  calPost(op, p);
+};
+
 async function get(path) {
   const r = await fetch(path, { cache: "no-store" });
   if (!r.ok) throw new Error(path + ": " + r.status + " " + await r.text());
@@ -256,8 +312,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m);
+    const [s, t, v, m, c] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c);
   } catch (e) {
     console.error(e);
   } finally {

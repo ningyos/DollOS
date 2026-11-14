@@ -218,6 +218,20 @@ public actor Doll {
     var inTurn = false
     /// The effort of the model call in flight.
     var inflightEffort: String?
+    /// `[calendar]` (2026-11-15).
+    let calendarConfig: CalendarConfig
+    /// Her calendar, `<data_dir>/calendar.json` (`Calendar.swift`).
+    let agenda: Agenda
+    /// "Now" for the calendar and 【狀況】; tests move it (`setClock`).
+    var wallClock: any DollClock = SystemClock()
+    /// The one task sleeping until the next timed start; replaced on every edit.
+    var calendarTask: Task<Void, Never>?
+    var calendarSerial = 0
+    /// Missed starts were dealt with (boot notice or `run`): the timer may start.
+    var calendarCaughtUp = false
+    /// Program notices that give no turn (the owner's calendar edits), held while a turn runs so
+    /// nothing lands between her reply and its results; appended when the turn ends.
+    var held: [Event] = []
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here.
@@ -232,10 +246,12 @@ public actor Doll {
         idle = config.idle
         memoryConfig = config.memory
         selectConfig = config.select
+        calendarConfig = config.calendar
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timeline = try Timeline(dir: data.appending(path: "timeline"))
+        agenda = try Agenda(url: data.appending(path: "calendar.json"))
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
                             embedder: embedder)
@@ -315,7 +331,7 @@ public actor Doll {
     public func announceBoot(docsFailure: String? = nil) throws {
         try append(Event(.memory, .internal, Self.bootNotice + (docsFailure.map {
             "DollOS 文件這次沒有複製進你的電腦（\($0)）；\(Self.docsVMPath) 裡可能是舊的或沒有。"
-        } ?? "")))
+        } ?? "") + (try calendarBootText())))
     }
     static let bootNotice = "【開機】你剛被開機了。"
 
@@ -445,16 +461,20 @@ public actor Doll {
 
     // consumer ---------------------------------------------------------------
     public func run() async throws {
+        if !calendarCaughtUp { _ = try calendarCatchUp() }
+        scheduleCalendar()
         while !stopped {
             guard await waitForEvent() else { break }
             try drain()
             try await turn()
+            try flushHeld()
         }
         shutdown()
     }
 
     /// Queued events enter the timeline, highest priority first (`[core] priority`).
     func drain() throws {
+        try flushHeld()
         guard !queue.isEmpty else { return }
         let rank = Dictionary(uniqueKeysWithValues: core.priority.enumerated().map { ($1, $0) })
         let batch = queue.enumerated().sorted {
@@ -484,6 +504,8 @@ public actor Doll {
             scoreAttached(steps: itemSteps.map(\.line), outcome: "unknown")
         }
         stopWatch()
+        calendarTask?.cancel()
+        calendarTask = nil
     }
 
     // prompt -----------------------------------------------------------------
@@ -532,6 +554,7 @@ public actor Doll {
             case .watch: break
             case .memory:
                 if !Self.workNotice(ev.text) { plan.append((ev, .full)) }
+            case .calendar: plan.append((ev, .full))
             }
             if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c))) }
         }
@@ -595,7 +618,7 @@ public actor Doll {
         case .owner, .developer: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
-        case .memory: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
+        case .memory, .calendar: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
         }
     }
 
@@ -668,9 +691,10 @@ public actor Doll {
     /// The facts footer: her todo list, her watch, the context, effort for the next call, and near
     /// the limit one warning line (2026-11-14). Figures are estimates scaled by the last real prompt size.
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
-        let now = Date().timeIntervalSince1970
+        let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
+        out.append("- 今天的行事曆：" + calendarStatus(now: now))
         let limit = contextConfig.limit
         out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"
                    + "其中做事的過程 \(Self.grouped(process.tokens))（截圖 \(Self.grouped(process.images))）")
@@ -1072,6 +1096,8 @@ public actor Doll {
                 try await computer.writeFile(path, Data(changed.utf8))
                 itemSteps.append((timeline.lastSeq + 1, "edit_file \(path)"))
                 return Outcome(text: out, actions: [name])
+            case .calendar(let r):
+                return Outcome(text: try calendarTool(r), actions: [name])
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
@@ -1746,7 +1772,7 @@ public actor Doll {
             switch e.kind {
             case .doll: pending = e.calls[...]
             case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
-            case .owner, .developer, .watch, .memory: break
+            case .owner, .developer, .watch, .memory, .calendar: break
             }
         }
         return out

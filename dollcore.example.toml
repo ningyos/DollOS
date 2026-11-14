@@ -10,8 +10,10 @@ max_tokens = 4096             # 初始值理由：一回合一個動作，回覆
 [core]
 data_dir = "data"
 pack = "character_packs/doll2/doll.toml"
-# 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、watch 叫醒）
-priority = ["owner_voice", "owner_text", "developer_text", "watch"]   # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
+# 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、行事曆的時間到了、watch 叫醒）
+# 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
+# calendar（2026-11-15）：人說的話之後、watch 之前。行事曆的開始時間是外面世界的事實（主人的約），watch 是她自己設來看畫面的，常常只是「沒變化／時間到」；同一批裡她先讀到約、再讀到畫面
+priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch"]
 mlx_cache_limit_mb = 256      # MLX 的 buffer cache 上限（整個 process 一個：記憶的 embedding 和她的聲音共用同一個 MLX）。初始值理由：voice-mlx 量測用 256 MB，串流 TTS 峰值 3.0 GB；0＝不留 cache
 docs = "dolldocs"             # 她的 DollOS 文件（2026-11-14）：repo 裡這個資料夾的 .md，開機時複製進她電腦的 ~/DollOS/docs/，她用 read_file 讀；相對路徑從目前目錄算。複製失敗寫 ERROR、開機通知告訴她，不擋開機（VM 可能在睡）
 
@@ -141,3 +143,8 @@ data_dir = "voice"            # 每一句念過的話（24 kHz wav＋manifest.js
 stop_settle_ms = 150          # 送出 stop 之後，再收這麼久的 played 才算最後播到哪。初始值理由：bridge 每 ≤100 ms 回報一次
 bridge_timeout_s = 10.0       # bridge 這麼久沒回 joined／left 或播放進度＝錯誤。初始值理由：進語音頻道一般 1–2 秒
 bridge_probe_ms = 1000        # 已經有一條 /api/voice 時又來一條（bridge 重連）：舊的先收一個 ping，這麼久沒有任何回應＝半開的死連線，關掉、換新的上；有回應＝新的那條 409。初始值理由：本機上活的 bridge 幾 ms 就回 pong
+
+[calendar]
+# 她的行事曆（2026-11-15）：<data_dir>/calendar.json；有開始時間的事，時間到了給她一個回合
+status_items = 5      # 【狀況】最多列今天幾件，多的說「還有 N 件」。理由：【狀況】每回合都送，長的一天不能讓它一直長；5 件夠一般的一天
+list_max_days = 31    # calendar.list 一次最多幾天。理由：結果會留在她的 context；最長的問法是「這個月」

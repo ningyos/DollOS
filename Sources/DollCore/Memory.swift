@@ -388,6 +388,7 @@ public final class TodayIndex {
             if !unindexedResults.contains(name) { out = [("\(seq)-result", "\(name) 的結果", ev.text)] }
         case .watch: out = [("\(seq)-watch", "watch", ev.text)]
         case .memory: break
+        case .calendar: out = [("\(seq)-calendar", "行事曆", ev.text)]
         }
         return out.map { ($0.0, $0.1, $0.2.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { !$0.2.isEmpty }
     }

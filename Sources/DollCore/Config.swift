@@ -19,7 +19,7 @@ public struct CoreConfig: Sendable {
     public var dataDir = "data"
     public var pack = "character_packs/doll2/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
-    public var priority = ["owner_voice", "owner_text", "developer_text", "watch"]
+    public var priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch"]
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
     /// voice share one MLX runtime, so one limit covers both. Set before either loads.
     public var mlxCacheLimitMB = 256
@@ -110,6 +110,16 @@ public struct DashboardConfig: Sendable {
     /// The timeline endpoint returns this many of the newest items (a turn, an owner line, a watch
     /// wake, a program event); the timeline file keeps every one.
     public var timelineItems = 200
+}
+
+/// Her calendar (2026-11-15, `Calendar.swift`).
+public struct CalendarConfig: Sendable {
+    /// 【狀況】 lists at most this many of today's items, then says how many more: it is re-sent
+    /// every turn, so a long day must not grow it without bound; 5 covers an ordinary day.
+    public var statusItems = 5
+    /// `calendar.list` refuses a longer span: its result stays in her context, and a month is the
+    /// longest span asked for in practice ("這個月").
+    public var listMaxDays = 31
 }
 
 /// The local API (2026-11-12): what `dollctl` and the Discord bridge talk to. It listens on
@@ -296,11 +306,12 @@ public struct Config: Sendable {
     public var consolidate: ConsolidateConfig
     public var select: SelectConfig
     public var voice: VoiceConfig
+    public var calendar: CalendarConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice"])
+                                                 "consolidate", "select", "voice", "calendar"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -512,8 +523,17 @@ public struct Config: Sendable {
               voice.bridgeTimeoutS > 0, voice.bridgeProbeMs >= 1 else {
             throw TOMLError(description: "[voice] silence_ms at least 100; silence_rms 0 or more; endpoint_poll_ms and asr_final_timeout_ms at least 1; tts_precision int8 or bf16; tts_model, tts_codec, reference_audio, reference_text, tts_language, warmup_text, data_dir not empty; sentence_max_chars at least 10; stop_settle_ms 0 or more; bridge_timeout_s positive; bridge_probe_ms at least 1")
         }
+
+        var cal = Section(name: "calendar", raw: raw["calendar"] ?? [:])
+        var calendar = CalendarConfig()
+        try cal.read("status_items", &calendar.statusItems)
+        try cal.read("list_max_days", &calendar.listMaxDays)
+        try cal.finish()
+        guard calendar.statusItems >= 1, calendar.listMaxDays >= 1 else {
+            throw TOMLError(description: "[calendar] status_items and list_max_days at least 1")
+        }
         return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice)
+                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar)
     }
 }
 
@@ -523,7 +543,7 @@ public enum Effort {
 
 /// Event sources, named as in `[core] priority`.
 public enum Priority: String, CaseIterable, Sendable {
-    case ownerVoice = "owner_voice", ownerText = "owner_text", developerText = "developer_text", watch
+    case ownerVoice = "owner_voice", ownerText = "owner_text", developerText = "developer_text", calendar, watch
 }
 
 /// Reads typed keys out of one section and rejects keys nobody read.
