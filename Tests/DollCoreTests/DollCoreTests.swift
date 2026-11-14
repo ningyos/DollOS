@@ -4816,6 +4816,16 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     #expect(comp.text!.contains("到這裡做過的動作：" + ["a", "b", "c", "d", "e", "f"].prefix(cutActions).map { "key \($0)" }.joined(separator: "、") + "。"))
 }
 
+@Test func theStatusSaysTheYearAndTheWeekday() async throws {
+    // 2026-11-15, real run: given only `11-15` she took the year for 2025 and the weekday from that.
+    let h = try await Harness()
+    await h.doll.ownerSaid("今天星期幾")
+    try await h.turn(Scripted("", dm("我看看")))
+    let c = Calendar.current.dateComponents([.year, .weekday], from: Date())
+    let day = ["日", "一", "二", "三", "四", "五", "六"][c.weekday! - 1]
+    #expect(h.last.footer.contains("- 現在 \(c.year!)-") && h.last.footer.contains("（星期\(day)）"))
+}
+
 @Test func nearFullMostlyConversationSaysCompactingWillNotHelp() async throws {
     let h = try await Harness(tune: { $0.context.limit = 1_000 })
     await h.doll.ownerSaid("聊聊")

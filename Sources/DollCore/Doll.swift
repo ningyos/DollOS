@@ -56,6 +56,14 @@ private func clock(_ ts: Double) -> String {
     return String(format: "%02d-%02d %02d:%02d:%02d", c.month!, c.day!, c.hour!, c.minute!, c.second!)
 }
 
+/// Now, as 【狀況】 says it: with the year and the weekday (2026-11-15: given only `11-15` she took the
+/// year for 2025, got the weekday wrong and worked out 「下週三」 from that).
+private func nowLine(_ ts: Double) -> String {
+    let c = Calendar.current.dateComponents([.year, .month, .day, .weekday, .hour, .minute, .second], from: Date(timeIntervalSince1970: ts))
+    return String(format: "%04d-%02d-%02d（星期%@）%02d:%02d:%02d", c.year!, c.month!, c.day!,
+                  ["日", "一", "二", "三", "四", "五", "六"][c.weekday! - 1], c.hour!, c.minute!, c.second!)
+}
+
 private func hex(_ n: Int) -> String {
     String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(n))
 }
@@ -661,7 +669,7 @@ public actor Doll {
     /// the limit one warning line (2026-11-14). Figures are estimates scaled by the last real prompt size.
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = Date().timeIntervalSince1970
-        var out = ["【狀況】", "- 現在 \(clock(now))", "- todo：" + todoLine()]
+        var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         let limit = contextConfig.limit
         out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"
