@@ -1759,7 +1759,14 @@ public actor Doll {
     func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
         let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
         let trigger = Selector.Trigger(label: "recall「\(query)」", query: query, app: nil)
-        let report = try pipeline.run(trigger, rule: .recall, visible: visible, tiers: nil, today: today) { $0.key }
+        // The owner's or developer's last line is the one she is answering: not a result (2026-11-15,
+        // real runs: the question itself came back as the first of her three). Later events can be,
+        // a compaction may have taken them out of her request.
+        let asked = events.last { $0.speaker != nil }?.seq ?? -1
+        let report = try pipeline.run(trigger, rule: .recall, visible: visible, tiers: nil, today: today) { c in
+            if case .today(let h) = c.hit, h.seq == asked { return nil }
+            return c.key
+        }
         logSelection(report)
         let hits = report.selected.map(\.hit)
         var out = "\(query)：\(hits.count) 條"

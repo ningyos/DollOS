@@ -3597,11 +3597,13 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await seedMemory(h, "public", "主人喜歡藍色", tier: "owner", confidence: 0.9)
     await h.doll.ownerSaid("我今天幫貓買了新的貓砂")
     try await h.turn(Scripted("", dm("好")))
+    // The line she is answering is not a result (2026-11-15: the question came back as her first hit).
+    await h.doll.ownerSaid("貓的事你記得什麼")
     try await h.turn(Scripted("", recall("貓")))
     let text = try h.toolResults().last!.text
     #expect(text.hasPrefix("貓：2 條") && text.contains("主人的貓叫咪咪") && text.contains("〔今天") && text.contains("貓砂")
-            && !text.contains("旺財"))
-    #expect(h.last.selections.first?.contains("given 2 [") == true && h.last.actions.contains("recall 2"))
+            && !text.contains("旺財") && !text.contains("貓的事你記得什麼"))
+    #expect(h.last.selections.last?.contains("given 2 [") == true && h.last.actions.contains("recall 2"))
     // Nothing near: still the two nearest (no floor; she judges).
     try await h.turn(Scripted("", recall("火星殖民計畫")))
     #expect(try h.toolResults().last!.text.hasPrefix("火星殖民計畫：2 條"))
@@ -3618,10 +3620,11 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await h.turn(Scripted("", recall("花生 過敏")))
     #expect(try h.toolResults().last!.text == "花生 過敏：1 條\n\n〔確定｜public〕\n我對花生過敏，吃到會起疹子")
     #expect(h.last.selections.first?.contains("fts 1,") == true)
+    await h.doll.ownerSaid("你查查看")
     try await h.turn(Scripted("", recall("過年")))
     let today = try h.toolResults().last!.text
     #expect(today.hasPrefix("過年：1 條") && today.contains("〔今天") && today.contains("過年要不要回台南"))
-    #expect(h.last.selections.first?.contains("fts 1,") == true)
+    #expect(h.last.selections.last?.contains("fts 1,") == true)
 }
 
 @Test func bootNeedsNoOnDeviceModel() async throws {
