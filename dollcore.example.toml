@@ -13,6 +13,14 @@ pack = "character_packs/doll2/doll.toml"
 # 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、watch 叫醒）
 priority = ["owner_voice", "owner_text", "developer_text", "watch"]   # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
 mlx_cache_limit_mb = 256      # MLX 的 buffer cache 上限（整個 process 一個：記憶的 embedding 和她的聲音共用同一個 MLX）。初始值理由：voice-mlx 量測用 256 MB，串流 TTS 峰值 3.0 GB；0＝不留 cache
+docs = "dolldocs"             # 她的 DollOS 文件（2026-11-14）：repo 裡這個資料夾的 .md，開機時複製進她電腦的 ~/DollOS/docs/，她用 read_file 讀；相對路徑從目前目錄算。複製失敗寫 ERROR、開機通知告訴她，不擋開機（VM 可能在睡）
+
+[context]
+# 她的 context 多滿、快滿時怎麼辦（2026-11-14，主人）。【狀況】每回合寫「context：用了／上限（%）；其中做事的過程 N（截圖 M）」
+limit = 60000                 # 【狀況】拿來比的上限（token）。初始值理由（主人）：60k；Strata 單一 slot 約 295 tok/s prefill，整段重讀約 3.4 分鐘，再大重讀就太久
+warn_ratio = 0.85             # 用到這個比例【狀況】才多一行「快滿了」（之前不提）。初始值理由（主人）：85% 還留 9k，夠她做完手上這一步、寫進度
+force_after_turns = 3         # 看到「快滿了」這麼多回合她都沒 todo.progress，程式自己收這一項。初始值理由（主人）：給她 3 回合把手上的步驟做完再收
+force_keep_turns = 2          # 程式自己收的時候，留她最近這麼多回合原封不動（她還看得到現在的畫面）。初始值理由（主人）：最近 2 回合＝上一個動作和它的結果，夠她接著做
 
 [computer]
 # M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
