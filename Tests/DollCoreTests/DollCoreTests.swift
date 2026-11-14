@@ -37,10 +37,17 @@ private func key(_ chord: String) -> (String, [(String, String)]) {
 private func watch(_ target: String, _ maxWait: Int? = nil) -> (String, [(String, String)]) {
     ("watch", [("target", target)] + (maxWait.map { [("max_wait_s", "\($0)")] } ?? []))
 }
-private let useComputer: (String, [(String, String)]) = ("use_computer", [("expect", "畫面上看得到結果")])
-private func outcome(_ success: Bool, _ summary: String) -> (String, [(String, String)]) {
-    ("outcome", [("success", "\(success)"), ("summary", summary)])
+/// `todo.set(items)`; the default item stands for what `use_computer(expect)` said before 2026-11-14.
+private func todoSet(_ items: String...) -> (String, [(String, String)]) {
+    let list = items.isEmpty ? ["畫面上看得到結果"] : items
+    return ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(list), as: UTF8.self))])
 }
+private func done(_ result: String) -> (String, [(String, String)]) { ("todo.done", [("result", result)]) }
+private func fail(_ reason: String, tried: String = "試過了") -> (String, [(String, String)]) {
+    ("todo.fail", [("reason", reason), ("tried", tried)])
+}
+private func todoWait(_ reason: String) -> (String, [(String, String)]) { ("todo.wait", [("reason", reason)]) }
+private func progress(_ note: String) -> (String, [(String, String)]) { ("todo.progress", [("note", note)]) }
 private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
 private func dm(_ text: String) -> (String, [(String, String)]) { ("discord.dm", [("text", text)]) }
 private func reply(_ text: String) -> (String, [(String, String)]) { ("dollctl.reply", [("text", text)]) }
@@ -76,6 +83,9 @@ private actor FakeModel: MainModel {
 
     /// When set, the next request hangs until the call is cancelled (a long model call).
     var stallNext = false
+    /// What one image counts in the reported prompt size (the server counts them; the footer scales by it).
+    var imageTokens = 350
+    func setImageTokens(_ n: Int) { imageTokens = n }
 
     func chat(_ messages: [ChatMessage], tools: String?, effort: String) async throws -> ModelReply {
         requests.append((messages, effort))
@@ -87,7 +97,7 @@ private actor FakeModel: MainModel {
         }
         guard !replies.isEmpty else { throw ModelError("script ran out at request \(requests.count)") }
         let r = replies.removeFirst()
-        let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 }
+        let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 + $1.images.count * imageTokens }
         return ModelReply(content: r.content, calls: r.toolCalls, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
     }
 
@@ -437,7 +447,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func jsonParametersDecodeFromTheirText() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
+    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
     let items = "[{\"text\": \"主人養貓\", \"folder\": \"public\"},\n {\"text\": \"我的 VM 密碼\", \"folder\": \"own\"}, {\"text\": \"姐姐的事\", \"folder\": \"secret\"}]"
     // as a JSON string (the text of the array) and as the array itself
     for c in [call("remember", [("items", items)]), ToolCall(name: "remember", arguments: "{\"items\": \(items)}")] {
@@ -450,15 +460,15 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(throws: ToolError.self) { try Tools.decode(wrongFolder, specs: specs) }
     let bad = call("remember", [("items", "主人養貓")])
     #expect(throws: ToolError.self) { try Tools.decode(bad, specs: specs) }
-    // a boolean and an integer as JSON values
-    guard case .outcome(let ok, _) = try Tools.decode(ToolCall(name: "outcome", arguments: "{\"success\": true, \"summary\": \"好\"}"), specs: [Tools.exitSpec]) else {
-        Issue.record("not outcome"); return
+    // an array of strings as a JSON value and as its text
+    for c in [ToolCall(name: "todo.set", arguments: "{\"items\": [\"a\", \"b\"]}"), call("todo.set", [("items", "[\"a\", \"b\"]")])] {
+        guard case .todoSet(let got) = try Tools.decode(c, specs: specs) else { Issue.record("not todo.set"); return }
+        #expect(got == ["a", "b"])
     }
-    #expect(ok)
 }
 
 @Test func aFailedCallsResultIsItsProblem() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false)
+    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
     let failed = ToolCall.unread(content: "<invoke name=\"use_computer\">\n</invoke>", rejected: [])[0]
     do { _ = try Tools.decode(failed, specs: specs); Issue.record("accepted") } catch {
         #expect("\(error)" == ToolCall.unreadable)
@@ -471,9 +481,10 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(sys.hasPrefix("你是") && !sys.contains("<tools>") && !sys.contains("<tool_call>"))
     let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
-    // her tools, then the computer menu's (declared from the start so the list never changes), outcome last
-    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "use_computer", "click", "type", "key",
-                      "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch", "outcome"])
+    // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
+                      "todo.wait", "todo.progress", "click", "type", "key", "scroll", "drag", "read_file", "write_file",
+                      "edit_file", "screenshot", "watch"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
     // every request sends the same list
     await h.doll.ownerSaid("在嗎")
@@ -526,19 +537,20 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let h = try await Harness()
     await h.doll.ownerSaid("試試")
     try await h.turn(Scripted("", ("bogus", []), ("recall", [("q", "ls")]), think("low"),
-                              remember(kinds: [("會失敗的記憶", false, "done"), ("主人喜歡貓", false, nil)]), ("recall", []), useComputer,
+                              remember(kinds: [("會失敗的記憶", false, "done"), ("主人喜歡貓", false, nil)]), ("recall", []), todoSet(), screenshotCall,
                               ("remember", [("items", "主人養貓")])))
     let results = try h.toolResults()
-    #expect(results.count == 7)
+    #expect(results.count == 8)
     #expect(results[0].text == "失敗：沒有 bogus 這個工具")
     #expect(results[1].text == "失敗：recall 沒有 q 這個參數")
     #expect(results[2].text == "失敗：think 的 level 只能是 medium 或 high，收到 low")
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
-    #expect(results[5].text.hasPrefix("電腦選單打開了"))                  // later calls still run
-    #expect(results[6].text.hasPrefix("失敗：remember 的 items 要是 JSON 陣列"))
+    #expect(results[5].text.hasPrefix("todo 列好了。"))                     // later calls still run
+    #expect(results[6].text.hasPrefix("現在的畫面：\n"))
+    #expect(results[7].text.hasPrefix("失敗：remember 的 items 要是 JSON 陣列"))
     #expect(h.last.actions == ["error bogus", "error recall", "error think", "error remember", "remember public",
-                               "error recall", "use_computer", "error remember"])
+                               "error recall", "todo set", "screenshot", "error remember"])
     #expect(await h.doll.effortNext == nil)
 }
 
@@ -554,7 +566,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 @Test func aPastToolRoundRendersByteIdenticallyOnLaterTurnsImagesIncluded() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("記一下我養貓，然後看電腦")
-    try await h.turn(Scripted("好", remember([("主人養貓", false)]), useComputer))
+    try await h.turn(Scripted("好", remember([("主人養貓", false)]), todoSet(), screenshotCall))
     h.vm.setFrame(7)                                                    // the screen changes in between
     try await h.turn(Scripted("再看一次", screenshotCall))
     try await h.turn("記好了，畫面看過了")
@@ -590,7 +602,8 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func toolResultsGiveHerTheNextTurnButAWatchAckAloneDoesNot() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("", dm("好了")), Scripted("", dm("盯著"), watch("window", 1)), Scripted("", dm("沒變"))])
+    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", dm("盯著"), watch("window", 1)),
+                               Scripted("", dm("沒變"), done("盯完了，畫面沒變"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
@@ -600,15 +613,13 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
             try await Task.sleep(for: .milliseconds(20))
         }
     }
-    await h.doll.ownerSaid("開電腦")
+    await h.doll.ownerSaid("開電腦盯著畫面")
     try await waitFor(2, said: 1)
-    #expect(await h.model.requests.count == 2 && h.said == ["好了"])     // the result woke her once
-    await h.doll.ownerSaid("盯著畫面")
-    try await waitFor(3, said: 2)
+    #expect(await h.model.requests.count == 2 && h.said == ["盯著"])     // the results woke her once
     try await Task.sleep(for: .milliseconds(200))                       // well inside max_wait (1 s)
-    #expect(await h.model.requests.count == 3)                          // neither the watch ack nor say woke her
-    try await waitFor(4, said: 3)                                       // max_wait passing does
-    #expect(await h.model.requests.count == 4 && h.said.last == "沒變")
+    #expect(await h.model.requests.count == 2)                          // neither the watch ack nor say woke her: 等待中
+    try await waitFor(3, said: 2)                                       // max_wait passing does
+    #expect(await h.model.requests.count == 3 && h.said.last == "沒變")
     await h.doll.stop()
     try await runner.value
 }
@@ -673,8 +684,9 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     await h.doll.ownerSaid("嗨")
     try await h.turn("哈囉")
     let first = h.last.footer
-    #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- 選單：頂層（電腦工具鎖著；use_computer(expect) 打開）")
-            && first.contains("- watch：沒有") && first.contains("下一回合 effort：medium"))
+    #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）")
+            && first.contains("- watch：沒有") && first.contains("- context：") && first.contains("下一回合 effort：medium")
+            && !first.contains("選單"))
     #expect(try h.events().last!.footer == first)
     await h.doll.ownerSaid("再來")
     try await h.turn("好")
@@ -1021,74 +1033,12 @@ private func waitUntil(seconds: Double = 3, _ cond: () async -> Bool) async thro
 
 private func watchWakes(_ h: Harness) async -> [Event] { await h.doll.queue.filter { $0.kind == .watch } }
 
-/// A harness whose first turn opened the computer menu.
+/// A harness whose first turn listed one todo item (in progress) and took a screenshot.
 private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -> Harness {
     let h = try await Harness(tune: tune)
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     return h
-}
-
-@Test func theComputerMenuOpensWithUseComputerAndLocksAgainWithOutcome() async throws {
-    let h = try await Harness()
-    await h.doll.ownerSaid("按一下 Return")
-    try await h.turn(Scripted("", key("Return")))
-    #expect(try h.toolResults().last!.text == "失敗：key 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
-    #expect(h.last.actions == ["error key"] && h.vm.actions.isEmpty)
-    #expect(h.last.footer.contains("- 選單：頂層"))
-    try await h.turn(Scripted("", useComputer))
-    let menu = try h.toolResults().last!
-    #expect(menu.text.hasPrefix("電腦選單打開了") && menu.image != nil)
-    // The menu's tools were declared in `tools` all along; its text names the ones it opened.
-    #expect(menu.text.hasPrefix("電腦選單打開了，現在可以用這些工具：click、type、key、scroll、drag、read_file、write_file、edit_file、screenshot、watch、outcome。"))
-    try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.actions == ["key"] && h.vm.actions == [.key("return")])
-    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, summary) 結束）"))
-    try await h.turn(Scripted("", outcome(false, "沒看到")))
-    #expect(try h.toolResults().last!.text == "記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。")
-    #expect(await h.doll.scenario == nil)
-    try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.actions == ["error key"] && h.vm.actions.count == 1)
-    #expect(h.last.footer.contains("- 選單：頂層"))
-    // Opening and closing the menu never touched the system prompt.
-    #expect(Set(await h.model.requests.map { $0.messages[0].content }).count == 1)
-}
-
-@Test func leavingAScenarioPutsHerSummaryInPlaceOfItsTurns() async throws {
-    let h = try await Harness()
-    await h.doll.ownerSaid("把 notes 存檔")
-    let enter = Scripted("好，我來", useComputer)
-    try await h.turn(enter)                                                        // request 0: before entering
-    try await h.turn(Scripted("", key("cmd+s")))                                   // request 1: inside
-    try await h.turn(Scripted("", dm("存好了。"), outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。")))  // request 2: inside
-    // While it was open, its turns went out in full: the menu's screenshot, the key's result.
-    let inside = await h.model.seen(2)
-    #expect(inside.contains { !$0.images.isEmpty } && inside.contains { $0.role == "tool" && $0.content == fakeWindowsLine })
-    await h.doll.ownerSaid("謝謝")
-    try await h.turn("不客氣")                                                     // request 3: first after leaving
-    await h.doll.ownerSaid("再見")
-    try await h.turn("掰")                                                         // request 4
-
-    let before = await h.model.seen(0), after = await h.model.seen(3)
-    // The main context up to and including her entering reply, unchanged; then the enter call's
-    // result is her summary; then what she said when she left; then what came after.
-    #expect(Array(after.prefix(before.count + 1)) == before + [enter.message])
-    #expect(after[before.count + 1] == ChatMessage(role: "tool", content: "成功。你自己記下的經過：\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。"))
-    #expect(after[before.count + 2] == Scripted("", dm("存好了。")).message)
-    #expect(after[before.count + 3] == ChatMessage(role: "tool", content: ""))
-    #expect(after[before.count + 4].role == "user" && after[before.count + 4].content.hasSuffix("主人｜Discord 私訊｜文字] 謝謝"))
-    #expect(after.last?.content.hasPrefix("【狀況】") == true)
-    // Nothing from inside: no screenshot, no computer result, no menu, no intermediate reply.
-    #expect(after.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty })
-    #expect(after.filter { $0.role == "tool" }.count == 2)
-    #expect(!after.contains { $0.content == fakeWindowsLine || $0.content.hasPrefix("電腦選單打開了") || $0.content.hasPrefix("記下了") })
-    // Later requests extend it byte-identically.
-    let next = await h.model.seen(4)
-    #expect(Array(next.prefix(after.count)) == after)
-    let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
-    #expect(try enc(next).starts(with: enc(after).dropLast()))
-    // The timeline still holds every event of the scenario.
-    #expect(try h.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
 }
 
 @Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
@@ -1097,7 +1047,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // Request k is the one that produced turn k+1's reply, so it holds the results up to turn k.
     let h = try await Harness(tune: { $0.computer.imageTurnsKept = 2 })
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", useComputer))                                   // turn 1: image turn A (the menu's screenshot)
+    try await h.turn(Scripted("", todoSet(), screenshotCall))                     // turn 1: image turn A (its screenshot)
     try await h.turn(Scripted("", key("cmd+n")))                                  // turn 2: image turn B
     try await h.turn(Scripted("", key("cmd+s"), screenshotCall))                  // turn 3: image turn C, two results with images
     try await h.turn(Scripted("", screenshotCall))                                // turn 4
@@ -1105,13 +1055,13 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // Request 2 holds A and B: both carry images. Request 3 holds A, B, C: A's images are gone, B's
     // and C's stay; A's result keeps its text and says where the images were.
     #expect(two.filter { !$0.images.isEmpty }.count == 2)
-    let menu = three.first { $0.content.hasPrefix("電腦選單打開了") }!
-    #expect(menu.images.isEmpty && menu.extra.contains(.text(Doll.imagesPutAway)))
+    let shotA = three.first { $0.content.hasPrefix("現在的畫面：") }!
+    #expect(shotA.images.isEmpty && shotA.extra.contains(.text(Doll.imagesPutAway)))
     let firstLine = { (m: ChatMessage) in String(m.content.split(separator: "\n").first ?? "") }
     #expect(three.filter { !$0.images.isEmpty }.map(firstLine) == [fakeWindowsLine, fakeWindowsLine, "現在的畫面："])
     // Everything before A's result is byte-identical; A's result is the first difference; the text
     // after it is unchanged.
-    let a = two.firstIndex { $0.content.hasPrefix("電腦選單打開了") }!
+    let a = two.firstIndex { $0.content.hasPrefix("現在的畫面：") }!
     #expect(Array(three.prefix(a)) == Array(two.prefix(a)) && three[a] != two[a])
     #expect(three[a].content == two[a].content && three[a + 1...a + 2].map(\.content) == two[a + 1...a + 2].map(\.content))
     // The files stay.
@@ -1119,7 +1069,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     // image_turns_kept = 1: in request 3 only C's results carry images.
     let one = try await Harness(tune: { $0.computer.imageTurnsKept = 1 })
     await one.doll.ownerSaid("用電腦")
-    try await one.turn(Scripted("", useComputer))
+    try await one.turn(Scripted("", todoSet(), screenshotCall))
     try await one.turn(Scripted("", key("cmd+n")))
     try await one.turn(Scripted("", key("cmd+s"), screenshotCall))
     try await one.turn(Scripted("", screenshotCall))
@@ -1128,20 +1078,11 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     let all = try await Harness()
     #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.imageTurnsKept == 0)
     await all.doll.ownerSaid("用電腦")
-    try await all.turn(Scripted("", useComputer))
+    try await all.turn(Scripted("", todoSet(), screenshotCall))
     try await all.turn(Scripted("", key("cmd+n")))
     try await all.turn(Scripted("", key("cmd+s"), screenshotCall))
     try await all.turn(Scripted("", screenshotCall))
     #expect((await all.model.seen(3)).filter { !$0.images.isEmpty }.count == 4)
-}
-
-@Test func enteringWhileAScenarioIsOpenIsAnError() async throws {
-    let h = try await menuHarness()
-    let open = await h.doll.scenario?.startSeq
-    try await h.turn(Scripted("", useComputer))
-    #expect(try h.toolResults().last!.text == "失敗：電腦選單還開著，不能再打開；先用 outcome(success, summary) 結束這次")
-    #expect(h.last.actions == ["error use_computer"])
-    #expect(await h.doll.scenario?.startSeq == open && open != nil)
 }
 
 @Test func onlyTheLastActionOfAReplyCarriesTheObservation() async throws {
@@ -1155,7 +1096,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(results.map { $0.image != nil } == [false, false, true] && results.map { $0.window != nil } == [false, false, true])
     #expect(h.vm.actions == [.clickText("Save", button: "right", count: 2), .type("sw_vers\n"), .key("cmd+s")])
     #expect(h.last.actions == ["click", "type", "key"])
-    #expect(await h.doll.scenario?.steps == ["click「Save」 right 雙擊", "type 「sw_vers\n」", "key cmd+s"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["click「Save」 right 雙擊", "type 「sw_vers\n」", "key cmd+s"])
     // Every other tool between them keeps its result; the last action is the last one written, wherever it is.
     try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), screenshotCall,
                               ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("high")))
@@ -1194,7 +1135,7 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(h.vm.actions.count == 5 && h.vm.actions.last == .clickText("Save", button: "left", count: 1))
     #expect(h.last.actions == ["key", "error click", "skipped type", "screenshot"])
     // Only the done actions are steps.
-    #expect(await h.doll.scenario?.steps == ["key cmd+shift+s", "click「Save」", "type 「copy」", "key cmd+shift+s"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["key cmd+shift+s", "click「Save」", "type 「copy」", "key cmd+shift+s"])
     // Bad arguments after a text-only step: the failure shows the screen, since nothing of this reply did yet.
     try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
     let bad = Array(try h.toolResults().suffix(3))
@@ -1202,13 +1143,14 @@ private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -
     #expect(bad[1].text.hasPrefix("失敗：沒有點：99999,1 在螢幕外") && bad[1].text.hasSuffix("\n" + fakeWindowsLine) && bad[1].image != nil)
     #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
     #expect(h.vm.actions.count == 6)
-    // Outcome after actions in the same reply still ends the scenario; the action before it is the last.
-    try await h.turn(Scripted("", key("cmd+s"), outcome(true, "存好了"), key("cmd+q")))
+    // todo.done after actions in the same reply still ends the item; the action before it is the last.
+    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("cmd+q")))
     let end = Array(try h.toolResults().suffix(3))
     #expect(end[0].image != nil && end[0].text == fakeWindowsLine)
-    #expect(end[1].text.hasPrefix("記下了：達成。") && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
-    #expect(h.last.outcome == "success" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+shift+s\n2. click「Save」\n3. type 「copy」\n4. key cmd+shift+s\n5. key return\n6. key cmd+s") == true)
-    #expect(await h.doll.scenario == nil && h.vm.actions.count == 7)
+    #expect(end[1].text.hasPrefix("完成，記下了。")
+            && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
+    #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+shift+s\n2. click「Save」\n3. type 「copy」\n4. key cmd+shift+s\n5. key return\n6. key cmd+s") == true)
+    #expect(await h.doll.todo.phase != .doing && h.vm.actions.count == 7)
 }
 
 @Test func clickTakesExactlyOneOfElementTextOrCoordinates() async throws {
@@ -1569,7 +1511,7 @@ private final class FakeAgentDesktop: Sendable {
     let h = try await menuHarness()
     h.vm.setFrame(1)
     try await h.turn(Scripted("", key("cmd+n"), screenshotCall))
-    let results = try h.toolResults()                                  // use_computer's, key's, screenshot's
+    let results = Array(try h.toolResults().suffix(3))                 // the first screenshot's, key's, screenshot's
     #expect(results.count == 3 && results.allSatisfy { $0.image != nil && $0.crop != nil })
     let note = "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。"
     #expect(results.allSatisfy { $0.cropNote == note })
@@ -1818,10 +1760,12 @@ private final class FakeVMPal: Sendable {
 @Test func aChangeInTheWatchedRegionWakesHerAndANewWatchReplacesTheOld() async throws {
     let h = try await menuHarness { $0.computer.watchStopAfter = 10 }
     try await h.turn(Scripted("", watch("0,0,100,50", 60)))
-    #expect(try h.toolResults().last!.text == "開始盯著0,0,100,50，最多等 60 秒；有變化或時間到會叫你。")
+    #expect(try h.toolResults().last!.text
+            == "開始盯著0,0,100,50，最多等 60 秒；有變化或時間到會叫你。這則回覆的呼叫做完以後，這一項就是等待中。")
     #expect(await !h.doll.followUp)                                     // the ack alone is no new turn
+    await h.doll.ownerSaid("換盯那裡")                                  // waiting: a line puts the item back in progress
     try await h.turn(Scripted("", watch("10,10,20,20", 60)))
-    #expect(try h.toolResults().last!.text.hasSuffix("（取代了上一個 watch）"))
+    #expect(try h.toolResults().last!.text.contains("（取代了上一個 watch）"))
     try await Task.sleep(for: .milliseconds(200))
     #expect(await watchWakes(h).isEmpty)                                // nothing changed yet
     h.vm.setFrame(1)
@@ -1874,11 +1818,12 @@ private final class FakeVMPal: Sendable {
     #expect(await watchWakes(h).count == 2)
 }
 
-@Test func outcomeStopsTheWatch() async throws {
+@Test func failingTheItemStopsTheWatch() async throws {
     let h = try await menuHarness()
     try await h.turn(Scripted("", watch("window", 60)))
-    try await h.turn(Scripted("", outcome(false, "沒好")))
-    #expect(h.last.outcome == "failure")
+    await h.doll.ownerSaid("不用等了")                                    // 等待中: his line puts the item back in progress
+    try await h.turn(Scripted("", fail("沒好")))
+    #expect(h.last.itemEnd == "失敗")
     h.vm.setFrame(1)
     try await Task.sleep(for: .milliseconds(200))
     let left = await h.doll.watch?.id
@@ -1936,7 +1881,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     let h = try await Harness()
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     let mems = try publicMemories(h)
     #expect(mems.map(\.text) == ["TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", "TextEdit：File › Save＝⌘S（TextEdit 1.21）",
                                  "TextEdit：Format › Font › Bold＝⌘B（TextEdit 1.21）"])
@@ -1976,7 +1921,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     let off = try await Harness(tune: { $0.computer.learnShortcuts = false })
     off.vm.setApp(textEdit, textEditKeys)
     await off.doll.ownerSaid("用電腦")
-    try await off.turn(Scripted("", useComputer))
+    try await off.turn(Scripted("", todoSet(), screenshotCall))
     try await off.turn(Scripted("", key("cmd+s")))
     #expect(off.vm.state.withLock { $0.menuReads.isEmpty })
     #expect(try publicMemories(off).isEmpty)
@@ -2041,8 +1986,8 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     try await seedMemory(h, "public", "TextEdit：File › Save＝⌘S（TextEdit 1.20）", tier: "program", confidence: 0.95)
     try await seedMemory(h, "public", "經驗：用 TextEdit 存檔\n1. key cmd+s → Done\n結果：存好了")
     await h.doll.ownerSaid("用 TextEdit 存檔")
-    try await h.turn(Scripted("", useComputer))
-    // The owner's line: the experience only. use_computer shows TextEdit (a switch, its shortcuts
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    // The owner's line: the experience only. The screenshot shows TextEdit (a switch, its shortcuts
     // learned now): nothing new to attach, no event.
     let mem = try memoryEvents(h)
     #expect(mem.count == 1 && mem[0].text.contains("經驗：用 TextEdit 存檔") && !mem[0].text.contains("⌘S（"))
@@ -2064,7 +2009,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     h.vm.setApp(textEdit, textEditKeys)
     try await seedMemory(h, "public", "經驗：用電腦存檔\n1. key cmd+s → Done")
     await h.doll.ownerSaid("用電腦存檔")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     try await h.turn(Scripted("", key("cmd+s")))
     try await h.turn("好了")
     let reqs = await h.model.requests.map(\.messages)
@@ -2092,28 +2037,32 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔大概｜secret〕\n經驗：TextEdit 的秘密筆記密碼是 1234"))
 }
 
-// scenarios, computer sessions and experiences (spec 3.1, 2026-11-09) ----------------------
+// todo items that used the computer, and experiences (spec 3.1, 2026-11-09; todo 2026-11-14) ------
 
 /// Her public memory files with tier self_reported.
 private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTier, confidence: Double, kind: String, app: String, version: String)] {
     try publicMemories(h).filter { $0.tier == .selfReported }
 }
 
-@Test func useComputerNeedsExpect() async throws {
+@Test func todoSetNeedsAListOfNonEmptyItems() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", ("use_computer", [])))
-    #expect(try h.toolResults().last!.text == "失敗：use_computer 少了參數 expect")
-    try await h.turn(Scripted("", ("use_computer", [("expect", "  ")])))
-    #expect(try h.toolResults().last!.text == "失敗：use_computer 的 expect 是空的")
-    #expect(await h.doll.scenario == nil)
+    try await h.turn(Scripted("", ("todo.set", [])))
+    #expect(try h.toolResults().last!.text == "失敗：todo.set 少了參數 items")
+    try await h.turn(Scripted("", ("todo.set", [("items", "[\"  \"]")])))
+    #expect(try h.toolResults().last!.text == "失敗：todo.set 的 items 裡有空的項目")
+    try await h.turn(Scripted("", ("todo.set", [("items", "存檔")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：todo.set 的 items 要是字串的 JSON 陣列"))
+    try await h.turn(Scripted("", done("好了")))
+    #expect(try h.toolResults().last!.text == "失敗：todo.done 要有進行中的項目；現在是待命中，先用 todo.set 列 todo")
+    #expect(await h.doll.todo.phase == .idle)
 }
 
-@Test func aSuccessfulOutcomeWritesOneExperienceOfHerActions() async throws {
+@Test func aDoneItemThatUsedTheComputerWritesOneExperienceOfHerActions() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔")
-    try await h.turn(Scripted("", ("use_computer", [("expect", "標題沒有「已編輯」")])))
-    // The menu is open: an action that fails is not a step; each step is only what she did, no VM answer text.
+    try await h.turn(Scripted("", todoSet("標題沒有「已編輯」")))
+    // An action that fails is not a step; each step is only what she did, no VM answer text.
     h.vm.failNext("boom\nsecond line")
     try await h.turn(Scripted("", ("click", [("text", "Save")]), screenshotCall))
     h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
@@ -2121,25 +2070,24 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")]),
                               ("type", [("text", "娃娃來過")]), key("cmd+s")))
     // She looks, then answers in the same reply.
-    try await h.turn(Scripted("", screenshotCall, outcome(true, "按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
-    #expect(h.last.footer.contains("- 選單：電腦（做完呼叫 outcome(success, summary) 結束）"))
-    #expect(try h.toolResults().last!.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
-    let text = "經驗：把 notes 存檔\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
+    try await h.turn(Scripted("", screenshotCall, done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
+    #expect(h.last.footer.contains("- todo：進行中「標題沒有「已編輯」」"))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。"))
+    let text = "經驗：把 notes 存檔\n這一項：標題沒有「已編輯」\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
         + "1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s"
-    #expect(h.last.outcome == "success" && h.last.experience == text && h.last.actions.contains("outcome success"))
+    #expect(h.last.itemEnd == "完成" && h.last.experience == text && h.last.actions.contains("todo done"))
     let mems = try experiences(h)
     let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
     #expect(mems.count == 1 && mems[0].text == text && mems[0].confidence == conf && mems[0].kind == "")
     #expect(conf >= 0.3 && conf < 0.7)
-    // Relocked.
+    // The list is done: idle, the computer refused again.
     try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.actions == ["error key"] && h.last.footer.contains("- 選單：頂層"))
-    #expect(await h.doll.scenario == nil)
-    // Its stats are in the front-matter, not in the text (what is embedded): this run's 5 turns.
+    #expect(h.last.actions == ["refused key"] && h.last.footer.contains("- todo：待命中"))
+    // Its stats are in the front-matter, not in the text (what is embedded): this item's 5 turns.
     let files = try experienceFiles(h)
     let stats = try #require(files.first?.stats)
     #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
-    // Only the program's steps count as steps, not a numbered line in her summary.
+    // Only the program's steps count as steps, not a numbered line in her result.
     #expect(Experience(id: "", folder: "public", secret: false, level: "", file: files[0]).steps
             == ["click dockitem \"Finder\"", "click 60,45 雙擊", "type 「娃娃來過」", "key cmd+s"])
     #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
@@ -2151,31 +2099,28 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
 }
 
-@Test func aFailedOrMissingOutcomeWritesNothing() async throws {
+@Test func aFailedItemOrOneWithoutTheComputerWritesNoExperience() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), outcome(false, "還有點")))
-    #expect(h.last.outcome == "failure" && h.last.experience == nil)
+    try await h.turn(Scripted("", key("cmd+s"), fail("還有點")))
+    #expect(h.last.itemEnd == "失敗" && h.last.experience == nil)
     #expect(try experiences(h).isEmpty)
-    // A bad success value is an error, and the scenario stays open.
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", ("outcome", [("success", "maybe"), ("summary", "x")]), outcome(true, "看到了")))
-    #expect(try h.toolResults().map(\.text).contains("失敗：outcome 的 success 只能是 true 或 false，收到 maybe"))
-    #expect(h.last.outcome == "success")
-    #expect(try experiences(h).count == 1)
-    // A scenario still open when the program stops: unknown, relocked, logged, nothing written.
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", watch("window", 60)))
+    // An item that never used the computer: done, no experience.
+    try await h.turn(Scripted("", todoSet("跟主人說好了")))
+    try await h.turn(Scripted("", dm("好"), done("說了")))
+    #expect(h.last.itemEnd == "完成" && h.last.experience == nil)
+    #expect(try experiences(h).isEmpty)
+    // An item still in progress when the program stops: the watch stops, it stays in the timeline's todo.
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", key("Return")))
     await h.doll.shutdown()
-    #expect(await h.doll.scenario == nil)
     #expect(await h.doll.watch == nil)
-    #expect(h.logs.contains { $0.contains("outcome unknown: computer scenario ended without her outcome") })
-    #expect(try experiences(h).count == 1)
-    // Nothing is stored for it (no summary of hers), so its turns stay in requests in full.
-    #expect(try h.timeline().closedScenarios.map(\.success) == [false, true])
+    #expect(h.logs.contains { $0.contains("todo: stopping with「畫面上看得到結果」進行中") })
+    #expect(try h.timeline().todo.phase == .doing)
+    #expect(try experiences(h).isEmpty)
 }
 
-@Test func outcomeEndsTheSessionAndNothingWakesHerForIt() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("", dm("存好了"), key("cmd+s"), outcome(true, "看到了"))])
+@Test func doneEndsTheListAndNothingWakesHerForIt() async throws {
+    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", dm("存好了"), key("cmd+s"), done("看到了"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await h.doll.ownerSaid("存檔")
@@ -2184,50 +2129,37 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
         try await Task.sleep(for: .milliseconds(20))
     }
     try await Task.sleep(for: .milliseconds(200))
-    #expect(await h.model.requests.count == 2 && h.said == ["存好了"])  // her words came with the outcome
+    #expect(await h.model.requests.count == 2 && h.said == ["存好了"])  // her words came with the done
     #expect(await h.doll.settled)
-    #expect(await h.doll.scenario == nil)
-    #expect(h.last.outcome == "success" && h.vm.actions == [.key("cmd+s")])
+    #expect(await h.doll.todo.phase == .idle)
+    #expect(h.last.itemEnd == "完成" && h.vm.actions == [.key("cmd+s")])
     // The result is still in the timeline, right after her reply.
     let events = try h.events()
-    #expect(events.last?.kind == .tool && events.last?.text == "記下了：達成。你的經過和這次的步驟存成一條經驗。離開電腦選單了；電腦工具鎖回去了。")
+    #expect(events.last?.kind == .tool && events.last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。")
+            && events.last!.text.hasSuffix("清單做完了，現在待命中；程式不會再為這件事叫你。"))
     #expect(events.dropLast(3).last?.kind == .doll)
     await h.doll.stop()
     try await runner.value
 }
 
-@Test func outcomeOutsideASessionIsAnError() async throws {
-    let h = try await Harness()
-    await h.doll.ownerSaid("好了嗎")
-    try await h.turn(Scripted("", outcome(true, "好了")))
-    #expect(try h.toolResults().last!.text == "失敗：outcome 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
-    #expect(h.last.outcome == nil && h.last.actions == ["error outcome"])
-    // After a session ended, too.
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", outcome(false, "沒好")))
-    try await h.turn(Scripted("", outcome(true, "好了")))
-    #expect(try h.toolResults().last!.text == "失敗：outcome 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單")
-    #expect(h.last.outcome == nil)
-    #expect(try experiences(h).isEmpty)
-}
-
-@Test func callsAfterOutcomeInTheSameReplyAreRefused() async throws {
+@Test func callsAfterDoneInTheSameReplyAreRefused() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), outcome(false, "沒好"), key("Return"), screenshotCall))
-    let refused = "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。"
-    #expect(try h.toolResults().suffix(3).map(\.text)
-            == ["記下了：沒達成。離開電腦選單了；電腦工具鎖回去了。", refused, refused])
-    #expect(h.last.actions == ["key", "outcome failure", "error key", "error screenshot"])
+    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("Return"), screenshotCall))
+    let refused = "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"
+    let results = try h.toolResults().suffix(3).map(\.text)
+    #expect(results.first!.hasPrefix("完成，記下了。") && Array(results.dropFirst()) == [refused, refused])
+    #expect(h.last.actions == ["key", "todo done", "error key", "error screenshot"])
     #expect(h.vm.actions == [.key("cmd+s")])
     #expect(await !h.doll.followUp)
-    #expect(await h.doll.scenario == nil)
-    // The next request: the enter call's result says it was not reached, with her summary; the
-    // refused calls' results are not in it.
+    #expect(await h.doll.todo.phase == .idle)
+    // The next request: the item is compacted to her todo calls and their results; the refused
+    // calls and the screenshots are not in it.
     await h.doll.ownerSaid("好吧")
     try await h.turn("嗯")
     let request = await h.model.requests.last!.messages
-    #expect(request.contains(ChatMessage(role: "tool", content: "沒達成。你自己記下的經過：\n沒好")))
-    #expect(!request.contains { $0.content.hasPrefix("失敗：這次用電腦已經用 outcome 結束了") || !$0.images.isEmpty })
+    #expect(request.contains { $0.role == "tool" && $0.content.hasPrefix("todo 列好了。") })
+    #expect(request.contains { $0.role == "tool" && $0.content.hasPrefix("完成，記下了。") })
+    #expect(!request.contains { $0.content.hasPrefix("失敗：這則回覆前面已經用") || !$0.images.isEmpty })
 }
 
 @Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
@@ -2386,53 +2318,53 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     #expect(!same("key cmd+s", "type 「cmd+s」") && same("scroll down 3", "scroll down 3"))
 }
 
-@Test func aFollowedExperienceCountsHerOutcomeAndRanksBy() async throws {
+@Test func aFollowedExperienceCountsHowHerItemEndedAndRanksBy() async throws {
     let h = try await Harness()
     let task = "把 notes 存檔"
     try await seedExperience(h, "1-seed", task: task, steps: ["click dockitem \"Finder\"", "key cmd+s", "key cmd+w", "type 「娃娃來過」"],
                              stats: ExperienceStats(turns: 9, seconds: 150))
     // 1: two of its four steps in order (ratio 0.5 = experience_follow_ratio): followed, her success counted.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     let attached = try #require(h.reports[0].attached.first)
     #expect(attached.contains("成績：這次 9 回合、150 秒；附上後照做 0 次，成功 0 次"))
     try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s")))
-    try await h.turn(Scripted("", outcome(true, "存好了")))
+    try await h.turn(Scripted("", done("存好了")))
     #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
-    // The attached event in the timeline is not re-rendered with the new stats: every request in
-    // the scenario starts with the whole one before it, and the first after it with the one that
-    // entered it (its turns are folded into her summary).
+    // The attached event in the timeline is not re-rendered with the new stats: every request while
+    // the item runs starts with the whole one before it, and the first after it with the one that
+    // listed it, up to that reply's footer (the item's turns are compacted).
     try await h.turn("好了")
     #expect(try memoryEvents(h).first?.text == attached)
     let reqs = await h.model.requests.map(\.messages)
     for i in 1..<3 { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
-    #expect(reqs.count == 4 && Array(reqs[3].prefix(reqs[0].count)) == reqs[0])
-    // Her new experience (3 turns: use_computer, the actions, outcome) now leads the group.
+    #expect(reqs.count == 4 && Array(reqs[3].prefix(reqs[0].count - 1)) == Array(reqs[0].dropLast()))
+    // Her new experience (3 turns: todo.set, the actions, todo.done) now leads the group.
     let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 3 })
     #expect(fresh.stats == ExperienceStats(turns: 3, seconds: fresh.stats!.seconds))
 
     // 2: the new one is attached; none of its steps done: not followed, nothing counted.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 3 回合") && !h.last.attached[0].contains("9 回合"))
-    try await h.turn(Scripted("", key("cmd+q"), outcome(false, "沒存到")))
+    try await h.turn(Scripted("", key("cmd+q"), fail("沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].hasSuffix("0/2 steps done in order (ratio 0.00), not followed"))
     #expect(try experienceFiles(h).first { $0.stats?.turns == 3 }?.stats?.attachedFollowed == 0)
 
     // 3: followed, and she says it failed: counted as a failure, and the failure demotes it below
     // the 9-turn one that succeeded.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), outcome(false, "沒存到")))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), fail("沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].contains("2/2 steps done in order (ratio 1.00), followed, counted failure: 照做 1、成功 0、失敗 1"))
     let ranking = try await h.doll.experienceRanking()
     #expect(ranking.count == 1 && ranking[0].count == 2 && ranking[0][0].hasPrefix("1-seed: 成績：這次 9 回合、150 秒；附上後照做 1 次，成功 1 次；失敗 0 次"))
     #expect(ranking[0][1].contains("3 回合") && ranking[0][1].hasSuffix("附上後照做 1 次，成功 0 次；失敗 1 次"))
-    // An unknown outcome (the program stopped with the session open) is only logged.
+    // An item still in progress when the program stops: only logged.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s"), key("cmd+w")))
     await h.doll.shutdown()
     #expect(h.logs.contains { $0.contains("experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted") })
@@ -2455,7 +2387,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     let h = try await Harness(tune: { $0.computer.cheatsheet = true })
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("用 TextEdit 另存一份")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     // The first result shows TextEdit: its whole list, in the reader's order, after the result.
     #expect(try sheets(h) == [textEditSheet])
     #expect(h.last.cheatsheets == [textEditSheet])
@@ -2487,21 +2419,21 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.finder"])
 }
 
-@Test func theFrontAppAtScenarioEntryGetsItsCheatsheetEvenIfItWasInFrontBefore() async throws {
-    // Chained E→F (2026-11-09): TextEdit stayed in front across the two scenarios, so F got no sheet;
-    // the first scenario's sheet had left the context with it. Entry resets what counts as a switch.
+@Test func theFrontAppAtAnItemsStartGetsItsCheatsheetEvenIfItWasInFrontBefore() async throws {
+    // Chained E→F (2026-11-09): TextEdit stayed in front across the two tasks, so F got no sheet;
+    // the first task's sheet had left the context with it. A new item resets what counts as a switch.
     let h = try await Harness(tune: { $0.computer.cheatsheet = true })
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("先存檔")
-    try await h.turn(Scripted("", useComputer))
-    try await h.turn(Scripted("", key("cmd+s"), outcome(true, "存了")))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", key("cmd+s"), done("存了")))
     #expect(try sheets(h) == [textEditSheet])
     await h.doll.ownerSaid("再另存一份")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     #expect(try sheets(h) == [textEditSheet, textEditSheet] && h.last.cheatsheets == [textEditSheet])
-    // The same owner line, a third scenario: again, since the second's sheet is gone from the context too.
-    try await h.turn(Scripted("", outcome(true, "好了")))
-    try await h.turn(Scripted("", useComputer))
+    // The same owner line, a third item: again, since the second's sheet is gone from the context too.
+    try await h.turn(Scripted("", done("好了")))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     #expect(try sheets(h).count == 3)
     #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
 }
@@ -2510,7 +2442,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     let h = try await Harness(tune: { $0.computer.cheatsheet = true })
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("用電腦存檔")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     try await h.turn(Scripted("", key("cmd+s")))
     try await h.turn("好了")
     let reqs = await h.model.requests.map(\.messages)
@@ -2525,7 +2457,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     // No front app: nothing to read, no event.
     h.vm.setApp(nil, [])
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     #expect(try sheets(h).isEmpty && h.vm.state.withLock { $0.menuReads.isEmpty })
     // The reader fails: the log says so; no event, nothing in her results.
     h.vm.setApp(textEdit, textEditKeys)
@@ -2547,7 +2479,7 @@ private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\
     let h = try await Harness(tune: { $0.computer.cheatsheet = false; $0.computer.learnShortcuts = false })
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     h.vm.setApp(finder, finderKeys)
     try await h.turn(Scripted("", key("cmd+n")))
     #expect(try sheets(h).isEmpty && h.reports.allSatisfy { $0.cheatsheets.isEmpty })
@@ -2663,16 +2595,16 @@ private func editFile(_ path: String, _ old: String, _ new: String) -> (String, 
     #expect(try h.toolResults().last!.text.hasSuffix("最接近的幾行（照這裡的字寫 old）：\n     8\tline 8\n     9\tline 9\n    10\tline 10"))
 }
 
-@Test func fileToolsAreLockedOutsideASessionAndRefuseNonUTF8Files() async throws {
+@Test func fileToolsAreRefusedWithoutAnItemInProgressAndRefuseNonUTF8Files() async throws {
     let h = try await Harness()
     h.vm.put(todoPath, todoBefore)
     await h.doll.ownerSaid("看一下 todo")
     try await h.turn(Scripted("", readFile(todoPath), writeFile("~/a.txt", "a"), editFile(todoPath, "買牛奶", "買豆漿")))
-    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：read_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單",
-                                                          "失敗：write_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單",
-                                                          "失敗：edit_file 現在鎖著：先呼叫 use_computer(expect) 打開電腦選單"])
+    let refused = { (tool: String) in "失敗：現在沒有進行中的 todo，\(tool) 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。" }
+    #expect(try h.toolResults().suffix(3).map(\.text) == [refused("read_file"), refused("write_file"), refused("edit_file")])
+    #expect(h.last.actions == ["refused read_file", "refused write_file", "refused edit_file"])
     #expect(h.vm.file(todoPath) == todoBefore && h.vm.file("~/a.txt") == nil)
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     h.vm.state.withLock { $0.files["/Users/doll/bin.dat"] = Data([0xFF, 0xFE, 0x41]) }
     try await h.turn(Scripted("", readFile("~/bin.dat"), editFile("~/bin.dat", "A", "B")))
     let text = "失敗：~/bin.dat 不是 UTF-8 文字檔（3 bytes），read_file、write_file、edit_file 只處理文字檔"
@@ -2684,10 +2616,10 @@ private func editFile(_ path: String, _ old: String, _ new: String) -> (String, 
     let h = try await Harness()
     h.vm.put(todoPath, todoBefore)
     await h.doll.ownerSaid("改 todo")
-    try await h.turn(Scripted("", ("use_computer", [("expect", "todo.txt 第一行是買豆漿")])))
+    try await h.turn(Scripted("", todoSet("todo.txt 第一行是買豆漿")))
     try await h.turn(Scripted("", readFile(todoPath), writeFile("~/Desktop/a.txt", "一\n二\n"), editFile(todoPath, "沒有這段", "x"),
-                              editFile(todoPath, "買牛奶", "買豆漿"), outcome(true, "第一行是買豆漿")))
-    #expect(h.last.experience == "經驗：改 todo\n第一行是買豆漿\n步驟：\n1. read_file ~/Documents/todo.txt\n2. write_file ~/Desktop/a.txt（2 行）\n3. edit_file ~/Documents/todo.txt")
+                              editFile(todoPath, "買牛奶", "買豆漿"), done("第一行是買豆漿")))
+    #expect(h.last.experience == "經驗：改 todo\n這一項：todo.txt 第一行是買豆漿\n第一行是買豆漿\n步驟：\n1. read_file ~/Documents/todo.txt\n2. write_file ~/Desktop/a.txt（2 行）\n3. edit_file ~/Documents/todo.txt")
     func same(_ a: String, _ b: String) -> Bool { StepShape(a).matches(StepShape(b)) }
     #expect(same("write_file ~/a.txt（2 行）", "write_file ~/a.txt（5 行）") && same("read_file ~/a.txt", "read_file ~/a.txt"))
     #expect(!same("read_file ~/a.txt", "edit_file ~/a.txt") && !same("read_file ~/a.txt", "read_file ~/b.txt") && !same("read_file ~/a.txt", "type 「~/a.txt」"))
@@ -2836,7 +2768,7 @@ private final class FakeStrata: Sendable {
         sent.withLock { $0 = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any] }
         return (Data(reply.utf8), 200)
     })
-    let tools = Tools.json([Tools.exitSpec])
+    let tools = Tools.json(Tools.todoSpecs)
     let history = [ChatMessage(role: "system", content: "s"),
                    ChatMessage(role: "assistant", content: "想", toolCalls: [ToolCall(name: "recall", arguments: "{\"query\": \"貓\"}"),
                                                                            ToolCall(failed: "", ToolCall.unreadable)]),
@@ -2888,22 +2820,23 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     let h = try await Harness()
     let d = dashboard(h)
     await h.doll.ownerSaid("用電腦看一下 macOS 版本")
-    try await h.turn(Scripted("好，我看看", useComputer,
+    try await h.turn(Scripted("好，我看看", todoSet(), screenshotCall,
                               remember(folders: [("我的信箱密碼是 hunter2", "own", nil), ("主人怕打雷", "secret", "happened"),
                                                  ("天空是藍的", "public", nil)])))
     h.vm.setFrame(1)
     try await h.turn(Scripted("", key("cmd+space")))
 
     let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
-    #expect(s.scenario == "電腦" && s.expect == "畫面上看得到結果" && s.watch == nil)
+    #expect(s.todo == "進行中" && s.item == "畫面上看得到結果" && s.pending.isEmpty && s.watch == nil)
     #expect(s.state == "asleep" && !s.paused && s.turn == 2 && s.queued == 0 && s.effort == "medium" && s.contextTokens > 0)
 
     let t = try json([DashboardItem].self, await d.respond(method: "GET", target: "/api/timeline"))
     #expect(t.map(\.type) == ["turn", "turn", "owner"])
     #expect(t[2].text == "用電腦看一下 macOS 版本" && t[2].voice == false)
-    #expect(t[1].thought == "好，我看看" && t[1].calls?.map(\.name) == ["use_computer", "remember"])
-    #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image != nil && t[1].calls?[1].image == nil)
-    #expect(t[1].calls?[1].result?.contains("own/") == true)
+    #expect(t[1].thought == "好，我看看" && t[1].calls?.map(\.name) == ["todo.set", "screenshot", "remember"])
+    #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image == nil && t[1].calls?[1].image != nil
+            && t[1].calls?[2].image == nil)
+    #expect(t[1].calls?[2].result?.contains("own/") == true)
     #expect(t[0].calls?.map(\.name) == ["key"] && t[0].calls?[0].parameters.map(\.name) == ["key", "modifiers"])
     for turn in t.prefix(2) {
         #expect(turn.prompt != nil && turn.prompt! > 0 && turn.seconds != nil && turn.effort == "medium" && turn.footer?.hasPrefix("【狀況】") == true)
@@ -2946,7 +2879,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     let h = try await Harness()
     let d = dashboard(h)
     await h.doll.ownerSaid("開電腦")
-    try await h.turn(Scripted("", useComputer))
+    try await h.turn(Scripted("", todoSet(), screenshotCall))
     let name = try h.toolResults().last!.image!
     let ok = await d.respond(method: "GET", target: "/shots/\(name)")
     let stored = try Data(contentsOf: h.doll.shots.appending(path: name))
@@ -3078,38 +3011,38 @@ private func hhmm(_ ts: Double) -> String {
 @Test func aRestartedDollRebuildsTheSameRequestFromTheTimelineFile() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔")
-    try await h.turn(Scripted("好，我來", useComputer))
+    try await h.turn(Scripted("好，我來", todoSet(), screenshotCall))
     try await h.turn(Scripted("", key("cmd+s")))
-    try await h.turn(Scripted("", dm("存好了。"), outcome(true, "按 ⌘S 存了檔。")))
+    try await h.turn(Scripted("", dm("存好了。"), done("按 ⌘S 存了檔。")))
     await h.doll.ownerSaid("謝謝")
     try await h.turn(Scripted("", dm("不客氣")))
     await h.doll.ownerSaid("再開一次電腦")
-    try await h.turn(Scripted("", useComputer))                                    // an open scenario, with images
+    try await h.turn(Scripted("", todoSet(), screenshotCall))                                    // an item in progress, with images
     let events = await h.doll.timelineEvents()
     let before = try await h.doll.context(events)
     #expect(before.contains { !$0.images.isEmpty })                                // screenshots in it
-    #expect(before.filter { $0.content.hasPrefix("【狀況】") }.count == 3)          // the footers of replies outside the closed span
-    #expect(before.contains { $0.content == "成功。你自己記下的經過：\n按 ⌘S 存了檔。" })   // the closed span
+    #expect(before.filter { $0.content.hasPrefix("【狀況】") }.count == 2)          // the footers of replies outside the compacted item
+    #expect(before.contains { $0.role == "tool" && $0.content.hasPrefix("完成，記下了。") })   // the compacted item
 
     // The file: one JSON object per line, every record type.
     let file = try h.timeline().file
     let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
     let types = try lines.map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }.map { $0["type"] as! String }
-    #expect(Set(types) == ["event", "footer", "turn", "scenario"])
+    #expect(Set(types) == ["event", "footer", "turn", "todo", "compact"])
     #expect(file.deletingLastPathComponent().lastPathComponent == "timeline" && file.pathExtension == "jsonl")
 
     let again = try await restarted(h, [Scripted("", dm("回來了"))])
     #expect(await again.doll.timelineEvents() == events)
     let after = try await again.doll.context(await again.doll.timelineEvents())
     #expect(try ChatMessage.encoder.encode(after) == ChatMessage.encoder.encode(before))
-    #expect(try h.timeline().closedScenarios.count == 1)
+    #expect(try h.timeline().compactions.count == 1)
     // Its first request continues the old one byte for byte.
     await again.doll.ownerSaid("在嗎")
     try await again.turn()
     let sent = await again.model.seen(0)
     #expect(try ChatMessage.encoder.encode(Array(sent.prefix(before.count))) == ChatMessage.encoder.encode(before))
     let kinds = try h.events().map(\.kind)
-    // One timeline: the owner's line, her reply, its result (the experience her outcome wrote is not
+    // One timeline: the owner's line, her reply, its result (the experience her todo.done wrote is not
     // related to 「在嗎」: nothing is attached).
     #expect(kinds.count == events.count + 3 && kinds.suffix(3) == [.owner, .doll, .tool])
     await h.doll.stop()
@@ -3208,18 +3141,17 @@ extension Doll {
     #expect(before.allSatisfy { $0.contains("〔今天 ") })
 }
 
-@Test func theTodayIndexLeavesOutMenusAndRecallResults() {
-    // 2026-11-11: use_computer's result is the program's menu text, not something that happened.
+@Test func theTodayIndexLeavesOutRecallResults() {
     func result(_ tool: String) -> [String] {
-        var ev = Event(.tool, .internal, "電腦選單打開了，現在多了這些工具：…")
+        var ev = Event(.tool, .internal, "todo 列好了。現在進行中：「存好檔」；後面：（沒有）。")
         ev.seq = 7
         return TodayIndex.entries(ev, tool: tool).map(\.label)
     }
-    #expect(result("use_computer").isEmpty && result("recall").isEmpty)
-    #expect(result("read_file") == ["read_file 的結果"])
+    #expect(result("recall").isEmpty)
+    #expect(result("read_file") == ["read_file 的結果"] && result("todo.set") == ["todo.set 的結果"])
 }
 
-@Test func aMenuReplyWithoutACallIsRemindedUntilTheIdleLimit() async throws {
+@Test func anItemInProgressReplyWithoutACallIsRemindedUntilTheIdleLimit() async throws {
     // 2026-11-11: she had only thought (or written nothing) and the task stopped.
     let h = try await menuHarness { $0.idle.maxTurnsWithoutTool = 3 }
     try await h.turn("")
@@ -3236,19 +3168,22 @@ extension Doll {
     #expect(await h.doll.followUp)
 }
 
-@Test func aSayAfterOutcomeIsStillSaidAndKeptWhenTheMenuCloses() async throws {
-    // 2026-11-11: she wrote say after outcome; the owner heard nothing.
+@Test func aSayAfterDoneIsStillSaidAndKeptWhenTheItemIsCompacted() async throws {
+    // 2026-11-11: she wrote her words after ending the work; the owner heard nothing.
     let h = try await menuHarness()
-    try await h.turn(Scripted("", outcome(true, "存好了"), dm("存好了喔"), key("cmd+q")))
+    try await h.turn(Scripted("", done("存好了"), dm("存好了喔"), key("cmd+q")))
     #expect(h.said == ["存好了喔"] && h.vm.actions.isEmpty)
     let end = Array(try h.toolResults().suffix(3))
-    #expect(end[1].text == "" && end[2].text == "失敗：這次用電腦已經用 outcome 結束了；outcome 後面的呼叫沒有執行。")
+    #expect(end[0].text.hasPrefix("完成，記下了。") && end[1].text == ""
+            && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
+    #expect(h.last.actions == ["todo done", "said discord_dm", "error key"])
     #expect(!(await h.doll.followUp))
-    // After the menu closes, the say stays in her context.
+    // After the item is compacted, the say stays in her context with her done.
     await h.doll.ownerSaid("謝謝")
     try await h.turn(Scripted("", dm("不客氣")))
     let last = await h.model.requests.last!.messages
-    #expect(last.contains { $0 == Scripted("", dm("存好了喔")).message })
+    #expect(last.contains { $0.role == "assistant" && $0.toolCalls.map(\.name) == ["todo.done", "discord.dm"]
+                            && $0.toolCalls[1].arguments!.contains("存好了喔") })
 }
 
 // consolidation (2026-11-11) -----------------------------------------------------
@@ -3300,8 +3235,8 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func consolidationRendersTheDayAsTextWithoutImagesOrProgramLines() {
     let events = [
         stamped(.owner, "用 TextEdit 另存一份", 1),
-        stamped(Scripted("我先打開電腦。", useComputer), 2),
-        stamped(.tool, "電腦選單打開了，現在多了這些工具：…", 3, image: "a.jpg"),
+        stamped(Scripted("我先列 todo。", todoSet()), 2),
+        stamped(.tool, "todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。", 3),
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
         stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
         stamped(.tool, "", 6),
@@ -3310,8 +3245,8 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
         stamped(Scripted("", recall("另存")), 9),
         stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
-        stamped(Scripted("", outcome(true, "按 ⇧⌥⌘S 另存好了")), 11),
-        stamped(.tool, "記下了：達成。", 12),
+        stamped(Scripted("", done("按 ⇧⌥⌘S 另存好了")), 11),
+        stamped(.tool, "完成，記下了。", 12),
         stamped(.owner, "我的密碼是 1234", 13, secret: true),
         stamped(.watch, "盯著的畫面變了。", 14, image: "d.jpg"),
     ]
@@ -3320,20 +3255,21 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(tasks.count == 2 && tasks.allSatisfy(\.owner))
     #expect(tasks[0].text == """
         [\(t(1)) 主人] 用 TextEdit 另存一份
-        [\(t(2)) 她想] 我先打開電腦。
-        [\(t(2)) 她呼叫] use_computer(expect: 畫面上看得到結果)
+        [\(t(2)) 她想] 我先列 todo。
+        [\(t(2)) 她呼叫] todo.set(items: ["畫面上看得到結果"])
+        [\(t(3)) todo.set 的結果] todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。
         [\(t(5)) 她說｜Discord 私訊] 好
         [\(t(5)) 她呼叫] key(key: s; modifiers: ["cmd", "shift", "alt"])
         [\(t(7)) key 的結果] 開著的視窗：TextEdit「另存」；焦點：textfield
         [\(t(9)) 她呼叫] recall(query: 另存)
-        [\(t(11)) 她呼叫] outcome(success: true; summary: 按 ⇧⌥⌘S 另存好了)
-        [\(t(12)) outcome 的結果] 記下了：達成。
+        [\(t(11)) 她呼叫] todo.done(result: 按 ⇧⌥⌘S 另存好了)
+        [\(t(12)) todo.done 的結果] 完成，記下了。
         """)
     #expect(tasks[0].queries == ["用 TextEdit 另存一份", "按 ⇧⌥⌘S 另存好了"])
     #expect(tasks[1].text == "[\(t(13)) 主人｜秘密] 我的密碼是 1234\n[\(t(14)) watch] 盯著的畫面變了。")
-    // Nothing of the images, the window outline, the program's lines, recall's copy or the menu text.
+    // Nothing of the images, the window outline, the program's lines or recall's copy.
     let all = tasks.map(\.text).joined(separator: "\n")
-    for gone in [".jpg", "視窗圖在", "window \"Save\"", "【快捷鍵】", "【相關記憶】", "另存：1 條", "電腦選單打開了"] {
+    for gone in [".jpg", "視窗圖在", "window \"Save\"", "【快捷鍵】", "【相關記憶】", "另存：1 條"] {
         #expect(!all.contains(gone), "\(gone)")
     }
     // Events before the first owner line are a task of their own.
@@ -3724,7 +3660,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 }
 
 @Test func programWrittenMemoriesCarryWhatTheProgramKnows() async throws {
-    let h = try await Harness([Scripted("", useComputer), Scripted("", outcome(true, "存好了"))])
+    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", done("存好了"))])
     h.vm.setApp(textEdit, textEditKeys)
     await h.doll.ownerSaid("用 TextEdit 存檔")
     try await h.turn()
@@ -4162,8 +4098,8 @@ private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
 
 @Test func voiceToolsAndPromptOnlyWithVoiceEnabled() async throws {
     let mem = try Config.load(root.appending(path: "dollcore.example.toml")).memory
-    #expect(!Tools.specs(memory: mem, voice: false).contains { $0.name.hasPrefix("voice.") })
-    let on = Tools.specs(memory: mem, voice: true)
+    #expect(!Tools.specs(memory: mem, voice: false, computer: ComputerConfig(), files: FilesConfig()).contains { $0.name.hasPrefix("voice.") })
+    let on = Tools.specs(memory: mem, voice: true, computer: ComputerConfig(), files: FilesConfig())
     #expect(on.suffix(3).map(\.name) == ["voice.join", "voice.say", "voice.leave"])
     #expect(on.first { $0.name == "discord.dm" }!.description.contains("你在語音頻道裡的時候"))
     let off = try await Harness()
@@ -4691,4 +4627,233 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     let text = try await rec.finalize(through: end!.through)
     print("M6ASR through \(end!.through) pad \(end!.pad) fed \(e.fed): 「\(text)」 in \(ContinuousClock.now - c0), total \(Date().timeIntervalSince1970 - t0) s")
     #expect(!text.isEmpty)
+}
+
+// the todo list, gating and compaction (2026-11-14) ------------------------------
+
+@Test func withoutAnItemInProgressTheComputerToolsAreRefused() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("按一下 Return")
+    try await h.turn(Scripted("", key("Return"), screenshotCall))
+    #expect(try h.toolResults().map(\.text) == ["失敗：現在沒有進行中的 todo，key 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。",
+                                                "失敗：現在沒有進行中的 todo，screenshot 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。"])
+    #expect(h.last.actions == ["refused key", "refused screenshot"] && h.vm.actions.isEmpty && h.last.todo == "待命中")
+    #expect(h.last.footer.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）"))
+    // Her refused calls are results she has not seen: she gets the next turn to list the todo.
+    #expect(await h.doll.followUp)
+    // The list and the action in one reply: the item is in progress before the action runs.
+    try await h.turn(Scripted("", todoSet("畫面上按過 Return", "存好檔"), key("Return")))
+    #expect(h.vm.actions == [.key("return")] && h.last.todo == "進行中")
+    #expect(try h.toolResults().suffix(2).first?.text == "todo 列好了。現在進行中：「畫面上按過 Return」；後面：「存好檔」。")
+    // 進行中: a reply that only speaks still gets the next turn.
+    try await h.turn(Scripted("", dm("按了")))
+    #expect(await h.doll.followUp)
+    #expect(h.last.footer.contains("- todo：進行中「畫面上按過 Return」；後面還有：「存好檔」"))
+    // Not gated: speaking, remember, recall, think and the todo tools themselves work while idle (above).
+    let t = try h.timeline().todo
+    #expect(t.phase == .doing && t.current == "畫面上按過 Return" && t.pending == ["存好檔"])
+}
+
+@Test func doneCompactsTheItemKeepsTheConversationAndMovesOn() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("把 notes 存檔，再關掉")
+    try await h.turn(Scripted("好，先看畫面", todoSet("notes 存好檔，標題沒有「已編輯」", "TextEdit 關掉了"), screenshotCall))  // request 0
+    try await h.turn(Scripted("我按 ⌘S", key("cmd+s")))                                                                  // request 1
+    await h.doll.ownerSaid("順便問，晚餐吃什麼？")
+    try await h.turn(Scripted("先回他", dm("等我存完再想"), ("click", [("text", "Save")])))                             // request 2
+    try await h.turn(Scripted("看起來好了", dm("存好了。"), done("按 ⌘S、點 Save 存檔，標題列沒有「已編輯」。")))         // request 3
+    try await h.turn(Scripted("", key("cmd+q")))                                                                        // request 4
+    try await h.turn(Scripted("", dm("關了")))                                                                          // request 5
+    let before = await h.model.seen(3), after = await h.model.seen(4), next = await h.model.seen(5)
+    // Up to the item's start (her reply that listed it) nothing changed.
+    #expect(Array(after.prefix(2)) == Array(before.prefix(2)))
+    #expect(before.contains { !$0.images.isEmpty } && before.contains { $0.content.hasPrefix("先回他") || $0.content == "我按 ⌘S" })
+    // After: no screenshot, no computer result, no thought, no footer of the item's replies.
+    let item = Array(after.dropFirst(2).dropLast())
+    #expect(item.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty && $0.content != fakeWindowsLine && !$0.content.hasPrefix("【狀況】") })
+    #expect(item.filter { $0.role == "assistant" }.allSatisfy { $0.content.isEmpty })
+    // What stays, in order: her todo.set (and its result), the owner's line verbatim, what she told him, her done with the action list.
+    #expect(item.map(\.role) == ["assistant", "tool", "user", "assistant", "tool", "assistant", "tool", "tool"])
+    #expect(item[0].toolCalls.map(\.name) == ["todo.set"] && item[1].content.hasPrefix("todo 列好了。"))
+    #expect(item[2].content.hasSuffix("主人｜Discord 私訊｜文字] 順便問，晚餐吃什麼？"))
+    #expect(item[3].toolCalls.map(\.name) == ["discord.dm"] && item[3].toolCalls[0].arguments!.contains("等我存完再想"))
+    #expect(item[5].toolCalls.map(\.name) == ["discord.dm", "todo.done"])
+    #expect(item[7].content.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。")
+            && item[7].content.contains("動作清單：key cmd+s、click「Save」。下一項「TextEdit 關掉了」現在進行中。"))
+    // The next item is in progress from right after the turn that finished the first.
+    let t = try h.timeline().todo
+    let last = try h.events().last { $0.kind == .doll && $0.calls.contains { $0.name == "todo.done" } }!
+    #expect(t.phase == .doing && t.current == "TextEdit 關掉了" && t.pending.isEmpty)
+    #expect(try h.timeline().compactions == [Compaction(kind: .done, item: "notes 存好檔，標題沒有「已編輯」", fromSeq: 1, toSeq: t.startSeq)]
+            && t.startSeq > last.seq!)
+    #expect(h.reports[3].itemEnd == "完成" && h.reports[3].compacted == ["done"] && h.reports[3].todo == "進行中")
+    // Byte-stable afterwards: the next request extends this one.
+    let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
+    #expect(try enc(next).starts(with: enc(after).dropLast()))
+    #expect(Array(next.prefix(after.count - 1)) == Array(after.dropLast()))
+    // The originals stay in the timeline.
+    #expect(try h.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
+}
+
+@Test func failBlocksTheComputerUntilSheDecidesWhatIsLeft() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("買票、再訂餐廳")
+    try await h.turn(Scripted("", todoSet("票買好了", "餐廳訂好了"), key("cmd+n")))
+    try await h.turn(Scripted("", fail("要主人的信用卡驗證碼", tried: "填了卡號，跳出簡訊驗證"), key("Return")))
+    #expect(try h.toolResults().suffix(2).map(\.text) == [
+        "記下了：「票買好了」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：key cmd+n。電腦工具先鎖著。現在決定剩下的（剩下：「餐廳訂好了」）：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
+        "失敗：這則回覆前面已經用 todo.fail 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"])
+    #expect(h.last.itemEnd == "失敗" && h.last.compacted == ["failed"] && h.last.todo == "失敗")
+    // She gets the turn in which she decides; the computer stays locked meanwhile.
+    #expect(await h.doll.followUp)
+    try await h.turn(Scripted("", key("Return")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：「票買好了」失敗了，key 先鎖著。") && h.vm.actions == [.key("cmd+n")])
+    #expect(h.last.footer.contains("- todo：失敗「票買好了」：電腦工具鎖著"))
+    // The failed item's reason and what she tried stay (her call); the action list is its result.
+    let msgs = await h.model.seen(2)
+    #expect(msgs.contains { $0.toolCalls.first?.name == "todo.fail" && $0.toolCalls[0].arguments!.contains("填了卡號，跳出簡訊驗證") })
+    #expect(!msgs.contains { $0.content == fakeWindowsLine })
+    // She continues with the next item: in progress again, computer unlocked.
+    try await h.turn(Scripted("", todoSet("餐廳訂好了"), key("cmd+t")))
+    #expect(h.vm.actions.last == .key("cmd+t") && h.last.todo == "進行中")
+}
+
+@Test func anEmptyListAfterAFailureEndsItAndNothingWakesHer() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("買票")
+    try await h.turn(Scripted("", todoSet("票買好了"), key("cmd+n")))
+    try await h.turn(Scripted("", fail("沒票了")))
+    try await h.turn(Scripted("", dm("沒票了"), ("todo.set", [("items", "[]")])))
+    #expect(try h.toolResults().last!.text == "清單結束了，現在待命中。" && h.last.todo == "待命中")
+    #expect(await !h.doll.followUp)
+    #expect(h.last.itemEnd == nil)
+    #expect(try h.timeline().todo == TodoState())
+}
+
+@Test func waitingGetsNoTurnsUntilSomethingHappens() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("幫我登入")
+    try await h.turn(Scripted("", todoSet("登入好了"), key("cmd+n")))
+    try await h.turn(Scripted("", dm("要你的驗證碼"), todoWait("主人的驗證碼"), key("Return")))
+    // The wait applies once the reply's calls ran: the key after it still ran.
+    #expect(h.vm.actions == [.key("cmd+n"), .key("return")])
+    #expect(h.last.todo == "等待中")
+    #expect(await !h.doll.followUp)
+    #expect(try h.timeline().todo.phase == .waiting)
+    await h.doll.ownerSaid("123456")
+    try await h.turn(Scripted("", ("type", [("text", "123456")])))
+    #expect(h.reports[2].footer.contains("- todo：進行中「登入好了」") && h.vm.actions.last == .type("123456"))
+    // A watch waits too, and its wake brings the item back.
+    try await h.turn(Scripted("", watch("window", 1)))
+    #expect(h.last.todo == "等待中")
+    try await h.waitFor(.watch)
+    try await h.turn(Scripted("", key("Return")))
+    #expect(h.last.todo == "進行中" && h.vm.actions.last == .key("return"))
+}
+
+/// A harness whose context is near full after a screenshot or two: a small limit and big screenshots.
+private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness {
+    let h = try await Harness(tune: {
+        $0.context.limit = 20_000
+        $0.context.forceAfterTurns = after
+        $0.context.forceKeepTurns = keep
+        $0.computer.screenshotTokens = 5_000
+    })
+    await h.model.setImageTokens(5_000)
+    return h
+}
+
+@Test func nearFullSheCompactsWithProgressAndTheItemGoesOn() async throws {
+    let h = try await tightHarness()
+    await h.doll.ownerSaid("整理桌面")
+    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), screenshotCall))
+    try await h.turn(Scripted("", key("cmd+a")))
+    try await h.turn(Scripted("", key("cmd+c")))
+    let warned = h.last.footer
+    #expect(warned.contains("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；再 3 回合沒收，程式會自己收（留動作清單和最近 2 回合）。"))
+    #expect(warned.contains("其中做事的過程") && !h.reports[0].footer.contains("快滿了"))
+    try await h.turn(Scripted("", progress("選了全部、複製了；接下來要刪掉別的檔案")))
+    #expect(h.last.compacted == ["progress"] && h.last.todo == "進行中")
+    #expect(await h.doll.followUp)
+    #expect(try h.toolResults().last!.text == "前面的過程收起來了，之後只留你寫的進度和這份動作清單：key cmd+a、key cmd+c。「桌面只剩 notes.txt」還在進行中，接著做。")
+    try await h.turn(Scripted("", key("Delete")))
+    let after = await h.model.seen(4)
+    #expect(!h.reports[4].footer.contains("快滿了"))
+    #expect(after.filter { !$0.images.isEmpty }.isEmpty && after.contains { $0.toolCalls.first?.name == "todo.progress" })
+    // Then done: the whole item, the progress note included, compacts from the same start.
+    try await h.turn(Scripted("", done("刪好了")))
+    try await h.turn(Scripted("", dm("好了")))
+    let comps = try h.timeline().compactions
+    #expect(comps.map(\.kind) == [.progress, .done] && comps[0].fromSeq == comps[1].fromSeq)
+    #expect(try h.toolResults().last { $0.text.hasPrefix("完成") }!.text.contains("動作清單：key cmd+a、key cmd+c、key delete。"))
+}
+
+@Test func nearFullWithoutHerCompactionTheProgramForcesItKeepingTheLastTurns() async throws {
+    let h = try await tightHarness()
+    await h.doll.ownerSaid("整理桌面")
+    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), screenshotCall))   // turn 1
+    try await h.turn(Scripted("", key("a")))                                          // 2: warned (0 → 1)?
+    for k in ["b", "c", "d", "e", "f"] { try await h.turn(Scripted("", key(k))) }
+    let warnings = h.reports.map { $0.footer.contains("context 快滿了：用 todo.progress") }
+    let first = warnings.firstIndex(of: true)!
+    // Three warned turns, then the program compacts at the start of the next one.
+    let forcedTurn = h.reports.firstIndex { $0.compacted == ["forced"] }!
+    #expect(forcedTurn == first + 3)
+    #expect(h.reports[first].footer.contains("再 3 回合") && h.reports[first + 2].footer.contains("再 1 回合"))
+    let comp = try h.timeline().compactions.last!
+    #expect(comp.kind == .forced && comp.text!.hasPrefix("【收起】context 快滿了，你沒有用 todo.progress 收") && comp.text!.contains("最近 2 回合還在下面"))
+    let req = await h.model.seen(forcedTurn)
+    // The block follows the span; her last two turns before it are intact, with their screenshots.
+    let block = req.firstIndex { $0.content.contains("【收起】") }!
+    let rest = Array(req[(block + 1)...])
+    #expect(rest.filter { $0.role == "assistant" }.count == 2 && rest.contains { !$0.images.isEmpty })
+    #expect(req[..<block].allSatisfy { $0.images.isEmpty })
+    // Its action list covers the actions up to the cut only.
+    let cutActions = forcedTurn - 3   // her replies before the kept two, the first (list and screenshot) without a key
+    #expect(comp.text!.contains("到這裡做過的動作：" + ["a", "b", "c", "d", "e", "f"].prefix(cutActions).map { "key \($0)" }.joined(separator: "、") + "。"))
+}
+
+@Test func nearFullMostlyConversationSaysCompactingWillNotHelp() async throws {
+    let h = try await Harness(tune: { $0.context.limit = 1_000 })
+    await h.doll.ownerSaid("聊聊")
+    try await h.turn(Scripted("", dm("好")))
+    #expect(h.last.footer.contains("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。"))
+    #expect(h.last.footer.contains("其中做事的過程 0（截圖 0）") && h.last.footer.contains("／1,000（"))
+}
+
+@Test func compactionsAndTheTodoListSurviveARestartByteForByte() async throws {
+    let h = try await tightHarness()
+    await h.doll.ownerSaid("兩件事")
+    try await h.turn(Scripted("", todoSet("A 好了", "B 好了"), screenshotCall))
+    try await h.turn(Scripted("", key("a")))
+    try await h.turn(Scripted("", done("A 做完")))
+    try await h.turn(Scripted("", key("b")))
+    for k in ["c", "d", "e", "f", "g"] { try await h.turn(Scripted("", key(k))) }
+    #expect(try h.timeline().compactions.map(\.kind) == [.done, .forced])
+    let events = await h.doll.timelineEvents()
+    let before = try await h.doll.context(events)
+    let again = try await restarted(h, [Scripted("", dm("回來了"))])
+    let after = try await again.doll.context(await again.doll.timelineEvents())
+    #expect(try ChatMessage.encoder.encode(after) == ChatMessage.encoder.encode(before))
+    #expect(await again.doll.todo == h.doll.todo)
+    let types = try String(contentsOf: try h.timeline().file, encoding: .utf8).split(separator: "\n")
+        .map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }.map { $0["type"] as! String }
+    #expect(Set(types) == ["event", "footer", "turn", "todo", "compact"])
+    await h.doll.stop()
+}
+
+@Test func theDocsGoIntoHerComputerAndAFailedCopyIsInTheBootNotice() async throws {
+    let h = try await Harness()
+    #expect(await h.doll.syncDocs() == nil)
+    let docs = root.appending(path: "dolldocs")
+    let names = try FileManager.default.contentsOfDirectory(atPath: docs.path).filter { $0.hasSuffix(".md") }.sorted()
+    #expect(names.contains("README.md") && names.count >= 6)
+    for n in names {
+        #expect(h.vm.file("\(Doll.docsVMPath)/\(n)") == String(decoding: try Data(contentsOf: docs.appending(path: n)), as: UTF8.self))
+    }
+    h.vm.failNext("vm is asleep")
+    let why = try #require(await h.doll.syncDocs())
+    try await h.doll.announceBoot(docsFailure: why)
+    #expect(try h.events().last!.text == "【開機】你剛被開機了。DollOS 文件這次沒有複製進你的電腦（\(why)）；~/DollOS/docs 裡可能是舊的或沒有。")
+    #expect(h.logs.contains { $0.hasPrefix("ERROR docs: copying") })
 }
