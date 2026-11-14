@@ -60,20 +60,15 @@ public struct MenuShortcut: Sendable, Equatable {
 }
 
 /// After every computer action (spec 3.1, 2026-11-09): the line naming the open windows and the
-/// focused element, as she reads it, and the front app; the front window's title and the focused
-/// element's name, which key the 【相關記憶】 entities (2026-11-11).
+/// focused element, as she reads it, and the front app.
 public struct FrontState: Sendable, Equatable {
     /// `開著的視窗：Finder、TextEdit「notes.txt」（前景）；焦點：textfield`; a part that could not be
     /// read says so in its place.
     public var line: String
     /// nil when there is none or it could not be read.
     public var app: AppIdentity?
-    /// The focused window's title, when it has one other than its app's name.
-    public var title: String?
-    /// The focused element's name, when it has one.
-    public var focus: String?
-    public init(line: String, app: AppIdentity?, title: String? = nil, focus: String? = nil) {
-        (self.line, self.app, self.title, self.focus) = (line, app, title, focus)
+    public init(line: String, app: AppIdentity?) {
+        (self.line, self.app) = (line, app)
     }
 }
 
@@ -307,9 +302,7 @@ public struct VMPalDriver: ComputerDriver {
             echo @@front; "$2" --front; exit 0
             """, [cfg.agentDesktop, cfg.axMenus]), first: "windows")
         let windows = Data((parts["windows"] ?? "").utf8), focused = Data((parts["focused"] ?? "").utf8)
-        let state = OpenWindows.names(windows: windows, focused: focused)
-        return FrontState(line: OpenWindows.line(windows: windows, focused: focused), app: Self.parseFrontApp(parts["front"] ?? ""),
-                          title: state.title, focus: state.focus)
+        return FrontState(line: OpenWindows.line(windows: windows, focused: focused), app: Self.parseFrontApp(parts["front"] ?? ""))
     }
 
     /// `$1` with `~` or `~/…` expanded to the VM account's home, into `p`.
@@ -948,17 +941,6 @@ enum OpenWindows {
             focus = "焦點讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: focused.prefix(300), as: UTF8.self))"
         }
         return list + "；" + focus
-    }
-
-    /// The focused window's title (from the snapshot, else `list-windows`; nil when empty or just its
-    /// app's name) and the focused element's name (nil when none or unnamed). Unreadable parts: nil.
-    static func names(windows: Data, focused: Data) -> (title: String?, focus: String?) {
-        let f = try? JSONDecoder().decode(Focused.self, from: focused)
-        let w = (try? JSONDecoder().decode(Windows.self, from: windows))?.data?.first { $0.is_focused == true }
-        let raw = f?.data?.tree?.name.flatMap { $0.isEmpty ? nil : $0 } ?? w?.title
-        let title = raw.flatMap { $0.isEmpty || $0 == w?.app_name ? nil : $0 }
-        let focus = f?.data?.tree.flatMap(find)?.name.flatMap { $0.isEmpty ? nil : $0 }
-        return (title, focus)
     }
 
     /// The first element, depth first, whose states include `focused`.

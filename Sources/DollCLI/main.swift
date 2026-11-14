@@ -65,7 +65,7 @@ do {
     let a = LocalAPI(config: cfg.api)
     api = a
     let d = try Doll(
-        config: cfg, root: root, model: HTTPMainModel(cfg.llm), selector: FoundationSelectionModel(), embedder: embedder,
+        config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: embedder,
         deliver: { text, to in
             let failed = a.deliver(text, to: to)
             out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))

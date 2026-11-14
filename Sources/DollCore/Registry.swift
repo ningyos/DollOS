@@ -10,8 +10,9 @@ import Foundation
 /// Like the memories, the files `<memory.dir>/<registry_dir>/<id>.md` are the source of truth;
 /// the SQLite tables (keys, FTS5 trigram, embedding) are an index rebuilt from them.
 ///
-/// Names are aligned to entries when they are written (`Selector.place`, `Selector.programApp`,
-/// consolidation's reply) and when a trigger names them (`Selector.resolve`).
+/// Entries are written by the program for what it knows exactly (`Selector.programApp`,
+/// `Selector.programShortcut`: exact keys, never another type's entry) and by consolidation's reply.
+/// Her `remember` writes none (2026-11-15).
 public struct RegistryEntry: Sendable, Equatable {
     public var id: String
     public var type: EntityType
@@ -40,22 +41,12 @@ public struct RegistryEntry: Sendable, Equatable {
     }
 }
 
-/// A thing a text names, as written, not yet aligned to the registry.
-public struct Mention: Sendable, Equatable, Hashable {
-    public var type: EntityType
-    public var name: String
-
-    public init(_ type: EntityType, _ name: String) { (self.type, self.name) = (type, name) }
-}
-
 public final class Registry {
     let dir: URL
     private let store: Store
     private let embedder: any Embedder
     private let maxQueryPhrases: Int
     private let rrfK: Int
-    /// Bumped on every change, so what was aligned before is looked up again (`Selector`'s cache).
-    public private(set) var generation = 0
 
     init(dir: URL, store: Store, embedder: any Embedder, config: MemoryConfig) throws {
         self.dir = dir
@@ -130,7 +121,6 @@ public final class Registry {
         let entries = try all()
         let vectors = try embedder.embed(entries.map(\.line), as: .document)
         for (e, v) in zip(entries, vectors) { try index(e, vector: v) }
-        generation += 1
     }
 
     private func index(_ e: RegistryEntry, vector: [Float]? = nil) throws {
@@ -141,7 +131,6 @@ public final class Registry {
     private func save(_ e: RegistryEntry) throws {
         try e.text.write(to: url(e.id), atomically: true, encoding: .utf8)
         try index(e)
-        generation += 1
     }
 
     /// A new entry. Aliases are trimmed; empty ones and those with the name's (or an earlier

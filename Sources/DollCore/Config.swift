@@ -203,18 +203,18 @@ public struct ConsolidateConfig: Sendable {
     public var retiredKeepDays = 30
 }
 
-/// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device scoring): the 【相關記憶】 the
-/// program attaches and her `recall` results both come from one pipeline (`Selector`): the
-/// trigger's names aligned to the registry, everything related (FTS and two-character words,
-/// embedding, a shared registry entity with the trigger or one hop from an FTS/embedding hit),
-/// then `Selector.Rule`: attach gives at most `attachMax` whose cosine is at least `similarity`,
-/// by the cheap score; recall gives the `recallLimit` best by RRF, no floor.
+/// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device model at all): the
+/// 【相關記憶】 the program attaches and her `recall` results both come from one pipeline
+/// (`Selector`): everything related (FTS and two-character words, embedding, the front app's
+/// registry entry, one hop from an FTS/embedding hit through a shared entity), then
+/// `Selector.Rule`: attach gives at most `attachMax` whose cosine is at least `similarity`, by the
+/// cheap score; recall gives the `recallLimit` best by RRF, no floor.
 public struct SelectConfig: Sendable {
     /// Auto-attach: the embedding channel and the floor; a candidate whose cosine to the query is
     /// below this is not attached, whatever else ties it to the trigger.
     public var similarity = 0.55
-    /// Auto-attach's cheap score: cosine to the query plus this much per registry entity of the
-    /// trigger it has.
+    /// Auto-attach's cheap score: cosine to the query plus this much when it has the front app's
+    /// registry entry.
     public var entityWeight = 0.2
     /// Auto-attach: at most this many, best cheap score first.
     public var attachMax = 5
@@ -222,11 +222,6 @@ public struct SelectConfig: Sendable {
     public var recallLimit = 3
     /// recall's embedding channel: this many best by cosine, no floor (what the 31/32 was measured with).
     public var recallCandidates = 5
-    /// How many registry entries (`Registry.nearby`) the on-device model sees when it aligns one name.
-    public var lookupK = 5
-    /// The on-device model's 0–10 that a name and the entry it picked are the same thing, at or
-    /// above which they are aligned.
-    public var alignThreshold = 7
 }
 
 /// Her voice in a Discord voice channel (2026-11-13, M6): the bridge streams the owner's audio over
@@ -463,12 +458,10 @@ public struct Config: Sendable {
         try s.read("attach_max", &select.attachMax)
         try s.read("recall_limit", &select.recallLimit)
         try s.read("recall_candidates", &select.recallCandidates)
-        try s.read("lookup_k", &select.lookupK)
-        try s.read("align_threshold", &select.alignThreshold)
         try s.finish()
         guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.attachMax >= 1,
-              select.recallLimit >= 1, select.recallCandidates >= select.recallLimit, select.lookupK >= 1, (0...10).contains(select.alignThreshold) else {
-            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max, recall_limit and lookup_k at least 1; recall_candidates at least recall_limit; align_threshold 0…10")
+              select.recallLimit >= 1, select.recallCandidates >= select.recallLimit else {
+            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max and recall_limit at least 1; recall_candidates at least recall_limit")
         }
         var o = Section(name: "voice", raw: raw["voice"] ?? [:])
         var voice = VoiceConfig()

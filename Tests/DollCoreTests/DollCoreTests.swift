@@ -272,47 +272,6 @@ final class FakeEmbedder: Embedder, Sendable {
 /// meaning: the M3a corpus and recall by meaning. Needs the weights in the Hugging Face cache.
 private let qwen3 = Task { try await MLXEmbedder.load(try Config.load(root.appending(path: "dollcore.example.toml")).memory) }
 
-/// The on-device model's stand-in: entities by exact text (none otherwise); a pick rule (default:
-/// the first candidate whose line contains the name, case-insensitively); a same rule (default:
-/// 10); a new entry described as 「測試：<name>」. Records every request.
-private final class FakeSelector: SelectionModel, Sendable {
-    typealias PickRule = @Sendable (Mention, String, [String]) -> Int?
-    struct State {
-        var entities: [String: [Mention]] = [:]
-        var pick: PickRule?
-        var same: (@Sendable (Mention, String) -> Int)?
-        var picked: [(mention: Mention, context: String, candidates: [String])] = []
-        var described: [Mention] = []
-        var unavailable: String?
-    }
-    let state = Mutex(State())
-
-    func check() async throws {
-        if let why = state.withLock({ $0.unavailable }) { throw SelectionError(why) }
-    }
-    func entities(in text: String) async throws -> [Mention] { state.withLock { $0.entities[text] ?? [] } }
-    func pick(_ mention: Mention, context: String, candidates: [String]) async throws -> Int? {
-        state.withLock { s in
-            s.picked.append((mention, context, candidates))
-            if let rule = s.pick { return rule(mention, context, candidates) }
-            return candidates.firstIndex { $0.lowercased().contains(mention.name.lowercased()) }
-        }
-    }
-    func same(_ mention: Mention, context: String, entry: String) async throws -> Int {
-        state.withLock { $0.same?(mention, entry) ?? 10 }
-    }
-    func describe(_ mention: Mention, context: String) async throws -> String {
-        state.withLock { s in
-            s.described.append(mention)
-            return context.contains("桌面") ? "桌面上的 \(mention.name)" : "測試：\(mention.name)"
-        }
-    }
-    func setEntities(_ text: String, _ list: [Mention]) { state.withLock { $0.entities[text] = list } }
-    func setPick(_ f: PickRule?) { state.withLock { $0.pick = f } }
-    func setSame(_ f: (@Sendable (Mention, String) -> Int)?) { state.withLock { $0.same = f } }
-    var picked: [(mention: Mention, context: String, candidates: [String])] { state.withLock { $0.picked } }
-}
-
 /// A PNG's signature and IHDR: enough for its pixel size.
 private func pngHeader(_ width: Int, _ height: Int) -> Data {
     func be32(_ v: Int) -> [UInt8] { [24, 16, 8, 0].map { UInt8((v >> $0) & 0xFF) } }
@@ -324,7 +283,6 @@ private struct Harness {
     let doll: Doll
     let model: FakeModel
     let vm: FakeComputer
-    let selector: FakeSelector
     let rec: Recorder
     let dir: URL
     let store: Store      // a second connection to the memory index, for checks
@@ -343,9 +301,7 @@ private struct Harness {
         self.rec = rec
         let vm = FakeComputer()
         self.vm = vm
-        let selector = FakeSelector()
-        self.selector = selector
-        doll = try Doll(config: cfg, root: root, model: model, selector: selector, embedder: embedder ?? FakeEmbedder(), computer: vm,
+        doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: vm,
                         deliver: { text, to in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
@@ -1903,7 +1859,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
     cfg.core.dataDir = h.dir.path
     cfg.memory.dir = h.dir.appending(path: "memory").path
-    let again = try Doll(config: cfg, root: root, model: FakeModel([]), selector: FakeSelector(), embedder: FakeEmbedder(),
+    let again = try Doll(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(),
                          computer: h.vm, deliver: { _, _ in nil })
     try await again.learnFrontApp()
     #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
@@ -3518,80 +3474,76 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     }
 }
 
-@Test func alignmentMapsOtherLanguagesAndPathVariantsAndKeepsHomonymsApart() async throws {
+@Test func theProgramsEntriesAreExactAndAnAppNeverResolvesToAnotherType() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
-    let fake = FakeSelector()
-    let sel = Selector(memory: memory, model: fake, config: cfg.select)
-    let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
-    // Another language's name is no entry's key: the lookup finds the entry by its description, the
-    // model picks it and says it is the same thing, and the name becomes an alias (the query side
-    // then finds it exactly).
-    let placed = try await sel.place(Mention(.app, "文字編輯"), context: "用文字編輯打開")
-    #expect(placed.entry.id == app.id && placed.how == "model 10" && placed.entry.aliases == ["文字編輯"])
-    #expect(fake.picked.last?.candidates.first == app.line)
-    let calls = fake.picked.count
-    #expect(try await sel.resolve(Mention(.app, "文字編輯"), context: "").how == "exact" && fake.picked.count == calls)
-    #expect(try await sel.resolve(Mention(.app, "ＴＥＸＴＥＤＩＴ"), context: "").entry?.id == app.id && fake.picked.count == calls)
+    let sel = Selector(memory: memory, config: cfg.select)
+    let registry = memory.registry
+    // The wrong merge the on-device model made in real runs (experiments/m6-todo-compact): TextEdit
+    // aligned to the shortcut entry ⇧⌘T, which then had the app's names as aliases.
+    let bad = try registry.create(.shortcut, name: "⇧⌘T", aliases: ["文字編輯", "com.apple.TextEdit"], description: "鍵盤快捷鍵 ⇧⌘T")
+    let localTextEdit = AppIdentity(bundleID: "com.apple.TextEdit", name: "文字編輯", version: "1.21")
+    #expect(try sel.appEntry(localTextEdit) == nil)
+    // The app is never that entry: a new app entry, aliased by its bundle id; the bad one unchanged.
+    let made = try sel.programApp(localTextEdit)
+    #expect(made.how == "new" && made.entry.id != bad.id && made.entry.type == .app)
+    #expect(made.entry.name == "文字編輯" && made.entry.aliases == ["com.apple.TextEdit"])
+    #expect(try registry.entry(bad.id) == bad)
+    // From then on that entry, by its bundle id; another name of it becomes an alias.
+    #expect(try sel.appEntry(localTextEdit)?.id == made.entry.id)
+    let english = try sel.programApp(textEdit)
+    #expect(english.entry.id == made.entry.id && english.how == "bundle id" && english.entry.aliases == ["com.apple.TextEdit", "TextEdit"])
+    // The shortcut side still finds the shortcut by its chord.
+    #expect(try sel.programShortcut("⇧⌘T").id == bad.id)
 
-    // A path variant: the model says the bare file name is the entry with the full path.
-    let docs = try memory.registry.create(.file, name: "~/Documents/notes.txt", aliases: [], description: "文件資料夾裡的 notes.txt")
-    let variant = try await sel.place(Mention(.file, "notes.txt"), context: "打開文件裡的 notes.txt")
-    #expect(variant.entry.id == docs.id && variant.entry.aliases == ["notes.txt"])
+    // An app entry with no bundle id (consolidation writes such): found by its exact name, the
+    // bundle id added.
+    let finder = try registry.create(.app, name: "Finder", aliases: [], description: "macOS 內建的檔案管理 app")
+    let byName = try sel.programApp(AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15"))
+    #expect(byName.entry.id == finder.id && byName.how == "name" && byName.entry.aliases == ["com.apple.finder"])
+    // No lookup by meaning or spelling: a similar name is no match.
+    let safari = try sel.programApp(AppIdentity(bundleID: "com.apple.Safari", name: "Safari", version: "18"))
+    #expect(safari.how == "new" && safari.entry.id != finder.id && safari.entry.description.contains("com.apple.Safari"))
+    #expect(try registry.entry(finder.id)?.aliases == ["com.apple.finder"])
 
-    // A homonym: the same name in another place. The write side always asks the model, so it is not
-    // taken for the entry that has the name as an alias: a new entry with its own description; from
-    // then on the model tells the two apart.
-    fake.setPick { _, context, c in c.firstIndex { $0.contains(context.contains("桌面") ? "桌面" : "文件") } }
-    let desk = try await sel.place(Mention(.file, "notes.txt"), context: "桌面上的 notes.txt 是草稿")
-    #expect(desk.how == "new (none)" && desk.entry.id != docs.id && desk.entry.description == "桌面上的 notes.txt")
-    #expect(try memory.registry.exact("notes.txt").map(\.id).sorted() == [docs.id, desk.entry.id].sorted())
-    #expect(try await sel.place(Mention(.file, "notes.txt"), context: "文件裡的 notes.txt").entry.id == docs.id)
-    #expect(try await sel.place(Mention(.file, "notes.txt"), context: "桌面上的 notes.txt").entry.id == desk.entry.id)
-    // The query side with two entries of the name: the model picks (here by context).
-    #expect(try await sel.resolve(Mention(.file, "notes.txt"), context: "桌面").entry?.id == desk.entry.id)
+    // Several entries of the type for one name: the oldest (created_ts, then id), every time.
+    let first = try registry.create(.app, name: "Notes", aliases: [], description: "備忘錄")
+    let second = try registry.create(.app, name: "Notes", aliases: [], description: "另一個 Notes")
+    let oldest = [first, second].min { $0.ts != $1.ts ? $0.ts < $1.ts : $0.id < $1.id }!
+    #expect(try sel.programApp(AppIdentity(bundleID: "com.apple.Notes", name: "Notes", version: "4")).entry.id == oldest.id)
+    #expect(try sel.appEntry(AppIdentity(bundleID: "com.apple.Notes", name: "Notes", version: "4"))?.id == oldest.id)
 
-    // The query side never writes: a name nothing matches is none, remembered per name.
-    fake.setPick(nil)
-    let before = try memory.registry.all()
-    let none = try await sel.resolve(Mention(.website, "apple.com"), context: "")
-    let after = try memory.registry.all()
-    #expect(none.entry == nil && none.how == "none" && after == before)
-    #expect(try await sel.resolve(Mention(.website, "apple.com"), context: "").how == "cached")
-
-    // The program's apps: aligned by name or bundle id, the bundle id kept as an alias.
-    let local = try await sel.programApp(AppIdentity(bundleID: "com.apple.TextEdit", name: "文字編輯", version: "1.21"), context: "")
-    #expect(local.entry.id == app.id && local.how == "exact" && local.entry.aliases == ["文字編輯", "com.apple.TextEdit"])
-    // A pick the model does not confirm is no match: Safari is not Finder, a new entry the program describes.
-    let finder = try memory.registry.create(.app, name: "Finder", aliases: [], description: "macOS 內建的檔案管理 app")
-    fake.setPick { _, _, c in c.firstIndex { $0.hasPrefix("Finder") } }
-    fake.setSame { m, entry in m.name == "Safari" && entry.hasPrefix("Finder") ? 2 : 10 }
-    let safari = try await sel.programApp(AppIdentity(bundleID: "com.apple.Safari", name: "Safari", version: "18"), context: "")
-    #expect(safari.how == "new (rejected Finder 2)" && safari.entry.id != finder.id)
-    #expect(safari.entry.aliases == ["com.apple.Safari"] && safari.entry.description.contains("com.apple.Safari"))
-    #expect(try memory.registry.entry(finder.id)?.aliases == [])
+    // Shortcuts: by the chord, of type shortcut only; none, a new one; the same one after that.
+    let appNamedLikeAChord = try registry.create(.app, name: "⌘P", aliases: [], description: "測試用：名字像快捷鍵的 app")
+    let print = try sel.programShortcut("⌘P")
+    #expect(print.id != appNamedLikeAChord.id && print.type == .shortcut && print.name == "⌘P")
+    #expect(try sel.programShortcut("⌘P").id == print.id)
 }
 
 /// A registry entry in the harness's memory (the next `seedMemory` re-indexes it).
-private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ description: String) throws -> RegistryEntry {
+private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ description: String,
+                   aliases: [String] = []) throws -> RegistryEntry {
     let cfg = try consolidationConfig(h)
     return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder()).registry
-        .create(type, name: name, aliases: [], description: description)
+        .create(type, name: name, aliases: aliases, description: description)
 }
 
-@Test func aMemoryReachableOnlyThroughAnAlignedEntityOrOneHopIsACandidateButNotAttached() async throws {
-    // No embedding channel here (similarity 1): only FTS, the trigger's entities and the hop. All
-    // three are candidates; none reaches the attach floor (cosine at least `similarity`), so none is
-    // attached, however the entity weight ranks them.
-    let h = try await Harness(tune: { $0.select.similarity = 1.0; $0.select.entityWeight = 1 })
-    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app")
+@Test func noNameIsExtractedAndTheFrontAppsEntryIsTheOnlyTriggerEntity() async throws {
+    // No embedding channel here (similarity 1): only FTS, the front app's entry and the hop. None
+    // reaches the attach floor (cosine at least `similarity`), so none is attached.
+    let h = try await Harness([Scripted("", todoSet(), screenshotCall)], tune: { $0.select.similarity = 1.0; $0.select.entityWeight = 1 })
+    h.vm.setApp(textEdit, textEditKeys)
+    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app", aliases: ["com.apple.TextEdit"])
+    // The wrong merge of real runs: a shortcut entry with the app's names as aliases.
+    let bad = try entry(h, .shortcut, "⇧⌘T", "鍵盤快捷鍵 ⇧⌘T", aliases: ["文字編輯", "com.apple.TextEdit"])
     let keys = try entry(h, .shortcut, "⇧⌥⌘S", "TextEdit 的另存快捷鍵")
     let safari = try entry(h, .app, "Safari", "macOS 的瀏覽器")
-    let line = "用文字編輯另存一份"
     // No word of the owner's line; names TextEdit, which the line calls 文字編輯.
     try await seedMemory(h, "public", "開檔對話框裡按 ⇧⌘G 可以直接輸入路徑", tier: "consolidated", confidence: 0.6,
                          entities: [MemoryEntity(app.id, "TextEdit")], id: "1-ent")
+    try await seedMemory(h, "public", "新視窗按 ⇧⌘T", tier: "consolidated", confidence: 0.6,
+                         entities: [MemoryEntity(bad.id, "⇧⌘T")], id: "1-bad")
     // An FTS hit (另存一份).
     try await seedMemory(h, "public", "另存一份要按 ⇧⌥⌘S", tier: "consolidated", confidence: 0.6,
                          entities: [MemoryEntity(keys.id, "⇧⌥⌘S")], id: "2-seed")
@@ -3601,20 +3553,24 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     // Related to nothing.
     try await seedMemory(h, "public", "Safari 書籤在側邊欄", tier: "consolidated", confidence: 0.6,
                          entities: [MemoryEntity(safari.id, "Safari")], id: "4-none")
-    h.selector.setEntities(line, [Mention(.app, "文字編輯")])
-    await h.doll.ownerSaid(line)
-    try await h.turn("好")
-    let report = try #require(h.last.selections.first)
-    #expect(report.contains("entities [文字編輯→\(app.id)「TextEdit」 model 10]"))
-    #expect(report.contains("related 3 (fts 1, embedding 0, entity 1, hop 1), prepared 3;"))
-    #expect(report.contains("ranked [1-ent ") && !report.contains("4-none") && report.contains("given 0 []"))
+    await h.doll.ownerSaid("用文字編輯另存一份")
+    try await h.turn()
+    let reports = h.last.selections
+    try #require(reports.count == 2)
+    // The owner's line: no front app yet, so no entity; 文字編輯 in the line links nothing.
+    #expect(reports[0].contains("（主人的新訊息）entities [];") && reports[0].contains("related 2 (fts 1, embedding 0, entity 0, hop 1), prepared 2;"))
+    #expect(!reports[0].contains("1-ent") && !reports[0].contains("1-bad"))
+    // The front app TextEdit: its app entry (by bundle id), never the shortcut entry aliased by it.
+    #expect(reports[1].contains("（前景 app 換成 TextEdit）entities [TextEdit→\(app.id)「TextEdit」];"))
+    #expect(reports[1].contains("related 3 (fts 1, embedding 0, entity 1, hop 1)") && reports[1].contains("ranked [1-ent ") && !reports[1].contains("1-bad"))
+    #expect(reports.allSatisfy { $0.contains("given 0 []") })
     #expect(try memoryEvents(h).isEmpty)
 }
 
 @Test func attachGivesAtMostAttachMaxAboveTheCosineFloorBestCheapScoreFirst() async throws {
-    // entity_weight 1: the two memories naming the trigger's app come first among those above the floor.
-    let h = try await Harness(tune: { $0.select.similarity = 0.2; $0.select.attachMax = 3; $0.select.entityWeight = 1 })
-    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app")
+    // entity_weight 1: the two memories having the front app's entry come first among those above the floor.
+    let h = try await Harness()
+    let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app", aliases: ["com.apple.TextEdit"])
     for i in 1...4 {
         try await seedMemory(h, "public", "TextEdit 另存第 \(i) 種方法", tier: "consolidated", confidence: 0.6,
                              entities: i >= 3 ? [MemoryEntity(app.id, "TextEdit")] : [], id: "\(i)-m")
@@ -3622,15 +3578,16 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     // Tied to the trigger by the entity only: its cheap score is the highest, its cosine under the floor.
     try await seedMemory(h, "public", "咪咪喜歡曬太陽", tier: "consolidated", confidence: 0.6,
                          entities: [MemoryEntity(app.id, "TextEdit")], id: "5-ent")
-    h.selector.setEntities("TextEdit 另存", [Mention(.app, "TextEdit")])
-    await h.doll.ownerSaid("TextEdit 另存")
-    try await h.turn("好")
-    let report = try #require(h.last.selections.first)
-    #expect(report.contains("related 5 ("))
-    let given = try #require(report.firstMatch(of: /given 3 \[(.*?)\]/)).1.split(separator: ", ").map(String.init)
-    #expect(Set(given.prefix(2)) == ["3-m", "4-m"] && ["1-m", "2-m"].contains(given[2]) && !given.contains("5-ent"))
-    let mem = try memoryEvents(h)
-    #expect(mem.count == 1 && mem[0].text.components(separatedBy: "另存第").count == 4 && !mem[0].text.contains("咪咪"))
+    let cfg = try consolidationConfig(h)
+    var select = cfg.select
+    (select.similarity, select.attachMax, select.entityWeight) = (0.2, 3, 1)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let report = try Selector(memory: memory, config: select).run(
+        .init(label: "測試", query: "TextEdit 另存", app: textEdit), rule: .attach, visible: [.public],
+        tiers: [.selfReported, .consolidated], today: nil) { $0.key }
+    #expect(report.entities == ["TextEdit→\(app.id)「TextEdit」"] && report.related == 5)
+    let given = report.selected.map(\.id)
+    #expect(given.count == 3 && Set(given.prefix(2)) == ["3-m", "4-m"] && ["1-m", "2-m"].contains(given[2]))
 }
 
 @Test func recallReturnsTheRecallLimitBestWithNoFloorTodayIncluded() async throws {
@@ -3667,10 +3624,21 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(h.last.selections.first?.contains("fts 1,") == true)
 }
 
-@Test func anUnavailableOnDeviceModelFailsBoot() async throws {
+@Test func bootNeedsNoOnDeviceModel() async throws {
     let h = try await Harness()
-    h.selector.state.withLock { $0.unavailable = "Apple Intelligence is off" }
-    await #expect(throws: SelectionError.self) { try await h.doll.boot() }
+    try await h.doll.boot()
+    #expect(!h.logs.contains { $0.hasPrefix("ERROR") })
+}
+
+@Test func rememberWritesNoEntitiesAndNoRegistryEntries() async throws {
+    let h = try await Harness([Scripted("", remember([("主人的媽媽林美玲用 TextEdit 寫食譜", false)]))])
+    await h.doll.ownerSaid("我媽用 TextEdit 寫食譜")
+    try await h.turn()
+    let files = try memoryFilesByID(h).values.map(\.file)
+    let mine = try #require(files.first { $0.body.contains("林美玲") })
+    #expect(mine.entities.isEmpty)
+    let cfg = try consolidationConfig(h)
+    #expect(try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder()).registry.all().isEmpty)
 }
 
 @Test func programWrittenMemoriesCarryWhatTheProgramKnows() async throws {
@@ -3694,12 +3662,12 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 
 @Test func selectConfigIsValidated() throws {
     let s = try Config.load(root.appending(path: "dollcore.example.toml")).select
-    #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 3 && s.recallCandidates == 5 && s.lookupK >= 1)
+    #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 3 && s.recallCandidates == 5)
     let file = FileManager.default.temporaryDirectory.appending(path: "select-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
-    for bad in ["similarity = 1.5", "entity_weight = -0.1", "attach_max = 0", "recall_limit = 0", "lookup_k = 0",
-                "align_threshold = -1", "prefilter = 8", "threshold = 7", "candidate_max_chars = 1500", "seed_k = 10", "bogus = 1"] {
+    for bad in ["similarity = 1.5", "entity_weight = -0.1", "attach_max = 0", "recall_limit = 0", "lookup_k = 5",
+                "align_threshold = 7", "prefilter = 8", "threshold = 7", "candidate_max_chars = 1500", "seed_k = 10", "bogus = 1"] {
         try (head + "[select]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
