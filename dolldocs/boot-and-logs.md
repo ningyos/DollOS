@@ -13,6 +13,8 @@ DollOS 的程式（dollcore）全部起來之後，時間線多一行程式事�
 - 紀錄種類（`type`）：
   - `event`：事件：主人或開發者的話、你的回覆（念頭和呼叫）、工具結果、watch 叫醒、程式事件等，帶時間、來源、含不含秘密、截圖檔名。
   - `footer`：你那則回覆前面的【狀況】。
+  - `todo`：你的 todo 每次換狀態時的樣子（狀態、這一項、後面的項目）。
+  - `compact`：一項被收起來的範圍（從哪個 seq 到哪個 seq、完成／失敗／你收的／程式收的）。收起來的事件還在檔案裡，只是不再送給你。
   - `turn`：每個回合的秒數和 token 數。
 - 你送出去的每個回合，都是從這個檔原樣組出來的。
 
@@ -23,7 +25,7 @@ DollOS 的程式（dollcore）全部起來之後，時間線多一行程式事�
 ## dollcore 的 log
 
 - 寫在 dollcore 的 stderr，一行一則：`2026-11-14 14:05:03 INFO …`（時間、等級 INFO／WARN／ERROR、內容）。語音的行前面是 `voice: `，Discord bridge 的輸出前面是 `bridge: `。
-- 每回合一行，例如 `turn N effort=medium actions=[…] prompt=… prefilled=… cached=…`：prompt 是這回合送出的 token 數，cached 是接上快取、不用重算的部分。
+- 每回合一行，例如 `turn N effort=medium todo=進行中 actions=[…] prompt=… prefilled=… cached=…`：prompt 是這回合送出的 token 數，cached 是接上快取、不用重算的部分。
 - 選記憶、說話送不到、截圖失敗等也都會記一行。
 
 ## 後台網頁和 dollctl status
