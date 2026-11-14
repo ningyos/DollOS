@@ -147,6 +147,34 @@ def test_odd_byte_counts_are_errors() -> None:
         OwnerDownsampler().process(b"\x00\x01")    # one sample, not a stereo frame
 
 
+def test_empty_chunks_resample_to_nothing() -> None:
+    # voice-mlx closes a sentence with an empty final chunk when every frame was already streamed;
+    # it reached the bridge as an empty binary frame and used to come out as one extra sample.
+    x = tone(1000, 24000, 0.1)
+    u = HerUpsampler()
+    assert u.process(b"") == b""
+    first = u.process(pcm(x[:1920]))
+    assert u.process(b"") == b""
+    assert first + u.process(pcm(x[1920:])) == HerUpsampler().process(pcm(x))
+    d = OwnerDownsampler()
+    assert d.process(b"") == b""
+    d.process(stereo(tone(1000, 48000, 0.1)))
+    assert d.process(b"") == b""
+
+
+def test_empty_audio_frames_are_not_played() -> None:
+    # 2026-11-14 live: "played: 80641 samples of utterance 2, only 80640 sent".
+    s = Speaker(idle_hold_s=0.5)
+    s.start(2)
+    for _ in range(42):
+        s.feed(her(1920))
+        s.feed(b"")
+    s.end(2)
+    while s.read() not in (SILENCE_FRAME, b""):
+        pass
+    assert s.progress() == [(2, 80640)]
+
+
 # --- bursts and the owner-only sink -------------------------------------------------------------------
 
 

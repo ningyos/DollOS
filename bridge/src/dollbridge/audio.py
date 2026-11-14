@@ -35,6 +35,11 @@ class StreamResampler:
         self._phase = 0                             # index of the next kept sample in the next block
 
     def process(self, x: np.ndarray) -> np.ndarray:
+        if len(x) == 0:
+            # np.convolve swaps its arguments when the first is the shorter, so 62 samples of
+            # history against 63 taps would give 2 outputs for no input (an empty TTS chunk
+            # became one 24 kHz sample more played than sent, 2026-11-14 live).
+            return np.zeros(0)
         if self.up > 1:
             u = np.zeros(len(x) * self.up)
             u[:: self.up] = x
