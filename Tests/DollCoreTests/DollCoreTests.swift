@@ -4190,6 +4190,7 @@ private final class FakeBridge: @unchecked Sendable {
         var interrupted = false
         var firstAudio: ContinuousClock.Instant?
         var startedAt: ContinuousClock.Instant?
+        var answersPings = true         // false: a half-open socket whose bridge is gone
     }
     var parser = WebSocket.Parser(expectMasked: false, maxMessage: 1 << 22)
     let step: Int
@@ -4266,6 +4267,8 @@ private final class FakeBridge: @unchecked Sendable {
                 try await json(["type": "played", "utterance": u, "samples": p])
             default: break
             }
+        case .ping(let d):
+            if lock.withLock({ $0.answersPings }) { try await send(WebSocket.message(.pong(d), mask: [5, 6, 7, 8])) }
         default: break
         }
     }
@@ -4343,7 +4346,7 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     vc.enabled = true
     vc.silenceMs = 300
     vc.bridgeTimeoutS = 5
-    tune(&vc)
+    vc.bridgeProbeMs = 200
     let manifest = try VoiceManifest(dir: h.dir.appending(path: "voice"), writeWAV: writeVoiceWAV)
     let link = VoiceLink(config: vc, recognizer: recognizer, synthesizer: synth, manifest: manifest)
     let doll = h.doll
@@ -4450,6 +4453,134 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
     try await r.bridge.json(["type": "played", "utterance": 5, "samples": 1])
     try await waitUntil { r.bridge.log.contains("error") }
     #expect(r.bridge.log.contains("error"))
+    try await waitUntil { await r.link.socket == nil }
+    // The bridge reconnects (2026-11-14): accepted at once, and voice works on the new socket.
+    let again = try await FakeBridge(port: r.api.port, key: r.api.ownerKey)
+    try await again.json(["type": "hello", "version": 1])
+    try await again.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await r.link.ownerChannel == "General" }
+    #expect(try await r.link.join() == "General")
+}
+
+/// Owner, 2026-11-14: a voice failure only affects voice. The bridge's socket ends mid-utterance:
+/// `voice.say` fails with the reason, she is told once, and the reconnected bridge can be joined
+/// and spoken through again; utterance ids keep counting, nothing on the new socket is a violation.
+@Test func voiceBridgeReconnectsMidUtteranceAndSheSpeaksAgain() async throws {
+    let r = try await voiceRig(FakeRecognizer(""))
+    defer { r.api.stop() }
+    try await r.bridge.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await r.link.ownerChannel == "General" }
+    #expect(try await r.link.join() == "General")
+    let link = r.link
+    let saying = Task { try await link.speak("一二三四五六七八九十。一二三四五六七八九十。一二三四五六七八九十。") }
+    try await waitUntil { r.bridge.log.contains { $0.hasPrefix("audio") } }
+    r.bridge.connection.cancel()                      // the bridge's socket ends mid-utterance
+    await #expect { _ = try await saying.value } throws: { "\($0)".contains("語音連線斷了") }
+    try await waitUntil { await r.h.doll.queue.contains { $0.text.contains("語音連線斷了") } }
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(await r.h.doll.queue.filter { $0.text.contains("語音連線斷了") }.count == 1)
+    #expect(await r.link.channel() == nil)
+
+    let b2 = try await FakeBridge(port: r.api.port, key: r.api.ownerKey)
+    try await b2.json(["type": "hello", "version": 1])
+    try await b2.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await r.link.ownerChannel == "General" }
+    #expect(try await r.link.join() == "General")
+    let report = try await r.link.speak("嗯。")
+    #expect(report.samples == [4800] && report.played == 4800 && !report.interrupted)
+    #expect(await r.link.utteranceSerial == 2)
+    // A late report for the cut utterance 1 is a race, not a violation.
+    try await b2.json(["type": "played", "utterance": 1, "samples": 0])
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(!b2.log.contains("error") && b2.log.contains("utterance_end"))
+}
+
+/// A half-open socket (its bridge gone without a close) must not keep the reconnecting bridge out:
+/// it does not answer the probe ping within `bridge_probe_ms`, so it is closed and replaced.
+@Test func voiceStaleBridgeSocketIsReplacedByTheNewOne() async throws {
+    let r = try await voiceRig(FakeRecognizer(""))
+    defer { r.api.stop() }
+    try await r.bridge.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await r.link.ownerChannel == "General" }
+    #expect(try await r.link.join() == "General")
+    r.bridge.lock.withLock { $0.answersPings = false }
+    let t0 = ContinuousClock.now
+    let b2 = try await FakeBridge(port: r.api.port, key: r.api.ownerKey)
+    #expect(ContinuousClock.now - t0 >= .milliseconds(200))
+    try await waitUntil { await r.h.doll.queue.contains { $0.text.contains("replaced a stale one") } }
+    try await b2.json(["type": "hello", "version": 1])
+    try await b2.json(["type": "owner_joined", "channel": "General"])
+    try await waitUntil { await r.link.ownerChannel == "General" }
+    // Whatever the old socket still sends is not the new bridge's.
+    try? await r.bridge.json(["type": "played", "utterance": 99, "samples": 1])
+    #expect(try await r.link.join() == "General")
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!b2.log.contains("error") && b2.log == ["join"])
+}
+
+/// Opt-in (`DOLL_VOICE_RECONNECT=1`): the real Qwen3-TTS and dollcore's real link against the real
+/// bridge `VoiceLink` (experiments/m6-voice-reconnect/bridge_harness.py: fake Discord, real
+/// Speaker and reconnect loop). Twice mid-utterance the socket is ended from this side, first as a
+/// protocol violation (`error` then close 1002, the live 2026-11-14 path), then as a plain close;
+/// each time the bridge must come back by itself, be joined again and finish a new utterance.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_RECONNECT"] == "1"))
+func realBridgeRecoversFromAViolationMidUtterance() async throws {
+    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    cfg.voice.enabled = true
+    MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
+    let synth = try await QwenSynthesizer.load(cfg.voice, root: root)
+    let h = try await Harness { $0.voice.enabled = true }
+    let manifest = try VoiceManifest(dir: h.dir.appending(path: "voice"), writeWAV: writeVoiceWAV)
+    let link = VoiceLink(config: cfg.voice, recognizer: FakeRecognizer(""), synthesizer: synth, manifest: manifest)
+    let notices = Mutex<[String]>([])
+    link.setLogSink { print("M6RECON LOG " + $0) }
+    await link.setEvents(VoiceEvents(ownerSaid: { _ in }, notice: { n in
+        notices.withLock { $0.append(n) }
+        print("M6RECON NOTICE " + n)
+    }))
+    let api = try await localAPI(h)
+    defer { api.stop() }
+    api.setVoice(link)
+    let dir = URL(filePath: "/tmp/m6reconnect")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try JSONSerialization.data(withJSONObject: ["port": Int(api.port), "key": api.ownerKey]).write(to: dir.appending(path: "endpoint.json"))
+    print("M6RECON READY port \(api.port)")
+    func linked(within seconds: Double) async throws {
+        try await waitUntil(seconds: seconds) {
+            let (hello, owner, hers) = await (link.hello, link.ownerChannel, link.channel())
+            return hello && owner != nil && hers == nil
+        }
+        #expect(try await link.join() == "General")
+    }
+    func cutMidUtterance(_ cut: @escaping @Sendable () async -> Void) async throws {
+        let t0 = ContinuousClock.now
+        let saying = Task { try await link.speak("第一句話說得長一點，讓它還在播的時候斷掉。第二句也還沒說完，對吧？") }
+        try await waitUntil(seconds: 60) { (await link.current?.played ?? 0) > 24000 }
+        let at = await link.current.map { "\($0.played)/\($0.sent)" } ?? "-"
+        await cut()
+        let result = await saying.result
+        print("M6RECON CUT at \(at) samples after \(ContinuousClock.now - t0): \(result)")
+        if case .success = result { Issue.record("speak survived the cut") }
+    }
+    func speakAgain() async throws {
+        let r = try await link.speak("我回來了，聽得到嗎？")
+        print("M6RECON AGAIN played \(r.played)/\(r.samples.reduce(0, +)) interrupted=\(r.interrupted)")
+        #expect(r.played == r.samples.reduce(0, +) && !r.interrupted)
+    }
+    try await linked(within: 120)
+    try await cutMidUtterance { _ = await link.violation("forced by the reconnect check") }
+    let t1 = ContinuousClock.now
+    try await linked(within: 30)
+    print("M6RECON RELINKED after the violation in \(ContinuousClock.now - t1)")
+    try await speakAgain()
+    try await cutMidUtterance { await link.socket?.close(code: 1011, reason: "forced close") }
+    let t2 = ContinuousClock.now
+    try await linked(within: 30)
+    print("M6RECON RELINKED after the close in \(ContinuousClock.now - t2)")
+    try await speakAgain()
+    let n = notices.withLock { $0 }
+    print("M6RECON DONE notices=\(n.count) utterances=\(await link.utteranceSerial)")
+    #expect(n.count == 2 && n.allSatisfy { $0.contains("語音連線斷了") })
 }
 
 /// Opt-in (`DOLL_VOICE_REAL=1`): the real Qwen3-TTS, the real SpeechTranscriber and the real

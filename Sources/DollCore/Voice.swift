@@ -8,11 +8,21 @@ import Synchronization
 //                      JSON    {"type":"hello","version":1} first; owner_joined {channel}, owner_left,
 //                              owner_speaking (start of each talk burst), joined {channel}, left,
 //                              played {utterance, samples} (≤ 100 ms apart, and a final one), error {message}
-//   dollcore → bridge  JSON    join, leave, utterance_start {utterance}, utterance_end {utterance}, stop {utterance}
+//   dollcore → bridge  JSON    join, leave, utterance_start {utterance}, utterance_end {utterance}, stop {utterance},
+//                              error {message} (a protocol violation by the bridge, sent right before the close)
 //                      binary  her audio for the open utterance, 24 kHz mono s16le
 //
 // Any protocol violation is an `error` message back plus an ERROR log line; a malformed frame or
 // message closes the socket. Nothing is dropped silently.
+//
+// Reconnects (2026-11-14, owner: a voice failure only affects voice): when the socket ends, the
+// bridge stays up (Discord DMs keep working), leaves the voice channel, drops its queued audio,
+// and opens `/api/voice` again after a delay; she gets one 語音連線斷了 notice per disconnect.
+// Utterance ids keep counting up across reconnects (one counter per dollcore process), and the
+// bridge starts every connection with an empty player, so no id is reused on either side.
+// One bridge at a time: a new connection while one is open probes the open one with a ping; if
+// nothing comes back within `[voice] bridge_probe_ms` it is half-open, closed as stale and the
+// new one takes its place; otherwise the new one gets 409.
 extension Config {
     /// `[voice] data_dir`: under `[core] data_dir` unless absolute (both relative to `root`).
     public func voiceDirectory(root: URL) -> URL {
@@ -431,18 +441,38 @@ public actor VoiceLink: VoicePort {
 
     // connection -------------------------------------------------------------
 
-    /// Takes the one bridge slot; false when a bridge is already connected.
-    public func claim() -> Bool {
-        guard socket == nil, !claimed else { return false }
-        claimed = true
+    /// Takes the one bridge slot for a new connection; false (409) when a live bridge holds it.
+    /// An open socket is probed first (see the header): a ping, and anything heard from it within
+    /// `bridge_probe_ms` means it is alive; nothing means it is half-open, and it is dropped.
+    public func claim() async -> Bool {
+        guard !attaching else { return false }
+        attaching = true
+        guard let old = socket else { return true }
+        let asked = Self.now()
+        old.enqueue(.ping(Data("alive?".utf8)))
+        try? await Task.sleep(for: .milliseconds(config.bridgeProbeMs))
+        guard socket === old else { return true }      // it ended while we waited
+        if heardAt >= asked {
+            attaching = false
+            return false
+        }
+        log("ERROR", "the open bridge socket did not answer a ping within \(config.bridgeProbeMs) ms: "
+            + "closing it as stale, the new connection takes its place")
+        await detached(old, why: "a new bridge connection replaced a stale one (no answer to a ping in \(config.bridgeProbeMs) ms)")
+        old.close(code: 1001, reason: "stale: replaced by a new connection")
         return true
     }
-    var claimed = false
+    /// Between a successful `claim` and its `attach`.
+    var attaching = false
+    /// When the current socket last sent anything (a pong included).
+    var heardAt: Double = 0
 
     /// The upgraded connection (after `claim`).
     public func attach(_ s: WebSocketSession) {
+        attaching = false
         socket = s
         hello = false
+        heardAt = Self.now()
         log("INFO", "bridge connected")
         if ticker == nil {
             let poll = config.endpointPollMs
@@ -459,6 +489,9 @@ public actor VoiceLink: VoicePort {
     func receive(_ s: WebSocketSession) async {
         do {
             for try await m in s.messages {
+                // Replaced as stale: whatever it still delivers is not the current bridge's.
+                guard socket === s else { return }
+                heardAt = Self.now()
                 switch m {
                 case .text(let t): try await control(t)
                 case .binary(let d): try await audio(d)
@@ -468,6 +501,7 @@ public actor VoiceLink: VoicePort {
             }
             await detached(s, why: "bridge closed the voice socket")
         } catch {
+            guard socket === s else { return }
             log("ERROR", "voice socket: \(error)")
             await detached(s, why: "\(error)")
         }
@@ -486,7 +520,6 @@ public actor VoiceLink: VoicePort {
     func detached(_ s: WebSocketSession, why: String) async {
         guard socket === s else { return }
         socket = nil
-        claimed = false
         hello = false
         let wasIn = herChannel
         herChannel = nil

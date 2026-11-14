@@ -126,3 +126,4 @@ sentence_max_chars = 60       # voice.say 切成句子（。！？；… 換行�
 data_dir = "voice"            # 每一句念過的話（24 kHz wav＋manifest.jsonl 一行：文字、語言、seed、時間、有沒有被打斷），給夜間微調；在 [core] data_dir 底下，除非是絕對路徑
 stop_settle_ms = 150          # 送出 stop 之後，再收這麼久的 played 才算最後播到哪。初始值理由：bridge 每 ≤100 ms 回報一次
 bridge_timeout_s = 10.0       # bridge 這麼久沒回 joined／left 或播放進度＝錯誤。初始值理由：進語音頻道一般 1–2 秒
+bridge_probe_ms = 1000        # 已經有一條 /api/voice 時又來一條（bridge 重連）：舊的先收一個 ping，這麼久沒有任何回應＝半開的死連線，關掉、換新的上；有回應＝新的那條 409。初始值理由：本機上活的 bridge 幾 ms 就回 pong

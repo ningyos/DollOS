@@ -246,6 +246,9 @@ public struct VoiceConfig: Sendable {
     public var stopSettleMs = 150
     /// The bridge must report `played` (and answer join/leave) within this.
     public var bridgeTimeoutS = 10.0
+    /// A new `/api/voice` connection while one is open: the open one gets a ping and must show
+    /// life within this, else it is closed as stale and the new one takes its place.
+    public var bridgeProbeMs = 1000
 }
 
 public struct Config: Sendable {
@@ -448,13 +451,14 @@ public struct Config: Sendable {
         try o.read("data_dir", &voice.dataDir)
         try o.read("stop_settle_ms", &voice.stopSettleMs)
         try o.read("bridge_timeout_s", &voice.bridgeTimeoutS)
+        try o.read("bridge_probe_ms", &voice.bridgeProbeMs)
         try o.finish()
         guard voice.silenceMs >= 100, voice.silenceRms >= 0, voice.endpointPollMs >= 1, voice.asrFinalTimeoutMs >= 1,
               ["int8", "bf16"].contains(voice.ttsPrecision), !voice.ttsModel.isEmpty, !voice.ttsCodec.isEmpty,
               !voice.referenceAudio.isEmpty, !voice.referenceText.isEmpty, !voice.ttsLanguage.isEmpty,
               !voice.warmupText.isEmpty, voice.sentenceMaxChars >= 10, !voice.dataDir.isEmpty, voice.stopSettleMs >= 0,
-              voice.bridgeTimeoutS > 0 else {
-            throw TOMLError(description: "[voice] silence_ms at least 100; silence_rms 0 or more; endpoint_poll_ms and asr_final_timeout_ms at least 1; tts_precision int8 or bf16; tts_model, tts_codec, reference_audio, reference_text, tts_language, warmup_text, data_dir not empty; sentence_max_chars at least 10; stop_settle_ms 0 or more; bridge_timeout_s positive")
+              voice.bridgeTimeoutS > 0, voice.bridgeProbeMs >= 1 else {
+            throw TOMLError(description: "[voice] silence_ms at least 100; silence_rms 0 or more; endpoint_poll_ms and asr_final_timeout_ms at least 1; tts_precision int8 or bf16; tts_model, tts_codec, reference_audio, reference_text, tts_language, warmup_text, data_dir not empty; sentence_max_chars at least 10; stop_settle_ms 0 or more; bridge_timeout_s positive; bridge_probe_ms at least 1")
         }
         return Config(llm: llm, core: core, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
                       api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice)

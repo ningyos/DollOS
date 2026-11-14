@@ -12,7 +12,9 @@ import Synchronization
 ///     POST /api/owner       {"text":…}    an owner line (the bridge); needs `Authorization: Bearer <owner key>`
 ///     GET  /api/listen?to=owner           NDJSON stream for the bridge; needs the owner key; one at a time
 ///     GET  /api/voice                     WebSocket for the bridge's voice channel (2026-11-13, M6; `Voice.swift`);
-///                                         needs the owner key; one at a time; 503 when `[voice] enabled = false`
+///                                         needs the owner key; one at a time (409 while a live one is open; an open
+///                                         one that does not answer a ping is replaced as stale); 503 when
+///                                         `[voice] enabled = false`
 ///
 /// Stream lines: `{"type":"hello"}` first, then `{"type":"say","text":…}` and
 /// `{"type":"typing","on":true|false}` (a turn that follows that person's line started or ended).
