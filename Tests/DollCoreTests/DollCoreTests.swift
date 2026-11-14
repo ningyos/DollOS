@@ -3837,6 +3837,20 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(h.said == ["在", "在"])   // only the two attempts above reached the delivery
 }
 
+@Test func theBootNoticeIsInTheTimelineAndTakesNoTurnOfItsOwn() async throws {
+    let h = try await Harness()
+    try await h.doll.announceBoot()
+    #expect(await h.doll.queue.isEmpty)                    // nothing wakes her
+    #expect(await h.model.requests.isEmpty)
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", dm("在")))
+    // She reads it with the owner's line, before it.
+    let seen = await h.model.seen(0).map(\.content)
+    let boot = try #require(seen.firstIndex { $0.contains("程式] 【開機】你剛被開機了。") })
+    let line = try #require(seen.firstIndex { $0.contains("在嗎") })
+    #expect(boot < line)
+}
+
 @Test func apiAndBridgeConfigAreValidated() throws {
     let example = try Config.load(root.appending(path: "dollcore.example.toml"))
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)

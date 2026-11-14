@@ -284,6 +284,13 @@ public actor Doll {
         try await selector.check()
     }
 
+    /// Tells her this process just started (owner, 2026-11-14): a program line in the timeline, no
+    /// turn of its own; she reads it with the next event.
+    public func announceBoot() throws {
+        try append(Event(.memory, .internal, Self.bootNotice))
+    }
+    static let bootNotice = "【開機】你剛被開機了。"
+
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {
         queue.append(ev)

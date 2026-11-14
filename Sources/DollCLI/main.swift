@@ -112,6 +112,7 @@ do {
         bridge = nil
         out("bridge: disabled ([bridge] enabled = false)")
     }
+    try await doll.announceBoot()
 } catch {
     fail("\(error)")
 }
