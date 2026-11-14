@@ -34,13 +34,13 @@ swift run dollcore --config dollcore.toml consolidate data
 - **換成 tools 的量測（2026-11-14，d93e1c9；`experiments/m6-toolnames/results_tools.txt`）**：同一個模型、同一份 system prompt（拿掉工具段落），工具改用 `tools` 送（`measure3.py`）：空時間線第一則，主人私訊 50/51 呼叫讀得到（1 則沒呼叫、0 則壞掉；含先前的 `r_d1_tools`），開發者 50/50；有歷史的 `voice.say`／`discord.dm` 30/30。131 則裡沒有一則留下讀不出來的呼叫、沒有 `strata_rejected_tool_calls`、沒有呼叫只在思考裡、沒有停在 max_tokens：原本的文字解析器、停在呼叫裡就重送、從思考裡撈呼叫都拿掉了，伺服器讀不出來的呼叫改成她看得到的失敗結果。宣告電腦選單的 11 個工具每個 request 多 2,366 token（17 個工具 3,478、頂層 6 個 1,112）。真的跑一次（`drive.py`：開發者 12 句、18 回合，含一次開關電腦選單；VM 沒開著，截圖失敗但選單照樣開關）：換之前 18 則都讀得到、每回合平均 5.7 秒、第一個 prompt 3,077；換之後 17 則有呼叫、1 則什麼都沒寫、0 則壞掉，每回合平均 7.1 秒、第一個 prompt 5,667。快取每回合接上（cached＝上一個 prompt 少 5 token），開選單、關選單後都一樣接上（關掉後 cached 接到她進選單那則回覆）；只有 effort 換了那兩回合從頭算，換之前也一樣（template 把 effort 的說明寫在 system 那段）。
 - **Discord bridge**（`bridge/`，`[bridge]`）：dollcore 開機時用 `[bridge] command` 啟動它（從目前目錄跑，多給 `DOLL_API`、`DOLL_BRIDGE_TOKEN` 兩個環境變數），它的 stdout／stderr 每行加 `bridge: ` 印到 dollcore 的 stderr。它連上 Discord、找到主人的私訊頻道、開好主人串流才算起來；`ready_timeout_s` 內沒起來、或先結束了，dollcore 開機失敗並說原因。只轉主人（`owner_id`）的私訊，當成主人文字事件；別人的私訊、任何伺服器裡的訊息（主人在伺服器講的也是）都丟掉，log 一行（誰、在哪裡，不記內容）；她自己的訊息不理。附件目前只轉文字：每個附件變一行「[附件：<檔名>]」接在那句後面。她用 `discord.dm` 傳的話送到主人的私訊，超過 2000 字就切開，盡量切在換行；她的回合在跑、而且最後說話的是主人時顯示「正在輸入」（每 8 秒重送一次，她說話或回合結束就停）。主人的訊息送不進 dollcore 時，bridge 在私訊回一句「[系統] 這則沒送到她那裡：…」。送 Discord 失敗（例如主人關了私訊）只在 bridge 的 log 寫 ERROR，她不知道。
 - **bridge 斷了＝系統錯誤**：起來之後它結束，dollcore 寫 ERROR、`dollctl status` 顯示 `down: exit status N at … ; not restarted`，之後每次 `discord.dm` 都失敗並說原因。**不自動重啟**（決定）：py-cord 自己會重連 Discord gateway，程序真的結束代表重啟也修不好的事（token 錯、intent 沒開、當掉），自動重啟只會把它藏起來；修好原因再重開 dollcore。dollcore 本身不跟著停，dollctl 和後台照常可用。dollcore 意外死掉時，bridge 的串流斷了它也會自己結束。
-- py-cord 釘在 PR #3159 的 commit `10a5e8cf1`（`fix/voice-rec-2`，2026-11-06 語音 spike 在 macOS 27 跑的 `2.8.2.dev91+g10a5e8cf1`）：文字用不到它，但之後語音要；同一個 py-cord 免得再搬一次。改這個釘要跟語音一起改。
+- py-cord 釘在 PR #3159 的 commit `10a5e8cf1`（`fix/voice-rec-2`，2026-11-06 語音 spike 在 macOS 27 跑的 `2.8.2.dev91+g10a5e8cf1`）：語音（收主人的聲音、DAVE）靠這個 commit；改這個釘要連語音一起重測。語音另外要 opus：`brew install opus`，路徑寫在 `bridge/discord.toml` 的 `[voice] opus_library`（開機時載入，載不到 bridge 就起不來）。
 
 ### 讓真的 Discord bot 動起來
 
 1. <https://discord.com/developers/applications> → New Application → 左邊 **Bot** → **Reset Token**，複製 token（只會顯示一次）。
 2. 同一頁 **Privileged Gateway Intents** 打開 **Message Content Intent**（Presence、Server Members 不用開）。沒開的話 bridge 起不來，log 說「Message Content Intent is off」。
-3. 左邊 **OAuth2 → URL Generator**：scopes 勾 **`bot`**，權限不用勾（她只在私訊說話）；用產生的網址把 bot 邀進一個主人也在的伺服器。主人跟 bot 要有共同的伺服器才能互傳私訊，而且主人在那個伺服器的隱私設定要允許「伺服器成員傳私訊」。
+3. 左邊 **OAuth2 → URL Generator**：scopes 勾 **`bot`**；只用私訊的話權限不用勾，要她進語音頻道就勾 **Connect** 和 **Speak**（permissions=3146752；已經邀進去的 bot 用新網址再邀一次，或在伺服器的頻道設定裡開這兩個權限）；用產生的網址把 bot 邀進一個主人也在的伺服器。主人跟 bot 要有共同的伺服器才能互傳私訊，而且主人在那個伺服器的隱私設定要允許「伺服器成員傳私訊」。
 4. 主人的 user ID：Discord 設定 → 進階 → 開「開發者模式」，在自己的名字上右鍵 → **複製使用者 ID**。
 5. `cp bridge/discord.example.toml bridge/discord.toml`，填 `token` 和 `owner_id`（這個檔在 .gitignore 裡；dollcore 不讀它，bridge 不把 token 寫進 log）。
 6. 第一次：`(cd bridge && uv sync --frozen)`（建 `bridge/.venv`，不碰系統 Python）。
