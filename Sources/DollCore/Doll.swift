@@ -139,6 +139,9 @@ public actor Doll {
     var itemApps: [AppIdentity] = []
     /// The current item called a computer tool that ran.
     var itemUsedComputer = false
+    /// The current item saw a call of hers other than the todo tools and `think` (a computer tool,
+    /// a line to someone, remember, recall): what `todo.done` needs before it is accepted.
+    var itemActed = false
     /// The compaction her todo call made this turn; recorded once the turn's results are in (its span
     /// ends at the turn's last event).
     var compacting: Compaction?
@@ -825,6 +828,7 @@ public actor Doll {
             } else {
                 if isAction { step += 1 }
                 if Tools.gated.contains(call.name) { itemUsedComputer = true }
+                if !call.name.hasPrefix("todo."), call.name != "think" { itemActed = true }
                 chain.last = !actionAt.contains(i) || actionAt.last == i
                 out = await execute(call, seen: events, reply: stored, chain: chain)
                 if out.ends { ended = name }
@@ -1425,6 +1429,7 @@ public actor Doll {
         itemSteps = []
         itemApps = []
         itemUsedComputer = false
+        itemActed = false
         warnedTurns = 0
         forgetSeen()
     }
@@ -1475,6 +1480,11 @@ public actor Doll {
     /// stops; the next item is 進行中 after this turn, or the list is done (待命中).
     func todoDone(_ result: String, reply: Event) async throws -> Outcome {
         let item = try currentItem("todo.done")
+        // Done needs something done or looked at (owner, 2026-11-14): in a real run she ended an
+        // untouched item right after the previous one was compacted, with a made-up result.
+        guard itemActed else {
+            throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 screenshot 或 read_file 親眼看過再說完成。")
+        }
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
         stopWatch()

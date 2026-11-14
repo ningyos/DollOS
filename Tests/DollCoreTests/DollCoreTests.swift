@@ -4654,6 +4654,22 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(t.phase == .doing && t.current == "畫面上按過 Return" && t.pending == ["存好檔"])
 }
 
+@Test func doneIsRefusedForAnItemSheNeverTouched() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("存檔，再另存到桌面")
+    try await h.turn(Scripted("", todoSet("notes 存好檔", "桌面有 copy.txt"), key("cmd+s")))
+    try await h.turn(Scripted("", done("⌘S 存好了。")))
+    // The second item is in progress and untouched: a made-up done is refused and it stays in progress.
+    try await h.turn(Scripted("", done("另存好了，read_file 確認過。")))
+    let refused = try #require(try h.toolResults().last)
+    #expect(refused.text.hasPrefix("失敗：「桌面有 copy.txt」這一項你還沒做任何動作，也沒看過結果，不能說完成。"))
+    #expect(h.last.actions == ["error todo.done"])
+    // Having looked, she may.
+    try await h.turn(Scripted("", screenshotCall))
+    try await h.turn(Scripted("", done("桌面看得到 copy.txt。")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+}
+
 @Test func doneCompactsTheItemKeepsTheConversationAndMovesOn() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔，再關掉")
