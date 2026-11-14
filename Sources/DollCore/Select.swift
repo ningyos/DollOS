@@ -1,10 +1,10 @@
 import Foundation
 import FoundationModels
 
-/// The on-device model the memory pipeline uses (2026-11-11): the things a line of text names,
-/// which registry entry a name means, and how useful one memory is in a situation. Production is
-/// Apple's Foundation Models (`FoundationSelectionModel`); tests use a fake. No fallback:
-/// unavailable is a boot error.
+/// The on-device model the memory pipeline uses (2026-11-11): the things a line of text names and
+/// which registry entry a name means. (It scored each candidate memory until 2026-11-15; dropped:
+/// experiments/m6-select-eval.) Production is Apple's Foundation Models
+/// (`FoundationSelectionModel`); tests use a fake. No fallback: unavailable is a boot error.
 public protocol SelectionModel: Sendable {
     /// Throws with the reason when the model cannot run.
     func check() async throws
@@ -17,8 +17,6 @@ public protocol SelectionModel: Sendable {
     func same(_ mention: Mention, context: String, entry: String) async throws -> Int
     /// One sentence: what `mention` is and where (a new registry entry's description).
     func describe(_ mention: Mention, context: String) async throws -> String
-    /// 0–10: how much what she does next will use `memory` in `situation`.
-    func score(situation: String, memory: String) async throws -> Int
 }
 
 public struct SelectionError: Error, CustomStringConvertible {
@@ -93,12 +91,6 @@ public struct FoundationSelectionModel: SelectionModel {
         你在幫一個 AI 助理整理她記憶裡提到的東西。下面是一個名字（和它的種類、出現的上下文）。用一句繁體中文寫它是什麼、在哪裡，例如「macOS 內建的文字編輯 app」「使用者文件資料夾裡的 notes.txt」。只寫上下文看得出來的。
         """
 
-    /// experiments/m2/fmscore (2026-11-11): one request per candidate separated relevant from
-    /// unrelated (an unrelated situation scored all ≤ 2); listing the useful ones was order-sensitive.
-    static let scoreInstructions = """
-        你在幫一個 AI 助理判斷一條記憶有沒有用。她在用電腦幫主人做事。下面先是她現在的情況，然後是一條記憶。打 0 到 10 分：她接下來要做的事會用到它的程度（做法、步驟、快捷鍵、要避開的失敗、之前做過的同一件事的經驗）。10＝一定用得上，5＝可能有幫助，0＝無關。
-        """
-
     static let options = GenerationOptions(samplingMode: .greedy)
 
     /// Available, then warmed (2026-11-11): one tiny request at boot, so her first triggered turn does
@@ -111,7 +103,7 @@ public struct FoundationSelectionModel: SelectionModel {
             throw SelectionError("Apple Foundation Models (on-device) is unavailable: \(reason); the memory pipeline needs it")
         }
         do {
-            _ = try await LanguageModelSession(instructions: Self.scoreInstructions)
+            _ = try await LanguageModelSession(instructions: Self.sameInstructions)
                 .respond(to: "（暖機，打 0 分）", generating: FMScore.self, options: Self.options)
         } catch {
             throw SelectionError("on-device model warm-up failed: \(error)")
@@ -171,16 +163,6 @@ public struct FoundationSelectionModel: SelectionModel {
         guard !text.isEmpty else { throw SelectionError("on-device description of \(mention.name) is empty") }
         return text
     }
-
-    public func score(situation: String, memory: String) async throws -> Int {
-        do {
-            return try await LanguageModelSession(instructions: Self.scoreInstructions)
-                .respond(to: Selector.scorePrompt(situation: situation, memory: memory), generating: FMScore.self,
-                         options: Self.options).content.score
-        } catch {
-            throw SelectionError("on-device scoring failed: \(error)")
-        }
-    }
 }
 
 /// The memory pipeline (2026-11-11): names aligned to the registry, and the selection behind the
@@ -213,10 +195,6 @@ public final class Selector {
 
     static func describePrompt(_ m: Mention, context: String) -> String {
         "# 名字\n\(m.name)（種類：\(m.type.rawValue)）\n\n# 上下文\n\(context)"
-    }
-
-    static func scorePrompt(situation: String, memory: String) -> String {
-        "# 她現在的情況\n\n\(situation)\n\n# 記憶\n\n\(memory)"
     }
 
     // alignment -------------------------------------------------------------------------
@@ -314,7 +292,7 @@ public final class Selector {
         public var mentions: [Mention]
         /// The front app, aligned as the program knows it.
         public var app: AppIdentity?
-        /// What the on-device model is told about now (also the alignment context).
+        /// Now, for the on-device model's alignment of the names: why, the last owner line, the front app.
         public var situation: String
         /// Seconds the on-device model took to find `mentions` (0 when they were known).
         public var extractSeconds: Double
@@ -326,14 +304,27 @@ public final class Selector {
         }
     }
 
+    /// How a selection gives what it found (2026-11-15, experiments/m6-select-eval; the on-device
+    /// model no longer scores candidates).
+    public enum Rule: Sendable {
+        /// The program's 【相關記憶】: the embedding channel at `[select] similarity`; only candidates
+        /// whose cosine is at least that (one tied only by FTS, an entity or the hop is not given);
+        /// best by the cheap score (cosine + `entity_weight` × the trigger's entities it has, ties by
+        /// key); at most `[select] attach_max`.
+        case attach
+        /// Her `recall`: no gate beyond the search. The embedding channel is the `[select]
+        /// recall_limit` best by cosine, whatever their cosine; everything related ranked by RRF
+        /// (`[memory] rrf_k`) over three lists: text (how many of the query's words it contains,
+        /// then cosine), cosine, and the trigger's entities (how many, then cosine); the
+        /// `recall_limit` best (ties by key).
+        case recall
+    }
+
     /// One selection: the trigger's names aligned (`resolve`, the front app by `programApp`),
-    /// everything related (`Memory.related`), each through `prepare` (what the model reads, under
-    /// which key; nil leaves it out; one per key, the best cheap score kept), the `prefilter` best
-    /// by the cheap score (cosine to the query + `entity_weight` × the trigger's entities it has;
-    /// ties by key), the on-device model's score for each (one request each, in that order), and
-    /// those at or above `threshold`, best score first (ties in prefilter order).
-    nonisolated(nonsending) public func run(_ t: Trigger, visible: Set<MemoryFolder>, tiers: Set<SourceTier>?, today: TodayIndex?,
-                    prepare: (Candidate) throws -> (key: String, text: String)?) async throws -> SelectionReport {
+    /// everything related (`Memory.related`), each through `prepare` (under which key; nil leaves it
+    /// out; one per key, the best kept), then what `rule` gives, best first.
+    nonisolated(nonsending) public func run(_ t: Trigger, rule: Rule, visible: Set<MemoryFolder>, tiers: Set<SourceTier>?,
+                                            today: TodayIndex?, prepare: (Candidate) throws -> String?) async throws -> SelectionReport {
         var report = SelectionReport(trigger: t.label)
         report.seconds.extract = t.extractSeconds
         var clock = ContinuousClock.now
@@ -351,51 +342,79 @@ public final class Selector {
         }
         report.seconds.align = lap(&clock)
 
+        let embedding: Memory.EmbeddingChannel = switch rule {
+        case .attach: .atLeast(config.similarity)
+        case .recall: .best(config.recallLimit)
+        }
         let related = try memory.related(t.query, entities: Set(ids), visible: visible, tiers: tiers, today: today,
-                                         similarity: config.similarity)
+                                         embedding: embedding)
         report.related = related.count
         for c in Candidate.Channel.allCases { report.channels[c] = related.filter { $0.channels.contains(c) }.count }
         report.seconds.related = lap(&clock)
 
-        func cheap(_ c: Candidate) -> Double { c.cosine + config.entityWeight * Double(c.triggerEntities.count) }
-        var byKey: [String: (candidate: Candidate, text: String, cheap: Double)] = [:]
+        let score: [String: Double]
+        let keep: (Candidate) -> Bool
+        let limit: Int
+        switch rule {
+        case .attach:
+            score = Dictionary(related.map { ($0.key, $0.cosine + config.entityWeight * Double($0.triggerEntities.count)) },
+                               uniquingKeysWith: { a, _ in a })
+            keep = { $0.cosine >= self.config.similarity }
+            limit = config.attachMax
+        case .recall:
+            score = recallScores(related, query: t.query)
+            keep = { _ in true }
+            limit = config.recallLimit
+        }
+        var byKey: [String: (candidate: Candidate, score: Double)] = [:]
         for c in related {
-            guard let p = try prepare(c) else { continue }
-            let s = cheap(c)
-            if let have = byKey[p.key], have.cheap >= s { continue }
+            guard let key = try prepare(c) else { continue }
+            let s = score[c.key]!
+            if let have = byKey[key], have.score >= s { continue }
             var moved = c
-            moved.key = p.key
-            byKey[p.key] = (moved, p.text, s)
+            moved.key = key
+            byKey[key] = (moved, s)
         }
-        let ranked = byKey.values.sorted { $0.cheap != $1.cheap ? $0.cheap > $1.cheap : $0.candidate.key < $1.candidate.key }
-        let picked = Array(ranked.prefix(config.prefilter))
         report.prepared = byKey.count
-        report.prefiltered = picked.map { ($0.candidate.id, $0.cheap) }
-        report.seconds.prefilter = lap(&clock)
-
-        var scored: [(candidate: Candidate, score: Int, order: Int)] = []
-        for (n, p) in picked.enumerated() {
-            let text = p.text.count > config.candidateMaxChars ? String(p.text.prefix(config.candidateMaxChars)) + "…" : p.text
-            let s = try await model.score(situation: t.situation, memory: text)
-            report.scores.append((p.candidate.id, s))
-            scored.append((p.candidate, s, n))
-        }
-        report.seconds.score = lap(&clock)
-        report.selected = scored.filter { $0.score >= config.threshold }
-            .sorted { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }
-            .map { ($0.candidate, $0.score) }
+        let ranked = byKey.values.sorted { $0.score != $1.score ? $0.score > $1.score : $0.candidate.key < $1.candidate.key }
+        report.ranked = ranked.prefix(SelectionReport.shown).map { ($0.candidate.id, $0.score, $0.candidate.cosine) }
+        report.selected = Array(ranked.filter { keep($0.candidate) }.prefix(limit).map(\.candidate))
+        report.seconds.rank = lap(&clock)
         return report
+    }
+
+    /// `Rule.recall`'s RRF score per candidate key.
+    func recallScores(_ related: [Candidate], query: String) -> [String: Double] {
+        let terms = Memory.queryPhrases(query, maxPhrases: memory.config.maxQueryPhrases)
+            + Memory.shortTerms(query, maxTerms: memory.config.maxQueryPhrases)
+        func words(_ c: Candidate) -> Int {
+            let text = c.hit.text.lowercased()
+            return terms.filter { text.contains($0) }.count
+        }
+        func byCosine(_ a: Candidate, _ b: Candidate) -> Bool { a.cosine != b.cosine ? a.cosine > b.cosine : a.key < b.key }
+        let counted = related.map { ($0, words($0)) }
+        let text = counted.filter { $0.1 > 0 }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : byCosine($0.0, $1.0) }.map(\.0)
+        let cosine = related.sorted(by: byCosine)
+        let entity = related.filter { !$0.triggerEntities.isEmpty }
+            .sorted { $0.triggerEntities.count != $1.triggerEntities.count ? $0.triggerEntities.count > $1.triggerEntities.count : byCosine($0, $1) }
+        var fused: [String: Double] = [:]
+        for list in [text, cosine, entity] {
+            for (rank, c) in list.enumerated() { fused[c.key, default: 0] += 1.0 / Double(memory.config.rrfK + rank + 1) }
+        }
+        return fused
     }
 }
 
 /// One run of the pipeline, for the log and the turn report.
 public struct SelectionReport: Sendable {
     public struct Seconds: Sendable {
-        /// Finding the trigger's names, aligning them, `Memory.related`, the cheap score, the
-        /// on-device model's scores.
-        public var extract = 0.0, align = 0.0, related = 0.0, prefilter = 0.0, score = 0.0
-        public var total: Double { extract + align + related + prefilter + score }
+        /// Finding the trigger's names, aligning them, `Memory.related`, ranking.
+        public var extract = 0.0, align = 0.0, related = 0.0, rank = 0.0
+        public var total: Double { extract + align + related + rank }
     }
+
+    /// How many of the ranked the log line shows.
+    static let shown = 10
 
     public var trigger: String
     /// Each trigger name: name→entry id「canonical」how (exact / cached / model / none / new).
@@ -405,22 +424,19 @@ public struct SelectionReport: Sendable {
     public var channels: [Candidate.Channel: Int] = [:]
     /// How many were left after `prepare`.
     public var prepared = 0
-    /// What went to the on-device model, in order, with the cheap score.
-    public var prefiltered: [(id: String, cheap: Double)] = []
-    /// The on-device model's score of each, in that order.
-    public var scores: [(id: String, score: Int)] = []
-    /// Those at or above the threshold, best first.
-    public var selected: [(candidate: Candidate, score: Int)] = []
+    /// The first `shown` by the rule's ranking, with its score and cosine.
+    public var ranked: [(id: String, score: Double, cosine: Double)] = []
+    /// What is given, best first.
+    public var selected: [Candidate] = []
     public var seconds = Seconds()
 
     public var line: String {
         func f(_ s: Double) -> String { String(format: "%.2f", s) }
         let ch = Candidate.Channel.allCases.map { "\($0.rawValue) \(channels[$0] ?? 0)" }.joined(separator: ", ")
         return "選記憶（\(trigger)）entities [\(aligned.joined(separator: ", "))]; related \(related) (\(ch)), prepared \(prepared); "
-            + "prefilter [\(prefiltered.map { "\($0.id) \(f($0.cheap))" }.joined(separator: ", "))]; "
-            + "scores [\(scores.map { "\($0.id) \($0.score)" }.joined(separator: ", "))]; "
-            + "attached \(selected.count) [\(selected.map { "\($0.candidate.id) \($0.score)" }.joined(separator: ", "))]; "
+            + "ranked [\(ranked.map { "\($0.id) \(String(format: "%.4f", $0.score)) cos \(f($0.cosine))" }.joined(separator: ", "))]; "
+            + "given \(selected.count) [\(selected.map(\.id).joined(separator: ", "))]; "
             + "seconds extract \(f(seconds.extract)), align \(f(seconds.align)), related \(f(seconds.related)), "
-            + "prefilter \(f(seconds.prefilter)), score \(f(seconds.score)), total \(f(seconds.total))"
+            + "rank \(f(seconds.rank)), total \(f(seconds.total))"
     }
 }

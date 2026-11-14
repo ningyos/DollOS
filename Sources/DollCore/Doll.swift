@@ -39,7 +39,7 @@ public struct TurnReport: Sendable {
     /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
     public var cheatsheets: [String]
     /// One line per memory selection this turn (【相關記憶】 and `recall`, 2026-11-11): the trigger's
-    /// names aligned, related counts by channel, prefilter, scores, what was given, seconds per stage.
+    /// names aligned, related counts by channel, the ranking, what was given, seconds per stage.
     public var selections: [String] = []
 }
 
@@ -1772,10 +1772,11 @@ public actor Doll {
 
     /// Folders by `Memory.visible`: `secret` only if the turn saw secret events (5.1), `own` in the
     /// owner's turns and hers. Her memories and today's events (today's secret events only where the
-    /// secret folder is visible) through the selection pipeline (2026-11-11, `Selector.run`): the
+    /// secret folder is visible) through the selection pipeline (`Selector.run`, `Rule.recall`): the
     /// names her query gives (on-device model) aligned to the registry, everything related, the
-    /// `[select] prefilter` best by the cheap score, the on-device model's score for each; those at
-    /// or above `[select] threshold`, best first. No fixed count; none is 「0 條」.
+    /// `[select] recall_limit` best by the fused ranking. No relevance gate beyond the search (she
+    /// judges; 2026-11-15): a query nothing matches well still returns the nearest; 「0 條」 only
+    /// when there is nothing to search.
     func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
         let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
         var clock = ContinuousClock.now
@@ -1783,11 +1784,9 @@ public actor Doll {
         let trigger = Selector.Trigger(label: "recall「\(query)」", query: query, mentions: mentions, app: nil,
                                        situation: situation("她用 recall 查「\(query)」", events: events),
                                        extractSeconds: lap(&clock))
-        let report = try await pipeline.run(trigger, visible: visible, tiers: nil, today: today) { c in
-            (c.key, Self.selectionText(c.hit))
-        }
+        let report = try await pipeline.run(trigger, rule: .recall, visible: visible, tiers: nil, today: today) { $0.key }
         logSelection(report)
-        let hits = report.selected.map(\.candidate.hit)
+        let hits = report.selected.map(\.hit)
         var out = "\(query)：\(hits.count) 條"
         for hit in hits {
             out += "\n\n" + hit.rendered
@@ -1796,16 +1795,9 @@ public actor Doll {
         return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
     }
 
-    /// A candidate as the on-device model reads it.
-    static func selectionText(_ hit: RecallHit) -> String {
-        switch hit {
-        case .memory(let h): h.text
-        case .today(let h): "（\(h.tag)）\(h.text)"
-        }
-    }
-
-    /// What the on-device model is told about now: why memories are being looked up, the last owner
-    /// or developer line, and the front app, window title and focused element of the last computer result.
+    /// Why memories are being looked up, the last owner or developer line, and the front app, window
+    /// title and focused element of the last computer result: the context the on-device model aligns
+    /// the trigger's names in.
     func situation(_ why: String, events: [Event]) -> String {
         var lines = ["- 為什麼查記憶：\(why)"]
         if let line = events.last(where: { $0.speaker != nil }) { lines.append("- \(line.speaker!.label)最後說：「\(line.text)」") }
@@ -1821,19 +1813,20 @@ public actor Doll {
         selectionsNow.append(report.line)
     }
 
-    /// The program's own recall (spec 3.1, 2026-11-09; registry and scoring 2026-11-11): on a new
-    /// owner line and when a computer result's front app changed, `Selector.run` with the owner's
-    /// last line plus the front app's name as the query; the names the owner's line gives (on-device
-    /// model, once per line), the front window's title and the focused element as the trigger's
-    /// names, the front app aligned by its bundle id. Experiences (tier self_reported) and
-    /// consolidated memories only (her other memories and the program's shortcuts stay for
-    /// `recall`), in the turn's visible folders. Experiences for one task are one group
-    /// (`Memory.experienceGroups`): only its best-ranked one (`Memory.ranked`) is a candidate; a
-    /// consolidated memory is its own group. Those attached since the owner's last line are left out.
-    /// Every one scored at or above `[select] threshold` becomes part of one 【相關記憶】 event, best
-    /// score first, re-sent byte-identical like every event. None, no event. Each goes in whole (an
-    /// experience's length is capped when written), an experience's stats line first. A failure is
-    /// logged and attaches nothing; the turn goes on.
+    /// The program's own recall (spec 3.1, 2026-11-09; registry 2026-11-11; no on-device scoring
+    /// 2026-11-15): on a new owner line and when a computer result's front app changed,
+    /// `Selector.run` (`Rule.attach`) with the owner's last line plus the front app's name as the
+    /// query; the names the owner's line gives (on-device model, once per line), the front window's
+    /// title and the focused element as the trigger's names, the front app aligned by its bundle id.
+    /// Experiences (tier self_reported) and consolidated memories only (her other memories and the
+    /// program's shortcuts stay for `recall`), in the turn's visible folders. Experiences for one
+    /// task are one group (`Memory.experienceGroups`): only its best-ranked one (`Memory.ranked`) is
+    /// a candidate; a consolidated memory is its own group. Those attached since the owner's last
+    /// line are left out. At most `[select] attach_max` whose cosine to the query is at least
+    /// `[select] similarity`, best cheap score first, become one 【相關記憶】 event, re-sent
+    /// byte-identical like every event. None, no event. Each goes in whole (an experience's length
+    /// is capped when written), an experience's stats line first. A failure is logged and attaches
+    /// nothing; the turn goes on.
     func attachMemories(trigger label: String) async {
         do {
             let events = timeline.events
@@ -1851,7 +1844,7 @@ public actor Doll {
                                            situation: situation(label, events: events), extractSeconds: lap(&clock))
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
             var picks: [String: Experience] = [:], already = Set<String>(), merged = Set<String>()
-            let report = try await pipeline.run(trigger, visible: visible, tiers: [.selfReported, .consolidated], today: nil) { c in
+            let report = try await pipeline.run(trigger, rule: .attach, visible: visible, tiers: [.selfReported, .consolidated], today: nil) { c in
                 let pick: Experience
                 if let m = try memory.consolidated(c.id) {
                     pick = m
@@ -1866,16 +1859,16 @@ public actor Doll {
                 } else { return nil }
                 if attachedIDs.contains(pick.id) { already.insert(pick.id); return nil }
                 picks[pick.id] = pick
-                return ("m:" + pick.id, pick.file.body)
+                return "m:" + pick.id
             }
             log("INFO", "turn \(turnIndex): 相關記憶（\(label)）query「\(query)」: task groups \(merged.sorted().joined(separator: " ")), "
                 + "already attached \(already.count) \(already.sorted())")
             logSelection(report)
-            let fresh = report.selected.compactMap { picks[$0.candidate.id] }
+            let fresh = report.selected.compactMap { picks[$0.id] }
             guard !fresh.isEmpty else { return }
             attachedIDs.formUnion(fresh.map(\.id))
             let from = frontApp.map { "主人的話和前景 app「\($0.name)」" } ?? "主人的話"
-            var text = "【相關記憶】程式用\(from)查到、判斷用得上的過去經驗："
+            var text = "【相關記憶】程式用\(from)查到、最相近的過去經驗："
             for e in fresh {
                 text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
             }

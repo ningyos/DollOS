@@ -296,6 +296,13 @@ public enum RecallHit: Sendable {
         }
     }
 
+    public var text: String {
+        switch self {
+        case .memory(let h): h.text
+        case .today(let h): h.text
+        }
+    }
+
     /// 〔確定的打算｜public〕 or 〔今天 14:05｜主人說〕, then the text.
     public var rendered: String {
         switch self {
@@ -381,6 +388,15 @@ public final class TodayIndex {
         try sql.query("""
             SELECT id, rank FROM today_fts WHERE today_fts MATCH ? AND (? OR secret = 0) ORDER BY rank, id
             """, [.text(match), .int(secret ? 1 : 0)]) { ($0.text(0)!, $0.real(1)) }
+    }
+
+    /// Entries whose text contains one of `terms` (`Store.memoryContaining`: the words a trigram
+    /// index cannot match; a linear scan); secret events only when `secret`; in id order.
+    func containing(_ terms: [String], secret: Bool) throws -> [String] {
+        guard !terms.isEmpty else { return [] }
+        let likes = terms.map { _ in "text LIKE ?" }.joined(separator: " OR ")
+        return try sql.query("SELECT id FROM today_fts WHERE (? OR secret = 0) AND (\(likes)) ORDER BY id",
+                             [.int(secret ? 1 : 0)] + terms.map { .text("%\($0)%") }) { $0.text(0)! }
     }
 
     func vectors(secret: Bool) throws -> [(id: String, vector: Data)] {
@@ -816,6 +832,39 @@ public final class Memory {
         return Array(unique.prefix(maxPhrases))
     }
 
+    /// The query's words a trigram index cannot match (2026-11-15): contiguous CJK runs and
+    /// Latin/digit runs of exactly 2 characters (過敏, 花生, 27), Latin lowercased; at most
+    /// `maxTerms`. Matched as substrings (`Store.memoryContaining`, `TodayIndex.containing`). Single
+    /// characters are left out: one character is in too many unrelated lines.
+    static func shortTerms(_ query: String, maxTerms: Int) -> [String] {
+        var out: [String] = []
+        var run = "", runIsCJK = false
+        func flush() {
+            if run.count == 2, !out.contains(runIsCJK ? run : run.lowercased()) { out.append(runIsCJK ? run : run.lowercased()) }
+            run = ""
+        }
+        for scalar in query.unicodeScalars {
+            let cjk = scalar.value >= 0x2E80 && scalar.value <= 0x9FFF
+            let latin = scalar.isASCII && (Character(scalar).isLetter || Character(scalar).isNumber)
+            if cjk || latin {
+                if !run.isEmpty && cjk != runIsCJK { flush() }
+                runIsCJK = cjk
+                run.unicodeScalars.append(scalar)
+            } else {
+                flush()
+            }
+        }
+        flush()
+        return Array(out.prefix(maxTerms))
+    }
+
+    /// How `related`'s embedding channel picks: a cosine floor (auto-attach), or the best `n` by
+    /// cosine whatever their cosine (recall: she asked, the search does not judge for her).
+    public enum EmbeddingChannel: Sendable {
+        case atLeast(Double)
+        case best(Int)
+    }
+
     /// Searches only the folders `visible` lets this turn read (`Memory.visible`); at most `limit`
     /// hits. With `tiers`, only records of those source tiers: every record is ranked by vector, not
     /// just the first `max_candidates`, so a few among many others are not lost. (Consolidation's
@@ -827,35 +876,45 @@ public final class Memory {
 
     /// Everything related to a trigger (2026-11-11), with no count limit: in `visible` folders,
     /// only `tiers` when given, each memory or today's event once with every channel that found it:
-    /// - fts: an FTS5 hit for `query` (memories, and today's events when `today` is given);
-    /// - embedding: cosine to `query` at least `similarity`;
+    /// - fts: an FTS5 hit for `query`, or a text containing one of its two-character words
+    ///   (`shortTerms`) (memories, and today's events when `today` is given);
+    /// - embedding: by `embedding` (cosine at least a floor, or the best few by cosine);
     /// - entity: has one of `entities` (the trigger's aligned registry entries);
     /// - hop: shares a registry entry with an fts or embedding hit other than itself (one hop).
     /// Today's events have no entities: fts and embedding only. In key order.
     public func related(_ query: String, entities: Set<String>, visible: Set<MemoryFolder>, tiers: Set<SourceTier>?,
-                        today: TodayIndex?, similarity: Double) throws -> [Candidate] {
+                        today: TodayIndex?, embedding: EmbeddingChannel) throws -> [Candidate] {
         let names = MemoryFolder.allCases.filter(visible.contains).map(dirName)
         guard !names.isEmpty else { return [] }
         let tierNames = tiers.map { $0.map(\.rawValue).sorted() }
         let qv = try embedder.embed(query, as: .query)
         let phrases = Self.queryPhrases(query, maxPhrases: config.maxQueryPhrases)
+        let short = Self.shortTerms(query, maxTerms: config.maxQueryPhrases)
         let match = phrases.isEmpty ? nil
             : phrases.map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }.joined(separator: " OR ")
         var channels: [String: Set<Candidate.Channel>] = [:]
-        let cosines = Dictionary(uniqueKeysWithValues: try store.memoryVectors(folders: names).map { ("m:" + $0.id, Self.dot($0.vector, qv)) })
+        var cosines = Dictionary(uniqueKeysWithValues: try store.memoryVectors(folders: names).map { ("m:" + $0.id, Self.dot($0.vector, qv)) })
         if let match {
             for h in try store.memoryFTS(match: match, folders: names, limit: nil) { channels["m:" + h.id, default: []].insert(.fts) }
         }
-        for (key, c) in cosines where c >= similarity { channels[key, default: []].insert(.embedding) }
-        var todayCosines: [String: Double] = [:]
+        for id in try store.memoryContaining(short, folders: names) { channels["m:" + id, default: []].insert(.fts) }
         if let today {
             let secret = visible.contains(.secret)
             if let match { for h in try today.fts(match: match, secret: secret) { channels["t:" + h.id, default: []].insert(.fts) } }
-            for (id, v) in try today.vectors(secret: secret) {
-                let c = Self.dot(v, qv)
-                todayCosines["t:" + id] = c
-                if c >= similarity { channels["t:" + id, default: []].insert(.embedding) }
+            for id in try today.containing(short, secret: secret) { channels["t:" + id, default: []].insert(.fts) }
+            for (id, v) in try today.vectors(secret: secret) { cosines["t:" + id] = Self.dot(v, qv) }
+        }
+        switch embedding {
+        case .atLeast(let floor):
+            for (key, c) in cosines where c >= floor { channels[key, default: []].insert(.embedding) }
+        case .best(let n):
+            // With `tiers`, the best among those of the tiers (a memory of another tier is no candidate).
+            var best: [(key: String, cosine: Double)] = []
+            for (key, c) in cosines.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) where best.count < n {
+                if key.hasPrefix("m:"), try memoryHit(String(key.dropFirst(2)), folders: names, tiers: tiers) == nil { continue }
+                best.append((key, c))
             }
+            for b in best { channels[b.key, default: []].insert(.embedding) }
         }
         // Seeds for the hop: the memories fts or embedding found (with `tiers`, only of those tiers).
         var hits: [String: MemoryHit] = [:]
@@ -886,7 +945,7 @@ public final class Memory {
             let id = String(key.dropFirst(2))
             if key.hasPrefix("t:") {
                 guard let today, let h = try today.entry(id) else { continue }
-                out.append(Candidate(key: key, hit: .today(h), channels: found, cosine: todayCosines[key] ?? 0,
+                out.append(Candidate(key: key, hit: .today(h), channels: found, cosine: cosines[key] ?? 0,
                                      triggerEntities: [], hopEntities: []))
                 continue
             }

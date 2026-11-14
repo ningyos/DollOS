@@ -101,7 +101,7 @@ public enum Tools {
                      "required": ["items"],
                  ], jsonParameters: ["items"]),
             Spec(name: "recall",
-                 description: "查記憶和今天的時間線，回用得上的那些（沒有固定條數，可能 0 條）。記憶附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕；沒填 kind 的是〔確定｜public〕。今天的事附時間和是誰的什麼，例如〔今天 14:05｜主人說〕〔今天 14:06｜你說｜Discord 私訊〕〔今天 14:06｜你想〕〔今天 14:07｜click 的結果〕。",
+                 description: "查記憶和今天的時間線，回最接近的幾條，最接近的在前。沒有真的相關的時候也會回最接近的那幾條，用不用得上你自己判斷。記憶附一個標籤和它在哪個資料夾，例如〔確定的打算｜public〕；沒填 kind 的是〔確定｜public〕。今天的事附時間和是誰的什麼，例如〔今天 14:05｜主人說〕〔今天 14:06｜你說｜Discord 私訊〕〔今天 14:06｜你想〕〔今天 14:07｜click 的結果〕。",
                  parameters: [
                      "type": "object",
                      "properties": ["query": ["type": "string", "description": "要查的事"]],

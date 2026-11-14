@@ -689,6 +689,18 @@ public final class Store {
             """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit ?? -1))]) { ($0.text(0)!, $0.real(1)) }
     }
 
+    /// Memories in the given folders whose text contains one of `terms` (case-insensitive for
+    /// ASCII), in id order. For query words shorter than a trigram (two characters: 過敏, 花生), which
+    /// the FTS5 trigram index cannot match: a LIKE under 3 characters is a linear scan of the FTS
+    /// table's text (2026-11-15). `terms` hold only letters, digits and CJK (no LIKE wildcards).
+    public func memoryContaining(_ terms: [String], folders: [String]) throws -> [String] {
+        guard !terms.isEmpty else { return [] }
+        let marks = folders.map { _ in "?" }.joined(separator: ", ")
+        let likes = terms.map { _ in "text LIKE ?" }.joined(separator: " OR ")
+        return try query("SELECT id FROM memory_fts WHERE folder IN (\(marks)) AND (\(likes)) ORDER BY id",
+                         folders.map { .text($0) } + terms.map { .text("%\($0)%") }) { $0.text(0)! }
+    }
+
     public func memoryVectors(folders: [String]) throws -> [MemoryVectorRow] {
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
         return try query("""

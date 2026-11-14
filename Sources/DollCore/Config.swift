@@ -203,24 +203,23 @@ public struct ConsolidateConfig: Sendable {
     public var retiredKeepDays = 30
 }
 
-/// Which memories she gets (2026-11-11, registry and scoring): the 【相關記憶】 the program attaches
-/// and her `recall` results both come from one pipeline (`Selector`): the trigger's names aligned
-/// to the registry, everything related (FTS, embedding at least `similarity`, a shared registry
-/// entity with the trigger or one hop from an FTS/embedding hit), the `prefilter` best by a cheap
-/// score, then Apple's on-device model scores each 0–10 and every one at or above `threshold` is
-/// given.
+/// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device scoring): the 【相關記憶】 the
+/// program attaches and her `recall` results both come from one pipeline (`Selector`): the
+/// trigger's names aligned to the registry, everything related (FTS and two-character words,
+/// embedding, a shared registry entity with the trigger or one hop from an FTS/embedding hit),
+/// then `Selector.Rule`: attach gives at most `attachMax` whose cosine is at least `similarity`,
+/// by the cheap score; recall gives the `recallLimit` best by RRF, no floor.
 public struct SelectConfig: Sendable {
-    /// The embedding channel: a memory (or today's event) whose cosine to the query is at least this.
+    /// Auto-attach: the embedding channel and the floor; a candidate whose cosine to the query is
+    /// below this is not attached, whatever else ties it to the trigger.
     public var similarity = 0.55
-    /// The cheap score: cosine to the query plus this much per registry entity of the trigger it has.
+    /// Auto-attach's cheap score: cosine to the query plus this much per registry entity of the
+    /// trigger it has.
     public var entityWeight = 0.2
-    /// How many of the related go to the on-device model, best cheap score first.
-    public var prefilter = 8
-    /// The on-device model's score (0–10) at or above which a candidate is given.
-    public var threshold = 7
-    /// A candidate longer than this many characters is cut for the on-device model (only for its
-    /// judgment; what she gets is whole).
-    public var candidateMaxChars = 1500
+    /// Auto-attach: at most this many, best cheap score first.
+    public var attachMax = 3
+    /// Recall: this many best by cosine are the embedding channel, and this many are given.
+    public var recallLimit = 5
     /// How many registry entries (`Registry.nearby`) the on-device model sees when it aligns one name.
     public var lookupK = 5
     /// The on-device model's 0–10 that a name and the entry it picked are the same thing, at or
@@ -459,16 +458,14 @@ public struct Config: Sendable {
         var select = SelectConfig()
         try s.read("similarity", &select.similarity)
         try s.read("entity_weight", &select.entityWeight)
-        try s.read("prefilter", &select.prefilter)
-        try s.read("threshold", &select.threshold)
-        try s.read("candidate_max_chars", &select.candidateMaxChars)
+        try s.read("attach_max", &select.attachMax)
+        try s.read("recall_limit", &select.recallLimit)
         try s.read("lookup_k", &select.lookupK)
         try s.read("align_threshold", &select.alignThreshold)
         try s.finish()
-        guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.prefilter >= 1,
-              (0...10).contains(select.threshold), select.candidateMaxChars >= 100, select.lookupK >= 1,
-              (0...10).contains(select.alignThreshold) else {
-            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; prefilter at least 1; threshold and align_threshold 0…10; candidate_max_chars at least 100; lookup_k at least 1")
+        guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.attachMax >= 1,
+              select.recallLimit >= 1, select.lookupK >= 1, (0...10).contains(select.alignThreshold) else {
+            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max, recall_limit and lookup_k at least 1; align_threshold 0…10")
         }
         var o = Section(name: "voice", raw: raw["voice"] ?? [:])
         var voice = VoiceConfig()
