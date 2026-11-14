@@ -181,14 +181,39 @@ function renderTimeline(items) {
   }
 }
 
-function memEntry(e) {
+function memEntry(e, unmark) {
   const sum = el("summary");
   sum.append(document.createTextNode(e.title + " "));
-  sum.append(el("span", "meta", `${e.kind || "（無 kind）"} · ${e.level} ${e.confidence} · ${e.tier}`));
-  const d = details(sum, el("pre", null, e.text));
+  const strength = e.deep ? " · deep（不淡）" : e.settled ? " · 記牢了（不淡）"
+    : e.strength == null ? "" : ` · 強度 ${e.strength.toFixed(2)}${e.faded ? "（淡了，不自動附）" : ""}`;
+  sum.append(el("span", "meta", `${e.kind || "（無 kind）"} · ${e.level} ${e.confidence} · ${e.tier}${strength}`));
+  const body = el("div");
+  body.append(el("pre", null, e.text));
+  if (e.strength != null) {
+    body.append(el("div", "meta", `id ${e.id} · 證據 ${e.evidence.map(clock).join("、")}` + (e.settled ? ` · ${clock(e.settled)} 記牢` : "")));
+  }
+  if (unmark) {
+    const b = el("button", null, "取消 deep");
+    b.onclick = () => post("/api/memory/undeep/" + encodeURIComponent(e.id));
+    body.append(b);
+  }
+  const d = details(sum, body);
   d.className = "mem";
-  d.dataset.key = "m:" + e.id;
+  d.dataset.key = (unmark ? "d:" : "m:") + e.id;
   return d;
+}
+
+function deepForm() {
+  const form = el("form");
+  const input = el("input");
+  input.placeholder = "記憶 id";
+  form.append(input, el("button", null, "標成 deep"));
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    const id = input.value.trim();
+    if (id) post("/api/memory/deep/" + encodeURIComponent(id));
+  };
+  return form;
 }
 
 function renderMemory(m) {
@@ -198,6 +223,10 @@ function renderMemory(m) {
   const showProgram = $("show-program").checked;
   box.append(el("h3", null, `這次附上的經驗（${m.attached.length}）`));
   for (const e of m.attached) box.append(memEntry(e));
+  box.append(el("h3", null, `deep 記憶（${m.deep.length}）：永遠不淡`));
+  for (const e of m.deep) box.append(memEntry(e, true));
+  if (!deepHolder.firstChild) deepHolder.append(deepForm());
+  box.append(deepHolder);
   box.append(el("h3", null, `這次送出的快捷鍵（${m.cheatsheets.length}）`));
   for (const s of m.cheatsheets) {
     const d = details(s.title, el("pre", null, s.text));
@@ -222,6 +251,7 @@ async function get(path) {
 }
 
 let busy = false, dirty = false, memory = null;
+const deepHolder = el("div");
 async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
@@ -240,6 +270,7 @@ $("show-program").onchange = () => { if (memory) renderMemory(memory); };
 async function post(path) {
   const r = await fetch(path, { method: "POST" });
   if (!r.ok && r.status !== 409) alert(path + ": " + r.status);
+  if (r.status === 409 && path.startsWith("/api/memory/")) alert(await r.text());
   refresh();
 }
 $("btn-interrupt").onclick = () => post("/api/interrupt");

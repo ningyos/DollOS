@@ -964,9 +964,9 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     #expect(out.contains("〔確定的打算｜public〕\n主人下個月要去大阪"))
     #expect(out.contains("〔確定｜public〕\n主人的貓叫麻糬"))
     #expect(!out.contains("未判"))
-    let hit = MemoryHit(id: "x", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: .happened, text: "")
+    let hit = MemoryHit(id: "x", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: .happened, text: "", tier: .doll, evidence: [], deep: false)
     #expect(hit.label == "聽說的已發生")
-    #expect(MemoryHit(id: "y", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: nil, text: "").label == "聽說")
+    #expect(MemoryHit(id: "y", folder: "public", secret: false, confidence: 0.3, level: "聽說", kind: nil, text: "", tier: .doll, evidence: [], deep: false).label == "聽說")
 }
 
 // computer (M2) ----------------------------------------------------------------
@@ -1884,14 +1884,14 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
 
 // auto-attached memories and the open windows line (spec 3.1, 2026-11-09) ----------------
 
-/// Writes one record file into her memory folder and re-indexes, as if remembered earlier. Default:
+/// Writes one record file into her memory folder and re-indexes, as if remembered just now. Default:
 /// an experience (tier self_reported, 0.4 = 大概), the only kind the program attaches.
 private func seedMemory(_ h: Harness, _ folder: String, _ text: String, tier: String = "self_reported",
                         confidence: Double = 0.4, entities: [MemoryEntity] = [], id: String? = nil) async throws {
     let dir = h.dir.appending(path: "memory/\(folder)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let ents = entities.isEmpty ? "" : "entities = \(MemoryEntity.json(entities))\n"
-    let file = "+++\nkind = \"\"\nconfidence = \(confidence)\ncreated_ts = 0\nsource_event_seq = 1\nsource_tier = \"\(tier)\"\n\(ents)+++\n\(text)"
+    let file = "+++\nkind = \"\"\nconfidence = \(confidence)\ncreated_ts = \(Date().timeIntervalSince1970)\nsource_event_seq = 1\nsource_tier = \"\(tier)\"\n\(ents)+++\n\(text)"
     try file.write(to: dir.appending(path: "\(id ?? "1-\(UUID().uuidString.prefix(6).lowercased())").md"), atomically: true, encoding: .utf8)
     try await h.doll.rebuildMemory()
 }
@@ -2818,8 +2818,9 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
 }
 
-@Test func theOnlyPostRoutesAreInterruptPauseAndResume() {
-    #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path)) == ["/api/interrupt", "/api/pause", "/api/resume"])
+@Test func theOnlyPostRoutesAreInterruptPauseResumeAndTheDeepMark() {
+    #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
+            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
 
@@ -3231,11 +3232,11 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
     let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil,
-                                  entities: [MemoryEntity(app.id, "TextEdit")])
-    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
-    let shortcut = try memory.write("TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
+                                  entities: [MemoryEntity(app.id, "TextEdit")], now: Date().timeIntervalSince1970)
+    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, now: Date().timeIntervalSince1970)
+    let shortcut = try memory.write("TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil, now: Date().timeIntervalSince1970)
     let experience = try memory.write("經驗：另存\n步驟：\n1. key cmd+shift+alt+s", folder: .public, sourceSeq: 1, tier: .selfReported,
-                                      kind: nil, experience: (task: "另存", stats: ExperienceStats(turns: 3, seconds: 20)))
+                                      kind: nil, experience: (task: "另存", stats: ExperienceStats(turns: 3, seconds: 20)), now: Date().timeIntervalSince1970)
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
     try writeRetired(h, "9-new000", days: 5, body: "剛退休的")
     await h.doll.ownerSaid("用 TextEdit 另存一份")
@@ -3260,7 +3261,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         ```
         """
     let model = FakeModel([Scripted(reply), Scripted("主人要了一份副本，你用 ⇧⌥⌘S 另存好了。")])
-    let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder())
+    let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
 
     // The request: no persona, high effort, the day as text, only memories she or consolidation
     // wrote, with their entities by registry id, and the registry entries near the day.
@@ -3326,11 +3327,11 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let cfg = try consolidationConfig(h)
     // Nothing in the timeline yet: nothing to consolidate.
     await #expect(throws: ConsolidationError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder())
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
     }
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
-    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil)
-    let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil)
+    let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, now: Date().timeIntervalSince1970)
+    let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil, now: Date().timeIntervalSince1970)
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
     await h.doll.ownerSaid("主人的貓叫什麼")
     try await h.turn(Scripted("", dm("不知道")))
@@ -3377,25 +3378,25 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     ]
     for reply in bad {
         await #expect(throws: ConsolidationError.self, "\(reply)") {
-            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]), embedder: FakeEmbedder())
+            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
         }
     }
     // The model failing is an error too.
     await #expect(throws: ModelError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder())
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
     }
     // So is the summary request failing or coming back empty: a valid plan is not applied without it.
     await #expect(throws: ModelError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder())
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
     }
     await #expect(throws: ConsolidationError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("")]), embedder: FakeEmbedder())
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("")]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
     }
     #expect(try memoryFiles(h) == files)
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
     #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
     // The same reply, valid: applied.
-    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("今天的摘要。")]), embedder: FakeEmbedder())
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("今天的摘要。")]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
     #expect(ok.applied.count == 3 && ok.applied[1].hasPrefix("entity ") && ok.applied[2].hasSuffix("主人的貓叫咪咪"))
 }
 
@@ -3442,7 +3443,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let file = try memory.registry.create(.file, name: "~/Documents/notes.txt", aliases: [], description: "文件資料夾裡的 notes.txt")
     // A memory names entries by id, as its text writes them; a second mention of one entry is dropped.
     let ents = [MemoryEntity(app.id, "TextEdit"), MemoryEntity(file.id, "notes.txt"), MemoryEntity(app.id, "文字編輯")]
-    let id = try memory.write("TextEdit 打開 notes.txt", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: ents)
+    let id = try memory.write("TextEdit 打開 notes.txt", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: ents, now: Date().timeIntervalSince1970)
     let mraw = try String(contentsOf: h.dir.appending(path: "memory/public/\(id).md"), encoding: .utf8)
     #expect(mraw.contains(#"entities = [{"id":"\#(app.id)","name":"TextEdit"},{"id":"\#(file.id)","name":"notes.txt"}]"#))
     #expect(try Memory.parseFile(mraw).entities == Array(ents.prefix(2)))
@@ -3459,7 +3460,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(try h.store.countRegistryIndex() == 2 && memory.registry.exact("文字編輯").map(\.id) == [app.id])
     // Naming an entry that does not exist: not written; a file doing so fails the rebuild.
     #expect(throws: MemoryError.self) {
-        try memory.write("x", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: [MemoryEntity("e404", "x")])
+        try memory.write("x", folder: .public, sourceSeq: 3, tier: .doll, kind: nil, entities: [MemoryEntity("e404", "x")], now: Date().timeIntervalSince1970)
     }
     try FileManager.default.removeItem(at: h.dir.appending(path: "memory/entities/\(file.id).md"))
     #expect(throws: MemoryError.self) { try memory.rebuild() }
@@ -3584,7 +3585,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let report = try Selector(memory: memory, config: select).run(
         .init(label: "測試", query: "TextEdit 另存", app: textEdit), rule: .attach, visible: [.public],
-        tiers: [.selfReported, .consolidated], today: nil) { $0.key }
+        tiers: [.selfReported, .consolidated], today: nil, now: Date().timeIntervalSince1970) { $0.key }
     #expect(report.entities == ["TextEdit→\(app.id)「TextEdit」"] && report.related == 5)
     let given = report.selected.map(\.id)
     #expect(given.count == 3 && Set(given.prefix(2)) == ["3-m", "4-m"] && ["1-m", "2-m"].contains(given[2]))
@@ -4930,4 +4931,209 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     try await h.doll.announceBoot(docsFailure: why)
     #expect(try h.events().last!.text == "【開機】你剛被開機了。DollOS 文件這次沒有複製進你的電腦（\(why)）；~/DollOS/docs 裡可能是舊的或沒有。")
     #expect(h.logs.contains { $0.hasPrefix("ERROR docs: copying") })
+}
+
+
+// memory strength (2026-11-15) --------------------------------------------------------------
+
+/// Noon, local time, `days` after 2026-10-01: the tests' clock (strength takes "now" as a parameter).
+private func day(_ days: Double) -> Double {
+    Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: 12))!.timeIntervalSince1970 + days * 86400
+}
+
+@Test func strengthIsACTRBaseLevelActivationOverTheEvidence() {
+    func b(_ ev: [Double], _ now: Double) -> Double {
+        Memory.activation(ev.map(day), now: day(now), decay: 0.5, unitDays: 7)
+    }
+    // Seen once: 0 on the day, then -d ln(1 + t/7).
+    #expect(b([0], 0) == 0)
+    #expect(abs(b([0], 7) - (-0.5 * log(2.0))) < 1e-9)
+    #expect(b([0], 24) >= -0.75 && b([0], 25) < -0.75)
+    // Each piece of evidence pulls it back up; days 0,7,14 on day 14: ln(1 + 2^-.5 + 3^-.5).
+    #expect(abs(b([0, 7, 14], 14) - log(1 + pow(2, -0.5) + pow(3, -0.5))) < 1e-9)
+    #expect(b([0, 7], 30) > b([0], 30))
+    // n pieces are at most ln n: two can never reach the settled line 0.75, three a week apart can.
+    #expect(b([0, 1], 1) < 0.75 && b([0, 7, 14], 14) >= 0.75 && b([0, 14, 28], 28) < 0.75)
+    // Evidence later than now counts as today's.
+    #expect(b([3], 0) == 0)
+}
+
+@Test func confirmCountsOnePieceOfEvidencePerDayAndSettlesAboveTheLine() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let tea = try memory.write("主人喜歡喝無糖綠茶", folder: .public, sourceSeq: 3, tier: .consolidated, kind: nil, now: day(0))
+    // A file written before 2026-11-15 has no evidence key: its one piece is created_ts.
+    let raw = try String(contentsOf: h.dir.appending(path: "memory/public/\(tea).md"), encoding: .utf8)
+    #expect(!raw.contains("evidence") && !raw.contains("deep") && !raw.contains("settled_ts"))
+    #expect(try memory.file(tea)!.file.allEvidence == [Evidence(ts: day(0), seq: 3)])
+    // The same calendar day again: not counted, nothing written.
+    #expect(try memory.confirm(tea, at: day(0) + 3600, seq: 9) == .sameDay(Memory.day(day(0))))
+    #expect(try String(contentsOf: h.dir.appending(path: "memory/public/\(tea).md"), encoding: .utf8) == raw)
+    guard case .counted(let s7, false) = try memory.confirm(tea, at: day(7), seq: 20) else { Issue.record("day 7 not counted"); return }
+    #expect(abs(s7 - log(1 + pow(2, -0.5))) < 1e-9)
+    #expect(try memory.confirm(tea, at: day(7) + 600, seq: 21) == .sameDay(Memory.day(day(7))))
+    guard case .counted(_, true) = try memory.confirm(tea, at: day(14), seq: 30) else { Issue.record("day 14 did not settle"); return }
+    let f = try memory.file(tea)!.file
+    #expect(f.evidence == [Evidence(ts: day(0), seq: 3), Evidence(ts: day(7), seq: 20), Evidence(ts: day(14), seq: 30)])
+    #expect(f.settled == day(14))
+    #expect(try Memory.parseFile(f.text) == f)
+    // Settled stays settled: a later piece of evidence keeps the first settled time.
+    _ = try memory.confirm(tea, at: day(100), seq: 40)
+    #expect(try memory.file(tea)!.file.settled == day(14))
+    // Only tiers with a strength; never a retired memory.
+    let shortcut = try memory.write("TextEdit：File › Save＝⌘S", folder: .public, sourceSeq: 0, tier: .program, kind: nil, now: day(0))
+    #expect(throws: MemoryError.self) { try memory.confirm(shortcut, at: day(3), seq: 1) }
+    #expect(throws: MemoryError.self) { try memory.write("x", folder: .public, sourceSeq: 0, tier: .program, kind: nil, deep: true, now: day(0)) }
+    try memory.retire(tea, Retirement(ts: day(101), supersededBy: shortcut, reason: "x"))
+    #expect(throws: MemoryError.self) { try memory.confirm(tea, at: day(102), seq: 1) }
+    #expect(throws: MemoryError.self) { try memory.setDeep(tea, true) }
+    // A malformed strength key is an error, not a silent default.
+    for bad in ["deep = yes", "evidence = []", "evidence = [1]", "settled_ts = soon"] {
+        #expect(throws: MemoryError.self, "\(bad)") {
+            try Memory.parseFile("+++\nkind = \"\"\nconfidence = 0.5\ncreated_ts = 1\nsource_event_seq = 1\nsource_tier = \"owner\"\n\(bad)\n+++\nx")
+        }
+    }
+}
+
+@Test func theConfirmOperationIsValidatedStrictly() throws {
+    let known: Set<String> = ["m1", "m2"]
+    func plan(_ ops: String) -> String { "```json\n{\"entities\": [], \"operations\": [\(ops)]}\n```" }
+    let ok = try Consolidation.parse(plan(#"{"op": "confirm", "id": "m1", "task": 2}, {"op": "confirm", "id": "m2", "task": 0}"#),
+                                     known: known, registry: [], tasks: [0, 1, 2])
+    #expect(ok.operations == [.confirm(id: "m1", task: 2), .confirm(id: "m2", task: 0)])
+    let update = #"{"op": "update", "id": "m1", "text": "新的", "entities": []}"#
+    let retire = #"{"op": "retire", "id": "m1", "superseded_by": "m2", "reason": "舊了"}"#
+    let bad = [
+        #"{"op": "confirm", "id": "m1"}"#,                                  // no task
+        #"{"op": "confirm", "id": "m1", "task": 2, "day": "x"}"#,           // an extra field
+        #"{"op": "confirm", "id": "m1", "task": "2"}"#,                     // a string
+        #"{"op": "confirm", "id": "m1", "task": 1.5}"#,                     // not an integer
+        #"{"op": "confirm", "id": "m1", "task": true}"#,                    // a boolean
+        #"{"op": "confirm", "id": "m1", "task": 9}"#,                       // no such task
+        #"{"op": "confirm", "id": "m9", "task": 1}"#,                       // an id the request did not show
+        #"{"op": "confirm", "id": "m1", "task": 1}, {"op": "confirm", "id": "m1", "task": 2}"#,
+        #"{"op": "confirm", "id": "m1", "task": 1}, "# + update,         // confirmed and updated
+        update + #", {"op": "confirm", "id": "m1", "task": 1}"#,
+        retire + #", {"op": "confirm", "id": "m1", "task": 1}"#,         // retired and confirmed
+    ]
+    for ops in bad {
+        #expect(throws: ConsolidationError.self, "\(ops)") { try Consolidation.parse(plan(ops), known: known, registry: [], tasks: [0, 1, 2]) }
+    }
+    // The instructions say when to use it.
+    #expect(Consolidation.instructions.contains(#"{"op": "confirm", "id": "既有記憶的 id", "task": 2}"#))
+    #expect(Consolidation.instructions.contains("只是今天提到相關的話題"))
+}
+
+@Test func aConsolidationConfirmIsEvidenceFromItsTasksEventOncePerDay() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let now = Date().timeIntervalSince1970
+    let old = try memory.write("主人喜歡喝無糖綠茶", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, now: now - 3 * 86400)
+    let fresh = try memory.write("主人喜歡喝無糖紅茶", folder: .public, sourceSeq: 1, tier: .doll, kind: nil, now: now)
+    await h.doll.ownerSaid("幫我買無糖綠茶和無糖紅茶")
+    try await h.turn(Scripted("", dm("好")))
+    let owner = try h.events().last { $0.kind == .owner }!
+    let reply = "```json\n{\"entities\": [], \"operations\": [{\"op\": \"confirm\", \"id\": \"\(old)\", \"task\": 1}, {\"op\": \"confirm\", \"id\": \"\(fresh)\", \"task\": 1}]}\n```"
+    let r = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply), Scripted("摘要。")]),
+                                        embedder: FakeEmbedder(), now: now + 60)
+    #expect(r.applied.contains { $0.hasPrefix("confirm \(old) (task 1, \(Memory.day(owner.ts)), event \(owner.seq!)): strength ") })
+    #expect(r.applied.contains("confirm \(fresh) (task 1): not counted, it already has evidence on \(Memory.day(now))"))
+    #expect(try memoryFilesByID(h)[old]!.file.evidence == [Evidence(ts: now - 3 * 86400, seq: 1), Evidence(ts: owner.ts, seq: owner.seq!)])
+    #expect(try memoryFilesByID(h)[fresh]!.file.evidence.isEmpty)
+}
+
+@Test func aFadedMemoryIsNotAttachedButRecallFindsItAndSettledOrDeepOnesStay() async throws {
+    let h = try await Harness()
+    let cfg = try consolidationConfig(h)
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let text = "主人的公司在信義區"
+    let faded = try memory.write(text, folder: .public, sourceSeq: 1, tier: .consolidated, kind: nil, now: day(0))
+    let settled = try memory.write(text + "。", folder: .public, sourceSeq: 2, tier: .consolidated, kind: nil, now: day(0))
+    _ = try memory.confirm(settled, at: day(7), seq: 3)
+    _ = try memory.confirm(settled, at: day(14), seq: 4)
+    let deep = try memory.write(text + "！", folder: .public, sourceSeq: 3, tier: .owner, kind: nil, deep: true, now: day(0))
+    let plain = try memory.write(text + "？", folder: .public, sourceSeq: 4, tier: .owner, kind: nil, now: day(0))
+    let selector = Selector(memory: memory, config: cfg.select)
+    func attach(_ now: Double) throws -> SelectionReport {
+        try selector.run(.init(label: "測試", query: text, app: nil), rule: .attach, visible: [.public],
+                         tiers: Memory.strengthTiers.union([.selfReported]), today: nil, now: now) { c in
+            try memory.attachable(c.id) == nil ? nil : c.key
+        }
+    }
+    // Day 3: all fresh, all attached (her plain memory is not attachable: not consolidated, not deep).
+    #expect(Set(try attach(day(3)).selected.map(\.id)) == [faded, settled, deep])
+    // Day 24 still attached, day 25 faded below -0.75: left out, logged; the settled and the deep stay.
+    #expect(try attach(day(24)).selected.map(\.id).contains(faded))
+    let late = try attach(day(365))
+    #expect(Set(late.selected.map(\.id)) == [settled, deep] && late.faded == [faded])
+    #expect(late.line.contains("faded 1 [\(faded)]"))
+    // Faded ranks lower before it drops out: strength_weight × strength below 0.
+    func score(_ now: Double) throws -> Double { try attach(now).ranked.first { $0.id == faded }!.score }
+    func strength(_ now: Double) -> Double { Memory.activation([day(0)], now: now, decay: 0.5, unitDays: 7) }
+    #expect(abs((try score(day(3)) - score(day(20))) - 0.1 * (strength(day(3)) - strength(day(20)))) < 1e-9)
+    // Recall still finds it: strength takes no part.
+    let recall = try selector.run(.init(label: "recall", query: text, app: nil), rule: .recall, visible: [.public], tiers: nil,
+                                  today: nil, now: day(365)) { $0.key }
+    #expect(recall.selected.map(\.id).contains(faded))
+    let near = try selector.run(.init(label: "recall", query: text, app: nil), rule: .recall, visible: [.public], tiers: nil,
+                                today: nil, now: day(0)) { $0.key }
+    #expect(recall.selected.map(\.id) == near.selected.map(\.id))
+    _ = plain
+}
+
+@Test func herRememberCanMarkDeepAndTheDashboardListsMarksAndUnmarks() async throws {
+    struct Item: Encodable { let text: String; let folder: String; let deep: Bool? }
+    let items = String(decoding: try JSONEncoder().encode([Item(text: "主人對花生過敏", folder: "public", deep: true),
+                                                          Item(text: "天空是藍的", folder: "public", deep: nil)]), as: UTF8.self)
+    let h = try await Harness([Scripted("", ("remember", [("items", items)]))])
+    let d = dashboard(h)
+    await h.doll.ownerSaid("記住我對花生過敏")
+    try await h.turn()
+    #expect(try h.toolResults().last!.text.contains("，deep：不會淡）"))
+    let files = try memoryFilesByID(h)
+    let peanut = files.first { $0.value.file.body == "主人對花生過敏" }!.key
+    let sky = files.first { $0.value.file.body == "天空是藍的" }!.key
+    #expect(files[peanut]!.file.deep && !files[sky]!.file.deep)
+    var m = try json(DashboardMemory.self, await d.respond(method: "GET", target: "/api/memory"))
+    #expect(m.deep.map(\.id) == [peanut])
+    let skyEntry = m.folders.flatMap(\.entries).first { $0.id == sky }!
+    #expect(skyEntry.strength == 0 || (skyEntry.strength! < 0 && skyEntry.strength! > -0.01))
+    #expect(!skyEntry.faded && skyEntry.evidence.count == 1)
+    // Mark another, unmark hers: through Memory, the file changes, the index stays.
+    let indexed = try h.store.countMemoryIndex()
+    #expect(await d.respond(method: "POST", target: "/api/memory/deep/\(sky)").status == 200)
+    #expect(await d.respond(method: "POST", target: "/api/memory/undeep/\(peanut)").status == 200)
+    #expect(try memoryFilesByID(h)[sky]!.file.deep && !(try memoryFilesByID(h)[peanut]!.file.deep))
+    #expect(try h.store.countMemoryIndex() == indexed)
+    m = try json(DashboardMemory.self, await d.respond(method: "GET", target: "/api/memory"))
+    #expect(m.deep.map(\.id) == [sky])
+    // Unknown ids, paths and memories without a strength are refused; GET is not allowed.
+    #expect(await d.respond(method: "POST", target: "/api/memory/deep/9-nothere").status == 409)
+    #expect(await d.respond(method: "POST", target: "/api/memory/deep/..%2Fx").status == 400)
+    #expect(await d.respond(method: "GET", target: "/api/memory/deep/\(sky)").status == 405)
+    #expect(DashboardPage.html.contains("/api/memory/undeep/") && DashboardPage.html.contains("標成 deep"))
+}
+
+@Test func strengthConfigHasDefaultsAndIsValidated() throws {
+    let c = try Config.load(root.appending(path: "dollcore.example.toml"))
+    #expect(c.memory.strengthDecay == 0.5 && c.memory.strengthUnitDays == 7 && c.memory.strengthSettled == 0.75)
+    #expect(c.select.strengthFloor == -0.75 && c.select.strengthWeight == 0.1)
+    let file = FileManager.default.temporaryDirectory.appending(path: "strength-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+        + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    // Absent keys: the defaults (a config written before 2026-11-15 boots unchanged).
+    try head.write(to: file, atomically: true, encoding: .utf8)
+    let d = try Config.load(file)
+    #expect(d.memory.strengthDecay == 0.5 && d.memory.strengthUnitDays == 7 && d.memory.strengthSettled == 0.75
+            && d.select.strengthFloor == -0.75 && d.select.strengthWeight == 0.1)
+    for bad in ["strength_decay = 0", "strength_unit_days = -1", "strength_settled = 0"] {
+        try (head + "\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+    for bad in ["strength_floor = 0", "strength_weight = -0.1"] {
+        try (head + "[select]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
 }

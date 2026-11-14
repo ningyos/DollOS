@@ -183,6 +183,14 @@ public struct MemoryConfig: Sendable {
     /// An attached experience counts as followed when at least this share of its steps appear, in
     /// order, among her actions of the session.
     public var experienceFollowRatio = 0.5
+    /// Memory strength (2026-11-15, experiments/m6-memory-strength): ACT-R base-level activation
+    /// ln Σ (1 + age_k / unit)^-d over the days the memory was seen (`Memory.activation`). `d`.
+    public var strengthDecay = 0.5
+    /// The unit of time, in days.
+    public var strengthUnitDays = 7.0
+    /// The settled line: a memory whose strength right after a piece of evidence is at least this
+    /// no longer fades (stored in its file).
+    public var strengthSettled = 0.75
 }
 
 /// Consolidation (2026-11-11): a separate, persona-free model request turns the day's timeline into
@@ -222,6 +230,12 @@ public struct SelectConfig: Sendable {
     public var recallLimit = 3
     /// recall's embedding channel: this many best by cosine, no floor (what the 31/32 was measured with).
     public var recallCandidates = 5
+    /// Auto-attach: a memory that fades (`Memory.fadingStrength`) and whose strength is below this
+    /// is not attached (recall still finds it).
+    public var strengthFloor = -0.75
+    /// Auto-attach's cheap score: plus this × its strength when the strength is below 0 (a fresh,
+    /// settled or deep memory, or an experience, adds nothing).
+    public var strengthWeight = 0.1
 }
 
 /// Her voice in a Discord voice channel (2026-11-13, M6): the bridge streams the owner's audio over
@@ -394,6 +408,9 @@ public struct Config: Sendable {
         try m.read("experience_max_chars", &memory.experienceMaxChars)
         try m.read("experience_group_similarity", &memory.experienceGroupSimilarity)
         try m.read("experience_follow_ratio", &memory.experienceFollowRatio)
+        try m.read("strength_decay", &memory.strengthDecay)
+        try m.read("strength_unit_days", &memory.strengthUnitDays)
+        try m.read("strength_settled", &memory.strengthSettled)
         for tier in SourceTier.allCases {
             var v: Double?
             try m.read("confidence_" + tier.rawValue, &v)
@@ -409,8 +426,9 @@ public struct Config: Sendable {
               memory.highConfidence > memory.mediumConfidence, !memory.embeddingModel.isEmpty,
               !memory.embeddingQueryInstruction.isEmpty, memory.embeddingMaxTokens >= 1,
               (0.0...1.0).contains(memory.todayConfidence),
-              Set([memory.secretDir, memory.ownDir, memory.publicDir, memory.registryDir]).count == 4 else {
-            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, embedding_model and embedding_query_instruction not empty, embedding_max_tokens at least 1, today_confidence from 0 to 1, four distinct folder names (secret, own, public, registry)")
+              Set([memory.secretDir, memory.ownDir, memory.publicDir, memory.registryDir]).count == 4,
+              memory.strengthDecay > 0, memory.strengthUnitDays > 0, memory.strengthSettled > 0 else {
+            throw TOMLError(description: "[memory] rrf_k and max_candidates at least 1, experience_max_chars at least 100, experience_group_similarity from 0 to 1, experience_follow_ratio above 0 up to 1, high_confidence > medium_confidence, embedding_model and embedding_query_instruction not empty, embedding_max_tokens at least 1, today_confidence from 0 to 1, four distinct folder names (secret, own, public, registry), strength_decay and strength_unit_days above 0, strength_settled above 0 (a memory seen once is 0 at most)")
         }
         var d = Section(name: "dashboard", raw: raw["dashboard"] ?? [:])
         var dashboard = DashboardConfig()
@@ -458,10 +476,13 @@ public struct Config: Sendable {
         try s.read("attach_max", &select.attachMax)
         try s.read("recall_limit", &select.recallLimit)
         try s.read("recall_candidates", &select.recallCandidates)
+        try s.read("strength_floor", &select.strengthFloor)
+        try s.read("strength_weight", &select.strengthWeight)
         try s.finish()
         guard (-1.0...1.0).contains(select.similarity), select.entityWeight >= 0, select.attachMax >= 1,
-              select.recallLimit >= 1, select.recallCandidates >= select.recallLimit else {
-            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max and recall_limit at least 1; recall_candidates at least recall_limit")
+              select.recallLimit >= 1, select.recallCandidates >= select.recallLimit,
+              select.strengthFloor < 0, select.strengthWeight >= 0 else {
+            throw TOMLError(description: "[select] similarity from -1 to 1; entity_weight 0 or more; attach_max and recall_limit at least 1; recall_candidates at least recall_limit; strength_floor below 0 (a memory is 0 on the day it is seen); strength_weight 0 or more")
         }
         var o = Section(name: "voice", raw: raw["voice"] ?? [:])
         var voice = VoiceConfig()

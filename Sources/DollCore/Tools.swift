@@ -9,7 +9,7 @@ import Foundation
 ///     discord.dm(text)                   text to the owner's Discord DM
 ///     dollctl.reply(text)                text to the developer's terminal (`dollctl chat`)
 ///     think(level: medium)               the next model call thinks first (2026-11-11: `none` removed; 2026-11-15: `high` removed)
-///     remember(items: [{text, folder, kind?}])  one memory per item; folder: secret | own | public
+///     remember(items: [{text, folder, kind?, deep?}])  one memory per item; folder: secret | own | public; deep: never fades
 ///     recall(query)                      search her memories and today's timeline
 ///     todo.set(items) / todo.done(result) / todo.fail(reason, tried) / todo.wait(reason) / todo.progress(note)
 ///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
@@ -81,7 +81,7 @@ public enum Tools {
                      "required": ["level"],
                  ], jsonParameters: []),
             Spec(name: "remember",
-                 description: "把值得長期記住的事寫進記憶。一次可寫多條，一條一件事。",
+                 description: "把值得長期記住的事寫進記憶。一次可寫多條，一條一件事。記憶的內容不會變，用 recall 一定查得到；程式自己想起來附給你的（【相關記憶】）會淡：睡覺整理好的記憶，之後沒在別的日子再遇到，過三個禮拜左右就不會自己冒出來；不同的日子又遇到同一件事（睡覺整理時算，你自己重說或查到的不算）就記得更牢，夠牢就不再淡。對你特別重要、要一直記得、相關時該自己冒出來的，標 deep：永遠不淡。",
                  parameters: [
                      "type": "object",
                      "properties": ["items": [
@@ -94,6 +94,8 @@ public enum Tools {
                                             "description": "secret＝主人的秘密，只有跟主人的場景看得到；own＝你自己的秘密（你的密碼、帳號、token），主人和你自己做事時看得到，陌生人看不到；public＝其他。拿不準是不是主人的秘密就 secret"],
                                  "kind": ["type": "string", "enum": ["happened", "intended", "uncertain"],
                                           "description": "happened＝已經發生；intended＝打算、還沒做；uncertain＝沒證實（聽說、猜的、結果不明）。是事實或喜好就不填"],
+                                 "deep": ["type": "boolean",
+                                          "description": "true＝這件事對你特別重要，要一直記得，永遠不會淡。只標真的重要的；平常不填"],
                              ],
                              "required": ["text", "folder"],
                          ],
@@ -320,7 +322,9 @@ public enum Tools {
             let kind: MemoryKind?
             /// What she wrote for `kind` when it is not one of the three; only this item fails.
             let badKind: String?
-            enum CodingKeys: CodingKey { case text, folder, kind }
+            /// She marked it deep: it never fades (2026-11-15). Absent or null: false.
+            let deep: Bool
+            enum CodingKeys: CodingKey { case text, folder, kind, deep }
             init(from decoder: any Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 text = try c.decode(String.self, forKey: .text)
@@ -340,6 +344,7 @@ public enum Tools {
                 }
                 kind = MemoryKind(rawValue: raw)
                 badKind = raw.isEmpty || kind != nil ? nil : raw
+                deep = try c.decodeIfPresent(Bool.self, forKey: .deep) ?? false
             }
         }
         /// `discord.dm`, `dollctl.reply` or `voice.say`: the text and the channel it goes to.

@@ -1184,7 +1184,8 @@ public actor Doll {
                     let text = "\(app.name)：\(s.path)＝\(s.keys)（\(app.name) \(app.version)）"
                     let keys = try pipeline.programShortcut(s.keys)
                     try memory.write(text, folder: .public, sourceSeq: 0, tier: .program, kind: nil, app: app,
-                                     entities: [MemoryEntity(appEntity.id, app.name), MemoryEntity(keys.id, s.keys)])
+                                     entities: [MemoryEntity(appEntity.id, app.name), MemoryEntity(keys.id, s.keys)],
+                                     now: Date().timeIntervalSince1970)
                 }
                 log("INFO", "shortcuts of \(app.bundleID) \(app.version): \(shortcuts.count) written, \(removed) old removed")
             } catch {
@@ -1563,7 +1564,7 @@ public actor Doll {
             entities.append(MemoryEntity(try pipeline.programApp(app).entry.id, app.name))
         }
         let id = try memory.write(text, folder: .public, sourceSeq: reply.seq!, tier: .selfReported, kind: nil,
-                                  experience: (task: task, stats: stats), entities: entities)
+                                  experience: (task: task, stats: stats), entities: entities, now: Date().timeIntervalSince1970)
         experienceNow = text
         log("INFO", "turn \(turnIndex): experience \(id) written, \(steps.count) steps, \(text.count) chars, "
             + "\(stats.turns) turns, \(stats.seconds) s")
@@ -1713,6 +1714,7 @@ public actor Doll {
         }
         // With no source event she is the source: the reply this call belongs to.
         let seq = source?.seq ?? reply.seq!
+        let now = Date().timeIntervalSince1970
         var lines: [String] = [], actions: [String] = []
         for (i, item) in items.enumerated() {
             let folder = memory.dirName(item.folder)
@@ -1721,10 +1723,10 @@ public actor Doll {
                     throw ToolError(description: "kind 只能是 happened、intended、uncertain，或不填；收到 \(bad)")
                 }
                 let id = try memory.write(item.text, folder: item.folder, sourceSeq: seq, tier: tier, kind: item.kind,
-                                          entities: [])
-                log("INFO", "turn \(turnIndex): remember \(id)")
+                                          entities: [], deep: item.deep, now: now)
+                log("INFO", "turn \(turnIndex): remember \(id)\(item.deep ? " (deep)" : "")")
                 let kind = item.kind.map { "，kind \($0.rawValue)" } ?? ""
-                lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)\(kind)）")
+                lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)\(kind)\(item.deep ? "，deep：不會淡" : "")）")
                 actions.append("remember \(folder)")
             } catch {
                 log("ERROR", "remember item \(i + 1) failed: \(error)")
@@ -1774,7 +1776,8 @@ public actor Doll {
         // real runs: the question itself came back as the first of her three). Later events can be,
         // a compaction may have taken them out of her request.
         let asked = events.last { $0.speaker != nil }?.seq ?? -1
-        let report = try pipeline.run(trigger, rule: .recall, visible: visible, tiers: nil, today: today) { c in
+        let report = try pipeline.run(trigger, rule: .recall, visible: visible, tiers: nil, today: today,
+                                      now: Date().timeIntervalSince1970) { c in
             if case .today(let h) = c.hit, h.seq == asked { return nil }
             return c.key
         }
@@ -1798,15 +1801,16 @@ public actor Doll {
     /// 2026-11-15): on a new owner line and when a computer result's front app changed,
     /// `Selector.run` (`Rule.attach`) with the owner's last line plus the front app's name as the
     /// query and the front app's registry entry (by its bundle id) as the trigger's entity.
-    /// Experiences (tier self_reported) and consolidated memories only (her other memories and the
-    /// program's shortcuts stay for `recall`), in the turn's visible folders. Experiences for one
-    /// task are one group (`Memory.experienceGroups`): only its best-ranked one (`Memory.ranked`) is
-    /// a candidate; a consolidated memory is its own group. Those attached since the owner's last
-    /// line are left out. At most `[select] attach_max` whose cosine to the query is at least
-    /// `[select] similarity`, best cheap score first, become one 【相關記憶】 event, re-sent
-    /// byte-identical like every event. None, no event. Each goes in whole (an experience's length
-    /// is capped when written), an experience's stats line first. A failure is logged and attaches
-    /// nothing; the turn goes on.
+    /// Experiences (tier self_reported), consolidated memories and (2026-11-15) deep memories only
+    /// (her other memories and the program's shortcuts stay for `recall`), in the turn's visible
+    /// folders; a memory that has faded below `[select] strength_floor` is not given. Experiences
+    /// for one task are one group (`Memory.experienceGroups`): only its best-ranked one
+    /// (`Memory.ranked`) is a candidate; a consolidated or deep memory is its own group. Those
+    /// attached since the owner's last line are left out. At most `[select] attach_max` whose
+    /// cosine to the query is at least `[select] similarity`, best cheap score first, become one
+    /// 【相關記憶】 event, re-sent byte-identical like every event. None, no event. Each goes in whole
+    /// (an experience's length is capped when written), an experience's stats line first. A failure
+    /// is logged and attaches nothing; the turn goes on.
     func attachMemories(trigger label: String) async {
         do {
             let events = timeline.events
@@ -1816,9 +1820,10 @@ public actor Doll {
             let trigger = Selector.Trigger(label: label, query: query, app: frontApp)
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
             var picks: [String: Experience] = [:], already = Set<String>(), merged = Set<String>()
-            let report = try pipeline.run(trigger, rule: .attach, visible: visible, tiers: [.selfReported, .consolidated], today: nil) { c in
+            let report = try pipeline.run(trigger, rule: .attach, visible: visible, tiers: Memory.strengthTiers.union([.selfReported]),
+                                          today: nil, now: Date().timeIntervalSince1970) { c in
                 let pick: Experience
-                if let m = try memory.consolidated(c.id) {
+                if let m = try memory.attachable(c.id) {
                     pick = m
                 } else if let g = groups.first(where: { $0.contains { $0.id == c.id } }) {
                     let ranked = Memory.ranked(g)

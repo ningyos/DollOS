@@ -72,22 +72,25 @@ public final class Selector {
     /// How a selection gives what it found (2026-11-15, experiments/m6-select-eval and m6-drop-fm).
     public enum Rule: Sendable {
         /// The program's 【相關記憶】: the embedding channel at `[select] similarity`; only candidates
-        /// whose cosine is at least that (one tied only by FTS, the entity or the hop is not given);
-        /// best by the cheap score (cosine + `entity_weight` when it has the front app's entry, ties
-        /// by key); at most `[select] attach_max`.
+        /// whose cosine is at least that (one tied only by FTS, the entity or the hop is not given),
+        /// and (2026-11-15) whose strength, when it fades (`Memory.fadingStrength`), is at least
+        /// `[select] strength_floor`; best by the cheap score (cosine + `entity_weight` when it has
+        /// the front app's entry + `strength_weight` × its strength when below 0, ties by key); at
+        /// most `[select] attach_max`.
         case attach
         /// Her `recall`: no gate beyond the search. The embedding channel is the `[select]
         /// recall_candidates` best by cosine, whatever their cosine; everything related ranked by
         /// RRF (`[memory] rrf_k`) over two lists: text (how many of the query's words it contains,
-        /// then cosine) and cosine; the `recall_limit` best (ties by key).
+        /// then cosine) and cosine; the `recall_limit` best (ties by key). Strength takes no part:
+        /// she asked, so a faded memory is found as readily as a fresh one (owner, 2026-11-14).
         case recall
     }
 
     /// One selection: the front app's entry (`appEntry`), everything related (`Memory.related`),
     /// each through `prepare` (under which key; nil leaves it out; one per key, the best kept), then
-    /// what `rule` gives, best first.
+    /// what `rule` gives, best first. `now`: the time strength is reckoned at.
     public func run(_ t: Trigger, rule: Rule, visible: Set<MemoryFolder>, tiers: Set<SourceTier>?,
-                    today: TodayIndex?, prepare: (Candidate) throws -> String?) throws -> SelectionReport {
+                    today: TodayIndex?, now: Double, prepare: (Candidate) throws -> String?) throws -> SelectionReport {
         var report = SelectionReport(trigger: t.label)
         var clock = ContinuousClock.now
         var ids: Set<String> = []
@@ -108,14 +111,21 @@ public final class Selector {
         for c in Candidate.Channel.allCases { report.channels[c] = related.filter { $0.channels.contains(c) }.count }
         report.seconds.related = lap(&clock)
 
+        /// A memory's strength when it fades; nil (counts as full) otherwise and for today's events.
+        func strength(_ c: Candidate) -> Double? {
+            guard case .memory(let h) = c.hit else { return nil }
+            return memory.fadingStrength(tier: h.tier, evidence: h.evidence, deep: h.deep, settled: h.settled, now: now)
+        }
         let score: [String: Double]
         let keep: (Candidate) -> Bool
         let limit: Int
         switch rule {
         case .attach:
-            score = Dictionary(related.map { ($0.key, $0.cosine + config.entityWeight * Double($0.triggerEntities.count)) },
-                               uniquingKeysWith: { a, _ in a })
-            keep = { $0.cosine >= self.config.similarity }
+            score = Dictionary(related.map { c in
+                (c.key, c.cosine + config.entityWeight * Double(c.triggerEntities.count)
+                    + config.strengthWeight * min(0, strength(c) ?? 0))
+            }, uniquingKeysWith: { a, _ in a })
+            keep = { $0.cosine >= self.config.similarity && (strength($0) ?? 0) >= self.config.strengthFloor }
             limit = config.attachMax
         case .recall:
             score = recallScores(related, query: t.query)
@@ -134,7 +144,11 @@ public final class Selector {
         report.prepared = byKey.count
         let ranked = byKey.values.sorted { $0.score != $1.score ? $0.score > $1.score : $0.candidate.key < $1.candidate.key }
         report.ranked = ranked.prefix(SelectionReport.shown).map { ($0.candidate.id, $0.score, $0.candidate.cosine) }
-        report.selected = Array(ranked.filter { keep($0.candidate) }.prefix(limit).map(\.candidate))
+        let kept = ranked.filter { keep($0.candidate) }
+        report.selected = Array(kept.prefix(limit).map(\.candidate))
+        if case .attach = rule {
+            report.faded = ranked.filter { $0.candidate.cosine >= config.similarity && !keep($0.candidate) }.map(\.candidate.id)
+        }
         report.seconds.rank = lap(&clock)
         return report
     }
@@ -182,6 +196,9 @@ public struct SelectionReport: Sendable {
     public var ranked: [(id: String, score: Double, cosine: Double)] = []
     /// What is given, best first.
     public var selected: [Candidate] = []
+    /// Attach only: those at or above the cosine floor left out because they faded below
+    /// `[select] strength_floor`, best first.
+    public var faded: [String] = []
     public var seconds = Seconds()
 
     public var line: String {
@@ -190,6 +207,7 @@ public struct SelectionReport: Sendable {
         return "選記憶（\(trigger)）entities [\(entities.joined(separator: ", "))]; related \(related) (\(ch)), prepared \(prepared); "
             + "ranked [\(ranked.map { "\($0.id) \(String(format: "%.4f", $0.score)) cos \(f($0.cosine))" }.joined(separator: ", "))]; "
             + "given \(selected.count) [\(selected.map(\.id).joined(separator: ", "))]; "
+            + (faded.isEmpty ? "" : "faded \(faded.count) [\(faded.joined(separator: ", "))]; ")
             + "seconds entity \(f(seconds.entity)), related \(f(seconds.related)), "
             + "rank \(f(seconds.rank)), total \(f(seconds.total))"
     }

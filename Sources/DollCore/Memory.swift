@@ -65,9 +65,34 @@ public struct MemoryHit: Sendable {
     /// nil when she gave none (front-matter `kind = ""`): a fact or a preference.
     public var kind: MemoryKind?
     public var text: String
+    public var tier: SourceTier
+    /// Its evidence (`MemoryFile.allEvidence`), deep mark and settled time: how strong it is
+    /// (`Memory.activation`).
+    public var evidence: [Evidence]
+    public var deep: Bool
+    public var settled: Double?
 
     /// What she sees: the level and the kind together, 「確定的打算」「聽說的已發生」, or the level alone (spec 6).
     public var label: String { kind.map { "\(level)的\($0.label)" } ?? level }
+}
+
+/// One piece of evidence for a memory (memory strength, 2026-11-15): when the thing happened, and
+/// the timeline event that showed it (`seq`, 0 when there is none).
+public struct Evidence: Sendable, Equatable, Codable {
+    public var ts: Double
+    public var seq: Int64
+
+    public init(ts: Double, seq: Int64) {
+        self.ts = ts
+        self.seq = seq
+    }
+
+    /// The list as the front-matter's one JSON line.
+    static func json(_ list: [Evidence]) -> String {
+        let enc = JSONEncoder()
+        enc.outputFormatting = .sortedKeys
+        return String(decoding: (try? enc.encode(list)) ?? Data("[]".utf8), as: UTF8.self)
+    }
 }
 
 /// An experience's stats (spec 3.1, 2026-11-09): in its file's front-matter, so the embedded text
@@ -187,7 +212,20 @@ public struct MemoryFile: Sendable, Equatable {
     public var stats: ExperienceStats?
     public var retired: Retirement?
     public var entities: [MemoryEntity] = []
+    /// Evidence after the first (memory strength, 2026-11-15): absent from the file until
+    /// consolidation confirms it once; then the whole list, the first being `created_ts` /
+    /// `source_event_seq`. `allEvidence` is what counts.
+    public var evidence: [Evidence] = []
+    /// She (on `remember`) or the owner (on the dashboard) marked it deep: it never fades.
+    public var deep = false
+    /// When its strength first reached `[memory] strength_settled`: from then on it no longer fades.
+    /// Stored, so it never flips back (not even when the config's lines change).
+    public var settled: Double?
     public var body: String
+
+    /// Every piece of evidence: `evidence`, or (never confirmed, and every file written before
+    /// 2026-11-15) the one the file was written from.
+    public var allEvidence: [Evidence] { evidence.isEmpty ? [Evidence(ts: ts, seq: sourceSeq)] : evidence }
 
     /// The file's bytes; `Memory.parseFile` of them gives this value back.
     public var text: String {
@@ -202,6 +240,9 @@ public struct MemoryFile: Sendable, Equatable {
         if let r = retired {
             lines += ["retired_ts = \(r.ts)", "superseded_by = \"\(r.supersededBy)\"", "retired_reason = " + Self.json(r.reason)]
         }
+        if deep { lines.append("deep = true") }
+        if !evidence.isEmpty { lines.append("evidence = " + Evidence.json(evidence)) }
+        if let settled { lines.append("settled_ts = \(settled)") }
         if !entities.isEmpty { lines.append("entities = " + MemoryEntity.json(entities)) }
         return (lines + ["+++", body]).joined(separator: "\n")
     }
@@ -516,6 +557,17 @@ public final class Memory {
                     throw MemoryError(description: "entities is not JSON: \(value)")
                 }
                 f.entities = try MemoryEntity.validated(list)
+            case "deep":
+                guard bare == "true" || bare == "false" else { throw MemoryError(description: "deep must be true or false: \(value)") }
+                f.deep = bare == "true"
+            case "evidence":
+                guard let list = try? JSONDecoder().decode([Evidence].self, from: Data(value.utf8)), !list.isEmpty else {
+                    throw MemoryError(description: "evidence is not a non-empty JSON list of {ts, seq}: \(value)")
+                }
+                f.evidence = list
+            case "settled_ts":
+                guard let t = Double(bare) else { throw MemoryError(description: "settled_ts is not a number: \(value)") }
+                f.settled = t
             default: break
             }
         }
@@ -555,27 +607,100 @@ public final class Memory {
     }
 
     /// An experience also gets the owner's line it was for and its stats in the front-matter, so the
-    /// embedded text stays what she did (spec 3.1, 2026-11-09).
+    /// embedded text stays what she did (spec 3.1, 2026-11-09). `now`: when it is written, its
+    /// `created_ts` and so its first piece of evidence. `deep` only for tiers that have a strength.
     @discardableResult
     public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?,
                       app: AppIdentity? = nil, experience: (task: String, stats: ExperienceStats)? = nil,
-                      entities: [MemoryEntity] = []) throws -> String {
+                      entities: [MemoryEntity] = [], deep: Bool = false, now: Double) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
             throw MemoryError(description: "no starting confidence configured for tier \(tier.rawValue)")
         }
+        guard !deep || Self.strengthTiers.contains(tier) else {
+            throw MemoryError(description: "a \(tier.rawValue) memory has no strength, so it cannot be deep")
+        }
         let entities = MemoryEntity.unique(entities)
         try checkEntities(entities)
-        let ts = Date().timeIntervalSince1970
         let id = "\(sourceSeq)-\(Self.hex(6))"
         let url = directory(f).appending(path: "\(id).md")
-        let file = MemoryFile(sourceSeq: sourceSeq, ts: ts, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier,
+        let file = MemoryFile(sourceSeq: sourceSeq, ts: now, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier,
                               app: app?.bundleID ?? "", appVersion: app?.version ?? "",
-                              task: experience?.task, stats: experience?.stats, entities: entities, body: body)
+                              task: experience?.task, stats: experience?.stats, entities: entities, deep: deep, body: body)
         try file.text.write(to: url, atomically: true, encoding: .utf8)
         try index(id, url: url, folder: dirName(f), file)
         return id
+    }
+
+    // strength ----------------------------------------------------------------
+    /// The tiers whose memories have a strength (2026-11-15): what she, the owner, the developer,
+    /// tools and consolidation told her, the memories consolidation sees and can confirm. The
+    /// program's own records keep their own measures: shortcuts are re-read per app version,
+    /// experiences have their stats.
+    public static let strengthTiers: Set<SourceTier> = Consolidation.revisable
+
+    /// ACT-R base-level activation (owner, 2026-11-05/07, 2026-11-14): ln Σ (1 + age_k / unit)^-d
+    /// over the evidence, age in days (`[memory] strength_unit_days`, `strength_decay`). The `1 +`
+    /// makes a piece of evidence count 1 on the day it happens (textbook ACT-R's t_k^-d is infinite
+    /// at t = 0), so n pieces are at most ln n (experiments/m6-memory-strength). Evidence after
+    /// `now` counts as today's.
+    public static func activation(_ evidence: [Double], now: Double, decay: Double, unitDays: Double) -> Double {
+        log(evidence.reduce(0.0) { sum, ts in sum + pow(1 + max(0, now - ts) / 86400 / unitDays, -decay) })
+    }
+
+    /// A memory's strength at `now`; nil when it does not fade: no strength for its tier, deep, or
+    /// settled. A memory that does not fade counts as fully strong.
+    public func fadingStrength(tier: SourceTier, evidence: [Evidence], deep: Bool, settled: Double?, now: Double) -> Double? {
+        guard Self.strengthTiers.contains(tier), !deep, settled == nil else { return nil }
+        return Self.activation(evidence.map(\.ts), now: now, decay: config.strengthDecay, unitDays: config.strengthUnitDays)
+    }
+
+    /// What `confirm` did.
+    public enum Confirmation: Sendable, Equatable {
+        /// A new piece of evidence: the strength right after it, and whether this made it settled.
+        case counted(strength: Double, settled: Bool)
+        /// It already has evidence on that calendar day (local time): nothing written.
+        case sameDay(String)
+    }
+
+    /// One more piece of evidence for memory `id` (consolidation's `confirm`): at most one per
+    /// calendar day. When its strength right after it is at least `[memory] strength_settled`, it is
+    /// settled from `ts` on (stored). The text, and so the index, stay as they are.
+    func confirm(_ id: String, at ts: Double, seq: Int64) throws -> Confirmation {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
+        guard Self.strengthTiers.contains(parsed.tier) else {
+            throw MemoryError(description: "memory \(id) is \(parsed.tier.rawValue): it has no strength to confirm")
+        }
+        let day = Self.day(ts)
+        if parsed.allEvidence.contains(where: { Self.day($0.ts) == day }) { return .sameDay(day) }
+        parsed.evidence = (parsed.allEvidence + [Evidence(ts: ts, seq: seq)]).sorted { $0.ts < $1.ts }
+        let strength = Self.activation(parsed.evidence.map(\.ts), now: ts, decay: config.strengthDecay, unitDays: config.strengthUnitDays)
+        let settles = parsed.settled == nil && strength >= config.strengthSettled
+        if settles { parsed.settled = ts }
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        return .counted(strength: strength, settled: settles)
+    }
+
+    /// The local calendar day of `ts`, `yyyy-MM-dd`.
+    static func day(_ ts: Double) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: Date(timeIntervalSince1970: ts))
+        return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+    }
+
+    /// Marks memory `id` deep or not (the dashboard; she marks hers on `remember`). Only memories
+    /// with a strength; never a retired one. The text, and so the index, stay as they are.
+    func setDeep(_ id: String, _ deep: Bool) throws {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
+        guard Self.strengthTiers.contains(parsed.tier) else {
+            throw MemoryError(description: "memory \(id) is \(parsed.tier.rawValue): it has no strength, so it cannot be deep")
+        }
+        parsed.deep = deep
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     /// Every entity must name an existing registry entry.
@@ -624,12 +749,13 @@ public final class Memory {
         return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
     }
 
-    /// A memory by id, when consolidation wrote it and it is not retired: what attaching shows for a
-    /// consolidated hit (2026-11-11, provisional).
-    func consolidated(_ id: String) throws -> Experience? {
+    /// A memory by id as attaching shows it, when consolidation wrote it or (2026-11-15) it is deep,
+    /// and it is not retired (2026-11-11, provisional).
+    func attachable(_ id: String) throws -> Experience? {
         guard let url = url(of: id) else { return nil }
         let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
-        guard parsed.tier == .consolidated, parsed.retired == nil, !parsed.body.isEmpty else { return nil }
+        guard parsed.tier == .consolidated || (parsed.deep && Self.strengthTiers.contains(parsed.tier)),
+              parsed.retired == nil, !parsed.body.isEmpty else { return nil }
         let folder = url.deletingLastPathComponent().lastPathComponent
         return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
     }
@@ -965,7 +1091,8 @@ public final class Memory {
         guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { return nil }
         return MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
                          confidence: meta.confidence, level: level(meta.confidence),
-                         kind: MemoryKind(rawValue: parsed.kind), text: parsed.body)
+                         kind: MemoryKind(rawValue: parsed.kind), text: parsed.body, tier: parsed.tier,
+                         evidence: parsed.allEvidence, deep: parsed.deep, settled: parsed.settled)
     }
 
     static func dot(_ vector: Data, _ qv: [Float]) -> Double {

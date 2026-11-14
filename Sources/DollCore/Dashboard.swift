@@ -2,10 +2,11 @@ import Foundation
 import Network
 import Synchronization
 
-/// The owner's dashboard (2026-11-09): a read-only web page served by this process, her vision,
-/// memory and actions updated live over SSE, plus two system operations, interrupt (cancel the model
-/// call in flight) and pause/resume (no new turns; events keep queueing). Nothing here can say
-/// anything to her or change a memory: the only POST routes are those two operations.
+/// The owner's dashboard (2026-11-09): a web page served by this process, her vision, memory and
+/// actions updated live over SSE, plus the system operations, interrupt (cancel the model call in
+/// flight) and pause/resume (no new turns; events keep queueing), and (2026-11-15) marking a memory
+/// deep or not. Nothing here can say anything to her or change a memory's text: the only POST
+/// routes are those operations.
 
 /// Wakes the dashboard's live connections: every appended event, a turn starting or ending, the
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
@@ -122,6 +123,14 @@ public struct DashboardMemoryEntry: Codable, Sendable, Equatable {
     public var level: String
     public var tier: String
     public var ts: Double
+    /// Memory strength (2026-11-15): her deep mark, when it settled, its evidence (when, oldest
+    /// first), its strength now (nil for tiers without one), and whether it has faded below
+    /// `[select] strength_floor` (no longer attached; deep or settled ones never fade).
+    public var deep: Bool
+    public var settled: Double?
+    public var evidence: [Double]
+    public var strength: Double?
+    public var faded: Bool
 }
 
 public struct DashboardMemory: Codable, Sendable, Equatable {
@@ -138,6 +147,8 @@ public struct DashboardMemory: Codable, Sendable, Equatable {
     public var folders: [Folder]
     /// Experiences the program attached since the owner's last line.
     public var attached: [DashboardMemoryEntry]
+    /// Every deep memory, in all folders, newest first.
+    public var deep: [DashboardMemoryEntry]
     /// 【快捷鍵】 events since the owner's last line.
     public var cheatsheets: [Sheet]
 }
@@ -214,10 +225,17 @@ extension Doll {
     }
 
     public func dashboardMemory() throws -> DashboardMemory {
+        let now = Date().timeIntervalSince1970
         func entry(_ id: String, _ folder: String, _ f: MemoryFile) -> DashboardMemoryEntry {
-            DashboardMemoryEntry(id: id, folder: folder, title: String(f.body.split(separator: "\n").first ?? ""),
-                                 text: f.body, kind: f.kind, confidence: f.confidence, level: memory.level(f.confidence),
-                                 tier: f.tier.rawValue, ts: f.ts)
+            let has = Memory.strengthTiers.contains(f.tier)
+            let strength = has ? Memory.activation(f.allEvidence.map(\.ts), now: now, decay: memoryConfig.strengthDecay,
+                                                   unitDays: memoryConfig.strengthUnitDays) : nil
+            let fading = memory.fadingStrength(tier: f.tier, evidence: f.allEvidence, deep: f.deep, settled: f.settled, now: now)
+            return DashboardMemoryEntry(id: id, folder: folder, title: String(f.body.split(separator: "\n").first ?? ""),
+                                        text: f.body, kind: f.kind, confidence: f.confidence, level: memory.level(f.confidence),
+                                        tier: f.tier.rawValue, ts: f.ts, deep: f.deep, settled: f.settled,
+                                        evidence: f.allEvidence.map(\.ts), strength: strength,
+                                        faded: fading.map { $0 < pipeline.config.strengthFloor } ?? false)
         }
         let folders = try [MemoryFolder.own, .public, .secret].map { f in
             DashboardMemory.Folder(folder: f.rawValue, dir: memory.dirName(f),
@@ -231,7 +249,15 @@ extension Doll {
         let sheets = events.filter { $0.kind == .memory && $0.seq! > since && $0.text.hasPrefix("【快捷鍵】") }.map {
             DashboardMemory.Sheet(seq: $0.seq!, title: String($0.text.split(separator: "\n").first ?? ""), text: $0.text)
         }
-        return DashboardMemory(folders: folders, attached: attached, cheatsheets: sheets)
+        let deep = folders.flatMap { f in f.entries.filter(\.deep) }.sorted { ($0.ts, $1.id) > ($1.ts, $0.id) }
+        return DashboardMemory(folders: folders, attached: attached, deep: deep, cheatsheets: sheets)
+    }
+
+    /// The dashboard's mark (2026-11-15): memory `id` deep or not, through `Memory` (its file; the
+    /// index holds no mark).
+    public func dashboardSetDeep(_ id: String, _ deep: Bool) throws {
+        try memory.setDeep(id, deep)
+        log("INFO", "dashboard: memory \(id) \(deep ? "marked deep" : "no longer deep")")
     }
 }
 
@@ -240,9 +266,9 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep }
 
-    /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name).
+    /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
     public static let routes: [(method: String, path: String, kind: Kind)] = [
         ("GET", "/", .page),
@@ -255,6 +281,8 @@ public final class Dashboard: @unchecked Sendable {
         ("POST", "/api/interrupt", .interrupt),
         ("POST", "/api/pause", .pause),
         ("POST", "/api/resume", .resume),
+        ("POST", "/api/memory/deep/", .deep),
+        ("POST", "/api/memory/undeep/", .undeep),
     ]
 
     public struct Response: Sendable {
@@ -336,6 +364,10 @@ public final class Dashboard: @unchecked Sendable {
             case .resume:
                 await doll.resume()
                 return .json(["paused": false])
+            case .deep, .undeep:
+                guard let id = Self.validShotName(rest) else { return .text(400, "bad memory id") }
+                do { try await doll.dashboardSetDeep(id, kind == .deep) } catch let e as MemoryError { return .text(409, e.description) }
+                return .json(["id": id, "deep": kind == .deep ? "true" : "false"])
             case .events:
                 return .text(400, "/events is a stream")
             }

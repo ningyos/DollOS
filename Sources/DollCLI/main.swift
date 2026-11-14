@@ -33,7 +33,8 @@ if argv.count > 3 {
         cfg.core.dataDir = argv[4]
         if argv.count == 7 { cfg.memory.dir = argv[6] }
         let result = try await Consolidation.run(config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath),
-                                                 model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory))
+                                                 model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory),
+                                                 now: Date().timeIntervalSince1970)
         out(result.report)
     } catch {
         fail("consolidate: \(error)")

@@ -25,6 +25,10 @@ public enum ConsolidationOp: Sendable, Equatable {
     case update(id: String, text: String, entities: [MemoryEntity])
     /// `supersededBy`: an existing memory's id or an add's ref, as the reply gave it.
     case retire(id: String, supersededBy: String, reason: String)
+    /// Today's task `task` (its number in the request; 0: the events before the owner's first line)
+    /// showed the same thing again, from a different event: one more piece of evidence for the
+    /// existing memory `id` (memory strength, 2026-11-15).
+    case confirm(id: String, task: Int)
 }
 
 /// A registry entry the reply creates (2026-11-11): its operations' entities name it by `ref`.
@@ -84,9 +88,10 @@ public enum Consolidation {
     }
 
     /// Consolidates the newest segment of `config.core.dataDir` into `config.memory.dir` (both
-    /// relative to `root` unless absolute), embedding with `embedder`.
+    /// relative to `root` unless absolute), embedding with `embedder`. `now`: when it runs (the new
+    /// memories' `created_ts`, the retired ones' `retired_ts`, the cutoff for deleting retired files).
     public static func run(config: Config, root: URL, model: any MainModel,
-                           embedder: any Embedder) async throws -> ConsolidationResult {
+                           embedder: any Embedder, now: Double) async throws -> ConsolidationResult {
         func path(_ p: String) -> URL { p.hasPrefix("/") ? URL(filePath: p) : root.appending(path: p) }
         let data = path(config.core.dataDir)
         let timelineDir = data.appending(path: "timeline")
@@ -129,7 +134,8 @@ public enum Consolidation {
         let started = Date()
         let reply = try await model.chat(messages, tools: nil, effort: config.consolidate.effort)
         let seconds = Date().timeIntervalSince(started)
-        let plan = try parse(reply.content, known: Set(related.map(\.id)), registry: Set(entries.map(\.id)))
+        let plan = try parse(reply.content, known: Set(related.map(\.id)), registry: Set(entries.map(\.id)),
+                             tasks: Set(numbered(tasks).keys))
         // What she wakes up with (owner, 2026-11-15: sleep is not a compaction, and it does not empty
         // her context): the day, as a summary a second clean request writes. Asked for before anything
         // is applied, so a failure here still writes nothing.
@@ -140,14 +146,14 @@ public enum Consolidation {
         guard !summary.isEmpty else { throw ConsolidationError("the summary request for the new segment returned no text") }
 
         // Valid: from here on it is applied.
-        let now = Date().timeIntervalSince1970
+        let byNumber = numbered(tasks)
         var applied = try memory.deleteRetired(before: now - Double(config.consolidate.retiredKeepDays) * 86400)
             .map { "deleted \($0) (retired more than \(config.consolidate.retiredKeepDays) days ago)" }
         // New registry entries: only those an operation names.
         let used = Set(plan.operations.flatMap { op -> [String] in
             switch op {
             case .add(_, _, _, _, let entities), .update(_, _, let entities): entities.map(\.id)
-            case .retire: []
+            case .retire, .confirm: []
             }
         })
         var entityIDs: [String: String] = [:]
@@ -174,7 +180,7 @@ public enum Consolidation {
             case .add(let ref, let text, let folder, let kind, let entities):
                 let list = try aligned(entities)
                 let id = try memory.write(text, folder: folder, sourceSeq: timeline.lastSeq, tier: .consolidated, kind: kind,
-                                          entities: list)
+                                          entities: list, now: now)
                 refs[ref] = id
                 applied.append("add \(memory.dirName(folder))/\(id) (ref \(ref), kind \(kind?.rawValue ?? "none"), entities \(MemoryEntity.json(list))): \(text)")
             case .update(let id, let text, let entities):
@@ -186,6 +192,15 @@ public enum Consolidation {
                 let target = refs[by] ?? by
                 try memory.retire(id, Retirement(ts: now, supersededBy: target, reason: reason))
                 applied.append("retire \(id) (superseded by \(target)): \(reason)")
+            case .confirm(let id, let task):
+                let t = byNumber[task]!
+                switch try memory.confirm(id, at: t.ts, seq: t.seq) {
+                case .counted(let strength, let settled):
+                    applied.append("confirm \(id) (task \(task), \(Memory.day(t.ts)), event \(t.seq)): strength "
+                                   + String(format: "%.2f", strength) + (settled ? ", settled: no longer fades" : ""))
+                case .sameDay(let day):
+                    applied.append("confirm \(id) (task \(task)): not counted, it already has evidence on \(day)")
+                }
             }
         }
         let newSegment = try Timeline.startSegment(dir: timelineDir)
@@ -201,11 +216,25 @@ public enum Consolidation {
     // rendering ---------------------------------------------------------------
 
     /// One task of the day: its rendered lines, whether an owner or developer line began it, and what
-    /// to recall for it (that line, and her `todo.done` results and `todo.fail` reasons).
+    /// to recall for it (that line, and her `todo.done` results and `todo.fail` reasons). `ts` and
+    /// `seq`: its first shown event (a `confirm` naming the task is evidence from then).
     public struct DayTask: Sendable, Equatable {
         public var text: String
         public var owner: Bool
         public var queries: [String]
+        public var ts: Double
+        public var seq: Int64
+    }
+
+    /// The tasks by the number the request shows: 1, 2, … for those an owner line began, 0 for the
+    /// events before the first one.
+    static func numbered(_ tasks: [DayTask]) -> [Int: DayTask] {
+        var out: [Int: DayTask] = [:], n = 0
+        for t in tasks {
+            if t.owner { n += 1 }
+            out[t.owner ? n : 0] = t
+        }
+        return out
     }
 
     /// The segment as plain text, a new task at each owner line (events before the first one are a
@@ -218,8 +247,11 @@ public enum Consolidation {
         let names = Doll.callNames(events)
         var out: [DayTask] = []
         var lines: [String] = [], queries: [String] = [], owner = false
+        var start = (ts: 0.0, seq: Int64(0))
         func flush() {
-            if !lines.isEmpty { out.append(DayTask(text: lines.joined(separator: "\n"), owner: owner, queries: queries)) }
+            if !lines.isEmpty {
+                out.append(DayTask(text: lines.joined(separator: "\n"), owner: owner, queries: queries, ts: start.ts, seq: start.seq))
+            }
             lines = []
             queries = []
             owner = false
@@ -229,7 +261,9 @@ public enum Consolidation {
             let mark = ev.secret ? "｜秘密" : ""
             func line(_ who: String, _ text: String) {
                 let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty { lines.append(String(format: "[%02d:%02d ", c.hour!, c.minute!) + who + mark + "] " + t) }
+                guard !t.isEmpty else { return }
+                if lines.isEmpty { start = (ev.ts, ev.seq ?? 0) }
+                lines.append(String(format: "[%02d:%02d ", c.hour!, c.minute!) + who + mark + "] " + t)
             }
             switch ev.kind {
             case .owner, .developer:
@@ -288,7 +322,7 @@ public enum Consolidation {
         輸入有三部分：
         1. 既有的長期記憶：每條有 id、資料夾、kind、entities 和內容。
         2. 登記簿裡可能相關的東西：登記簿記著記憶提到的每個具體東西，每條有 id、種類、正式名字、別名和說明（它是什麼、在哪裡）。
-        3. 今天的時間線，依主人的每一句話分成任務。每行開頭是時間和誰：主人說的話、她想的、她說的（「她說｜」後面是她說在哪裡：Discord 私訊、終端機、Discord 語音）、她呼叫的工具和參數、工具的結果、watch 叫醒。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
+        3. 今天的時間線，依主人的每一句話分成任務（任務 1、任務 2…；「主人說話之前」那段是任務 0）。每行開頭是時間和誰：主人說的話、她想的、她說的（「她說｜」後面是她說在哪裡：Discord 私訊、終端機、Discord 語音）、她呼叫的工具和參數、工具的結果、watch 叫醒。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
 
         要寫的記憶：
         - 技能：一條一個片段：情境＋動作＋結果，例如「TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取」。寫具體的 app、按鍵或點的元素、之後畫面或檔案變成什麼。只寫時間線上真的做了、結果看得到的。走了冤枉路的，寫走通的那條路；從今天的經過看得出更短的走法，也可以把一串動作寫成一條（情境＋一串動作＋結果）。值得避開的失敗寫成「做 X → 失敗：原因」。
@@ -297,6 +331,7 @@ public enum Consolidation {
         - 不要記她自己的工具怎麼用（discord.dm、voice.join、voice.say、todo.set、remember、recall 這些怎麼呼叫、呼叫了會怎樣：她本來就知道），也不要把這些工具登記成東西。系統自己出的錯（連線斷了、bridge 掛了、程式報的錯誤訊息和數字）不是值得長期記的事，除非主人為了它交代了什麼。
         - 不要寫時間線上沒有的東西，不要猜。不要抄快捷鍵清單（程式另外記了）。既有記憶已經寫了的不要再寫一次。用繁體中文。
         - 既有記憶：今天的經歷讓它更完整或要修正它時用 update，給新的全文和新的 entities；被今天的新記憶取代時（例如找到更短的走法、事實變了）用 retire，superseded_by 填取代它的那條：既有記憶的 id，或你這次 add 的 ref。跟今天無關的不要動。
+        - 既有記憶今天又被證實一次時用 confirm：今天另一件事又一次顯示同一件事是真的，例如主人又說了同一個偏好、同一個做法今天又照做成功、同一個事實又從別的地方看到。task 填那件事所在的任務編號。只是今天提到相關的話題、沒有再顯示同一件事，不要用；她自己把記得的事再說一遍、或查記憶查出來的，不算。這次要 update 或 retire 的那條不要再 confirm。confirm 讓那條記憶比較不會被忘記，不改它的內容。
         - entities：每條 add 和 update 都列出這條記憶提到的具體東西（app、畫面元素／對話框／選單項目、快捷鍵、檔案／資料夾／路徑、網站、人、其他具體的東西；抽象的動作不算），之後用來把提到同一個東西的記憶連起來。每個是 {"name": 記憶內文裡的寫法, "id": 它在登記簿裡的 id}。
         - 對齊登記簿：同一個東西只能有一條登記。它就是登記簿裡的某一條時（別的語言的名字、縮寫、完整路徑和只寫檔名、大小寫不同都算同一個），id 填那一條的 id。登記簿裡沒有的，在最上層的 entities 新增一條：ref（你取的代號，new1、new2…）、type（app、ui、shortcut、file、website、person、other）、name（正式名字）、aliases（你知道的其他寫法，例如另一種語言的名字、完整路徑；沒有就 []）、description（一句話：它是什麼、在哪裡），記憶的 entities 裡 id 就填這個 ref。名字一樣但其實是不同的東西（例如不同資料夾裡同名的檔案），要新增另一條，用 description 分清楚。
 
@@ -308,20 +343,23 @@ public enum Consolidation {
         "operations": [
           {"op": "add", "ref": "n1", "text": "…", "folder": "public", "kind": "", "entities": [{"name": "TextEdit", "id": "new1"}, {"name": "⇧⌥⌘S", "id": "登記簿裡的 id"}]},
           {"op": "update", "id": "既有記憶的 id", "text": "新的全文", "entities": [{"name": "notes.txt", "id": "登記簿裡的 id"}]},
-          {"op": "retire", "id": "既有記憶的 id", "superseded_by": "n1", "reason": "…"}
+          {"op": "retire", "id": "既有記憶的 id", "superseded_by": "n1", "reason": "…"},
+          {"op": "confirm", "id": "既有記憶的 id", "task": 2}
         ]}
         ```
-        每個操作和每個新登記只能有上面那些欄位。ref 不能重複。update 和 retire 只能用既有記憶列出來的 id，同一個 id 只能出現一次；entities 的 id 只能是登記簿列出來的 id 或你新增的 ref，一條記憶裡同一個 id 只能出現一次。沒有值得記的就輸出 {"entities": [], "operations": []}。
+        每個操作和每個新登記只能有上面那些欄位。ref 不能重複。update、retire 和 confirm 只能用既有記憶列出來的 id，同一個 id 只能出現一次（不能同時 confirm 又 update 或 retire）；confirm 的 task 是今天時間線裡有的任務編號（整數）。entities 的 id 只能是登記簿列出來的 id 或你新增的 ref，一條記憶裡同一個 id 只能出現一次。沒有值得記的就輸出 {"entities": [], "operations": []}。
         """
 
     // the reply -----------------------------------------------------------------
 
     /// The plan in `reply`: exactly one ```json block holding {"entities": [...], "operations": [...]},
     /// each new entity and operation with exactly its fields. `known`: the memory ids the request
-    /// showed; update and retire may name only those, each id at most once. `registry`: the registry
-    /// ids it showed; an operation's entity names one of those or a new entity's ref. Anything else
-    /// is an error naming what is wrong.
-    public static func parse(_ reply: String, known: Set<String>, registry: Set<String>) throws -> ConsolidationPlan {
+    /// showed; update, retire and confirm may name only those, each id at most once (so never
+    /// confirm one that is updated or retired too). `registry`: the registry ids it showed; an
+    /// operation's entity names one of those or a new entity's ref. `tasks`: the day's task numbers
+    /// (`numbered`); a confirm's task is one of them, a JSON integer. Anything else is an error
+    /// naming what is wrong.
+    public static func parse(_ reply: String, known: Set<String>, registry: Set<String>, tasks: Set<Int>) throws -> ConsolidationPlan {
         let blocks = reply.components(separatedBy: "```json")
         guard blocks.count == 2, let close = blocks[1].range(of: "```") else {
             throw ConsolidationError("the reply must hold exactly one ```json block; got \(blocks.count - 1)")
@@ -380,7 +418,8 @@ public enum Consolidation {
             case "add": ["op", "ref", "text", "folder", "kind", "entities"]
             case "update": ["op", "id", "text", "entities"]
             case "retire": ["op", "id", "superseded_by", "reason"]
-            default: throw ConsolidationError("operation \(n): op must be add, update or retire; got \(op)")
+            case "confirm": ["op", "id", "task"]
+            default: throw ConsolidationError("operation \(n): op must be add, update, retire or confirm; got \(op)")
             }
             guard Set(o.keys) == fields else {
                 throw ConsolidationError("operation \(n) (\(op)) must have exactly \(fields.sorted()); got \(o.keys.sorted())")
@@ -408,6 +447,16 @@ public enum Consolidation {
                 }
                 guard !text.isEmpty else { throw ConsolidationError("operation \(n): text is empty") }
                 ops.append(.update(id: id, text: text, entities: try entities(o, n)))
+            case "confirm":
+                let id = try string(o, "id", n)
+                guard known.contains(id), touched.insert(id).inserted else {
+                    throw ConsolidationError("operation \(n): id \(id) is not one of the existing memories shown, or is used twice")
+                }
+                guard let number = o["task"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      number.doubleValue == Double(number.intValue), tasks.contains(number.intValue) else {
+                    throw ConsolidationError("operation \(n): task must be the integer number of one of today's tasks \(tasks.sorted()); got \(o["task"].map { "\($0)" } ?? "nothing")")
+                }
+                ops.append(.confirm(id: id, task: number.intValue))
             default:
                 let id = try string(o, "id", n), by = try string(o, "superseded_by", n)
                 let reason = try string(o, "reason", n).trimmingCharacters(in: .whitespacesAndNewlines)
