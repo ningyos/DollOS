@@ -14,3 +14,5 @@ idle_hold_ms = 500            # after her last queued sentence, keep the player 
 connect_timeout_s = 15.0      # Discord's voice connect on `join`
 dave_ready_timeout_s = 10.0   # DAVE (voice E2EE) must be ready this soon after joining, else the bridge ends
 udp_keepalive_s = 5.0         # UDP keep-alive period while receiving (a send failure ends the bridge)
+reconnect_delay_s = 1.0       # /api/voice ended after it once worked: leave the voice channel, drop queued audio, wait this long, reconnect (DMs keep working). Why 1 s: dollcore is local, the link comes back in ms
+reconnect_max_delay_s = 30.0  # every try (failed, or the link ended again soon) doubles the next wait up to this; a link that stayed up this long starts over at reconnect_delay_s. Why 30 s: an ERROR line every 30 s while dollcore refuses is visible without flooding the log

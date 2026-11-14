@@ -16,9 +16,18 @@ bridge → dollcore
 dollcore → bridge
 - `join` (the voice channel the owner is in), `leave`, `utterance_start`/`utterance_end`,
   `stop` (drop that utterance's buffered audio now; it is closed: no more audio or
-  `utterance_end` for it), and binary 24 kHz mono s16le audio of the open utterance.
+  `utterance_end` for it), `error` (a protocol violation by the bridge, sent right before dollcore
+  closes the socket; logged here as ERROR), and binary 24 kHz mono s16le audio of the open
+  utterance.
 
 Only the owner is heard: everyone else's packets are dropped before Opus decoding.
+
+A voice failure only affects voice (owner, 2026-11-14). When the socket ends after it once worked
+(dollcore closed it, a protocol violation it closed on, the connection was lost), the bridge logs
+ERROR, leaves the Discord voice channel, drops its queued audio and player, and opens `/api/voice`
+again after `reconnect_delay_s` (each try doubles the next wait, up to `reconnect_max_delay_s`;
+a link that then stays up at least `reconnect_max_delay_s` starts over at `reconnect_delay_s`),
+starting over with `hello` and the owner's voice state. Discord and the DM stream are not touched.
 """
 
 from __future__ import annotations
@@ -58,6 +67,11 @@ class VoiceFatal(Exception):
     """Voice cannot go on (DAVE not ready, UDP keep-alive failing): the bridge ends."""
 
 
+#: An end of the `/api/voice` connection itself (closed, lost, refused on reconnect): voice
+#: reconnects. `CoreAPI.voice` raises ConnectionError when dollcore refuses the handshake.
+LINK_ENDED = (OSError, aiohttp.ClientError)
+
+
 # --- config -------------------------------------------------------------------------------------
 
 
@@ -80,6 +94,13 @@ class VoiceConfig:
     dave_ready_timeout_s: float = 10.0
     #: UDP keep-alive period while receiving (py-cord's own sleeps 5000 s by mistake).
     udp_keepalive_s: float = 5.0
+    #: After the link to dollcore ended, wait this long before opening it again. Every try (one
+    #: that failed, or one that connected but the link ended again soon) doubles the next wait,
+    #: up to `reconnect_max_delay_s`.
+    reconnect_delay_s: float = 1.0
+    #: The longest wait between reconnect tries. A link that stayed up at least this long starts
+    #: over at `reconnect_delay_s` when it ends (a violation loop keeps backing off).
+    reconnect_max_delay_s: float = 30.0
 
     @classmethod
     def from_toml(cls, raw: Any, where: str) -> VoiceConfig:
@@ -104,6 +125,8 @@ class VoiceConfig:
         cfg = cls(**values)
         if cfg.played_interval_ms > 100:
             raise ValueError(f"{where}: [voice] played_interval_ms must be at most 100 (the /api/voice contract)")
+        if cfg.reconnect_max_delay_s < cfg.reconnect_delay_s:
+            raise ValueError(f"{where}: [voice] reconnect_max_delay_s must be at least reconnect_delay_s")
         return cfg
 
 
@@ -114,6 +137,7 @@ CORE_MESSAGES: dict[str, tuple[str, ...]] = {
     "join": (),
     "leave": (),
     "utterance_start": ("utterance",),
+    "error": ("message",),
     "utterance_end": ("utterance",),
     "stop": ("utterance",),
 }
@@ -123,6 +147,7 @@ CORE_MESSAGES: dict[str, tuple[str, ...]] = {
 class CoreMessage:
     type: str
     utterance: int | None = None
+    message: str | None = None
 
 
 def decode_core(text: str) -> CoreMessage:
@@ -142,7 +167,10 @@ def decode_core(text: str) -> CoreMessage:
     utterance = obj.get("utterance")
     if "utterance" in expected and (not isinstance(utterance, int) or isinstance(utterance, bool) or utterance < 0):
         raise ProtocolError(f"{kind}: utterance must be a non-negative integer, got {utterance!r}")
-    return CoreMessage(kind, utterance)
+    message = obj.get("message")
+    if "message" in expected and not isinstance(message, str):
+        raise ProtocolError(f"{kind}: message must be a string, got {message!r}")
+    return CoreMessage(kind, utterance, message)
 
 
 def encode(kind: str, **fields: Any) -> str:
@@ -485,37 +513,88 @@ class VoiceLink:
     # session ---------------------------------------------------------------------------------
 
     async def run(self) -> None:
-        """Runs until dollcore closes the socket or voice hits a fatal error; returns only by raising."""
+        """Runs voice until it hits a fatal error; returns only by raising.
+
+        Fatal: the first connect at startup failing (dollcore unreachable, the key refused,
+        `[voice]` disabled in dollcore: nothing ever worked, a setup error) and VoiceFatal (DAVE not
+        ready, the UDP keep-alive failing). Any later end of the link is not: it is logged as ERROR
+        and the link is opened again (see the module docstring).
+        """
         self._loop = asyncio.get_running_loop()
         self._fatal = self._loop.create_future()
+        ws = await self._connect()
+        delay = self.cfg.reconnect_delay_s
+        while True:
+            began = self._clock()
+            reason = await self._session(ws)
+            if self._clock() - began >= self.cfg.reconnect_max_delay_s:
+                delay = self.cfg.reconnect_delay_s     # it was up a while: not a failure loop
+            log.error("voice: the link to dollcore ended (%s); reconnecting in %.1f s", reason, delay)
+            while True:
+                await self._wait_or_fatal(delay)
+                delay = min(delay * 2, self.cfg.reconnect_max_delay_s)
+                try:
+                    ws = await self._connect()
+                    break
+                except LINK_ENDED as e:
+                    log.error("voice: reconnecting to /api/voice failed (%s); next try in %.1f s", str(e) or repr(e), delay)
+            log.info("voice: reconnected to /api/voice")
+
+    async def _wait_or_fatal(self, seconds: float) -> None:
+        assert self._fatal is not None
+        done, _ = await asyncio.wait([self._fatal], timeout=seconds)
+        if done:
+            self._fatal.result()
+
+    async def _session(self, ws: Any) -> str:
+        """One connection: `hello`, the owner's voice state, then dollcore's messages until it ends.
+        Every connection starts with an empty player. Returns why it ended; raises VoiceFatal."""
+        assert self._fatal is not None
+        self._ws = ws
         self._out = asyncio.Queue()
-        self._ws = await self._connect()
+        self.speaker = Speaker(self.cfg.idle_hold_ms / 1000, self._clock)
+        self._player_idle = asyncio.Event()
+        self._player_idle.set()
+        self._rejected = None
         self._send(encode("hello", version=PROTOCOL_VERSION))
         channel = owner_voice_channel(self.client, self.owner_id)
         if channel is not None:
             self._send(encode("owner_joined", channel=channel.name))
         parts = [asyncio.create_task(self._receive()), asyncio.create_task(self._sender()),
-                 asyncio.create_task(self._reporter()), self._fatal]
+                 asyncio.create_task(self._reporter())]
         try:
-            done, _ = await asyncio.wait(parts, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait([*parts, self._fatal], return_when=asyncio.FIRST_COMPLETED)
             for part in done:
                 part.result()
-            raise ConnectionError("voice link ended")
+            raise AssertionError("a link part returned")  # each part runs until it raises
         except VoiceFatal as e:
             await self._last_words(str(e))
             raise
+        except LINK_ENDED as e:
+            return str(e) or repr(e)
         finally:
-            for part in parts + list(self._tasks):
-                part.cancel()
-            if self.vc is not None:
-                vc, self.vc = self.vc, None
-                if self.sink is not None:
-                    self.sink.closing = True
-                try:
-                    await vc.disconnect(force=True)
-                except Exception as e:  # noqa: BLE001 — the link is ending with its own error
-                    log.error("voice: disconnect while ending failed: %r", e)
-            await self._ws.close()
+            await self._end_session(ws, parts)
+
+    async def _end_session(self, ws: Any, parts: list[asyncio.Task[Any]]) -> None:
+        """Nothing of this connection goes on: its tasks end, nothing more is sent, and the voice
+        channel is left (dollcore forgets it was in one when the socket ends)."""
+        self._out = None
+        pending = parts + list(self._tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if self.vc is not None:
+            vc, self.vc = self.vc, None
+            if self.sink is not None:
+                self.sink.closing = True
+            self.sink = None
+            try:
+                await vc.disconnect(force=True)
+                log.info("voice: left %s because the link to dollcore ended", self.channel_name)
+            except Exception as e:  # noqa: BLE001 — the link is ending with its own error
+                log.error("voice: leaving %s while the link ended failed: %r", self.channel_name, e)
+            self.channel_name = None
+        await ws.close()
 
     async def _receive(self) -> None:
         assert self._ws is not None
@@ -548,7 +627,10 @@ class VoiceLink:
             self._send(encode("played", utterance=uid, samples=samples))
 
     def _send(self, item: str | bytes) -> None:
-        assert self._out is not None, "the link is running"
+        if self._out is None:
+            what = item if isinstance(item, str) else f"{len(item)} bytes of the owner's audio"
+            log.warning("voice: the link to dollcore is down; not sent: %s", what)
+            return
         self._out.put_nowait(item)
 
     def _error(self, message: str) -> None:
@@ -606,6 +688,9 @@ class VoiceLink:
                 self._utterance_end(m.utterance)
             elif m.type == "stop":
                 self._stop(m.utterance)
+            elif m.type == "error":
+                # A violation dollcore saw on our side; it closes the socket next, and we reconnect.
+                log.error("voice: dollcore reports a protocol violation by the bridge: %s", m.message)
         except ProtocolError as e:
             self._error(f"protocol: {e}")
 
@@ -656,23 +741,31 @@ class VoiceLink:
             self._spawn(self._start_player(self.vc, player))
 
     async def _start_player(self, vc: Any, player: int) -> None:
-        await self._player_idle.wait()     # the previous player's thread has finished
-        self._player_idle.clear()
+        # This connection's speaker and player state: a player of an ended link reports into its
+        # own, never into the next connection's.
+        speaker, idle = self.speaker, self._player_idle
+        await idle.wait()                  # the previous player's thread has finished
+        idle.clear()
         try:
-            vc.play(self.speaker, after=lambda exc: self._player_after_thread(player, exc))
+            vc.play(speaker, after=lambda exc: self._player_after_thread(speaker, idle, player, exc))
         except Exception as e:  # noqa: BLE001 — told to dollcore; her utterances end here
-            self.speaker.player_ended(player)
-            self._player_idle.set()
+            speaker.player_ended(player)
+            idle.set()
             self._error(f"cannot play: {e!r}")
             self._abort_utterances()
 
-    def _player_after_thread(self, player: int, exc: Exception | None) -> None:
-        self.speaker.player_ended(player)
+    def _player_after_thread(self, speaker: Speaker, idle: asyncio.Event, player: int,
+                             exc: Exception | None) -> None:
+        speaker.player_ended(player)
         assert self._loop is not None
-        self._loop.call_soon_threadsafe(self._player_done, exc)
+        self._loop.call_soon_threadsafe(self._player_done, speaker, idle, exc)
 
-    def _player_done(self, exc: Exception | None) -> None:
-        self._player_idle.set()
+    def _player_done(self, speaker: Speaker, idle: asyncio.Event, exc: Exception | None) -> None:
+        idle.set()
+        if speaker is not self.speaker:
+            if exc is not None:
+                log.error("voice: playback of an ended link failed: %r", exc)
+            return
         if exc is not None:
             self._error(f"playback failed: {exc!r}")
             self._abort_utterances()
@@ -766,7 +859,7 @@ class VoiceLink:
     def on_voice_state(self, member: Any, before: Any, after: Any) -> None:
         """discord's `on_voice_state_update`, forwarded by the bridge."""
         if self._out is None:
-            return  # not linked yet: `hello` will carry the owner's state
+            return  # not linked (yet, or again): the next `hello` carries the owner's state
         was = before.channel.id if before.channel is not None else None
         now = after.channel.id if after.channel is not None else None
         if was == now:

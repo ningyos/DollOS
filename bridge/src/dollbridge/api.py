@@ -32,8 +32,9 @@ class CoreAPI:
                     yield json.loads(line)
 
     async def voice(self) -> aiohttp.ClientWebSocketResponse:
-        """The `/api/voice` WebSocket (see voice.py). dollcore allows one at a time."""
+        """The `/api/voice` WebSocket (see voice.py). dollcore allows one at a time. A refused
+        handshake (401, 409, 503) is a ConnectionError, like a connection that cannot be made."""
         try:
             return await self.session.ws_connect(f"{self.base}/api/voice", headers=self.auth, autoping=True)
         except aiohttp.WSServerHandshakeError as e:
-            raise RuntimeError(f"dollcore refused /api/voice: {e.status} {e.message}") from None
+            raise ConnectionError(f"dollcore refused /api/voice: {e.status} {e.message}") from None

@@ -1,9 +1,10 @@
 """`python -m dollbridge --config bridge/discord.toml`, started by dollcore (`[bridge] command`).
 
 Exits non-zero on anything it cannot carry on from (bad config, libopus not loading, login
-refused, missing intent, the owner not found, dollcore's stream or `/api/voice` ending, DAVE not
-ready after joining voice, the UDP keep-alive failing); dollcore reports that exit and does not
-restart it.
+refused, missing intent, the owner not found, dollcore's stream ending, `/api/voice` not
+connecting at startup, DAVE not ready after joining voice, the UDP keep-alive failing); dollcore
+reports that exit and does not restart it. `/api/voice` ending after it once connected is not one
+of these: voice reconnects by itself and Discord DMs keep working (voice.py, 2026-11-14).
 """
 
 from __future__ import annotations
@@ -81,7 +82,7 @@ async def run(cfg: Config, base: str, key: str, config: Path) -> int:
         async def voice_then_close() -> None:
             try:
                 await voice.run()
-            except Exception as e:  # noqa: BLE001 — any end of the voice link ends the bridge
+            except Exception as e:  # noqa: BLE001 — voice.run raises only when voice cannot go on
                 failure.append(f"voice: {e}")
             await client.close()
 

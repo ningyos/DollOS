@@ -18,6 +18,7 @@ from discord import opus
 from discord.voice.receive import reader as receive_reader
 
 from dollbridge.api import CoreAPI
+from dollbridge.core import Bridge, pump
 from dollbridge.audio import HerUpsampler, OwnerDownsampler
 from dollbridge.voice import (
     FRAME_BYTES,
@@ -47,12 +48,14 @@ def test_decode_core_messages() -> None:
     assert decode_core('{"type":"utterance_start","utterance":3}') == CoreMessage("utterance_start", 3)
     assert decode_core('{"type":"utterance_end","utterance":3}') == CoreMessage("utterance_end", 3)
     assert decode_core('{"type":"stop","utterance":0}') == CoreMessage("stop", 0)
+    assert decode_core('{"type":"error","message":"hello twice"}') == CoreMessage("error", None, "hello twice")
 
 
 @pytest.mark.parametrize("bad", [
     "not json", "[1]", '{"type":"dance"}', '{"utterance":1}', '{"type":"join","x":1}',
     '{"type":"stop"}', '{"type":"stop","utterance":"1"}', '{"type":"stop","utterance":true}',
     '{"type":"stop","utterance":-1}', '{"type":"utterance_start","utterance":1.5}',
+    '{"type":"error"}', '{"type":"error","message":3}', '{"type":"error","message":"x","utterance":1}',
 ])
 def test_decode_core_rejects(bad: str) -> None:
     with pytest.raises(ProtocolError):
@@ -74,7 +77,8 @@ def test_voice_config() -> None:
     assert (c.owner_burst_gap_ms, c.connect_timeout_s, c.opus_library) == (250, 20.0, "/x.dylib")
     assert isinstance(c.connect_timeout_s, float)
     for bad in [{"nope": 1}, {"owner_burst_gap_ms": 0}, {"owner_burst_gap_ms": 1.5}, {"owner_burst_gap_ms": True},
-                {"played_interval_ms": 101}, {"opus_library": ""}, {"udp_keepalive_s": "5"}, []]:
+                {"played_interval_ms": 101}, {"opus_library": ""}, {"udp_keepalive_s": "5"}, [],
+                {"reconnect_delay_s": 0}, {"reconnect_delay_s": 5, "reconnect_max_delay_s": 2}]:
         with pytest.raises(ValueError):
             VoiceConfig.from_toml(bad, "x")
 
@@ -472,21 +476,42 @@ class FakeGuild:
 
 
 class Dollcore:
-    """A fake dollcore: the `/api/voice` server side, scripted by the test."""
+    """A fake dollcore: the `/api/voice` server side, scripted by the test, plus the DM side
+    (`/api/listen` lines from `lines`, `/api/owner` posts into `posted`)."""
 
     def __init__(self) -> None:
         self.ws: web.WebSocketResponse | None = None
         self.connected = asyncio.Event()
+        self.connections = 0
+        self.refuse = 0                    # this many next `/api/voice` handshakes get 409
         self.texts: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.binary: list[bytes] = []
         self.order: list[str] = []
+        self.lines: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self.posted: list[str] = []
+
+    async def listen(self, req: web.Request) -> web.StreamResponse:
+        r = web.StreamResponse()
+        await r.prepare(req)
+        await r.write(b'{"type":"hello"}\n')
+        while (line := await self.lines.get()) is not None:
+            await r.write((json.dumps(line) + "\n").encode())
+        return r
+
+    async def owner(self, req: web.Request) -> web.Response:
+        self.posted.append((await req.json())["text"])
+        return web.json_response({"queued": True})
 
     async def handler(self, req: web.Request) -> web.StreamResponse:
         if req.headers.get("Authorization") != "Bearer k":
             return web.json_response({"error": "owner key required"}, status=401)
+        if self.refuse:
+            self.refuse -= 1
+            return web.json_response({"error": "a voice connection is already open"}, status=409)
         ws = web.WebSocketResponse()
         await ws.prepare(req)
         self.ws = ws
+        self.connections += 1
         self.connected.set()
         async for m in ws:
             if m.type == aiohttp.WSMsgType.TEXT:
@@ -524,6 +549,8 @@ async def rig(restore_keepalive: Any) -> Any:
     core = Dollcore()
     app = web.Application()
     app.router.add_get("/api/voice", core.handler)
+    app.router.add_get("/api/listen", core.listen)
+    app.router.add_post("/api/owner", core.owner)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -533,13 +560,15 @@ async def rig(restore_keepalive: Any) -> Any:
     guild = FakeGuild()
     client = NS(guilds=[guild], user=NS(id=BOT))
     api = CoreAPI(f"http://127.0.0.1:{port}", "k", session)
-    cfg = VoiceConfig(idle_hold_ms=1, played_interval_ms=20, dave_ready_timeout_s=0.2)
+    cfg = VoiceConfig(idle_hold_ms=1, played_interval_ms=20, dave_ready_timeout_s=0.2,
+                      reconnect_delay_s=0.05, reconnect_max_delay_s=0.2)
     link = VoiceLink(cfg, OWNER, client, api.voice, decoder=FakeDecoder)
     rig = NS(core=core, guild=guild, link=link, api=api, session=session, task=None)
     yield rig
     if rig.task is not None and not rig.task.done():
         rig.task.cancel()
         await asyncio.gather(rig.task, return_exceptions=True)
+    await core.lines.put(None)             # ends a DM stream a test left open
     await session.close()
     await runner.cleanup()
 
@@ -714,17 +743,108 @@ async def test_link_keepalive_failure_ends_the_bridge(rig: Any) -> None:
         await asyncio.wait_for(rig.task, 2)
 
 
-async def test_link_ends_when_dollcore_closes(rig: Any) -> None:
+class FakeDM:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, content: str) -> None:
+        self.sent.append(content)
+
+
+async def until(cond: Any, seconds: float = 2) -> None:
+    for _ in range(int(seconds / 0.01)):
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met in time")
+
+
+async def test_link_survives_dollcore_closing_mid_utterance(rig: Any, caplog: pytest.LogCaptureFixture) -> None:
+    """Owner, 2026-11-14: a voice failure only affects voice. The socket ends mid-utterance: the
+    bridge leaves the channel, reconnects with `hello` and the owner's state, the DM path keeps
+    working, and she can join and speak again with a fresh player."""
+    channel = owner_in(rig, "客廳")
+    dms = Bridge(OWNER, rig.api, self_id=lambda: BOT)
+    dms.dm = dm = FakeDM()
+    dm_stream = asyncio.create_task(pump(rig.api.listen, dms.on_core))
     await start(rig)
+    await rig.core.expect("owner_joined")
+    await rig.core.send(type="join")
+    await rig.core.expect("joined")
+    vc1 = channel.vc
+    await rig.core.send(type="utterance_start", utterance=1)
+    await rig.core.ws.send_bytes(her(4800))
+    await until(lambda: vc1.plays == 1)
+    vc1.pump(1)
+    await rig.core.played_until(1, 480)
+
+    rig.core.connected.clear()
+    await rig.core.ws.close()                          # dollcore ends the link mid-utterance
+    await asyncio.wait_for(rig.core.connected.wait(), 2)
+    assert rig.core.connections == 2
+    assert await rig.core.expect("hello") == {"type": "hello", "version": 1}
+    assert await rig.core.expect("owner_joined", skip=()) == {"type": "owner_joined", "channel": "客廳"}
+    assert vc1.disconnected and vc1.sink.closing and rig.link.vc is None and not rig.task.done()
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and "link to dollcore ended" in r.getMessage()]
+    assert len(errors) == 1 and "dollcore closed /api/voice" in errors[0].getMessage()
+
+    # The DM path never noticed: her line reaches the DM, the owner's reaches dollcore.
+    await rig.core.lines.put({"type": "say", "text": "還在喔"})
+    await until(lambda: dm.sent == ["還在喔"])
+    await dms.on_message(NS(author=NS(id=OWNER), content="語音怎麼了", guild=None, channel=NS(id=5), attachments=[]))
+    assert rig.core.posted == ["語音怎麼了"]
+    assert not dm_stream.done()
+
+    # Rejoin and speak again: a fresh player, utterance ids just keep counting.
+    channel.vc = vc2 = FakeVC()
+    await rig.core.send(type="join")
+    assert await rig.core.expect("joined", skip=()) == {"type": "joined", "channel": "客廳"}
+    await rig.core.send(type="utterance_start", utterance=2)
+    await rig.core.ws.send_bytes(her(2400))
+    await rig.core.send(type="utterance_end", utterance=2)
+    await until(lambda: vc2.plays == 1)
+    await asyncio.to_thread(vc2.finish)
+    assert (await rig.core.played_until(2, 2400))[-1] == 2400   # nothing of utterance 1 replayed or reported
+    assert vc1.plays == 1
+    await rig.core.lines.put(None)
+    with pytest.raises(ConnectionError, match="closed the stream"):
+        await asyncio.wait_for(dm_stream, 2)
+
+
+async def test_link_dollcore_violation_report_then_reconnect(rig: Any, caplog: pytest.LogCaptureFixture) -> None:
+    """dollcore's `error` (a violation it saw on our side) is logged with its reason, not echoed;
+    its close follows and the link comes back."""
+    await start(rig)
+    rig.core.connected.clear()
+    await rig.core.send(type="error", message="played: unknown utterance 9")
+    await rig.core.ws.close(code=1002, message=b"played: unknown utterance 9")
+    await asyncio.wait_for(rig.core.connected.wait(), 2)
+    assert await rig.core.expect("hello", skip=()) == {"type": "hello", "version": 1}   # no `error` echoed back
+    text = caplog.text
+    assert "dollcore reports a protocol violation by the bridge: played: unknown utterance 9" in text
+    assert "code 1002" in text and not rig.task.done()
+
+
+async def test_link_reconnect_retries_with_backoff(rig: Any, caplog: pytest.LogCaptureFixture) -> None:
+    await start(rig)
+    rig.core.refuse = 2
+    rig.core.connected.clear()
+    began = time.monotonic()
     await rig.core.ws.close()
-    with pytest.raises(ConnectionError, match="closed /api/voice"):
-        await asyncio.wait_for(rig.task, 2)
+    await asyncio.wait_for(rig.core.connected.wait(), 3)
+    waited = time.monotonic() - began
+    assert await rig.core.expect("hello", skip=()) == {"type": "hello", "version": 1}
+    failed = [r.getMessage() for r in caplog.records if "reconnecting to /api/voice failed" in r.getMessage()]
+    assert len(failed) == 2 and all("409" in m for m in failed)
+    assert "next try in 0.2 s" in failed[1]          # 0.05, 0.1, then capped at 0.2
+    assert waited >= 0.05 + 0.1 + 0.2
 
 
-async def test_voice_socket_needs_the_key(rig: Any) -> None:
+async def test_link_startup_connect_failure_is_fatal(rig: Any) -> None:
     bad = CoreAPI(rig.api.base, "wrong", rig.session)
-    with pytest.raises(RuntimeError, match="401"):
-        await bad.voice()
+    link = VoiceLink(rig.link.cfg, OWNER, rig.link.client, bad.voice, decoder=FakeDecoder)
+    with pytest.raises(ConnectionError, match="refused /api/voice: 401"):
+        await asyncio.wait_for(link.run(), 2)
 
 
 # --- against py-cord's real pieces (no network) -------------------------------------------------------------
