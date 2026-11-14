@@ -977,7 +977,8 @@ public actor Doll {
         do {
             let request = try Tools.decode(call, specs: tools)
             switch request {
-            case .speak(let text, .discordVoice):
+            case .speak(let raw, .discordVoice):
+                let (text, fixed) = Traditional.fix(raw)
                 // The owner hears it in the voice channel (M6): sentence by sentence through the TTS.
                 // Refused when she is not in one (`VoicePort.speak` says so).
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
@@ -987,9 +988,11 @@ public actor Doll {
                 let report = try await voice.speak(text)
                 if report.interrupted, report.heard.cut != nil { voiceCut = true }
                 log("INFO", "turn \(turnIndex): said in voice「\(report.heardText)」" + (report.interrupted ? "（被打斷）" : ""))
-                return Outcome(text: report.resultText, actions: ["said \(Channel.discordVoice.rawValue)" + (report.interrupted ? " (cut)" : "")],
+                let note = fixed.isEmpty ? "" : (report.resultText.isEmpty ? "" : "\n") + Traditional.note(fixed)
+                return Outcome(text: report.resultText + note, actions: ["said \(Channel.discordVoice.rawValue)" + (report.interrupted ? " (cut)" : "")],
                                background: true, channel: .discordVoice)
-            case .speak(let text, let channel):
+            case .speak(let raw, let channel):
+                let (text, fixed) = Traditional.fix(raw)
                 // Text to the owner's Discord DM or the developer's terminal: nothing new for her to
                 // read, and nothing to wake her for. Not delivered (the bridge is down, no dollctl
                 // chat is open): her result says why and what she can do.
@@ -1002,7 +1005,7 @@ public actor Doll {
                     }
                     return Outcome(text: "失敗：\(to.label)沒收到：\(why)。\(next)", actions: ["error \(name)"], background: true)
                 }
-                return Outcome(text: "", actions: ["said \(channel.rawValue)"], background: true, channel: channel)
+                return Outcome(text: fixed.isEmpty ? "" : Traditional.note(fixed), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
             case .voiceJoin:
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
                 let ch = try await voice.join()

@@ -4816,6 +4816,24 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     #expect(comp.text!.contains("到這裡做過的動作：" + ["a", "b", "c", "d", "e", "f"].prefix(cutActions).map { "key \($0)" }.joined(separator: "、") + "。"))
 }
 
+@Test func whatSheSaysGoesOutInTraditionalCharacters() async throws {
+    // Only characters traditional writing does not use are replaced; shared ones stay.
+    #expect(Traditional.fix("叫我来语音频道干嘛？").text == "叫我來語音頻道干嘛？")
+    #expect(Traditional.fix("公里、皇后、干擾、台北、一隻貓、裡面、頭髮").changes.isEmpty)
+    #expect(Traditional.fix("这个 app 的 TextEdit 说明 123").text == "這個 app 的 TextEdit 說明 123")
+    #expect(Traditional.fix("来来去去").changes == ["来→來"])
+    let h = try await Harness()
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", dm("在，我这边没问题")))
+    #expect(h.said == ["在，我這邊沒問題"])
+    #expect(try h.toolResults().last!.text == "你寫了簡體字，送出去的時候程式改成繁體了：这→這、边→邊、没→沒、问→問、题→題。下次直接寫繁體。")
+    // Nothing simplified: the result stays empty.
+    await h.doll.ownerSaid("好")
+    try await h.turn(Scripted("", dm("嗯，台北今天裡面外面都很冷")))
+    #expect(h.said.last == "嗯，台北今天裡面外面都很冷")
+    #expect(try h.toolResults().last!.text == "")
+}
+
 @Test func theStatusSaysTheYearAndTheWeekday() async throws {
     // 2026-11-15, real run: given only `11-15` she took the year for 2025 and the weekday from that.
     let h = try await Harness()
