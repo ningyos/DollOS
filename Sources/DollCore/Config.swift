@@ -122,6 +122,27 @@ public struct CalendarConfig: Sendable {
     public var listMaxDays = 31
 }
 
+/// Her sleep (2026-11-15, `Sleep.swift`).
+public struct SleepConfig: Sendable {
+    /// Off: no `sleep` tool, no 「睡覺」／「起床」 items, no backstop, no 【狀況】 line (runners and
+    /// tests that are not about a day's cycle). Her own process keeps it on.
+    public var enabled = true
+    /// The 「睡覺」 item's time when her calendar has none: 01:00, after the owner's usual evening
+    /// (he talks with her late), so the item does not fire mid-conversation on an ordinary night.
+    public var bedTime = "01:00"
+    /// The 「起床」 item's time when her calendar has none: 08:00, a 7-hour night after 01:00 and
+    /// before the owner's usual morning.
+    public var wakeTime = "08:00"
+    /// The backstop: nobody (owner or developer) has spoken to her for this long while she is awake
+    /// with nothing in hand and something to consolidate, so the program puts her to sleep. 120: an
+    /// evening's pause in conversation is shorter; two quiet hours mean the owner has gone.
+    public var idleBackstopMin = 120
+    /// After her sleep's tasks she rests until the next 「起床」 only when it is at most this far
+    /// away; further means today's wake time has passed (she slept at 09:00), and she wakes once the
+    /// tasks are done. 12: the longest night; 23:30 → 08:00 is 8.5 h, 09:00 → 08:00 is 23 h.
+    public var restMaxHours = 12.0
+}
+
 /// The local API (2026-11-12): what `dollctl` and the Discord bridge talk to. It listens on
 /// 127.0.0.1 only (not configurable) and refuses any connection whose peer is not loopback.
 public struct ApiConfig: Sendable {
@@ -307,11 +328,12 @@ public struct Config: Sendable {
     public var select: SelectConfig
     public var voice: VoiceConfig
     public var calendar: CalendarConfig
+    public var sleep: SleepConfig
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar"])
+                                                 "consolidate", "select", "voice", "calendar", "sleep"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -532,8 +554,20 @@ public struct Config: Sendable {
         guard calendar.statusItems >= 1, calendar.listMaxDays >= 1 else {
             throw TOMLError(description: "[calendar] status_items and list_max_days at least 1")
         }
+        var sl = Section(name: "sleep", raw: raw["sleep"] ?? [:])
+        var sleep = SleepConfig()
+        try sl.read("enabled", &sleep.enabled)
+        try sl.read("bed_time", &sleep.bedTime)
+        try sl.read("wake_time", &sleep.wakeTime)
+        try sl.read("idle_backstop_min", &sleep.idleBackstopMin)
+        try sl.read("rest_max_hours", &sleep.restMaxHours)
+        try sl.finish()
+        guard TimeOfDay(sleep.bedTime) != nil, TimeOfDay(sleep.wakeTime) != nil, sleep.bedTime != sleep.wakeTime,
+              sleep.idleBackstopMin >= 1, sleep.restMaxHours > 0, sleep.restMaxHours <= 24 else {
+            throw TOMLError(description: "[sleep] bed_time and wake_time HH:MM and different; idle_backstop_min at least 1; rest_max_hours above 0, at most 24")
+        }
         return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar)
+                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, sleep: sleep)
     }
 }
 

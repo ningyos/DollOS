@@ -1,8 +1,9 @@
 import Foundation
 
 /// Consolidation (2026-11-11): the day's timeline becomes long-term memories, then a new timeline
-/// segment begins, as if she slept. Manual only (`dollcore --config … consolidate <data_dir>`, the
-/// m2 runner's `--consolidate on`); run it only while her process is not running.
+/// segment begins, as if she slept. Since 2026-11-15 it is the first task of her sleep (`Sleep.swift`,
+/// inside her running process); the CLI's `dollcore --config … consolidate <data_dir>` runs the same
+/// steps (`gather`, `ask`, `apply`) while her process is not running.
 ///
 /// One separate model request, not in her context and without her persona: the program renders the
 /// current segment as plain text (`tasks`: no images, no program 【快捷鍵】／【相關記憶】, split at each
@@ -87,29 +88,63 @@ public enum Consolidation {
         return HTTPMainModel(llm)
     }
 
+    /// What one consolidation asks, gathered from the segment and the memory before any request:
+    /// the day's tasks, the existing memories and registry entries shown, and the request itself.
+    public struct Request: Sendable {
+        public var segment: String
+        /// The segment's last event when gathered: new memories' `source_seq`; anything after it was
+        /// not in the request.
+        public var lastSeq: Int64
+        var tasks: [DayTask]
+        var related: [MemoryHit]
+        var registry: [RegistryEntry]
+        var messages: [ChatMessage]
+    }
+
+    /// The two replies, validated: the plan and the day's summary. Nothing is written yet.
+    public struct Answer: Sendable {
+        var reply: ModelReply
+        var plan: ConsolidationPlan
+        public var summary: String
+        var seconds: Double
+    }
+
     /// Consolidates the newest segment of `config.core.dataDir` into `config.memory.dir` (both
     /// relative to `root` unless absolute), embedding with `embedder`. `now`: when it runs (the new
     /// memories' `created_ts`, the retired ones' `retired_ts`, the cutoff for deleting retired files).
+    /// The CLI's `consolidate` command; her running process does the same three steps in her sleep
+    /// (`Sleep.swift`).
     public static func run(config: Config, root: URL, model: any MainModel,
                            embedder: any Embedder, now: Double) async throws -> ConsolidationResult {
         func path(_ p: String) -> URL { p.hasPrefix("/") ? URL(filePath: p) : root.appending(path: p) }
         let data = path(config.core.dataDir)
         let timelineDir = data.appending(path: "timeline")
         let timeline = try Timeline(dir: timelineDir)
-        guard !timeline.events.isEmpty else {
-            throw ConsolidationError("segment \(timeline.segment) is empty: nothing to consolidate")
-        }
         let memory = try Memory(config: config.memory, root: path(config.memory.dir), store: try Store(path: data.appending(path: "doll.db")),
                                 embedder: embedder)
         try memory.syncOnBoot()
         try await model.check()
+        let request = try gather(timeline, memory: memory, config: config.consolidate)
+        let answer = try await ask(request, model: model, config: config)
+        return try apply(request, answer, memory: memory, config: config.consolidate, now: now) {
+            let newSegment = try Timeline.startSegment(dir: timelineDir)
+            try Timeline(dir: timelineDir).append(Event(.memory, .internal, Self.wakeNote + answer.summary))
+            return newSegment
+        }
+    }
 
+    /// Step 1, synchronous and writing nothing: the day's tasks, the related memories and registry
+    /// entries, the request. An empty segment is an error.
+    static func gather(_ timeline: Timeline, memory: Memory, config: ConsolidateConfig) throws -> Request {
+        guard !timeline.events.isEmpty else {
+            throw ConsolidationError("segment \(timeline.segment) is empty: nothing to consolidate")
+        }
         let tasks = Self.tasks(timeline.events)
         var related: [MemoryHit] = []
         var seen = Set<String>()
         for task in tasks {
             for q in task.queries {
-                let hits = try memory.search(q, visible: Set(MemoryFolder.allCases), limit: config.consolidate.recallK, tiers: revisable)
+                let hits = try memory.search(q, visible: Set(MemoryFolder.allCases), limit: config.recallK, tiers: revisable)
                 for h in hits where seen.insert(h.id).inserted { related.append(h) }
             }
         }
@@ -124,31 +159,44 @@ public enum Consolidation {
         }
         for task in tasks {
             for q in task.queries {
-                for e in try memory.registry.nearby(q, limit: config.consolidate.registryK) where taken.insert(e.id).inserted {
+                for e in try memory.registry.nearby(q, limit: config.registryK) where taken.insert(e.id).inserted {
                     entries.append(e)
                 }
             }
         }
         let messages = [ChatMessage(role: "system", content: instructions),
                         ChatMessage(role: "user", content: input(segment: timeline.segment, tasks: tasks, related: shown, registry: entries))]
+        return Request(segment: timeline.segment, lastSeq: timeline.lastSeq, tasks: tasks, related: related, registry: entries,
+                       messages: messages)
+    }
+
+    /// Step 2, the model requests (cancellable: a cancelled task throws `CancellationError` and
+    /// nothing has been written). The plan is validated whole; the summary must not be empty.
+    static func ask(_ r: Request, model: any MainModel, config: Config) async throws -> Answer {
         let started = Date()
-        let reply = try await model.chat(messages, tools: nil, effort: config.consolidate.effort)
+        let reply = try await model.chat(r.messages, tools: nil, effort: config.consolidate.effort)
         let seconds = Date().timeIntervalSince(started)
-        let plan = try parse(reply.content, known: Set(related.map(\.id)), registry: Set(entries.map(\.id)),
-                             tasks: Set(numbered(tasks).keys))
+        let plan = try parse(reply.content, known: Set(r.related.map(\.id)), registry: Set(r.registry.map(\.id)),
+                             tasks: Set(numbered(r.tasks).keys))
         // What she wakes up with (owner, 2026-11-15: sleep is not a compaction, and it does not empty
         // her context): the day, as a summary a second clean request writes. Asked for before anything
         // is applied, so a failure here still writes nothing.
         let day = try await model.chat([ChatMessage(role: "system", content: Doll.talkInstructions),
-                                        ChatMessage(role: "user", content: tasks.map(\.text).joined(separator: "\n\n"))],
+                                        ChatMessage(role: "user", content: r.tasks.map(\.text).joined(separator: "\n\n"))],
                                        tools: nil, effort: config.context.talkEffort)
         let summary = day.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !summary.isEmpty else { throw ConsolidationError("the summary request for the new segment returned no text") }
+        return Answer(reply: reply, plan: plan, summary: summary, seconds: seconds)
+    }
 
-        // Valid: from here on it is applied.
-        let byNumber = numbered(tasks)
-        var applied = try memory.deleteRetired(before: now - Double(config.consolidate.retiredKeepDays) * 86400)
-            .map { "deleted \($0) (retired more than \(config.consolidate.retiredKeepDays) days ago)" }
+    /// Step 3, synchronous: deletes long-retired files, applies the operations, then `newSegment`
+    /// starts the next segment (its first event: `wakeNote` + the summary) and returns its name.
+    static func apply(_ r: Request, _ a: Answer, memory: Memory, config: ConsolidateConfig, now: Double,
+                      newSegment: () throws -> String) throws -> ConsolidationResult {
+        let plan = a.plan
+        let byNumber = numbered(r.tasks)
+        var applied = try memory.deleteRetired(before: now - Double(config.retiredKeepDays) * 86400)
+            .map { "deleted \($0) (retired more than \(config.retiredKeepDays) days ago)" }
         // New registry entries: only those an operation names.
         let used = Set(plan.operations.flatMap { op -> [String] in
             switch op {
@@ -179,7 +227,7 @@ public enum Consolidation {
             switch op {
             case .add(let ref, let text, let folder, let kind, let entities):
                 let list = try aligned(entities)
-                let id = try memory.write(text, folder: folder, sourceSeq: timeline.lastSeq, tier: .consolidated, kind: kind,
+                let id = try memory.write(text, folder: folder, sourceSeq: r.lastSeq, tier: .consolidated, kind: kind,
                                           entities: list, now: now)
                 refs[ref] = id
                 applied.append("add \(memory.dirName(folder))/\(id) (ref \(ref), kind \(kind?.rawValue ?? "none"), entities \(MemoryEntity.json(list))): \(text)")
@@ -203,11 +251,10 @@ public enum Consolidation {
                 }
             }
         }
-        let newSegment = try Timeline.startSegment(dir: timelineDir)
-        try Timeline(dir: timelineDir).append(Event(.memory, .internal, Self.wakeNote + summary))
-        return ConsolidationResult(segment: timeline.segment, newSegment: newSegment, plan: plan, applied: applied,
-                                   related: related.map(\.id), registry: entries.map(\.id), promptTokens: reply.usage.promptTokens,
-                                   completionTokens: reply.usage.completionTokens, seconds: seconds, reply: reply.content)
+        let next = try newSegment()
+        return ConsolidationResult(segment: r.segment, newSegment: next, plan: plan, applied: applied,
+                                   related: r.related.map(\.id), registry: r.registry.map(\.id), promptTokens: a.reply.usage.promptTokens,
+                                   completionTokens: a.reply.usage.completionTokens, seconds: a.seconds, reply: a.reply.content)
     }
 
     /// Opens the first event of the segment after a consolidation; the day's summary follows.

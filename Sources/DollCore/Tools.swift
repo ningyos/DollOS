@@ -16,6 +16,7 @@ import Foundation
 ///                                        only while an item is 進行中
 ///     calendar.add / calendar.change / calendar.delete / calendar.list
 ///                                        her calendar (2026-11-15, `Calendar.swift`); never gated
+///     sleep()                            ([sleep] enabled) go to sleep (2026-11-15, `Sleep.swift`); refused with an item in hand
 ///     voice.join() / voice.leave()       ([voice] enabled, M6) enter / leave the Discord voice channel the owner is in
 ///     voice.say(text)                    ([voice] enabled, M6) speak in that voice channel through the TTS
 ///
@@ -54,8 +55,9 @@ public enum Tools {
 
     /// Every internal tool, in the order she sees them. Built once per process from config, so the
     /// `tools` list never changes between turns and the server's prefix cache keeps hitting.
-    /// `voice` (`[voice] enabled`, M6): the voice tools follow the others.
-    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig) -> [Spec] {
+    /// `voice` (`[voice] enabled`, M6): the voice tools follow the others. `sleep` (`[sleep] enabled`):
+    /// her `sleep` follows the calendar's.
+    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig, sleep: Bool = false) -> [Spec] {
         let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
         return [
             Spec(name: Name.dm,
@@ -111,7 +113,7 @@ public enum Tools {
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
                  ], jsonParameters: []),
-        ] + todoSpecs + calendarSpecs + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
+        ] + todoSpecs + calendarSpecs + (sleep ? [sleepSpec] : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
 
     /// Her todo list (2026-11-14). Never gated.
@@ -213,6 +215,12 @@ public enum Tools {
                  ], jsonParameters: []),
         ]
     }()
+
+    /// Her sleep (2026-11-15). Never gated by the computer; refused with a todo item in hand.
+    static let sleepSpec = Spec(
+        name: "sleep",
+        description: "去睡覺。睡著以後程式把今天整理進長期記憶、另外寫一段今天的摘要，然後你睡到行事曆上的「起床」；主人或開發者找你、行事曆上別的事到了，會把你叫醒。什麼時候睡你自己決定：想睡了、主人說晚安、行事曆的「睡覺」到了而手上沒事，都可以睡。todo 有進行中或等待中的項目不能睡。要跟人說晚安，用回話的工具寫在同一則回覆裡，寫在 sleep 前面。",
+        parameters: ["type": "object", "properties": .object([]), "required": .array([])], jsonParameters: [])
 
     /// The names of the tools that reach a person or act on a channel: written once, so the specs,
     /// the prompt text, the decoder and everything that reads her calls agree.
@@ -432,6 +440,7 @@ public enum Tools {
         case editFile(path: String, old: String, new: String)
         /// `calendar.*` (2026-11-15), parsed by `CalendarRequest.parse`.
         case calendar(CalendarRequest)
+        case sleep
     }
 
     /// `specs` are the tools she has; bad arguments throw with what was wrong.
@@ -596,6 +605,8 @@ public enum Tools {
             guard !old.isEmpty else { throw ToolError(description: "edit_file 的 old 是空的；要加字就把它旁邊現有的那段當 old，new 填那段加上新的字") }
             guard old != new else { throw ToolError(description: "edit_file 的 old 和 new 一樣，沒有要改什麼") }
             return .editFile(path: path, old: old, new: new)
+        case "sleep":
+            return .sleep
         case let n where CalendarRequest.names.contains(n):
             do {
                 return .calendar(try CalendarRequest.parse(n, Dictionary(call.parameters.map { ($0.name, $0.value) }, uniquingKeysWith: { $1 })))
@@ -776,9 +787,17 @@ enum Instructions {
     /// How she works, after the pack in the system prompt (2026-11-14, owner: the operating
     /// principles she always needs, in plain sentences; the rest of DollOS is in her documents,
     /// `Doll.docsVMPath`). Her tools' descriptions (in `tools`) carry the details.
-    /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
-    static func text(voice: Bool, context c: ContextConfig) -> String {
+    /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in. `sleep`
+    /// (`[sleep] enabled`): the section on her sleep.
+    static func text(voice: Bool, context c: ContextConfig, sleep: Bool = false) -> String {
         let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""
+        let sleepPart = sleep ? """
+
+
+            ## 睡覺
+
+            什麼時候睡你自己決定，用 sleep。睡著的時候程式把今天整理進長期記憶、另外寫一段今天的摘要；整理完，醒來的時候今天從那段【睡前】摘要開始。行事曆上有每天的「睡覺」和「起床」（用 calendar.change 改時間）：「睡覺」到了給你一個回合，要不要睡你決定；「起床」到了你就醒，時間線上會有【起床】，列今天的行事曆。主人或開發者找你、行事曆上別的事到了，會把你叫醒；整理到一半被叫醒，那次整理就不算，下次睡覺再整理。todo 有進行中或等待中的項目不能睡。很久沒人跟你說話、你手上也沒事，程式會讓你先睡。【狀況】寫你醒了多久、今天的時間線有多少。細節在 \(Doll.docsVMPath)/sleep.md。
+            """ : ""
         return """
         ## 你怎麼運作
 
@@ -807,7 +826,7 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。\(sleepPart)
 
         ## 你的電腦
 

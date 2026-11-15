@@ -91,12 +91,19 @@ public actor Doll {
     let selectConfig: SelectConfig
     /// Screenshot files; events name them, and each is re-sent byte-identical every turn.
     public nonisolated let shots: URL
-    /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`.
-    let timeline: Timeline
+    /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`; replaced when her sleep
+    /// consolidates the day (`Sleep.swift`).
+    var timeline: Timeline
+    let timelineDir: URL
     /// Today's events for `recall`, in memory (2026-11-11): built from the segment at start, fed on every append.
-    let today: TodayIndex
+    var today: TodayIndex
+    let embedder: any Embedder
     let memory: Memory
     let model: any MainModel
+    /// Her sleep's model requests (consolidation: `[consolidate]` max_tokens and timeout).
+    let sleepModel: any MainModel
+    /// The whole config, for the sleep's tasks (consolidation reads several sections).
+    let config: Config
     /// The memory selection over `memory`, and the registry entries the program knows exactly.
     let pipeline: Selector
     let computer: any ComputerDriver
@@ -232,12 +239,37 @@ public actor Doll {
     /// Program notices that give no turn (the owner's calendar edits), held while a turn runs so
     /// nothing lands between her reply and its results; appended when the turn ends.
     var held: [Event] = []
+    /// `[sleep]` (2026-11-15, `Sleep.swift`).
+    let sleepConfig: SleepConfig
+    /// `<data_dir>/sleep.json` and what it holds.
+    let sleepURL: URL
+    var sleepState: SleepFile
+    /// No sleep file yet: "awake since" is set when the calendar is first caught up (the clock then is the real one).
+    var sleepFresh = false
+    /// The task running the sleep's tasks; replaced (and cancelled) on waking.
+    var sleepTask: Task<Void, Never>?
+    var sleepSerial = 0
+    /// Asleep and the tasks are still running (not resting).
+    var sleepWorking = false
+    /// 「起床」 came during the tasks: she wakes once they are done.
+    var wakeDue = false
+    /// Her `sleep` this reply: she sleeps once the reply's calls ran.
+    var sleepAsked = false
+    var backstopTask: Task<Void, Never>?
+    var backstopSerial = 0
+    /// When the owner or the developer last spoke to her (the clock's time; at start, the segment's last line).
+    var lastSpoke: Double = 0
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
-    /// index embeds the segment's events here.
+    /// index embeds the segment's events here. `sleepModel`: her sleep's requests; nil = `model`
+    /// (tests script one model for both).
     public init(config: Config, root: URL, model: any MainModel,
-                embedder: any Embedder, computer: (any ComputerDriver)? = nil,
+                embedder: any Embedder, computer: (any ComputerDriver)? = nil, sleepModel: (any MainModel)? = nil,
                 deliver: @escaping Deliver) throws {
+        self.config = config
+        sleepConfig = config.sleep
+        self.embedder = embedder
+        self.sleepModel = sleepModel ?? model
         core = config.core
         contextConfig = config.context
         llm = config.llm
@@ -250,7 +282,13 @@ public actor Doll {
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
-        timeline = try Timeline(dir: data.appending(path: "timeline"))
+        timelineDir = data.appending(path: "timeline")
+        timeline = try Timeline(dir: timelineDir)
+        sleepURL = data.appending(path: "sleep.json")
+        let slept = try Self.readSleep(sleepURL)
+        sleepState = slept ?? SleepFile(asleep: false, since: 0)
+        sleepFresh = slept == nil
+        lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
         agenda = try Agenda(url: data.appending(path: "calendar.json"))
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
@@ -261,7 +299,8 @@ public actor Doll {
         self.model = model
         self.computer = computer ?? VMPalDriver(config.computer)
         self.deliver = deliver
-        tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files)
+        tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files,
+                            sleep: config.sleep.enabled)
         voiceEnabled = config.voice.enabled
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
@@ -368,16 +407,21 @@ public actor Doll {
     }
 
     /// Owner voice is the only input that cancels a model call in flight (3.1); the event is
-    /// queued first so the rerun sees it.
+    /// queued first so the rerun sees it. Asleep, the owner's line wakes her first (`Sleep.swift`).
     public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM) {
+        wakeUp(.owner)
+        lastSpoke = wallClock.now()
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
         put(ev)
         if voice { inflight?.cancel() }
     }
 
-    /// The developer typed a line in `dollctl chat` (2026-11-12). Never secret; never cancels a call.
+    /// The developer typed a line in `dollctl chat` (2026-11-12). Never secret; never cancels a
+    /// call. Asleep, it wakes her like the owner's.
     public func developerSaid(_ text: String) {
+        wakeUp(.developer)
+        lastSpoke = wallClock.now()
         var ev = Event(.developer, .developer, text)
         ev.channel = .dollctl
         put(ev)
@@ -445,11 +489,11 @@ public actor Doll {
         return true
     }
 
-    /// Sleeps until an event arrives or her tool results await her and she is not paused (true), or
-    /// `stop()` (false). No timer: nothing else wakes her.
+    /// Sleeps until an event arrives or her tool results await her and she is neither paused nor
+    /// asleep (true), or `stop()` (false). No timer: nothing else wakes her.
     func waitForEvent() async -> Bool {
         while true {
-            if !paused, !queue.isEmpty || followUp { return true }
+            if !paused, !sleepState.asleep, !queue.isEmpty || followUp { return true }
             if stopped { return false }
             guard await withCheckedContinuation({ waiter = $0 }) else { return false }
         }
@@ -463,11 +507,14 @@ public actor Doll {
     public func run() async throws {
         if !calendarCaughtUp { _ = try calendarCatchUp() }
         scheduleCalendar()
+        // A restart while she slept: still asleep, the tasks not done yet go on.
+        if sleepState.asleep { startSleepCycle() } else { scheduleBackstop() }
         while !stopped {
             guard await waitForEvent() else { break }
             try drain()
             try await turn()
             try flushHeld()
+            if sleepConfig.enabled { try afterTurn() }
         }
         shutdown()
     }
@@ -506,13 +553,20 @@ public actor Doll {
         stopWatch()
         calendarTask?.cancel()
         calendarTask = nil
+        // Asleep stays asleep in `sleep.json`; the task cut short wrote nothing and runs again at boot.
+        sleepSerial += 1
+        sleepTask?.cancel()
+        sleepTask = nil
+        backstopSerial += 1
+        backstopTask?.cancel()
+        backstopTask = nil
     }
 
     // prompt -----------------------------------------------------------------
     /// Fixed for the life of the process: the persona and how she works. Her tools go in the
     /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, sleep: sleepConfig.enabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
@@ -695,6 +749,7 @@ public actor Doll {
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
+        if sleepConfig.enabled { out.append(sleepStatusLine(now: now)) }
         let limit = contextConfig.limit
         out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"
                    + "其中做事的過程 \(Self.grouped(process.tokens))（截圖 \(Self.grouped(process.images))）")
@@ -1098,6 +1153,8 @@ public actor Doll {
                 return Outcome(text: out, actions: [name])
             case .calendar(let r):
                 return Outcome(text: try calendarTool(r), actions: [name])
+            case .sleep:
+                return try sleepTool()
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")

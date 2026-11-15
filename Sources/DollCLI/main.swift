@@ -8,7 +8,8 @@
 // `dollcore --config <file.toml> consolidate <data_dir> [--memory <dir>]` (2026-11-11) consolidates
 // that data dir's newest timeline segment into her memory (the config's `[memory] dir`, or `--memory`;
 // relative paths from the current directory), starts a new segment, prints what it applied and exits.
-// Run it only while her process is not running.
+// Run it only while her process is not running. Her running process does the same in her sleep
+// (2026-11-15, `Sleep.swift`); this command stays for a data dir whose process is stopped.
 
 import DollCore
 import Foundation
@@ -66,7 +67,7 @@ do {
     let a = LocalAPI(config: cfg.api)
     api = a
     let d = try Doll(
-        config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: embedder,
+        config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: embedder, sleepModel: Consolidation.model(cfg),
         deliver: { text, to in
             let failed = a.deliver(text, to: to)
             out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))

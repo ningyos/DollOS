@@ -15,7 +15,7 @@ enum DashboardPage {
            padding: 8px 14px; background: #1b2028; border-bottom: 1px solid #2c3440; }
   header .name { font-weight: 700; font-size: 15px; }
   .badge { padding: 1px 8px; border-radius: 10px; background: #2c3440; }
-  .badge.thinking { background: #2d5a8a; } .badge.acting { background: #6a5a1e; } .badge.asleep { background: #333a44; }
+  .badge.thinking { background: #2d5a8a; } .badge.acting { background: #6a5a1e; } .badge.idle { background: #333a44; } .badge.sleeping { background: #3a2d6a; }
   .badge.paused { background: #8a2d2d; } .badge.live { background: #285a35; } .badge.dead { background: #8a2d2d; }
   header button { font: inherit; padding: 3px 12px; border-radius: 5px; border: 1px solid #4a5666; background: #26303c; color: #fff; cursor: pointer; }
   header button:disabled { opacity: .4; cursor: default; }
@@ -113,8 +113,8 @@ let status = null;
 function renderStatus(s) {
   status = s;
   $("name").textContent = s.name;
-  const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", asleep: "睡著" };
-  $("state").textContent = names[s.state] || s.state;
+  const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", idle: "醒著，等下一件事", sleeping: "睡覺中" };
+  $("state").textContent = (names[s.state] || s.state) + (s.sleep ? "：" + s.sleep : "");
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
   $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」` : "") + (s.pending.length ? `；後面 ${s.pending.length} 項` : "");
