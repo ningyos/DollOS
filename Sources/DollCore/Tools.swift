@@ -875,7 +875,7 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人自己加的事你不能改也不能刪，覺得該改就跟他說。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
 
         ## 你的電腦
 

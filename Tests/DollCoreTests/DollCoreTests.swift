@@ -5560,6 +5560,21 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     try await runner.value
 }
 
+@Test func sheCannotChangeOrDeleteWhatTheOwnerPutOnTheCalendar() throws {
+    let a = try Agenda(url: FileManager.default.temporaryDirectory.appending(path: "cal-\(UUID().uuidString).json"))
+    _ = try a.apply(.add(title: "起床", day: Day("2026-11-17")!, start: TimeOfDay("06:30"), end: nil, repeat: nil, until: nil), by: "owner")
+    _ = try a.apply(.add(title: "叫主人起床", day: Day("2026-11-17")!, start: TimeOfDay("06:25"), end: nil, repeat: nil, until: nil), by: "doll")
+    for r in [CalendarRequest.delete(id: 1, on: nil),
+              .change(id: 1, on: nil, title: nil, day: nil, start: TimeOfDay("07:00"), end: nil, allDay: false)] {
+        #expect { _ = try a.apply(r, by: "doll") } throws: { "\($0)".contains("#1「起床」是主人自己加的，你不能改也不能刪") }
+    }
+    #expect(a.item(1)?.start == "06:30")
+    // Her own she may; the owner may edit his and hers.
+    _ = try a.apply(.delete(id: 2, on: nil), by: "doll")
+    _ = try a.apply(.change(id: 1, on: nil, title: nil, day: nil, start: TimeOfDay("07:00"), end: nil, allDay: false), by: "owner")
+    #expect(a.item(2) == nil && a.item(1)?.start == "07:00")
+}
+
 @Test func sheIsToldBeforeItStartsGetsATurnAndMayMoveTodaysMaintenance() async throws {
     // Told at its time with a turn; it starts `notice_min` later (owner, 2026-11-16).
     let clock = ManualClock(at("2026-11-16", "22:00"))

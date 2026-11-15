@@ -410,6 +410,11 @@ final class Agenda {
 
     /// Applies one edit; returns the occurrence lines it produced, for the result. Throws a refusal.
     func apply(_ r: CalendarRequest, by who: String) throws -> String {
+        // What the owner put there is his (owner, 2026-11-16; real runs: she deleted his 06:30 wake-up
+        // as a duplicate of her own reminder without telling him): she reads it, she does not edit it.
+        if who == "doll", let id = r.id, let it = item(id), it.by == "owner" {
+            throw CalendarError(description: "#\(id)「\(it.title)」是主人自己加的，你不能改也不能刪。覺得該改就跟主人說，讓他自己改；你要另外提醒自己，就加一項你自己的。")
+        }
         switch r {
         case .list:
             fatalError("list is not an edit")
