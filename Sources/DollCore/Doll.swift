@@ -345,7 +345,11 @@ public actor Doll {
 
     /// Appends one event to the timeline file, then to the today index, then tells the dashboard.
     @discardableResult
-    func append(_ ev: Event) throws -> Event {
+    /// `ev`'s time is the doll's clock (`wallClock`) when it is appended; a queued event keeps the
+    /// time `put` gave it (when it arrived), and so does one moved to a new segment (`keepTime`).
+    func append(_ ev: Event, keepTime: Bool = false) throws -> Event {
+        var ev = ev
+        if !keepTime { ev.ts = wallClock.now() }
         let stored = try timeline.append(ev)
         try today.add(timeline)
         feed.notify(.event)
@@ -398,6 +402,8 @@ public actor Doll {
 
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {
+        var ev = ev
+        ev.ts = wallClock.now()
         queue.append(ev)
         feed.notify(.queue)
         if let w = waiter {
@@ -530,7 +536,7 @@ public actor Doll {
         queue.removeAll()
         var last: Event?
         for ev in batch {
-            last = try append(ev)
+            last = try append(ev, keepTime: true)
         }
         if batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }

@@ -724,13 +724,15 @@ extension Doll {
 
     /// Holds a no-turn program notice while a turn runs; appends it at once otherwise.
     func notice(_ ev: Event) throws {
-        if inTurn { held.append(ev) } else { try append(ev) }
+        var ev = ev
+        ev.ts = wallClock.now()
+        if inTurn { held.append(ev) } else { try append(ev, keepTime: true) }
     }
 
     func flushHeld() throws {
         let evs = held
         held = []
-        for ev in evs { try append(ev) }
+        for ev in evs { try append(ev, keepTime: true) }
     }
 
     // dashboard ------------------------------------------------------------------------------

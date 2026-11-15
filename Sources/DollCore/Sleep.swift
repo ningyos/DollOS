@@ -277,7 +277,7 @@ extension Doll {
             try append(Event(.memory, .internal, Consolidation.wakeNote + answer.summary))
             // Program notices that came after the request was gathered (the owner's calendar edits
             // while she slept) move to the new day; nothing else can arrive while she sleeps.
-            for ev in old.events where ev.seq! > request.lastSeq { try append(ev) }
+            for ev in old.events where ev.seq! > request.lastSeq { try append(ev, keepTime: true) }
             return "segment \(result.segment) → \(result.newSegment), \(result.applied.count) applied, request \(result.promptTokens) prompt tokens"
         }
     }
