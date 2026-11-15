@@ -220,7 +220,7 @@ extension Doll {
             dueTS = day.at(time)
         }
         let c = try addConcern(t, about: a, source: "her", due: dueTS)
-        return Outcome(text: "記下了：#\(c.id)〔\(a.label)〕\(t)。", actions: ["concern note"], background: true)
+        return Outcome(text: "記下了：#\(c.id)〔\(a.label)〕\(t)。", actions: ["concern note"])
     }
 
     func concernEnd(id: Int, how: String) throws -> Outcome {
@@ -230,7 +230,7 @@ extension Doll {
             signal(.concernDone, "#\(c.id) \(c.text)")
             if c.about == .own { chainAfter = c.id }
         }
-        return Outcome(text: "#\(c.id) 結束了（\(how == "done" ? "做完" : "放下")）。", actions: ["concern end"], background: true)
+        return Outcome(text: "#\(c.id) 結束了（\(how == "done" ? "做完" : "放下")）。", actions: ["concern end"])
     }
 
     func ownerFeedback(kind: String, quote: String) throws -> Outcome {
@@ -245,7 +245,7 @@ extension Doll {
         case "correction": signal(.correction, "「\(q)」")
         default: throw ToolError(description: "kind 只能是 praise 或 correction")
         }
-        return Outcome(text: "記下了。", actions: ["owner feedback \(kind)"], background: true)
+        return Outcome(text: "記下了。", actions: ["owner feedback \(kind)"])
     }
 
     // the program's concerns --------------------------------------------------------------------------

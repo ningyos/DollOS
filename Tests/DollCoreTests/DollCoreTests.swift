@@ -5807,12 +5807,13 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
 
 @Test func signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await Harness([Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "不是這個")]))], clock: clock) { $0.drives.enabled = true }
+    let h = try await Harness([Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "不是這個")])), Scripted("", dm("好"))],
+                              clock: clock) { $0.drives.enabled = true }
     let doll0 = h.doll
     let runner = Task { try await doll0.run() }
     try await waitUntil { clock.sleepers >= 1 }   // caught up: the signals have started
     await h.doll.ownerSaid("不是這個啦")
-    try await waitUntil { await h.doll.settled && h.reports.count == 1 }
+    try await waitUntil { await h.doll.settled && h.reports.count == 2 }
     await h.doll.stop()
     try await runner.value
     let c = DrivesConfig()
@@ -5843,7 +5844,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 
 @Test func wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdleAndNotAsleep() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await Harness([Scripted("", noteCall("主人昨晚加班到兩點，很累", "owner"))], clock: clock) {
+    let h = try await Harness([Scripted("", noteCall("主人昨晚加班到兩點，很累", "owner")), Scripted("", dm("辛苦了"))], clock: clock) {
         $0.drives.enabled = true
         $0.sleep.enabled = true
         $0.drives.sleepinessPerHour = 0.0001   // this test is about 親近 (and the backstop waits for 睡意)
@@ -5852,29 +5853,29 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("昨晚加班到兩點")
-    try await waitUntil { await doll.settled && h.reports.count == 1 }
+    try await waitUntil { await doll.settled && h.reports.count == 2 }
     // 親近 0.6 + 0.1 = 0.7 at 10:00 crosses 0.2 after log2(3.5)·4 h ≈ 7.23 h: 17:14.
     clock.set(at("2026-11-16", "17:00"))
     try await Task.sleep(for: .milliseconds(100))
-    #expect(await h.model.requests.count == 1)
+    #expect(await h.model.requests.count == 2)
     await h.model.add([Scripted("", dm("今天還好嗎？"))])
     clock.set(at("2026-11-16", "17:20"))
-    try await waitUntil { await h.model.requests.count == 2 }
+    try await waitUntil { await h.model.requests.count == 3 }
     try await waitUntil { await doll.settled }
     let wander = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
     #expect(wander == ["【走神】你想起掛著的一件事（#1，你 2026-11-16（星期一） 10:00 記的）：主人昨晚加班到兩點，很累"])
-    #expect(await h.model.seen(1).contains { $0.content.contains("【走神】") })
+    #expect(await h.model.seen(2).contains { $0.content.contains("【走神】") })
     // Still out of range hours later: no second surfacing for the same crossing.
     clock.set(at("2026-11-16", "21:00"))
     try await Task.sleep(for: .milliseconds(100))
-    #expect(await h.model.requests.count == 2)
+    #expect(await h.model.requests.count == 3)
     // The owner talks (back in range), she takes an item and waits: the next crossing does not surface.
     await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案"))])
     await doll.ownerSaid("幫我寄報告，檔案等等給你")
     try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
     clock.set(at("2026-11-16", "23:30"))
     try await Task.sleep(for: .milliseconds(100))
-    #expect(await h.model.requests.count == 3)
+    #expect(await h.model.requests.count == 4)
     #expect(h.logs.contains { $0.contains("drives: 親近") })
     await doll.stop()
     try await runner.value
@@ -5882,32 +5883,33 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 
 @Test func asleepNothingSurfacesClosenessHoldsThroughTheNightAndSleepClearsSleepiness() async throws {
     let clock = ManualClock(at("2026-11-16", "23:00"))
-    let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("晚安"), sleepCall), planReply, summaryReply],
+    let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("早點睡")), Scripted("", dm("晚安"), sleepCall),
+                               planReply, summaryReply],
                               clock: clock) { $0.sleep.enabled = true; $0.drives.enabled = true }
     let doll = b.doll
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("最近好累")
-    try await waitUntil { await doll.settled && b.reports.count == 1 }
+    try await waitUntil { await doll.settled && b.reports.count == 2 }
     await doll.ownerSaid("晚安")
     try await waitUntil { await doll.isAsleep }
-    try await waitUntil { await b.model.requests.count == 4 }   // the two sleep requests
+    try await waitUntil { await b.model.requests.count == 5 }   // the two sleep requests
     #expect(await doll.dashboardDrives().values.first { $0.signal == "sleepiness" }!.value == 0)
     // 親近 0.8 at 23:00 would cross 0.2 at 07:00 if the night counted: asleep, nothing surfaces.
     clock.set(at("2026-11-17", "07:30"))
     try await Task.sleep(for: .milliseconds(150))
-    #expect(await b.model.requests.count == 4)
+    #expect(await b.model.requests.count == 5)
     #expect(try b.events().allSatisfy { !$0.text.hasPrefix("【走神】") })
     // 起床 at 08:00: 親近 resumes from 0.8 (the night did not count), so nothing surfaces yet …
     clock.set(at("2026-11-17", "08:00"))
     try await waitUntil { await !doll.isAsleep }
     try await Task.sleep(for: .milliseconds(100))
-    #expect(await b.model.requests.count == 4)
+    #expect(await b.model.requests.count == 5)
     #expect(approx(await doll.dashboardDrives().values.first { $0.signal == "closeness" }!.value, 0.8))
     // … until 8 awake hours later.
     await b.model.add([Scripted("", dm("今天好點了嗎？"))])
     clock.set(at("2026-11-17", "16:01"))
-    try await waitUntil { await b.model.requests.count == 5 }
+    try await waitUntil { await b.model.requests.count == 6 }
     #expect(try b.events().contains { $0.text.hasPrefix("【走神】") && $0.text.hasSuffix("主人最近很累") })
     await doll.stop()
     try await runner.value
@@ -5915,7 +5917,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 
 @Test func anAssociationAttachesOnlyAboveTheThresholdAndAddsNoTurn() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await Harness([Scripted("", noteCall("鯊魚分類還剩兩步沒弄完", "duty"))], clock: clock) {
+    let h = try await Harness([Scripted("", noteCall("鯊魚分類還剩兩步沒弄完", "duty")), Scripted("", dm("記著了"))], clock: clock) {
         $0.drives.enabled = true
         $0.drives.sleepinessPerHour = 0.0001
         $0.drives.closenessHalfLifeH = 1000
@@ -5924,16 +5926,16 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("先記著鯊魚分類")
-    try await waitUntil { await doll.settled && h.reports.count == 1 }
+    try await waitUntil { await doll.settled && h.reports.count == 2 }
     await h.model.add([Scripted("", dm("好"))])
     await doll.ownerSaid("今天天氣很好")
-    try await waitUntil { await doll.settled && h.reports.count == 2 }
+    try await waitUntil { await doll.settled && h.reports.count == 3 }
     #expect(try h.events().allSatisfy { !$0.text.hasPrefix("【聯想】") })
     await h.model.add([Scripted("", dm("嗯，還剩兩步"))])
     await doll.ownerSaid("鯊魚分類還剩兩步沒弄完嗎")
-    try await waitUntil { await doll.settled && h.reports.count == 3 }
-    #expect(await h.model.requests.count == 3)
-    #expect(await h.model.seen(2).contains { $0.content.hasSuffix("【聯想】（想到）鯊魚分類還剩兩步沒弄完（#1）") })
+    try await waitUntil { await doll.settled && h.reports.count == 4 }
+    #expect(await h.model.requests.count == 4)
+    #expect(await h.model.seen(3).contains { $0.content.hasSuffix("【聯想】（想到）鯊魚分類還剩兩步沒弄完（#1）") })
     #expect(h.logs.contains { $0.contains("drives: association best #1") && $0.contains("(threshold 0.55)") })
     await doll.stop()
     try await runner.value
@@ -5974,7 +5976,8 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 
 @Test func highDriveChainsHerOwnThingsAndTheChainEnds() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own"), noteCall("學會畫鯊魚", "own"))], clock: clock) {
+    let h = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own"), noteCall("學會畫鯊魚", "own")), Scripted("", dm("想讀圖鑑"))],
+                              clock: clock) {
         $0.drives.enabled = true
         $0.drives.sleepinessPerHour = 0.0001
         $0.drives.closenessHalfLifeH = 1000
@@ -5984,14 +5987,14 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("你有什麼想做的？")
-    try await waitUntil { await doll.settled && h.reports.count == 1 }
-    await h.model.add([Scripted("", ("concern.end", [("id", "1"), ("how", "done")])),
-                       Scripted("", ("concern.end", [("id", "2"), ("how", "done")]))])
+    try await waitUntil { await doll.settled && h.reports.count == 2 }
+    await h.model.add([Scripted("", ("concern.end", [("id", "1"), ("how", "done")])), Scripted("", dm("讀完了")),
+                       Scripted("", ("concern.end", [("id", "2"), ("how", "done")])), Scripted("", dm("也畫好了"))])
     await doll.ownerSaid("圖鑑讀完了嗎")
-    try await waitUntil { await h.model.requests.count == 3 }
+    try await waitUntil { await h.model.requests.count == 6 }
     try await waitUntil { await doll.settled }
     try await Task.sleep(for: .milliseconds(100))
-    #expect(await h.model.requests.count == 3)
+    #expect(await h.model.requests.count == 6)
     #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text).count == 1)
     #expect(h.logs.contains { $0.contains("drives: wander (動力, chained) #2「學會畫鯊魚」") })
     #expect(h.logs.contains { $0.contains("動力 out of range, no concern of that kind; nothing surfaces") })
@@ -6024,6 +6027,23 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     #expect(await h.doll.dashboardDrives().changes.contains { $0.cause == "主人誇她：「謝啦」" && $0.signal == .drive })
     await h.doll.stop()
     try await runner.value
+}
+
+/// m6-drives real runs (2026-11-16): a turn whose only call was owner.feedback (2/3 after a
+/// correction, once after praise) or concern.note (once after the owner's line) ended there, and the
+/// owner's line never got an answer. The bookkeeping calls give her the next turn, like `remember`.
+@Test func aTurnThatOnlyRecordsFeedbackOrAConcernStillGetsToAnswer() async throws {
+    for call in [("owner.feedback", [("kind", "correction"), ("quote", "太正式了")]), noteCall("主人今天很煩", "owner"),
+                 ("concern.end", [("id", "1"), ("how", "let_go")])] {
+        let h = try await Harness { $0.drives.enabled = true }
+        await h.doll.ownerSaid("不對啦，太正式了")
+        if call.0 == "concern.end" { try await h.turn(Scripted("", noteCall("阿凱的訊息", "duty"))) }
+        try await h.turn(Scripted("", call))
+        #expect(try h.toolResults().last!.text.hasPrefix(call.0 == "concern.end" ? "#1 結束了" : "記下了"))
+        #expect(await h.doll.followUp, "\(call.0)")
+        try await h.turn(Scripted("", dm("好，改成隨便一點的")))
+        #expect(h.said == ["好，改成隨便一點的"])
+    }
 }
 
 @Test func theExampleDrivesSectionIsTheDefaultsAndBadValuesAreRefused() throws {
