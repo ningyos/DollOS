@@ -592,6 +592,11 @@ extension Doll {
         // Asleep through a restart and 「起床」 passed meanwhile: she wakes once the tasks are done.
         if sleepState.asleep, missed.contains(where: { $0.role == "wake" }) { wakeDue = true }
         try ensureSleepItems()
+        if drivesConfig.enabled, signalsFresh {
+            signalsFresh = false
+            drives = Drives(config: drivesConfig, now: now)
+            try saveSignals()
+        }
         return missed
     }
 

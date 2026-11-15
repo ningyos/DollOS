@@ -177,8 +177,10 @@ extension Doll {
         backstopTask?.cancel()
         backstopTask = nil
         if by == "backstop" {
-            try append(Event(.memory, .internal, "【睡覺】已經 \(Self.minutes(sleepConfig.idleBackstopMin))沒有人跟你說話，你手上也沒事，程式讓你去睡了。"))
+            let sleepy = drivesConfig.enabled ? "你已經很睏了，" : ""
+            try append(Event(.memory, .internal, "【睡覺】\(sleepy)已經 \(Self.minutes(sleepConfig.idleBackstopMin))沒有人跟你說話，你手上也沒事，程式讓你去睡了。"))
         }
+        signal(.sleep, by == "backstop" ? "程式讓她睡" : "她自己去睡")
         sleepState = SleepFile(asleep: true, since: now, by: by)
         try saveSleep()
         wakeDue = false
@@ -340,7 +342,16 @@ extension Doll {
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "sleep: wake notice not written: \(error)") }
         log("INFO", "sleep: woke (\(by == .morning ? "morning" : by.label), \(working ? "during the tasks" : "resting")); done \(slept.done), left \(left.map(\.rawValue))")
         feed.notify(.sleep)
+        if by == .morning {
+            signal(.wake, "睡到起床")
+        } else if drivesConfig.enabled, !signalsFresh {
+            drives.thaw(at: now)
+            do { try saveSignals() } catch { log("ERROR", "drives: saving \(signalsURL.path) failed: \(error)") }
+        }
         scheduleBackstop()
+        // The morning wake gives no turn of its own; something may surface now. (A person or a
+        // calendar item that woke her brings its own turn; the check after it runs then.)
+        if by == .morning { drivesCheck() }
         if let w = waiter {
             waiter = nil
             w.resume(returning: true)
@@ -367,9 +378,15 @@ extension Doll {
 
     // the backstop ---------------------------------------------------------------------------------
 
-    /// When the backstop may fire: the last person's line (or since she woke, if later) plus the idle time.
+    /// When the backstop may fire: the last person's line (or since she woke, if later) plus the
+    /// idle time; with drives on (m6-drives) also not before 睡意 leaves its range, so a quiet
+    /// afternoon is not a night. The last resort: 睡意 builds at `sleepiness_per_hour` and never
+    /// recedes while she is awake, so every day still ends in a sleep (and its consolidation) even
+    /// when she never calls `sleep`.
     func backstopDeadline() -> Double {
-        max(lastSpoke, sleepState.since) + Double(sleepConfig.idleBackstopMin) * 60
+        let idle = max(lastSpoke, sleepState.since) + Double(sleepConfig.idleBackstopMin) * 60
+        guard drivesConfig.enabled, let sleepy = drives.sleepyAt() else { return idle }
+        return max(idle, sleepy)
     }
 
     func scheduleBackstop() {

@@ -306,6 +306,7 @@ private struct Harness {
         cfg.memory.dir = dir.appending(path: "memory").path
         cfg.computer.cheatsheet = false   // the cheatsheet's own tests switch it on
         cfg.sleep.enabled = false         // the sleep tests switch it on
+        cfg.drives.enabled = false        // the drives tests switch it on
         tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
@@ -3788,7 +3789,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 @Test func apiAndBridgeConfigAreValidated() throws {
     let example = try Config.load(root.appending(path: "dollcore.example.toml"))
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
-    #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "calendar", "watch"])
+    #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"])
     let file = FileManager.default.temporaryDirectory.appending(path: "api-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
@@ -3806,7 +3807,10 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"calendar\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }   // developer_text must be placed
     // So must calendar (2026-11-15): a config from before it says so instead of guessing its place.
-    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"developer_text\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
+    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"developer_text\", \"watch\", \"wander\"]\n").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+    // And wander (m6-drives): a config from before it must place it.
+    try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"developer_text\", \"calendar\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
     // The tracked experiment configs that loaded before (automem and shortcuts predate the
     // self_reported and consolidated tiers and did not load already).
@@ -5718,4 +5722,318 @@ private func consolidatedBodies(_ h: Harness) throws -> [String] {
     let b = try await sleepHarness(clock, dir: h.dir)
     try await b.doll.announceBoot()
     #expect(await b.doll.dashboardCalendar().items.map(\.title) == ["睡覺", "起床"])
+}
+
+// drives (m6-drives, 2026-11-15) ---------------------------------------------------------------
+
+private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
+
+@Test func drivesEventsMoveSignalsWithACauseAndRelaxByTheirHalfLife() {
+    let c = DrivesConfig()
+    var d = Drives(config: c, now: 0)
+    #expect(approx(d.value(.closeness, at: 0), c.closenessStart) && approx(d.value(.stress, at: 0), c.stressRest))
+    d.apply(.correction, at: 0, detail: "「不是這樣」")
+    #expect(approx(d.value(.stress, at: 0), c.stressRest + c.correctionStress))
+    // One half-life later half the gap to rest is left; two, a quarter.
+    #expect(approx(d.value(.stress, at: c.stressHalfLifeH * 3600), c.stressRest + c.correctionStress / 2))
+    #expect(approx(d.value(.stress, at: 2 * c.stressHalfLifeH * 3600), c.stressRest + c.correctionStress / 4))
+    #expect(d.state.log == [SignalChange(ts: 0, signal: .stress, before: c.stressRest, after: c.stressRest + c.correctionStress,
+                                         cause: "主人糾正她：「不是這樣」")])
+    var p = Drives(config: c, now: 0)
+    p.apply(.praise, at: 0, detail: "「謝啦」")
+    #expect(approx(p.value(.drive, at: 0), c.driveRest + c.praiseDrive))
+    #expect(approx(p.value(.closeness, at: 0), c.closenessStart + c.praiseCloseness))
+    #expect(approx(p.value(.stress, at: 0), max(0, c.stressRest + c.praiseStress)))
+    p.apply(.itemDone, at: 0, detail: "寄出季報")
+    #expect(approx(p.value(.drive, at: 0), c.driveRest + c.praiseDrive + c.itemDoneDrive))
+    p.apply(.itemFailed, at: 0, detail: "寄出季報")
+    p.apply(.ownerTalk, at: 0, detail: "「嗨」")
+    p.apply(.deadline, at: 0, detail: "#1")
+    p.apply(.toolErrors, at: 0, detail: "click")
+    p.apply(.concernDone, at: 0, detail: "#2")
+    // Every change has its event as the cause.
+    #expect(p.state.log.count == 10 && p.state.log.allSatisfy { $0.cause.contains("：") && $0.before != $0.after })
+    // 睡意 builds at its rate while awake; sleep clears it and keeps sleep_stress_keep of 壓力's gap.
+    var s = Drives(config: c, now: 0)
+    #expect(approx(s.value(.sleepiness, at: 10 * 3600), 10 * c.sleepinessPerHour))
+    s.apply(.correction, at: 10 * 3600, detail: "x")
+    let stress = s.value(.stress, at: 10 * 3600)
+    s.apply(.sleep, at: 10 * 3600, detail: "她自己去睡")
+    #expect(s.value(.sleepiness, at: 10 * 3600) == 0)
+    #expect(approx(s.value(.stress, at: 10 * 3600), c.stressRest + (stress - c.stressRest) * c.sleepStressKeep))
+    #expect(s.state.log.suffix(2).allSatisfy { $0.cause == "睡覺：她自己去睡" })
+}
+
+@Test func drivesNextCrossingIsExactAndAnExcursionSurfacesOncePerCrossing() {
+    let c = DrivesConfig()
+    var d = Drives(config: c, now: 0)
+    let t = d.nextCrossing(after: 0)!
+    #expect(abs(t - (log2(c.closenessStart / c.closenessLow) * c.closenessHalfLifeH * 3600 + 1)) < 1e-6)
+    #expect(!d.isOut(.closeness, at: t - 2) && d.isOut(.closeness, at: t))
+    #expect(d.pending(at: t - 2) == [] && d.pending(at: t) == [.closeness])
+    d.state.surfaced.insert(.closeness)
+    #expect(d.pending(at: t + 3600) == [])
+    // The owner talks: back in range, the mark is forgotten, and the next crossing surfaces again.
+    d.apply(.ownerTalk, at: t + 3600, detail: "「嗨」")
+    #expect(d.pending(at: t + 3600) == [] && !d.state.surfaced.contains(.closeness))
+    let t2 = d.nextCrossing(after: t + 3600)!
+    #expect(d.pending(at: t2 - 2) == [] && d.pending(at: t2) == [.closeness])
+    // 壓力 out and surfaced: the timer's next moment is its way back into range.
+    var e = Drives(config: c, now: 0)
+    e.apply(.correction, at: 0, detail: "x")
+    e.apply(.correction, at: 0, detail: "x")
+    e.state.surfaced.insert(.stress)
+    let back = log2((e.value(.stress, at: 0) - c.stressRest) / (c.stressHigh - c.stressRest)) * c.stressHalfLifeH * 3600 + 1
+    #expect(abs(e.nextCrossing(after: 0)! - min(back, t)) < 1e-6)
+    // 睡意 crosses at its steady rate.
+    #expect(abs(e.sleepyAt()! - (c.sleepinessHigh / c.sleepinessPerHour * 3600 + 1)) < 1e-6)
+}
+
+@Test func theFeltLineIsOneFixedSentenceByTheCombinationAndNoneInRange() {
+    let c = DrivesConfig()
+    var d = Drives(config: c, now: 0)
+    #expect(d.felt(at: 0) == nil)
+    d.apply(.correction, at: 0, detail: "x")
+    d.apply(.correction, at: 0, detail: "x")
+    #expect(d.felt(at: 0) == "你現在有點緊繃")
+    // 17 h on: 壓力 has receded, 睡意 is high (and 親近 low): the sleepy sentence comes first.
+    #expect(!d.isOut(.stress, at: 17 * 3600) && d.felt(at: 17 * 3600) == "有點想睡了")
+    #expect(d.felt(at: 5 * 3600) == nil || d.felt(at: 5 * 3600) == "有點想主人了")
+    var both = Drives(config: c, now: 0)
+    both.apply(.correction, at: 15.5 * 3600, detail: "x")
+    both.apply(.correction, at: 15.5 * 3600, detail: "x")
+    #expect(both.felt(at: 16.5 * 3600) == "你又累又有點緊繃")
+}
+
+@Test func signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "不是這個")]))], clock: clock) { $0.drives.enabled = true }
+    let doll0 = h.doll
+    let runner = Task { try await doll0.run() }
+    try await waitUntil { clock.sleepers >= 1 }   // caught up: the signals have started
+    await h.doll.ownerSaid("不是這個啦")
+    try await waitUntil { await h.doll.settled && h.reports.count == 1 }
+    await h.doll.stop()
+    try await runner.value
+    let c = DrivesConfig()
+    let stress = c.stressRest + c.correctionStress
+    // Four hours later in a new process: the value decayed for the time passed.
+    clock.set(at("2026-11-16", "14:00"))
+    let b = try await Harness(dir: h.dir, clock: clock) { $0.drives.enabled = true }
+    let v = await b.doll.dashboardDrives().values.first { $0.signal == "stress" }!.value
+    #expect(approx(v, c.stressRest + (stress - c.stressRest) / 2))
+    #expect(await b.doll.dashboardDrives().changes.map(\.cause).contains("主人糾正她：「不是這個」"))
+    for name in ["signals.json", "concerns.json"] {
+        let url = h.dir.appending(path: name)
+        let keep = try? Data(contentsOf: url)
+        try Data("{".utf8).write(to: url)
+        await #expect { try await Harness(dir: h.dir, clock: clock) { $0.drives.enabled = true } } throws: {
+            "\($0)".contains("\(name): not a \(name == "signals.json" ? "signals" : "concerns") file")
+        }
+        if let keep { try keep.write(to: url) } else { try FileManager.default.removeItem(at: url) }
+    }
+    // A signals file missing a signal is malformed too.
+    try Data(#"{"points":{"drive":{"value":0.4,"ts":0}},"surfaced":[],"log":[]}"#.utf8).write(to: h.dir.appending(path: "signals.json"))
+    await #expect(throws: (any Error).self) { try await Harness(dir: h.dir, clock: clock) { $0.drives.enabled = true } }
+}
+
+private func noteCall(_ text: String, _ about: String) -> (String, [(String, String)]) {
+    ("concern.note", [("text", text), ("about", about)])
+}
+
+@Test func wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdleAndNotAsleep() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", noteCall("主人昨晚加班到兩點，很累", "owner"))], clock: clock) {
+        $0.drives.enabled = true
+        $0.sleep.enabled = true
+        $0.drives.sleepinessPerHour = 0.0001   // this test is about 親近 (and the backstop waits for 睡意)
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("昨晚加班到兩點")
+    try await waitUntil { await doll.settled && h.reports.count == 1 }
+    // 親近 0.6 + 0.1 = 0.7 at 10:00 crosses 0.2 after log2(3.5)·4 h ≈ 7.23 h: 17:14.
+    clock.set(at("2026-11-16", "17:00"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 1)
+    await h.model.add([Scripted("", dm("今天還好嗎？"))])
+    clock.set(at("2026-11-16", "17:20"))
+    try await waitUntil { await h.model.requests.count == 2 }
+    try await waitUntil { await doll.settled }
+    let wander = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
+    #expect(wander == ["【走神】你想起掛著的一件事（#1，你 2026-11-16（星期一） 10:00 記的）：主人昨晚加班到兩點，很累"])
+    #expect(await h.model.seen(1).contains { $0.content.contains("【走神】") })
+    // Still out of range hours later: no second surfacing for the same crossing.
+    clock.set(at("2026-11-16", "21:00"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 2)
+    // The owner talks (back in range), she takes an item and waits: the next crossing does not surface.
+    await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案"))])
+    await doll.ownerSaid("幫我寄報告，檔案等等給你")
+    try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
+    clock.set(at("2026-11-16", "23:30"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 3)
+    #expect(h.logs.contains { $0.contains("drives: 親近") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func asleepNothingSurfacesClosenessHoldsThroughTheNightAndSleepClearsSleepiness() async throws {
+    let clock = ManualClock(at("2026-11-16", "23:00"))
+    let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("晚安"), sleepCall), planReply, summaryReply],
+                              clock: clock) { $0.sleep.enabled = true; $0.drives.enabled = true }
+    let doll = b.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("最近好累")
+    try await waitUntil { await doll.settled && b.reports.count == 1 }
+    await doll.ownerSaid("晚安")
+    try await waitUntil { await doll.isAsleep }
+    try await waitUntil { await b.model.requests.count == 4 }   // the two sleep requests
+    #expect(await doll.dashboardDrives().values.first { $0.signal == "sleepiness" }!.value == 0)
+    // 親近 0.8 at 23:00 would cross 0.2 at 07:00 if the night counted: asleep, nothing surfaces.
+    clock.set(at("2026-11-17", "07:30"))
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(await b.model.requests.count == 4)
+    #expect(try b.events().allSatisfy { !$0.text.hasPrefix("【走神】") })
+    // 起床 at 08:00: 親近 resumes from 0.8 (the night did not count), so nothing surfaces yet …
+    clock.set(at("2026-11-17", "08:00"))
+    try await waitUntil { await !doll.isAsleep }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await b.model.requests.count == 4)
+    #expect(approx(await doll.dashboardDrives().values.first { $0.signal == "closeness" }!.value, 0.8))
+    // … until 8 awake hours later.
+    await b.model.add([Scripted("", dm("今天好點了嗎？"))])
+    clock.set(at("2026-11-17", "16:01"))
+    try await waitUntil { await b.model.requests.count == 5 }
+    #expect(try b.events().contains { $0.text.hasPrefix("【走神】") && $0.text.hasSuffix("主人最近很累") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func anAssociationAttachesOnlyAboveTheThresholdAndAddsNoTurn() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", noteCall("鯊魚分類還剩兩步沒弄完", "duty"))], clock: clock) {
+        $0.drives.enabled = true
+        $0.drives.sleepinessPerHour = 0.0001
+        $0.drives.closenessHalfLifeH = 1000
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("先記著鯊魚分類")
+    try await waitUntil { await doll.settled && h.reports.count == 1 }
+    await h.model.add([Scripted("", dm("好"))])
+    await doll.ownerSaid("今天天氣很好")
+    try await waitUntil { await doll.settled && h.reports.count == 2 }
+    #expect(try h.events().allSatisfy { !$0.text.hasPrefix("【聯想】") })
+    await h.model.add([Scripted("", dm("嗯，還剩兩步"))])
+    await doll.ownerSaid("鯊魚分類還剩兩步沒弄完嗎")
+    try await waitUntil { await doll.settled && h.reports.count == 3 }
+    #expect(await h.model.requests.count == 3)
+    #expect(await h.model.seen(2).contains { $0.content.hasSuffix("【聯想】（想到）鯊魚分類還剩兩步沒弄完（#1）") })
+    #expect(h.logs.contains { $0.contains("drives: association best #1") && $0.contains("(threshold 0.55)") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func theProgramNotesCalendarAndFailedItemsAndEndsPassedOnes() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let add = ("calendar.add", [("title", "主人看牙醫"), ("date", "2026-11-17"), ("start", "09:00")])
+    let h = try await Harness([Scripted("", add), Scripted("", dm("記好了")), Scripted("", todoSet("報告寄出了"), fail("沒有檔案")),
+                               Scripted("", ("todo.set", [("items", "[]")]))], clock: clock) {
+        $0.drives.enabled = true
+        $0.drives.sleepinessPerHour = 0.0001
+        $0.drives.closenessHalfLifeH = 1000
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("明天九點我看牙醫")
+    try await waitUntil { await doll.settled && h.reports.count == 2 }
+    var open = await doll.dashboardDrives().open
+    #expect(open.map(\.text) == ["主人看牙醫（2026-11-17（星期二） 09:00）"] && open[0].source == "calendar")
+    await doll.ownerSaid("幫我寄報告")
+    try await waitUntil { await doll.settled && h.reports.count == 4 }
+    open = await doll.dashboardDrives().open
+    #expect(open.map(\.text).last == "沒做成：報告寄出了（沒有檔案）" && open.last!.source == "todo")
+    #expect(try h.toolResults().contains { $0.text.contains("程式記成你的掛念 #2") })
+    // Three hours before: 壓力 up once.
+    clock.set(at("2026-11-17", "06:30"))
+    try await waitUntil { await doll.dashboardDrives().changes.contains { $0.cause.hasPrefix("掛念的事快到了：#1") } }
+    // The time passes (the calendar's turn): the concern ends.
+    await h.model.add([Scripted("", dm("該出門看牙醫了"))])
+    clock.set(at("2026-11-17", "09:00"))
+    try await waitUntil { await doll.dashboardDrives().ended.contains { $0.id == 1 && $0.end == "passed" } }
+    #expect(await doll.dashboardDrives().changes.filter { $0.cause.hasPrefix("掛念的事快到了") }.count == 1)
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func highDriveChainsHerOwnThingsAndTheChainEnds() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own"), noteCall("學會畫鯊魚", "own"))], clock: clock) {
+        $0.drives.enabled = true
+        $0.drives.sleepinessPerHour = 0.0001
+        $0.drives.closenessHalfLifeH = 1000
+        $0.drives.driveHigh = 0.45        // one concern done (0.4 + 0.1) is high
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("你有什麼想做的？")
+    try await waitUntil { await doll.settled && h.reports.count == 1 }
+    await h.model.add([Scripted("", ("concern.end", [("id", "1"), ("how", "done")])),
+                       Scripted("", ("concern.end", [("id", "2"), ("how", "done")]))])
+    await doll.ownerSaid("圖鑑讀完了嗎")
+    try await waitUntil { await h.model.requests.count == 3 }
+    try await waitUntil { await doll.settled }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 3)
+    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text).count == 1)
+    #expect(h.logs.contains { $0.contains("drives: wander (動力, chained) #2「學會畫鯊魚」") })
+    #expect(h.logs.contains { $0.contains("動力 out of range, no concern of that kind; nothing surfaces") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func herConcernToolsCheckWhatTheyAreGiven() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", noteCall("", "owner"), ("concern.note", [("text", "x"), ("about", "y")]),
+                                        ("concern.note", [("text", "牙醫"), ("about", "duty"), ("due", "明天")]),
+                                        ("concern.end", [("id", "9"), ("how", "done")]),
+                                        ("owner.feedback", [("kind", "praise"), ("quote", "你好棒")]),
+                                        ("owner.feedback", [("kind", "praise"), ("quote", "謝啦")])),
+                               Scripted("", dm("嘿嘿"))], clock: clock) {
+        $0.drives.enabled = true
+    }
+    let doll0 = h.doll
+    let runner = Task { try await doll0.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await h.doll.ownerSaid("謝啦")
+    try await waitUntil { await h.doll.settled && h.reports.count == 2 }
+    let r = try h.toolResults().map(\.text)
+    #expect(r[0].hasPrefix("失敗：") && r[0].contains("text 是空的"))
+    #expect(r[1].contains("about 只能是 owner、duty、own"))
+    #expect(r[2].contains("due 要寫成 YYYY-MM-DD HH:MM"))
+    #expect(r[3].contains("沒有 #9 這件掛念"))
+    #expect(r[4].contains("今天主人的話裡找不到「你好棒」"))
+    #expect(r[5] == "記下了。")
+    #expect(await h.doll.dashboardDrives().changes.contains { $0.cause == "主人誇她：「謝啦」" && $0.signal == .drive })
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func theExampleDrivesSectionIsTheDefaultsAndBadValuesAreRefused() throws {
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).drives == DrivesConfig())
+    let file = FileManager.default.temporaryDirectory.appending(path: "drives-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
+        + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    for bad in ["[drives]\norder = [\"stress\"]\n", "[drives]\nsleepiness_per_hour = 0\n", "[drives]\nstress_high = 0.05\n",
+                "[drives]\ncloseness_start = 0.1\n", "[drives]\nmood = 1\n"] {
+        try (head + bad).write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
 }

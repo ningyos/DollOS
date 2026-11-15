@@ -78,6 +78,7 @@ enum DashboardPage {
     </form>
     <div class="muted">主人改的每一筆，她的時間線上都會多一則【行事曆】通知（不會叫醒她）。</div>
     <div id="calendar-body"></div></section>
+  <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -283,6 +284,39 @@ function renderCalendar(c) {
   }
 }
 
+function renderDrives(d) {
+  const box = $("drives-body");
+  box.replaceChildren();
+  if (!d.enabled) { box.textContent = "關閉（[drives] enabled = false）"; return; }
+  const hm = ts => new Date(ts * 1000).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const label = { drive: "動力", stress: "壓力", closeness: "親近", sleepiness: "睡意" };
+  box.append(el("div", null, "現在：" + d.values.map(v =>
+    `${v.label} ${v.value.toFixed(2)}（${v.outWhenLow ? "低於" : "高於"} ${v.edge} 算超出${v.out ? "，超出" : ""}）`).join("　")));
+  box.append(el("div", null, "她看到的感覺：" + (d.felt || "（沒有，四個都在範圍內）")));
+  if (d.nextCrossing) box.append(el("div", "muted", "下一次有訊號跨過範圍：" + hm(d.nextCrossing)));
+  // The last day's curves: one polyline per signal on a 0…1 scale.
+  const colors = { drive: "#e0a030", stress: "#e05050", closeness: "#50a0e0", sleepiness: "#a070e0" };
+  const W = 720, H = 120, n = d.curve.length;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  for (const k of Object.keys(colors)) {
+    const pts = d.curve.map((s, i) => `${(i / Math.max(1, n - 1) * W).toFixed(1)},${(H - s.values[k] * H).toFixed(1)}`).join(" ");
+    const pl = document.createElementNS(svg.namespaceURI, "polyline");
+    pl.setAttribute("points", pts); pl.setAttribute("fill", "none"); pl.setAttribute("stroke", colors[k]);
+    svg.append(pl);
+  }
+  box.append(el("h3", null, "最近一天（" + Object.entries(colors).map(([k, c]) => label[k] + " " + c).join("、") + "）"), svg);
+  box.append(el("h3", null, `每一次變化和原因（${d.changes.length}）`));
+  for (const c of d.changes.slice().reverse()) box.append(el("div", null, `${hm(c.ts)} ${label[c.signal]} ${c.before.toFixed(2)} → ${c.after.toFixed(2)}：${c.cause}`));
+  const about = { owner: "主人", duty: "該做的", own: "自己的事" };
+  box.append(el("h3", null, `還掛著的（${d.open.length}）`));
+  for (const c of d.open) box.append(el("div", null, `#${c.id}〔${about[c.about]}〕${c.text}（${c.source === "her" ? "她記的" : c.source === "calendar" ? "行事曆" : "todo 失敗"}，冒出來 ${c.surfaced.length} 次，聯想 ${c.associated.length} 次）`));
+  box.append(el("h3", null, `結束的（${d.ended.length}）`));
+  for (const c of d.ended.slice(-20).reverse()) box.append(el("div", "muted", `#${c.id} ${c.text}（${({ done: "做完", let_go: "放下", passed: "時間過了" })[c.end] || c.end}）`));
+  box.append(el("h3", null, `最近的走神和聯想（${d.thoughts.length}）`));
+  for (const t of d.thoughts.slice().reverse()) box.append(el("div", null, `${hm(t.ts)} ${t.kind}：${t.text}`));
+}
+
 async function calPost(op, params) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
   const r = await fetch(`/api/calendar/${op}?${q}`, { method: "POST" });
@@ -312,8 +346,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c);
+    const [s, t, v, m, c, dr] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr);
   } catch (e) {
     console.error(e);
   } finally {

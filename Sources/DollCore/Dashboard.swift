@@ -13,7 +13,7 @@ import Synchronization
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
 /// change only, and refetches everything anyway.
 public final class ChangeFeed: Sendable {
-    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, sleep }
+    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, sleep, drives }
 
     private let subscribers = Mutex<[UUID: AsyncStream<Change>.Continuation]>([:])
 
@@ -270,7 +270,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit, drives }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -291,6 +291,8 @@ public final class Dashboard: @unchecked Sendable {
         // The owner's calendar edits (2026-11-15): `add`, `change`, `delete`, with her tool's
         // parameters in the query string (`?title=…&date=2026-11-18&start=10:00`).
         ("POST", "/api/calendar/", .calendarEdit),
+        // Her signals, concerns, wanderings and associations (m6-drives): read only.
+        ("GET", "/api/drives", .drives),
     ]
 
     public struct Response: Sendable {
@@ -388,6 +390,7 @@ public final class Dashboard: @unchecked Sendable {
                 do { try await doll.dashboardSetDeep(id, kind == .deep) } catch let e as MemoryError { return .text(409, e.description) }
                 return .json(["id": id, "deep": kind == .deep ? "true" : "false"])
             case .calendar: return .json(await doll.dashboardCalendar())
+            case .drives: return .json(await doll.dashboardDrives())
             case .calendarEdit:
                 guard ["add", "change", "delete"].contains(rest) else { return .text(404, "not found") }
                 do {

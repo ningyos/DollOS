@@ -19,7 +19,7 @@ public struct CoreConfig: Sendable {
     public var dataDir = "data"
     public var pack = "character_packs/doll2/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
-    public var priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch"]
+    public var priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"]
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
     /// voice share one MLX runtime, so one limit covers both. Set before either loads.
     public var mlxCacheLimitMB = 256
@@ -141,6 +141,64 @@ public struct SleepConfig: Sendable {
     /// away; further means today's wake time has passed (she slept at 09:00), and she wakes once the
     /// tasks are done. 12: the longest night; 23:30 → 08:00 is 8.5 h, 09:00 → 08:00 is 23 h.
     public var restMaxHours = 12.0
+}
+
+/// Her concerns and four signals (m6-drives, 2026-11-15, `Signals.swift`, `Drives.swift`). Values
+/// are 0…1. The reasons for each number are in `dollcore.example.toml` and
+/// experiments/m6-drives/week.txt (the simulated week).
+public struct DrivesConfig: Sendable, Equatable {
+    /// Off: no concern tools, no signals, no wandering, association or felt line (runners and tests
+    /// that are not about them). Her own process keeps it on.
+    public var enabled = true
+    /// Which out-of-range signal surfaces first when several are pending.
+    public var order: [Signal] = [.sleepiness, .stress, .closeness, .drive]
+    public var driveRest = 0.4, driveHalfLifeH = 6.0, driveHigh = 0.8
+    public var stressRest = 0.1, stressHalfLifeH = 4.0, stressHigh = 0.5
+    public var closenessRest = 0.0, closenessHalfLifeH = 4.0, closenessLow = 0.2, closenessStart = 0.6
+    public var sleepinessPerHour = 0.05, sleepinessHigh = 0.8
+    public var itemDoneDrive = 0.1, itemDoneSleepiness = 0.02
+    public var itemFailedStress = 0.25
+    public var toolErrorsStress = 0.05
+    public var praiseDrive = 0.2, praiseCloseness = 0.15, praiseStress = -0.15
+    public var correctionStress = 0.5
+    public var ownerTalkCloseness = 0.1
+    public var deadlineStress = 0.15
+    public var concernDoneDrive = 0.1
+    public var sleepStressKeep = 0.5
+    /// A concern with a time this close raises 壓力 once (`deadline`).
+    public var nearHours = 3.0
+    /// A timed calendar item this close becomes a program concern.
+    public var calendarConcernHours = 24.0
+    /// Signal changes older than this leave `signals.json`; ended concerns too.
+    public var logDays = 7.0
+    /// Most concerns open at once (her `concern.note` refused above it).
+    public var maxOpen = 20
+
+    public init() {}
+
+    public func spec(_ s: Signal) -> SignalSpec {
+        switch s {
+        case .drive: SignalSpec(rest: driveRest, halfLifeH: driveHalfLifeH, edge: driveHigh)
+        case .stress: SignalSpec(rest: stressRest, halfLifeH: stressHalfLifeH, edge: stressHigh)
+        case .closeness: SignalSpec(rest: closenessRest, halfLifeH: closenessHalfLifeH, edge: closenessLow)
+        case .sleepiness: SignalSpec(rest: 0, halfLifeH: 1, edge: sleepinessHigh)
+        }
+    }
+
+    /// What one event moves (sleep is special: `Drives.apply`).
+    public func deltas(_ e: SignalEvent) -> [(Signal, Double)] {
+        switch e {
+        case .itemDone: [(.drive, itemDoneDrive), (.sleepiness, itemDoneSleepiness)]
+        case .itemFailed: [(.stress, itemFailedStress)]
+        case .toolErrors: [(.stress, toolErrorsStress)]
+        case .praise: [(.drive, praiseDrive), (.closeness, praiseCloseness), (.stress, praiseStress)]
+        case .correction: [(.stress, correctionStress)]
+        case .ownerTalk: [(.closeness, ownerTalkCloseness)]
+        case .deadline: [(.stress, deadlineStress)]
+        case .concernDone: [(.drive, concernDoneDrive)]
+        case .sleep, .wake: []
+        }
+    }
 }
 
 /// The local API (2026-11-12): what `dollctl` and the Discord bridge talk to. It listens on
@@ -329,11 +387,12 @@ public struct Config: Sendable {
     public var voice: VoiceConfig
     public var calendar: CalendarConfig
     public var sleep: SleepConfig
+    public var drives = DrivesConfig()
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "sleep"])
+                                                 "consolidate", "select", "voice", "calendar", "sleep", "drives"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -566,8 +625,49 @@ public struct Config: Sendable {
               sleep.idleBackstopMin >= 1, sleep.restMaxHours > 0, sleep.restMaxHours <= 24 else {
             throw TOMLError(description: "[sleep] bed_time and wake_time HH:MM and different; idle_backstop_min at least 1; rest_max_hours above 0, at most 24")
         }
+        let drives = try Self.readDrives(raw["drives"] ?? [:])
         return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, sleep: sleep)
+                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, sleep: sleep,
+                      drives: drives)
+    }
+
+    static func readDrives(_ raw: [String: TOMLValue]) throws -> DrivesConfig {
+        var s = Section(name: "drives", raw: raw)
+        var d = DrivesConfig()
+        var order = d.order.map(\.rawValue)
+        try s.read("enabled", &d.enabled)
+        try s.read("order", &order)
+        let nums: [(String, WritableKeyPath<DrivesConfig, Double>)] = [
+            ("drive_rest", \.driveRest), ("drive_half_life_h", \.driveHalfLifeH), ("drive_high", \.driveHigh),
+            ("stress_rest", \.stressRest), ("stress_half_life_h", \.stressHalfLifeH), ("stress_high", \.stressHigh),
+            ("closeness_rest", \.closenessRest), ("closeness_half_life_h", \.closenessHalfLifeH),
+            ("closeness_low", \.closenessLow), ("closeness_start", \.closenessStart),
+            ("sleepiness_per_hour", \.sleepinessPerHour), ("sleepiness_high", \.sleepinessHigh),
+            ("item_done_drive", \.itemDoneDrive), ("item_done_sleepiness", \.itemDoneSleepiness),
+            ("item_failed_stress", \.itemFailedStress), ("tool_errors_stress", \.toolErrorsStress),
+            ("praise_drive", \.praiseDrive), ("praise_closeness", \.praiseCloseness), ("praise_stress", \.praiseStress),
+            ("correction_stress", \.correctionStress), ("owner_talk_closeness", \.ownerTalkCloseness),
+            ("deadline_stress", \.deadlineStress), ("concern_done_drive", \.concernDoneDrive),
+            ("sleep_stress_keep", \.sleepStressKeep), ("near_hours", \.nearHours),
+            ("calendar_concern_hours", \.calendarConcernHours), ("log_days", \.logDays),
+        ]
+        for (k, p) in nums { try s.read(k, &d[keyPath: p]) }
+        try s.read("max_open", &d.maxOpen)
+        try s.finish()
+        let signals = order.compactMap(Signal.init(rawValue:))
+        guard signals.count == order.count, Set(signals).count == Signal.allCases.count, order.count == Signal.allCases.count else {
+            throw TOMLError(description: "[drives] order must list each of \(Signal.allCases.map(\.rawValue)) exactly once")
+        }
+        d.order = signals
+        let unit = [d.driveRest, d.driveHigh, d.stressRest, d.stressHigh, d.closenessRest, d.closenessLow, d.closenessStart,
+                    d.sleepinessHigh, d.sleepStressKeep]
+        guard unit.allSatisfy({ (0...1).contains($0) }), d.driveRest < d.driveHigh, d.stressRest < d.stressHigh,
+              d.closenessRest < d.closenessLow, d.closenessStart > d.closenessLow,
+              d.driveHalfLifeH > 0, d.stressHalfLifeH > 0, d.closenessHalfLifeH > 0, d.sleepinessPerHour > 0,
+              d.nearHours > 0, d.calendarConcernHours > 0, d.logDays > 0, d.maxOpen >= 1 else {
+            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, sleepiness_per_hour (the last resort for sleep rests on it), near_hours, calendar_concern_hours, log_days above 0; max_open at least 1")
+        }
+        return d
     }
 }
 
@@ -578,6 +678,8 @@ public enum Effort {
 /// Event sources, named as in `[core] priority`.
 public enum Priority: String, CaseIterable, Sendable {
     case ownerVoice = "owner_voice", ownerText = "owner_text", developerText = "developer_text", calendar, watch
+    /// Her wandering (m6-drives): a concern surfacing while she is idle; last by default.
+    case wander
 }
 
 /// Reads typed keys out of one section and rejects keys nobody read.

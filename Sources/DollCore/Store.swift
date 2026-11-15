@@ -150,6 +150,7 @@ public struct Event: Sendable, Equatable {
         case .developer: .developerText
         case .watch: .watch
         case .calendar: .calendar
+        case .memory where text.hasPrefix(Concerns.wanderTag): .wander   // her wandering (m6-drives)
         case .doll, .tool, .memory: .watch   // only program notices (【語音】, M6) are queued; the rest go straight to the timeline
         }
     }

@@ -10,5 +10,6 @@
 - `tool-failures.md`：常見的「失敗：」結果是什麼意思、該怎麼做。
 - `boot-and-logs.md`：【開機】通知、時間線檔、截圖、dollcore 的 log、後台網頁和 `dollctl status`。
 - `calendar.md`：行事曆：全天和定時的事、重複、只改一天、時間到了給你回合、主人在後台網頁改。
+- `drives.md`：掛念、【走神】、【聯想】、【狀況】裡的感覺、`owner.feedback`、你跟主人的交換。
 
 待辦清單（todo）怎麼用寫在你的 system prompt 裡，這裡不重複。

@@ -259,6 +259,32 @@ public actor Doll {
     var backstopSerial = 0
     /// When the owner or the developer last spoke to her (the clock's time; at start, the segment's last line).
     var lastSpoke: Double = 0
+    /// `[drives]` (m6-drives, 2026-11-15, `Concerns.swift`, `Signals.swift`).
+    let drivesConfig: DrivesConfig
+    let concernsURL: URL
+    let signalsURL: URL
+    var concernFile: ConcernFile
+    var drives: Drives
+    /// No signals file yet: every signal starts at its start value when the calendar is first
+    /// caught up (the clock then is the right one).
+    var signalsFresh = false
+    /// The one task sleeping until the next signal crossing or concern change.
+    var drivesTask: Task<Void, Never>?
+    var drivesSerial = 0
+    /// She finished one of her own concerns: with 動力 high, the next one surfaces at once.
+    var chainAfter: Int?
+    /// Concerns surfaced or associated since the owner's last line; never associated twice in that span.
+    var associatedIDs: Set<Int> = []
+    /// Concern id → its text's embedding, computed on first use.
+    var concernVectors: [Int: [Float]] = [:]
+    /// Concerns noted since the last turn began: not associated in the next one.
+    var concernsNew: Set<Int> = []
+    /// Her tool calls that failed in a row (any call that went through resets it).
+    var errorsInRow = 0
+    /// This turn's 【聯想】 lines.
+    var associatedNow: [String] = []
+    /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
+    func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `sleepModel`: her sleep's requests; nil = `model`
@@ -289,6 +315,13 @@ public actor Doll {
         sleepState = slept ?? SleepFile(asleep: false, since: 0)
         sleepFresh = slept == nil
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
+        drivesConfig = config.drives
+        concernsURL = data.appending(path: "concerns.json")
+        signalsURL = data.appending(path: "signals.json")
+        concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns") ?? ConcernFile()
+        let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals")
+        drives = signals.map { Drives(config: config.drives, state: $0) } ?? Drives(config: config.drives, now: 0)
+        signalsFresh = signals == nil
         agenda = try Agenda(url: data.appending(path: "calendar.json"))
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
@@ -300,7 +333,7 @@ public actor Doll {
         self.computer = computer ?? VMPalDriver(config.computer)
         self.deliver = deliver
         tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files,
-                            sleep: config.sleep.enabled)
+                            sleep: config.sleep.enabled, drives: config.drives.enabled)
         voiceEnabled = config.voice.enabled
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
@@ -417,6 +450,7 @@ public actor Doll {
     public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM) {
         wakeUp(.owner)
         lastSpoke = wallClock.now()
+        signal(.ownerTalk, "「\(text.prefix(30))」")
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
         put(ev)
@@ -515,12 +549,14 @@ public actor Doll {
         scheduleCalendar()
         // A restart while she slept: still asleep, the tasks not done yet go on.
         if sleepState.asleep { startSleepCycle() } else { scheduleBackstop() }
+        drivesCheck()
         while !stopped {
             guard await waitForEvent() else { break }
             try drain()
             try await turn()
             try flushHeld()
             if sleepConfig.enabled { try afterTurn() }
+            drivesCheck()
         }
         shutdown()
     }
@@ -566,13 +602,17 @@ public actor Doll {
         backstopSerial += 1
         backstopTask?.cancel()
         backstopTask = nil
+        drivesSerial += 1
+        drivesTask?.cancel()
+        drivesTask = nil
     }
 
     // prompt -----------------------------------------------------------------
     /// Fixed for the life of the process: the persona and how she works. Her tools go in the
     /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, sleep: sleepConfig.enabled) + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, sleep: sleepConfig.enabled, drives: drivesConfig.enabled)
+            + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
@@ -753,6 +793,7 @@ public actor Doll {
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
+        if let felt = feltLine(now: now) { out.append("- " + felt) }
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
         if sleepConfig.enabled { out.append(sleepStatusLine(now: now)) }
@@ -817,6 +858,7 @@ public actor Doll {
         let started = Date().timeIntervalSince1970
         followUp = false
         attachedNow = []
+        associatedNow = []
         cheatsheetNow = []
         itemEndNow = nil
         compactedNow = []
@@ -831,9 +873,12 @@ public actor Doll {
         if ownerArrived {
             ownerArrived = false
             attachedIDs = []
+            associatedIDs = []
             cheatsheetSent = []
             await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
         }
+        // What is in front of her against her concerns (m6-drives): one may come to mind, no extra turn.
+        await associate()
         // She was warned `force_after_turns` times and did not compact: the program does.
         if todo.phase == .doing, warnedTurns >= contextConfig.forceAfterTurns { try forceCompact() }
         // At the limit the oldest conversation is collapsed into a summary (owner, 2026-11-15).
@@ -937,6 +982,13 @@ public actor Doll {
             resultEvent.channel = out.channel
             try append(resultEvent)
             actions += out.actions
+            // Repeated tool failures raise 壓力 (m6-drives): the second in a row and each after it.
+            if out.actions.contains(where: { $0.hasPrefix("error ") }) {
+                errorsInRow += 1
+                if errorsInRow >= 2 { signal(.toolErrors, "\(name)：\(out.text.prefix(40))") }
+            } else if !out.actions.contains(where: { $0.hasPrefix("refused ") || $0.hasPrefix("skipped ") }) {
+                errorsInRow = 0
+            }
             if !out.background {
                 followUp = true
                 taskTurn = true
@@ -1161,6 +1213,12 @@ public actor Doll {
                 return Outcome(text: try calendarTool(r), actions: [name])
             case .sleep:
                 return try sleepTool()
+            case .concernNote(let text, let about, let due):
+                return try concernNote(text: text, about: about, due: due)
+            case .concernEnd(let id, let how):
+                return try concernEnd(id: id, how: how)
+            case .ownerFeedback(let kind, let quote):
+                return try ownerFeedback(kind: kind, quote: quote)
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
@@ -1598,6 +1656,7 @@ public actor Doll {
         }
         let next = advance()
         log("INFO", "turn \(turnIndex): todo 完成「\(item)」result「\(result)」, \(steps.count) actions")
+        signal(.itemDone, item)
         return Outcome(text: "完成，記下了。\(note)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
                        + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),
@@ -1616,9 +1675,15 @@ public actor Doll {
         itemEndNow = TodoPhase.failed.label
         todo.phase = .failed
         log("INFO", "turn \(turnIndex): todo 失敗「\(item)」reason「\(reason)」")
+        signal(.itemFailed, item)
+        var concernNote = ""
+        if drivesConfig.enabled {
+            let c = try addConcern("沒做成：\(item)（\(reason)）", about: .duty, source: "todo", key: "todo:\(todo.startSeq)")
+            concernNote = "這件事程式記成你的掛念 #\(c.id)；之後做成或決定放下，用 concern.end 結束它。"
+        }
         let rest = todo.pending.isEmpty ? "（後面沒有別的項目了）" : "（剩下：" + todo.pending.map { "「\($0)」" }.joined() + "）"
         return Outcome(text: "記下了：「\(item)」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：\(Self.actionList(steps))。"
-                       + "電腦工具先鎖著。現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
+                       + "電腦工具先鎖著。現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。" + concernNote,
                        actions: ["todo fail"], ends: true)
     }
 
