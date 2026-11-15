@@ -35,6 +35,8 @@ struct MaintenanceFile: Codable, Equatable {
     var due: Double?
     /// Running since this time; nil: not running.
     var running: Double?
+    /// Not before this time: she was told at its time and has `notice_min` minutes first.
+    var notBefore: Double?
     /// Interrupted since it came due: waits for `retry_idle_min` of quiet.
     var interrupted = false
     /// The busy limit made it start with a todo in hand: the end notice gives her a turn.
@@ -158,9 +160,33 @@ extension Doll {
         guard maintenanceConfig.enabled else { return }
         if maintenanceState.running != nil { return log("INFO", "maintenance: its time came while it runs; nothing") }
         if maintenanceState.due != nil { return log("INFO", "maintenance: its time came while still due; nothing") }
-        maintenanceState.due = wallClock.now()
+        let now = wallClock.now()
+        maintenanceState.due = now
+        // She is told first and gets a turn (owner, 2026-11-16): to wrap up, tell someone, or move
+        // today's maintenance (a change to the item while it has not started calls this one off).
+        let lead = maintenanceConfig.noticeMin
+        if lead > 0 {
+            maintenanceState.notBefore = now + Double(lead) * 60
+            put(Event(.calendar, .internal, Self.maintenanceNotice(lead)))
+        }
         saveMaintenanceLogged()
-        log("INFO", "maintenance: due")
+        log("INFO", "maintenance: due" + (lead > 0 ? "; she is told, it starts in \(lead) min" : ""))
+        maintenanceCheck()
+    }
+
+    static func maintenanceNotice(_ lead: Int) -> String {
+        "【系統維護】時間到了，\(minutes(lead))後開始：程式要整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。"
+            + "要收尾、要跟誰說一聲，現在做；今天這個時間不方便，就用 calendar.change 把今天的系統維護往後移。"
+            + "你手上沒事它就開始，不會再另外通知。"
+    }
+
+    /// The 「系統維護」 item was changed while this one was due and not started: it is called off and
+    /// comes due again at the item's next time.
+    func maintenanceItemChanged() {
+        guard maintenanceState.due != nil, maintenanceState.running == nil else { return }
+        maintenanceState = MaintenanceFile()
+        saveMaintenanceLogged()
+        log("INFO", "maintenance: its item was changed before it started; called off until the item's next time")
         maintenanceCheck()
     }
 
@@ -184,6 +210,7 @@ extension Doll {
               maintenanceState.running == nil else { return }
         let now = wallClock.now()
         if let r = retryAt(), now < r { return armMaintenanceTimer(r) }
+        if let n = maintenanceState.notBefore, now < n { return armMaintenanceTimer(n) }
         if maintenanceIdle { return startMaintenance(forced: false) }
         let limit = busyLimitAt()!
         if now >= limit, !inTurn, queue.isEmpty {

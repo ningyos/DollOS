@@ -139,6 +139,10 @@ public struct MaintenanceConfig: Sendable {
     /// this long and she is idle (or, failing that, at the next day's time). 30: a short talk at
     /// night is over by then, and the day is not left unconsolidated until tomorrow.
     public var retryIdleMin = 30
+    /// She is told before it starts (owner, 2026-11-16): at the item's time she gets a turn with the
+    /// notice, and it starts this many minutes later (when she is idle). 10: enough to finish a
+    /// sentence, tell someone, or move today's maintenance; short enough that 03:00 still means 03:00.
+    public var noticeMin = 10
 }
 
 /// Her concerns and four signals (m6-drives, 2026-11-15, `Signals.swift`, `Drives.swift`). Values
@@ -613,8 +617,9 @@ public struct Config: Sendable {
         try mt.read("time", &maintenance.time)
         try mt.read("busy_limit_hours", &maintenance.busyLimitHours)
         try mt.read("retry_idle_min", &maintenance.retryIdleMin)
+        try mt.read("notice_min", &maintenance.noticeMin)
         try mt.finish()
-        guard TimeOfDay(maintenance.time) != nil, maintenance.busyLimitHours > 0, maintenance.retryIdleMin >= 1 else {
+        guard TimeOfDay(maintenance.time) != nil, maintenance.busyLimitHours > 0, maintenance.retryIdleMin >= 1, maintenance.noticeMin >= 0 else {
             throw TOMLError(description: "[maintenance] time HH:MM; busy_limit_hours above 0; retry_idle_min at least 1")
         }
         let drives = try Self.readDrives(raw["drives"] ?? [:])

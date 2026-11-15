@@ -5492,8 +5492,12 @@ private let summaryReply = Scripted("今天主人跟她說了晚安。")
 private let startNotice = "【系統維護】開始，現在 03:00。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
 private let didOne = "整理了之前的事：新記了 1 條記憶，改了 0 條，0 條舊的換掉了，0 條又遇到一次、記得更牢了。"
 
-private func maintenanceHarness(_ clock: ManualClock, dir: URL? = nil, drives: Bool = false, _ replies: [Scripted] = []) async throws -> Harness {
-    try await Harness(replies, dir: dir, clock: clock) { $0.maintenance.enabled = true; $0.drives.enabled = drives }
+/// `notice`: minutes she is told ahead (`[maintenance] notice_min`); 0 here unless a test is about the notice.
+private func maintenanceHarness(_ clock: ManualClock, dir: URL? = nil, drives: Bool = false, notice: Int = 0,
+                                _ replies: [Scripted] = []) async throws -> Harness {
+    try await Harness(replies, dir: dir, clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = notice; $0.drives.enabled = drives
+    }
 }
 
 /// Every segment's event texts, oldest segment first.
@@ -5553,6 +5557,53 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     #expect(seen.last!.content.contains("- 系統維護：2026-11-18（星期三） 03:00（還有 19 小時）"))
     await doll.stop()
     try await runner.value
+}
+
+@Test func sheIsToldBeforeItStartsGetsATurnAndMayMoveTodaysMaintenance() async throws {
+    // Told at its time with a turn; it starts `notice_min` later (owner, 2026-11-16).
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await maintenanceHarness(clock, notice: 10, [Scripted("", dm("晚安")), Scripted("", dm("我等一下要維護，先不在幾分鐘")),
+                                                               planReply, summaryReply])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("晚安")
+    try await waitUntil { h.said == ["晚安"] }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.said.count == 2 }
+    let told = try #require(try h.events().last { $0.kind == .calendar })
+    #expect(told.text == Doll.maintenanceNotice(10) && told.text.hasPrefix("【系統維護】時間到了，10 分鐘後開始"))
+    #expect(!h.logs.contains { $0.contains("maintenance: started") })
+    clock.set(at("2026-11-17", "03:09"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!h.logs.contains { $0.contains("maintenance: started") })
+    clock.set(at("2026-11-17", "03:10"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(try consolidatedBodies(h) == ["主人今天跟我說晚安"])
+    await doll.stop()
+    try await runner.value
+
+    // She moves today's maintenance in that turn: this one is called off and comes at the new time.
+    let clock2 = ManualClock(at("2026-11-16", "22:00"))
+    let moved = ("calendar.change", [("id", "1"), ("on", "2026-11-17"), ("start", "04:00")])
+    let h2 = try await maintenanceHarness(clock2, notice: 10, [Scripted("", dm("晚安")), Scripted("", moved), Scripted("", dm("改到四點")),
+                                                                 Scripted("", dm("好")), planReply, summaryReply])
+    let doll2 = h2.doll
+    let runner2 = Task { try await doll2.run() }
+    await doll2.ownerSaid("晚安")
+    try await waitUntil { h2.said == ["晚安"] }
+    clock2.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h2.logs.contains { $0.contains("called off until the item's next time") } }
+    try await waitUntil { await doll2.settled }
+    clock2.set(at("2026-11-17", "03:30"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!h2.logs.contains { $0.contains("maintenance: started") })
+    #expect(try maintenanceFile(h2).due == nil)
+    clock2.set(at("2026-11-17", "04:00"))
+    try await waitUntil { h2.logs.filter { $0.contains("maintenance: due") }.count == 2 }
+    clock2.set(at("2026-11-17", "04:10"))
+    try await waitUntil { h2.logs.contains { $0.contains("maintenance: ended") } }
+    await doll2.stop()
+    try await runner2.value
 }
 
 @Test func maintenanceWaitsForATodoInHandAndStartsOnceSheIsIdle() async throws {
@@ -5709,7 +5760,7 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     let r = try h.toolResults().map(\.text)
     #expect(r[0] == "失敗：#1「系統維護」是每天系統維護的時間，不能刪掉；要換時間用 calendar.change 改 start，只改一天就給 on")
     #expect(r[1].hasPrefix("失敗：#1「系統維護」是每天系統維護的時間，不能改成全天"))
-    #expect(r[2].hasSuffix("下一次是 2026-11-17（星期二） 04:30，到時候你手上沒事，系統維護就開始（不會給你回合）。"))
+    #expect(r[2].hasSuffix("下一次是 2026-11-17（星期二） 04:30，到時候會先告訴你、給你一個回合，再過幾分鐘系統維護就開始。"))
     let b = try await maintenanceHarness(clock, dir: h.dir)
     try await b.doll.announceBoot()
     #expect(await b.doll.dashboardCalendar().items.map(\.title) == ["系統維護"])
@@ -5913,7 +5964,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func duringMaintenanceNothingSurfaces() async throws {
     let clock = ManualClock(at("2026-11-16", "23:00"))
     let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("早點睡"))],
-                              clock: clock) { $0.maintenance.enabled = true; $0.drives.enabled = true }
+                              clock: clock) { $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true }
     await b.model.stall(request: 3)
     let doll = b.doll
     let runner = Task { try await doll.run() }

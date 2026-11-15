@@ -696,6 +696,7 @@ extension Doll {
         if calendarCaughtUp { try fireDue() }
         let line = try agenda.apply(r, by: who)
         try agenda.save()
+        if let id = r.id, agenda.item(id)?.role == Agenda.maintenanceRole { maintenanceItemChanged() }
         scheduleCalendar()
         feed.notify(.calendar)
         log("INFO", "calendar: \(who) \(r.verb) \(line)")
@@ -728,7 +729,7 @@ extension Doll {
         }
         guard let next = agenda.nextStart(of: id, after: now) else { return "時間已經過了，不會叫你。" }
         let c = Day.cal.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: next))
-        let then = it.role == Agenda.maintenanceRole ? "到時候你手上沒事，系統維護就開始（不會給你回合）" : "到時候會給你一個回合"
+        let then = it.role == Agenda.maintenanceRole ? "到時候會先告訴你、給你一個回合，再過幾分鐘系統維護就開始" : "到時候會給你一個回合"
         return String(format: "下一次是 %@ %02d:%02d，%@。", Day(ts: next).label, c.hour!, c.minute!, then)
     }
 
