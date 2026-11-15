@@ -305,7 +305,7 @@ private struct Harness {
         cfg.computer.watchMinIntervalS = 0
         cfg.memory.dir = dir.appending(path: "memory").path
         cfg.computer.cheatsheet = false   // the cheatsheet's own tests switch it on
-        cfg.sleep.enabled = false         // the sleep tests switch it on
+        cfg.maintenance.enabled = false   // the maintenance tests switch it on
         cfg.drives.enabled = false        // the drives tests switch it on
         tune(&cfg)
         model = FakeModel(replies)
@@ -3330,7 +3330,9 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     // empty her context, the day before is there as a summary); long-term memory stays.
     let next = try await restarted(h)
     #expect(try h.timeline().segment == r.newSegment)   // `next` runs on h's data dir
-    #expect(await next.doll.timelineEvents().map(\.text) == [Consolidation.wakeNote + "主人要了一份副本，你用 ⇧⌥⌘S 另存好了。"])
+    let first = try #require(await next.doll.timelineEvents().map(\.text).first)
+    #expect(await next.doll.timelineEvents().count == 1 && first.hasPrefix("【系統維護】（離線整理）整理了之前的事：")
+            && first.hasSuffix("\n" + Consolidation.summaryNote + "主人要了一份副本，你用 ⇧⌥⌘S 另存好了。"))
     #expect(await next.doll.timelineEvents().first?.kind == .memory)
     #expect(FileManager.default.fileExists(atPath: h.dir.appending(path: "timeline/\(before).jsonl").path))
 }
@@ -5478,7 +5480,7 @@ private func cal(_ name: String, _ params: [(String, String)]) -> (String, [(Str
     }
 }
 
-// sleep (2026-11-15) ---------------------------------------------------------------
+// system maintenance (2026-11-16) ------------------------------------------------------------
 
 /// A valid consolidation reply (one add), then the day's summary.
 private let planReply = Scripted("""
@@ -5487,11 +5489,11 @@ private let planReply = Scripted("""
     ```
     """)
 private let summaryReply = Scripted("今天主人跟她說了晚安。")
-private let sleepCall: (String, [(String, String)]) = ("sleep", [])
-private let consolidated = "把今天整理進長期記憶、寫今天的摘要"
+private let startNotice = "【系統維護】開始，現在 03:00。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+private let didOne = "整理了之前的事：新記了 1 條記憶，改了 0 條，0 條舊的換掉了，0 條又遇到一次、記得更牢了。"
 
-private func sleepHarness(_ clock: ManualClock, dir: URL? = nil, idle: Int = 120, _ replies: [Scripted] = []) async throws -> Harness {
-    try await Harness(replies, dir: dir, clock: clock) { $0.sleep.enabled = true; $0.sleep.idleBackstopMin = idle }
+private func maintenanceHarness(_ clock: ManualClock, dir: URL? = nil, drives: Bool = false, _ replies: [Scripted] = []) async throws -> Harness {
+    try await Harness(replies, dir: dir, clock: clock) { $0.maintenance.enabled = true; $0.drives.enabled = drives }
 }
 
 /// Every segment's event texts, oldest segment first.
@@ -5511,217 +5513,256 @@ private func consolidatedBodies(_ h: Harness) throws -> [String] {
     try memoryFilesByID(h).values.filter { $0.file.tier == .consolidated }.map(\.file.body)
 }
 
-@Test func sheSleepsConsolidatesInProcessRestsAndTheWakeItemWakesHerWithTodaysCalendar() async throws {
-    let clock = ManualClock(at("2026-11-16", "23:00"))
-    let h = try await sleepHarness(clock, [Scripted("", dm("晚安"), sleepCall), planReply, summaryReply])
+private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
+    try JSONDecoder().decode(MaintenanceFile.self, from: Data(contentsOf: h.dir.appending(path: "maintenance.json")))
+}
+
+@Test func maintenanceStartsAtItsTimeWhenIdleWithoutATurnAndEndsWithWhatItDidTheSummaryAndTheCalendar() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await maintenanceHarness(clock, [Scripted("", dm("晚安")), planReply, summaryReply])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await doll.ownerSaid("晚安")
-    try await waitUntil { (await doll.sleepLine() ?? "").contains("整理完了") }
-    #expect(try await doll.dashboardStatus().state == "sleeping")
-    #expect(await doll.sleepLine() == "睡著，從 2026-11-16（星期一） 23:00 起（自己去睡的）；整理完了，睡到 2026-11-17（星期二） 08:00")
-    #expect(h.said == ["晚安"])
+    try await waitUntil { h.said == ["晚安"] }
+    // 【狀況】 says when it comes and how much the day holds.
+    let footer = await h.model.requests.first!.messages.last!.content
+    #expect(footer.contains("- 今天的時間線：別人跟你說了 1 句，你回了 0 則\n- 系統維護：2026-11-17（星期二） 03:00（還有 5 小時）"))
+    #expect(!footer.contains("醒著"))
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    // No turn of hers: her one reply, the plan, the summary.
     let reqs = await h.model.requests
     #expect(reqs.count == 3 && reqs[1].effort == "high" && reqs[1].messages[1].content.contains("] 晚安"))
     #expect(try consolidatedBodies(h) == ["主人今天跟我說晚安"])
     let segs = try segmentTexts(h)
-    #expect(segs.count == 2 && segs[0].contains("好，這則回覆的呼叫做完以後你就睡了。"))
-    #expect(segs[1] == [Consolidation.wakeNote + "今天主人跟她說了晚安。"])
-    // The 「睡覺」 item while asleep: nothing; she stays asleep until 「起床」.
-    clock.set(at("2026-11-17", "01:00"))
-    clock.set(at("2026-11-17", "07:59"))
-    try await Task.sleep(for: .milliseconds(200))
-    let n0 = await h.model.requests.count
-    #expect(await doll.isAsleep && n0 == 3)
+    #expect(segs.count == 2 && segs[0].last == startNotice)
+    #expect(segs[1] == ["【系統維護】結束，現在 03:00。\(didOne)\n\(Consolidation.summaryNote)今天主人跟她說了晚安。\n今天的行事曆：03:00 系統維護（#1，每天）。"])
+    #expect(try await doll.dashboardStatus().state == "idle")
+    #expect(await doll.maintenanceLine() == nil)
+    #expect(try maintenanceFile(h) == MaintenanceFile())
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 3)
+    // Her next turn begins from the end notice and the summary; the day before is gone from view.
     clock.set(at("2026-11-17", "08:00"))
-    try await waitUntil { await !doll.isAsleep }
-    #expect(try h.events().last!.text == "【起床】你醒了，現在 2026-11-17（星期二） 08:00。睡著的時候做完了：\(consolidated)，今天從上面的【睡前】摘要開始。今天的行事曆：01:00 睡覺（#1，每天）；08:00 起床（#2，每天）。")
-    try await Task.sleep(for: .milliseconds(200))
-    #expect(await h.model.requests.count == 3)          // the morning wake gives no turn
     await h.model.add([Scripted("", dm("早安"))])
     await doll.ownerSaid("早")
     try await waitUntil { h.said.last == "早安" }
     let seen = await h.model.requests.last!.messages
-    #expect(seen.contains { $0.content.contains("【睡前】") } && seen.contains { $0.content.contains("【起床】你醒了") })
+    #expect(seen.contains { $0.content.contains("【系統維護】結束") && $0.content.contains("今天主人跟她說了晚安。") })
     #expect(!seen.contains { $0.role == "user" && $0.content.hasSuffix("] 晚安") })
-    #expect(seen.last!.content.contains("- 醒著：0 小時 0 分（從 08:00 起）；今天的時間線：別人跟你說了 1 句，你回了 0 則"))
-    let state = try JSONDecoder().decode(SleepFile.self, from: Data(contentsOf: h.dir.appending(path: "sleep.json")))
-    #expect(!state.asleep && state.since == at("2026-11-17", "08:00"))
+    #expect(seen.last!.content.contains("- 系統維護：2026-11-18（星期三） 03:00（還有 19 小時）"))
     await doll.stop()
     try await runner.value
 }
 
-@Test func theSleepItemGivesHerATurnSleepIsRefusedWithATodoInHandAndTheBackstopWaits() async throws {
-    let clock = ManualClock(at("2026-11-17", "00:50"))
-    let h = try await sleepHarness(clock, [Scripted("", todoSet("報告寄給主人了"), todoWait("等主人給檔案"))])
+@Test func maintenanceWaitsForATodoInHandAndStartsOnceSheIsIdle() async throws {
+    let clock = ManualClock(at("2026-11-17", "02:50"))
+    let h = try await maintenanceHarness(clock, [Scripted("", todoSet("報告寄給主人了"), todoWait("等主人給檔案"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await doll.ownerSaid("幫我寄報告")
     try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
-    await h.model.add([Scripted("", sleepCall), Scripted("", todoWait("還在等檔案"))])
-    clock.set(at("2026-11-17", "01:00"))
-    try await waitUntil { await h.model.requests.count == 3 }
-    try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
-    #expect(try h.events().filter { $0.kind == .calendar }.map(\.text)
-            == ["【行事曆】現在 01:00：睡覺（#1，每天）：你睡覺的時間到了。要睡就呼叫 sleep；手上的事還沒完，可以晚點再睡"])
-    #expect(try h.toolResults().map(\.text).contains("失敗：todo 還有「報告寄給主人了」進行中，不能睡；先做完（todo.done）、確定做不到（todo.fail），或用 todo.set 給空的陣列結束清單，再睡"))
-    #expect(await !doll.isAsleep)
-    // Two quiet hours with the item waiting: the backstop does not fire.
-    clock.set(at("2026-11-17", "03:01"))
-    try await waitUntil { h.logs.contains { $0.contains("is 等待中; not put to sleep") } }
-    #expect(await !doll.isAsleep)
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: due") } }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await doll.maintenanceLine() == "系統維護 2026-11-17（星期二） 03:00 到了，等她手上沒事")
+    #expect(await h.model.requests.count == 1 && !h.logs.contains { $0.contains("maintenance: started") })
+    #expect(try h.events().allSatisfy { !$0.text.hasPrefix("【系統維護】") && $0.kind != .calendar })
+    let first = await h.model.requests.first!
+    #expect(first.messages.last!.content.contains("- 系統維護：2026-11-17（星期二） 03:00（還有 10 分鐘）"))
+    // The owner answers; she ends the list and tells him; once those turns are over it starts, with
+    // no turn of its own.
+    await h.model.add([Scripted("", fail("主人說檔案不用寄了")), Scripted("", ("todo.set", [("items", "[]")]), dm("好，那我等你回來再說")),
+                       planReply, summaryReply])
+    clock.set(at("2026-11-17", "03:20"))
+    await doll.ownerSaid("檔案在桌面")
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(await h.model.requests.count == 5 && h.said == ["好，那我等你回來再說"])
+    #expect(try segmentTexts(h)[0].last == startNotice.replacingOccurrences(of: "03:00", with: "03:20"))
     await doll.stop()
     try await runner.value
 }
 
-@Test func theBackstopFiresAfterIdleNotBeforeNotWithNothingAndSleepingAfterTheWakeTimeEndsWithTheTasks() async throws {
-    let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await sleepHarness(clock)
+@Test func busyPastTheLimitItStartsAnywayKeepsTheTodoAndGivesHerATurnToResume() async throws {
+    let clock = ManualClock(at("2026-11-17", "02:50"))
+    let h = try await maintenanceHarness(clock, [Scripted("", todoSet("報告寄給主人了"), todoWait("等主人給檔案"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
-    try await waitUntil { clock.sleepers == 2 }        // the calendar timer and the backstop
-    clock.set(at("2026-11-16", "12:01"))
-    try await waitUntil { h.logs.contains { $0.contains("with nothing to consolidate; not put to sleep") } }
-    #expect(await !doll.isAsleep)
-    await h.model.add([Scripted("", dm("嗨")), planReply, summaryReply])
-    await doll.ownerSaid("嗨")
-    try await waitUntil { h.said == ["嗨"] }
-    clock.set(at("2026-11-16", "14:00"))
-    try await Task.sleep(for: .milliseconds(200))
-    let n1 = await h.model.requests.count
-    #expect(await !doll.isAsleep && n1 == 1)
-    clock.set(at("2026-11-16", "14:01"))
-    // The next 起床 is 18 h away: she wakes once the tasks are done.
-    try await waitUntil { (try? h.events().last?.text.hasPrefix("【起床】")) == true }
-    let n3 = await h.model.requests.count
-    #expect(await !doll.isAsleep && n3 == 3)
+    await doll.ownerSaid("幫我寄報告")
+    try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: due") } }
+    clock.set(at("2026-11-17", "05:59"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!h.logs.contains { $0.contains("maintenance: started") })
+    await h.model.add([planReply, summaryReply, Scripted("", dm("報告還在等檔案"))])
+    clock.set(at("2026-11-17", "06:00"))
+    try await waitUntil { await h.model.requests.count == 4 }
+    try await waitUntil { await doll.settled }
+    #expect(h.logs.contains { $0.contains("maintenance: busy 3.0 h since due") })
     let segs = try segmentTexts(h)
-    #expect(segs[0].last == "【睡覺】已經 2 小時沒有人跟你說話，你手上也沒事，程式讓你去睡了。")
-    #expect(segs[1].last == "【起床】你醒了，現在 2026-11-16（星期一） 14:01。睡著的時候做完了：\(consolidated)，今天從上面的【睡前】摘要開始。今天的行事曆：01:00 睡覺（#1，每天）；08:00 起床（#2，每天）。")
-    #expect(h.logs.contains { $0.contains("sleep: asleep (backstop)") })
+    #expect(segs[0].last == "【系統維護】開始，現在 06:00。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
+    #expect(segs[1][0].hasPrefix("【系統維護】結束，現在 06:00。") && segs[1][0].hasSuffix("你手上的「報告寄給主人了」還在，接著做。"))
+    // The item went on in the new day, and her turn after the end continued it.
+    #expect(try h.timeline().todo.current == "報告寄給主人了")
+    #expect(try await doll.dashboardStatus().todo == "等待中")
     await doll.stop()
     try await runner.value
 }
 
-@Test func wokenMidConsolidationNothingIsWrittenTheRequestIsCancelledAndTheNextSleepConsolidates() async throws {
-    let clock = ManualClock(at("2026-11-16", "23:00"))
-    let h = try await sleepHarness(clock, [Scripted("", dm("晚安"), sleepCall)])
+@Test func theOwnersLineInterruptsItNothingIsWrittenSheAnswersAndItRetriesAfterQuiet() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await maintenanceHarness(clock, [Scripted("", dm("晚安"))])
     await h.model.stall(request: 2)
     let doll = h.doll
     let runner = Task { try await doll.run() }
     let before = try h.timeline().segment
     await doll.ownerSaid("晚安")
+    try await waitUntil { h.said == ["晚安"] }
+    clock.set(at("2026-11-17", "03:00"))
     try await waitUntil { await h.model.requests.count == 2 }
-    #expect((await doll.sleepLine() ?? "").hasSuffix("整理中"))
-    await h.model.add([Scripted("", dm("醒了醒了"))])
-    await doll.ownerSaid("還醒著嗎")
-    try await waitUntil { h.said.last == "醒了醒了" }
+    #expect(try await doll.dashboardStatus().state == "maintenance")
+    #expect(await doll.maintenanceLine() == "系統維護中，從 2026-11-17（星期二） 03:00 起")
+    await h.model.add([Scripted("", dm("還沒睡啊？"))])
+    clock.set(at("2026-11-17", "03:05"))
+    await doll.ownerSaid("你在嗎")
+    try await waitUntil { h.said.last == "還沒睡啊？" }
     #expect(await h.model.cancelled == 1)
     #expect(try h.timeline().segment == before && consolidatedBodies(h).isEmpty)
     let texts = try h.events().map(\.text)
-    let notice = try #require(texts.firstIndex { $0.hasPrefix("【睡覺】") })
-    #expect(texts[notice] == "【睡覺】你睡到一半被主人叫醒，現在 2026-11-16（星期一） 23:00。還沒做完：\(consolidated)，下次睡覺再做；今天的事還沒整理完，睡前的對話和做過的事都還在你眼前。今天的行事曆：01:00 睡覺（#1，每天）；08:00 起床（#2，每天）。")
-    #expect(texts[notice + 1] == "還醒著嗎")
-    // Her context is as before: the first line is still there.
-    let seen = await h.model.requests.last!.messages
-    #expect(seen.contains { $0.role == "user" && $0.content.hasSuffix("] 晚安") })
-    #expect(h.logs.contains { $0.contains("sleep: consolidate cancelled (she woke)") })
-    // The next sleep consolidates the whole day.
-    await h.model.add([Scripted("", dm("那我睡了"), sleepCall), planReply, summaryReply])
-    await doll.ownerSaid("好啦去睡")
-    try await waitUntil { (try? h.events().first?.text.hasPrefix("【睡前】")) == true }
+    let notice = try #require(texts.firstIndex { $0.hasPrefix("【系統維護】被") })
+    #expect(texts[notice] == "【系統維護】被主人打斷了，今天的還沒整理完，之前的對話和做過的事都還在你眼前；沒人跟你說話 30 分鐘、你手上也沒事的時候，會再做一次。")
+    #expect(texts[notice + 1] == "你在嗎")
+    #expect(h.logs.contains { $0.contains("maintenance: consolidate cancelled (interrupted)") })
+    let state = try maintenanceFile(h)
+    #expect(state.running == nil && state.interrupted && state.due == at("2026-11-17", "03:00"))
+    // Quiet for less than 30 minutes: not yet.
+    await h.model.add([planReply, summaryReply])
+    clock.set(at("2026-11-17", "03:34"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 3)
+    clock.set(at("2026-11-17", "03:35"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
     #expect(try consolidatedBodies(h) == ["主人今天跟我說晚安"])
     let all = await h.model.requests
-    let sent = all[all.count - 2].messages[1].content
-    #expect(sent.contains("] 晚安") && sent.contains("] 還醒著嗎") && sent.contains("] 好啦去睡"))
+    let sent = all[3].messages[1].content
+    #expect(sent.contains("] 晚安") && sent.contains("] 你在嗎"))
+    #expect(try segmentTexts(h)[1][0].hasPrefix("【系統維護】結束，現在 03:35。"))
     await doll.stop()
     try await runner.value
 }
 
-@Test func wokenAfterTheTasksByTheDeveloperKeepsTheConsolidation() async throws {
-    let clock = ManualClock(at("2026-11-16", "23:00"))
-    let h = try await sleepHarness(clock, [Scripted("", dm("晚安"), sleepCall), planReply, summaryReply])
+@Test func theDevelopersLineInterruptsItToo() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await maintenanceHarness(clock, [Scripted("", dm("晚安"))])
+    await h.model.stall(request: 2)
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await doll.ownerSaid("晚安")
-    try await waitUntil { (await doll.sleepLine() ?? "").contains("整理完了") }
-    await h.model.add([Scripted("", reply("醒了"))])
-    clock.set(at("2026-11-16", "23:20"))
-    await doll.developerSaid("醒醒")
-    try await waitUntil { h.said.last == "醒了" }
-    let texts = try h.events().map(\.text)
-    #expect(try texts.first!.hasPrefix("【睡前】") && consolidatedBodies(h) == ["主人今天跟我說晚安"])
-    #expect(texts[1] == "【起床】你被開發者叫醒了，現在 2026-11-16（星期一） 23:20。睡著的時候做完了：\(consolidated)，今天從上面的【睡前】摘要開始。今天的行事曆：01:00 睡覺（#1，每天）；08:00 起床（#2，每天）。")
-    #expect(texts[2] == "醒醒")
+    try await waitUntil { h.said == ["晚安"] }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 2 }
+    await h.model.add([Scripted("", reply("在"))])
+    await doll.developerSaid("在嗎")
+    try await waitUntil { h.said.last == "在" }
+    #expect(try h.events().map(\.text).contains { $0.hasPrefix("【系統維護】被開發者打斷了") })
     await doll.stop()
     try await runner.value
 }
 
-@Test func aCalendarItemDuringSleepWakesHerAndGivesItsTurn() async throws {
-    let clock = ManualClock(at("2026-11-16", "23:00"))
-    let h = try await sleepHarness(clock, [Scripted("", cal("calendar.add", [("title", "提醒主人吃藥"), ("date", "2026-11-16"), ("start", "23:30")]),
-                                                    dm("晚安"), sleepCall), planReply, summaryReply])
-    let doll = h.doll
-    let runner = Task { try await doll.run() }
-    await doll.ownerSaid("晚安")
-    try await waitUntil { (await doll.sleepLine() ?? "").contains("整理完了") }
-    await h.model.add([Scripted("", dm("該吃藥了"))])
-    clock.set(at("2026-11-16", "23:30"))
-    try await waitUntil { h.said.last == "該吃藥了" }
-    let texts = try h.events().map(\.text)
-    #expect(texts[1].hasPrefix("【起床】你被行事曆上的「提醒主人吃藥」叫醒了，現在 2026-11-16（星期一） 23:30。"))
-    #expect(texts[2] == "【行事曆】現在 23:30：提醒主人吃藥（#3）")
-    await doll.stop()
-    try await runner.value
-}
-
-@Test func aRestartWhileAsleepStaysAsleepFinishesTheTasksAndAWakeTimePassedMeanwhileWakesHer() async throws {
-    let clock = ManualClock(at("2026-11-16", "23:00"))
-    let a = try await sleepHarness(clock, [Scripted("", dm("晚安"), sleepCall)])
+@Test func aRestartDuringMaintenanceGoesOnWithTheTasksNotDone() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let a = try await maintenanceHarness(clock, [Scripted("", dm("晚安"))])
     await a.model.stall(request: 2)
     let ra = Task { [doll = a.doll] in try await doll.run() }
     await a.doll.ownerSaid("晚安")
+    try await waitUntil { a.said == ["晚安"] }
+    clock.set(at("2026-11-17", "03:00"))
     try await waitUntil { await a.model.requests.count == 2 }
     await a.doll.stop()
     try await ra.value
-    #expect(try consolidatedBodies(a).isEmpty)
-    // Back up before 起床: still asleep, the consolidation runs again, then she rests.
-    clock.set(at("2026-11-16", "23:30"))
-    let b = try await sleepHarness(clock, dir: a.dir, [planReply, summaryReply])
-    #expect(await b.doll.isAsleep)
+    #expect(try consolidatedBodies(a).isEmpty && maintenanceFile(a).running == at("2026-11-17", "03:00"))
+    clock.set(at("2026-11-17", "03:10"))
+    let b = try await maintenanceHarness(clock, dir: a.dir, [planReply, summaryReply])
+    #expect(await b.doll.inMaintenance)
     try await b.doll.announceBoot()
     let rb = Task { [doll = b.doll] in try await doll.run() }
-    try await waitUntil { (try? consolidatedBodies(b)) == ["主人今天跟我說晚安"] }
-    try await waitUntil { (await b.doll.sleepLine() ?? "").contains("整理完了") }
-    #expect(try segmentTexts(b)[0].last!.hasPrefix("【開機】"))
+    try await waitUntil { b.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(b.logs.contains { $0.contains("maintenance: was running at the restart") })
+    #expect(try consolidatedBodies(b) == ["主人今天跟我說晚安"])
+    #expect(await b.model.requests.count == 2)   // the tasks only; no turn of hers
     await b.doll.stop()
     try await rb.value
-    // Down past 08:00: she wakes once the (finished) tasks are looked at.
-    clock.set(at("2026-11-17", "09:00"))
-    let c = try await sleepHarness(clock, dir: a.dir)
+    // Down across its time: due at boot, starts once she is idle.
+    clock.set(at("2026-11-18", "09:00"))
+    let c = try await maintenanceHarness(clock, dir: a.dir)
     try await c.doll.announceBoot()
-    let rc = Task { [doll = c.doll] in try await doll.run() }
-    try await waitUntil { await !c.doll.isAsleep }
-    #expect(try c.events().last!.text.hasPrefix("【起床】你醒了，現在 2026-11-17（星期二） 09:00。睡著的時候做完了：\(consolidated)"))
-    #expect(await c.model.requests.isEmpty)
-    await c.doll.stop()
-    try await rc.value
+    #expect(c.logs.contains { $0.contains("maintenance: its time passed while not running; due") })
 }
 
-@Test func theSleepItemsAreCreatedOnceAndCannotBeDeletedOrMadeAllDay() async throws {
+@Test func theItemIsCreatedOnceCanBeMovedForADayAndCannotBeDeletedOrMadeAllDay() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await sleepHarness(clock)
+    let h = try await maintenanceHarness(clock)
     try await h.doll.announceBoot()
-    try await h.turn(Scripted("", cal("calendar.delete", [("id", "1")]), cal("calendar.change", [("id", "2"), ("all_day", "true")]),
-                              cal("calendar.change", [("id", "2"), ("start", "07:30")]), cal("calendar.delete", [("id", "1"), ("on", "2026-11-17")])))
+    try await h.turn(Scripted("", cal("calendar.delete", [("id", "1")]), cal("calendar.change", [("id", "1"), ("all_day", "true")]),
+                              cal("calendar.change", [("id", "1"), ("on", "2026-11-17"), ("start", "04:30")])))
     let r = try h.toolResults().map(\.text)
-    #expect(r[0] == "失敗：#1「睡覺」是你睡覺的時間，不能刪掉；要換時間用 calendar.change 改 start，只改一天就給 on")
-    #expect(r[1].hasPrefix("失敗：#2「起床」是你起床的時間，不能改成全天"))
-    #expect(r[2].hasPrefix("改好了：從 2026-11-16（星期一） 07:30 起床（#2，每天）"))
-    #expect(r[3].hasPrefix("2026-11-17（星期二） 這一次取消了"))
-    let b = try await sleepHarness(clock, dir: h.dir)
+    #expect(r[0] == "失敗：#1「系統維護」是每天系統維護的時間，不能刪掉；要換時間用 calendar.change 改 start，只改一天就給 on")
+    #expect(r[1].hasPrefix("失敗：#1「系統維護」是每天系統維護的時間，不能改成全天"))
+    #expect(r[2].hasSuffix("下一次是 2026-11-17（星期二） 04:30，到時候你手上沒事，系統維護就開始（不會給你回合）。"))
+    let b = try await maintenanceHarness(clock, dir: h.dir)
     try await b.doll.announceBoot()
-    #expect(await b.doll.dashboardCalendar().items.map(\.title) == ["睡覺", "起床"])
+    #expect(await b.doll.dashboardCalendar().items.map(\.title) == ["系統維護"])
+    // Moved for one day: 03:00 passes, 04:30 makes it due.
+    let runner = Task { [doll = b.doll] in try await doll.run() }
+    clock.set(at("2026-11-17", "03:00"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!b.logs.contains { $0.contains("maintenance: due") })
+    clock.set(at("2026-11-17", "04:30"))
+    try await waitUntil { b.logs.contains { $0.contains("maintenance: due") } }
+    await b.doll.stop()
+    try await runner.value
+}
+
+@Test func anOldCalendarWithTheSleepItemsAndOldSignalsWithSleepinessAreReplacedAtBoot() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(#"""
+        {"fired_through": "2026-11-16T09:00:00.000+08:00", "next_id": 4, "items": [
+          {"id": 1, "title": "睡覺", "date": "2026-11-15", "start": "01:00", "repeat": "daily", "by": "program", "role": "sleep"},
+          {"id": 2, "title": "起床", "date": "2026-11-15", "start": "08:00", "repeat": "daily", "by": "program", "role": "wake"},
+          {"id": 3, "title": "看牙醫", "date": "2026-11-18", "start": "15:00", "by": "owner"}]}
+        """#.utf8).write(to: dir.appending(path: "calendar.json"))
+    try Data(#"""
+        {"points": {"drive": {"value": 0.4, "ts": 0}, "stress": {"value": 0.1, "ts": 0}, "closeness": {"value": 0.6, "ts": 0},
+                    "sleepiness": {"value": 0.7, "ts": 0}},
+         "surfaced": ["sleepiness"],
+         "log": [{"ts": 0, "signal": "sleepiness", "before": 0, "after": 0.7, "cause": "x"},
+                 {"ts": 0, "signal": "stress", "before": 0, "after": 0.1, "cause": "y"}]}
+        """#.utf8).write(to: dir.appending(path: "signals.json"))
+    let h = try await maintenanceHarness(clock, dir: dir, drives: true)
+    try await h.doll.announceBoot()
+    #expect(await h.doll.dashboardCalendar().items.map(\.title) == ["看牙醫", "系統維護"])
+    #expect(h.logs.contains { $0.contains("calendar: removed the sleep items 睡覺 01:00, 起床 08:00 (sleep became system maintenance, 2026-11-16)") })
+    #expect(h.logs.contains { $0.contains("maintenance: calendar had no 系統維護 03:00 (it replaces them); added (daily)") })
+    #expect(h.logs.contains { $0.contains("held 睡意 (removed 2026-11-16); dropped and saved without it") })
+    let saved = try String(contentsOf: dir.appending(path: "signals.json"), encoding: .utf8)
+    #expect(!saved.contains("sleepiness") && saved.contains("\"y\""))
+    #expect(!(try String(contentsOf: dir.appending(path: "calendar.json"), encoding: .utf8)).contains("\"sleep\""))
+}
+
+@Test func noSleepToolNoSleepinessAndTheOldToolIsUnknown() async throws {
+    let clock = ManualClock(at("2026-11-16", "23:00"))
+    let h = try await maintenanceHarness(clock, drives: true)
+    #expect(!(await h.doll.toolsJSON).contains("\"sleep\""))
+    // How she works (the persona before it is the character pack's own words).
+    let prompt = try #require(await h.doll.systemPrompt().components(separatedBy: "## 你怎麼運作").last)
+    #expect(prompt.contains("## 系統維護") && !prompt.contains("睡覺") && !prompt.contains("睡意") && !prompt.contains("起床"))
+    #expect(Signal.allCases == [.drive, .stress, .closeness])
+    try await h.doll.announceBoot()
+    try await h.turn(Scripted("", ("sleep", []), dm("晚安")))
+    #expect(try h.toolResults().first!.text.hasPrefix("失敗："))
 }
 
 // drives (m6-drives, 2026-11-15) ---------------------------------------------------------------
@@ -5752,16 +5793,7 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     p.apply(.toolErrors, at: 0, detail: "click")
     p.apply(.concernDone, at: 0, detail: "#2")
     // Every change has its event as the cause.
-    #expect(p.state.log.count == 10 && p.state.log.allSatisfy { $0.cause.contains("：") && $0.before != $0.after })
-    // 睡意 builds at its rate while awake; sleep clears it and keeps sleep_stress_keep of 壓力's gap.
-    var s = Drives(config: c, now: 0)
-    #expect(approx(s.value(.sleepiness, at: 10 * 3600), 10 * c.sleepinessPerHour))
-    s.apply(.correction, at: 10 * 3600, detail: "x")
-    let stress = s.value(.stress, at: 10 * 3600)
-    s.apply(.sleep, at: 10 * 3600, detail: "她自己去睡")
-    #expect(s.value(.sleepiness, at: 10 * 3600) == 0)
-    #expect(approx(s.value(.stress, at: 10 * 3600), c.stressRest + (stress - c.stressRest) * c.sleepStressKeep))
-    #expect(s.state.log.suffix(2).allSatisfy { $0.cause == "睡覺：她自己去睡" })
+    #expect(p.state.log.count == 9 && p.state.log.allSatisfy { $0.cause.contains("：") && $0.before != $0.after })
 }
 
 @Test func drivesNextCrossingIsExactAndAnExcursionSurfacesOncePerCrossing() {
@@ -5785,8 +5817,6 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     e.state.surfaced.insert(.stress)
     let back = log2((e.value(.stress, at: 0) - c.stressRest) / (c.stressHigh - c.stressRest)) * c.stressHalfLifeH * 3600 + 1
     #expect(abs(e.nextCrossing(after: 0)! - min(back, t)) < 1e-6)
-    // 睡意 crosses at its steady rate.
-    #expect(abs(e.sleepyAt()! - (c.sleepinessHigh / c.sleepinessPerHour * 3600 + 1)) < 1e-6)
 }
 
 @Test func theFeltLineIsOneFixedSentenceByTheCombinationAndNoneInRange() {
@@ -5796,13 +5826,13 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     d.apply(.correction, at: 0, detail: "x")
     d.apply(.correction, at: 0, detail: "x")
     #expect(d.felt(at: 0) == "你現在有點緊繃")
-    // 17 h on: 壓力 has receded, 睡意 is high (and 親近 low): the sleepy sentence comes first.
-    #expect(!d.isOut(.stress, at: 17 * 3600) && d.felt(at: 17 * 3600) == "有點想睡了")
+    // 17 h on: 壓力 has receded, 親近 is low.
+    #expect(!d.isOut(.stress, at: 17 * 3600) && d.felt(at: 17 * 3600) == "有點想主人了")
     #expect(d.felt(at: 5 * 3600) == nil || d.felt(at: 5 * 3600) == "有點想主人了")
     var both = Drives(config: c, now: 0)
     both.apply(.correction, at: 15.5 * 3600, detail: "x")
     both.apply(.correction, at: 15.5 * 3600, detail: "x")
-    #expect(both.felt(at: 16.5 * 3600) == "你又累又有點緊繃")
+    #expect(both.felt(at: 16.5 * 3600) == "你有點緊繃，也有點想主人")
 }
 
 @Test func signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot() async throws {
@@ -5842,12 +5872,11 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     ("concern.note", [("text", text), ("about", about)])
 }
 
-@Test func wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdleAndNotAsleep() async throws {
+@Test func wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdle() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("主人昨晚加班到兩點，很累", "owner")), Scripted("", dm("辛苦了"))], clock: clock) {
         $0.drives.enabled = true
-        $0.sleep.enabled = true
-        $0.drives.sleepinessPerHour = 0.0001   // this test is about 親近 (and the backstop waits for 睡意)
+        $0.maintenance.enabled = true
     }
     let doll = h.doll
     let runner = Task { try await doll.run() }
@@ -5881,36 +5910,24 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await runner.value
 }
 
-@Test func asleepNothingSurfacesClosenessHoldsThroughTheNightAndSleepClearsSleepiness() async throws {
+@Test func duringMaintenanceNothingSurfaces() async throws {
     let clock = ManualClock(at("2026-11-16", "23:00"))
-    let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("早點睡")), Scripted("", dm("晚安"), sleepCall),
-                               planReply, summaryReply],
-                              clock: clock) { $0.sleep.enabled = true; $0.drives.enabled = true }
+    let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("早點睡"))],
+                              clock: clock) { $0.maintenance.enabled = true; $0.drives.enabled = true }
+    await b.model.stall(request: 3)
     let doll = b.doll
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("最近好累")
     try await waitUntil { await doll.settled && b.reports.count == 2 }
-    await doll.ownerSaid("晚安")
-    try await waitUntil { await doll.isAsleep }
-    try await waitUntil { await b.model.requests.count == 5 }   // the two sleep requests
-    #expect(await doll.dashboardDrives().values.first { $0.signal == "sleepiness" }!.value == 0)
-    // 親近 0.8 at 23:00 would cross 0.2 at 07:00 if the night counted: asleep, nothing surfaces.
-    clock.set(at("2026-11-17", "07:30"))
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await b.model.requests.count == 3 }
+    // 親近 0.7 at 23:00 crosses 0.2 at 06:14; maintenance still runs: nothing surfaces.
+    clock.set(at("2026-11-17", "06:30"))
     try await Task.sleep(for: .milliseconds(150))
-    #expect(await b.model.requests.count == 5)
+    #expect(await b.model.requests.count == 3)
+    #expect(await doll.inMaintenance)
     #expect(try b.events().allSatisfy { !$0.text.hasPrefix("【走神】") })
-    // 起床 at 08:00: 親近 resumes from 0.8 (the night did not count), so nothing surfaces yet …
-    clock.set(at("2026-11-17", "08:00"))
-    try await waitUntil { await !doll.isAsleep }
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(await b.model.requests.count == 5)
-    #expect(approx(await doll.dashboardDrives().values.first { $0.signal == "closeness" }!.value, 0.8))
-    // … until 8 awake hours later.
-    await b.model.add([Scripted("", dm("今天好點了嗎？"))])
-    clock.set(at("2026-11-17", "16:01"))
-    try await waitUntil { await b.model.requests.count == 6 }
-    #expect(try b.events().contains { $0.text.hasPrefix("【走神】") && $0.text.hasSuffix("主人最近很累") })
     await doll.stop()
     try await runner.value
 }
@@ -5919,7 +5936,6 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("鯊魚分類還剩兩步沒弄完", "duty")), Scripted("", dm("記著了"))], clock: clock) {
         $0.drives.enabled = true
-        $0.drives.sleepinessPerHour = 0.0001
         $0.drives.closenessHalfLifeH = 1000
     }
     let doll = h.doll
@@ -5947,7 +5963,6 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let h = try await Harness([Scripted("", add), Scripted("", dm("記好了")), Scripted("", todoSet("報告寄出了"), fail("沒有檔案")),
                                Scripted("", ("todo.set", [("items", "[]")]))], clock: clock) {
         $0.drives.enabled = true
-        $0.drives.sleepinessPerHour = 0.0001
         $0.drives.closenessHalfLifeH = 1000
     }
     let doll = h.doll
@@ -5979,7 +5994,6 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let h = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own"), noteCall("學會畫鯊魚", "own")), Scripted("", dm("想讀圖鑑"))],
                               clock: clock) {
         $0.drives.enabled = true
-        $0.drives.sleepinessPerHour = 0.0001
         $0.drives.closenessHalfLifeH = 1000
         $0.drives.driveHigh = 0.45        // one concern done (0.4 + 0.1) is high
     }
@@ -6051,7 +6065,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let file = FileManager.default.temporaryDirectory.appending(path: "drives-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
-    for bad in ["[drives]\norder = [\"stress\"]\n", "[drives]\nsleepiness_per_hour = 0\n", "[drives]\nstress_high = 0.05\n",
+    for bad in ["[drives]\norder = [\"stress\"]\n", "[drives]\nsleepiness_high = 0.8\n", "[drives]\nstress_high = 0.05\n",
                 "[drives]\ncloseness_start = 0.1\n", "[drives]\nmood = 1\n"] {
         try (head + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }

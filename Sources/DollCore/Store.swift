@@ -169,8 +169,8 @@ public struct Event: Sendable, Equatable {
 // timeline ---------------------------------------------------------------------
 
 /// Her raw timeline (2026-11-10): one append-only JSONL file per segment, `<data_dir>/timeline/<segment>.jsonl`.
-/// A segment is one day, from waking to falling asleep; a process continues the newest segment.
-/// Consolidation (2026-11-11, manual; sleep does not exist yet) ends the day: it starts a new, empty
+/// A segment is one day, from one maintenance to the next; a process continues the newest segment.
+/// Consolidation (2026-11-11; since 2026-11-16 in the daily maintenance) ends the day: it starts a new, empty
 /// segment (`startSegment`), so the next process begins a fresh today. The file is the only source of the events,
 /// the footers, the turn stats, the todo list and the compactions; `TodayIndex` is a rebuildable index of it.
 ///

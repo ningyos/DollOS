@@ -1,8 +1,8 @@
 import Foundation
 
 /// Consolidation (2026-11-11): the day's timeline becomes long-term memories, then a new timeline
-/// segment begins, as if she slept. Since 2026-11-15 it is the first task of her sleep (`Sleep.swift`,
-/// inside her running process); the CLI's `dollcore --config … consolidate <data_dir>` runs the same
+/// segment begins. Since 2026-11-16 it is the first task of the daily system maintenance
+/// (`Maintenance.swift`, inside her running process); the CLI's `dollcore --config … consolidate <data_dir>` runs the same
 /// steps (`gather`, `ask`, `apply`) while her process is not running.
 ///
 /// One separate model request, not in her context and without her persona: the program renders the
@@ -112,8 +112,8 @@ public enum Consolidation {
     /// Consolidates the newest segment of `config.core.dataDir` into `config.memory.dir` (both
     /// relative to `root` unless absolute), embedding with `embedder`. `now`: when it runs (the new
     /// memories' `created_ts`, the retired ones' `retired_ts`, the cutoff for deleting retired files).
-    /// The CLI's `consolidate` command; her running process does the same three steps in her sleep
-    /// (`Sleep.swift`).
+    /// The CLI's `consolidate` command; her running process does the same three steps in its daily
+    /// maintenance (`Maintenance.swift`).
     public static func run(config: Config, root: URL, model: any MainModel,
                            embedder: any Embedder, now: Double) async throws -> ConsolidationResult {
         func path(_ p: String) -> URL { p.hasPrefix("/") ? URL(filePath: p) : root.appending(path: p) }
@@ -126,11 +126,11 @@ public enum Consolidation {
         try await model.check()
         let request = try gather(timeline, memory: memory, config: config.consolidate)
         let answer = try await ask(request, model: model, config: config)
-        return try apply(request, answer, memory: memory, config: config.consolidate, now: now) {
-            let newSegment = try Timeline.startSegment(dir: timelineDir)
-            try Timeline(dir: timelineDir).append(Event(.memory, .internal, Self.wakeNote + answer.summary))
-            return newSegment
+        let result = try apply(request, answer, memory: memory, config: config.consolidate, now: now) {
+            try Timeline.startSegment(dir: timelineDir)
         }
+        try Timeline(dir: timelineDir).append(Event(.memory, .internal, "【系統維護】（離線整理）" + doneText(result.plan) + "\n" + summaryNote + answer.summary))
+        return result
     }
 
     /// Step 1, synchronous and writing nothing: the day's tasks, the related memories and registry
@@ -178,8 +178,8 @@ public enum Consolidation {
         let seconds = Date().timeIntervalSince(started)
         let plan = try parse(reply.content, known: Set(r.related.map(\.id)), registry: Set(r.registry.map(\.id)),
                              tasks: Set(numbered(r.tasks).keys))
-        // What she wakes up with (owner, 2026-11-15: sleep is not a compaction, and it does not empty
-        // her context): the day, as a summary a second clean request writes. Asked for before anything
+        // What she finds after the maintenance (owner, 2026-11-15: it is not a compaction, and it
+        // does not empty her context): the day, as a summary a second clean request writes. Asked for before anything
         // is applied, so a failure here still writes nothing.
         let day = try await model.chat([ChatMessage(role: "system", content: Doll.talkInstructions),
                                         ChatMessage(role: "user", content: r.tasks.map(\.text).joined(separator: "\n\n"))],
@@ -190,7 +190,7 @@ public enum Consolidation {
     }
 
     /// Step 3, synchronous: deletes long-retired files, applies the operations, then `newSegment`
-    /// starts the next segment (its first event: `wakeNote` + the summary) and returns its name.
+    /// starts the next segment (its first event: the end notice with `doneText` and the summary) and returns its name.
     static func apply(_ r: Request, _ a: Answer, memory: Memory, config: ConsolidateConfig, now: Double,
                       newSegment: () throws -> String) throws -> ConsolidationResult {
         let plan = a.plan
@@ -257,8 +257,22 @@ public enum Consolidation {
                                    completionTokens: a.reply.usage.completionTokens, seconds: a.seconds, reply: a.reply.content)
     }
 
-    /// Opens the first event of the segment after a consolidation; the day's summary follows.
-    public static let wakeNote = "【睡前】你睡了一覺，睡前的事整理進長期記憶了。睡前的對話和做過的事不在眼前了，換成下面這段另外寫的摘要（不是你寫的）；要細節用 recall 查記憶。\n"
+    /// What the operations did, in her words, for the first event of the next segment.
+    public static func doneText(_ plan: ConsolidationPlan) -> String {
+        var add = 0, update = 0, retire = 0, confirm = 0
+        for op in plan.operations {
+            switch op {
+            case .add: add += 1
+            case .update: update += 1
+            case .retire: retire += 1
+            case .confirm: confirm += 1
+            }
+        }
+        return "整理了之前的事：新記了 \(add) 條記憶，改了 \(update) 條，\(retire) 條舊的換掉了，\(confirm) 條又遇到一次、記得更牢了。"
+    }
+
+    /// Before the day's summary in that event.
+    public static let summaryNote = "之前的對話和做過的事不在眼前了，換成下面這段另外寫的摘要（不是你寫的）；要細節用 recall 查記憶。\n"
 
     // rendering ---------------------------------------------------------------
 

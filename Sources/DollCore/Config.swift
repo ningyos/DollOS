@@ -122,25 +122,23 @@ public struct CalendarConfig: Sendable {
     public var listMaxDays = 31
 }
 
-/// Her sleep (2026-11-15, `Sleep.swift`).
-public struct SleepConfig: Sendable {
-    /// Off: no `sleep` tool, no 「睡覺」／「起床」 items, no backstop, no 【狀況】 line (runners and
-    /// tests that are not about a day's cycle). Her own process keeps it on.
+/// System maintenance (2026-11-16, `Maintenance.swift`): once a day the program tidies her memory
+/// and writes the day's summary; she takes no turns meanwhile.
+public struct MaintenanceConfig: Sendable {
+    /// Off: no 「系統維護」 item, no maintenance, no day line in 【狀況】 (runners and tests that are
+    /// not about a day's cycle). Her own process keeps it on.
     public var enabled = true
-    /// The 「睡覺」 item's time when her calendar has none: 01:00, after the owner's usual evening
-    /// (he talks with her late), so the item does not fire mid-conversation on an ordinary night.
-    public var bedTime = "01:00"
-    /// The 「起床」 item's time when her calendar has none: 08:00, a 7-hour night after 01:00 and
-    /// before the owner's usual morning.
-    public var wakeTime = "08:00"
-    /// The backstop: nobody (owner or developer) has spoken to her for this long while she is awake
-    /// with nothing in hand and something to consolidate, so the program puts her to sleep. 120: an
-    /// evening's pause in conversation is shorter; two quiet hours mean the owner has gone.
-    public var idleBackstopMin = 120
-    /// After her sleep's tasks she rests until the next 「起床」 only when it is at most this far
-    /// away; further means today's wake time has passed (she slept at 09:00), and she wakes once the
-    /// tasks are done. 12: the longest night; 23:30 → 08:00 is 8.5 h, 09:00 → 08:00 is 23 h.
-    public var restMaxHours = 12.0
+    /// The 「系統維護」 item's time when her calendar has none: 03:00, after the owner's usual late
+    /// evening (he talks with her past midnight) and long before his morning.
+    public var time = "03:00"
+    /// Due while she is busy (a todo item in progress or waiting) this long: it starts when her
+    /// current turn ends anyway, the todo kept; she resumes it after. 3: an ordinary task at night
+    /// takes well under an hour; three hours busy means it would otherwise never start that day.
+    public var busyLimitHours = 3.0
+    /// Interrupted by the owner or the developer: it runs again once nobody has spoken to her for
+    /// this long and she is idle (or, failing that, at the next day's time). 30: a short talk at
+    /// night is over by then, and the day is not left unconsolidated until tomorrow.
+    public var retryIdleMin = 30
 }
 
 /// Her concerns and four signals (m6-drives, 2026-11-15, `Signals.swift`, `Drives.swift`). Values
@@ -151,12 +149,11 @@ public struct DrivesConfig: Sendable, Equatable {
     /// that are not about them). Her own process keeps it on.
     public var enabled = true
     /// Which out-of-range signal surfaces first when several are pending.
-    public var order: [Signal] = [.sleepiness, .stress, .closeness, .drive]
+    public var order: [Signal] = [.stress, .closeness, .drive]
     public var driveRest = 0.4, driveHalfLifeH = 6.0, driveHigh = 0.8
     public var stressRest = 0.1, stressHalfLifeH = 4.0, stressHigh = 0.5
     public var closenessRest = 0.0, closenessHalfLifeH = 4.0, closenessLow = 0.2, closenessStart = 0.6
-    public var sleepinessPerHour = 0.05, sleepinessHigh = 0.8
-    public var itemDoneDrive = 0.1, itemDoneSleepiness = 0.02
+    public var itemDoneDrive = 0.1
     public var itemFailedStress = 0.25
     public var toolErrorsStress = 0.05
     public var praiseDrive = 0.2, praiseCloseness = 0.15, praiseStress = -0.15
@@ -164,7 +161,6 @@ public struct DrivesConfig: Sendable, Equatable {
     public var ownerTalkCloseness = 0.1
     public var deadlineStress = 0.15
     public var concernDoneDrive = 0.1
-    public var sleepStressKeep = 0.5
     /// A concern with a time this close raises 壓力 once (`deadline`).
     public var nearHours = 3.0
     /// A timed calendar item this close becomes a program concern.
@@ -181,14 +177,13 @@ public struct DrivesConfig: Sendable, Equatable {
         case .drive: SignalSpec(rest: driveRest, halfLifeH: driveHalfLifeH, edge: driveHigh)
         case .stress: SignalSpec(rest: stressRest, halfLifeH: stressHalfLifeH, edge: stressHigh)
         case .closeness: SignalSpec(rest: closenessRest, halfLifeH: closenessHalfLifeH, edge: closenessLow)
-        case .sleepiness: SignalSpec(rest: 0, halfLifeH: 1, edge: sleepinessHigh)
         }
     }
 
-    /// What one event moves (sleep is special: `Drives.apply`).
+    /// What one event moves.
     public func deltas(_ e: SignalEvent) -> [(Signal, Double)] {
         switch e {
-        case .itemDone: [(.drive, itemDoneDrive), (.sleepiness, itemDoneSleepiness)]
+        case .itemDone: [(.drive, itemDoneDrive)]
         case .itemFailed: [(.stress, itemFailedStress)]
         case .toolErrors: [(.stress, toolErrorsStress)]
         case .praise: [(.drive, praiseDrive), (.closeness, praiseCloseness), (.stress, praiseStress)]
@@ -196,7 +191,6 @@ public struct DrivesConfig: Sendable, Equatable {
         case .ownerTalk: [(.closeness, ownerTalkCloseness)]
         case .deadline: [(.stress, deadlineStress)]
         case .concernDone: [(.drive, concernDoneDrive)]
-        case .sleep, .wake: []
         }
     }
 }
@@ -386,13 +380,13 @@ public struct Config: Sendable {
     public var select: SelectConfig
     public var voice: VoiceConfig
     public var calendar: CalendarConfig
-    public var sleep: SleepConfig
+    public var maintenance: MaintenanceConfig
     public var drives = DrivesConfig()
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "sleep", "drives"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -613,21 +607,19 @@ public struct Config: Sendable {
         guard calendar.statusItems >= 1, calendar.listMaxDays >= 1 else {
             throw TOMLError(description: "[calendar] status_items and list_max_days at least 1")
         }
-        var sl = Section(name: "sleep", raw: raw["sleep"] ?? [:])
-        var sleep = SleepConfig()
-        try sl.read("enabled", &sleep.enabled)
-        try sl.read("bed_time", &sleep.bedTime)
-        try sl.read("wake_time", &sleep.wakeTime)
-        try sl.read("idle_backstop_min", &sleep.idleBackstopMin)
-        try sl.read("rest_max_hours", &sleep.restMaxHours)
-        try sl.finish()
-        guard TimeOfDay(sleep.bedTime) != nil, TimeOfDay(sleep.wakeTime) != nil, sleep.bedTime != sleep.wakeTime,
-              sleep.idleBackstopMin >= 1, sleep.restMaxHours > 0, sleep.restMaxHours <= 24 else {
-            throw TOMLError(description: "[sleep] bed_time and wake_time HH:MM and different; idle_backstop_min at least 1; rest_max_hours above 0, at most 24")
+        var mt = Section(name: "maintenance", raw: raw["maintenance"] ?? [:])
+        var maintenance = MaintenanceConfig()
+        try mt.read("enabled", &maintenance.enabled)
+        try mt.read("time", &maintenance.time)
+        try mt.read("busy_limit_hours", &maintenance.busyLimitHours)
+        try mt.read("retry_idle_min", &maintenance.retryIdleMin)
+        try mt.finish()
+        guard TimeOfDay(maintenance.time) != nil, maintenance.busyLimitHours > 0, maintenance.retryIdleMin >= 1 else {
+            throw TOMLError(description: "[maintenance] time HH:MM; busy_limit_hours above 0; retry_idle_min at least 1")
         }
         let drives = try Self.readDrives(raw["drives"] ?? [:])
         return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, sleep: sleep,
+                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, maintenance: maintenance,
                       drives: drives)
     }
 
@@ -642,13 +634,12 @@ public struct Config: Sendable {
             ("stress_rest", \.stressRest), ("stress_half_life_h", \.stressHalfLifeH), ("stress_high", \.stressHigh),
             ("closeness_rest", \.closenessRest), ("closeness_half_life_h", \.closenessHalfLifeH),
             ("closeness_low", \.closenessLow), ("closeness_start", \.closenessStart),
-            ("sleepiness_per_hour", \.sleepinessPerHour), ("sleepiness_high", \.sleepinessHigh),
-            ("item_done_drive", \.itemDoneDrive), ("item_done_sleepiness", \.itemDoneSleepiness),
+            ("item_done_drive", \.itemDoneDrive),
             ("item_failed_stress", \.itemFailedStress), ("tool_errors_stress", \.toolErrorsStress),
             ("praise_drive", \.praiseDrive), ("praise_closeness", \.praiseCloseness), ("praise_stress", \.praiseStress),
             ("correction_stress", \.correctionStress), ("owner_talk_closeness", \.ownerTalkCloseness),
             ("deadline_stress", \.deadlineStress), ("concern_done_drive", \.concernDoneDrive),
-            ("sleep_stress_keep", \.sleepStressKeep), ("near_hours", \.nearHours),
+            ("near_hours", \.nearHours),
             ("calendar_concern_hours", \.calendarConcernHours), ("log_days", \.logDays),
         ]
         for (k, p) in nums { try s.read(k, &d[keyPath: p]) }
@@ -659,13 +650,12 @@ public struct Config: Sendable {
             throw TOMLError(description: "[drives] order must list each of \(Signal.allCases.map(\.rawValue)) exactly once")
         }
         d.order = signals
-        let unit = [d.driveRest, d.driveHigh, d.stressRest, d.stressHigh, d.closenessRest, d.closenessLow, d.closenessStart,
-                    d.sleepinessHigh, d.sleepStressKeep]
+        let unit = [d.driveRest, d.driveHigh, d.stressRest, d.stressHigh, d.closenessRest, d.closenessLow, d.closenessStart]
         guard unit.allSatisfy({ (0...1).contains($0) }), d.driveRest < d.driveHigh, d.stressRest < d.stressHigh,
               d.closenessRest < d.closenessLow, d.closenessStart > d.closenessLow,
-              d.driveHalfLifeH > 0, d.stressHalfLifeH > 0, d.closenessHalfLifeH > 0, d.sleepinessPerHour > 0,
+              d.driveHalfLifeH > 0, d.stressHalfLifeH > 0, d.closenessHalfLifeH > 0,
               d.nearHours > 0, d.calendarConcernHours > 0, d.logDays > 0, d.maxOpen >= 1 else {
-            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, sleepiness_per_hour (the last resort for sleep rests on it), near_hours, calendar_concern_hours, log_days above 0; max_open at least 1")
+            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, near_hours, calendar_concern_hours, log_days above 0; max_open at least 1")
         }
         return d
     }

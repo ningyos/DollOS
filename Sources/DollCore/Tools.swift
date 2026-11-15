@@ -16,7 +16,6 @@ import Foundation
 ///                                        only while an item is 進行中
 ///     calendar.add / calendar.change / calendar.delete / calendar.list
 ///                                        her calendar (2026-11-15, `Calendar.swift`); never gated
-///     sleep()                            ([sleep] enabled) go to sleep (2026-11-15, `Sleep.swift`); refused with an item in hand
 ///     voice.join() / voice.leave()       ([voice] enabled, M6) enter / leave the Discord voice channel the owner is in
 ///     voice.say(text)                    ([voice] enabled, M6) speak in that voice channel through the TTS
 ///
@@ -55,9 +54,8 @@ public enum Tools {
 
     /// Every internal tool, in the order she sees them. Built once per process from config, so the
     /// `tools` list never changes between turns and the server's prefix cache keeps hitting.
-    /// `voice` (`[voice] enabled`, M6): the voice tools follow the others. `sleep` (`[sleep] enabled`):
-    /// her `sleep` follows the calendar's.
-    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig, sleep: Bool = false, drives: Bool = false) -> [Spec] {
+    /// `voice` (`[voice] enabled`, M6): the voice tools follow the others.
+    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig, drives: Bool = false) -> [Spec] {
         let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
         return [
             Spec(name: Name.dm,
@@ -85,7 +83,7 @@ public enum Tools {
                      "required": ["level"],
                  ], jsonParameters: []),
             Spec(name: "remember",
-                 description: "把值得長期記住的事寫進記憶。一次可寫多條，一條一件事。記憶的內容不會變，用 recall 一定查得到；程式自己想起來附給你的（【相關記憶】）會淡：睡覺整理好的記憶，之後沒在別的日子再遇到，過三個禮拜左右就不會自己冒出來；不同的日子又遇到同一件事（睡覺整理時算，你自己重說或查到的不算）就記得更牢，夠牢就不再淡。對你特別重要、要一直記得、相關時該自己冒出來的，標 deep：永遠不淡。",
+                 description: "把值得長期記住的事寫進記憶。一次可寫多條，一條一件事。記憶的內容不會變，用 recall 一定查得到；程式自己想起來附給你的（【相關記憶】）會淡：系統維護整理好的記憶，之後沒在別的日子再遇到，過三個禮拜左右就不會自己冒出來；不同的日子又遇到同一件事（系統維護整理時算，你自己重說或查到的不算）就記得更牢，夠牢就不再淡。對你特別重要、要一直記得、相關時該自己冒出來的，標 deep：永遠不淡。",
                  parameters: [
                      "type": "object",
                      "properties": ["items": [
@@ -113,7 +111,7 @@ public enum Tools {
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
                  ], jsonParameters: []),
-        ] + todoSpecs + calendarSpecs + (sleep ? [sleepSpec] : []) + (drives ? concernSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
+        ] + todoSpecs + calendarSpecs + (drives ? concernSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
 
     /// Her todo list (2026-11-14). Never gated.
@@ -215,12 +213,6 @@ public enum Tools {
                  ], jsonParameters: []),
         ]
     }()
-
-    /// Her sleep (2026-11-15). Never gated by the computer; refused with a todo item in hand.
-    static let sleepSpec = Spec(
-        name: "sleep",
-        description: "去睡覺。睡著以後程式把今天整理進長期記憶、另外寫一段今天的摘要，然後你睡到行事曆上的「起床」；主人或開發者找你、行事曆上別的事到了，會把你叫醒。什麼時候睡你自己決定：想睡了、主人說晚安、行事曆的「睡覺」到了而手上沒事，都可以睡。只在回話裡說要去睡不算，要呼叫這個工具才會睡著。todo 有進行中或等待中的項目不能睡。要跟人說晚安，用回話的工具寫在同一則回覆裡，寫在 sleep 前面。",
-        parameters: ["type": "object", "properties": .object([]), "required": .array([])], jsonParameters: [])
 
     /// Her concerns and the owner's praise or correction (m6-drives, 2026-11-15). Never gated.
     static let concernSpecs: [Spec] = [
@@ -476,7 +468,6 @@ public enum Tools {
         case editFile(path: String, old: String, new: String)
         /// `calendar.*` (2026-11-15), parsed by `CalendarRequest.parse`.
         case calendar(CalendarRequest)
-        case sleep
         case concernNote(text: String, about: String, due: String?)
         case concernEnd(id: Int, how: String)
         case ownerFeedback(kind: String, quote: String)
@@ -651,8 +642,6 @@ public enum Tools {
             return .concernEnd(id: try int("id")!, how: try oneOf("how", ["done", "let_go"], default: ""))
         case "owner.feedback":
             return .ownerFeedback(kind: try oneOf("kind", ["praise", "correction"], default: ""), quote: try nonEmpty("quote"))
-        case "sleep":
-            return .sleep
         case let n where CalendarRequest.names.contains(n):
             do {
                 return .calendar(try CalendarRequest.parse(n, Dictionary(call.parameters.map { ($0.name, $0.value) }, uniquingKeysWith: { $1 })))
@@ -833,16 +822,16 @@ enum Instructions {
     /// How she works, after the pack in the system prompt (2026-11-14, owner: the operating
     /// principles she always needs, in plain sentences; the rest of DollOS is in her documents,
     /// `Doll.docsVMPath`). Her tools' descriptions (in `tools`) carry the details.
-    /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in. `sleep`
-    /// (`[sleep] enabled`): the section on her sleep.
-    static func text(voice: Bool, context c: ContextConfig, sleep: Bool = false, drives: Bool = false) -> String {
+    /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
+    /// `maintenance` (`[maintenance] enabled`): the section on the daily system maintenance.
+    static func text(voice: Bool, context c: ContextConfig, maintenance: Bool = false, drives: Bool = false) -> String {
         let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""
-        let sleepPart = sleep ? """
+        let maintenancePart = maintenance ? """
 
 
-            ## 睡覺
+            ## 系統維護
 
-            什麼時候睡你自己決定，用 sleep。只在回話裡說「我也去睡了」不會讓你睡著，要真的呼叫 sleep；主人說晚安、你手上沒事，通常就一起睡：同一則回覆裡先用回話的工具說晚安，再呼叫 sleep。睡著的時候程式把今天整理進長期記憶、另外寫一段今天的摘要；整理完，醒來的時候今天從那段【睡前】摘要開始。行事曆上有每天的「睡覺」和「起床」（用 calendar.change 改時間）：「睡覺」到了給你一個回合，要不要睡你決定；「起床」到了你就醒，時間線上會有【起床】，列今天的行事曆。主人或開發者找你、行事曆上別的事到了，會把你叫醒；整理到一半被叫醒，那次整理就不算，下次睡覺再整理。todo 有進行中或等待中的項目不能睡。很久沒人跟你說話、你手上也沒事，程式會讓你先睡。【狀況】寫你醒了多久、今天的時間線有多少。細節在 \(Doll.docsVMPath)/sleep.md。
+            每天一次，行事曆上「系統維護」的時間（【狀況】會寫下一次是什麼時候），程式做系統維護：把到那時為止的對話和做過的事整理進你的長期記憶，另外寫一段摘要。要幾分鐘，這段時間你不在，沒有回合。時間到了你手上的 todo 還沒做完，會等你做完再開始；拖太久就在你這一回合之後開始，todo 留著，結束後接著做。開始和結束時間線上都有【系統維護】：結束那則寫著整理了幾條記憶，接著是那段摘要（不是你寫的）和今天的行事曆；之前的對話和做過的事就不在眼前了，要細節用 recall 查。維護中主人或開發者跟你說話，維護就停下來，什麼都沒寫，你直接回他；之後安靜一陣子、你手上沒事，會再做一次。要換時間用 calendar.change（只換一天給 on），不能刪。主人說晚安就照平常回他，你不用做什麼。細節在 \(Doll.docsVMPath)/maintenance.md。
             """ : ""
         let drivesPart = drives ? """
 
@@ -856,7 +845,7 @@ enum Instructions {
         return """
         ## 你怎麼運作
 
-        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、行事曆上的時間到了、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合，你不會被叫醒。
+        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、行事曆上的時間到了、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合。
 
         回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。做事只能透過工具，光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
 
@@ -881,7 +870,7 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。\(sleepPart)\(drivesPart)
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
 
         ## 你的電腦
 
@@ -891,7 +880,7 @@ enum Instructions {
 
         ## DollOS 文件
 
-        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；sleep.md 是整理（睡覺）；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
+        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
 

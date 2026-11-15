@@ -13,7 +13,7 @@ import Synchronization
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
 /// change only, and refetches everything anyway.
 public final class ChangeFeed: Sendable {
-    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, sleep, drives }
+    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, maintenance, drives }
 
     private let subscribers = Mutex<[UUID: AsyncStream<Change>.Continuation]>([:])
 
@@ -52,11 +52,11 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var watch: String?
     /// The footer's context figure: the estimate scaled by the last real prompt size.
     public var contextTokens: Int
-    /// thinking (model call in flight) | acting (her tool calls) | idle (awake, waiting for the next
-    /// event) | sleeping (her sleep, `Sleep.swift`)
+    /// thinking (model call in flight) | acting (her tool calls) | idle (waiting for the next
+    /// event) | maintenance (the daily system maintenance runs, `Maintenance.swift`)
     public var state: String
-    /// While she sleeps: since when, who put her to sleep, working or resting (`Doll.sleepLine`).
-    public var sleep: String?
+    /// While maintenance runs (since when) or is due and waits (`Doll.maintenanceLine`).
+    public var maintenance: String?
     public var paused: Bool
     /// The effort of the call in flight, else the one the next call will use.
     public var effort: String
@@ -163,7 +163,7 @@ extension Doll {
             name: name, todo: todo.phase.label, item: todo.current, pending: todo.pending,
             watch: watch.map { "盯著 \($0.target)，最多等 \(seconds($0.maxWait))" },
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
-            state: inflight != nil ? "thinking" : inTurn ? "acting" : isAsleep ? "sleeping" : "idle", sleep: sleepLine(),
+            state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
             paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,
             lastInterrupt: lastInterrupt)
     }

@@ -96,7 +96,6 @@ enum Concerns {
         case .closeness: about = .owner
         case .stress: about = .duty
         case .drive: about = .own
-        case .sleepiness: return nil
         }
         return items.filter { $0.ended == nil && $0.about == about && $0.id != except }.min { a, b in
             let la = a.surfaced.last ?? 0, lb = b.surfaced.last ?? 0
@@ -119,9 +118,8 @@ enum Concerns {
     static func wanderText(_ c: Concern) -> String {
         "\(wanderTag)你想起掛著的一件事（\(origin(c))）：\(c.text)"
     }
-    // Not 「手上沒事」 (step 0, 2026-11-15): the sleep section says "with nothing in hand, sleep",
+    // Not 「手上沒事」 (step 0, 2026-11-15): then her sleep section said "with nothing in hand, sleep",
     // and 3 of 20 idle runs about an unhurried step answered a mid-afternoon surfacing by calling sleep.
-    static let wanderSleepy = "\(wanderTag)你有點想睡了。"
     static let wanderOwner = "\(wanderTag)你想到好一陣子沒跟主人說上話了。"
 
     static func associateText(_ c: Concern) -> String { "\(associateTag)（想到）\(c.text)（#\(c.id)）" }
@@ -292,9 +290,9 @@ extension Doll {
 
     // wandering ------------------------------------------------------------------------------------
 
-    /// Idle: no todo in hand, nothing queued or owed, not asleep, no turn running, no watch.
+    /// Idle: no todo in hand, nothing queued or owed, not in maintenance, no turn running, no watch.
     var idleForWander: Bool {
-        !inTurn && !paused && !sleepState.asleep && queue.isEmpty && !followUp && watch == nil
+        !inTurn && !paused && maintenanceState.running == nil && queue.isEmpty && !followUp && watch == nil
             && (todo.phase == .idle || todo.phase == .done)
     }
 
@@ -319,7 +317,6 @@ extension Doll {
             do { try saveSignals() } catch { log("ERROR", "drives: saving \(signalsURL.path) failed: \(error)") }
             if let c = Concerns.pick(concernFile.items, for: s) { return wander(c, signal: s, now: now, chained: false) }
             switch s {
-            case .sleepiness: return wanderLine(Concerns.wanderSleepy, signal: s)
             case .closeness: return wanderLine(Concerns.wanderOwner, signal: s)
             default: log("INFO", "drives: \(s.label) out of range, no concern of that kind; nothing surfaces")
             }

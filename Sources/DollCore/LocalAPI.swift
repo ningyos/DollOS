@@ -176,7 +176,7 @@ public final class LocalAPI: @unchecked Sendable {
 
     func status(_ doll: Doll) async throws -> ApiStatus {
         let d = try await doll.dashboardStatus()
-        return ApiStatus(name: doll.name, footer: try await doll.status(), state: d.state, sleep: d.sleep, paused: d.paused, queued: d.queued,
+        return ApiStatus(name: doll.name, footer: try await doll.status(), state: d.state, maintenance: d.maintenance, paused: d.paused, queued: d.queued,
                          turn: d.turn, answering: await doll.answering()?.rawValue, bridge: bridge,
                          ownerStreams: listening(.owner), developerStreams: listening(.developer))
     }
@@ -374,10 +374,10 @@ public struct ApiStatus: Codable, Sendable, Equatable {
     public var name: String
     /// Her 【狀況】 footer as of now.
     public var footer: String
-    /// thinking | acting | idle | sleeping
+    /// thinking | acting | idle | maintenance
     public var state: String
-    /// While she sleeps: since when, who put her to sleep, working or resting.
-    public var sleep: String?
+    /// While maintenance runs (since when) or is due and waits.
+    public var maintenance: String?
     public var paused: Bool
     public var queued: Int
     public var turn: Int
@@ -388,12 +388,12 @@ public struct ApiStatus: Codable, Sendable, Equatable {
     public var ownerStreams: Int
     public var developerStreams: Int
 
-    public init(name: String, footer: String, state: String, sleep: String? = nil, paused: Bool, queued: Int, turn: Int, answering: String?,
+    public init(name: String, footer: String, state: String, maintenance: String? = nil, paused: Bool, queued: Int, turn: Int, answering: String?,
                 bridge: String, ownerStreams: Int, developerStreams: Int) {
         self.name = name
         self.footer = footer
         self.state = state
-        self.sleep = sleep
+        self.maintenance = maintenance
         self.paused = paused
         self.queued = queued
         self.turn = turn
@@ -405,9 +405,9 @@ public struct ApiStatus: Codable, Sendable, Equatable {
 
     /// What `dollctl status` prints.
     public var text: String {
-        var lines = ["\(name)：\(["thinking": "在想", "acting": "在做事", "idle": "醒著，等下一件事", "sleeping": "睡覺中"][state] ?? state)"
+        var lines = ["\(name)：\(["thinking": "在想", "acting": "在做事", "idle": "等下一件事", "maintenance": "系統維護中"][state] ?? state)"
                      + (paused ? "（暫停中）" : "") + "，第 \(turn) 回合，佇列 \(queued) 件"]
-        if let s = sleep { lines.append(s) }
+        if let s = maintenance { lines.append(s) }
         if let s = answering { lines.append("這回合接在誰的話後面：\(Addressee(rawValue: s)?.label ?? s)") }
         lines.append("Discord bridge：\(bridge)（owner stream \(ownerStreams)）")
         lines.append("dollctl chat：\(developerStreams) 個開著")

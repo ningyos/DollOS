@@ -165,10 +165,11 @@ struct CalendarFile: Codable {
         var until: String?
         /// Original day → that day's change.
         var exceptions: [String: Exception]?
-        /// Who added it: `doll`, `owner`, or `program` (the sleep items).
+        /// Who added it: `doll`, `owner`, or `program` (the maintenance item).
         var by: String
-        /// `sleep` or `wake` (2026-11-15, `Sleep.swift`): her bedtime and wake-up items, at most one
-        /// each; daily and timed. They can be moved like any item, not deleted or made all-day.
+        /// `maintenance` (2026-11-16, `Maintenance.swift`): the daily 「系統維護」, at most one; daily
+        /// and timed. It can be moved like any item, not deleted or made all-day. (`sleep` and `wake`,
+        /// the sleep's items before that, are read only to be removed: `Agenda.removedRoles`.)
         var role: String?
     }
     var firedThrough: String?
@@ -188,7 +189,7 @@ public struct Occurrence: Sendable, Equatable {
     public let end: TimeOfDay?
     public let repeating: Repeat?
     public let changed: Bool
-    /// The item's role (`sleep`, `wake`), nil for an ordinary item.
+    /// The item's role (`maintenance`), nil for an ordinary item.
     public var role: String? = nil
 
     public var startTS: Double? { start.map(day.at) }
@@ -304,7 +305,7 @@ final class Agenda {
             guard Day(it.date) != nil else { throw bad("item \(it.id): date \(it.date) is not YYYY-MM-DD") }
             for t in [it.start, it.end].compactMap({ $0 }) where TimeOfDay(t) == nil { throw bad("item \(it.id): time \(t) is not HH:MM") }
             if let r = it.role {
-                guard ["sleep", "wake"].contains(r) else { throw bad("item \(it.id): role \(r) is not sleep or wake") }
+                guard r == Agenda.maintenanceRole || Agenda.removedRoles.contains(r) else { throw bad("item \(it.id): role \(r) is not maintenance") }
                 guard file.items.filter({ $0.role == r }).count == 1 else { throw bad("role \(r) appears on more than one item") }
                 guard it.repeat != nil, it.start != nil else { throw bad("item \(it.id): a \(r) item repeats and has a start") }
             }
@@ -520,7 +521,7 @@ extension Agenda {
         return occurrences(from: Day(ts: t).adding(-1), to: to).filter { $0.id == id }.compactMap(\.startTS).filter { $0 > t }.min()
     }
 
-    /// The item with `role` (`sleep`, `wake`), if any.
+    /// The item with `role` (`maintenance`), if any.
     func item(role: String) -> CalendarFile.Item? { file.items.first { $0.role == role } }
 
     /// Adds the daily `role` item at `time` from `day` (by the program; not saved here).
@@ -532,8 +533,20 @@ extension Agenda {
     }
 
     static func roleRefusal(_ it: CalendarFile.Item, _ role: String, _ what: String) -> CalendarError {
-        CalendarError(description: "#\(it.id)「\(it.title)」是你\(role == "sleep" ? "睡覺" : "起床")的時間，不能\(what)；"
+        CalendarError(description: "#\(it.id)「\(it.title)」是每天系統維護的時間，不能\(what)；"
                       + "要換時間用 calendar.change 改 start，只改一天就給 on")
+    }
+
+    static let maintenanceRole = "maintenance"
+    static let maintenanceTitle = "系統維護"
+    /// The sleep's 「睡覺」／「起床」 (2026-11-15), replaced by the maintenance item on 2026-11-16.
+    static let removedRoles: Set<String> = ["sleep", "wake"]
+
+    /// Deletes the items with these roles (not saved here); returns them as `title HH:MM`.
+    func removeRoles(_ roles: Set<String>) -> [String] {
+        let gone = file.items.filter { $0.role.map(roles.contains) ?? false }
+        file.items.removeAll { $0.role.map(roles.contains) ?? false }
+        return gone.map { "\($0.title) \($0.start ?? "")" }
     }
 }
 
@@ -589,9 +602,18 @@ extension Doll {
         try agenda.save()
         calendarCaughtUp = true
         if !missed.isEmpty { log("INFO", "calendar: \(missed.count) start(s) passed while not running, listed in the boot notice") }
-        // Asleep through a restart and 「起床」 passed meanwhile: she wakes once the tasks are done.
-        if sleepState.asleep, missed.contains(where: { $0.role == "wake" }) { wakeDue = true }
-        try ensureSleepItems()
+        // Its time passed while not running: maintenance is due.
+        if maintenanceConfig.enabled, maintenanceState.due == nil, missed.contains(where: { $0.role == Agenda.maintenanceRole }) {
+            maintenanceState.due = now
+            try saveMaintenance()
+            log("INFO", "maintenance: its time passed while not running; due")
+        }
+        try ensureMaintenanceItem()
+        if drives.state.droppedRemoved {
+            drives.state.droppedRemoved = false
+            try saveSignals()
+            log("INFO", "drives: \(signalsURL.path) held 睡意 (removed 2026-11-16); dropped and saved without it")
+        }
         if drivesConfig.enabled, signalsFresh {
             signalsFresh = false
             drives = Drives(config: drivesConfig, now: now)
@@ -658,15 +680,14 @@ extension Doll {
         try agenda.save()
         for o in due {
             log("INFO", "calendar: #\(o.id) \(o.day) \(o.start!) fired")
-            fire(o)
+            if o.role == Agenda.maintenanceRole { maintenanceFire() } else { put(Event(.calendar, .internal, Self.fireText(o))) }
         }
     }
 
-    /// `【行事曆】現在 10:00：看牙醫（#4，到 11:00）`; the 「睡覺」 item says what it is for.
+    /// `【行事曆】現在 10:00：看牙醫（#4，到 11:00）`.
     static func fireText(_ o: Occurrence) -> String {
         let notes = ["#\(o.id)"] + [o.end.map { "到 \($0)" }, o.repeating?.label].compactMap { $0 }
         return "【行事曆】現在 \(o.start!)：\(o.title)（\(notes.joined(separator: "，"))）"
-            + (o.role == "sleep" ? "：你睡覺的時間到了。要睡就呼叫 sleep；手上的事還沒完，可以晚點再睡" : "")
     }
 
     /// One edit, hers or the owner's: what is due fires first (the mark then is now, so a start
@@ -707,7 +728,8 @@ extension Doll {
         }
         guard let next = agenda.nextStart(of: id, after: now) else { return "時間已經過了，不會叫你。" }
         let c = Day.cal.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: next))
-        return String(format: "下一次是 %@ %02d:%02d，到時候會給你一個回合。", Day(ts: next).label, c.hour!, c.minute!)
+        let then = it.role == Agenda.maintenanceRole ? "到時候你手上沒事，系統維護就開始（不會給你回合）" : "到時候會給你一個回合"
+        return String(format: "下一次是 %@ %02d:%02d，%@。", Day(ts: next).label, c.hour!, c.minute!, then)
     }
 
     func calendarList(_ from: Day, _ to: Day) throws -> String {

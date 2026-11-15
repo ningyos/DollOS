@@ -15,7 +15,7 @@ enum DashboardPage {
            padding: 8px 14px; background: #1b2028; border-bottom: 1px solid #2c3440; }
   header .name { font-weight: 700; font-size: 15px; }
   .badge { padding: 1px 8px; border-radius: 10px; background: #2c3440; }
-  .badge.thinking { background: #2d5a8a; } .badge.acting { background: #6a5a1e; } .badge.idle { background: #333a44; } .badge.sleeping { background: #3a2d6a; }
+  .badge.thinking { background: #2d5a8a; } .badge.acting { background: #6a5a1e; } .badge.idle { background: #333a44; } .badge.maintenance { background: #3a2d6a; }
   .badge.paused { background: #8a2d2d; } .badge.live { background: #285a35; } .badge.dead { background: #8a2d2d; }
   header button { font: inherit; padding: 3px 12px; border-radius: 5px; border: 1px solid #4a5666; background: #26303c; color: #fff; cursor: pointer; }
   header button:disabled { opacity: .4; cursor: default; }
@@ -114,8 +114,8 @@ let status = null;
 function renderStatus(s) {
   status = s;
   $("name").textContent = s.name;
-  const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", idle: "醒著，等下一件事", sleeping: "睡覺中" };
-  $("state").textContent = (names[s.state] || s.state) + (s.sleep ? "：" + s.sleep : "");
+  const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", idle: "等下一件事", maintenance: "系統維護中" };
+  $("state").textContent = (names[s.state] || s.state) + (s.maintenance ? "：" + s.maintenance : "");
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
   $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」` : "") + (s.pending.length ? `；後面 ${s.pending.length} 項` : "");
@@ -289,13 +289,13 @@ function renderDrives(d) {
   box.replaceChildren();
   if (!d.enabled) { box.textContent = "關閉（[drives] enabled = false）"; return; }
   const hm = ts => new Date(ts * 1000).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
-  const label = { drive: "動力", stress: "壓力", closeness: "親近", sleepiness: "睡意" };
+  const label = { drive: "動力", stress: "壓力", closeness: "親近" };
   box.append(el("div", null, "現在：" + d.values.map(v =>
     `${v.label} ${v.value.toFixed(2)}（${v.outWhenLow ? "低於" : "高於"} ${v.edge} 算超出${v.out ? "，超出" : ""}）`).join("　")));
-  box.append(el("div", null, "她看到的感覺：" + (d.felt || "（沒有，四個都在範圍內）")));
+  box.append(el("div", null, "她看到的感覺：" + (d.felt || "（沒有，三個都在範圍內）")));
   if (d.nextCrossing) box.append(el("div", "muted", "下一次有訊號跨過範圍：" + hm(d.nextCrossing)));
   // The last day's curves: one polyline per signal on a 0…1 scale.
-  const colors = { drive: "#e0a030", stress: "#e05050", closeness: "#50a0e0", sleepiness: "#a070e0" };
+  const colors = { drive: "#e0a030", stress: "#e05050", closeness: "#50a0e0" };
   const W = 720, H = 120, n = d.curve.length;
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("width", W); svg.setAttribute("height", H);

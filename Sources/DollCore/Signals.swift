@@ -1,24 +1,22 @@
 import Foundation
 
-/// Her four simulated signals (m6-drives, 2026-11-15, owner). Designed by what they do, not named
+/// Her three simulated signals (m6-drives, 2026-11-15, owner). Designed by what they do, not named
 /// after real neurochemicals. Events move them; between events each relaxes toward its rest value
-/// with its own half-life (睡意 instead builds at a steady rate while she is awake); every change is
-/// recorded with the event that caused it. She never sees a number: a signal outside its usual
-/// range gives 【狀況】 one plain sentence (`felt`) and may make a concern surface (`Doll+Drives`).
+/// with its own half-life; every change is recorded with the event that caused it. She never sees a
+/// number: a signal outside its usual range gives 【狀況】 one plain sentence (`felt`) and may make a
+/// concern surface (`Doll+Drives`). (睡意 is gone since 2026-11-16: sleep became system maintenance.)
 ///
 ///     動力 drive       progress, being affirmed ↑; high → her own things surface, one after another
-///     壓力 stress      mistakes, corrections, deadlines ↑; praise and sleep ↓; high → duties surface
+///     壓力 stress      mistakes, corrections, deadlines ↑; praise ↓; high → duties surface
 ///     親近 closeness   talk with the owner, thanks ↑; recedes within hours; low → the owner surfaces
-///     睡意 sleepiness  builds while awake and working; sleep clears it; high → "time to sleep"
 public enum Signal: String, CaseIterable, Sendable, Codable {
-    case drive, stress, closeness, sleepiness
+    case drive, stress, closeness
 
     public var label: String {
         switch self {
         case .drive: "動力"
         case .stress: "壓力"
         case .closeness: "親近"
-        case .sleepiness: "睡意"
         }
     }
 
@@ -28,9 +26,9 @@ public enum Signal: String, CaseIterable, Sendable, Codable {
 
 /// One signal's numbers (`[drives]`): values live in 0…1.
 public struct SignalSpec: Sendable, Equatable {
-    /// Where it relaxes to between events (睡意: its value right after sleep).
+    /// Where it relaxes to between events.
     public var rest: Double
-    /// Hours to close half the gap to `rest` (睡意: unused).
+    /// Hours to close half the gap to `rest`.
     public var halfLifeH: Double
     /// The edge of the usual range on the side that counts (`Signal.outWhenLow`).
     public var edge: Double
@@ -46,8 +44,6 @@ public enum SignalEvent: String, CaseIterable, Sendable, Codable {
     case ownerTalk = "owner_talk"         // a line from the owner
     case deadline                         // one of her concerns came within `near_hours` of its time
     case concernDone = "concern_done"     // she finished one of her concerns
-    case sleep                            // her sleep: 睡意 cleared, 壓力 partly down
-    case wake                             // the morning wake: 睡意 cleared again (it built while she slept)
 }
 
 /// One recorded change: when, what, why, from and to.
@@ -81,11 +77,17 @@ public struct SignalState: Sendable, Codable, Equatable {
     public init(from d: any Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         let raw = try c.decode([String: Point].self, forKey: .points)
+        var dropped = false
+        func signal(_ k: String, _ key: CodingKeys) throws -> Signal? {
+            if k == Self.removed { dropped = true; return nil }
+            guard let s = Signal(rawValue: k) else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: c, debugDescription: "unknown signal \(k)")
+            }
+            return s
+        }
         var points: [Signal: Point] = [:]
         for (k, v) in raw {
-            guard let s = Signal(rawValue: k) else {
-                throw DecodingError.dataCorruptedError(forKey: .points, in: c, debugDescription: "unknown signal \(k)")
-            }
+            guard let s = try signal(k, .points) else { continue }
             guard (0...1).contains(v.value) else {
                 throw DecodingError.dataCorruptedError(forKey: .points, in: c, debugDescription: "\(k) value \(v.value) outside 0…1")
             }
@@ -95,13 +97,22 @@ public struct SignalState: Sendable, Codable, Equatable {
             throw DecodingError.dataCorruptedError(forKey: .points, in: c, debugDescription: "points must hold each of \(Signal.allCases.map(\.rawValue))")
         }
         self.points = points
-        surfaced = Set(try c.decode([String].self, forKey: .surfaced).map {
-            guard let s = Signal(rawValue: $0) else {
-                throw DecodingError.dataCorruptedError(forKey: .surfaced, in: c, debugDescription: "unknown signal \($0)")
-            }
-            return s
-        })
-        log = try c.decode([SignalChange].self, forKey: .log)
+        surfaced = Set(try c.decode([String].self, forKey: .surfaced).compactMap { try signal($0, .surfaced) })
+        log = try c.decode([RawChange].self, forKey: .log).compactMap { r in
+            try signal(r.signal, .log).map { SignalChange(ts: r.ts, signal: $0, before: r.before, after: r.after, cause: r.cause) }
+        }
+        droppedRemoved = dropped
+    }
+
+    /// 睡意, removed 2026-11-16 (sleep became system maintenance): a `signals.json` written before
+    /// holds it; reading drops it (points, surfaced, log), the boot log says so (`droppedRemoved`),
+    /// and the next save writes the file without it.
+    static let removed = "sleepiness"
+    /// Read from a file that still held 睡意 (never saved).
+    public var droppedRemoved = false
+
+    private struct RawChange: Decodable {
+        var ts: Double, signal: String, before: Double, after: Double, cause: String
     }
     public func encode(to e: any Encoder) throws {
         var c = e.container(keyedBy: CodingKeys.self)
@@ -134,7 +145,6 @@ public struct Drives: Sendable {
         let p = state.points[s]!
         let dt = max(0, t - p.ts) / 3600
         let spec = config.spec(s)
-        if s == .sleepiness { return min(1, p.value + config.sleepinessPerHour * dt) }
         return spec.rest + (p.value - spec.rest) * pow(0.5, dt / spec.halfLifeH)
     }
 
@@ -157,7 +167,7 @@ public struct Drives: Sendable {
         state.log.append(SignalChange(ts: t, signal: s, before: before, after: after, cause: cause))
     }
 
-    /// Sets `s` to `value` at `t` (sleep clearing 睡意), recording the cause.
+    /// Sets `s` to `value` at `t`, recording the cause.
     public mutating func set(_ s: Signal, to v: Double, at t: Double, cause: String) {
         let before = value(s, at: t)
         state.points[s] = .init(value: v, ts: t)
@@ -168,40 +178,12 @@ public struct Drives: Sendable {
     /// One event's effect on every signal it moves (`[drives]`'s deltas). `detail`: the cause's words.
     public mutating func apply(_ e: SignalEvent, at t: Double, detail: String) {
         let cause = "\(Self.eventLabel(e))：\(detail)"
-        switch e {
-        case .sleep:
-            set(.sleepiness, to: config.spec(.sleepiness).rest, at: t, cause: cause)
-            let rest = config.spec(.stress).rest
-            set(.stress, to: rest + (value(.stress, at: t) - rest) * config.sleepStressKeep, at: t, cause: cause)
-            // 親近 does not recede while she sleeps (the night is not "no one talked to me"): its
-            // point is pinned here and `thaw` moves it to the wake.
-            state.points[.closeness] = .init(value: value(.closeness, at: t), ts: t)
-        case .wake:
-            set(.sleepiness, to: config.spec(.sleepiness).rest, at: t, cause: cause)
-            thaw(at: t)
-        default:
-            for (s, d) in config.deltas(e) where d != 0 { move(s, by: d, at: t, cause: cause) }
-        }
+        for (s, d) in config.deltas(e) where d != 0 { move(s, by: d, at: t, cause: cause) }
         trim(before: t - config.logDays * 86400)
-    }
-
-    /// Woken (any way): 親近 resumes receding from where it was when she fell asleep.
-    public mutating func thaw(at t: Double) {
-        let p = state.points[.closeness]!
-        state.points[.closeness] = .init(value: p.value, ts: max(p.ts, t))
     }
 
     mutating func trim(before t: Double) {
         if let i = state.log.firstIndex(where: { $0.ts >= t }) { state.log.removeFirst(i) } else { state.log.removeAll() }
-    }
-
-    /// When 睡意 leaves its range at its steady rate (now or past when it already has); nil when it never will.
-    public func sleepyAt() -> Double? {
-        let p = state.points[.sleepiness]!
-        let edge = config.spec(.sleepiness).edge
-        if p.value > edge { return p.ts }
-        guard config.sleepinessPerHour > 0 else { return nil }
-        return p.ts + (edge - p.value) / config.sleepinessPerHour * 3600 + 1
     }
 
     static func eventLabel(_ e: SignalEvent) -> String {
@@ -214,8 +196,6 @@ public struct Drives: Sendable {
         case .ownerTalk: "主人跟她說話"
         case .deadline: "掛念的事快到了"
         case .concernDone: "掛念的事做完了"
-        case .sleep: "睡覺"
-        case .wake: "起床"
         }
     }
 
@@ -236,15 +216,9 @@ public struct Drives: Sendable {
             let out = isOut(s, at: t)
             // Only a change of side matters: into range when surfaced, out of range otherwise.
             guard !out || state.surfaced.contains(s) else { continue }
-            var at: Double?
-            if s == .sleepiness {
-                // Builds only: it never comes back into range on its own.
-                if !out, config.sleepinessPerHour > 0 { at = t + (spec.edge - v) / config.sleepinessPerHour * 3600 }
-            } else {
-                // v(t+h) = rest + (v - rest)·½^(h/H) crosses edge when ½^(h/H) = (edge - rest)/(v - rest).
-                let r = (spec.edge - spec.rest) / (v - spec.rest)
-                if r > 0, r < 1 { at = t + log2(1 / r) * spec.halfLifeH * 3600 }
-            }
+            // v(t+h) = rest + (v - rest)·½^(h/H) crosses edge when ½^(h/H) = (edge - rest)/(v - rest).
+            let r = (spec.edge - spec.rest) / (v - spec.rest)
+            let at = r > 0 && r < 1 ? t + log2(1 / r) * spec.halfLifeH * 3600 : nil
             // A hair past the edge so `isOut` agrees when the timer wakes.
             if let a = at.map({ $0 + 1 }), a > t { best = min(best ?? a, a) }
         }
@@ -260,12 +234,9 @@ public struct Drives: Sendable {
 
     /// The fixed set, most specific first (a pair before its singles).
     static let feltTable: [(Set<Signal>, String)] = [
-        ([.stress, .sleepiness], "你又累又有點緊繃"),
         ([.stress, .drive], "事情很多，你繃著但做得起勁"),
         ([.stress, .closeness], "你有點緊繃，也有點想主人"),
-        ([.drive, .sleepiness], "今天做了很多，開始想睡了"),
         ([.stress], "你現在有點緊繃"),
-        ([.sleepiness], "有點想睡了"),
         ([.closeness], "有點想主人了"),
         ([.drive], "今天做得很順，精神不錯"),
     ]
