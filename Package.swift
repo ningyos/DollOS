@@ -30,6 +30,7 @@ let package = Package(
         .executableTarget(name: "DollCtl", dependencies: ["DollCore"]),
         .executableTarget(name: "m2-computer", dependencies: ["DollCore"], path: "experiments/m2/Runner"),
         .executableTarget(name: "m6-calendar", dependencies: ["DollCore"], path: "experiments/m6-calendar/Runner"),
+        .executableTarget(name: "m6-sleep", dependencies: ["DollCore"], path: "experiments/m6-sleep-cycle/Runner"),
         .testTarget(name: "DollCoreTests", dependencies: ["DollCore"]),
     ]
 )
