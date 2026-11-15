@@ -64,7 +64,7 @@ func m6DrivesWeek() throws {
     var curves: [String] = []
     out.append("Each day runs 08:00 → 08:00 next day; maintenance at 03:00 (10 min, no surfacing). * = a wander between 02:00 and 07:00.")
     out.append("")
-    out.append("day             last owner line  親近 below 0.2  wanderings (time signal)                          壓力 back in range")
+    out.append("day             last owner line  親近 <0.2 after  wanderings (time signal)                          壓力 back in range")
     for (i, name) in days.enumerated() {
         let day0 = Day("2026-11-16")!.adding(i).at(TimeOfDay("00:00")!)
         let events = schedule(name)
@@ -91,7 +91,8 @@ func m6DrivesWeek() throws {
             if let ca = correctionAt, stressBack == "-", t > ca, !d.isOut(.stress, at: t) {
                 stressBack = String(format: "%.1f h after", (t - ca) / 3600)
             }
-            if closenessLow == "-", d.isOut(.closeness, at: t) { closenessLow = Doll.hhmm(t) }
+            // After the day's last owner line (the night's crossing).
+            if closenessLow == "-", m > (lastTalk ?? 0), d.isOut(.closeness, at: t) { closenessLow = Doll.hhmm(t) }
             if m == 27 * 60 { busyUntil = max(busyUntil, t + 600) }   // maintenance 03:00–03:10
             let pending = d.pending(at: t)
             if t >= busyUntil, let s = pending.first {
