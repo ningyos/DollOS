@@ -227,6 +227,8 @@ public actor Doll {
     var inflightEffort: String?
     /// `[calendar]` (2026-11-15).
     let calendarConfig: CalendarConfig
+    /// `[owner_sleep]` (2026-11-16): the 「主人睡覺」 span (`Calendar.swift`, `ownerSleepLine`).
+    let ownerSleepConfig: OwnerSleepConfig
     /// Her calendar, `<data_dir>/calendar.json` (`Calendar.swift`).
     let agenda: Agenda
     /// "Now" for the calendar and 【狀況】; tests move it (`setClock`).
@@ -252,6 +254,8 @@ public actor Doll {
     var maintenanceTimerSerial = 0
     /// When the owner or the developer last spoke to her (the clock's time; at start, the segment's last line).
     var lastSpoke: Double = 0
+    /// When the owner last spoke to her (the clock's time; at start, the segment's last owner line).
+    var ownerLastLine: Double = 0
     /// `[drives]` (m6-drives, 2026-11-15, `Concerns.swift`, `Signals.swift`).
     let drivesConfig: DrivesConfig
     let concernsURL: URL
@@ -298,6 +302,7 @@ public actor Doll {
         memoryConfig = config.memory
         selectConfig = config.select
         calendarConfig = config.calendar
+        ownerSleepConfig = config.ownerSleep
         let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
         shots = data.appending(path: "shots")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
@@ -306,6 +311,7 @@ public actor Doll {
         maintenanceURL = data.appending(path: "maintenance.json")
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
+        ownerLastLine = timeline.events.last { $0.kind == .owner }?.ts ?? 0
         drivesConfig = config.drives
         concernsURL = data.appending(path: "concerns.json")
         signalsURL = data.appending(path: "signals.json")
@@ -441,6 +447,7 @@ public actor Doll {
     public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM) {
         interruptMaintenance(by: "主人")
         lastSpoke = wallClock.now()
+        ownerLastLine = lastSpoke
         signal(.ownerTalk, "「\(text.prefix(30))」")
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
@@ -602,7 +609,8 @@ public actor Doll {
     /// Fixed for the life of the process: the persona and how she works. Her tools go in the
     /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, maintenance: maintenanceConfig.enabled, drives: drivesConfig.enabled)
+        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, maintenance: maintenanceConfig.enabled,
+                                                                       drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled)
             + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
 
@@ -787,6 +795,7 @@ public actor Doll {
         if let felt = feltLine(now: now) { out.append("- " + felt) }
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
+        if let asleep = ownerSleepLine(now: now) { out.append("- " + asleep) }
         if maintenanceConfig.enabled { out += maintenanceStatusLines(now: now) }
         let limit = contextConfig.limit
         out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"

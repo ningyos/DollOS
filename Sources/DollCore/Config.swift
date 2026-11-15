@@ -145,6 +145,20 @@ public struct MaintenanceConfig: Sendable {
     public var noticeMin = 10
 }
 
+/// When the owner is usually asleep (2026-11-16, owner's option A: she is told, nothing is blocked;
+/// `Calendar.swift`, `Doll.ownerSleepLine`). A daily 「主人睡覺」 span on her calendar; inside it
+/// 【狀況】, a wandering and the maintenance notice say he should be asleep. No turn at its start or end.
+public struct OwnerSleepConfig: Sendable {
+    /// Off: no 「主人睡覺」 item and no line (runners and tests that are not about it).
+    public var enabled = true
+    /// The item's span when her calendar has none. 00:00–08:00: the owner's own figure (2026-11-16);
+    /// he talks with her until about midnight on late evenings, and he moves the item (for good or
+    /// for one day) when his night differs. An end not after the start runs over midnight
+    /// (23:00–07:00 ends at 07:00 the next day).
+    public var start = "00:00"
+    public var end = "08:00"
+}
+
 /// Her concerns and four signals (m6-drives, 2026-11-15, `Signals.swift`, `Drives.swift`). Values
 /// are 0…1. The reasons for each number are in `dollcore.example.toml` and
 /// experiments/m6-drives/week.txt (the simulated week).
@@ -386,11 +400,12 @@ public struct Config: Sendable {
     public var calendar: CalendarConfig
     public var maintenance: MaintenanceConfig
     public var drives = DrivesConfig()
+    public var ownerSleep = OwnerSleepConfig()
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -623,9 +638,18 @@ public struct Config: Sendable {
             throw TOMLError(description: "[maintenance] time HH:MM; busy_limit_hours above 0; retry_idle_min at least 1")
         }
         let drives = try Self.readDrives(raw["drives"] ?? [:])
+        var os = Section(name: "owner_sleep", raw: raw["owner_sleep"] ?? [:])
+        var ownerSleep = OwnerSleepConfig()
+        try os.read("enabled", &ownerSleep.enabled)
+        try os.read("start", &ownerSleep.start)
+        try os.read("end", &ownerSleep.end)
+        try os.finish()
+        guard TimeOfDay(ownerSleep.start) != nil, TimeOfDay(ownerSleep.end) != nil, ownerSleep.start != ownerSleep.end else {
+            throw TOMLError(description: "[owner_sleep] start and end HH:MM and not equal (an end before the start runs over midnight)")
+        }
         return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
                       api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, maintenance: maintenance,
-                      drives: drives)
+                      drives: drives, ownerSleep: ownerSleep)
     }
 
     static func readDrives(_ raw: [String: TOMLValue]) throws -> DrivesConfig {

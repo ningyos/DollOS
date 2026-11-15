@@ -307,6 +307,7 @@ private struct Harness {
         cfg.computer.cheatsheet = false   // the cheatsheet's own tests switch it on
         cfg.maintenance.enabled = false   // the maintenance tests switch it on
         cfg.drives.enabled = false        // the drives tests switch it on
+        cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
         tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
@@ -6121,4 +6122,162 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
         try (head + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
+}
+
+// when the owner is usually asleep (2026-11-16) ----------------------------------------------------
+
+@Test func theOwnerSleepItemIsCreatedOnceMovableOverMidnightNotDeletableOrAllDay() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await Harness(clock: clock) { $0.ownerSleep.enabled = true }
+    try await h.doll.announceBoot()
+    let items = await h.doll.dashboardCalendar().items
+    #expect(items.count == 1 && items[0].title == "主人睡覺" && items[0].start == "00:00" && items[0].end == "08:00"
+            && items[0].repeat == "daily" && items[0].by == "program")
+    #expect(h.logs.contains { $0.contains("calendar: had no 主人睡覺; added 00:00–08:00 (daily)") })
+    // The next boot finds it: not added again.
+    let b = try await Harness(dir: h.dir, clock: clock) { $0.ownerSleep.enabled = true }
+    try await b.doll.announceBoot()
+    #expect(await b.doll.dashboardCalendar().items.count == 1)
+    #expect(!b.logs.contains { $0.contains("had no 主人睡覺") })
+    for (op, p, says) in [("delete", ["id": "1"], "不能刪掉"), ("change", ["id": "1", "all_day": "true"], "不能改成全天"),
+                          ("change", ["id": "1", "end": "00:00"], "不能和 start 一樣")] {
+        do { _ = try await b.doll.dashboardCalendarEdit(op, p); Issue.record("accepted \(op) \(p)") } catch let e as CalendarError {
+            #expect(e.description.contains(says), "\(e)")
+        }
+    }
+    // Over midnight: the end is the next day's; start alone keeps the 8 hours.
+    #expect(try await b.doll.dashboardCalendarEdit("change", ["id": "1", "start": "23:00", "end": "07:00"]).contains("23:00–隔天 07:00 主人睡覺"))
+    #expect(try await b.doll.dashboardCalendarEdit("change", ["id": "1", "on": "2026-11-17", "start": "01:00"]).contains("01:00–09:00 主人睡覺（#1，每天，這天改過）"))
+    #expect(try await b.doll.calendarTool(.change(id: 1, on: nil, title: nil, day: nil, start: TimeOfDay("22:30")!, end: nil, allDay: false))
+            .contains("22:30–隔天 06:30 主人睡覺（#1，每天）。開始和結束都不會叫你"))
+    // An over-midnight span reads back from the file.
+    let c = try await Harness(dir: h.dir, clock: clock) { $0.ownerSleep.enabled = true }
+    #expect(await c.doll.dashboardCalendar().items[0].end == "06:30")
+}
+
+@Test func theStatusSaysHeShouldBeAsleepOnlyInsideTheSpanAlsoOverMidnight() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await Harness([Scripted("", dm("怎麼還沒睡"))], clock: clock) {
+        $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"
+    }
+    try await h.doll.announceBoot()
+    let asleep = "- 主人現在應該在睡（23:00–07:00）；不急的事等他醒了再說"
+    for (day, time, inside) in [("2026-11-16", "21:00", false), ("2026-11-16", "22:59", false), ("2026-11-16", "23:00", true),
+                                ("2026-11-17", "00:00", true), ("2026-11-17", "06:59", true), ("2026-11-17", "07:00", false)] {
+        clock.set(at(day, time))
+        let f = try await h.doll.status()
+        #expect(f.contains(asleep) == inside, "\(day) \(time)")
+        #expect(!f.contains("主人平常") && !f.contains("應該在睡") || inside, "\(day) \(time)")
+    }
+    // One night moved later (its start goes to the next day, so `date` too): that night's span counts.
+    _ = try await h.doll.dashboardCalendarEdit("change", ["id": "1", "on": "2026-11-17", "date": "2026-11-18", "start": "01:00", "end": "09:00"])
+    clock.set(at("2026-11-18", "00:30"))
+    #expect(try await !h.doll.status().contains("應該在睡"))
+    clock.set(at("2026-11-18", "08:30"))
+    #expect(try await h.doll.status().contains("- 主人現在應該在睡（01:00–09:00）"))
+    // He speaks inside the span: he was awake then, and the line says when.
+    clock.set(at("2026-11-18", "23:30"))
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("還沒睡")
+    try await waitUntil { h.said == ["怎麼還沒睡"] }
+    #expect(await h.model.seen(0).last!.content.contains("- 主人平常這時候在睡（23:00–07:00），不過他 23:30 還跟你說過話"))
+    clock.set(at("2026-11-19", "23:10"))
+    #expect(try await doll.status().contains(asleep))
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func theSpanGivesNoTurnAndTheNoticeAndWanderingInsideItCarryTheFactAndADMStillGoes() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")), Scripted(""), planReply, summaryReply,
+                               Scripted("", dm("醫生到底說什麼啦？"))], clock: clock) {
+        $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 10; $0.drives.enabled = true
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("今天去看牙醫，晚安")
+    try await waitUntil { h.said == ["晚安"] }
+    #expect(await !h.model.seen(0).last!.content.contains("應該在睡"))
+    // Its start: no turn.
+    clock.set(at("2026-11-16", "23:00"))
+    try await waitUntil { h.logs.contains { $0.contains("主人睡覺 began (no turn)") } }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 2)
+    // The maintenance notice at 03:00 carries it.
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 3 }
+    let fact = "（主人現在應該在睡（23:00–07:00）；不急的事等他醒了再說）"
+    #expect(try h.events().last { $0.kind == .calendar }!.text == Doll.maintenanceNotice(10) + "\n" + fact)
+    clock.set(at("2026-11-17", "03:10"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    // 親近 0.7 at 21:00 crosses 0.2 at 04:14: the wandering carries it, and her DM is sent.
+    clock.set(at("2026-11-17", "04:30"))
+    try await waitUntil { h.said.count == 2 }
+    let wander = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
+    #expect(wander.count == 1 && wander[0].hasSuffix("：明天問主人牙醫說什麼\n" + fact))
+    #expect(h.said.last == "醫生到底說什麼啦？")
+    // Its end: no turn.
+    try await waitUntil { await doll.settled }
+    clock.set(at("2026-11-17", "07:00"))
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(await h.model.requests.count == 6)
+    #expect(!h.logs.contains { $0.contains("consolidate failed") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func outsideTheSpanTheWanderingAndTheNoticeAreUnchanged() async throws {
+    let clock = ManualClock(at("2026-11-16", "12:00"))
+    let h = try await Harness(clock: clock) { $0.ownerSleep.enabled = true }
+    try await h.doll.announceBoot()
+    #expect(await h.doll.withOwnerSleep("【走神】x") == "【走神】x")
+    clock.set(at("2026-11-17", "03:00"))
+    #expect(await h.doll.withOwnerSleep("【走神】x") == "【走神】x\n（主人現在應該在睡（00:00–08:00）；不急的事等他醒了再說）")
+}
+
+@Test func theInstructionsTellHerTheFactNotARule() {
+    let t = Instructions.text(voice: false, context: ContextConfig(), drives: true, ownerSleep: true)
+    #expect(t.contains("行事曆上的「主人睡覺」是主人平常睡覺的時間，開始和結束都不會叫你；在那段時間裡【狀況】會寫他應該在睡。那時候想到要跟他說的事，不急就用 concern.note 記著，等他醒了再說；急事（像他交代要叫他起床）照樣可以找他。"))
+    #expect(!Instructions.text(voice: false, context: ContextConfig()).contains("主人睡覺"))
+}
+
+@Test func ownerSleepConfigIsStrict() throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appending(path: "c.toml")
+    let head = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
+        .replacingOccurrences(of: "[owner_sleep]\n", with: "[owner_sleep_old]\n")
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).ownerSleep.end == "08:00")
+    for bad in ["[owner_sleep]\nstart = \"25:00\"\n", "[owner_sleep]\nstart = \"07:00\"\nend = \"07:00\"\n", "[owner_sleep]\nquiet = true\n"] {
+        try (head.components(separatedBy: "[owner_sleep_old]")[0] + bad).write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+}
+
+@Test func anOldCalendarGetsTheOwnerSleepItemAtBootAndItsPassedStartIsNotListed() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(#"""
+        {"fired_through": "2026-11-15T09:00:00.000+08:00", "next_id": 3, "items": [
+          {"id": 1, "title": "系統維護", "date": "2026-11-15", "start": "03:00", "repeat": "daily", "by": "program", "role": "maintenance"},
+          {"id": 2, "title": "看牙醫", "date": "2026-11-18", "start": "15:00", "by": "owner"}]}
+        """#.utf8).write(to: dir.appending(path: "calendar.json"))
+    let h = try await Harness(dir: dir, clock: clock) { $0.ownerSleep.enabled = true }
+    try await h.doll.announceBoot()
+    #expect(await h.doll.dashboardCalendar().items.map(\.title) == ["系統維護", "看牙醫", "主人睡覺"])
+    // Down a whole night with a span stored: a passed start of it is not among the missed ones.
+    let dir2 = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir2, withIntermediateDirectories: true)
+    try Data(#"""
+        {"fired_through": "2026-11-15T09:00:00.000+08:00", "next_id": 2, "items": [
+          {"id": 1, "title": "主人睡覺", "date": "2026-11-15", "start": "23:00", "end": "07:00", "repeat": "daily", "by": "program", "role": "owner_sleep"}]}
+        """#.utf8).write(to: dir2.appending(path: "calendar.json"))
+    let b = try await Harness(dir: dir2, clock: clock) { $0.ownerSleep.enabled = true }
+    try await b.doll.announceBoot()
+    #expect(try b.events().allSatisfy { !$0.text.contains("沒開機的時候過了") })
+    #expect(await b.doll.dashboardCalendar().items.count == 1)
 }

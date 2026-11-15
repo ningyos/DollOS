@@ -167,7 +167,7 @@ extension Doll {
         let lead = maintenanceConfig.noticeMin
         if lead > 0 {
             maintenanceState.notBefore = now + Double(lead) * 60
-            put(Event(.calendar, .internal, Self.maintenanceNotice(lead)))
+            put(Event(.calendar, .internal, withOwnerSleep(Self.maintenanceNotice(lead))))
         }
         saveMaintenanceLogged()
         log("INFO", "maintenance: due" + (lead > 0 ? "; she is told, it starts in \(lead) min" : ""))

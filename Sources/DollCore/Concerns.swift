@@ -328,12 +328,18 @@ extension Doll {
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         associatedIDs.insert(c.id)
         log("INFO", "drives: wander (\(s.label)\(chained ? ", chained" : "")) #\(c.id)「\(c.text)」")
-        put(Event(.memory, .internal, Concerns.wanderText(c)))
+        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c))))
     }
 
     func wanderLine(_ text: String, signal s: Signal) {
         log("INFO", "drives: wander (\(s.label)) \(text)")
-        put(Event(.memory, .internal, text))
+        put(Event(.memory, .internal, withOwnerSleep(text)))
+    }
+
+    /// A wandering or the maintenance notice inside the owner-sleep span carries the 【狀況】 line,
+    /// so the turn that might message him has it in front of her (2026-11-16).
+    func withOwnerSleep(_ text: String) -> String {
+        ownerSleepLine(now: wallClock.now()).map { text + "\n（\($0)）" } ?? text
     }
 
     func scheduleDrives() {

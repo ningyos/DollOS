@@ -824,7 +824,12 @@ enum Instructions {
     /// `Doll.docsVMPath`). Her tools' descriptions (in `tools`) carry the details.
     /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
     /// `maintenance` (`[maintenance] enabled`): the section on the daily system maintenance.
-    static func text(voice: Bool, context c: ContextConfig, maintenance: Bool = false, drives: Bool = false) -> String {
+    static func text(voice: Bool, context c: ContextConfig, maintenance: Bool = false, drives: Bool = false, ownerSleep: Bool = false) -> String {
+        // `ownerSleep` (`[owner_sleep] enabled`, 2026-11-16): the fact, no rule; she judges.
+        let ownerSleepPart = ownerSleep
+            ? "行事曆上的「主人睡覺」是主人平常睡覺的時間，開始和結束都不會叫你；在那段時間裡【狀況】會寫他應該在睡。那時候想到要跟他說的事，不急就"
+                + (drives ? "用 concern.note 記著" : "先記著") + "，等他醒了再說；急事（像他交代要叫他起床）照樣可以找他。"
+            : ""
         let voicePart = voice ? "主人在 Discord 語音說的話，用 \(Tools.Name.voiceSay) 回（你要先在語音頻道裡）；" : ""
         let maintenancePart = maintenance ? """
 
@@ -870,7 +875,7 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
 
         ## 你的電腦
 

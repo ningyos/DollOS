@@ -165,11 +165,13 @@ struct CalendarFile: Codable {
         var until: String?
         /// Original day → that day's change.
         var exceptions: [String: Exception]?
-        /// Who added it: `doll`, `owner`, or `program` (the maintenance item).
+        /// Who added it: `doll`, `owner`, or `program` (the maintenance and owner-sleep items).
         var by: String
         /// `maintenance` (2026-11-16, `Maintenance.swift`): the daily 「系統維護」, at most one; daily
-        /// and timed. It can be moved like any item, not deleted or made all-day. (`sleep` and `wake`,
-        /// the sleep's items before that, are read only to be removed: `Agenda.removedRoles`.)
+        /// and timed. `owner_sleep` (2026-11-16): the daily 「主人睡覺」 span, at most one, with an
+        /// end; its end may be at or before its start, then it ends the next day (23:00–07:00); it
+        /// gives no turn. Either can be moved like any item, not deleted or made all-day. (`sleep`
+        /// and `wake`, the sleep's items before that, are read only to be removed: `Agenda.removedRoles`.)
         var role: String?
     }
     var firedThrough: String?
@@ -189,15 +191,17 @@ public struct Occurrence: Sendable, Equatable {
     public let end: TimeOfDay?
     public let repeating: Repeat?
     public let changed: Bool
-    /// The item's role (`maintenance`), nil for an ordinary item.
+    /// The item's role (`maintenance`, `owner_sleep`), nil for an ordinary item.
     public var role: String? = nil
 
+    /// An end not after the start (only the owner-sleep span has one) is the next day's.
+    var overnight: Bool { start.flatMap { s in end.map { $0 <= s } } ?? false }
     public var startTS: Double? { start.map(day.at) }
-    public var endTS: Double? { end.map(day.at) }
+    public var endTS: Double? { end.map((overnight ? day.adding(1) : day).at) }
 
-    /// `10:00–11:00 看牙醫（#4，每週三）` / `全天 生日（#2）`
+    /// `10:00–11:00 看牙醫（#4，每週三）` / `全天 生日（#2）` / `23:00–隔天 07:00 主人睡覺（#3，每天）`
     public var line: String {
-        let time = start.map { s in end.map { "\(s)–\($0)" } ?? "\(s)" } ?? "全天"
+        let time = start.map { s in end.map { "\(s)–\(overnight ? "隔天 " : "")\($0)" } ?? "\(s)" } ?? "全天"
         let notes = ["#\(id)"] + [repeating?.label, changed ? "這天改過" : nil].compactMap { $0 }
         return "\(time) \(title)（\(notes.joined(separator: "，"))）"
     }
@@ -305,12 +309,18 @@ final class Agenda {
             guard Day(it.date) != nil else { throw bad("item \(it.id): date \(it.date) is not YYYY-MM-DD") }
             for t in [it.start, it.end].compactMap({ $0 }) where TimeOfDay(t) == nil { throw bad("item \(it.id): time \(t) is not HH:MM") }
             if let r = it.role {
-                guard r == Agenda.maintenanceRole || Agenda.removedRoles.contains(r) else { throw bad("item \(it.id): role \(r) is not maintenance") }
+                guard r == Agenda.maintenanceRole || r == Agenda.ownerSleepRole || Agenda.removedRoles.contains(r) else {
+                    throw bad("item \(it.id): role \(r) is not maintenance or owner_sleep")
+                }
                 guard file.items.filter({ $0.role == r }).count == 1 else { throw bad("role \(r) appears on more than one item") }
                 guard it.repeat != nil, it.start != nil else { throw bad("item \(it.id): a \(r) item repeats and has a start") }
+                if r == Agenda.ownerSleepRole, it.end == nil { throw bad("item \(it.id): the owner_sleep item has an end") }
             }
             if it.end != nil, it.start == nil { throw bad("item \(it.id): end without start") }
-            if let s = it.start.flatMap(TimeOfDay.init), let e = it.end.flatMap(TimeOfDay.init), e <= s { throw bad("item \(it.id): end not after start") }
+            if let s = it.start.flatMap(TimeOfDay.init), let e = it.end.flatMap(TimeOfDay.init),
+               it.role == Agenda.ownerSleepRole ? e == s : e <= s {
+                throw bad("item \(it.id): end not after start")
+            }
             if let r = it.repeat, Repeat(r) == nil { throw bad("item \(it.id): repeat \(r) is not daily or weekdays 1-7") }
             if let u = it.until { guard Day(u) != nil, it.repeat != nil else { throw bad("item \(it.id): until \(u) needs a repeat and a YYYY-MM-DD date") } }
             for (k, x) in it.exceptions ?? [:] {
@@ -419,6 +429,7 @@ final class Agenda {
             if allDay, start != nil || end != nil { throw CalendarError(description: "calendar.change 的 all_day 和 start、end 不能一起給") }
             var it = file.items[i]
             if allDay, let r = it.role { throw Self.roleRefusal(it, r, "改成全天") }
+            let overnight = it.role == Agenda.ownerSleepRole
             let rep = it.repeat.flatMap(Repeat.init)
             if let on, rep == nil, on.description != it.date {
                 throw CalendarError(description: "#\(id) 不重複，只在 \(Day(it.date)!.label)；改它不用 on")
@@ -428,7 +439,7 @@ final class Agenda {
                 var x = it.exceptions?[on.description] ?? CalendarFile.Exception()
                 let curStart = x.allDay == true ? nil : (x.start.flatMap(TimeOfDay.init) ?? it.start.flatMap(TimeOfDay.init))
                 let curEnd = x.allDay == true ? nil : (x.end.flatMap(TimeOfDay.init) ?? (x.start == nil ? it.end.flatMap(TimeOfDay.init) : nil))
-                let (s, e) = try newTimes(curStart, curEnd, start, end, allDay)
+                let (s, e) = try newTimes(curStart, curEnd, start, end, allDay, overnight: overnight)
                 if let title { x.title = title }
                 if let day { x.date = day == on ? nil : day.description }
                 x.start = s?.description; x.end = e?.description; x.allDay = s == nil ? true : nil
@@ -436,7 +447,7 @@ final class Agenda {
                 file.items[i] = it
                 return describe(id, day: x.date.flatMap(Day.init) ?? on)
             }
-            let (s, e) = try newTimes(it.start.flatMap(TimeOfDay.init), it.end.flatMap(TimeOfDay.init), start, end, allDay)
+            let (s, e) = try newTimes(it.start.flatMap(TimeOfDay.init), it.end.flatMap(TimeOfDay.init), start, end, allDay, overnight: overnight)
             if let title { it.title = title }
             if let day {
                 if let u = it.until.flatMap(Day.init), u < day { throw CalendarError(description: "#\(id) 重複到 \(u.label) 為止，date 不能晚於它") }
@@ -468,9 +479,11 @@ final class Agenda {
         CalendarError(description: "沒有 #\(id) 這個行事曆項目；用 calendar.list 看現有的編號")
     }
 
-    private func checkTimes(_ start: TimeOfDay?, _ end: TimeOfDay?, _ tool: String) throws {
+    /// `overnight` (the owner-sleep span): an end at or before the start is the next day's; equal is refused.
+    private func checkTimes(_ start: TimeOfDay?, _ end: TimeOfDay?, _ tool: String, overnight: Bool = false) throws {
         if end != nil, start == nil { throw CalendarError(description: "\(tool) 有 end 就要有 start；全天的事兩個都不給") }
-        if let start, let end, end <= start { throw CalendarError(description: "\(tool) 的 end（\(end)）要晚於 start（\(start)）") }
+        if overnight, let start, let end, end == start { throw CalendarError(description: "\(tool) 的 end（\(end)）不能和 start 一樣") }
+        if !overnight, let start, let end, end <= start { throw CalendarError(description: "\(tool) 的 end（\(end)）要晚於 start（\(start)）") }
     }
 
     /// `on` must be a day the series happens (not already removed).
@@ -482,19 +495,22 @@ final class Agenda {
         }
     }
 
-    /// Times after a change: `start` alone keeps the duration; `allDay` drops both.
-    private func newTimes(_ s0: TimeOfDay?, _ e0: TimeOfDay?, _ s: TimeOfDay?, _ e: TimeOfDay?, _ allDay: Bool) throws -> (TimeOfDay?, TimeOfDay?) {
+    /// Times after a change: `start` alone keeps the duration; `allDay` drops both. `overnight`:
+    /// the owner-sleep span, whose end may fall on the next day.
+    private func newTimes(_ s0: TimeOfDay?, _ e0: TimeOfDay?, _ s: TimeOfDay?, _ e: TimeOfDay?, _ allDay: Bool,
+                          overnight: Bool = false) throws -> (TimeOfDay?, TimeOfDay?) {
         if allDay { return (nil, nil) }
         var start = s0, end = e0
         if let s {
             if e == nil, let s0, let e0 {
-                let m = s.minutes + (e0.minutes - s0.minutes)
+                let len = overnight ? (e0.minutes - s0.minutes + 24 * 60) % (24 * 60) : e0.minutes - s0.minutes
+                let m = overnight ? (s.minutes + len) % (24 * 60) : s.minutes + len
                 end = m < 24 * 60 ? TimeOfDay(String(format: "%02d:%02d", m / 60, m % 60)) : nil
             }
             start = s
         }
         if let e { end = e }
-        try checkTimes(start, end, "calendar.change")
+        try checkTimes(start, end, "calendar.change", overnight: overnight)
         return (start, end)
     }
 
@@ -524,23 +540,35 @@ extension Agenda {
     /// The item with `role` (`maintenance`), if any.
     func item(role: String) -> CalendarFile.Item? { file.items.first { $0.role == role } }
 
-    /// Adds the daily `role` item at `time` from `day` (by the program; not saved here).
-    func addRole(_ role: String, title: String, day: Day, time: TimeOfDay) {
+    /// Adds the daily `role` item at `time` (to `end`) from `day` (by the program; not saved here).
+    func addRole(_ role: String, title: String, day: Day, time: TimeOfDay, end: TimeOfDay? = nil) {
         let id = file.nextID
         file.nextID += 1
-        file.items.append(CalendarFile.Item(id: id, title: title, date: day.description, start: time.description, end: nil,
+        file.items.append(CalendarFile.Item(id: id, title: title, date: day.description, start: time.description, end: end?.description,
                                             repeat: Repeat.daily.description, until: nil, exceptions: nil, by: "program", role: role))
     }
 
     static func roleRefusal(_ it: CalendarFile.Item, _ role: String, _ what: String) -> CalendarError {
-        CalendarError(description: "#\(it.id)「\(it.title)」是每天系統維護的時間，不能\(what)；"
-                      + "要換時間用 calendar.change 改 start，只改一天就給 on")
+        let kind = role == ownerSleepRole ? "主人平常睡覺的時間" : "每天系統維護的時間"
+        let how = role == ownerSleepRole ? "start、end" : "start"
+        return CalendarError(description: "#\(it.id)「\(it.title)」是\(kind)，不能\(what)；要換時間用 calendar.change 改 \(how)，只改一天就給 on")
     }
 
     static let maintenanceRole = "maintenance"
     static let maintenanceTitle = "系統維護"
+    static let ownerSleepRole = "owner_sleep"
+    static let ownerSleepTitle = "主人睡覺"
     /// The sleep's 「睡覺」／「起床」 (2026-11-15), replaced by the maintenance item on 2026-11-16.
     static let removedRoles: Set<String> = ["sleep", "wake"]
+
+    /// The owner-sleep occurrence `t` falls in (start ≤ t < end), if any: yesterday's span may run
+    /// over midnight into today.
+    func ownerSleep(at t: Double) -> Occurrence? {
+        let today = Day(ts: t)
+        return occurrences(from: today.adding(-1), to: today).first { o in
+            o.role == Self.ownerSleepRole && (o.startTS.map { $0 <= t } ?? false) && (o.endTS.map { t < $0 } ?? false)
+        }
+    }
 
     /// Deletes the items with these roles (not saved here); returns them as `title HH:MM`.
     func removeRoles(_ roles: Set<String>) -> [String] {
@@ -597,7 +625,8 @@ extension Doll {
     /// with, not fired; the boot notice lists them.
     func calendarCatchUp() throws -> [Occurrence] {
         let now = wallClock.now()
-        let missed = agenda.firedThrough.map { agenda.starts(after: $0, through: now) } ?? []
+        // The owner-sleep span never calls her, so a start of it passing is nothing to list.
+        let missed = (agenda.firedThrough.map { agenda.starts(after: $0, through: now) } ?? []).filter { $0.role != Agenda.ownerSleepRole }
         agenda.setFiredThrough(max(now, agenda.firedThrough ?? now))
         try agenda.save()
         calendarCaughtUp = true
@@ -609,6 +638,7 @@ extension Doll {
             log("INFO", "maintenance: its time passed while not running; due")
         }
         try ensureMaintenanceItem()
+        try ensureOwnerSleepItem()
         if drives.state.droppedRemoved {
             drives.state.droppedRemoved = false
             try saveSignals()
@@ -679,9 +709,35 @@ extension Doll {
         agenda.setFiredThrough(max(now, through))
         try agenda.save()
         for o in due {
+            if o.role == Agenda.ownerSleepRole {
+                log("INFO", "calendar: #\(o.id) \(o.day) \(o.start!) \(o.title) began (no turn)")
+                continue
+            }
             log("INFO", "calendar: #\(o.id) \(o.day) \(o.start!) fired")
             if o.role == Agenda.maintenanceRole { maintenanceFire() } else { put(Event(.calendar, .internal, Self.fireText(o))) }
         }
+    }
+
+    /// The 「主人睡覺」 item when the calendar has none (`[owner_sleep]` start, end). Runs once the
+    /// calendar is caught up, so an old calendar gets it at boot.
+    func ensureOwnerSleepItem() throws {
+        guard ownerSleepConfig.enabled, agenda.item(role: Agenda.ownerSleepRole) == nil else { return }
+        agenda.addRole(Agenda.ownerSleepRole, title: Agenda.ownerSleepTitle, day: Day(ts: wallClock.now()),
+                       time: TimeOfDay(ownerSleepConfig.start)!, end: TimeOfDay(ownerSleepConfig.end)!)
+        try agenda.save()
+        log("INFO", "calendar: had no \(Agenda.ownerSleepTitle); added \(ownerSleepConfig.start)–\(ownerSleepConfig.end) (daily)")
+    }
+
+    /// Inside the owner-sleep span: what she is told (【狀況】, a wandering, the maintenance notice);
+    /// nil outside it or when it is off. The owner's own line inside the span is named with its time
+    /// (he was evidently awake then); she judges whether he still is.
+    func ownerSleepLine(now: Double) -> String? {
+        guard ownerSleepConfig.enabled, let o = agenda.ownerSleep(at: now) else { return nil }
+        let span = "\(o.start!)–\(o.end!)"
+        if ownerLastLine >= o.startTS! {
+            return "主人平常這時候在睡（\(span)），不過他 \(Self.hhmm(ownerLastLine)) 還跟你說過話"
+        }
+        return "主人現在應該在睡（\(span)）；不急的事等他醒了再說"
     }
 
     /// `【行事曆】現在 10:00：看牙醫（#4，到 11:00）`.
@@ -726,6 +782,9 @@ extension Doll {
         guard let it = agenda.item(id) else { return "" }
         if it.start == nil, !(it.exceptions ?? [:]).values.contains(where: { $0.start != nil }) {
             return "全天的事不會叫你，那天的【狀況】會列出來。"
+        }
+        if it.role == Agenda.ownerSleepRole {
+            return "開始和結束都不會叫你；在這段時間裡，【狀況】會寫主人應該在睡。"
         }
         guard let next = agenda.nextStart(of: id, after: now) else { return "時間已經過了，不會叫你。" }
         let c = Day.cal.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: next))
