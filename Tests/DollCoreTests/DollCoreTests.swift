@@ -6248,6 +6248,42 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await runner.value
 }
 
+@Test func aConcernSheLeftWhileHeSleptComesBackOnceAtHisNextLine() async throws {
+    // told == false: at the night wandering she leaves it; his 「早～」 brings it back, once.
+    // told == true: she messaged him in that turn; nothing is held.
+    for told in [false, true] {
+        let clock = ManualClock(at("2026-11-16", "21:00"))
+        let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")),
+                                   told ? Scripted("", dm("醫生說什麼？")) : Scripted("他還在睡，等他醒了再說"),
+                                   Scripted("", dm("早，牙醫說什麼？")), Scripted("", dm("好"))], clock: clock) {
+            $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"; $0.drives.enabled = true
+        }
+        let doll = h.doll
+        let runner = Task { try await doll.run() }
+        try await waitUntil { clock.sleepers >= 1 }
+        await doll.ownerSaid("今天去看牙醫，晚安")
+        try await waitUntil { h.said == ["晚安"] }
+        // 親近 0.7 at 21:00 crosses 0.2 at 04:14.
+        clock.set(at("2026-11-17", "04:30"))
+        try await waitUntil { await h.model.requests.count == 3 }
+        try await waitUntil { await doll.settled }
+        let file = try #require(try Concerns.read(ConcernFile.self, h.dir.appending(path: "concerns.json"), what: "concerns"))
+        #expect((file.items[0].held != nil) == !told)
+        clock.set(at("2026-11-17", "07:30"))
+        await doll.ownerSaid("早～")
+        try await waitUntil { await h.model.requests.count == 4 }
+        try await waitUntil { await doll.settled }
+        let back = "【聯想】主人在睡的時候你想起這件事，那時沒找他；現在他在了：明天問主人牙醫說什麼（#1）"
+        #expect(try h.events().filter { $0.text == back }.count == (told ? 0 : 1))
+        await doll.ownerSaid("嗯")
+        try await waitUntil { await h.model.requests.count == 5 }
+        try await waitUntil { await doll.settled }
+        #expect(try h.events().filter { $0.text == back }.count == (told ? 0 : 1))
+        await doll.stop()
+        try await runner.value
+    }
+}
+
 @Test func outsideTheSpanTheWanderingAndTheNoticeAreUnchanged() async throws {
     let clock = ManualClock(at("2026-11-16", "12:00"))
     let h = try await Harness(clock: clock) { $0.ownerSleep.enabled = true }

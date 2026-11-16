@@ -280,6 +280,9 @@ public actor Doll {
     var errorsInRow = 0
     /// This turn's 【聯想】 lines.
     var associatedNow: [String] = []
+    /// A concern held by the wandering just queued, then by the turn it gave her (`Concerns.swift`).
+    var heldPending: Int?
+    var heldTurn: Int?
     /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
     func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
 
@@ -872,6 +875,8 @@ public actor Doll {
             feed.notify(.turn)
         }
         let started = Date().timeIntervalSince1970
+        // A round after her own tool result keeps the held concern of the wandering that began it.
+        if !followUp { heldTurn = heldPending; heldPending = nil }
         followUp = false
         attachedNow = []
         associatedNow = []
@@ -892,6 +897,7 @@ public actor Doll {
             associatedIDs = []
             cheatsheetSent = []
             await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
+            recallHeld()
         }
         // What is in front of her against her concerns (m6-drives): one may come to mind, no extra turn.
         await associate()
@@ -1161,6 +1167,7 @@ public actor Doll {
                     }
                     return Outcome(text: "失敗：\(to.label)沒收到：\(why)。\(next)", actions: ["error \(name)"], background: true)
                 }
+                if to == .owner { reachedOwner() }
                 return Outcome(text: fixed.isEmpty ? "" : Traditional.note(fixed), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
             case .voiceJoin:
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }

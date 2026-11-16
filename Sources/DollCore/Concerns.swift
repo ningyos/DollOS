@@ -45,6 +45,9 @@ public struct Concern: Sendable, Codable, Equatable {
     public var due: Double?
     public var surfaced: [Double] = []
     public var associated: [Double] = []
+    /// It surfaced while the owner should be asleep and she did not message him in that turn: when.
+    /// The owner's next line brings it back once (`Doll.recallHeld`; owner, 2026-11-16).
+    public var held: Double?
     /// Its `deadline` already raised 壓力.
     public var nearRaised = false
     public var ended: Double?
@@ -124,6 +127,12 @@ enum Concerns {
     // Not 「手上沒事」 (step 0, 2026-11-15): then her sleep section said "with nothing in hand, sleep",
     // and 3 of 20 idle runs about an unhurried step answered a mid-afternoon surfacing by calling sleep.
     static let wanderOwner = "\(wanderTag)你想到好一陣子沒跟主人說上話了。"
+
+    /// Real runs (2026-11-16): at 05:44 she thought 「等他醒了再說」, and at his 「早～」 nothing put it
+    /// back in front of her (1 of 5 asked).
+    static func heldText(_ c: Concern) -> String {
+        "\(associateTag)主人在睡的時候你想起這件事，那時沒找他；現在他在了：\(c.text)（#\(c.id)）"
+    }
 
     static func associateText(_ c: Concern) -> String { "\(associateTag)（想到）\(c.text)（#\(c.id)）" }
 }
@@ -330,6 +339,14 @@ extension Doll {
         if let i = concernFile.items.firstIndex(where: { $0.id == c.id }) { concernFile.items[i].surfaced.append(now) }
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         associatedIDs.insert(c.id)
+        // He should be asleep (and has not spoken this night): held for his next line unless she
+        // messages him in the turn this gives her.
+        if let o = agenda.ownerSleep(at: now), ownerSleepConfig.enabled, ownerLastLine < o.startTS!, c.about == .owner,
+           let i = concernFile.items.firstIndex(where: { $0.id == c.id }) {
+            concernFile.items[i].held = now
+            heldPending = c.id
+        }
+        do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         log("INFO", "drives: wander (\(s.label)\(chained ? ", chained" : "")) #\(c.id)「\(c.text)」")
         put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c))))
     }
@@ -367,6 +384,34 @@ extension Doll {
     }
 
     // association ----------------------------------------------------------------------------------
+
+    /// She messaged the owner in the turn a held concern's wandering gave her: it is not held.
+    func reachedOwner() {
+        guard let id = heldTurn, let i = concernFile.items.firstIndex(where: { $0.id == id }) else { return }
+        heldTurn = nil
+        concernFile.items[i].held = nil
+        do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
+    }
+
+    /// The owner's line: the concerns held while he slept go into this turn, once.
+    func recallHeld() {
+        guard drivesConfig.enabled, timeline.events.last(where: { $0.speaker != nil })?.kind == .owner else { return }
+        let held = openConcerns.filter { $0.held != nil }
+        for i in concernFile.items.indices { concernFile.items[i].held = nil }
+        guard !held.isEmpty else { return }
+        do {
+            try saveConcerns()
+            for c in held {
+                associatedIDs.insert(c.id)
+                let text = Concerns.heldText(c)
+                try append(Event(.memory, .internal, text))
+                associatedNow.append(text)
+                log("INFO", "drives: held while the owner slept, back now: #\(c.id)「\(c.text)」")
+            }
+        } catch {
+            log("ERROR", "drives: held concerns not brought back: \(error)")
+        }
+    }
 
     /// At the start of a turn: the new lines and results since her last reply against her open
     /// concerns; the nearest at or above `[select] similarity`, not given since the owner's last
