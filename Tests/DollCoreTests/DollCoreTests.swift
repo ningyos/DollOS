@@ -6577,3 +6577,24 @@ private func goOn(_ missing: String, _ why: String) -> (String, [(String, String
     #expect(String(decoding: LocalAPI.Message.say("看", image: "/d/shots/a.jpg").line, as: UTF8.self) == "{\"image\":\"/d/shots/a.jpg\",\"text\":\"看\",\"type\":\"say\"}\n")
     #expect(String(decoding: LocalAPI.Message.say("看").line, as: UTF8.self) == "{\"text\":\"看\",\"type\":\"say\"}\n")
 }
+
+@Test func aWindowOnAnotherSpaceIsReadAndPressedAndAWindowWithoutATreeIsSkipped() async throws {
+    // 2026-11-16 23:40: the owner in full-screen Moonlight; Calculator's window was on another Space
+    // (is_on_screen false) and she was told it had none. cua-driver reads and presses it there.
+    let h = try await Harness()
+    h.cua.change { s in
+        s.windows[0].onScreen = false
+        // A helper window in front with no AX tree (TextEdit's "Save Panel Accessory View" kind).
+        s.windows.append(FakeCua.Window(id: 62999, pid: 100, app: "計算機", title: "", elements: [], z: 5))
+    }
+    await h.doll.ownerSaid("按 7")
+    try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")])))
+    let opened = try h.toolResults().last!
+    #expect(opened.window?.hasPrefix("Calculator 的視窗「計算機」（這個 app 有 2 個視窗") == true && opened.window?.contains(#"AXStaticText "0""#) == true)
+    try await h.turn(Scripted("", clickRow(2)))
+    #expect(try h.toolResults().last!.window?.contains(#"AXStaticText "7""#) == true)
+    // read_window without a title skips the treeless one too; apps lists both.
+    try await h.turn(Scripted("", readCall, ("apps", [])))
+    #expect(try h.toolResults().suffix(2).first!.window?.hasPrefix("Calculator 的視窗「計算機」") == true)
+    #expect(try h.toolResults().last!.text.contains("- Calculator：「」、「計算機」"))
+}

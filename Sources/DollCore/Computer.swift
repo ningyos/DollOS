@@ -266,23 +266,45 @@ public actor Mac {
         return AppIdentity(bundleID: a.bundleID, name: a.name, version: version)
     }
 
-    struct Win { var id: Int; var title: String; var z: Int }
+    struct Win { var id: Int; var title: String; var z: Int; var onScreen = true }
 
-    /// The app's windows she can read: on screen, layer 0, front first.
+    /// The app's layer-0 windows, the ones on the owner's screen first, then front first within each.
+    /// Windows on another Space (the owner in a full-screen app, 2026-11-16 23:40) or minimized are
+    /// kept: cua-driver reads them and acts on them by element token without bringing them forward
+    /// (measured: an off-Space Calculator read with its tree and screenshot, a click changed its
+    /// display, the front app and the Space stayed the owner's). Windows without an AX tree (helper
+    /// windows such as TextEdit's "Save Panel Accessory View") are dropped when they are read (`readFront`).
     func windows(pid: Int) async throws -> [Win] {
         let j = try await call("list_windows", ["pid": pid])
         return (j["windows"] as? [[String: Any]] ?? []).compactMap { w -> Win? in
-            guard w["layer"] as? Int == 0, w["is_on_screen"] as? Bool == true, let id = w["window_id"] as? Int else { return nil }
-            return Win(id: id, title: w["title"] as? String ?? "", z: w["z_index"] as? Int ?? 0)
-        }.sorted { $0.z > $1.z }
+            guard w["layer"] as? Int == 0, let id = w["window_id"] as? Int else { return nil }
+            return Win(id: id, title: w["title"] as? String ?? "", z: w["z_index"] as? Int ?? 0, onScreen: w["is_on_screen"] as? Bool == true)
+        }.sorted { ($0.onScreen ? 1 : 0, $0.z) > ($1.onScreen ? 1 : 0, $1.z) }
     }
 
-    /// Running apps that have windows, each with its on-screen windows (the `apps` tool).
+    /// A read of `first`, or, when it has no element list (a helper window without an AX tree), of
+    /// the next window in `wins` that has one; the first failure when none does.
+    func readFront(pid: Int, app: AppIdentity, first: Win, wins: [Win]) async throws -> MacResult {
+        var firstError: Error?
+        for w in [first] + wins.filter({ $0.id != first.id }) {
+            do { return try await read(pid: pid, app: app, window: w, of: wins.count) } catch let e as NoTree {
+                firstError = firstError ?? e.error
+            }
+        }
+        throw firstError!
+    }
+    /// `read` found no element list in the answer: the window has no AX tree.
+    struct NoTree: Error, CustomStringConvertible {
+        let error: ComputerError
+        var description: String { error.description }
+    }
+
+    /// Running apps that have windows, each with its layer-0 windows, on any Space (the `apps` tool).
     public func apps() async throws -> String {
         let running = try await listApps().filter { $0.pid != nil }
         let j = try await call("list_windows", [:])
         var byPid: [Int: [(String, Int)]] = [:]
-        for w in j["windows"] as? [[String: Any]] ?? [] where w["is_on_screen"] as? Bool == true {
+        for w in j["windows"] as? [[String: Any]] ?? [] where w["layer"] as? Int == 0 {
             guard let pid = w["pid"] as? Int else { continue }
             byPid[pid, default: []].append((w["title"] as? String ?? "", w["z_index"] as? Int ?? 0))
         }
@@ -345,7 +367,7 @@ public actor Mac {
         let shown = wins.first(where: isTarget) ?? front
         try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: shown.title,
                          element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
-        var r = try await read(pid: pid, app: identity, window: shown, of: wins.count)
+        var r = try await readFront(pid: pid, app: identity, first: shown, wins: wins)
         if let file, !isTarget(shown) {
             r.window = "（沒看到標題有「\(file)」的視窗：檔案可能沒有開起來（例如 app 有對話框擋著）。下面是 \(identity.name) 最前面的視窗，不是那個檔）\n" + (r.window ?? "")
         }
@@ -360,12 +382,11 @@ public actor Mac {
         guard !wins.isEmpty else {
             throw ComputerError("\(identity.name) 現在沒有視窗。新文件用 menu 選「檔案 › 新增」；開檔用 open 帶 target。")
         }
-        var pick = wins[0]
-        if let window, !window.isEmpty {
-            guard let w = wins.first(where: { $0.title == window }) ?? wins.first(where: { $0.title.localizedCaseInsensitiveContains(window) }) else {
-                throw ComputerError("\(identity.name) 沒有標題含「\(window)」的視窗；它的視窗：" + wins.map { "「\($0.title)」" }.joined(separator: "、"))
-            }
-            pick = w
+        guard let window, !window.isEmpty else {
+            return try await readFront(pid: pid, app: identity, first: wins[0], wins: wins)
+        }
+        guard let pick = wins.first(where: { $0.title == window }) ?? wins.first(where: { $0.title.localizedCaseInsensitiveContains(window) }) else {
+            throw ComputerError("\(identity.name) 沒有標題含「\(window)」的視窗；它的視窗：" + wins.map { "「\($0.title)」" }.joined(separator: "、"))
         }
         return try await read(pid: pid, app: identity, window: pick, of: wins.count)
     }
@@ -400,12 +421,13 @@ public actor Mac {
             current = nil
             throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：\(Self.said(error))" + (await otherWindows(pid, not: window.id)))
         }
-        guard let snapshot = j["snapshot_id"] as? String, let tree = j["tree_markdown"] as? String else {
+        guard let snapshot = j["snapshot_id"] as? String, let tree = j["tree_markdown"] as? String, !tree.isEmpty,
+              j["degraded_reason"] as? String != "ax_window_unresolved" else {
             current = nil
             // Seen 2026-11-16: Calculator with a second, untitled window in front that has no tree;
             // she found the real one only through `apps`. The other windows are named here.
             let why = (j["degraded_reason"] as? String).map { "（cua-driver：\($0)）" } ?? ""
-            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：回答裡沒有元素清單\(why)" + (await otherWindows(pid, not: window.id)))
+            throw NoTree(error: ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：回答裡沒有元素清單\(why)" + (await otherWindows(pid, not: window.id))))
         }
         let elements = j["elements"] as? [[String: Any]] ?? []
         let rows = Self.identities(elements, markdown: tree)
@@ -626,7 +648,7 @@ public actor Mac {
             return try await read(pid: c.pid, app: c.app, window: same, of: wins.count)
         }
         if let front = wins.first {
-            var r = try await read(pid: c.pid, app: c.app, window: front, of: wins.count)
+            var r = try await readFront(pid: c.pid, app: c.app, first: front, wins: wins)
             r.window = "（剛才那個視窗「\(c.title)」不見了，這是 \(c.app.name) 現在最前面的視窗）\n" + (r.window ?? "")
             return r
         }
