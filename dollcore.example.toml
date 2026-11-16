@@ -16,7 +16,7 @@ pack = "character_packs/doll2/doll.toml"
 # wander（m6-drives，2026-11-15）：她走神（閒著、某個訊號超出平常範圍時，程式讓一件掛念冒出來）排最後：有人說話、行事曆、watch 都比她自己想到的事先
 priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"]
 mlx_cache_limit_mb = 256      # MLX 的 buffer cache 上限（整個 process 一個：記憶的 embedding 和她的聲音共用同一個 MLX）。初始值理由：voice-mlx 量測用 256 MB，串流 TTS 峰值 3.0 GB；0＝不留 cache
-docs = "dolldocs"             # 她的 DollOS 文件（2026-11-14）：repo 裡這個資料夾的 .md，開機時複製進她電腦的 ~/DollOS/docs/，她用 read_file 讀；相對路徑從目前目錄算。複製失敗寫 ERROR、開機通知告訴她，不擋開機（VM 可能在睡）
+docs = "dolldocs"             # 她的 DollOS 文件（2026-11-14；2026-11-16 起在這台 Mac 上原地讀）：這個資料夾的 .md，她用 read_file 讀它的絕對路徑（系統提示裡寫著）；相對路徑從目前目錄算。資料夾裡沒有 README.md＝開機失敗
 
 [context]
 # 她的 context 多滿、快滿時怎麼辦（2026-11-14，主人）。【狀況】每回合寫「context：用了／上限（%）；其中做事的過程 N（截圖 M）」
@@ -28,27 +28,20 @@ talk_share = 0.5              # 到 limit 的時候（最後一道，馬上做�
 talk_effort = "medium"        # 寫那段摘要的請求的 reasoning_effort。初始值理由：跟做事的回合一樣
 
 [computer]
-# M2：她的電腦＝VMPal 的 VM，只看截圖、用滑鼠鍵盤操作（spec 3.1，2026-11-08）
-vm_id = "E6813EBA"            # Doll VM；用 ID 不用名字：vmpal ui 不用回頭問 VMPal
-vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"   # PATH 上沒有 vmpal
-agent_desktop = "/Users/doll/agent-desktop/agent-desktop"   # VM 裡的 agent-desktop（v1.2.0）；每個動作後用 vmpal exec 跑 snapshot --skeleton -i --compact --include-bounds（視窗概要＋視窗位置）和 list-displays（換算成截圖座標）
-ax_menus = "/Users/doll/agent-desktop/axmenus"   # VM 裡的快捷鍵讀取器（scripts/axmenus.swift，host 編好 vmpal cp 進去）：--front 讀前景 app，<bundle id> 讀它選單上的快捷鍵；用 VMPal Tools 的輔助使用權限。每個動作後跟 agent-desktop list-windows、snapshot --surface focused 同一個 vmpal exec 跑（開著的視窗＋焦點那一行）
-learn_shortcuts = true        # 決定（2026-11-09）：她第一次用某個 app（前景 app 換成還沒記過這個版本的 app）時，程式把那個 app 的全部快捷鍵寫進她的記憶，一個快捷鍵一條；改版才重寫
-cheatsheet = true            # 決定（spec 3.1，2026-11-09）：電腦結果的前景 app 換了、而且這個 app 從主人最後一句以來還沒給過，程式把它整份快捷鍵（【快捷鍵】<App> <版本>，一行一個「選單 › 項目 = 鍵」，照讀取器的順序）寫進時間線；跟 learn_shortcuts 共用同一次讀取。TextEdit 77 行約 1000 token、Finder 111 行約 1460
-screenshot_width = 1280       # 初始值理由：VMPal 的座標空間本來就是 1280 寬，截圖同寬她的座標不用換算；一張約 350 token（spec 3.x 探測）
-screenshot_format = "jpeg"    # 初始值理由：VMPal 預設；1280 寬一張約 270 KB，PNG 大好幾倍，每回合都要重送
-window_crop_width = 1280      # 視窗圖最寬這麼寬（vmpal --max-width；窄視窗照螢幕原解析度）。初始值理由：2026-11-09 探測只截終端機視窗 1280 寬讀 build 號 10/10（全螢幕 0/10）；每張圖不管多大都約 300 token
-window_crop_format = "jpeg"   # 初始值理由：同全螢幕截圖；每回合都要重送
-jpeg_quality = 40             # JPEG 截圖（全螢幕和視窗圖）重新壓縮的品質，0＝用 VMPal 原檔。初始值理由：2026-11-09 Safari 小字三題和終端機 build 號，品質 60／40／25 都 10/10；40 留餘裕。一回合兩張 359→163 KB；舊截圖每回合都重傳，大小就是上傳時間（主人在外面約 0.6 MB/s）
-screenshot_tokens = 350       # 只用來估【狀況】的 context 長度；1356×737 探測一張約 350 token
-image_turns_kept = 0          # request 只帶最近幾個回合的截圖，0＝全留。初始值理由：2026-11-09 試過留 2 回合（省掉每回合重傳 4.6 MB 舊圖），但 Qwen3-Next 上 Strata 的 prompt cache 只能從 checkpoint 接：舊圖一拿掉，前綴從主人那句之後全部重算，prefill 6.5→25–31 秒、一回合 20→41 秒，比省下的上傳多很多。只有「任意前綴都能接」的模型才值得設 1 或 2
-watch_poll_s = 1.0            # 初始值理由：一次區域截圖約 0.05 秒；每秒比一次夠快，又不佔 VM
-watch_min_interval_s = 10.0   # 初始值理由：兩次叫醒至少隔 10 秒，大約一次模型呼叫的時間；一直變的畫面不會每秒叫她（主人選限頻）
-watch_stop_after = 3          # 初始值理由：連 3 次叫醒都沒動作＝她不在看這塊；再叫只是燒回合
-watch_default_max_wait_s = 120.0   # 初始值理由：她沒說最多等多久時等 2 分鐘；一般 app 開啟、網頁載入、短命令都在這之內
+# 她的電腦就是這台 Mac（2026-11-16，主人）：在背景操作主人的 app，經過開源的 cua-driver（https://github.com/trycua/cua），不搶主人的滑鼠、鍵盤和前景 app。
+# 開機時：cua-driver 不在、它沒有輔助使用／螢幕錄製權限＝開機失敗，訊息寫怎麼修；daemon 沒在跑就由 dollcore 啟動（cua-driver serve），結束時停掉它啟動的那個；已經在跑的照用、不停
+driver = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"   # cua-driver 0.52.4 的 CLI（~/.local/bin/cua-driver 是指向它的連結；用絕對路徑，不靠 PATH）
+daemon_start_s = 10.0         # dollcore 啟動的 daemon 最多等這麼久回應。初始值理由：2026-11-16 手動 cua-driver serve 不到 1 秒就在聽 socket；10 倍餘裕
+max_elements = 250            # 讀一個視窗最多走這麼多個元素（cua-driver 自己的預設）。初始值理由：計算機 34 個、備忘錄、TextEdit 都在 250 內；超過時結果會說清單被截斷、要看截圖
+screenshot_max_dimension = 1024   # 視窗截圖長邊最多這麼多像素。初始值理由：計算機視窗 460×816（2 倍）原樣就夠讀；大視窗（Safari、Finder）縮到 1024 長邊，小字仍讀得出來的程度未驗證
+screenshot_tokens = 600       # 只用來估【狀況】的 context 長度：一張視窗截圖約多少 token。量測見 DEMO.md「電腦」
+settle_s = 0.4                # 每個動作做完、重讀視窗之前等這麼久。初始值理由：cua-driver 自己的動作已等到 300 ms 看有沒有新視窗；多等 0.4 秒讓按下去的結果畫出來
+window_wait_tries = 5         # open／menu 之後最多看幾次 app 有沒有視窗，才說它沒有視窗
+window_wait_s = 0.6           # 兩次之間等多久。初始值理由：2026-11-16 TextEdit 選「檔案 › 新增」後 1.5 秒內新視窗已在；5×0.6＝3 秒
+auth_processes = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]   # 系統驗證視窗（Touch ID、管理者密碼）的擁有者 process 名字：畫面上有它們的視窗，結果就多一行【系統驗證】要她停下來告訴主人。哪些名字在這台 Mac 上真的會出現，見 DEMO.md「電腦」的 g3 量測
 
 [files]
-# 電腦選單裡的檔案工具（2026-11-09）：read_file／write_file／edit_file 直接讀寫 VM 裡的文字檔，不經過 GUI
+# 檔案工具（2026-11-09；2026-11-16 起讀寫這台 Mac 的檔案）：read_file／write_file／edit_file 直接讀寫文字檔，不經過 GUI；~ 是主人的家目錄
 max_read_lines = 500          # read_file 一次最多回這麼多行，剩下只說「還有 N 行」。初始值理由：一行約 10–40 token，500 行最多約 2 萬 token，一次讀完一般文字檔又不會把 context 塞滿
 
 [idle]
