@@ -213,6 +213,11 @@ public final class Timeline {
         public var prompt: Int
         public var cached: Int?
         public var effort: String
+        /// The reply's completion tokens, `finish_reason` and reasoning characters (absent in lines
+        /// written before 2026-11-16).
+        public var completion: Int? = nil
+        public var finish: String? = nil
+        public var reasoningChars: Int? = nil
     }
 
     private struct Line: Decodable { var type: String }
@@ -268,6 +273,9 @@ public final class Timeline {
         var prompt: Int
         var cached: Int?
         var effort: String
+        var completion: Int?
+        var finish: String?
+        var reasoningChars: Int?
     }
 
     private static let encoder: JSONEncoder = {
@@ -365,7 +373,8 @@ public final class Timeline {
                 case "turn":
                     let t = try Self.decoder.decode(TurnLine.self, from: raw)
                     turnStats[t.seq] = TurnStats(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt,
-                                                 cached: t.cached, effort: t.effort)
+                                                 cached: t.cached, effort: t.effort, completion: t.completion,
+                                                 finish: t.finish, reasoningChars: t.reasoningChars)
                 case let other: throw StoreError(description: "unknown record type \(other)")
                 }
             } catch { throw bad(error) }
@@ -442,7 +451,7 @@ public final class Timeline {
 
     public func recordTurn(_ t: TurnStats) throws {
         try write(TurnLine(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt, cached: t.cached,
-                           effort: t.effort))
+                           effort: t.effort, completion: t.completion, finish: t.finish, reasoningChars: t.reasoningChars))
         turnStats[t.seq] = t
     }
 }

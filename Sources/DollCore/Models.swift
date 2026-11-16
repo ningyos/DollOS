@@ -92,9 +92,17 @@ public struct ModelUsage: Sendable, Equatable {
     public var predictedMs: Double?
     /// Bytes of the request body as sent (after `hash:` references replaced pictures already uploaded).
     public var requestBytes: Int?
+    /// Why the server stopped generating (`choices[0].finish_reason`: "stop", "tool_calls", …); nil when
+    /// the server sent none. Recorded per turn (2026-11-16: replies that shrank to nothing could not be
+    /// explained because nothing kept this).
+    public var finish: String?
+    /// Characters of `reasoning_content` the server returned (0 when none): a reply whose visible text
+    /// is empty may still have spent its tokens there.
+    public var reasoningChars: Int
 
     public init(promptTokens: Int, completionTokens: Int, prefilled: Int? = nil, cached: Int? = nil,
-                promptMs: Double? = nil, predictedMs: Double? = nil, requestBytes: Int? = nil) {
+                promptMs: Double? = nil, predictedMs: Double? = nil, requestBytes: Int? = nil,
+                finish: String? = nil, reasoningChars: Int = 0) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.prefilled = prefilled
@@ -102,6 +110,13 @@ public struct ModelUsage: Sendable, Equatable {
         self.promptMs = promptMs
         self.predictedMs = predictedMs
         self.requestBytes = requestBytes
+        self.finish = finish
+        self.reasoningChars = reasoningChars
+    }
+
+    /// One line for logs and transcripts: why it stopped and what it produced.
+    public var stopLine: String {
+        "finish=\(finish ?? "none") completion=\(completionTokens) reasoning_chars=\(reasoningChars)"
     }
 }
 
@@ -302,6 +317,7 @@ public final class HTTPMainModel: MainModel {
             calls: calls,
             usage: ModelUsage(promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens,
                               prefilled: t?.prompt_n, cached: t?.cache_n, promptMs: t?.prompt_ms,
-                              predictedMs: t?.predicted_ms, requestBytes: bytes))
+                              predictedMs: t?.predicted_ms, requestBytes: bytes, finish: choice.finish_reason,
+                              reasoningChars: choice.message.reasoning_content?.count ?? 0))
     }
 }
