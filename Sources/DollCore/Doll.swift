@@ -36,8 +36,6 @@ public struct TurnReport: Sendable {
     public var todo: String = ""
     /// The compactions recorded this turn (`Compaction.Kind` raw values), the forced one first.
     public var compacted: [String] = []
-    /// The 【快捷鍵】 events the program appended this turn, verbatim (spec 3.1, 2026-11-09).
-    public var cheatsheets: [String]
     /// One line per memory selection this turn (【相關記憶】 and `recall`, 2026-11-11): the trigger's
     /// names aligned, related counts by channel, the ranking, what was given, seconds per stage.
     public var selections: [String] = []
@@ -68,16 +66,6 @@ private func hex(_ n: Int) -> String {
     String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(n))
 }
 
-/// The one watch she has set (a new one replaces it).
-struct Watch: Sendable {
-    let id: Int
-    let region: Region?
-    let maxWait: Double
-    let task: Task<Void, Never>
-
-    var target: String { region.map { "\($0)" } ?? "整個畫面" }
-}
-
 public actor Doll {
     public nonisolated let name: String
     let identity: String
@@ -106,7 +94,8 @@ public actor Doll {
     let config: Config
     /// The memory selection over `memory`, and the registry entries the program knows exactly.
     let pipeline: Selector
-    let computer: any ComputerDriver
+    /// Her computer: this Mac through cua-driver (2026-11-16).
+    let mac: Mac
     let deliver: Deliver
     /// `[voice] enabled` (M6): the voice tools and the voice part of the system prompt.
     let voiceEnabled: Bool
@@ -139,8 +128,9 @@ public actor Doll {
     /// template puts it at the front of the prompt; a change would void the prefix cache).
     let tools: [Tools.Spec]
     let toolsJSON: String
-    /// Where her DollOS documents come from (`[core] docs`); `syncDocs` copies them into the VM.
+    /// Her DollOS documents (`[core] docs`), read in place: `docsPath` is this folder's absolute path.
     let docsDir: URL
+    var docsPath: String { docsDir.standardizedFileURL.path }
     /// Her todo list (`Todo.swift`), as the timeline last recorded it.
     var todo: TodoState
     /// The current item's actions that went through, one short line each (`Doll.step`) with the seq
@@ -172,12 +162,9 @@ public actor Doll {
     var compactedNow: [String] = []
     var experienceNow: String?
     var followsNow: [String] = []
-    /// Bundle id → version of the apps whose shortcuts are in her memory; read from the memory
-    /// files on first use, then kept here.
-    var learnedApps: [String: String]?
-    /// The front app in the last computer result; nil before the first.
+    /// The app of the last computer result; nil before the first.
     var frontApp: AppIdentity?
-    /// A computer result this turn showed a front app other than the one before: attach memories.
+    /// A computer result this turn worked on an app other than the one before: attach memories.
     var appSwitched = false
     /// An owner line was drained since her last turn: attach memories, after forgetting what was attached.
     var ownerArrived = false
@@ -187,24 +174,9 @@ public actor Doll {
     var attachedNow: [String] = []
     /// This turn's selection lines, for its report.
     var selectionsNow: [String] = []
-    /// Menu shortcuts per app version (`bundle id` + version), read once per process and shared by
-    /// shortcut learning and the cheatsheet.
-    var shortcutCache: [String: [MenuShortcut]] = [:]
-    /// Bundle ids whose 【快捷鍵】 went into the timeline since the owner's last line.
-    var cheatsheetSent: Set<String> = []
-    /// Apps a computer result switched to this turn whose cheatsheet is still to be sent.
-    var cheatsheetDue: [AppIdentity] = []
-    /// This turn's 【快捷鍵】 events, for its report.
-    var cheatsheetNow: [String] = []
-    var watch: Watch?
-    var watchSerial = 0
-    /// Wakes from the current watch since her last computer action.
-    var watchIdle = 0
-    /// The last full screenshot's pixel size: where her screen coordinates must fall.
-    var screenSize: (width: Int, height: Int)?
-    /// The last window crop she was shown: where it sits on the full screenshot and its pixel size,
-    /// to turn `on: window` coordinates into full-screen ones. nil when the last result had no crop.
-    var cropMap: (region: Region, width: Int, height: Int)?
+    /// Her computer calls that failed, in a row, as `name + arguments` → how many times (2026-11-16:
+    /// the same failing step was retried for 15 rounds); reset by any computer call that succeeds.
+    var failedCalls: [String: Int] = [:]
     /// Screenshot file → its `data:` URI, so a stored image is read and encoded once.
     var imageURIs: [String: String] = [:]
     var observer: (@Sendable (TurnReport) -> Void)?
@@ -355,7 +327,10 @@ public actor Doll {
         // Before anything is appended: every event of the segment so far.
         today = try TodayIndex(timeline, embedder: embedder)
         self.model = model
-        self.computer = computer ?? VMPalDriver(config.computer)
+        // One session label per process (cua-driver's element tokens are scoped to it).
+        mac = Mac(driver: computer ?? CuaDriverCLI(path: config.computer.driver), config: config.computer,
+                  session: "dollcore-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970))",
+                  shots: shots, log: data.appending(path: "computer-actions.jsonl"))
         self.deliver = deliver
         tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files,
                             drives: config.drives.enabled)
@@ -363,6 +338,10 @@ public actor Doll {
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
         docsDir = core.docs.hasPrefix("/") ? URL(filePath: core.docs) : root.appending(path: core.docs)
+        // She reads them in place: a docs folder without its index is a boot error.
+        guard FileManager.default.fileExists(atPath: docsDir.appending(path: "README.md").path) else {
+            throw TOMLError(description: "[core] docs: \(docsDir.path)/README.md does not exist")
+        }
 
         let packPath = root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
@@ -450,35 +429,11 @@ public actor Doll {
     }
 
     /// Tells her this process just started (owner, 2026-11-14): a program line in the timeline, no
-    /// turn of its own; she reads it with the next event. `docsFailure`: why `syncDocs` failed.
-    public func announceBoot(docsFailure: String? = nil) throws {
-        try append(Event(.memory, .internal, Self.bootNotice + (docsFailure.map {
-            "DollOS 文件這次沒有複製進你的電腦（\($0)）；\(Self.docsVMPath) 裡可能是舊的或沒有。"
-        } ?? "") + (try calendarBootText())))
+    /// turn of its own; she reads it with the next event.
+    public func announceBoot() throws {
+        try append(Event(.memory, .internal, Self.bootNotice + (try calendarBootText())))
     }
     static let bootNotice = "【開機】你剛被開機了。"
-
-    /// Where her DollOS documents are in her computer (2026-11-14, owner): she reads them with `read_file`.
-    public static let docsVMPath = "~/DollOS/docs"
-
-    /// Copies every `.md` file of `[core] docs` into her computer at `docsVMPath`, replacing what is
-    /// there (a file removed from the source stays in the VM). Returns nil, or why it failed (ERROR in
-    /// the log; the boot notice tells her). Not fatal: the VM may be suspended at boot, and nothing
-    /// but her reading the docs needs it.
-    public func syncDocs() async -> String? {
-        do {
-            let names = try FileManager.default.contentsOfDirectory(atPath: docsDir.path).filter { $0.hasSuffix(".md") }.sorted()
-            guard !names.isEmpty else { throw ToolError(description: "\(docsDir.path) 裡沒有 .md 檔") }
-            for n in names {
-                try await computer.writeFile("\(Self.docsVMPath)/\(n)", try Data(contentsOf: docsDir.appending(path: n)))
-            }
-            log("INFO", "docs: \(names.count) files copied from \(docsDir.path) into \(Self.docsVMPath)")
-            return nil
-        } catch {
-            log("ERROR", "docs: copying \(docsDir.path) into \(Self.docsVMPath) failed: \(error)")
-            return "\(error)"
-        }
-    }
 
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {
@@ -588,8 +543,8 @@ public actor Doll {
     }
 
     /// She is waiting and nothing will give her a turn: no queued event, no tool result she has not
-    /// answered, no watch.
-    public var settled: Bool { waiter != nil && queue.isEmpty && !followUp && watch == nil }
+    /// answered.
+    public var settled: Bool { waiter != nil && queue.isEmpty && !followUp }
 
     // consumer ---------------------------------------------------------------
     public func run() async throws {
@@ -634,13 +589,12 @@ public actor Doll {
 
     /// An item still in progress when the program stops stays in the timeline's todo record: the next
     /// process continues it (its action list starts empty there). The experiences attached for it
-    /// are scored as unknown (only logged); the watch stops.
+    /// are scored as unknown (only logged).
     func shutdown() {
         if todo.phase == .doing || todo.phase == .waiting {
             log("INFO", "todo: stopping with「\(todo.current ?? "")」\(todo.phase.label)")
             scoreAttached(steps: itemSteps.map(\.line), outcome: "unknown")
         }
-        stopWatch()
         calendarTask?.cancel()
         calendarTask = nil
         // Running stays running in `maintenance.json`; the task cut short wrote nothing and runs again at boot.
@@ -661,9 +615,9 @@ public actor Doll {
     /// in the request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
         "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n")
-            + Instructions.text(voice: voiceEnabled, context: contextConfig, maintenance: maintenanceConfig.enabled,
+            + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
                                 drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled)
-            + (voiceEnabled ? "\n\n" + Instructions.voice : "")
+            + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath) : "")
     }
 
     /// The line before her ideal self (fixed bytes).
@@ -676,7 +630,7 @@ public actor Doll {
     /// A compacted span (`Compaction`, 2026-11-14): owner and developer lines stay verbatim; each of
     /// her replies keeps only its speaking and todo calls (`survivesCompaction`; no thought, no footer;
     /// a reply with none left is not sent), followed by those calls' results. Every other event of the
-    /// span (other results, screenshots, crops, watch wakes, the program's work notices) stays in the
+    /// span (other results, window reads, the program's work notices) stays in the
     /// timeline but is not sent. A forced compaction's block follows the span's last event. Every
     /// compaction of an item starts at the item's start, so the one reaching furthest decides.
     func context(_ events: [Event]) throws -> [ChatMessage] {
@@ -712,23 +666,15 @@ public actor Doll {
             }
             if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c))) }
         }
-        // Only the last `image_turns_kept` turns keep their screenshots (spec 3.1, 2026-11-09): a turn's
-        // images are the ones after her reply, up to her next; a watch wake's belong to the turn before it.
-        var turnOfImage: [Int64: Int64] = [:], turns: [Int64] = [], lastReply: Int64 = 0
-        for (ev, mode) in plan {
-            guard case .full = mode else { continue }
-            if ev.kind == .doll { lastReply = ev.seq! }
-            guard ev.image != nil || ev.crop != nil else { continue }
-            turnOfImage[ev.seq!] = lastReply
-            if turns.last != lastReply { turns.append(lastReply) }
-        }
-        let kept = computerConfig.imageTurnsKept
-        let withImages = Set(kept == 0 ? turns : turns.suffix(kept))
+        // Only the latest window read keeps its element list and screenshot (2026-11-16, owner): every
+        // earlier read goes out as one line naming the window, so she never acts on a stale list and a
+        // list costs its tokens once.
+        let latestRead = plan.last { if case .full = $0.1 { $0.0.image != nil || $0.0.window != nil } else { false } }?.0.seq
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             switch mode {
             case .full:
-                out += try render(ev, images: turnOfImage[ev.seq!].map(withImages.contains) ?? true)
+                out += try render(ev, read: ev.seq == latestRead)
             case .reply(let calls):
                 out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
             case .block(let c):
@@ -750,21 +696,19 @@ public actor Doll {
     }
 
     /// One event as prompt messages. Tool results follow her reply directly, in call order; the
-    /// template wraps them in `<tool_response>`. A computer result goes out as one message: its
-    /// text, the full-screen screenshot, the crop's line, the front window's crop, the window's
-    /// outline (2026-11-09), images from the stored files' bytes. `images: false`: the screenshots
-    /// are replaced by one fixed line, the rest stays.
-    func render(_ ev: Event, images: Bool = true) throws -> [ChatMessage] {
+    /// template wraps them in `<tool_response>`. A computer read goes out as one message: its text,
+    /// the window's screenshot, then the window's element list (2026-11-16), the image from the stored
+    /// file's bytes. `read: false` (an older read): the screenshot and the list are replaced by one
+    /// line naming the window.
+    func render(_ ev: Event, read: Bool = true) throws -> [ChatMessage] {
         let t = clock(ev.ts)
         var extra: [ChatMessage.Extra] = []
-        if images {
+        if read {
             if let f = ev.image { extra.append(.image(try imageURI(f))) }
-            if let n = ev.cropNote { extra.append(.text(n)) }
-            if let f = ev.crop { extra.append(.image(try imageURI(f))) }
-        } else if ev.image != nil || ev.crop != nil {
-            extra.append(.text(Self.imagesPutAway))
+            if let w = ev.window { extra.append(.text(w)) }
+        } else if ev.image != nil || ev.window != nil {
+            extra.append(.text(Self.readPutAway(ev.window)))
         }
-        if let w = ev.window { extra.append(.text(w)) }
         switch ev.kind {
         case .doll:
             let footer = ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? []
@@ -788,8 +732,10 @@ public actor Doll {
         }
     }
 
-    /// What an older result says where its screenshots were (fixed bytes).
-    static let imagesPutAway = "（這回合的截圖已收起；只有最近幾回合帶圖）"
+    /// What an older read says in place of its screenshot and list: the window's first line.
+    static func readPutAway(_ window: String?) -> String {
+        "（較早讀到的：" + (window.map { String($0.prefix { $0 != "\n" }) } ?? "視窗") + "；清單和截圖已收起，只有最新一次讀到的留著）"
+    }
     /// What a reply of hers without any call is sent as (2026-11-16, see `render`); the wording measured.
     static let thoughtOnlyTag = "[她那回合只想了，沒呼叫工具] "
 
@@ -823,8 +769,9 @@ public actor Doll {
         let start = todo.startSeq
         let covered = timeline.compactions.filter { $0.kind != .talk && $0.fromSeq == start }.map(\.toSeq).max() ?? start
         var tokens = 0, images = 0
+        let latestRead = timeline.events.last { $0.image != nil || $0.window != nil }?.seq
         for ev in timeline.events where ev.seq! > covered && ev.speaker == nil {
-            let msgs = try render(ev)
+            let msgs = try render(ev, read: ev.seq == latestRead)
             tokens += estimate(msgs)
             images += msgs.reduce(0) { $0 + $1.extra.filter { if case .image = $0 { true } else { false } }.count }
         }
@@ -856,14 +803,13 @@ public actor Doll {
         return (n < 0 ? "-" : "") + out
     }
 
-    /// The facts footer: her todo list, her watch, the context, effort for the next call, and near
+    /// The facts footer: her todo list, the context, effort for the next call, and near
     /// the limit one warning line (2026-11-14). Figures are estimates scaled by the last real prompt size.
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
         if let felt = feltLine(now: now) { out.append("- " + felt) }
         if let goals = goalStatusLine() { out.append(goals) }
-        out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
         if let asleep = ownerSleepLine(now: now) { out.append("- " + asleep) }
         if maintenanceConfig.enabled { out += maintenanceStatusLines(now: now) }
@@ -893,7 +839,7 @@ public actor Doll {
         return switch todo.phase {
         case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
         case .doing: "進行中\(item)\(rest)"
-        case .waiting: "等待中\(item)（有人說話或 watch 叫你才會再有回合）\(rest)"
+        case .waiting: "等待中\(item)（有人說話才會再有回合）\(rest)"
         case .failed: "失敗\(item)：電腦工具鎖著，用 todo.set 決定剩下的（重寫、照原樣列，或給空的陣列結束清單）\(rest)"
         }
     }
@@ -933,7 +879,6 @@ public actor Doll {
         followUp = false
         attachedNow = []
         associatedNow = []
-        cheatsheetNow = []
         itemEndNow = nil
         compactedNow = []
         experienceNow = nil
@@ -948,7 +893,6 @@ public actor Doll {
             ownerArrived = false
             attachedIDs = []
             associatedIDs = []
-            cheatsheetSent = []
             await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
             recallHeld()
         }
@@ -1018,17 +962,19 @@ public actor Doll {
         // Her `todo.done` / `todo.fail` / `todo.progress` ends a span: the calls after it are refused,
         // except the speaking tools (2026-11-11: she wrote her words after the end and the owner heard
         // nothing; speaking touches no computer).
-        // Her computer actions (click, type, key, scroll, drag) run in order and stop at the first
-        // failure (2026-11-09): only the last one done carries the observation, the ones before it
-        // answer with their line only, and the ones after a failure are not run. Actions written
-        // after an ending call never run, so the one before it is the last.
+        // Her computer actions (click, type, key, scroll, menu) run in order and stop at the first
+        // failure (2026-11-09): only the last one done carries the window's new read, the ones before
+        // it answer with their line only, and the ones after a failure are not run. Actions written
+        // after an ending call never run, so the one before it is the last. Every row she gives means
+        // the read she saw before this reply (`Mac.beginReply`).
+        await mac.beginReply(item: todo.current)
         let live = calls.prefix { !Tools.ending.contains($0.name) }
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
         var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?
         for (i, call) in calls.enumerated() {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
-            let out: Outcome
+            var out: Outcome
             if let ended, Tools.speaking[call.name] == nil {
                 out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
@@ -1043,6 +989,7 @@ public actor Doll {
                 if !call.name.hasPrefix("todo."), call.name != "think" { itemActed = true }
                 chain.last = !actionAt.contains(i) || actionAt.last == i
                 out = await execute(call, seen: events, reply: stored, chain: chain)
+                if Tools.gated.contains(call.name) { out = noteRepeats(call, out) }
                 if out.ends { ended = name }
                 if isAction {
                     if let line = out.failedStep {
@@ -1052,8 +999,7 @@ public actor Doll {
                     }
                 }
             }
-            var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image,
-                                    cropNote: out.cropNote, crop: out.crop, window: out.window)
+            var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image, window: out.window)
             resultEvent.channel = out.channel
             try append(resultEvent)
             actions += out.actions
@@ -1071,13 +1017,9 @@ public actor Doll {
         }
         if ended != nil {
             // What the program would attach for the span she just closed would leave with it.
-            cheatsheetDue = []
             appSwitched = false
         }
-        // A computer result showed another front app: its 【快捷鍵】 (once per task), then one
-        // 【相關記憶】, after all of this reply's results.
-        for app in cheatsheetDue { await sendCheatsheet(app) }
-        cheatsheetDue = []
+        // A computer result worked on another app: one 【相關記憶】, after all of this reply's results.
         if appSwitched {
             appSwitched = false
             await attachMemories(trigger: "前景 app 換成 \(frontApp?.name ?? "?")")
@@ -1140,7 +1082,7 @@ public actor Doll {
                                 footer: footerText, effort: effort, usage: reply.usage, usedTool: usedTool,
                                 attached: attachedNow, itemEnd: itemEndNow, experience: experienceNow, follows: followsNow,
                                 todo: todo.phase.label, compacted: compactedNow,
-                                cheatsheets: cheatsheetNow, selections: selectionsNow)
+                                selections: selectionsNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) todo=\(todo.phase.label) actions=\(actions) prompt=\(reply.usage.promptTokens) "
             + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?") "
             + reply.usage.stopLine)
@@ -1158,21 +1100,19 @@ public actor Doll {
     static let voiceUnwired = "語音還沒接上，語音頻道現在用不了；要跟主人說話用 \(Tools.Name.dm)。"
 
     // tools ------------------------------------------------------------------
-    /// One call's result: the tool message text, its screenshots (full screen, then the front
-    /// window's crop after its line) and the front window's outline, whether it carries a secret, the
-    /// report actions, and whether it only says something started (no next turn for that alone).
+    /// One call's result: the tool message text, the window's screenshot and its element list (a
+    /// computer read), whether it carries a secret, the report actions, and whether it only says
+    /// something started (no next turn for that alone).
     struct Outcome {
         var text: String
         var image: String?
-        var cropNote: String?
-        var crop: String?
         var window: String?
         var secret = false
         var actions: [String]
         var background = false
         /// This call closed a span (`todo.done`, `todo.fail`, `todo.progress`): the calls after it do not run.
         var ends = false
-        /// This computer action failed (before or in the VM): its line, for the refusals after it.
+        /// This computer action failed: its line, for the refusals after it.
         var failedStep: String?
         /// A speaking call that went out: the channel it went to (2026-11-14).
         var channel: Channel?
@@ -1246,7 +1186,7 @@ public actor Doll {
             case .todoWait:
                 let item = try currentItem("todo.wait")
                 waitNow = true
-                return Outcome(text: "好，這則回覆的呼叫做完以後，「\(item)」就是等待中：有人說話或 watch 叫你才會再有回合。",
+                return Outcome(text: "好，這則回覆的呼叫做完以後，「\(item)」就是等待中：有人說話才會再有回合。",
                                actions: ["todo wait"], background: true)
             case .todoProgress:
                 let item = try currentItem("todo.progress")
@@ -1254,38 +1194,31 @@ public actor Doll {
                 warnedTurns = 0
                 return Outcome(text: "前面的過程收起來了，之後只留你寫的進度和這份動作清單：\(Self.actionList(itemSteps.map(\.line)))。「\(item)」還在進行中，接著做。",
                                actions: ["todo progress"], ends: true)
-            case .screenshot:
-                watchIdle = 0
-                return await withScreenshot("現在的畫面：", actions: [name])
+            case .apps:
+                return Outcome(text: try await mac.apps(), actions: [name])
+            case .open(let app, let target):
+                return computerOutcome(try await mac.open(app, target: target), name: name, chain: chain)
+            case .readWindow(let app, let window):
+                return computerOutcome(try await mac.readWindow(app, window: window), name: name, chain: chain)
             case .act(let action):
-                return await perform(action, said: Self.describe(action), note: nil, name: name, chain: chain)
-            case .clickAt(let x, let y, let onWindow, let button, let count):
-                let p = try screenPoint(x, y, onWindow: onWindow)
-                let action = ComputerAction.click(x: p.x, y: p.y, button: button, count: count)
-                let line = onWindow ? "click 視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" + Self.extra(button, count) : Self.describe(action)
-                return await perform(action, said: line, note: onWindow ? "視窗圖 \(x),\(y) → 全螢幕 \(p.x),\(p.y)" : nil, name: name, chain: chain)
-            case .watch(let region, let maxWait):
-                let replaced = watch != nil
-                let w = startWatch(region, maxWait: maxWait ?? computerConfig.watchDefaultMaxWaitS)
-                waitNow = true
-                return Outcome(text: "開始盯著\(w.target)，最多等 \(seconds(w.maxWait))；有變化或時間到會叫你。"
-                               + (replaced ? "（取代了上一個 watch）" : "") + "這則回覆的呼叫做完以後，這一項就是等待中。",
-                               actions: [name], background: true)
-            // The file tools (2026-11-09): text only, no screenshot and no window line, the screen did
-            // not change. Only a success is a step, and the step never holds the content.
+                return computerOutcome(try await mac.act(action), name: name, chain: chain)
+            case .askOwner(let what, let place, let why):
+                return try askOwner(what: what, where: place, why: why)
+            // The file tools (2026-11-09; this Mac's files since 2026-11-16): text only, no window read.
+            // Only a success is a step, and the step never holds the content.
             case .readFile(let path, let from, let to):
-                let text = try FileText.decode(try await computer.readFile(path), path: path)
+                let text = try FileText.decode(try LocalFiles.read(path), path: path)
                 let out = try FileText.read(text, path: path, from: from, to: to, max: filesConfig.maxReadLines)
                 itemSteps.append((timeline.lastSeq + 1, "read_file \(path)"))
                 return Outcome(text: out, actions: [name])
             case .writeFile(let path, let text):
-                try await computer.writeFile(path, Data(text.utf8))
+                try LocalFiles.write(path, Data(text.utf8))
                 itemSteps.append((timeline.lastSeq + 1, "write_file \(path)（\(FileText.lines(text).count) 行）"))
                 return Outcome(text: FileText.written(text, path: path), actions: [name])
             case .editFile(let path, let old, let new):
-                let text = try FileText.decode(try await computer.readFile(path), path: path)
+                let text = try FileText.decode(try LocalFiles.read(path), path: path)
                 let (changed, out) = try FileText.edit(text, path: path, old: old, new: new)
-                try await computer.writeFile(path, Data(changed.utf8))
+                try LocalFiles.write(path, Data(changed.utf8))
                 itemSteps.append((timeline.lastSeq + 1, "edit_file \(path)"))
                 return Outcome(text: out, actions: [name])
             case .calendar(let r):
@@ -1309,341 +1242,81 @@ public actor Doll {
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
-            // A computer action refused before the VM (bad arguments, a point off the screen) ends the
-            // reply's chain like one that failed in it; the screen is shown when an earlier action
-            // of this reply answered with its line only.
+            // A computer action refused before it was sent (a row not in the latest read, bad
+            // arguments) ends the reply's chain like one that failed; the window is read again when an
+            // earlier action of this reply answered with its line only, so she sees where things stand.
             guard Tools.actionNames.contains(call.name) else { return Outcome(text: "失敗：\(error)", actions: ["error \(name)"]) }
-            var out = chain.owed ? await withScreenshot("失敗：\(error)", actions: ["error \(name)"])
-                                 : Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
+            var out = Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
+            if chain.owed {
+                do {
+                    let r = try await mac.look()
+                    out.image = r.image
+                    out.window = r.window
+                } catch {
+                    out.text += "\n（重讀視窗也失敗：\(error)）"
+                }
+            }
             out.failedStep = name
             return out
         }
     }
 
-    /// `text` and the open windows / focus line, plus a fresh full-screen screenshot, the front
-    /// window's crop with where it sits on the full screen and its size, and the window's outline
-    /// (spec 3.1, 2026-11-09). No front window: no crop and no outline, the result says why, and the
-    /// menu bar's and Dock's items with their centers follow in the outline's place. A failed
-    /// screenshot, crop, outline, menu bar/Dock summary or window list is said in the result (and is
-    /// an error); none is dropped silently.
-    func withScreenshot(_ text: String, actions: [String]) async -> Outcome {
-        let computer = computer
-        async let front: Result<FrontWindow, Error> = {
-            do { return .success(try await computer.frontWindow()) } catch { return .failure(error) }
-        }()
-        var out = Outcome(text: text, actions: actions)
-        // A successful action may have nothing of its own to say (2026-11-10): no leading blank line.
-        func add(_ line: String) { out.text = out.text.isEmpty ? line : out.text + "\n" + line }
-        cropMap = nil
-        do { out.image = try await capture(nil) } catch {
-            log("ERROR", "turn \(turnIndex): screenshot failed: \(error)")
-            add("截圖失敗：\(error)")
-            out.actions.append("error screenshot")
+    /// A computer read or action as her tool result: its text, and the window's screenshot and
+    /// element list unless an action is not the last of her reply (then its line only). Its app keys
+    /// the 【相關記憶】 on a switch and the experience's entities; a success is a step of the item.
+    func computerOutcome(_ r: MacResult, name: String, chain: Chain) -> Outcome {
+        var out = Outcome(text: r.text, image: r.image, window: r.window, actions: [r.failed ? "error \(name)" : name])
+        if r.failed {
+            out.failedStep = name
+        } else {
+            if let step = r.step { itemSteps.append((timeline.lastSeq + 1, step)) }
+            if Tools.actionNames.contains(name), !chain.last {
+                out.image = nil
+                out.window = nil
+            }
         }
-        switch await front {
-        case .success(let w):
-            out.window = w.summary
-            switch w.place {
-            case .at(let r):
-                do {
-                    out.crop = try await capture(r)
-                    let size = cropMap.map { "，圖 \($0.width)×\($0.height)" } ?? ""
-                    out.cropNote = "視窗圖：最前面的視窗，在全螢幕 (\(r.x0),\(r.y0))–(\(r.x1),\(r.y1))\(size)；用這張圖上的座標點要加 on: window。"
-                } catch {
-                    log("ERROR", "turn \(turnIndex): window crop failed: \(error)")
-                    out.cropNote = "沒有視窗圖：截視窗失敗：\(error)"
-                    out.actions.append("error crop")
-                }
-            case .unknown(let why):
-                out.cropNote = "沒有視窗圖：\(why)"
-            }
-        case .failure(let error):
-            log("ERROR", "turn \(turnIndex): window outline failed: \(error)")
-            out.actions.append("error window")
-            let desktop: String
-            do { desktop = try await computer.desktopSummary() } catch {
-                log("ERROR", "turn \(turnIndex): menu bar and Dock summary failed: \(error)")
-                desktop = "Dock 和選單列概要失敗：\(error)"
-                out.actions.append("error desktop")
-            }
-            out.window = "沒有視窗圖和視窗概要：\(error)\n\(desktop)"
-        }
-        // The open windows, the focused element and the front app: after the rest, never alongside it
-        // (VMPal runs at most two CLI commands per VM at once; a third fails, 2026-11-09). The line
-        // ends the result's text; the front app keys her shortcut memories and the 【相關記憶】 on a switch.
-        do {
-            let state = try await computer.frontState()
-            add(state.line)
-            if let app = state.app {
-                if computerConfig.learnShortcuts { await learnShortcuts(app) }
-                if app.name != frontApp?.name {
-                    appSwitched = true
-                    if computerConfig.cheatsheet, !cheatsheetSent.contains(app.bundleID),
-                       !cheatsheetDue.contains(where: { $0.bundleID == app.bundleID }) {
-                        cheatsheetDue.append(app)
-                    }
-                }
-                frontApp = app
-                noteSeen(app: app, line: state.line)
-                if !itemApps.contains(where: { $0.bundleID == app.bundleID }) { itemApps.append(app) }
-            }
-        } catch {
-            log("ERROR", "turn \(turnIndex): open windows and focus failed: \(error)")
-            add("開著的視窗和焦點讀不到：\(error)")
-            out.actions.append("error windows")
+        if let app = r.app {
+            if app.bundleID != frontApp?.bundleID { appSwitched = true }
+            frontApp = app
+            noteSeen(app: app, line: r.window.map { String($0.prefix { $0 != "\n" }) } ?? app.name)
+            if !itemApps.contains(where: { $0.bundleID == app.bundleID }) { itemApps.append(app) }
         }
         return out
     }
 
-    /// The program's own shortcut memories (spec 3.1, 2026-11-09): the first time the front app is
-    /// one not recorded at its version, every menu shortcut it has becomes one public memory, tier
-    /// program, no kind; the app's records from another version are deleted first. She is not told:
-    /// they are in her memory for `recall`. A failed read is logged and tried again next time. Its
-    /// entities (2026-11-11; exact only 2026-11-15): the app (`Selector.programApp`) and the keys
-    /// (`Selector.programShortcut`).
-    /// Not the menu item: two apps' items of one title are different things, and the text has it.
-    func learnShortcuts(_ app: AppIdentity) async {
-        do {
-            if learnedApps == nil { learnedApps = try memory.learnedApps() }
-            guard learnedApps?[app.bundleID] != app.version else { return }
-            let shortcuts = try await shortcuts(of: app)
-            // Re-checked after the await: another call may have recorded it meanwhile. Marked before
-            // the writes, unmarked if they fail.
-            guard learnedApps?[app.bundleID] != app.version else { return }
-            let before = learnedApps?[app.bundleID]
-            learnedApps?[app.bundleID] = app.version
-            do {
-                let removed = try memory.forgetApp(app.bundleID)
-                let appEntity = try pipeline.programApp(app).entry
-                for s in shortcuts {
-                    let text = "\(app.name)：\(s.path)＝\(s.keys)（\(app.name) \(app.version)）"
-                    let keys = try pipeline.programShortcut(s.keys)
-                    try memory.write(text, folder: .public, sourceSeq: 0, tier: .program, kind: nil, app: app,
-                                     entities: [MemoryEntity(appEntity.id, app.name), MemoryEntity(keys.id, s.keys)],
-                                     now: Date().timeIntervalSince1970)
-                }
-                log("INFO", "shortcuts of \(app.bundleID) \(app.version): \(shortcuts.count) written, \(removed) old removed")
-            } catch {
-                learnedApps?[app.bundleID] = before
-                throw error
-            }
-        } catch {
-            log("ERROR", "shortcuts of \(app.bundleID) \(app.version) failed: \(error)")
-        }
-    }
-
-    /// The menu shortcuts of `app` at its version: from the cache, else read from the VM once.
-    func shortcuts(of app: AppIdentity) async throws -> [MenuShortcut] {
-        let key = "\(app.bundleID)\t\(app.version)"
-        if let cached = shortcutCache[key] { return cached }
-        let read = try await computer.menuShortcuts(app.bundleID)
-        shortcutCache[key] = read
-        return read
-    }
-
-    /// The front app's whole cheatsheet into the timeline (spec 3.1, 2026-11-09): `【快捷鍵】<App>
-    /// <version>`, then one `選單 › 項目 = 鍵` line per shortcut in the reader's order; stored once,
-    /// re-sent byte-identical like every event. Once per app since the owner's last line. A failed
-    /// read, or an app without shortcuts, is said in the log only; a failed read is tried again on
-    /// the next switch to that app.
-    func sendCheatsheet(_ app: AppIdentity) async {
-        guard !cheatsheetSent.contains(app.bundleID) else { return }
-        do {
-            let shortcuts = try await shortcuts(of: app)
-            guard !shortcuts.isEmpty else {
-                log("INFO", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version): none, no event")
-                return
-            }
-            let text = Self.cheatsheetText(app, shortcuts)
-            try append(Event(.memory, .internal, text))
-            cheatsheetSent.insert(app.bundleID)
-            cheatsheetNow.append(text)
-            log("INFO", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version): \(shortcuts.count) lines, \(text.count) chars")
-        } catch {
-            log("ERROR", "turn \(turnIndex): 快捷鍵 of \(app.bundleID) \(app.version) failed: \(error)")
-        }
-    }
-
-    static func cheatsheetText(_ app: AppIdentity, _ shortcuts: [MenuShortcut]) -> String {
-        (["【快捷鍵】\(app.name) \(app.version)"] + shortcuts.map { "\($0.path) = \($0.keys)" }).joined(separator: "\n")
-    }
-
-    /// Records the front app's shortcuts now, as the first use of it would (a run that starts with
-    /// them already in her memory).
-    public func learnFrontApp() async throws {
-        guard let app = try await computer.frontApp() else { throw ComputerError("沒有前景 app") }
-        await learnShortcuts(app)
-    }
-
-    /// Takes a full-screen screenshot, or the front window's crop at `region`, and stores its bytes
-    /// as a file under `shots/`. Notes its pixel size for `click`'s coordinates.
-    func capture(_ region: Region?) async throws -> String {
-        let data: Data, format: String
-        if let region {
-            (data, format) = (try await computer.windowShot(region), computerConfig.windowCropFormat)
-            cropMap = ImageSize.of(data).map { (region, $0.width, $0.height) }
-        } else {
-            (data, format) = (try await computer.screenshot(region: nil), computerConfig.screenshotFormat)
-            screenSize = ImageSize.of(data)
-        }
-        let file = "\(hex(16)).\(format == "png" ? "png" : "jpg")"
-        try data.write(to: shots.appending(path: file))
-        return file
-    }
-
-    /// Runs one action. A success says only what she does not already have (2026-11-10: her call is in
-    /// the context, so it is not echoed): `note` (what the program worked out, e.g. a window-crop point's
-    /// screen point), then VMPal's words without its bookkeeping; nothing at all when nothing is left. A
-    /// failure names the step (`said`) and the reason. The last action of her reply (and every failure)
-    /// comes with fresh screenshots; an earlier one with its text only. The action's own time,
-    /// screenshots excluded, goes to the log (M2 round 6: element-click latency).
-    func perform(_ action: ComputerAction, said: String, note: String?, name: String, chain: Chain) async -> Outcome {
-        watchIdle = 0
-        let start = ContinuousClock.now
-        let result: Result<String, Error>
-        do { result = .success(try await computer.act(action)) } catch { result = .failure(error) }
-        let took = start.duration(to: .now)
-        log("INFO", "turn \(turnIndex): \(Self.describe(action)) took \(String(format: "%.2f", Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)) s")
-        switch result {
-        case .success(let answer):
-            itemSteps.append((timeline.lastSeq + 1, Self.step(action)))
-            let text = [note ?? "", Self.condense(answer)].filter { !$0.isEmpty }.joined(separator: "\n")
-            guard chain.last else { return Outcome(text: text, actions: [name]) }
-            return await withScreenshot(text, actions: [name])
-        case .failure(let error):
-            // A failed action is not a step of the experience (spec 3.1, 2026-11-09).
-            // VMPal's or agent-desktop's own words, verbatim; the screenshot shows where things stand.
-            log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
-            var out = await withScreenshot("失敗：\(said)\n\(error)", actions: ["error \(name)"])
-            out.failedStep = said
+    /// The same computer call failing again (2026-11-16: TextEdit, 15 rounds of the same step that
+    /// could not work): from the second identical failure in a row her result says so and what her
+    /// honest options are. Nothing is refused; any computer call that succeeds starts the count over.
+    func noteRepeats(_ call: ToolCall, _ out: Outcome) -> Outcome {
+        guard out.actions.contains(where: { $0.hasPrefix("error ") }) else {
+            failedCalls = [:]
             return out
         }
+        let key = call.name + " " + call.parameters.map { "\($0.name)=\($0.value)" }.joined(separator: " ")
+        let n = (failedCalls[key] ?? 0) + 1
+        failedCalls[key] = n
+        guard n >= 2 else { return out }
+        var out = out
+        out.text += "\n【同一步又失敗】一模一樣的 \(call.name) 已經失敗 \(n) 次了，再做一次也會一樣。換一個做法（別的元素、menu、open 帶 target、先讀別的視窗）；想不到別的做法，就用 todo.fail 老實說做不到、試過什麼，或用 ask_owner 問主人。"
+        log("INFO", "turn \(turnIndex): \(call.name) failed \(n) times in a row with the same arguments")
+        return out
     }
 
-    /// A successful action's answer as she reads it (2026-11-10): VMPal's bookkeeping lines are left
-    /// out: `Done: 1 action in 0.7 s. Screen 1280×800 (screenshot pixels), frame 8386.`, the echo of
-    /// where a pointer action landed (`left_click at (558, 328).`, `double_click on “x” at (…).`),
-    /// `Typed 46 characters.`, and the clipboard note of a paste. What she uses stays: `Changed: …`,
-    /// `Nothing changed …` (a click that may have missed), and anything else. They were most of the
-    /// ~90 tokens a result took, kept in every later turn.
-    static func condense(_ answer: String) -> String {
-        answer.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).filter { line in
-            !(line.hasPrefix("Done: ") && line.contains(" action")
-              || line.range(of: #"^(left_click|right_click|middle_click|double_click|triple_click)( on .*)? at \(\d+, \d+\)\.$"#, options: .regularExpression) != nil
-              || line.range(of: #"^Typed \d+ characters?\.$"#, options: .regularExpression) != nil
-              || line == "經剪貼簿貼上（cmd+v），剪貼簿已還原。")
-        }.joined(separator: "\n")
-    }
-
-    /// `click` x, y in full-screenshot pixels: as given (`on: screen`), or from the last window crop
-    /// through where it sits on the screen and its size (`on: window`). A point off the screen, or
-    /// off the crop, is an error and nothing is clicked.
-    func screenPoint(_ x: Int, _ y: Int, onWindow: Bool) throws -> (x: Int, y: Int) {
-        let width = screenSize?.width ?? computerConfig.screenshotWidth
-        guard onWindow else {
-            guard x >= 0, y >= 0, x < width, screenSize.map({ y < $0.height }) ?? true else {
-                throw ToolError(description: "沒有點：\(x),\(y) 在螢幕外（全螢幕截圖 "
-                                + (screenSize.map { "\($0.width)×\($0.height)" } ?? "\(width) 寬") + "）")
-            }
-            return (x, y)
+    /// `ask_owner` (2026-11-16, owner decision 4): her question goes to the owner's DM; with an item in
+    /// progress it becomes 等待中 after this reply's calls, and his answer (an owner line) resumes it.
+    func askOwner(what: String, where place: String, why: String) throws -> Outcome {
+        let text = "【\(name)想先問你】\n要做：\(what)\n在哪裡：\(place)\n為什麼：\(why)"
+        if let failure = deliver(text, .owner) {
+            log("ERROR", "turn \(turnIndex): ask_owner not delivered: \(failure)")
+            throw ToolError(description: "主人沒收到：\(failure)。Discord 連上之前問不了；先不要做那件事。")
         }
-        guard let m = cropMap else {
-            throw ToolError(description: "沒有點：最近的結果沒有視窗圖，on: window 換算不了；用全螢幕截圖的座標")
+        reachedOwner()
+        guard todo.phase == .doing, let item = todo.current else {
+            return Outcome(text: "問了主人（私訊）。他回了你才會知道。", actions: ["ask owner"], background: true)
         }
-        guard x >= 0, y >= 0, x < m.width, y < m.height else {
-            throw ToolError(description: "沒有點：\(x),\(y) 不在視窗圖裡（視窗圖 \(m.width)×\(m.height)）")
-        }
-        let r = m.region
-        let sx = r.x0 + Int((Double(x) * Double(r.x1 - r.x0) / Double(m.width)).rounded(.down))
-        let sy = r.y0 + Int((Double(y) * Double(r.y1 - r.y0) / Double(m.height)).rounded(.down))
-        return (sx, sy)
-    }
-
-    static func extra(_ button: String, _ count: Int) -> String {
-        (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
-    }
-
-    /// What an action was, for the first line of its result.
-    static func describe(_ a: ComputerAction) -> String {
-        switch a {
-        case .click(let x, let y, let button, let count): return "click \(x),\(y)\(extra(button, count))"
-        case .clickText(let text, let button, let count): return "click「\(text)」\(extra(button, count))"
-        case .clickElement(let role, let name, let button, let count):
-            return "click 元素 " + [role, name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ") + extra(button, count)
-        case .type(let text): return "type「\(text)」"
-        case .key(let keys): return "key \(keys)"
-        case .scroll(let direction, let amount): return "scroll \(direction) \(amount)"
-        case .drag(let x0, let y0, let x1, let y1): return "drag \(x0),\(y0) → \(x1),\(y1)"
-        }
-    }
-
-    // watch ------------------------------------------------------------------
-    /// Replaces any watch she had. The loop compares screenshots of the region; a change wakes her
-    /// (at most once per `watch_min_interval_s`), and so does `max_wait` passing without a wake.
-    func startWatch(_ region: Region?, maxWait: Double) -> Watch {
-        stopWatch()
-        watchSerial += 1
-        let id = watchSerial
-        watchIdle = 0
-        let w = Watch(id: id, region: region, maxWait: maxWait,
-                      task: Task { await self.watchLoop(id, region: region, maxWait: maxWait) })
-        watch = w
-        return w
-    }
-
-    func stopWatch() {
-        watch?.task.cancel()
-        watch = nil
-    }
-
-    func watchLoop(_ id: Int, region: Region?, maxWait: Double) async {
-        let c = computerConfig
-        var base: Data
-        do { base = try await computer.screenshot(region: region) } catch {
-            guard watch?.id == id else { return }
-            log("ERROR", "watch \(id): first screenshot failed: \(error)")
-            watch = nil
-            put(Event(.watch, .internal, "watch 失敗，沒有在盯：\(error)"))
-            return
-        }
-        var lastWake: ContinuousClock.Instant?
-        var deadline = ContinuousClock.now + .seconds(maxWait)
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(c.watchPollS))
-            guard watch?.id == id, !Task.isCancelled else { return }
-            let shot: Data
-            do { shot = try await computer.screenshot(region: region) } catch {
-                log("WARN", "watch \(id): screenshot failed: \(error)")
-                continue
-            }
-            guard watch?.id == id else { return }
-            let now = ContinuousClock.now
-            let changed = shot != base
-            let spaced = lastWake.map { now - $0 >= .seconds(c.watchMinIntervalS) } ?? true
-            guard (changed && spaced) || now >= deadline else { continue }
-            base = shot
-            lastWake = now
-            deadline = now + .seconds(maxWait)
-            await watchWake(id, changed: changed)
-        }
-    }
-
-    func watchWake(_ id: Int, changed: Bool) async {
-        guard let w = watch, w.id == id else { return }
-        watchIdle += 1
-        var text = changed ? "盯著的\(w.target)變了。" : "盯著的\(w.target) \(seconds(w.maxWait))沒變化。"
-        if watchIdle >= computerConfig.watchStopAfter {
-            text += "（連續 \(watchIdle) 次叫你都沒操作電腦，watch 停了）"
-            log("INFO", "watch \(id) stopped after \(watchIdle) wakes in a row without a computer action")
-            stopWatch()
-        }
-        let image: String?
-        do { image = try await capture(nil) } catch {
-            log("ERROR", "watch \(id): screenshot failed: \(error)")
-            text += "\n截圖失敗：\(error)"
-            image = nil
-        }
-        put(Event(.watch, .internal, text, image: image))
+        waitNow = true
+        return Outcome(text: "問了主人（私訊）。這則回覆的呼叫做完以後，「\(item)」就是等待中：他回了才會再有回合。",
+                       actions: ["ask owner"], background: true)
     }
 
     // todo -------------------------------------------------------------------
@@ -1679,10 +1352,9 @@ public actor Doll {
         forgetSeen()
     }
 
-    /// After a compaction: what the program showed for the front app left the request.
+    /// After a compaction: what the program showed for the app left the request.
     func forgetSeen() {
         frontApp = nil
-        cheatsheetSent = []
     }
 
     /// The action list a compaction leaves (2026-11-14): one short piece per action that went
@@ -1735,7 +1407,6 @@ public actor Doll {
         }
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
-        stopWatch()
         scoreAttached(steps: steps, outcome: "success")
         itemEndNow = TodoPhase.done.label
         var note = ""
@@ -1765,7 +1436,6 @@ public actor Doll {
         let item = try currentItem("todo.fail")
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .failed, item: item, fromSeq: todo.startSeq, toSeq: 0)
-        stopWatch()
         scoreAttached(steps: steps, outcome: "failure")
         itemEndNow = TodoPhase.failed.label
         todo.phase = .failed
@@ -1903,17 +1573,6 @@ public actor Doll {
             log("INFO", String(format: "turn \(turnIndex + 1): context \(used) of \(contextConfig.limit): events \(last + 1)…\(cut) collapsed into a summary of \(summary.count) chars (%.1f s)", Date().timeIntervalSince(t0)))
         } catch {
             log("ERROR", "turn \(turnIndex + 1): the oldest conversation was not collapsed: \(error)")
-        }
-    }
-
-    /// One step of an experience: only what she did, in full-screenshot coordinates (a click on the
-    /// window crop is stored where it landed); no VM answer text (spec 3.1, 2026-11-09).
-    static func step(_ a: ComputerAction) -> String {
-        switch a {
-        case .clickElement(let role, let name, let button, let count):
-            return "click " + [role, name.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: " ") + extra(button, count)
-        case .type(let text): return "type 「\(text)」"
-        default: return describe(a)
         }
     }
 

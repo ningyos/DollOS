@@ -48,8 +48,6 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var item: String?
     /// The items after it.
     public var pending: [String]
-    /// "盯著 <target>，最多等 <n> 秒"; nil without a watch.
-    public var watch: String?
     /// The footer's context figure: the estimate scaled by the last real prompt size.
     public var contextTokens: Int
     /// thinking (model call in flight) | acting (her tool calls) | idle (waiting for the next
@@ -77,8 +75,6 @@ public struct DashboardCall: Codable, Sendable, Equatable {
     /// Her call's result, verbatim; nil while it has not been stored yet.
     public var result: String?
     public var image: String?
-    public var cropNote: String?
-    public var crop: String?
     public var window: String?
     public var secret: Bool
     /// A well-formed speaking call's channel (2026-11-14), from its name: Discord 私訊 | Discord 語音 |
@@ -105,16 +101,12 @@ public struct DashboardItem: Codable, Sendable, Equatable {
     public var effort: String?
 }
 
-/// The latest screenshot, window crop and outline, and the open windows / focus line.
+/// The latest window read: its screenshot and element list.
 public struct DashboardVision: Codable, Sendable, Equatable {
     public var seq: Int64?
     public var ts: Double?
     public var image: String?
-    public var cropNote: String?
-    public var crop: String?
     public var window: String?
-    /// `開著的視窗：…；焦點：…` from the newest computer result that has it.
-    public var windows: String?
 }
 
 public struct DashboardMemoryEntry: Codable, Sendable, Equatable {
@@ -161,7 +153,6 @@ extension Doll {
     public func dashboardStatus() throws -> DashboardStatus {
         DashboardStatus(
             name: name, todo: todo.phase.label, item: todo.current, pending: todo.pending,
-            watch: watch.map { "盯著 \($0.target)，最多等 \(seconds($0.maxWait))" },
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
             paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,
@@ -197,8 +188,6 @@ extension Doll {
                 }
                 items[i].calls![at].result = e.text
                 items[i].calls![at].image = e.image
-                items[i].calls![at].cropNote = e.cropNote
-                items[i].calls![at].crop = e.crop
                 items[i].calls![at].window = e.window
                 items[i].calls![at].secret = e.secret
                 items[i].secret = items[i].secret || e.secret
@@ -219,12 +208,9 @@ extension Doll {
     public func dashboardVision() throws -> DashboardVision {
         let events = timeline.events
         var out = DashboardVision()
-        if let e = events.last(where: { $0.image != nil }) {
-            out = DashboardVision(seq: e.seq, ts: e.ts, image: e.image, cropNote: e.cropNote, crop: e.crop, window: e.window)
+        if let e = events.last(where: { $0.image != nil || $0.window != nil }) {
+            out = DashboardVision(seq: e.seq, ts: e.ts, image: e.image, window: e.window)
         }
-        out.windows = events.lazy.reversed().filter { $0.kind == .tool }.compactMap {
-            $0.text.split(separator: "\n").last { $0.hasPrefix("開著的視窗") }.map(String.init)
-        }.first
         return out
     }
 

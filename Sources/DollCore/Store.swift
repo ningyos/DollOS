@@ -107,15 +107,9 @@ public struct Event: Sendable, Equatable {
     public var secret: Bool
     /// Only owner voice may cancel a model call in flight (voice itself is M6).
     public var voice: Bool
-    /// The full-screen screenshot's file name under the data dir's `shots/`; rendered as an image part.
+    /// A computer read's window screenshot: a file name under the data dir's `shots/`; rendered as an image part.
     public var image: String?
-    /// The line rendered after that screenshot: where the front window's crop sits on the full
-    /// screen, or why there is no crop.
-    public var cropNote: String?
-    /// The front window's crop, a file under `shots/`; rendered as an image part after `cropNote`.
-    public var crop: String?
-    /// The front window's outline taken with those screenshots, or why there is none followed by the
-    /// menu bar's and Dock's items; rendered verbatim as the last text part.
+    /// A computer read's window element list (2026-11-16); rendered verbatim after the screenshot.
     public var window: String?
     /// For an owner or developer line: where it came from (2026-11-12). For the result of her
     /// `discord.dm` / `dollctl.reply` / `voice.say` call that went out: where it went (2026-11-14).
@@ -130,15 +124,13 @@ public struct Event: Sendable, Equatable {
     public var calls: [ToolCall] = []
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
-                image: String? = nil, cropNote: String? = nil, crop: String? = nil, window: String? = nil) {
+                image: String? = nil, window: String? = nil) {
         self.kind = kind
         self.principal = principal
         self.text = text
         self.secret = secret
         self.voice = voice
         self.image = image
-        self.cropNote = cropNote
-        self.crop = crop
         self.window = window
         self.seq = nil
         self.ts = Date().timeIntervalSince1970
@@ -177,7 +169,7 @@ public struct Event: Sendable, Equatable {
 /// One JSON object per line, told apart by `type` (keys snake_case, absent optionals left out):
 ///
 ///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
-///      "secret":false,"voice":false,"text":"…","image":"…","crop_note":"…","crop":"…","window":"…","channel":"discord_dm|discord_voice|dollctl"}
+///      "secret":false,"voice":false,"text":"…","image":"…","window":"…","channel":"discord_dm|discord_voice|dollctl"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
 ///     {"type":"todo","seq":5,"phase":"idle|doing|waiting|failed","current":"…","pending":["…"],"start_seq":4}
 ///                                                                   the todo list after her reply `seq` changed it
@@ -231,8 +223,6 @@ public final class Timeline {
         var voice: Bool
         var text: String
         var image: String?
-        var cropNote: String?
-        var crop: String?
         var window: String?
         var channel: Channel?
         /// Her reply's calls; present on every `doll` event since 2026-11-14.
@@ -382,8 +372,7 @@ public final class Timeline {
     }
 
     private func take(_ l: EventLine) {
-        var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, cropNote: l.cropNote,
-                      crop: l.crop, window: l.window)
+        var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, window: l.window)
         e.channel = l.channel
         e.calls = (l.calls ?? []).map { c in
             if let arguments = c.arguments { ToolCall(name: c.name, arguments: arguments) }
@@ -422,7 +411,7 @@ public final class Timeline {
     @discardableResult
     public func append(_ ev: Event) throws -> Event {
         let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
-                             voice: ev.voice, text: ev.text, image: ev.image, cropNote: ev.cropNote, crop: ev.crop,
+                             voice: ev.voice, text: ev.text, image: ev.image,
                              window: ev.window, channel: ev.channel,
                              calls: ev.kind == .doll ? ev.calls.map { StoredCall(name: $0.name, arguments: $0.arguments,
                                                                                   malformed: $0.arguments == nil ? $0.malformed : nil) } : nil)

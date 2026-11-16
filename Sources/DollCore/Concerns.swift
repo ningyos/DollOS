@@ -308,9 +308,9 @@ extension Doll {
 
     // wandering ------------------------------------------------------------------------------------
 
-    /// Idle: no todo in hand, nothing queued or owed, not in maintenance, no turn running, no watch.
+    /// Idle: no todo in hand, nothing queued or owed, not in maintenance, no turn running.
     var idleForWander: Bool {
-        !inTurn && !paused && maintenanceState.running == nil && queue.isEmpty && !followUp && watch == nil
+        !inTurn && !paused && maintenanceState.running == nil && queue.isEmpty && !followUp
             && (todo.phase == .idle || todo.phase == .done)
     }
 

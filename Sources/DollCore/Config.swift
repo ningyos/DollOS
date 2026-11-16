@@ -23,8 +23,8 @@ public struct CoreConfig: Sendable {
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
     /// voice share one MLX runtime, so one limit covers both. Set before either loads.
     public var mlxCacheLimitMB = 256
-    /// Her DollOS documents (2026-11-14): the repo folder copied into her computer at
-    /// `Doll.docsVMPath` at boot; relative paths are under the config's folder.
+    /// Her DollOS documents (2026-11-14; on this Mac since 2026-11-16): she reads them in place with
+    /// `read_file`, at this folder's absolute path; a relative path is under the config's folder.
     public var docs = "dolldocs"
 }
 
@@ -45,55 +45,30 @@ public struct ContextConfig: Sendable {
     public var talkEffort = "medium"
 }
 
-/// M2: her computer, a VMPal VM she drives with screenshots, pointer and keyboard (spec 3.1, 2026-11-08).
+/// Her computer is this Mac (2026-11-16): the owner's apps, driven in the background through
+/// `cua-driver` (`Computer.swift`).
 public struct ComputerConfig: Sendable {
-    /// The VM's whole ID: `vmpal ui` resolves it without asking VMPal.
-    public var vmID = ""
-    /// The VMPal CLI; it runs as `<vmpal> --cli ui <vm_id> …` (and `exec`, `cp`).
-    public var vmpal = "/Applications/VMPal.app/Contents/Helpers/VMPalMachine.app/Contents/MacOS/VMPalMachine"
-    /// agent-desktop inside the VM (run with `vmpal exec`): the front window's outline after every action.
-    public var agentDesktop = "/Users/doll/agent-desktop/agent-desktop"
-    /// The menu-shortcut reader inside the VM (`scripts/axmenus.swift`): `--front` names the front
-    /// app, `<bundle id>` lists that app's menu items with shortcuts.
-    public var axMenus = "/Users/doll/agent-desktop/axmenus"
-    /// When the front app is one not yet recorded at its version, the program writes one public
-    /// memory per menu shortcut of it (spec 3.1, 2026-11-09).
-    public var learnShortcuts = true
-    /// When a computer result's front app differs from the last one's and that app has had no
-    /// cheatsheet since the owner's last line, the program puts its whole menu-shortcut list into
-    /// the timeline as one 【快捷鍵】 event (spec 3.1, 2026-11-09).
-    public var cheatsheet = true
-    /// Every screenshot she gets has this width; her coordinates are in this space.
-    public var screenshotWidth = 1280
-    /// "jpeg" or "png".
-    public var screenshotFormat = "jpeg"
-    /// The front window's crop (spec 3.1, 2026-11-09: full screen plus the front window): at most this
-    /// wide (VMPal `--max-width`; a narrower window keeps the screen's own resolution).
-    public var windowCropWidth = 1280
-    /// The crop's format: "jpeg" or "png".
-    public var windowCropFormat = "jpeg"
-    /// JPEG screenshots (full and crop) are re-encoded at this quality, 1…100; 0 keeps VMPal's own
-    /// bytes. Every old screenshot is re-sent each turn, so their size is upload time (spec 3.1, 2026-11-09).
-    public var jpegQuality = 40
+    /// The cua-driver CLI (`/Applications/CuaDriver.app/Contents/MacOS/cua-driver`).
+    public var driver = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+    /// At boot, how long a daemon this process started may take to answer.
+    public var daemonStartS = 10.0
+    /// A read walks at most this many accessibility nodes (the driver's own default).
+    public var maxElements = 250
+    /// A window screenshot's long edge, in pixels, at most.
+    public var screenshotMaxDimension = 1024
     /// Rough prompt tokens of one screenshot, for the footer's context figure only.
-    public var screenshotTokens = 350
-    /// How many of the most recent turns keep their screenshots in the request; earlier results go
-    /// out as text only. 0 = every turn keeps them (the default): on Qwen3-Next Strata's prompt cache
-    /// resumes only from checkpoints, so dropping an old image costs a re-prefill of everything after
-    /// the owner's line (2026-11-09: 25-31 s a turn instead of 6.5). Useful only for models whose cache
-    /// matches any prefix.
-    public var imageTurnsKept = 0
-    /// watch: how often the watched region is captured and compared.
-    public var watchPollS = 1.0
-    /// watch: at least this many seconds between two wakes.
-    public var watchMinIntervalS = 10.0
-    /// watch: after this many wakes in a row with no computer action from her, the watch stops.
-    public var watchStopAfter = 3
-    /// watch: max_wait when she gives none.
-    public var watchDefaultMaxWaitS = 120.0
+    public var screenshotTokens = 600
+    /// After an action, before the window is read again.
+    public var settleS = 0.4
+    /// After launching an app or choosing a menu item, how many times the app's windows are listed
+    /// before saying it has none, and how long between two.
+    public var windowWaitTries = 5
+    public var windowWaitS = 0.6
+    /// Owner process names (`list_windows` app_name) of the system's authentication dialogs.
+    public var authProcesses = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]
 }
 
-/// Her file tools in the computer menu (2026-11-09): read_file, write_file, edit_file on text files in the VM.
+/// Her file tools (2026-11-09; on this Mac since 2026-11-16): read_file, write_file, edit_file on text files.
 public struct FilesConfig: Sendable {
     /// read_file returns at most this many lines at once; the rest is a count she reads with from/to.
     public var maxReadLines = 500
@@ -492,30 +467,20 @@ public struct Config: Sendable {
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])
         var computer = ComputerConfig()
-        computer.vmID = try v.required("vm_id")
-        try v.read("vmpal", &computer.vmpal)
-        try v.read("agent_desktop", &computer.agentDesktop)
-        try v.read("ax_menus", &computer.axMenus)
-        try v.read("learn_shortcuts", &computer.learnShortcuts)
-        try v.read("cheatsheet", &computer.cheatsheet)
-        try v.read("screenshot_width", &computer.screenshotWidth)
-        try v.read("screenshot_format", &computer.screenshotFormat)
-        try v.read("window_crop_width", &computer.windowCropWidth)
-        try v.read("window_crop_format", &computer.windowCropFormat)
-        try v.read("jpeg_quality", &computer.jpegQuality)
+        try v.read("driver", &computer.driver)
+        try v.read("daemon_start_s", &computer.daemonStartS)
+        try v.read("max_elements", &computer.maxElements)
+        try v.read("screenshot_max_dimension", &computer.screenshotMaxDimension)
         try v.read("screenshot_tokens", &computer.screenshotTokens)
-        try v.read("image_turns_kept", &computer.imageTurnsKept)
-        try v.read("watch_poll_s", &computer.watchPollS)
-        try v.read("watch_min_interval_s", &computer.watchMinIntervalS)
-        try v.read("watch_stop_after", &computer.watchStopAfter)
-        try v.read("watch_default_max_wait_s", &computer.watchDefaultMaxWaitS)
+        try v.read("settle_s", &computer.settleS)
+        try v.read("window_wait_tries", &computer.windowWaitTries)
+        try v.read("window_wait_s", &computer.windowWaitS)
+        try v.read("auth_processes", &computer.authProcesses)
         try v.finish()
-        guard ["jpeg", "png"].contains(computer.screenshotFormat), ["jpeg", "png"].contains(computer.windowCropFormat),
-              computer.screenshotWidth >= 1, computer.windowCropWidth >= 1, (0...100).contains(computer.jpegQuality),
-              computer.imageTurnsKept >= 0,
-              computer.watchPollS > 0, computer.watchMinIntervalS >= 0, computer.watchStopAfter >= 1,
-              computer.watchDefaultMaxWaitS > 0 else {
-            throw TOMLError(description: "[computer] screenshot_format and window_crop_format are jpeg or png; jpeg_quality 0…100; image_turns_kept 0 or more; screenshot_width, window_crop_width, watch_poll_s, watch_stop_after, watch_default_max_wait_s positive")
+        guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
+              computer.screenshotTokens >= 0, computer.settleS >= 0, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
+              !computer.authProcesses.isEmpty else {
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, window_wait_tries positive; screenshot_tokens, settle_s, window_wait_s 0 or more")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

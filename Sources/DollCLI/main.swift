@@ -58,8 +58,14 @@ let doll: Doll
 let api: LocalAPI
 let bridge: Bridge?
 let dashboard: Dashboard?
+/// Her computer's driver daemon (2026-11-16): started here when it was not running, stopped at exit.
+nonisolated(unsafe) var daemon: CuaDaemon?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
+    // Her computer (this Mac through cua-driver): missing driver, permission or daemon stops the boot.
+    let dm = try await CuaDaemon.ensure(driver: cfg.computer.driver, startWait: cfg.computer.daemonStartS)
+    daemon = dm
+    out("computer: cua-driver daemon " + (dm.started ? "started by this process (stopped at exit)" : "already running (left running at exit)"))
     // One MLX runtime for the embedding model and her voice: one cache limit, set before either loads.
     MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
     // Boot: the embedding model loads first (the today index embeds at start); no fallback.
@@ -114,12 +120,10 @@ do {
         bridge = nil
         out("bridge: disabled ([bridge] enabled = false)")
     }
-    // Her DollOS documents into her computer (2026-11-14): a failure is an ERROR and is in her boot
-    // notice, not fatal (the VM may be suspended; only her reading the docs needs it).
-    let docsFailure = await doll.syncDocs()
-    out("docs: " + (docsFailure.map { "NOT copied into \(Doll.docsVMPath): \($0)" } ?? "copied into \(Doll.docsVMPath)"))
-    try await doll.announceBoot(docsFailure: docsFailure)
+    out("docs: \(cfg.core.docs) (she reads them in place)")
+    try await doll.announceBoot()
 } catch {
+    await daemon?.stop()
     fail("\(error)")
 }
 
@@ -145,4 +149,5 @@ await doll.stop()
 await bridge?.waitUntilExit(seconds: 5)
 runner.cancel()
 await runner.value
+await daemon?.stop()
 _ = signalSources

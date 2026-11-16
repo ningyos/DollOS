@@ -46,7 +46,6 @@ enum DashboardPage {
   <span class="badge" id="state">…</span>
   <span class="badge" id="paused" hidden>暫停中</span>
   <span id="menu"></span>
-  <span id="watch"></span>
   <span id="ctx"></span>
   <span id="effort"></span>
   <span id="queued"></span>
@@ -120,7 +119,6 @@ function renderStatus(s) {
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
   $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」` : "") + (s.pending.length ? `；後面 ${s.pending.length} 項` : "");
-  $("watch").textContent = "watch：" + (s.watch || "沒有");
   $("ctx").textContent = `context 約 ${s.contextTokens} token`;
   $("effort").textContent = "effort：" + s.effort;
   $("queued").textContent = `排隊 ${s.queued} 件 · 第 ${s.turn} 回合`;
@@ -133,13 +131,10 @@ function renderVision(v) {
   const box = $("vision-body");
   box.replaceChildren();
   box.className = "";
-  if (!v.image && !v.windows) { box.className = "muted"; box.textContent = "還沒有截圖"; return; }
+  if (!v.image && !v.window) { box.className = "muted"; box.textContent = "還沒有讀過視窗"; return; }
   if (v.ts) box.append(el("div", "meta", `#${v.seq} · ${clock(v.ts)}`));
-  if (v.image) { box.append(el("h3", null, "全螢幕")); box.append(shot(v.image, "shot")); }
-  if (v.cropNote) box.append(el("pre", null, v.cropNote));
-  if (v.crop) { box.append(el("h3", null, "視窗圖")); box.append(shot(v.crop, "shot")); }
-  if (v.windows) { box.append(el("h3", null, "開著的視窗／焦點")); box.append(el("pre", null, v.windows)); }
-  if (v.window) { box.append(el("h3", null, "視窗概要")); box.append(el("pre", null, v.window)); }
+  if (v.image) { box.append(el("h3", null, "視窗截圖")); box.append(shot(v.image, "shot")); }
+  if (v.window) { box.append(el("h3", null, "元素清單")); box.append(el("pre", null, v.window)); }
 }
 
 function renderCall(c) {
@@ -152,8 +147,7 @@ function renderCall(c) {
   for (const p of c.parameters) if (p.value.length > 60 || p.value.includes("\n")) body.append(el("pre", "muted", `${p.name}:\n${p.value}`));
   body.append(el("pre", null, c.result === null || c.result === undefined ? "（還沒有結果）" : c.result));
   if (c.image) body.append(shot(c.image, "thumb"));
-  if (c.crop) body.append(shot(c.crop, "thumb"));
-  if (c.window) body.append(details("視窗概要", el("pre", null, c.window)));
+  if (c.window) body.append(details("元素清單", el("pre", null, c.window)));
   const d = details(sum, body);
   d.className = "call";
   return d;

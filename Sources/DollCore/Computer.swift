@@ -1,50 +1,125 @@
 import Foundation
-import ImageIO
 
-/// M2: her computer (spec 3.1, 2026-11-08). She sees it through a full-screen screenshot, a crop of
-/// the front window and a short outline of that window (2026-11-09), and acts on it with pointer and
-/// keyboard; the program drives it with `vmpal ui <vm> …` and `vmpal exec`. Tests swap in a fake driver.
-
-/// A rectangle in screenshot pixels, corners inclusive of x0,y0.
-public struct Region: Sendable, Equatable, CustomStringConvertible {
-    public var x0, y0, x1, y1: Int
-    public init(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) { (self.x0, self.y0, self.x1, self.y1) = (x0, y0, x1, y1) }
-    public var description: String { "\(x0),\(y0),\(x1),\(y1)" }
-}
-
-public enum ComputerAction: Sendable, Equatable {
-    /// Full-screenshot pixels.
-    case click(x: Int, y: Int, button: String, count: Int)
-    case clickText(String, button: String, count: Int)
-    /// An element of the front window, found fresh at click time (spec 3.1, M2 round 6): its name
-    /// exactly (case-insensitive), else containing `name`; `role` narrows it when given. No name:
-    /// the role alone (M2 round 7). No front window: the Dock and the menu bar instead.
-    case clickElement(role: String?, name: String?, button: String, count: Int)
-    case type(String)
-    case key(String)
-    case scroll(direction: String, amount: Int)
-    case drag(x0: Int, y0: Int, x1: Int, y1: Int)
-}
+/// Her computer is this Mac (2026-11-16, owner): she drives the owner's real apps in the background
+/// through the open-source `cua-driver` (https://github.com/trycua/cua), without taking his pointer,
+/// keyboard or frontmost app. She reads one window at a time (its accessibility tree with numbered
+/// rows, and a screenshot of that window) and acts on a row of the latest read. Tests swap in a fake
+/// driver.
 
 public struct ComputerError: Error, CustomStringConvertible {
     public let description: String
     public init(_ description: String) { self.description = description }
 }
 
-/// The front window: its outline as she reads it (`WindowSummary.render`) and where it is.
-public struct FrontWindow: Sendable, Equatable {
-    public enum Place: Sendable, Equatable {
-        /// In her full screenshot's pixels, clipped to the screen.
-        case at(Region)
-        /// Why there is no place to crop (said to her instead of a crop).
-        case unknown(String)
-    }
-    public var summary: String
-    public var place: Place
-    public init(summary: String, place: Place) { (self.summary, self.place) = (summary, place) }
+/// One cua-driver tool call (`cua-driver <tool> '<json>'`): the JSON answer on success; a refusal or
+/// failure throws `ComputerError` with the driver's own JSON answer (or its stderr) as text.
+public protocol ComputerDriver: Sendable {
+    func call(_ tool: String, _ json: String) async throws -> String
 }
 
-/// The front app as the program keys her shortcut memories (spec 3.1, 2026-11-09): one app at one version.
+/// The real driver: one `cua-driver` process per call; the daemon it talks to is `CuaDaemon`'s.
+public struct CuaDriverCLI: ComputerDriver {
+    let path: String
+    public init(path: String) { self.path = path }
+
+    public func call(_ tool: String, _ json: String) async throws -> String {
+        let r = try await runProcess(path, [tool, json])
+        guard r.status == 0 else { throw ComputerError(r.stdout.isEmpty ? r.stderr : r.stdout) }
+        return r.stdout
+    }
+}
+
+/// stdout and stderr (trimmed) and the exit status. `terminationHandler`, not `waitUntilExit`:
+/// waitUntilExit on a dispatch worker was seen to hang after the child had exited (2026-11-08).
+func runProcess(_ path: String, _ args: [String]) async throws -> (status: Int32, stdout: String, stderr: String) {
+    let p = Process()
+    p.executableURL = URL(filePath: path)
+    p.arguments = args
+    let out = Pipe(), err = Pipe()
+    p.standardOutput = out
+    p.standardError = err
+    p.standardInput = FileHandle.nullDevice
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
+    do { try p.run() } catch { throw ComputerError("cannot run \(path): \(error.localizedDescription)") }
+    let (o, e) = await withCheckedContinuation { (c: CheckedContinuation<(Data, Data), Never>) in
+        DispatchQueue.global().async {
+            // stderr is drained on its own thread so a long stdout (a big tree) cannot block on it.
+            var errData = Data()
+            let errDone = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); errDone.signal() }
+            let o = out.fileHandleForReading.readDataToEndOfFile()
+            errDone.wait()
+            exited.wait()
+            c.resume(returning: (o, errData))
+        }
+    }
+    let trim = { (d: Data) in String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+    return (p.terminationStatus, trim(o), trim(e))
+}
+
+/// The driver's daemon at boot (2026-11-16): dollcore starts it when it is not running and stops the
+/// one it started when it exits; one already running (started by someone else) is used and left
+/// running. Missing driver, missing permission or a daemon that does not come up stops the boot with
+/// the exact fix; there is no fallback.
+public final class CuaDaemon: @unchecked Sendable {
+    /// The `cua-driver serve` this process started; nil when the daemon was already running.
+    let child: Process?
+    let driver: String
+
+    init(driver: String, child: Process?) { (self.driver, self.child) = (driver, child) }
+
+    /// `startWait`: how long to wait for a daemon this process started to answer.
+    public static func ensure(driver: String, startWait: Double) async throws -> CuaDaemon {
+        guard FileManager.default.isExecutableFile(atPath: driver) else {
+            throw ComputerError("沒有 cua-driver：\(driver) 不存在或不能執行。修法：安裝 CuaDriver.app（https://github.com/trycua/cua，"
+                                + "/Applications/CuaDriver.app），把 [computer] driver 設成 /Applications/CuaDriver.app/Contents/MacOS/cua-driver。")
+        }
+        // Never asks for anything; when the daemon is down it starts one briefly to answer for itself.
+        let perm = try await runProcess(driver, ["permissions", "status", "--json"])
+        guard let j = try? JSONSerialization.jsonObject(with: Data(perm.stdout.utf8)) as? [String: Any] else {
+            throw ComputerError("cua-driver permissions status 讀不懂（exit \(perm.status)）：\(perm.stdout) \(perm.stderr)")
+        }
+        var missing: [String] = []
+        if j["accessibility"] as? Bool != true { missing.append("輔助使用（Accessibility）") }
+        if j["screen_recording"] as? Bool != true { missing.append("螢幕錄製（Screen Recording）") }
+        guard missing.isEmpty else {
+            throw ComputerError("CuaDriver 沒有\(missing.joined(separator: "和"))權限。修法：執行 `\(driver) permissions grant`，"
+                                + "或到 系統設定 › 隱私權與安全性 打開 CuaDriver 的這兩項，然後重開 dollcore。")
+        }
+        if try await running(driver) { return CuaDaemon(driver: driver, child: nil) }
+        let p = Process()
+        p.executableURL = URL(filePath: driver)
+        p.arguments = ["serve"]
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { throw ComputerError("cua-driver serve 起不來：\(error.localizedDescription)") }
+        let deadline = Date().addingTimeInterval(startWait)
+        while Date() < deadline {
+            if !p.isRunning { throw ComputerError("cua-driver serve 一啟動就結束了（exit \(p.terminationStatus)）。修法：在終端機跑 `\(driver) serve` 看它說什麼。") }
+            if try await running(driver) { return CuaDaemon(driver: driver, child: p) }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        p.terminate()
+        throw ComputerError("cua-driver serve \(Int(startWait)) 秒內沒有回應。修法：在終端機跑 `\(driver) serve` 看它說什麼。")
+    }
+
+    static func running(_ driver: String) async throws -> Bool {
+        try await runProcess(driver, ["status"]).status == 0
+    }
+
+    public var started: Bool { child != nil }
+
+    /// Stops the daemon this process started (`cua-driver stop`, then the child itself); leaves one it found running.
+    public func stop() async {
+        guard let child, child.isRunning else { return }
+        _ = try? await runProcess(driver, ["stop"])
+        if child.isRunning { child.terminate() }
+    }
+}
+
+/// The front app as an experience names it: one app at one version.
 public struct AppIdentity: Sendable, Equatable {
     public var bundleID: String
     public var name: String
@@ -52,912 +127,554 @@ public struct AppIdentity: Sendable, Equatable {
     public init(bundleID: String, name: String, version: String) { (self.bundleID, self.name, self.version) = (bundleID, name, version) }
 }
 
-/// One menu item with a shortcut: its menu path (`File › Save As…`) and its keys (`⇧⌥⌘S`).
-public struct MenuShortcut: Sendable, Equatable {
-    public var path: String
-    public var keys: String
-    public init(path: String, keys: String) { (self.path, self.keys) = (path, keys) }
+/// One element as the action log keeps it (2026-11-16, owner decision 5): what identifies it across
+/// reads, not only its row in one read, so a recorded chain can be found again later.
+public struct ElementIdentity: Codable, Sendable, Equatable {
+    public var row: Int
+    public var role: String
+    public var subrole: String?
+    /// The AX identifier (`id=` in the tree), when the app sets one: the most stable handle.
+    public var axID: String?
+    public var label: String?
+    public var title: String?
+    /// The ancestors from the window down, each `role "label"` (label omitted when empty).
+    public var path: [String]
 }
 
-/// After every computer action (spec 3.1, 2026-11-09): the line naming the open windows and the
-/// focused element, as she reads it, and the front app.
-public struct FrontState: Sendable, Equatable {
-    /// `開著的視窗：Finder、TextEdit「notes.txt」（前景）；焦點：textfield`; a part that could not be
-    /// read says so in its place.
-    public var line: String
-    /// nil when there is none or it could not be read.
+/// One action in her action log (`computer-actions.jsonl` under the data dir), one JSON line each.
+public struct ActionRecord: Codable, Sendable, Equatable {
+    public var ts: Double
+    /// The todo item in progress, verbatim.
+    public var item: String?
+    public var tool: String
+    public var app: String
+    public var bundleID: String
+    public var window: String?
+    public var element: ElementIdentity?
+    /// What else the action needs to be done again: text, key, modifiers, menu path, direction, x/y.
+    public var args: [String: String]
+    public var ok: Bool
+    public var error: String?
+}
+
+/// What a computer tool hands back to the loop: her text, the window screenshot (a file under
+/// `shots/`) and the window's element list (the latest read; collapsed when a newer one exists).
+public struct MacResult: Sendable {
+    public var text: String
+    public var image: String?
+    public var window: String?
+    public var failed = false
+    /// The app the call worked on, for experiences.
     public var app: AppIdentity?
-    public init(line: String, app: AppIdentity?) {
-        (self.line, self.app) = (line, app)
-    }
+    /// A success's piece of the item's action list (`click AXButton "7"`, `menu 檔案 › 新增`).
+    public var step: String?
 }
 
-public protocol ComputerDriver: Sendable {
-    /// Does one action and waits until the screen settles. Returns the VM's own text about it;
-    /// a failed call (non-zero exit, an error answer) throws with the VM's error text.
-    func act(_ action: ComputerAction) async throws -> String
-    /// One full-screen screenshot at the configured width and format, or a region of it (watch). A
-    /// region crops it; the bytes only need to be equal when that part of the screen did not change.
-    func screenshot(region: Region?) async throws -> Data
-    /// The front window's crop: `region` in full-screenshot pixels, at the configured crop width and
-    /// format.
-    func windowShot(_ region: Region) async throws -> Data
-    /// The front window's outline and place; throws with the reason when there is none (no front
-    /// window, no accessibility access, agent-desktop missing).
-    func frontWindow() async throws -> FrontWindow
-    /// With no front window (spec 3.1, 2026-11-09): the menu bar's and the Dock's items, one line
-    /// each, `role "name" (x,y)` with the item's center in full-screenshot pixels. A part that could
-    /// not be read is a line saying why; throws when none could (agent-desktop missing, no screen).
-    func desktopSummary() async throws -> String
-    /// The front app; nil when there is none.
-    func frontApp() async throws -> AppIdentity?
-    /// Every menu item of the running app `bundleID` that has a shortcut, in menu order.
-    func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut]
-    /// The open windows, the focused element and the front app, in one VM command; throws only when
-    /// that command could not run at all.
-    func frontState() async throws -> FrontState
-    /// A file's bytes as they are in the VM (2026-11-09: her file tools). `~` and `~/…` are the VM
-    /// account's home; a relative path is under it. Throws with the reason: no such file, a folder,
-    /// no permission.
-    func readFile(_ path: String) async throws -> Data
-    /// Writes `data` as the whole file (created or replaced), creating missing folders; throws when
-    /// it could not, with the reason.
-    func writeFile(_ path: String, _ data: Data) async throws
-}
-
-/// Runs the VMPal CLI as `<vmpal> --cli <args…>`: stdout on exit 0, else throws `ComputerError`
-/// with the VM's error text.
-public typealias VMPalRun = @Sendable ([String]) async throws -> String
-
-/// `vmpal ui` / `vmpal exec` / `vmpal cp`, one process per call (each `ui` run is its own connection;
-/// nothing carries over).
-public struct VMPalDriver: ComputerDriver {
+/// Her computer (2026-11-16). One session label per process; the latest read is what rows mean.
+public actor Mac {
+    let driver: any ComputerDriver
     let cfg: ComputerConfig
-    let vmpal: VMPalRun
-    /// Every `vmpal ui` run's coordinates are screenshot pixels in a 1280-wide space (`vmpal ui help`).
-    static let space = 1280
+    let session: String
+    let shots: URL
+    let logURL: URL
+    /// The todo item in progress, for the action log; set by the loop.
+    var item: String?
 
-    /// `vmpal` replaces the process runner (tests).
-    public init(_ cfg: ComputerConfig, vmpal: VMPalRun? = nil) {
-        self.cfg = cfg
-        let path = cfg.vmpal
-        self.vmpal = vmpal ?? { try await Self.process(path, $0) }
+    struct Read {
+        var pid: Int
+        var app: AppIdentity
+        var windowID: Int
+        var title: String
+        var snapshot: String
+        var rows: [Int: ElementIdentity]
+        var maxRow: Int
+        /// Screenshot pixel size (her x,y space).
+        var size: (w: Int, h: Int)?
+    }
+    /// The latest read: rows and x,y mean this window.
+    var current: Read?
+    /// The read she saw when her reply was written (`beginReply`): a row in that reply means this
+    /// read's element, also after an earlier action of the reply read the window again.
+    var seen: Read?
+
+    public init(driver: any ComputerDriver, config: ComputerConfig, session: String, shots: URL, log: URL) {
+        self.driver = driver
+        cfg = config
+        self.session = session
+        self.shots = shots
+        logURL = log
     }
 
-    /// Her coordinates are in the configured screenshot width; VMPal's in its 1280-wide space.
-    func scale(_ v: Int) -> Int {
-        cfg.screenshotWidth == Self.space ? v : Int((Double(v) * Double(Self.space) / Double(cfg.screenshotWidth)).rounded())
+    /// A reply of hers starts: its rows mean the latest read as it is now.
+    public func beginReply(item: String?) {
+        self.item = item
+        seen = current
     }
 
-    func ui(_ args: [String]) async throws -> String { try await vmpal(["ui", cfg.vmID] + args) }
-
-    /// A `/bin/sh -c` script in the VM; `args` arrive as $1, $2, … so the script text stays fixed.
-    func exec(_ script: String, _ args: [String] = []) async throws -> String {
-        try await vmpal(["exec", cfg.vmID, "--", "/bin/sh", "-c", script, "sh"] + args)
+    /// The window of the latest read, read again (a chain failed before anything was sent).
+    public func look() async throws -> MacResult {
+        guard let c = current else { throw ComputerError("還沒讀過視窗") }
+        return try await reread(c)
     }
 
-    public func act(_ action: ComputerAction) async throws -> String {
-        func clickFlags(_ button: String, _ count: Int) -> [String] {
-            (button == "left" ? [] : ["--button", button]) + (count == 2 ? ["--double"] : [])
+    // driver plumbing --------------------------------------------------------
+    func call(_ tool: String, _ args: [String: Any]) async throws -> [String: Any] {
+        let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
+        let out = try await driver.call(tool, String(decoding: data, as: UTF8.self))
+        guard let j = try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any] else {
+            throw ComputerError("cua-driver \(tool) 的回答讀不懂：\(out.prefix(300))")
         }
-        var tmp: URL?
-        defer { tmp.map { try? FileManager.default.removeItem(at: $0) } }
-        let args: [String]
-        switch action {
-        case .click(let x, let y, let button, let count):
-            args = ["click", "\(scale(x))", "\(scale(y))"] + clickFlags(button, count)
-        case .clickText(let text, let button, let count):
-            args = ["click", "--text", text] + clickFlags(button, count)
-        case .clickElement(let role, let name, let button, let count):
-            return try await clickElement(role: role, name: name, button: button, count: count)
-        case .type(let text) where !text.allSatisfy(\.isASCII):
-            return try await paste(text)
-        case .type(let text):
-            // A file, so text that starts with "-" is not read as an option. VMPal drops a file's last
-            // newline, so one is added: her text goes exactly as written.
-            let url = Self.tempFile("type")
-            try Data((text + "\n").utf8).write(to: url)
-            tmp = url
-            args = ["type", "--file", url.path]
-        case .key(let keys):
-            args = ["key", keys]
-        case .scroll(let direction, let amount):
-            args = ["scroll", direction, "\(amount)"]
-        case .drag(let x0, let y0, let x1, let y1):
-            args = ["drag"] + [x0, y0, x1, y1].map { "\(scale($0))" }
-        }
-        // VMPal's default settle; no observation text (she gets a screenshot instead).
-        return try await ui(args + ["--observe", "none"])
+        return j
     }
 
-    /// `vmpal ui type` only types what a US keyboard can ("A US keyboard can't type “你”", M2 medium
-    /// round C): text with any non-ASCII character goes through the VM's clipboard instead. Her text
-    /// only travels as a file (`vmpal cp`), never as a process argument. Each line is pasted with
-    /// cmd+v and a newline is a Return key, the same as `type`. The clipboard's previous text is put
-    /// back afterwards, also when a step fails; `pbpaste` only reads text, so a non-text clipboard
-    /// (an image, files) comes back empty.
-    func paste(_ text: String) async throws -> String {
-        let id = UUID().uuidString
-        let saved = "/tmp/dollos-clip-\(id)", staged = "/tmp/dollos-paste-\(id)"
-        // pbcopy/pbpaste read and write the locale's encoding; vmpal exec gives no LANG.
-        let utf8 = "export LC_ALL=en_US.UTF-8; "
-        _ = try await exec(utf8 + "pbpaste > \"$1\"", [saved])
-        var said = ""
-        var failure: Error?
-        do {
-            for (i, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-                if i > 0 { said = try await ui(["key", "Return", "--observe", "none"]) }
-                guard !line.isEmpty else { continue }
-                let local = Self.tempFile("paste")
-                defer { try? FileManager.default.removeItem(at: local) }
-                try Data(line.utf8).write(to: local)
-                _ = try await vmpal(["cp", local.path, "\(cfg.vmID):\(staged)"])
-                _ = try await exec(utf8 + "pbcopy < \"$1\"", [staged])
-                said = try await ui(["key", "cmd+v", "--observe", "none"])
-            }
-        } catch { failure = error }
-        do {
-            _ = try await exec(utf8 + "pbcopy < \"$1\"; rm -f \"$1\" \"$2\"", [saved, staged])
-        } catch {
-            throw ComputerError((failure.map { "\($0)\n" } ?? "") + "剪貼簿沒還原：\(error)")
-        }
-        if let failure { throw failure }
-        return "經剪貼簿貼上（cmd+v），剪貼簿已還原。\n\(said)"
+    /// The driver's refusal in her words: its message and hint, without the JSON around them.
+    static func said(_ error: Error) -> String {
+        let text = "\(error)"
+        guard let j = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return text }
+        let refusal = j["refusal"] as? [String: Any]
+        let code = (refusal?["code"] ?? j["code"]) as? String
+        let message = (refusal?["message"] ?? j["message"] ?? j["reason"] ?? j["error"]) as? String
+        let parts = [code.map { "[\($0)]" }, message, j["hint"] as? String].compactMap { $0 }
+        return parts.isEmpty ? text : parts.joined(separator: " ")
     }
 
-    public func screenshot(region: Region?) async throws -> Data {
-        if let r = region { return try await shot(cfg.screenshotFormat, ["--region", vmRegion(r)]) }
-        return try await shot(cfg.screenshotFormat, ["--max-width", "\(cfg.screenshotWidth)"])
-    }
+    // apps -------------------------------------------------------------------
+    struct AppInfo { var name: String; var bundleID: String; var pid: Int?; var path: String? }
 
-    /// VMPal reads `--region` in its own 1280-wide space whatever `--max-width` is (2026-11-09: region
-    /// 0,0,1280,800 with --max-width 1719 was the whole screen); `--max-width` only caps the output.
-    public func windowShot(_ region: Region) async throws -> Data {
-        try await shot(cfg.windowCropFormat, ["--region", vmRegion(region), "--max-width", "\(cfg.windowCropWidth)"])
-    }
-
-    func vmRegion(_ r: Region) -> String { [r.x0, r.y0, r.x1, r.y1].map { "\(scale($0))" }.joined(separator: ",") }
-
-    func shot(_ format: String, _ extra: [String]) async throws -> Data {
-        let png = format == "png"
-        let url = Self.tempFile("shot", ext: png ? "png" : "jpg")
-        defer { try? FileManager.default.removeItem(at: url) }
-        _ = try await ui(["screenshot", "-o", url.path] + (png ? ["--png"] : []) + extra)
-        let data: Data
-        do { data = try Data(contentsOf: url) } catch {
-            throw ComputerError("vmpal wrote no screenshot: \(error.localizedDescription)")
-        }
-        return png ? data : try Self.reencodeJPEG(data, quality: cfg.jpegQuality)
-    }
-
-    /// Same pixels, smaller file: every old screenshot is re-sent each turn, so its size is upload time
-    /// (spec 3.1, 2026-11-09: quality 40 read the same small text 10/10 as VMPal's own bytes). 0 keeps them.
-    static func reencodeJPEG(_ data: Data, quality: Int) throws -> Data {
-        guard quality > 0 else { return data }
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw ComputerError("screenshot is not a readable image")
-        }
-        let out = NSMutableData()
-        guard let dst = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else {
-            throw ComputerError("cannot encode JPEG")
-        }
-        CGImageDestinationAddImage(dst, image, [kCGImageDestinationLossyCompressionQuality: Double(quality) / 100] as CFDictionary)
-        guard CGImageDestinationFinalize(dst) else { throw ComputerError("cannot encode JPEG") }
-        return out as Data
-    }
-
-    /// agent-desktop in the VM (spec 3.1, 2026-11-08: the front window's skeleton; 2026-11-09: and
-    /// its place, for the crop). It answers JSON on stdout, an error answer included (with exit 1).
-    /// The window's bounds are screen points; `list-displays` gives the screen's, to turn them into
-    /// her screenshot's pixels.
-    public func frontWindow() async throws -> FrontWindow {
-        let out: String
-        do {
-            out = try await exec("\"$1\" snapshot --skeleton -i --compact --include-bounds", [cfg.agentDesktop])
-        } catch let e as ComputerError {
-            throw ComputerError(WindowSummary.errorText(e.description))
-        }
-        let (summary, bounds) = try WindowSummary.parse(Data(out.utf8))
-        guard let bounds else { return FrontWindow(summary: summary, place: .unknown("agent-desktop 沒給這個視窗的位置")) }
-        let screen: WindowSummary.Rect
-        do {
-            screen = try WindowSummary.display(Data(try await exec("\"$1\" list-displays", [cfg.agentDesktop]).utf8))
-        } catch let e as ComputerError {
-            return FrontWindow(summary: summary, place: .unknown("不知道螢幕多大：\(WindowSummary.errorText(e.description))"))
-        }
-        return FrontWindow(summary: summary, place: WindowSummary.place(bounds, on: screen, width: cfg.screenshotWidth))
-    }
-
-    /// agent-desktop's menu bar, menu bar extras and Dock surfaces, then the screen's size, in one
-    /// `vmpal exec`. Each answer is one JSON line after a `@@<name>` marker; a surface that fails
-    /// answers its JSON error and the script goes on. The script's status is `list-displays`'s.
-    public func desktopSummary() async throws -> String {
-        let parts = Self.sections(try await agentDesktop("""
-            for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
-            echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done
-            echo "@@displays"; "$1" list-displays
-            """, [cfg.agentDesktop]))
-        let screen = try WindowSummary.display(Data((parts["displays"] ?? "").utf8))
-        return DesktopSummary.render(DesktopSummary.surfaces.map { ($0, Data((parts[$0.flag] ?? "").utf8)) },
-                                     on: screen, width: cfg.screenshotWidth)
-    }
-
-    /// `axmenus --front` (`scripts/axmenus.swift`, in the VM): bundle id, name, version, tab-separated.
-    public func frontApp() async throws -> AppIdentity? {
-        Self.parseFrontApp(try await exec("\"$1\" --front", [cfg.axMenus]))
-    }
-
-    /// `axmenus <bundle id>`: one `path<TAB>keys` line per menu item with a shortcut.
-    public func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
-        Self.parseShortcuts(try await exec("\"$1\" \"$2\"", [cfg.axMenus, bundleID]))
-    }
-
-    /// agent-desktop `list-windows` and `snapshot --surface focused`, then `axmenus --front`, in one
-    /// `vmpal exec` (VMPal runs at most two CLI commands per VM at once). Each part after a `@@<name>`
-    /// marker; a part that fails answers its error and the script goes on.
-    public func frontState() async throws -> FrontState {
-        let parts = Self.sections(try await exec("""
-            "$1" list-windows; echo; echo @@focused; "$1" snapshot --surface focused -i --compact; echo
-            echo @@front; "$2" --front; exit 0
-            """, [cfg.agentDesktop, cfg.axMenus]), first: "windows")
-        let windows = Data((parts["windows"] ?? "").utf8), focused = Data((parts["focused"] ?? "").utf8)
-        return FrontState(line: OpenWindows.line(windows: windows, focused: focused), app: Self.parseFrontApp(parts["front"] ?? ""))
-    }
-
-    /// `$1` with `~` or `~/…` expanded to the VM account's home, into `p`.
-    static let expandHome = #"case "$1" in "~") p="$HOME";; "~/"*) p="$HOME${1#?}";; *) p="$1";; esac"#
-
-    /// The bytes come back as base64 (`vmpal exec` reads output as UTF-8 text and trims it; base64 is
-    /// ASCII with nothing to trim, so arbitrary bytes and a last newline survive). `vmpal exec` does not
-    /// forward stdin (probe 2026-11-09: `cat | wc -c` read 0 bytes), so input goes the other way, by file.
-    public func readFile(_ path: String) async throws -> Data {
-        let out = try await exec(Self.expandHome + """
-            ; [ -e "$p" ] || { echo "沒有這個檔案：$1" >&2; exit 1; }
-            [ -d "$p" ] && { echo "$1 是資料夾，不是檔案" >&2; exit 1; }
-            [ -r "$p" ] || { echo "沒有權限讀 $1" >&2; exit 1; }
-            base64 < "$p"
-            """, [path])
-        guard let data = Data(base64Encoded: out, options: .ignoreUnknownCharacters) else {
-            throw ComputerError("\(path) 的內容傳不回來（base64 讀不懂）")
-        }
-        return data
-    }
-
-    /// The bytes travel as a file through `vmpal cp` (probe 2026-11-09: 12 bytes with CR, non-ASCII and
-    /// two trailing newlines arrived byte-identical) into /tmp in the VM, then one `vmpal exec` makes the
-    /// folder and copies them into place (`cat`, so a file an app has open keeps its inode).
-    public func writeFile(_ path: String, _ data: Data) async throws {
-        let local = Self.tempFile("write")
-        defer { try? FileManager.default.removeItem(at: local) }
-        try data.write(to: local)
-        let staged = "/tmp/dollos-write-\(UUID().uuidString)"
-        _ = try await vmpal(["cp", local.path, "\(cfg.vmID):\(staged)"])
-        _ = try await exec(Self.expandHome + """
-            ; trap 'rm -f "$2"' EXIT
-            [ -d "$p" ] && { echo "$1 是資料夾，不能當檔案寫" >&2; exit 1; }
-            mkdir -p "$(dirname "$p")" || { echo "開不出 $1 的資料夾" >&2; exit 1; }
-            cat "$2" > "$p" || { echo "寫不進 $1" >&2; exit 1; }
-            """, [path, staged])
-    }
-
-    /// nil when there is no front app or it has no bundle id (nothing to key memories by).
-    static func parseFrontApp(_ out: String) -> AppIdentity? {
-        let f = out.trimmingCharacters(in: .newlines).components(separatedBy: "\t")
-        guard f.count == 3, !f[0].isEmpty else { return nil }
-        return AppIdentity(bundleID: f[0], name: f[1].isEmpty ? f[0] : f[1], version: f[2])
-    }
-
-    static func parseShortcuts(_ out: String) -> [MenuShortcut] {
-        out.split(separator: "\n").compactMap { line in
-            let f = line.components(separatedBy: "\t")
-            return f.count == 2 && !f[0].isEmpty && !f[1].isEmpty ? MenuShortcut(path: f[0], keys: f[1]) : nil
+    func listApps() async throws -> [AppInfo] {
+        let j = try await call("list_apps", [:])
+        return (j["apps"] as? [[String: Any]] ?? []).compactMap { a in
+            guard let name = a["name"] as? String else { return nil }
+            return AppInfo(name: name, bundleID: a["bundle_id"] as? String ?? "",
+                           pid: (a["running"] as? Bool == true) ? a["pid"] as? Int : nil, path: a["launch_path"] as? String)
         }
     }
 
-    /// `click` by element (spec 3.1, M2 round 6). At click time: the focused window from
-    /// `list-windows`, then `find --window-id` in it, so the ref is fresh and a second window of the
-    /// same app is never searched; with no focused window (round 7), the menu bar's, menu bar
-    /// extras' and Dock's items instead. One match is pressed through accessibility first (a sheet's
-    /// Save has no physical owning window for `--headed`, 2026-11-09); when agent-desktop says that
-    /// press was not delivered (Finder's file icons have no semantic double-click), with real
-    /// pointer input (`--headed`). The result says what was clicked, where, which way got through
-    /// and agent-desktop's disposition as given. Several matches are never guessed between and no
-    /// match is never a click on something else: both fail with candidates and their centers in her
-    /// full-screenshot pixels, so she can pick one by coordinates.
-    func clickElement(role: String?, name: String?, button: String, count: Int) async throws -> String {
-        let verb: String
-        switch (button, count) {
-        case ("left", 1): verb = "click"
-        case ("left", _): verb = "double-click"
-        case (_, 1): verb = "right-click"
-        default: throw ComputerError("element 不能右鍵雙擊；右鍵 count 給 1")
+    /// An app by its name (any case), its window's app name (localized, e.g. 計算機) or its bundle id.
+    func find(_ app: String, in apps: [AppInfo]) -> AppInfo? {
+        let q = app.trimmingCharacters(in: .whitespaces).lowercased()
+        let path = { (a: AppInfo) in ((a.path ?? "") as NSString).lastPathComponent.lowercased() }
+        return apps.first { $0.bundleID.lowercased() == q } ?? apps.first { $0.name.lowercased() == q }
+            ?? apps.first { path($0) == q + ".app" }
+    }
+
+    static func identity(_ a: AppInfo) -> AppIdentity {
+        var version = ""
+        if let p = a.path, let info = NSDictionary(contentsOfFile: p + "/Contents/Info.plist") {
+            version = info["CFBundleShortVersionString"] as? String ?? ""
         }
-        guard name != nil || role != nil else { throw ComputerError("element 要有名字或角色") }
-        let ad = cfg.agentDesktop
-        let info = Self.sections(try await agentDesktop("\"$1\" list-windows; echo @@displays; \"$1\" list-displays", [ad]),
-                                 first: "windows")
-        let screen = try WindowSummary.display(Data((info["displays"] ?? "").utf8))
-        let width = cfg.screenshotWidth
-        let scope: ElementClick.Window, found: [ElementClick.Match]
-        /// Every item of the Dock and the menu bar when that is where the search went (near names come from here).
-        var desktopItems: [ElementClick.Match]?
-        if let window = try ElementClick.frontWindow(Data((info["windows"] ?? "").utf8)) {
-            scope = window
-            let query = name.map { ["--name", $0] } ?? ["--role", role!]
-            found = try ElementClick.matches(Data(
-                try await agentDesktop("\"$1\" find --window-id \"$2\" \"$3\" \"$4\"", [ad, window.id] + query).utf8),
-                unnamed: name == nil)
-        } else {
-            let parts = Self.sections(try await agentDesktop("""
-                for s in \(DesktopSummary.surfaces.map(\.flag).joined(separator: " ")); do
-                echo "@@$s"; "$1" snapshot --surface "$s" -i --compact --include-bounds; done; exit 0
-                """, [ad]))
-            var items: [ElementClick.Match] = [], unread: [String] = []
-            for s in DesktopSummary.surfaces {
-                do { items += try ElementClick.elements(Data((parts[s.flag] ?? "").utf8), unnamed: true) } catch {
-                    unread.append("\(s.label)：\(error)")
-                }
-            }
-            guard !items.isEmpty else {
-                throw ComputerError("沒有點：現在沒有最前面的視窗，Dock 和選單列也讀不到。" + unread.joined(separator: "；"))
-            }
-            scope = ElementClick.desktop
-            found = items
-            desktopItems = items
+        return AppIdentity(bundleID: a.bundleID, name: a.name, version: version)
+    }
+
+    struct Win { var id: Int; var title: String; var z: Int }
+
+    /// The app's windows she can read: on screen, layer 0, front first.
+    func windows(pid: Int) async throws -> [Win] {
+        let j = try await call("list_windows", ["pid": pid])
+        return (j["windows"] as? [[String: Any]] ?? []).compactMap { w -> Win? in
+            guard w["layer"] as? Int == 0, w["is_on_screen"] as? Bool == true, let id = w["window_id"] as? Int else { return nil }
+            return Win(id: id, title: w["title"] as? String ?? "", z: w["z_index"] as? Int ?? 0)
+        }.sorted { $0.z > $1.z }
+    }
+
+    /// Running apps that have windows, each with its on-screen windows (the `apps` tool).
+    public func apps() async throws -> String {
+        let running = try await listApps().filter { $0.pid != nil }
+        let j = try await call("list_windows", [:])
+        var byPid: [Int: [(String, Int)]] = [:]
+        for w in j["windows"] as? [[String: Any]] ?? [] where w["is_on_screen"] as? Bool == true {
+            guard let pid = w["pid"] as? Int else { continue }
+            byPid[pid, default: []].append((w["title"] as? String ?? "", w["z_index"] as? Int ?? 0))
         }
-        func listed(_ ms: [ElementClick.Match]) async throws -> String {
-            let at = try await bounds(ms.filter { $0.bounds == nil }.map(\.ref))
-            return ms.map { m in ElementClick.line(m, (m.bounds ?? at[m.ref]).map { ElementClick.center($0, on: screen, width: width) }) }
-                .joined(separator: "\n")
-        }
-        let target = (role ?? "") + (name.map { "「\($0)」" } ?? "")
-        var pick = ElementClick.pick(found, role: role, name: name)
-        if case .several(let ms) = pick {
-            // An element and its own cell or label (Finder's sidebar: treeitem and cell "Documents",
-            // 2026-11-09) are one spot on the screen: the same name at the same center is one target.
-            let placed = Array(ms.prefix(ElementClick.maxPlaced))
-            let at = try await bounds(placed.filter { $0.bounds == nil }.map(\.ref))
-            pick = ElementClick.collapse(ms.map { m in var m = m; m.bounds = m.bounds ?? at[m.ref]; return m })
-        }
-        switch pick {
-        case .one(let m):
-            // One run: the accessibility press, and only when agent-desktop says it was not delivered,
-            // the same with real pointer input. printf, not echo: the answer may hold backslashes.
-            let out = Self.sections(try await agentDesktop("""
-                "$1" get "$2" --property bounds; echo @@semantic; a=$("$1" \(verb) "$2"); printf '%s\\n' "$a"
-                case "$a" in *'"delivery":"not_delivered"'*) echo @@headed; "$1" \(verb) --headed "$2";; esac; exit 0
-                """, [ad, m.ref]), first: "bounds")
-            let point = (ElementClick.bounds(Data((out["bounds"] ?? "").utf8)) ?? m.bounds).map { ElementClick.center($0, on: screen, width: width) }
-            let said = try ElementClick.clicked(m, verb: verb, at: point, semantic: Data((out["semantic"] ?? "").utf8),
-                                                headed: out["headed"].map { Data($0.utf8) })
-            // Like every other action, wait for the screen to settle before the screenshot: a Dock press
-            // returns before the app's window exists (round 7: 8/8 screenshots showed no window yet).
-            do {
-                _ = try await ui(["wait", "--settled", "--observe", "none"])
-            } catch {
-                return said + "（畫面沒等到穩定：\(error)）"
-            }
-            return said
-        case .several(let ms):
-            let shown = Array(ms.prefix(ElementClick.maxListed))
-            throw ComputerError("沒有點：\(scope.label)裡有 \(ms.count) 個符合\(target)，不知道是哪一個。"
-                                + "要點的那個用它的座標 click x、y（全螢幕截圖座標）：\n" + (try await listed(shown))
-                                + (ms.count > shown.count ? "\n（另外 \(ms.count - shown.count) 個沒列）" : ""))
-        case .none(let named) where !named.isEmpty:
-            let shown = Array(named.prefix(ElementClick.maxListed))
-            throw ComputerError("沒有點：\(scope.label)裡沒有\(target)；名字對、角色不同的有（全螢幕截圖座標）：\n"
-                                + (try await listed(shown)))
-        case .none:
-            guard let name else { throw ComputerError("沒有點：\(scope.label)裡沒有\(target)。") }
-            // `find` with no name times out on a whole window (TIMEOUT, 2026-11-09); its snapshot is 0.4 s.
-            let all: [ElementClick.Match]
-            if let desktopItems { all = desktopItems } else {
-                all = try ElementClick.elements(Data(try await agentDesktop(
-                    "\"$1\" snapshot --window-id \"$2\" -i --compact --include-bounds", [ad, scope.id]).utf8))
-            }
-            let near = ElementClick.similar(all, to: name)
-            guard !near.isEmpty else { throw ComputerError("沒有點：\(scope.label)裡沒有\(target)，也沒有名字相近的元素。") }
-            throw ComputerError("沒有點：\(scope.label)裡沒有\(target)。名字相近的（全螢幕截圖座標）：\n" + (try await listed(near)))
-        }
-    }
-
-    /// Each ref's bounds (screen points), one `vmpal exec`; a ref whose bounds could not be read is absent.
-    func bounds(_ refs: [String]) async throws -> [String: WindowSummary.Rect] {
-        guard !refs.isEmpty else { return [:] }
-        let out = Self.sections(try await agentDesktop(
-            "a=\"$1\"; shift; for r in \"$@\"; do echo \"@@$r\"; \"$a\" get \"$r\" --property bounds; done; exit 0",
-            [cfg.agentDesktop] + refs))
-        return out.compactMapValues { ElementClick.bounds(Data($0.utf8)) }
-    }
-
-    /// An agent-desktop script through `vmpal exec`; a failed run throws agent-desktop's JSON error as text.
-    func agentDesktop(_ script: String, _ args: [String]) async throws -> String {
-        do { return try await exec(script, args) } catch let e as ComputerError {
-            throw ComputerError(WindowSummary.errorText(e.description))
-        }
-    }
-
-    /// A script's output split at `@@<name>` marker lines; lines before the first marker go to `first`.
-    static func sections(_ out: String, first: String = "") -> [String: String] {
-        var parts: [String: String] = [:], key = first
-        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
-            if line.hasPrefix("@@") { key = String(line.dropFirst(2)) } else { parts[key, default: ""] += line }
-        }
-        return parts
-    }
-
-    static func tempFile(_ what: String, ext: String? = nil) -> URL {
-        FileManager.default.temporaryDirectory.appending(path: "dollos-\(what)-\(UUID().uuidString)" + (ext.map { ".\($0)" } ?? ""))
-    }
-
-    /// stdout on exit 0; otherwise the VM's error text (stderr, else stdout) verbatim.
-    static func process(_ vmpal: String, _ args: [String]) async throws -> String {
-        let p = Process()
-        p.executableURL = URL(filePath: vmpal)
-        p.arguments = ["--cli"] + args
-        let out = Pipe(), err = Pipe()
-        p.standardOutput = out
-        p.standardError = err
-        p.standardInput = FileHandle.nullDevice
-        // terminationHandler, not waitUntilExit: waitUntilExit on a dispatch worker was seen to hang
-        // after the child had already exited (M2 medium runs, 2026-11-08).
-        let exited = DispatchSemaphore(value: 0)
-        p.terminationHandler = { _ in exited.signal() }
-        do { try p.run() } catch { throw ComputerError("cannot run \(vmpal): \(error.localizedDescription)") }
-        let (stdout, stderr) = await withCheckedContinuation { (c: CheckedContinuation<(Data, Data), Never>) in
-            DispatchQueue.global().async {
-                // Answers are a few kB; stderr cannot fill its pipe while stdout is read.
-                let o = out.fileHandleForReading.readDataToEndOfFile()
-                let e = err.fileHandleForReading.readDataToEndOfFile()
-                exited.wait()
-                c.resume(returning: (o, e))
-            }
-        }
-        let text = String(decoding: stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard p.terminationStatus == 0 else {
-            let e = String(decoding: stderr, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ComputerError(e.isEmpty ? (text.isEmpty ? "vmpal exit \(p.terminationStatus)" : text) : e)
-        }
-        return text
-    }
-}
-
-/// The front window as a few lines of text: `agent-desktop snapshot --skeleton -i --compact` JSON,
-/// one line per element (role, "name", (children count) when the skeleton cut its children),
-/// two spaces of indent per depth. No refs: she has no tool that takes one, and a ref only lives as
-/// long as the snapshot that made it. The tree's root is the window; its bounds (screen points,
-/// with `--include-bounds`) are where the crop goes.
-enum WindowSummary {
-    struct Answer: Decodable {
-        struct Failure: Decodable { let code: String?; let message: String? }
-        struct Window: Decodable { let title: String? }
-        struct Payload: Decodable { let app: String?; let window: Window?; let tree: Node? }
-        let ok: Bool
-        let data: Payload?
-        let error: Failure?
-    }
-
-    struct Rect: Decodable, Equatable { let x, y, width, height: Double }
-
-    final class Node: Decodable {
-        let role: String?
-        let name: String?
-        let bounds: Rect?
-        let children_count: Int?
-        let ref_id: String?
-        let children: [Node]?
-    }
-
-    /// The outline she reads, and the window's bounds when agent-desktop gave them.
-    static func parse(_ json: Data) throws -> (summary: String, bounds: Rect?) {
-        guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
-            throw ComputerError("agent-desktop 的回答不是 JSON：\(String(decoding: json.prefix(300), as: UTF8.self))")
-        }
-        guard a.ok, let d = a.data, let tree = d.tree else {
-            throw ComputerError(a.error.map(describe) ?? "agent-desktop 沒有回視窗")
-        }
-        // `window.title` was the app's name in every sample (Safari, TextEdit, Terminal, 2026-11-08);
-        // the window element's own name is the title on screen.
-        let title = tree.name.flatMap { $0.isEmpty ? nil : $0 } ?? d.window?.title ?? ""
-        var lines = ["前景 app：\(d.app ?? "?")，視窗標題「\(title)」"]
-        func walk(_ n: Node, _ depth: Int) {
-            var line = String(repeating: "  ", count: depth) + (n.role ?? "?")
-            if let name = n.name, !name.isEmpty { line += " \"\(name)\"" }
-            if let c = n.children_count { line += " (\(c))" }
-            lines.append(line)
-            for c in n.children ?? [] { walk(c, depth + 1) }
-        }
-        walk(tree, 0)
-        return (lines.joined(separator: "\n"), tree.bounds)
-    }
-
-    /// `agent-desktop list-displays`: the primary display's bounds in points (the first one when
-    /// none says primary).
-    static func display(_ json: Data) throws -> Rect {
-        struct Display: Decodable { let bounds: Rect; let is_primary: Bool? }
-        struct Displays: Decodable { let ok: Bool; let data: [Display]? }
-        guard let a = try? JSONDecoder().decode(Displays.self, from: json), a.ok, let all = a.data,
-              let d = all.first(where: { $0.is_primary == true }) ?? all.first else {
-            throw ComputerError("agent-desktop list-displays 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
-        }
-        return d.bounds
-    }
-
-    /// A window's points as pixels of a `width`-wide screenshot of `screen`, widened to whole pixels
-    /// and clipped to the screen.
-    static func place(_ w: Rect, on screen: Rect, width: Int) -> FrontWindow.Place {
-        // Multiply before dividing: 900 points of a 1440-point screen are exactly 800 of 1280 pixels.
-        func px(_ points: Double) -> Double { points * Double(width) / screen.width }
-        let height = Int(px(screen.height).rounded())
-        let x0 = max(0, Int(px(w.x - screen.x).rounded(.down)))
-        let y0 = max(0, Int(px(w.y - screen.y).rounded(.down)))
-        let x1 = min(width, Int(px(w.x + w.width - screen.x).rounded(.up)))
-        let y1 = min(height, Int(px(w.y + w.height - screen.y).rounded(.up)))
-        guard x1 > x0, y1 > y0 else { return .unknown("最前面的視窗不在螢幕上") }
-        return .at(Region(x0, y0, x1, y1))
-    }
-
-    static func describe(_ f: Answer.Failure) -> String {
-        [f.code, f.message].compactMap { $0 }.joined(separator: ": ")
-    }
-
-    /// A failed run's text: agent-desktop's JSON error answer when it is one, else as given.
-    static func errorText(_ text: String) -> String {
-        guard let a = try? JSONDecoder().decode(Answer.self, from: Data(text.utf8)), let f = a.error else { return text }
-        return describe(f)
-    }
-}
-
-/// The menu bar and the Dock as text, for when there is no front window to crop (spec 3.1,
-/// 2026-11-09: round 4's six coordinate misses were all on the bare desktop, three below the screen
-/// and three on the wrong Dock icon). One line per item: role, "name", its center in her
-/// full-screenshot pixels, converted from agent-desktop's points the same way as the crop.
-enum DesktopSummary {
-    struct Surface: Sendable, Equatable {
-        /// agent-desktop's `--surface` value.
-        let flag: String
-        /// What she reads it as.
-        let label: String
-    }
-
-    /// Top to bottom. The app menus need a window of the app on macOS 27 (agent-desktop 2.6:
-    /// WINDOW_NOT_FOUND with Finder frontmost and no window); that line then says so.
-    static let surfaces = [
-        Surface(flag: "menubar", label: "選單列"),
-        Surface(flag: "menu-bar-extras", label: "選單列右側"),
-        Surface(flag: "dock", label: "Dock"),
-    ]
-
-    static func render(_ answers: [(Surface, Data)], on screen: WindowSummary.Rect, width: Int) -> String {
-        func px(_ points: Double) -> Int { Int((points * Double(width) / screen.width).rounded()) }
-        var lines = ["Dock 和選單列（項目中心，全螢幕截圖座標）："]
-        for (surface, json) in answers {
-            guard let a = try? JSONDecoder().decode(WindowSummary.Answer.self, from: json) else {
-                lines.append("\(surface.label)讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: json.prefix(300), as: UTF8.self))")
-                continue
-            }
-            guard a.ok, let tree = a.data?.tree else {
-                lines.append("\(surface.label)讀不到：\(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回內容")")
-                continue
-            }
-            // Leaves with a name and a size: the clickable items, not the list or group around them.
-            var items: [String] = []
-            func walk(_ n: WindowSummary.Node) {
-                if let kids = n.children, !kids.isEmpty { kids.forEach(walk); return }
-                guard let name = n.name, !name.isEmpty, let b = n.bounds, b.width > 0, b.height > 0 else { return }
-                items.append("\(n.role ?? "?") \"\(name)\" (\(px(b.x + b.width / 2 - screen.x)),\(px(b.y + b.height / 2 - screen.y)))")
-            }
-            walk(tree)
-            lines += items.isEmpty ? ["\(surface.label)：沒有項目"] : items
+        var lines = ["開著的 app（有視窗的列出視窗標題，前面的在上）："]
+        for a in running.sorted(by: { $0.name < $1.name }) {
+            let ws = (byPid[a.pid!] ?? []).sorted { $0.1 > $1.1 }.map { "「\($0.0)」" }
+            lines.append("- \(a.name)" + (ws.isEmpty ? "（沒有視窗）" : "：" + ws.joined(separator: "、")))
         }
         return lines.joined(separator: "\n")
     }
-}
 
-/// `click` by element (spec 3.1, M2 round 6): agent-desktop's answers read on this Mac (never
-/// python in the VM: it pops the developer-tools installer), the pick, and what she reads back.
-enum ElementClick {
-    /// One `find` match she could click: one with a ref (and a name, unless she gave only a role).
-    struct Match: Equatable {
-        let role: String
-        let name: String
-        let ref: String
-        /// Screen points, when the answer had them (a snapshot does, `find` does not).
-        var bounds: WindowSummary.Rect? = nil
-    }
-
-    struct Window: Equatable {
-        let id: String
-        /// How results name it: 最前面的視窗（App「title」）.
-        let label: String
-    }
-
-    /// Where the search goes with no front window (spec 3.1, 2026-11-09).
-    static let desktop = Window(id: "", label: "Dock 和選單列（現在沒有最前面的視窗）")
-
-    enum Pick: Equatable {
-        case one(Match)
-        case several([Match])
-        /// No match; the ones whose name fits but whose role does not (empty without a role).
-        case none([Match])
-    }
-
-    /// At most this many candidates are listed in a failed click.
-    static let maxListed = 8
-    /// Several matches: the first this many get their bounds read, to find ones at the same spot.
-    static let maxPlaced = 20
-
-    /// `list-windows`: the focused one; nil when none is.
-    static func frontWindow(_ json: Data) throws -> Window? {
-        struct W: Decodable { let id: String; let app_name: String?; let title: String?; let is_focused: Bool? }
-        struct Answer: Decodable { let ok: Bool; let data: [W]?; let error: WindowSummary.Answer.Failure? }
-        guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
-            throw ComputerError("agent-desktop list-windows 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
-        }
-        guard a.ok, let all = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
-        guard let w = all.first(where: { $0.is_focused == true }) else { return nil }
-        // `title` was the app's name in every sample (Finder, 2026-11-09); then only the app is said.
-        let app = w.app_name ?? "?", title = w.title ?? ""
-        return Window(id: w.id, label: "最前面的視窗（\(app)\(title.isEmpty || title == app ? "" : "「\(title)」")）")
-    }
-
-    /// `find`: the matches with a ref and a name (`unnamed`: also those without one), in agent-desktop's order.
-    static func matches(_ json: Data, unnamed: Bool = false) throws -> [Match] {
-        struct M: Decodable { let role: String?; let name: String?; let ref_id: String? }
-        struct Payload: Decodable { let matches: [M] }
-        struct Answer: Decodable { let ok: Bool; let data: Payload?; let error: WindowSummary.Answer.Failure? }
-        guard let a = try? JSONDecoder().decode(Answer.self, from: json) else {
-            throw ComputerError("agent-desktop find 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
-        }
-        guard a.ok, let d = a.data else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop find 沒有回結果") }
-        return d.matches.compactMap { m in
-            guard let ref = m.ref_id, unnamed || !(m.name ?? "").isEmpty else { return nil }
-            return Match(role: m.role ?? "?", name: m.name ?? "", ref: ref)
-        }
-    }
-
-    /// A `snapshot -i --include-bounds` (a window or a surface): every element with a ref and a name
-    /// (`unnamed`: also those without one), in tree order.
-    static func elements(_ json: Data, unnamed: Bool = false) throws -> [Match] {
-        guard let a = try? JSONDecoder().decode(WindowSummary.Answer.self, from: json) else {
-            throw ComputerError("agent-desktop snapshot 的回答看不懂：\(String(decoding: json.prefix(300), as: UTF8.self))")
-        }
-        guard a.ok, let tree = a.data?.tree else { throw ComputerError(a.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗") }
-        var out: [Match] = []
-        func walk(_ n: WindowSummary.Node) {
-            if let ref = n.ref_id, unnamed || !(n.name ?? "").isEmpty {
-                out.append(Match(role: n.role ?? "?", name: n.name ?? "", ref: ref, bounds: n.bounds))
+    // reading ------------------------------------------------------------------
+    /// `open`: launches (or reaches) the app in the background, optionally handing it a file or URL,
+    /// then reads its front window. No window (a document app launched in the background has none):
+    /// says so and how to get one; nothing is guessed.
+    public func open(_ app: String, target: String?) async throws -> MacResult {
+        let apps = try await listApps()
+        var args: [String: Any] = ["session": session]
+        let known = find(app, in: apps)
+        if let known { args["bundle_id"] = known.bundleID } else { args["name"] = app }
+        if let target {
+            if target.contains("://") { args["urls"] = [target] } else {
+                let path = Self.expand(target)
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw ComputerError("沒有開：\(target) 不存在。要新檔案：先用 write_file 建一個（可以是空的），再 open 它。")
+                }
+                args["urls"] = [path]
             }
-            n.children?.forEach(walk)
         }
-        walk(tree)
+        let j: [String: Any]
+        do { j = try await call("launch_app", args) } catch {
+            let names = known == nil ? "（找不到叫「\(app)」的 app；用 apps 看開著的 app 名字，或給 bundle id）" : ""
+            throw ComputerError("開不了 \(app)：\(Self.said(error))\(names)")
+        }
+        guard let pid = j["pid"] as? Int else { throw ComputerError("開不了 \(app)：cua-driver 沒給 pid") }
+        let info = known ?? AppInfo(name: j["name"] as? String ?? app, bundleID: j["bundle_id"] as? String ?? "", pid: pid, path: nil)
+        let identity = Self.identity(info)
+        // A window may take a moment after launch_app returns.
+        var wins: [Win] = []
+        for attempt in 0..<cfg.windowWaitTries {
+            wins = try await windows(pid: pid)
+            if !wins.isEmpty || attempt == cfg.windowWaitTries - 1 { break }
+            try await Task.sleep(for: .seconds(cfg.windowWaitS))
+        }
+        guard let front = wins.first else {
+            current = nil
+            var r = MacResult(text: "\(identity.name) 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 menu(app: \"\(identity.name)\", path: [\"檔案\", \"新增\"])"
+                              + "（英文選單是 File › New，選單名字以 app 自己的為準）；要開某個檔案就 open 帶 target。", image: nil, window: nil)
+            r.app = identity
+            r.step = "open \(identity.name)" + (target.map { " \($0)" } ?? "")
+            try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: nil,
+                             element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
+            return r
+        }
+        try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: front.title,
+                         element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
+        var r = try await read(pid: pid, app: identity, window: front, of: wins.count)
+        r.step = "open \(identity.name)" + (target.map { " \($0)" } ?? "")
+        return r
+    }
+
+    /// `read_window`: the app's window (`window` = its title, or part of it; none = the front one).
+    public func readWindow(_ app: String?, window: String?) async throws -> MacResult {
+        let (pid, identity) = try await target(app)
+        let wins = try await windows(pid: pid)
+        guard !wins.isEmpty else {
+            throw ComputerError("\(identity.name) 現在沒有視窗。新文件用 menu 選「檔案 › 新增」；開檔用 open 帶 target。")
+        }
+        var pick = wins[0]
+        if let window, !window.isEmpty {
+            guard let w = wins.first(where: { $0.title == window }) ?? wins.first(where: { $0.title.localizedCaseInsensitiveContains(window) }) else {
+                throw ComputerError("\(identity.name) 沒有標題含「\(window)」的視窗；它的視窗：" + wins.map { "「\($0.title)」" }.joined(separator: "、"))
+            }
+            pick = w
+        }
+        return try await read(pid: pid, app: identity, window: pick, of: wins.count)
+    }
+
+    /// The app she names, or the one of the latest read.
+    func target(_ app: String?) async throws -> (Int, AppIdentity) {
+        if let app, !app.isEmpty {
+            if let c = current, c.app.name.lowercased() == app.lowercased() || c.app.bundleID == app {
+                return (c.pid, c.app)
+            }
+            guard let a = find(app, in: try await listApps()) else {
+                throw ComputerError("找不到叫「\(app)」的 app；用 apps 看開著的 app 名字。")
+            }
+            guard let pid = a.pid else { throw ComputerError("\(a.name) 沒開；先用 open。") }
+            return (pid, Self.identity(a))
+        }
+        guard let c = current else { throw ComputerError("還沒讀過任何視窗；給 app，或先 open / read_window。") }
+        return (c.pid, c.app)
+    }
+
+    /// One read of a window: its tree with numbered rows and its screenshot.
+    func read(pid: Int, app: AppIdentity, window: Win, of count: Int) async throws -> MacResult {
+        let file = "\(UUID().uuidString.lowercased()).jpg"
+        let j: [String: Any]
+        do {
+            j = try await call("get_window_state", [
+                "pid": pid, "window_id": window.id, "session": session, "tree_format": "both",
+                "max_elements": cfg.maxElements, "max_image_dimension": cfg.screenshotMaxDimension,
+                "screenshot_format": "jpeg", "screenshot_out_file": shots.appending(path: file).path,
+            ])
+        } catch {
+            current = nil
+            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：\(Self.said(error))")
+        }
+        guard let snapshot = j["snapshot_id"] as? String, let tree = j["tree_markdown"] as? String else {
+            current = nil
+            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：回答裡沒有元素清單")
+        }
+        let elements = j["elements"] as? [[String: Any]] ?? []
+        let rows = Self.identities(elements, markdown: tree)
+        let size = (j["screenshot_width"] as? Int).flatMap { w in (j["screenshot_height"] as? Int).map { (w: w, h: $0) } }
+        let title = j["window_title"] as? String ?? window.title
+        current = Read(pid: pid, app: app, windowID: window.id, title: title, snapshot: snapshot, rows: rows,
+                       maxRow: rows.keys.max() ?? -1, size: size)
+        let image = FileManager.default.fileExists(atPath: shots.appending(path: file).path) ? file : nil
+        var head = "\(app.name) 的視窗「\(title)」" + (count > 1 ? "（這個 app 有 \(count) 個視窗；讀別的用 read_window 帶 window 標題）" : "")
+        if let size { head += "；截圖 \(size.w)×\(size.h)" }
+        var body = head + "\n" + tree
+        if j["truncated"] as? Bool == true {
+            body += "\n（清單在 \(cfg.maxElements) 個元素截斷了；要的東西不在清單裡就看截圖，用 click 的 x、y）"
+        }
+        if image == nil { body += "\n（這次沒有截圖：\(j["degraded_reason"] as? String ?? "cua-driver 沒寫出截圖檔")）" }
+        if let warn = Self.passwordField(elements) { body += "\n" + warn }
+        var r = MacResult(text: "", image: image, window: body)
+        r.app = app
+        if let auth = await authLine() { r.text = auth }
+        return r
+    }
+
+    /// Row → stable identity from the structured elements; the AX id comes from the markdown row (`id=`).
+    static func identities(_ elements: [[String: Any]], markdown: String) -> [Int: ElementIdentity] {
+        var ids: [Int: String] = [:]
+        for line in markdown.split(separator: "\n") {
+            guard let open = line.firstIndex(of: "["), let close = line[open...].firstIndex(of: "]"),
+                  let row = Int(line[line.index(after: open)..<close]) else { continue }
+            if let r = line.range(of: "[id=") ?? line.range(of: " id=") {
+                let rest = line[r.upperBound...]
+                let end = rest.firstIndex(where: { $0 == " " || $0 == "]" }) ?? rest.endIndex
+                ids[row] = String(rest[..<end])
+            }
+        }
+        var byIndex: [Int: [String: Any]] = [:]
+        for e in elements { if let i = e["element_index"] as? Int { byIndex[i] = e } }
+        func name(_ e: [String: Any]) -> String {
+            let role = e["role"] as? String ?? "?"
+            let label = (e["label"] as? String) ?? (e["title"] as? String) ?? ""
+            return label.isEmpty ? role : "\(role) \"\(label)\""
+        }
+        var out: [Int: ElementIdentity] = [:]
+        for (i, e) in byIndex {
+            var path: [String] = []
+            var p = e["parent_index"] as? Int
+            var guardCount = 0
+            while let pi = p, let pe = byIndex[pi], guardCount < 64 {
+                path.insert(name(pe), at: 0)
+                p = pe["parent_index"] as? Int
+                guardCount += 1
+            }
+            out[i] = ElementIdentity(row: i, role: e["role"] as? String ?? "?", subrole: e["subrole"] as? String, axID: ids[i],
+                                     label: e["label"] as? String, title: e["title"] as? String, path: path)
+        }
         return out
     }
 
-    /// Role first (case-insensitive) when given; then the names equal to `name` (case-insensitive),
-    /// else the ones containing it. No name: the role alone.
-    static func pick(_ found: [Match], role: String?, name: String?) -> Pick {
-        let hits: [Match], named: [Match]
-        if let name {
-            let q = name.lowercased()
-            named = found.filter { !$0.name.isEmpty && $0.name.lowercased().contains(q) }
-            let fit = role.map { r in named.filter { $0.role.lowercased() == r.lowercased() } } ?? named
-            let exact = fit.filter { $0.name.lowercased() == q }
-            hits = exact.isEmpty ? fit : exact
-        } else {
-            named = []
-            hits = found.filter { $0.role.lowercased() == role?.lowercased() }
-        }
-        switch hits.count {
-        case 1: return .one(hits[0])
-        case 0: return .none(named)
-        default: return .several(hits)
-        }
+    /// A password field in the window: she does not type passwords herself.
+    static func passwordField(_ elements: [[String: Any]]) -> String? {
+        guard elements.contains(where: { ($0["role"] as? String) == "AXSecureTextField" || ($0["subrole"] as? String) == "AXSecureTextField" }) else { return nil }
+        return "【注意】這個視窗有密碼欄位。密碼不要自己打：停下來，用 ask_owner 跟主人說要做什麼、在哪裡、為什麼。"
     }
 
-    /// Several matches with their bounds where read: the same name (case-insensitive) at the same
-    /// center is one target, the first (outermost) kept. One left is `.one`; a match without bounds
-    /// always stays its own.
-    static func collapse(_ ms: [Match]) -> Pick {
-        var kept: [Match] = []
-        for m in ms {
-            let same = { (k: Match) -> Bool in
-                guard let a = k.bounds, let b = m.bounds else { return false }
-                return k.name.lowercased() == m.name.lowercased()
-                    && abs((a.x + a.width / 2) - (b.x + b.width / 2)) < 1 && abs((a.y + a.height / 2) - (b.y + b.height / 2)) < 1
+    /// A system authentication dialog on screen (Touch ID, an administrator password): its owner
+    /// process is one of the system's authentication agents (`ComputerConfig.authProcesses`).
+    func authDialog() async throws -> String? {
+        let j = try await call("list_windows", [:])
+        for w in j["windows"] as? [[String: Any]] ?? [] where w["is_on_screen"] as? Bool == true {
+            let owner = w["app_name"] as? String ?? ""
+            if cfg.authProcesses.contains(owner) {
+                return "【系統驗證】畫面上有系統的驗證視窗（\(owner)「\(w["title"] as? String ?? "")」：Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。"
             }
-            if !kept.contains(where: same) { kept.append(m) }
-        }
-        return kept.count == 1 ? .one(kept[0]) : .several(kept)
-    }
-
-    /// For a name with no match: the elements sharing the longest run of characters with it (at
-    /// least half the name, and two unless the name is shorter), best first, at most `maxListed`.
-    static func similar(_ all: [Match], to name: String) -> [Match] {
-        let q = Array(name.lowercased())
-        func run(_ s: String) -> Int {
-            let t = Array(s.lowercased())
-            var best = 0, prev = [Int](repeating: 0, count: t.count + 1)
-            for a in q {
-                var cur = [Int](repeating: 0, count: t.count + 1)
-                for (j, b) in t.enumerated() where a == b {
-                    cur[j + 1] = prev[j] + 1
-                    best = max(best, cur[j + 1])
-                }
-                prev = cur
-            }
-            return best
-        }
-        // Half the name at least: "nots.txt" finds "notes.txt" (s.txt), not "Recents" (ts).
-        let need = max(min(2, q.count), (q.count + 1) / 2)
-        let scored = all.map { ($0, run($0.name)) }.filter { $0.1 >= need }
-        return Array(scored.enumerated().sorted { ($0.1.1, -$0.0) > ($1.1.1, -$1.0) }.map(\.1.0).prefix(maxListed))
-    }
-
-    /// `get --property bounds`: screen points.
-    static func bounds(_ json: Data) -> WindowSummary.Rect? {
-        struct Payload: Decodable { let value: WindowSummary.Rect? }
-        struct Answer: Decodable { let ok: Bool; let data: Payload? }
-        guard let a = try? JSONDecoder().decode(Answer.self, from: json), a.ok else { return nil }
-        return a.data?.value
-    }
-
-    /// A rectangle's center in her full-screenshot pixels, converted like the crop and the Dock.
-    static func center(_ b: WindowSummary.Rect, on screen: WindowSummary.Rect, width: Int) -> (x: Int, y: Int) {
-        func px(_ points: Double) -> Int { Int((points * Double(width) / screen.width).rounded()) }
-        return (px(b.x + b.width / 2 - screen.x), px(b.y + b.height / 2 - screen.y))
-    }
-
-    /// `role "name" (x,y)`, the outline's and the Dock summary's form; `role (x,y)` without a name.
-    static func line(_ m: Match, _ at: (x: Int, y: Int)?) -> String {
-        "\(m.role) " + (m.name.isEmpty ? "" : "\"\(m.name)\" ") + (at.map { "(\($0.x),\($0.y))" } ?? "(位置讀不到)")
-    }
-
-    /// One press's answer: whether agent-desktop said ok, and its words (code: message, or the raw
-    /// answer) and disposition as given.
-    static func answer(_ data: Data) -> (ok: Bool, words: String, disposition: String) {
-        let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        let ok = obj?["ok"] as? Bool ?? false
-        let body = (ok ? obj?["data"] : obj?["error"]) as? [String: Any]
-        let disposition = (body?["disposition"] as? [String: Any]).map { d in
-            d.keys.sorted { k1, k2 in
-                let order = ["delivery", "retry"]
-                return (order.firstIndex(of: k1) ?? 2, k1) < (order.firstIndex(of: k2) ?? 2, k2)
-            }.map { "\($0)=\(d[$0].map { "\($0)" } ?? "")" }.joined(separator: ", ")
-        } ?? "沒有 disposition"
-        let why = [body?["code"] as? String, body?["message"] as? String].compactMap { $0 }.joined(separator: ": ")
-        return (ok, why.isEmpty && !ok ? String(decoding: data.prefix(300), as: UTF8.self) : why, disposition)
-    }
-
-    /// The click's answer, what she reads (2026-11-10, trimmed): her call already says what she clicked,
-    /// so only what she does not know: nothing, or, when the press was not delivered, that real
-    /// pointer input went instead (that the screenshot, not the press, is the proof is in the system prompt). agent-desktop's
-    /// disposition codes and the point are left out. A click neither way got through throws, with
-    /// agent-desktop's words.
-    static func clicked(_ m: Match, verb: String, at: (x: Int, y: Int)?, semantic: Data, headed: Data?) throws -> String {
-        let what = line(m, at)
-        let press = answer(semantic)
-        let pressSaid = (press.words.isEmpty ? "" : "\(press.words)；") + press.disposition
-        guard let headed else {
-            guard press.ok else { throw ComputerError("\(verb) \(what) 失敗（無障礙按壓）：\(press.words)（agent-desktop：\(press.disposition)）") }
-            return ""
-        }
-        let mouse = answer(headed)
-        guard mouse.ok else {
-            throw ComputerError("沒有點成 \(what)：無障礙按壓沒送出（agent-desktop：\(pressSaid)），實體滑鼠（headed）也沒有（agent-desktop：\((mouse.words.isEmpty ? "" : "\(mouse.words)；") + mouse.disposition)）。")
-        }
-        return "無障礙按壓沒送出，改用實體滑鼠。"
-    }
-}
-
-/// An image's pixel size from its PNG or JPEG header, for turning crop coordinates into the
-/// screen's (spec 3.1, M2 round 6: she clicked crop positions as if they were full-screen ones).
-enum ImageSize {
-    static func of(_ data: Data) -> (width: Int, height: Int)? {
-        let b = [UInt8](data.prefix(64 * 1024))
-        func be16(_ i: Int) -> Int { Int(b[i]) << 8 | Int(b[i + 1]) }
-        func be32(_ i: Int) -> Int { be16(i) << 16 | be16(i + 2) }
-        if b.count >= 24, b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return (be32(16), be32(20)) }
-        guard b.count >= 4, b[0] == 0xFF, b[1] == 0xD8 else { return nil }
-        var i = 2
-        while i + 9 < b.count {
-            guard b[i] == 0xFF else { return nil }
-            let marker = b[i + 1]
-            if marker == 0xFF { i += 1; continue }
-            if marker == 0xD8 || marker == 0x01 || (0xD0...0xD7).contains(marker) { i += 2; continue }
-            // SOF0–SOF15 except DHT (C4), JPG (C8), DAC (CC): height, then width.
-            if (0xC0...0xCF).contains(marker), ![0xC4, 0xC8, 0xCC].contains(marker) { return (be16(i + 7), be16(i + 5)) }
-            i += 2 + be16(i + 2)
         }
         return nil
     }
-}
 
-/// The open windows and the focused element as one line (spec 3.1, 2026-11-09), from agent-desktop's
-/// `list-windows` and `snapshot --surface focused`. Only windows agent-desktop calls visible are
-/// listed (the rest are menu-bar and helper windows: Caffeine, Siri, loginwindow), in its order.
-/// `list-windows` gives the app's name as `title` (every sample, 2026-11-09), so a window is named
-/// by its app alone unless the title differs; the focused one takes its title from the snapshot's
-/// window element. The focused element: role, "name", and the start of its value.
-enum OpenWindows {
-    /// At most this many characters of the focused element's value are shown.
-    static let maxValue = 20
-
-    struct Window: Decodable { let id: String; let app_name: String?; let title: String?; let is_focused: Bool?; let visible: Bool? }
-    struct Windows: Decodable { let ok: Bool; let data: [Window]?; let error: WindowSummary.Answer.Failure? }
-
-    final class Node: Decodable {
-        let role: String?
-        let name: String?
-        let value: String?
-        let states: [String]?
-        let children: [Node]?
-        enum CodingKeys: String, CodingKey { case role, name, value, states, children }
-        init(from d: Decoder) throws {
-            let c = try d.container(keyedBy: CodingKeys.self)
-            role = try c.decodeIfPresent(String.self, forKey: .role)
-            name = try c.decodeIfPresent(String.self, forKey: .name)
-            value = try? c.decodeIfPresent(String.self, forKey: .value)   // a number or flag is not shown
-            states = try c.decodeIfPresent([String].self, forKey: .states)
-            children = try c.decodeIfPresent([Node].self, forKey: .children)
-        }
-    }
-    struct Focused: Decodable {
-        struct Win: Decodable { let id: String? }
-        struct Payload: Decodable { let window: Win?; let tree: Node? }
-        let ok: Bool
-        let data: Payload?
-        let error: WindowSummary.Answer.Failure?
+    /// `authDialog` as a line for her: the warning, nil when there is none, or why the check failed.
+    func authLine() async -> String? {
+        do { return try await authDialog() } catch { return "（沒查到畫面上有沒有系統驗證視窗：\(Self.said(error))）" }
     }
 
-    static func line(windows: Data, focused: Data) -> String {
-        let f = try? JSONDecoder().decode(Focused.self, from: focused)
-        let focusedTitle = f?.data?.tree?.name.flatMap { $0.isEmpty ? nil : $0 }
-        let list: String
-        if let w = try? JSONDecoder().decode(Windows.self, from: windows) {
-            if w.ok, let all = w.data {
-                let shown = all.filter { $0.visible == true }.map { win in
-                    let app = win.app_name ?? "?"
-                    let own = win.is_focused == true ? focusedTitle ?? win.title : win.title
-                    let title = own.flatMap { $0.isEmpty || $0 == app ? nil : $0 }
-                    return app + (title.map { "「\($0)」" } ?? "") + (win.is_focused == true ? "（前景）" : "")
+    // acting -------------------------------------------------------------------
+    public enum Act: Sendable {
+        case click(row: Int?, x: Int?, y: Int?, button: String, count: Int)
+        case type(text: String, row: Int?)
+        case key(key: String, modifiers: [String])
+        case scroll(direction: String, amount: Int, row: Int?)
+        case menu(app: String?, path: [String])
+    }
+
+    /// Does one action on the window of the latest read (a menu: on the app she names), then reads
+    /// that window again (or the app's front window when that one closed) so she never acts on a stale
+    /// read. A row not in the latest read is refused before anything is sent.
+    public func act(_ a: Act) async throws -> MacResult {
+        if case .menu(let app, let path) = a { return try await menu(app, path) }
+        guard let c = current else { throw ComputerError("沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。") }
+        var args: [String: Any] = ["pid": c.pid, "window_id": c.windowID, "session": session]
+        var element: ElementIdentity?
+        var logArgs: [String: String] = [:]
+        func row(_ n: Int) throws {
+            guard let e = c.rows[n] else {
+                throw ComputerError("沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。重新 read_window，用新清單的行號。")
+            }
+            // An earlier action of this reply read the window again: the row must still be the
+            // element she saw, or it is not hers to press.
+            if let s = seen, s.snapshot != c.snapshot {
+                guard s.windowID == c.windowID, let was = s.rows[n], Self.same(was, e) else {
+                    let was = s.rows[n].map(Self.describe) ?? "沒有這一行"
+                    throw ComputerError("沒有做：這則回覆前面的動作改變了視窗，第 \(n) 行現在是 \(Self.describe(e))，你看到的是 \(was)。看新清單再選。")
                 }
-                list = "開著的視窗：" + (shown.isEmpty ? "沒有" : shown.joined(separator: "、"))
-            } else {
-                list = "開著的視窗讀不到：" + (w.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回視窗")
             }
-        } else {
-            list = "開著的視窗讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: windows.prefix(300), as: UTF8.self))"
+            element = e
+            args["element_token"] = "\(c.snapshot):\(n)"
         }
-        let focus: String
-        if let f {
-            if f.ok, let tree = f.data?.tree {
-                focus = find(tree).map { "焦點：" + describe($0) } ?? "焦點：沒有"
-            } else {
-                focus = "焦點讀不到：" + (f.error.map(WindowSummary.describe) ?? "agent-desktop 沒有回內容")
-            }
-        } else {
-            focus = "焦點讀不到：agent-desktop 的回答不是 JSON：\(String(decoding: focused.prefix(300), as: UTF8.self))"
+        let tool: String
+        switch a {
+        case .click(let r, let x, let y, let button, let count):
+            if let r { try row(r) } else if let x, let y {
+                if let s = c.size, !(0..<s.w).contains(x) || !(0..<s.h).contains(y) {
+                    throw ComputerError("沒有點：\(x),\(y) 在截圖外（截圖 \(s.w)×\(s.h)）")
+                }
+                args["x"] = x; args["y"] = y
+                logArgs = ["x": "\(x)", "y": "\(y)"]
+            } else { throw ComputerError("click 要給 row，或 x 和 y") }
+            if button != "left" { args["button"] = button; logArgs["button"] = button }
+            tool = count == 2 ? "double_click" : "click"
+        case .type(let text, let r):
+            if let r { try row(r) }
+            args["text"] = text
+            logArgs = ["text": text]
+            tool = "type_text"
+        case .key(let key, let mods):
+            if mods.isEmpty { args["key"] = key; tool = "press_key" } else { args["keys"] = mods + [key]; tool = "hotkey" }
+            logArgs = ["key": key, "modifiers": mods.joined(separator: "+")]
+        case .scroll(let direction, let amount, let r):
+            if let r { try row(r) }
+            args["direction"] = direction; args["amount"] = amount
+            logArgs = ["direction": direction, "amount": "\(amount)"]
+            tool = "scroll"
+        case .menu: fatalError("handled above")
         }
-        return list + "；" + focus
+        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: Self.toolName(a), app: c.app.name, bundleID: c.app.bundleID,
+                                  window: c.title, element: element, args: logArgs, ok: true, error: nil)
+        var said = ""
+        do {
+            let j = try await call(tool, args)
+            said = Self.effect(j)
+        } catch {
+            record.ok = false
+            record.error = Self.said(error)
+            try log(record)
+            var r = try await reread(c)
+            r.text = "失敗：\(Self.said(error))" + (r.text.isEmpty ? "" : "\n" + r.text)
+            r.failed = true
+            return r
+        }
+        try log(record)
+        try await Task.sleep(for: .seconds(cfg.settleS))
+        var r = try await reread(c)
+        r.text = [said, r.text].filter { !$0.isEmpty }.joined(separator: "\n")
+        r.step = Self.step(a, element)
+        return r
     }
 
-    /// The first element, depth first, whose states include `focused`.
-    static func find(_ n: Node) -> Node? {
-        if n.states?.contains("focused") == true { return n }
-        for c in n.children ?? [] { if let hit = find(c) { return hit } }
-        return nil
+    /// The same element across two reads: everything but its row.
+    static func same(_ a: ElementIdentity, _ b: ElementIdentity) -> Bool {
+        a.role == b.role && a.subrole == b.subrole && a.axID == b.axID && a.label == b.label && a.title == b.title && a.path == b.path
     }
 
-    /// `role "name"「value」`; a newline in the value shows as ⏎ (2026-11-11: as a space she could not
-    /// see that notes.txt already ended in one, pressed Return after ⌘↓ and left a blank line).
-    static func describe(_ n: Node) -> String {
-        var out = n.role ?? "?"
-        if let name = n.name, !name.isEmpty { out += " \"\(name)\"" }
-        if let v = n.value?.replacingOccurrences(of: "\n", with: "⏎"), !v.isEmpty {
-            out += "「" + (v.count > maxValue ? String(v.prefix(maxValue)) + "…" : v) + "」"
+    static func describe(_ e: ElementIdentity) -> String {
+        let name = e.label.flatMap { $0.isEmpty ? nil : $0 } ?? e.title.flatMap { $0.isEmpty ? nil : $0 } ?? e.axID
+        return e.role + (name.map { " \"\($0)\"" } ?? "")
+    }
+
+    /// One piece of the item's action list: what was done to what, no row numbers.
+    static func step(_ a: Act, _ e: ElementIdentity?) -> String {
+        let on = e.map { " " + describe($0) } ?? ""
+        switch a {
+        case .click(_, let x, let y, let button, let count):
+            let how = (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
+            return "click" + (e == nil ? " \(x ?? 0),\(y ?? 0)" : on) + how
+        case .type(let text, _): return "type「\(text)」" + (e == nil ? "" : " 進" + on)
+        case .key(let key, let mods): return "key " + (mods + [key]).joined(separator: "+")
+        case .scroll(let direction, let amount, _): return "scroll \(direction) \(amount)" + on
+        case .menu(_, let path): return "menu " + path.joined(separator: " › ")
         }
-        return out
+    }
+
+    static func toolName(_ a: Act) -> String {
+        switch a {
+        case .click: "click"
+        case .type: "type"
+        case .key: "key"
+        case .scroll: "scroll"
+        case .menu: "menu"
+        }
+    }
+
+    /// What she needs from a success: only that the driver could not confirm it (her next read shows
+    /// what happened), not its bookkeeping.
+    static func effect(_ j: [String: Any]) -> String {
+        guard let e = j["effect"] as? String else { return "" }
+        return e == "unverifiable" ? "（送出了，cua-driver 沒法確認有沒有作用；看下面這次讀到的視窗）" : ""
+    }
+
+    /// After an action: the same window if it is still there, else the app's front window, else why none.
+    func reread(_ c: Read) async throws -> MacResult {
+        let wins = try await windows(pid: c.pid)
+        if let same = wins.first(where: { $0.id == c.windowID }) {
+            return try await read(pid: c.pid, app: c.app, window: same, of: wins.count)
+        }
+        if let front = wins.first {
+            var r = try await read(pid: c.pid, app: c.app, window: front, of: wins.count)
+            r.window = "（剛才那個視窗「\(c.title)」不見了，這是 \(c.app.name) 現在最前面的視窗）\n" + (r.window ?? "")
+            return r
+        }
+        current = nil
+        var r = MacResult(text: "\(c.app.name) 現在沒有視窗了（剛才的「\(c.title)」關了）。", image: nil, window: nil)
+        r.app = c.app
+        if let auth = await authLine() { r.text += "\n" + auth }
+        return r
+    }
+
+    /// `menu`: an app-menu item by its labels, top level first, through accessibility in the
+    /// background. Works on an app with no window (TextEdit 檔案 › 新增, 2026-11-16).
+    func menu(_ app: String?, _ path: [String]) async throws -> MacResult {
+        let (pid, identity) = try await target(app)
+        var args: [String: Any] = ["pid": pid, "path": path, "session": session]
+        let wins = try await windows(pid: pid)
+        // The driver refuses a window that is not the app's key window; the front one is.
+        if let c = current, c.pid == pid, wins.first?.id == c.windowID { args["window_id"] = c.windowID }
+        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "menu", app: identity.name, bundleID: identity.bundleID,
+                                  window: wins.first?.title, element: nil, args: ["path": path.joined(separator: " › ")], ok: true, error: nil)
+        let before = Set(wins.map(\.id))
+        do { _ = try await call("invoke_menu", args) } catch {
+            record.ok = false
+            record.error = Self.said(error)
+            try log(record)
+            throw ComputerError("選單「\(path.joined(separator: " › "))」沒有執行：\(Self.said(error))")
+        }
+        try log(record)
+        // A new window may take a moment.
+        var now: [Win] = []
+        for attempt in 0..<cfg.windowWaitTries {
+            try await Task.sleep(for: .seconds(attempt == 0 ? cfg.settleS : cfg.windowWaitS))
+            now = try await windows(pid: pid)
+            if now.contains(where: { !before.contains($0.id) }) || (!now.isEmpty && !before.isEmpty) { break }
+        }
+        guard let front = now.first(where: { !before.contains($0.id) }) ?? now.first else {
+            current = nil
+            return MacResult(text: "選了「\(path.joined(separator: " › "))」，\(identity.name) 還是沒有視窗。", image: nil, window: nil,
+                             app: identity, step: "menu " + path.joined(separator: " › "))
+        }
+        var r = try await read(pid: pid, app: identity, window: front, of: now.count)
+        r.step = "menu " + path.joined(separator: " › ")
+        return r
+    }
+
+    // the action log -------------------------------------------------------------
+    /// Appends one line; a write that fails throws (the action already happened: she is told the log missed it).
+    func log(_ r: ActionRecord) throws {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var line = try enc.encode(r)
+        line.append(0x0A)
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            guard FileManager.default.createFile(atPath: logURL.path, contents: nil) else {
+                throw ComputerError("動作紀錄寫不進 \(logURL.path)")
+            }
+        }
+        let h = try FileHandle(forWritingTo: logURL)
+        defer { try? h.close() }
+        try h.seekToEnd()
+        try h.write(contentsOf: line)
+    }
+
+    /// `~` and `~/…` are the owner's home; a relative path is under it.
+    public static func expand(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if path == "~" { return home }
+        if path.hasPrefix("~/") { return home + path.dropFirst() }
+        return path.hasPrefix("/") ? path : home + "/" + path
     }
 }

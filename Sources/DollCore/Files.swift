@@ -1,9 +1,44 @@
 import Foundation
 
-/// Her file tools in the computer menu (2026-11-09): read_file, write_file, edit_file on text files
-/// in the VM. The driver only moves bytes; everything about text is decided here, on the host, so
-/// it is exact and the words are ours: UTF-8 or an error, `cat -n` line numbers, the one occurrence
+/// Her file tools (2026-11-09; on this Mac since 2026-11-16): read_file, write_file, edit_file on
+/// text files. `LocalFiles` only moves bytes; everything about text is decided in `FileText`, so it
+/// is exact and the words are ours: UTF-8 or an error, `cat -n` line numbers, the one occurrence
 /// edit_file's `old` must have, the nearest lines when it has none.
+enum LocalFiles {
+    /// A file's bytes. `~` and `~/…` are the owner's home; a relative path is under it. Throws with
+    /// the reason: no such file, a folder, no permission.
+    static func read(_ path: String) throws -> Data {
+        let p = Mac.expand(path)
+        var dir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: p, isDirectory: &dir) else { throw ToolError(description: "沒有這個檔案：\(path)") }
+        guard !dir.boolValue else { throw ToolError(description: "\(path) 是資料夾，不是檔案") }
+        guard FileManager.default.isReadableFile(atPath: p) else { throw ToolError(description: "沒有權限讀 \(path)") }
+        return try Data(contentsOf: URL(filePath: p))
+    }
+
+    /// Writes `data` as the whole file (created or replaced), creating missing folders. Written in
+    /// place, not replaced, so a file an app has open keeps its identity.
+    static func write(_ path: String, _ data: Data) throws {
+        let p = Mac.expand(path)
+        var dir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: p, isDirectory: &dir), dir.boolValue {
+            throw ToolError(description: "\(path) 是資料夾，不能當檔案寫")
+        }
+        do {
+            try FileManager.default.createDirectory(at: URL(filePath: p).deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch { throw ToolError(description: "開不出 \(path) 的資料夾：\(error.localizedDescription)") }
+        if !FileManager.default.fileExists(atPath: p) {
+            guard FileManager.default.createFile(atPath: p, contents: nil) else { throw ToolError(description: "寫不進 \(path)") }
+        }
+        do {
+            let h = try FileHandle(forWritingTo: URL(filePath: p))
+            defer { try? h.close() }
+            try h.truncate(atOffset: 0)
+            try h.write(contentsOf: data)
+        } catch { throw ToolError(description: "寫不進 \(path)：\(error.localizedDescription)") }
+    }
+}
+
 enum FileText {
     /// Strict UTF-8; anything else is an error naming the file (these tools are text only).
     static func decode(_ data: Data, path: String) throws -> String {

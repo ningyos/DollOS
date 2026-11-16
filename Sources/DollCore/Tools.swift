@@ -31,7 +31,7 @@ public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
     static let modifiers = ["cmd", "shift", "alt", "ctrl"]
 
-    /// The VMPal key string for one chord: modifiers in `modifiers` order, then the key, joined by `+`
+    /// One chord as a step writes it: modifiers in `modifiers` order, then the key, joined by `+`
     /// (`cmd+shift+alt+s`). One fixed order, so the same chord is always the same step.
     static func chord(key: String, modifiers mods: [String]) -> String {
         (modifiers.filter(mods.contains) + [key.lowercased()]).joined(separator: "+")
@@ -322,6 +322,7 @@ public enum Tools {
         static let todoFail = "todo.fail"
         static let todoWait = "todo.wait"
         static let todoProgress = "todo.progress"
+        static let askOwner = "ask_owner"
     }
 
     /// Her todo tools; they stay (with their results) when an item's span is compacted.
@@ -329,8 +330,9 @@ public enum Tools {
     /// The todo calls that end a span (the item, or her progress compaction): the calls after one in
     /// the same reply do not run, except the speaking tools.
     static let ending: Set<String> = [Name.todoDone, Name.todoFail, Name.todoProgress]
-    /// The tools that run only while an item is 進行中 (2026-11-14): the computer's.
-    static let gated: Set<String> = ["click", "type", "key", "scroll", "drag", "read_file", "write_file", "edit_file", "screenshot", "watch"]
+    /// The tools that run only while an item is 進行中 (2026-11-14): the computer's. `ask_owner` is not
+    /// one: she may ask the owner any time.
+    static let gated: Set<String> = ["apps", "open", "read_window", "click", "type", "key", "scroll", "menu", "read_file", "write_file", "edit_file"]
 
     /// The tools she speaks with, and the channel each one goes to.
     static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice]
@@ -352,42 +354,66 @@ public enum Tools {
              parameters: ["type": "object", "properties": [:], "required": []], jsonParameters: []),
     ]
 
-    /// The computer tools that move the VM (click, type, key, scroll, drag): in one reply they run in
-    /// order and stop at the first failure; only the last one done carries the observation (2026-11-09).
-    static let actionNames: Set<String> = ["click", "type", "key", "scroll", "drag"]
+    /// The computer tools that act on a window (2026-11-16): in one reply they run in order and stop at
+    /// the first failure; only the last one done carries the window's new read.
+    static let actionNames: Set<String> = ["click", "type", "key", "scroll", "menu"]
 
-    /// The computer tools (spec 3.1, 2026-11-08): declared in `tools` from the start, run only while an item is 進行中.
+    /// The computer tools (2026-11-16, this Mac through cua-driver): declared in `tools` from the
+    /// start, run only while an item is 進行中. Each exists because: `apps` she has to know what is
+    /// open; `open` starts or reaches an app (and hands it a file or URL: the way a document app gets
+    /// a window in the background); `read_window` is how she sees (element rows and a screenshot);
+    /// `click`/`type`/`key`/`scroll` are the four ways to act on a read; `menu` reaches menu items,
+    /// also of an app with no window (measured: TextEdit had no window and no other way to get one);
+    /// the file tools read and write text without a window (her docs, checking a saved file).
     static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
-        let px = "全螢幕截圖的像素座標（全螢幕截圖 \(c.screenshotWidth) 寬，左上角是 0,0；視窗圖上的位置要先換回全螢幕）"
-        let after = "做完會等畫面停下來，回一行結果（同一則回覆裡最後一個動作才附新的截圖、視窗圖和概要）。"
-        func ints(_ names: [String], _ what: String) -> [(String, JSONValue)] {
-            names.map { ($0, ["type": "integer", "description": .string(what)]) }
-        }
+        let after = "做完會重讀這個視窗；同一則回覆裡只有最後一個動作附新的清單和截圖，前面的只回一行。"
+        let row: (String, JSONValue) = ("row", ["type": "integer", "description": "最新一次讀到的清單裡的行號（[5] 就是 5）"])
         return [
-            Spec(name: "click",
-                 description: "點一下，element、text、x/y 三種只給一種。最好用 element：視窗概要裡那一行（例如 button \"Save\"，角色可省略），程式當下在最前面的視窗找它再點（沒有視窗時在 Dock 和選單列找）；找到好幾個或找不到就不點，回候選和它們的全螢幕座標。text 點畫面上那段字。x、y 預設是全螢幕截圖的座標；用視窗圖上的座標就加 on: window，程式換算。\(after)",
+            Spec(name: "apps",
+                 description: "列出現在開著的 app，和每個 app 開著的視窗標題。",
+                 parameters: ["type": "object", "properties": [:], "required": []], jsonParameters: []),
+            Spec(name: "open",
+                 description: "在背景打開一個 app（已經開著就是叫到它），不會搶主人的前景和滑鼠。給 target 就用這個 app 開那個檔案或網址。開好會讀它最前面的視窗，跟 read_window 一樣回清單和截圖；它沒有視窗會告訴你怎麼辦。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         ("element", ["type": "string", "description": "最前面視窗（沒有視窗時 Dock 和選單列）裡的元素：角色和名字，例如 button \"Save\"；只給名字或只給角色也可以"]),
-                         ("text", ["type": "string", "description": "畫面上要點的字"]),
-                     ] + ints(["x", "y"], "座標，像素；左上角是 0,0") + [
-                         ("on", ["type": "string", "enum": ["screen", "window"],
-                                 "description": .string("x、y 是哪張圖上的：screen＝全螢幕截圖（\(c.screenshotWidth) 寬，不填就是這個），window＝最近一張視窗圖")]),
+                         ("app", ["type": "string", "description": "app 的名字（例：TextEdit、Notes、Safari、Calculator、Finder）或 bundle id"]),
+                         ("target", ["type": "string", "description": "要用它開的檔案路徑（~ 是主人的家目錄）或網址；不填就只開 app"]),
+                     ]),
+                     "required": ["app"],
+                 ], jsonParameters: []),
+            Spec(name: "read_window",
+                 description: "讀一個視窗：元素清單（能操作的元素前面有 [行號]）和這個視窗的截圖。之後的 click、type、scroll、key 都是對這個視窗做，行號只看最新一次讀到的。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("app", ["type": "string", "description": "哪個 app；不填就是上次讀的那個"]),
+                         ("window", ["type": "string", "description": "視窗標題（或其中一段）；不填就是它最前面的視窗"]),
+                     ]),
+                     "required": [],
+                 ], jsonParameters: []),
+            Spec(name: "click",
+                 description: "點最新一次讀到的視窗裡第 row 行的元素。清單裡找不到的東西才用截圖上的 x、y（截圖像素，左上角 0,0）。\(after)",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         row,
+                         ("x", ["type": "integer", "description": "截圖上的 x（只在清單裡沒有時用）"]),
+                         ("y", ["type": "integer", "description": "截圖上的 y"]),
                          ("button", ["type": "string", "enum": ["left", "right"], "description": "不填是 left"]),
                          ("count", ["type": "integer", "description": "1 單擊、2 雙擊；不填是 1"]),
                      ]),
                      "required": [],
                  ], jsonParameters: []),
             Spec(name: "type",
-                 description: "打字到目前有焦點的地方。換行＝按 Return。\(after)",
+                 description: "打字進最新讀的視窗：給 row 就打進那一行的欄位，不給就打進現在有焦點的地方。只放字，不會按鍵；要按 Return 用 key。\(after)",
                  parameters: [
                      "type": "object",
-                     "properties": ["text": ["type": "string", "description": "要打的字"]],
+                     "properties": .object([("text", ["type": "string", "description": "要打的字"]), row]),
                      "required": ["text"],
                  ], jsonParameters: []),
             Spec(name: "key",
-                 description: "按一個鍵，可以同時按住修飾鍵。例：Return＝key(key: \"return\")；⌘S＝key(key: \"s\", modifiers: [\"cmd\"])；⇧⌥⌘S＝key(key: \"s\", modifiers: [\"cmd\", \"shift\", \"alt\"])。要依序按好幾個鍵，就在同一則回覆裡呼叫好幾次 key。\(after)",
+                 description: "對最新讀的視窗的 app 按一個鍵，可以同時按住修飾鍵。例：Return＝key(key: \"return\")；⌘S＝key(key: \"s\", modifiers: [\"cmd\"])。\(after)",
                  parameters: [
                      "type": "object",
                      "properties": .object([
@@ -398,71 +424,74 @@ public enum Tools {
                      "required": ["key"],
                  ], jsonParameters: ["modifiers"]),
             Spec(name: "scroll",
-                 description: "捲動滑鼠所在的地方。\(after)",
-                 parameters: [
-                     "type": "object",
-                     "properties": [
-                         "direction": ["type": "string", "enum": ["up", "down", "left", "right"]],
-                         "amount": ["type": "integer", "description": "捲幾格；不填是 3"],
-                     ],
-                     "required": ["direction"],
-                 ], jsonParameters: []),
-            Spec(name: "drag",
-                 description: "按住左鍵從 x0,y0 拖到 x1,y1（\(px)）。\(after)",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object(ints(["x0", "y0", "x1", "y1"], px)),
-                     "required": ["x0", "y0", "x1", "y1"],
-                 ], jsonParameters: []),
-            Spec(name: "read_file",
-                 description: "讀電腦裡的一個文字檔，回每一行，前面帶行號（像 cat -n）。路徑可以用 ~ 代表你的家目錄，例：read_file(path: \"~/Documents/todo.txt\")。超過 \(f.maxReadLines) 行只回前 \(f.maxReadLines) 行、說還有幾行，再用 from、to 讀後面（行號從 1 算）。只讀 UTF-8 的文字檔，不是文字會跟你說。畫面不會動，所以沒有截圖。",
+                 description: "捲動最新讀的視窗：給 row 就捲那一行的元素所在的地方，不給就捲有焦點的那塊。\(after)",
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
-                     ] + ints(["from", "to"], "要讀的行號範圍，從 1 算、含頭尾；不填就從頭／到尾")),
+                         ("direction", ["type": "string", "enum": ["up", "down", "left", "right"]]),
+                         ("amount", ["type": "integer", "description": "捲幾格；不填是 3"]),
+                         row,
+                     ]),
+                     "required": ["direction"],
+                 ], jsonParameters: []),
+            Spec(name: "menu",
+                 description: "選 app 選單列上的一個項目，path 從最上層的選單寫到項目，用 app 自己顯示的名字，例：[\"檔案\", \"新增\"]。app 沒有視窗也能用（在背景開的 TextEdit 沒有視窗，新文件就這樣開）。做完讀這個 app 最前面的視窗。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("app", ["type": "string", "description": "哪個 app；不填就是最新讀的那個"]),
+                         ("path", ["type": "array", "items": ["type": "string"], "description": "選單路徑，例：[\"檔案\", \"另存新檔⋯\"]"]),
+                     ]),
+                     "required": ["path"],
+                 ], jsonParameters: ["path"]),
+            Spec(name: "read_file",
+                 description: "讀這台 Mac 上的一個文字檔，回每一行，前面帶行號（像 cat -n）。~ 是主人的家目錄。超過 \(f.maxReadLines) 行只回前 \(f.maxReadLines) 行、說還有幾行，再用 from、to 讀後面（行號從 1 算）。只讀 UTF-8 的文字檔。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是主人的家目錄"]),
+                         ("from", ["type": "integer", "description": "從第幾行；不填從頭"]),
+                         ("to", ["type": "integer", "description": "到第幾行（含）；不填到尾"]),
+                     ]),
                      "required": ["path"],
                  ], jsonParameters: []),
             Spec(name: "write_file",
-                 description: "把整個檔案寫成 text：有這個檔就整個蓋掉，沒有就新建，資料夾不在也會順便開。text 怎麼寫就怎麼存，換行照原樣（最後一行要不要換行你決定）。例：write_file(path: \"~/Desktop/hello.txt\", text: \"你好，我是娃娃\\n\")。畫面不會動，所以沒有截圖。",
+                 description: "把整個檔案寫成 text：有這個檔就整個蓋掉，沒有就新建，資料夾不在也會順便開。蓋掉主人的檔案是敏感的事，先問他。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是主人的家目錄"]),
                          ("text", ["type": "string", "description": "整個檔案的內容"]),
                      ]),
                      "required": ["path", "text"],
                  ], jsonParameters: []),
             Spec(name: "edit_file",
-                 description: "改文字檔裡的一段：把 old 換成 new。old 要跟檔案裡一字不差（含空白、換行、標點），而且整個檔案只能出現一次，不然不改、回原因和最接近的幾行。要改一行就把那整行當 old；要在最後加一行，old 填最後一行、new 填最後一行加換行加新的一行。例：edit_file(path: \"~/Documents/todo.txt\", old: \"買牛奶\", new: \"買豆漿\")。畫面不會動，所以沒有截圖。",
+                 description: "改文字檔裡的一段：把 old 換成 new。old 要跟檔案裡一字不差，而且整個檔案只能出現一次，不然不改、回原因和最接近的幾行。要在最後加一行，old 填最後一行、new 填最後一行加換行加新的一行。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         ("path", ["type": "string", "description": "檔案路徑；~ 是你的家目錄"]),
+                         ("path", ["type": "string", "description": "檔案路徑；~ 是主人的家目錄"]),
                          ("old", ["type": "string", "description": "檔案裡現在的那段字，一字不差"]),
                          ("new", ["type": "string", "description": "要換成的字；空的就是刪掉 old"]),
                      ]),
                      "required": ["path", "old", "new"],
                  ], jsonParameters: []),
-            Spec(name: "screenshot",
-                 description: "不做事，只回現在的全螢幕截圖、最前面視窗的視窗圖和概要。",
-                 parameters: ["type": "object", "properties": [:], "required": []],
-                 jsonParameters: []),
-            Spec(name: "watch",
-                 description: "盯著畫面一塊地方，馬上返回。那裡有變化就叫你（兩次至少隔 \(Int(c.watchMinIntervalS)) 秒），max_wait_s 秒內沒變化也會叫你；叫你時附一張全螢幕截圖。設了 watch，這一項就變成等待中：程式不會再叫你，等 watch（或有人說話）才叫你。再呼叫一次 watch 就取代上一個；連續 \(c.watchStopAfter) 次叫你都沒操作電腦，就自動停；這一項結束時也會停。",
+            Spec(name: Name.askOwner,
+                 description: "做敏感的事之前問主人（花錢、刪東西、用主人的名義往外送東西、打密碼、改系統設定），或遇到系統要 Touch ID／密碼的時候。程式把你寫的私訊給他，這一項變成等待中，他回了你才繼續。",
                  parameters: [
                      "type": "object",
-                     "properties": [
-                         "target": ["type": "string", "description": .string("x0,y0,x1,y1（\(px)）或 window（整個畫面）")],
-                         "max_wait_s": ["type": "integer", "description": .string("最多等幾秒；不填是 \(Int(c.watchDefaultMaxWaitS))")],
-                     ],
-                     "required": ["target"],
+                     "properties": .object([
+                         ("what", ["type": "string", "description": "你要做什麼（或卡在什麼）"]),
+                         ("where", ["type": "string", "description": "在哪個 app、哪個視窗、哪個檔案"]),
+                         ("why", ["type": "string", "description": "為什麼要做／為什麼要問他"]),
+                     ]),
+                     "required": ["what", "where", "why"],
                  ], jsonParameters: []),
         ]
     }
 
-    /// How her computer actions chain in one reply (2026-11-09): in the system prompt's computer paragraph.
-    static let chaining = "接下來幾步的結果猜得到的話（例如：打開另存面板、打檔名、按 Save），就照順序寫在同一則回覆裡，程式會照順序做，哪一步失敗就停在那裡，後面的不做。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）會附新的全螢幕截圖、視窗圖和概要，前面的只回一行結果。結果猜不到的（找不找得到、會跳出什麼）就先做那一步、看了再說。"
+    /// How her computer actions chain in one reply: in the system prompt's computer paragraph.
+    static let chaining = "接下來幾步不用看結果就知道的話（例如計算機連按幾個鍵），就照順序寫在同一則回覆裡，程式照順序做，哪一步失敗就停，後面的不做。每做一步程式都重讀視窗：後面那步的行號如果已經指到不一樣的元素，就不做、要你看新清單。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）附新的清單和截圖。結果猜不到的就先做那一步、看了再說。"
 
     /// The request's `tools`: every spec's tool object, as JSON text.
     static func json(_ specs: [Spec]) -> String {
@@ -509,18 +538,17 @@ public enum Tools {
         case recall(String)
         case voiceJoin
         case voiceLeave
-        case act(ComputerAction)
+        /// A computer action on the window of the latest read (or, `menu`, on an app).
+        case act(Mac.Act)
+        case apps
+        case open(app: String, target: String?)
+        case readWindow(app: String?, window: String?)
+        case askOwner(what: String, where: String, why: String)
         case todoSet([String], subgoal: Int?)
         case todoDone(String)
         case todoFail(reason: String, tried: String)
         case todoWait(String)
         case todoProgress(String)
-        /// `click` at x, y on the full screenshot or on the last window crop; the program converts
-        /// and checks them before anything is clicked.
-        case clickAt(x: Int, y: Int, onWindow: Bool, button: String, count: Int)
-        case screenshot
-        /// nil region = the whole screen; nil max_wait = the configured default.
-        case watch(Region?, maxWait: Double?)
         /// The file tools (2026-11-09): `from`/`to` 1-based inclusive, checked ≥ 1 and from ≤ to here.
         case readFile(path: String, from: Int?, to: Int?)
         case writeFile(path: String, text: String)
@@ -617,36 +645,29 @@ public enum Tools {
             return .todoWait(try nonEmpty("reason"))
         case Name.todoProgress:
             return .todoProgress(try nonEmpty("note"))
-        case "screenshot":
-            return .screenshot
+        case "apps":
+            return .apps
+        case "open":
+            return .open(app: try nonEmpty("app"), target: given("target").flatMap { $0.isEmpty ? nil : $0 })
+        case "read_window":
+            return .readWindow(app: given("app").flatMap { $0.isEmpty ? nil : $0 }, window: given("window").flatMap { $0.isEmpty ? nil : $0 })
         case "click":
             let button = try oneOf("button", ["left", "right"], default: "left")
             let count = try int("count") ?? 1
             guard count == 1 || count == 2 else { throw ToolError(description: "click 的 count 只能是 1 或 2，收到 \(count)") }
-            let x = try int("x"), y = try int("y")
-            let element = given("element").flatMap { $0.isEmpty ? nil : $0 }
-            let text = given("text").flatMap { $0.isEmpty ? nil : $0 }
-            let on = try oneOf("on", ["screen", "window"], default: "")
-            let targets = [element != nil, text != nil, x != nil || y != nil].filter { $0 }.count
-            guard targets == 1 else {
-                throw ToolError(description: targets == 0 ? "click 要給 element、text 或 x 和 y 其中一種"
-                                                          : "click 的 element、text、x/y 只能給一種，不要同時給")
+            let row = try int("row"), x = try int("x"), y = try int("y")
+            if row != nil, x != nil || y != nil { throw ToolError(description: "click 的 row 和 x/y 只能給一種；清單裡有就用 row") }
+            guard row != nil || (x != nil && y != nil) else {
+                throw ToolError(description: row == nil && (x != nil || y != nil) ? "click 的 x 和 y 要一起給" : "click 要給 row（清單裡的行號），清單裡沒有才給 x 和 y")
             }
-            guard on.isEmpty || x != nil || y != nil else { throw ToolError(description: "click 的 on 只配 x、y 用") }
-            if let element {
-                let (role, name) = try clickElement(element)
-                return .act(.clickElement(role: role, name: name, button: button, count: count))
-            }
-            if let text { return .act(.clickText(text, button: button, count: count)) }
-            guard let x, let y else { throw ToolError(description: "click 的 x 和 y 要一起給") }
-            return .clickAt(x: x, y: y, onWindow: on == "window", button: button, count: count)
+            return .act(.click(row: row, x: x, y: y, button: button, count: count))
         case "type":
-            // Not trimmed: a newline she writes is a Return.
+            // Not trimmed: what she writes is inserted exactly.
             let text = value("text")
             guard !text.isEmpty else { throw ToolError(description: "type 的 text 是空的") }
-            return .act(.type(text))
+            return .act(.type(text: text, row: try int("row")))
         case "key":
-            let key = try nonEmpty("key")
+            let key = try nonEmpty("key").lowercased()
             guard !key.contains("+"), !key.contains(where: \.isWhitespace) else {
                 throw ToolError(description: "key 只放一個鍵，收到 \(key)；修飾鍵放 modifiers，例：key(key: \"s\", modifiers: [\"cmd\"])；要依序按好幾個鍵就呼叫好幾次 key")
             }
@@ -662,27 +683,22 @@ public enum Tools {
                     if !mods.contains(m) { mods.append(m) }
                 }
             }
-            return .act(.key(Tools.chord(key: key, modifiers: mods)))
+            // One fixed order, so the same chord is always the same recorded step.
+            return .act(.key(key: key, modifiers: Tools.modifiers.filter(mods.contains)))
         case "scroll":
             let direction = try oneOf("direction", ["up", "down", "left", "right"], default: "")
             let amount = try int("amount") ?? 3
             guard amount >= 1 else { throw ToolError(description: "scroll 的 amount 至少是 1，收到 \(amount)") }
-            return .act(.scroll(direction: direction, amount: amount))
-        case "drag":
-            return .act(.drag(x0: try int("x0")!, y0: try int("y0")!, x1: try int("x1")!, y1: try int("y1")!))
-        case "watch":
-            let target = try nonEmpty("target")
-            var region: Region?
-            if target != "window" {
-                let n = target.split(separator: ",").map { Int($0.trimmingCharacters(in: .whitespaces)) }
-                guard n.count == 4, let x0 = n[0], let y0 = n[1], let x1 = n[2], let y1 = n[3], x1 > x0, y1 > y0 else {
-                    throw ToolError(description: "watch 的 target 要是 x0,y0,x1,y1（x1>x0、y1>y0）或 window，收到 \(target)")
-                }
-                region = Region(x0, y0, x1, y1)
+            return .act(.scroll(direction: direction, amount: amount, row: try int("row")))
+        case "menu":
+            let raw = value("path")
+            guard let path = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)), !path.isEmpty,
+                  !path.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+                throw ToolError(description: "menu 的 path 要是字串的 JSON 陣列，從最上層寫起，例：[\"檔案\", \"新增\"]；收到 \(raw)")
             }
-            let wait = try int("max_wait_s")
-            if let wait, wait < 1 { throw ToolError(description: "watch 的 max_wait_s 至少是 1，收到 \(wait)") }
-            return .watch(region, maxWait: wait.map(Double.init))
+            return .act(.menu(app: given("app").flatMap { $0.isEmpty ? nil : $0 }, path: path))
+        case Name.askOwner:
+            return .askOwner(what: try nonEmpty("what"), where: try nonEmpty("where"), why: try nonEmpty("why"))
         case "read_file":
             let path = try nonEmpty("path")
             let from = try int("from"), to = try int("to")
@@ -727,44 +743,6 @@ public enum Tools {
         default:
             fatalError("tool \(call.name) listed but not decoded")
         }
-    }
-
-    /// Roles agent-desktop names in the window outline (round 5's outlines, plus common web and
-    /// text roles): a first word that is one of these is the element's role.
-    static let roles: Set<String> = [
-        "button", "checkbox", "radiobutton", "menubutton", "popupbutton", "combobox", "textfield", "textarea",
-        "searchfield", "statictext", "text", "link", "image", "menuitem", "dockitem", "treeitem", "cell", "row",
-        "column", "tab", "tablist", "list", "outline", "table", "grid", "group", "radiogroup", "toolbar",
-        "scrollarea", "scrollbar", "slider", "disclosure", "heading", "window", "sheet", "handle", "ruler",
-    ]
-
-    /// `click`'s element: `{"role": …, "name": …}`, the outline's `role "name"`, `"name"`, a role word
-    /// and the name after it, a role word alone, or just the name. Escaped quotes (`textfield
-    /// \"Search\"`, M2 round 6) read as quotes.
-    static func clickElement(_ raw: String) throws -> (role: String?, name: String?) {
-        func unquote(_ s: Substring) -> String {
-            let t = s.trimmingCharacters(in: .whitespaces)
-            return t.count >= 2 && t.hasPrefix("\"") && t.hasSuffix("\"") ? String(t.dropFirst().dropLast()) : t
-        }
-        let unescaped = raw.replacingOccurrences(of: "\\\"", with: "\"").trimmingCharacters(in: .whitespaces)
-        if unescaped.hasPrefix("{") {
-            struct Element: Decodable { let role: String?; let name: String? }
-            guard let e = [raw, unescaped].lazy.compactMap({ try? JSONDecoder().decode(Element.self, from: Data($0.utf8)) }).first else {
-                throw ToolError(description: "click 的 element 要是 角色 \"名字\"，或 {\"role\": …, \"name\": …}；讀不懂：\(raw)")
-            }
-            let role = e.role?.trimmingCharacters(in: .whitespaces).lowercased()
-            let name = e.name?.trimmingCharacters(in: .whitespaces)
-            let r = role.flatMap { $0.isEmpty ? nil : $0 }, n = name.flatMap { $0.isEmpty ? nil : $0 }
-            guard r != nil || n != nil else { throw ToolError(description: "click 的 element 沒有名字也沒有角色") }
-            return (r, n)
-        }
-        if roles.contains(unescaped.lowercased()) { return (unescaped.lowercased(), nil) }
-        let parts = unescaped.split(separator: " ", maxSplits: 1)
-        if parts.count == 2, let rest = Optional(parts[1].trimmingCharacters(in: .whitespaces)), !rest.isEmpty,
-           roles.contains(parts[0].lowercased()) || (rest.hasPrefix("\"") && !parts[0].hasPrefix("\"")) {
-            return (parts[0].lowercased(), unquote(Substring(rest)))
-        }
-        return (nil, unquote(Substring(unescaped)))
     }
 }
 
@@ -898,11 +876,11 @@ public func estimateTokens(_ s: String) -> Int {
 
 enum Instructions {
     /// How she works, after the pack in the system prompt (2026-11-14, owner: the operating
-    /// principles she always needs, in plain sentences; the rest of DollOS is in her documents,
-    /// `Doll.docsVMPath`). Her tools' descriptions (in `tools`) carry the details.
+    /// principles she always needs, in plain sentences; the rest of DollOS is in her documents at
+    /// `docs`, an absolute folder on this Mac). Her tools' descriptions (in `tools`) carry the details.
     /// `voice` (`[voice] enabled`): the voice channel is one of the places she answers in.
     /// `maintenance` (`[maintenance] enabled`): the section on the daily system maintenance.
-    static func text(voice: Bool, context c: ContextConfig, maintenance: Bool = false, drives: Bool = false, ownerSleep: Bool = false) -> String {
+    static func text(voice: Bool, context c: ContextConfig, docs: String, maintenance: Bool = false, drives: Bool = false, ownerSleep: Bool = false) -> String {
         // `ownerSleep` (`[owner_sleep] enabled`, 2026-11-16): the fact, no rule; she judges.
         let ownerSleepPart = ownerSleep
             ? "行事曆上的「主人睡覺」是主人平常睡覺的時間，開始和結束都不會叫你；在那段時間裡【狀況】會寫他應該在睡。那時候想到要跟他說的事，不急就"
@@ -914,7 +892,7 @@ enum Instructions {
 
             ## 系統維護
 
-            每天一次，行事曆上「系統維護」的時間（【狀況】會寫下一次是什麼時候），程式做系統維護：把到那時為止的對話和做過的事整理進你的長期記憶，另外寫一段摘要。要幾分鐘，這段時間你不在，沒有回合。時間到了程式會先告訴你、給你一個回合，再過幾分鐘才開始：要收尾、要跟誰說一聲就趁那時候；那天的時間不方便，可以用 calendar.change 把那一天的系統維護往後移。到時候你手上的 todo 還沒做完，會等你做完再開始；拖太久就在你這一回合之後開始，todo 留著，結束後接著做。開始和結束時間線上都有【系統維護】：結束那則寫著整理了幾條記憶，接著是那段摘要（不是你寫的）和今天的行事曆；之前的對話和做過的事就不在眼前了，要細節用 recall 查。維護中主人或開發者跟你說話，維護就停下來，什麼都沒寫，你直接回他；之後安靜一陣子、你手上沒事，會再做一次。要換時間用 calendar.change（只換一天給 on），不能刪。主人說晚安就照平常回他，你不用做什麼。細節在 \(Doll.docsVMPath)/maintenance.md。
+            每天一次，行事曆上「系統維護」的時間（【狀況】會寫下一次是什麼時候），程式做系統維護：把到那時為止的對話和做過的事整理進你的長期記憶，另外寫一段摘要。要幾分鐘，這段時間你不在，沒有回合。時間到了程式會先告訴你、給你一個回合，再過幾分鐘才開始：要收尾、要跟誰說一聲就趁那時候；那天的時間不方便，可以用 calendar.change 把那一天的系統維護往後移。到時候你手上的 todo 還沒做完，會等你做完再開始；拖太久就在你這一回合之後開始，todo 留著，結束後接著做。開始和結束時間線上都有【系統維護】：結束那則寫著整理了幾條記憶，接著是那段摘要（不是你寫的）和今天的行事曆；之前的對話和做過的事就不在眼前了，要細節用 recall 查。維護中主人或開發者跟你說話，維護就停下來，什麼都沒寫，你直接回他；之後安靜一陣子、你手上沒事，會再做一次。要換時間用 calendar.change（只換一天給 on），不能刪。主人說晚安就照平常回他，你不用做什麼。細節在 \(docs)/maintenance.md。
             """ : ""
         let drivesPart = drives ? """
 
@@ -923,19 +901,19 @@ enum Instructions {
 
             你有自己掛著的事：一件具體的落差（主人不太好、答應的還沒做、快到了還沒準備好、結果不如預期、你自己想做的事）。用 concern.note 記，用你自己的話；做完或決定放下用 concern.end。程式也會替你記：一天內有時間的行事曆、沒做成的 todo；每天的系統維護也會從那天的對話記下之後值得再想起的事（已經掛著的不重複記），結束的【系統維護】會寫記了哪幾件。閒著、心裡某種感覺上來的時候，一件掛念會冒出來（【走神】）；眼前的事跟一件掛念有關，它會附在那個回合（【聯想】）。那是你自己想到的，不是有人找你：要做、要跟主人說、排進行事曆、還是先放著，你自己判斷；手上有事就先做完，要不要提、什麼時候提也是你決定。【狀況】有時多一句你現在的感覺（像「你現在有點緊繃」），那是你的狀態，不用照著說出來。主人明確誇你、謝你或糾正你，用 owner.feedback 照抄他那句。
 
-            你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。細節在 \(Doll.docsVMPath)/drives.md。
+            你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。細節在 \(docs)/drives.md。
 
 
             ## 你想成為的樣子、目標樹
 
             上面「你想成為的樣子」是你自己的，會跟著你經歷的事慢慢改：真的有事讓你想法變了，用 ideal.revise 改（寫為什麼、根據哪件事），馬上生效；系統維護也會幫你回顧一天，有理由才改。名字、身分、禁忌不會變。主人看得到每一次修改，也可以改回去，他改了會告訴你。
             從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.list。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
-            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。細節在 \(Doll.docsVMPath)/goals.md。
+            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。細節在 \(docs)/goals.md。
             """ : ""
         return """
         ## 你怎麼運作
 
-        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、你設的 watch 叫你、行事曆上的時間到了、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合。
+        你跟主人在同一條時間線上。有事情發生（有人跟你說話、你工具的結果回來、行事曆上的時間到了、程式的通知）你就得到一個回合；一個回合＝一次回覆。沒事發生就沒有回合。
 
         回覆裡工具呼叫以外的文字是你自己的念頭，只有你看得到；主人和其他人都看不到、聽不到。做事只能透過工具，光在心裡想「記下了」「做好了」不算做了。一次回覆可以呼叫好幾個工具，會照順序執行，每個都有結果回來。**每一則回覆都至少要呼叫一個工具。**
 
@@ -943,16 +921,16 @@ enum Instructions {
 
         回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
 
-        每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、有沒有 watch、今天的行事曆、context 用了多少、下一回合的 effort。
+        每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、今天的行事曆、context 用了多少、下一回合的 effort。
 
         ## todo
 
         要做事之前先用 todo.set 列 todo。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；打開、修改、存檔、確認是同一項裡的步驟，不要拆開。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼。一次只做一項，照順序。你的 todo 有五種狀態：
         - 待命中：沒有 todo。只有事情發生才有回合；電腦工具不能用，呼叫會回「失敗：…先用 todo.set 列 todo」。
         - 進行中：正在做一項。電腦工具可以用；你每回覆一次就會再有下一回合，直到這一項結束。
-        - 等待中：這一項在等主人或 watch（你呼叫了 todo.wait 或 watch）。有事發生之前不會有回合；有事發生就回到進行中。
+        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有事發生之前不會有回合；有事發生就回到進行中。
         - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
-        - 失敗：你確定做不到，用 todo.fail(reason, tried)。還在試、在等主人，都不是失敗。失敗以後電腦工具鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
+        - 失敗：你確定做不到，用 todo.fail(reason, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後電腦工具鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 
         一項完成或失敗的時候，這一項做事的過程（每一步的呼叫和結果、截圖、那幾回合你的念頭）就從你眼前收起來了，只留下：你寫的 result（失敗時是原因和試過什麼）、程式列的動作清單（像「key cmd+shift+s、type 「copy」、click "Save"」，沒有截圖，沒有每一步的結果），和中間你跟別人說的話、別人跟你說的話（原樣留著）。所以 result 要寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。收起來的東西還在時間線檔裡，recall 查得到。
 
@@ -960,24 +938,39 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人自己加的事你不能改也不能刪，覺得該改就跟他說。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)細節在 \(Doll.docsVMPath)/calendar.md。\(maintenancePart)\(drivesPart)
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人自己加的事你不能改也不能刪，覺得該改就跟他說。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)細節在 \(docs)/calendar.md。\(maintenancePart)\(drivesPart)
 
         ## 你的電腦
 
-        你有一台自己的電腦（macOS），只有進行中的項目能用電腦工具。開始用之前先呼叫 screenshot 看現在的畫面。動作做完會回一行結果；一則回覆裡最後一個做成的動作（或失敗的那一步）才附新截圖，截圖後面是最前面那個視窗的概要（每行一個元素：種類、"名字"、括號裡是收起來的子元素數）。你只能從截圖和這份概要看到畫面。點了不代表真的點到，有沒有點中看截圖。\(Tools.chaining)
+        你的電腦就是主人這台 Mac。你在背景操作他的 app，不會搶他的滑鼠、鍵盤和前景視窗，所以他用電腦的時候你也可以做事。只有進行中的項目能用電腦工具。
 
-        卡住的時候可以找主人：人機驗證（拼圖、選圖、滑塊）不要自己試，要手機號、要付錢、要主人才有的東西也一樣——跟主人說清楚卡在哪、要主人做什麼，然後 todo.wait，等主人回話再接著做。
+        怎麼看：open 打開（或叫到）一個 app，read_window 讀它的一個視窗。讀到的是兩樣東西：元素清單（能操作的元素前面有 [行號]）和那個視窗的截圖。兩樣都看：清單告訴你有什麼可以按、可以打字，截圖告訴你看起來怎樣。不知道開著什麼就用 apps。
+        怎麼做：click、type、scroll 用最新一次讀到的清單的行號；key 對同一個 app 按鍵；menu 選選單（app 沒有視窗也可以用，例如新文件）。每做一步程式就重讀那個視窗，結果裡是新的清單和截圖，行號會變，只用最新的。只有最新一次讀到的視窗會留著清單和截圖，之前讀的會收成一行。清單裡找不到的東西才用截圖上的 x、y 點。
+        按了不代表成功：結果裡寫「沒法確認」，就從新的清單和截圖確認有沒有變。\(Tools.chaining)
+        在背景開的 app 常常沒有視窗（例如 TextEdit）：要新文件就 menu(path: ["檔案", "新增"])；要在某個資料夾建新檔，也可以先 write_file 建一個空檔，再 open 帶 target 打開它。
+
+        ## 敏感的事：先問主人
+
+        下面這些事，做之前先用 ask_owner 問主人（寫要做什麼、在哪裡、為什麼），等他回答再做：
+        - 花錢：買東西、付款、訂閱。
+        - 刪東西：刪檔案、清空垃圾桶、刪信、刪備忘錄、刪帳號裡的資料。
+        - 用主人的名義往外送東西：寄信、傳訊息給別人、貼文、留言、送出表單。
+        - 打密碼、登入帳號。
+        - 改系統設定。
+        主人明確叫你做的，就是他已經同意了那一件，不用再問；但做到一半發現還要做上面另一件事，那件要問。
+        畫面上跳出系統要 Touch ID 或密碼的視窗（結果裡會寫【系統驗證】），馬上停下來，不要試著通過它，用 ask_owner 告訴主人是哪一步叫出來的。
+        人機驗證（拼圖、選圖、滑塊）、要手機號、要主人才有的東西，也一樣跟主人說清楚卡在哪、要他做什麼。
 
         ## DollOS 文件
 
-        你自己這套系統（DollOS）其他的事寫在你電腦裡的 \(Doll.docsVMPath)/：README.md 是目錄；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(Doll.docsVMPath)/memory.md")。read_file 是電腦工具，要有進行中的 todo、電腦要開著才讀得到。
+        你自己這套系統（DollOS）其他的事寫在這台 Mac 的 \(docs)/：README.md 是目錄；computer.md 是電腦怎麼用、常見的狀況；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(docs)/memory.md")。read_file 是電腦工具，要有進行中的 todo。
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
 
         ## 做事的規矩
 
         - 主人交代一件事，那一回合就列 todo、動手做第一步；不要只回「收到」。
-        - 按了不代表成功，做完不代表目標完成。結果要從截圖看過才知道；沒看到結果不要說做完了。
+        - 按了不代表成功，做完不代表目標完成。結果要從新的清單和截圖看過才知道；沒看到結果不要說做完了。
         - 檢查步驟要真的做、真的看；畫面跟預期不一樣就不是做完。
         - 主人交代、在等結果的事，做完要回報，講結果和你檢查到什麼；其他的，要不要說你自己判斷。
         - 主人叫你做事的時候，他在等你的反應：要做、不做、要等一下，都讓他知道。怎麼讓他知道、要不要先說一聲再動手，你自己判斷。
@@ -987,13 +980,14 @@ enum Instructions {
     }
 
     /// After `text` when `[voice] enabled` (M6, 2026-11-13).
-    static let voice = """
+    static func voice(docs: String) -> String { """
         ## 語音頻道
 
         主人叫你進 Discord 語音頻道，你再用 \(Tools.Name.voiceJoin) 進去（他要先在裡面）；\(Tools.Name.voiceLeave) 出來。他進頻道不會通知你；你在裡面時他離開了，時間線上會有【語音】的通知。在語音頻道裡你只聽得到主人；他說的話標著 Discord 語音｜語音，是辨識出來的字。
 
         \(Tools.Name.voiceSay) 的話用你的聲音說出口，主人只聽得到、沒有文字；你不在語音頻道裡就說不出去。所以裡面不要放念不出來或念了沒意義的東西：連結、網址、公式、程式碼、指令、檔案路徑、一長串數字、表情符號、顏文字。真的要給主人看，就用 \(Tools.Name.dm) 傳到他的 Discord 私訊，\(Tools.Name.voiceSay) 只講一聲（例如「我傳給你了」）。
 
-        主人開口的時候，你正在說的話會馬上停下來，\(Tools.Name.voiceSay) 的結果會寫你說到哪裡；被打斷和斷線重連的細節在 \(Doll.docsVMPath)/voice.md。
+        主人開口的時候，你正在說的話會馬上停下來，\(Tools.Name.voiceSay) 的結果會寫你說到哪裡；被打斷和斷線重連的細節在 \(docs)/voice.md。
         """
+    }
 }

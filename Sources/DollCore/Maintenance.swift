@@ -254,7 +254,6 @@ extension Doll {
             maintenanceState = MaintenanceFile()
             return saveMaintenanceLogged()
         }
-        if forced { stopWatch() }
         taskTurn = false
         maintenanceState.running = now
         maintenanceState.forced = forced
@@ -405,7 +404,6 @@ extension Doll {
         compacting = nil
         warnedTurns = 0
         attachedIDs = []
-        cheatsheetSent = []
         imageURIs = [:]
         idleTurns = 0
         effortNext = nil
