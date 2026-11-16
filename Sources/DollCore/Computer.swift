@@ -389,11 +389,14 @@ public actor Mac {
             ])
         } catch {
             current = nil
-            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：\(Self.said(error))")
+            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：\(Self.said(error))" + (await otherWindows(pid, not: window.id)))
         }
         guard let snapshot = j["snapshot_id"] as? String, let tree = j["tree_markdown"] as? String else {
             current = nil
-            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：回答裡沒有元素清單")
+            // Seen 2026-11-16: Calculator with a second, untitled window in front that has no tree;
+            // she found the real one only through `apps`. The other windows are named here.
+            let why = (j["degraded_reason"] as? String).map { "（cua-driver：\($0)）" } ?? ""
+            throw ComputerError("讀不到 \(app.name) 的視窗「\(window.title)」：回答裡沒有元素清單\(why)" + (await otherWindows(pid, not: window.id)))
         }
         let elements = j["elements"] as? [[String: Any]] ?? []
         let rows = Self.identities(elements, markdown: tree)
@@ -414,6 +417,14 @@ public actor Mac {
         r.app = app
         if let auth = await authLine() { r.text = auth }
         return r
+    }
+
+    /// After a failed read: the app's other windows, for read_window(window:); empty when there are none.
+    func otherWindows(_ pid: Int, not id: Int) async -> String {
+        let wins: [Win]
+        do { wins = try await windows(pid: pid).filter { $0.id != id } } catch { return "（它另外的視窗也沒列出來：\(Self.said(error))）" }
+        guard !wins.isEmpty else { return "" }
+        return "。這個 app 另外的視窗：" + wins.map { "「\($0.title)」" }.joined(separator: "、") + "；用 read_window 帶 window 標題讀"
     }
 
     /// Row → stable identity from the structured elements; the AX id comes from the markdown row (`id=`).
