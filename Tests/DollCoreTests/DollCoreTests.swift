@@ -1322,6 +1322,140 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     }
 }
 
+/// A stand-in `cua-driver` executable in a fresh folder: `permissions status --json` prints
+/// `perm.json`; `status` succeeds while the file `up` exists; `serve` creates `up` and runs until
+/// terminated (or exits 3 at once when `servefail` exists); `stop` removes `up`. Every call's
+/// arguments are appended to `calls`.
+private struct FakeDriverCLI {
+    let dir: URL
+    var path: String { dir.appending(path: "cua-driver").path }
+
+    init(permissions: String, running: Bool = false) throws {
+        dir = FileManager.default.temporaryDirectory.appending(path: "fake-cua-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let script = """
+            #!/bin/sh
+            d=$(dirname "$0")
+            echo "$*" >> "$d/calls"
+            case "$1" in
+            permissions) cat "$d/perm.json" ;;
+            status) [ -f "$d/up" ] ;;
+            serve)
+                [ -f "$d/servefail" ] && exit 3
+                touch "$d/up"
+                trap 'rm -f "$d/up"; exit 0' TERM
+                while :; do sleep 0.05; done ;;
+            stop) rm -f "$d/up" ;;
+            esac
+            """
+        try script.write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        try permissions.write(to: dir.appending(path: "perm.json"), atomically: true, encoding: .utf8)
+        if running { FileManager.default.createFile(atPath: dir.appending(path: "up").path, contents: nil) }
+    }
+
+    /// The calls so far, one line of arguments each.
+    var calls: [String] {
+        ((try? String(contentsOf: dir.appending(path: "calls"), encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    }
+    var up: Bool { FileManager.default.fileExists(atPath: dir.appending(path: "up").path) }
+}
+
+private let allowed = #"{"accessibility": true, "screen_recording": true}"#
+
+@Test func theDaemonCheckNamesTheMissingPermissionAndStartsNothing() async throws {
+    for (perm, missing) in [(#"{"accessibility": true, "screen_recording": false}"#, "螢幕錄製（Screen Recording）"),
+                            (#"{"accessibility": false, "screen_recording": true}"#, "輔助使用（Accessibility）"),
+                            (#"{"screen_recording": true}"#, "輔助使用（Accessibility）"),
+                            (#"{"accessibility": false, "screen_recording": false}"#, "輔助使用（Accessibility）和螢幕錄製（Screen Recording）")] {
+        let cli = try FakeDriverCLI(permissions: perm)
+        do {
+            _ = try await CuaDaemon.ensure(driver: cli.path, startWait: 2)
+            Issue.record("came up without \(missing)")
+        } catch let e as ComputerError {
+            #expect(e.description == "CuaDriver 沒有\(missing)權限。修法：執行 `\(cli.path) permissions grant`，"
+                    + "或到 系統設定 › 隱私權與安全性 打開 CuaDriver 的這兩項，然後重開 dollcore。")
+        }
+        #expect(cli.calls == ["permissions status --json"] && !cli.up)
+    }
+    // An answer that is not the JSON it should be: said, with what it was.
+    let garbled = try FakeDriverCLI(permissions: "not json")
+    do {
+        _ = try await CuaDaemon.ensure(driver: garbled.path, startWait: 2)
+        Issue.record("came up on a garbled permissions answer")
+    } catch let e as ComputerError {
+        #expect(e.description.hasPrefix("cua-driver permissions status 讀不懂（exit 0）：not json"))
+    }
+}
+
+@Test func theDaemonIsStartedWhenDownStoppedAtTheEndAndAOneAlreadyRunningIsLeftAlone() async throws {
+    let cli = try FakeDriverCLI(permissions: allowed)
+    let daemon = try await CuaDaemon.ensure(driver: cli.path, startWait: 5)
+    #expect(daemon.started && cli.up)
+    // Checked, found down, started once, then asked until it answered (the child's own line may land between polls).
+    #expect(Array(cli.calls.prefix(2)) == ["permissions status --json", "status"] && cli.calls.filter { $0 == "serve" }.count == 1
+            && cli.calls.last == "status")
+    await daemon.stop()
+    #expect(cli.calls.last == "stop" && !cli.up)
+    try await waitUntil { !(daemon.child?.isRunning ?? false) }
+    #expect(daemon.child?.isRunning == false)
+    // Already running (started by someone else): used, never started or stopped by this process.
+    let other = try FakeDriverCLI(permissions: allowed, running: true)
+    let found = try await CuaDaemon.ensure(driver: other.path, startWait: 5)
+    #expect(!found.started && other.calls == ["permissions status --json", "status"])
+    await found.stop()
+    #expect(other.calls == ["permissions status --json", "status"] && other.up)
+    // A daemon that exits at once: the boot stops with how to see why.
+    let broken = try FakeDriverCLI(permissions: allowed)
+    FileManager.default.createFile(atPath: broken.dir.appending(path: "servefail").path, contents: nil)
+    do {
+        _ = try await CuaDaemon.ensure(driver: broken.path, startWait: 5)
+        Issue.record("a daemon that exited came up")
+    } catch let e as ComputerError {
+        #expect(e.description == "cua-driver serve 一啟動就結束了（exit 3）。修法：在終端機跑 `\(broken.path) serve` 看它說什麼。")
+    }
+}
+
+@Test func failedComputerCallsInARowRaiseStressFromTheSecondAndASuccessResetsTheCount() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    await h.doll.testStartSignals()
+    let stress = { await h.doll.dashboardDrives().changes.filter { $0.signal == .stress } }
+    await h.doll.ownerSaid("按 7")
+    try await h.turn(Scripted("", todoSet(), readCall))
+    try await h.turn(Scripted("", clickRow(9)))
+    #expect(await stress().isEmpty)
+    // The second failure in a row: 壓力 up, with the call and its result as the cause.
+    try await h.turn(Scripted("", clickRow(9)))
+    let up = await stress()
+    #expect(up.count == 1 && up[0].cause.hasPrefix("工具連續失敗：click：失敗：沒有做：第 9 行不在最新一次讀到的清單裡")
+            && approx(up[0].after - up[0].before, DrivesConfig().toolErrorsStress))
+    // A success starts over: the next single failure moves nothing.
+    try await h.turn(Scripted("", clickRow(2)))
+    try await h.turn(Scripted("", clickRow(9)))
+    #expect(await stress().count == 1)
+}
+
+@Test func readWindowPicksAWindowByTitleAndOpenRefusesAFileThatIsNotThere() async throws {
+    let h = try await menuHarness()
+    h.cua.change { $0.windows.append(FakeCua.Window(id: 62542, pid: 100, app: "計算機", title: "紙帶", elements: [
+        FakeCua.Element(role: "AXWindow", label: "紙帶", parent: nil)], z: -1)) }
+    try await h.turn(Scripted("", ("read_window", [("app", "Calculator"), ("window", "紙")])))
+    let r = try h.toolResults().last!
+    #expect(r.window?.hasPrefix("Calculator 的視窗「紙帶」（這個 app 有 2 個視窗；讀別的用 read_window 帶 window 標題）；截圖 460×816\n") == true)
+    #expect(h.cua.args("get_window_state").last?["window_id"] as? Int == 62542)
+    // No such title: the app's windows, front first.
+    try await h.turn(Scripted("", ("read_window", [("app", "Calculator"), ("window", "設定")])))
+    #expect(try h.toolResults().last!.text == "失敗：Calculator 沒有標題含「設定」的視窗；它的視窗：「計算機」、「紙帶」")
+    // A missing file is not handed to the app; an unknown app says how to find names.
+    let nope = h.dir.appending(path: "nope.txt").path
+    try await h.turn(Scripted("", ("open", [("app", "TextEdit"), ("target", nope)]), ("open", [("app", "Nope")])))
+    #expect(try h.toolResults().suffix(2).map(\.text) == [
+        "失敗：沒有開：\(nope) 不存在。要新檔案：先用 write_file 建一個（可以是空的），再 open 它。",
+        "失敗：開不了 Nope：no app named Nope（找不到叫「Nope」的 app；用 apps 看開著的 app 名字，或給 bundle id）"])
+    #expect(h.cua.args("launch_app").map { $0["name"] as? String } == ["Nope"])
+}
+
 // memory folders (2026-11-08: secret / own / public) ----------------------------
 
 @Test func ownMemoriesShowInTheOwnersTurnsAndHersButNeverAStrangers() async throws {
