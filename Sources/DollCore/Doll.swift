@@ -1418,7 +1418,9 @@ public actor Doll {
             todo.pending = Array(items.dropFirst())
             todo.startSeq = reply.seq! - 1
             beginItem()
-            listFor = Self.unanswered(timeline.events)
+            // Whose line was waiting before this reply: a 「好，我來」 she wrote ahead of todo.set in the
+            // same reply is an acknowledgement and does not make the list her own.
+            listFor = Self.unanswered(timeline.events.filter { ($0.seq ?? 0) <= reply.seq! })
             listReply = reply.seq!
             listReported = false
             return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])

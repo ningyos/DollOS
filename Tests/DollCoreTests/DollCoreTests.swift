@@ -1729,6 +1729,16 @@ private func notTold(_ who: String, _ tool: String) -> String {
         + "先用 \(tool) 跟\(who)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以。"
 }
 
+@Test func anAcknowledgementAheadOfTodoSetInTheSameReplyDoesNotMakeTheListHers() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("7 加 8 是多少")
+    try await h.turn(Scripted("", dm("好，我算算"), todoSet("算出 7+8"), readCall))
+    try await h.turn(Scripted("", clickRow(2), done("15")))
+    #expect(try h.toolResults().last!.text == notTold("主人", "discord.dm"))
+    try await h.turn(Scripted("", dm("是 15"), done("15")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+}
+
 @Test func theDoneThatFinishesTheOwnersListNeedsALineToHimFirst() async throws {
     // m7-mac (2026-11-16): the answer went only into todo.done's result, which he never sees.
     let h = try await Harness()
@@ -1766,9 +1776,12 @@ private func notTold(_ who: String, _ tool: String) -> String {
     try await h.turn(Scripted("", todoSet("計算機歸零"), readCall))
     try await h.turn(Scripted("", done("看過了，是 0")))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。") && h.said.isEmpty)
-    // The owner's line answered before she listed: the list is hers too.
+    // The owner's line answered in an earlier reply: the list she sets afterwards is hers too.
+    // (Answered in the same reply as todo.set it stays his: that shape is 「好，我來」＋list.)
     await h.doll.ownerSaid("在嗎")
-    try await h.turn(Scripted("", dm("在"), todoSet("看一下計算機"), readCall))
+    try await h.turn(Scripted("", dm("在")))
+    await h.doll.put(Event(.watch, .internal, "想看一下計算機"))
+    try await h.turn(Scripted("", todoSet("看一下計算機"), readCall))
     try await h.turn(Scripted("", done("看過了")))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
     // The developer's list: a DM to the owner is not a line to him; his channel is dollctl.reply.
