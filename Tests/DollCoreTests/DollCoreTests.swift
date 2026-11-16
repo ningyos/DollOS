@@ -166,6 +166,9 @@ private final class FakeCua: ComputerDriver, Sendable {
         var refuse: [String: String] = [:]
         /// After a successful action or menu call: how the desktop changes (default: `FakeCua.press`).
         var after: @Sendable (String, [String: Any], inout State) -> Void = FakeCua.press
+        /// launch_app with `urls`: each file gets a window titled by its name, behind the others
+        /// (false: the app shows nothing for it, as TextEdit with a dialog open did on 2026-11-16).
+        var opensFiles = true
     }
     let state = Mutex(State())
 
@@ -213,6 +216,13 @@ private final class FakeCua: ComputerDriver, Sendable {
                     throw ComputerError(#"{"error":"no app named \#(args["name"] ?? "?")"}"#)
                 }
                 s.apps[i].running = true
+                if s.opensFiles, let urls = args["urls"] as? [String] {
+                    for u in urls where !u.contains("://") {
+                        let name = (u as NSString).lastPathComponent
+                        s.windows.append(Window(id: 64000 + s.windows.count, pid: s.apps[i].pid, app: s.apps[i].name, title: name, elements: [
+                            Element(role: "AXWindow", label: name, parent: nil), Element(role: "AXTextArea", label: nil, id: "First Text View")]))
+                    }
+                }
                 let a = s.apps[i]
                 return Self.text(["pid": a.pid, "bundle_id": a.bundleID, "name": a.name, "windows": [] as [Any]])
             case "get_window_state":
@@ -1097,6 +1107,48 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     let typed = try #require(h.cua.args("type_text").first)
     #expect(typed["pid"] as? Int == 200 && typed["window_id"] as? Int == 63000 && typed["text"] as? String == "娃娃"
             && (typed["element_token"] as? String)?.hasSuffix(":1") == true)
+}
+
+/// 2026-11-16 c-1: the menu item ran but the window was gone by the time it was read; she was told
+/// "menu failed" and the next read without an app failed too. The action is reported as done.
+@Test func aReadThatFailsAfterAnActionSaysTheActionWasDone() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("開一份新文件")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
+    h.cua.refuse("get_window_state", #"{"refusal":{"code":"window_id_not_found","message":"No window matches that target now."}}"#)
+    try await h.turn(Scripted("", ("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")])))
+    let r = try h.toolResults().last!
+    #expect(r.text.hasPrefix("選單「檔案 › 新增」選了，可是之後讀視窗失敗：") && r.text.contains("不要因為這個再做一次")
+            && r.text.contains("read_window(app: \"TextEdit\")") && r.window == nil)
+    #expect(h.last.actions == ["menu"] && h.cua.actions == ["invoke_menu"])
+    // Read again by the app's name: the window is there.
+    try await h.turn(Scripted("", ("read_window", [("app", "TextEdit")])))
+    #expect(try h.toolResults().last!.window?.hasPrefix("TextEdit 的視窗「未命名」") == true)
+    // The same for a click: sent once, reported done.
+    h.cua.refuse("get_window_state", #"{"refusal":{"code":"window_id_not_found","message":"No window matches that target now."}}"#)
+    try await h.turn(Scripted("", ("click", [("row", "1")])))
+    #expect(try h.toolResults().last!.text.contains("click 做了，可是之後讀視窗失敗：") && h.last.actions == ["click"])
+    #expect(h.cua.actions == ["invoke_menu", "click"])
+}
+
+/// open with a file: the file's window is read even when another window of the app is in front; when
+/// no window of that file shows up, the read says so instead of passing the front one off as it.
+@Test func openWithAFileReadsThatFilesWindowOrSaysItIsNotThere() async throws {
+    let h = try await Harness()
+    let notes = h.dir.appending(path: "notes.txt")
+    try FileManager.default.createDirectory(at: h.dir, withIntermediateDirectories: true)
+    try Data("第一行\n".utf8).write(to: notes)
+    h.cua.change { $0.windows.append(FakeCua.untitled) }
+    await h.doll.ownerSaid("打開 notes.txt")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit"), ("target", notes.path)])))
+    let r = try h.toolResults().last!
+    #expect(r.window?.hasPrefix("TextEdit 的視窗「notes.txt」（這個 app 有 2 個視窗") == true)
+    #expect(h.cua.args("launch_app").last?["urls"] as? [String] == [notes.path])
+    // The app shows nothing for the file: the front window comes with a line saying it is not the file.
+    h.cua.change { s in s.opensFiles = false; s.windows.removeAll { $0.title == "notes.txt" } }
+    try await h.turn(Scripted("", ("open", [("app", "TextEdit"), ("target", notes.path)])))
+    let none = try h.toolResults().last!
+    #expect(none.window?.hasPrefix("（沒看到標題有「notes.txt」的視窗：檔案可能沒有開起來（例如 app 有對話框擋著）。下面是 TextEdit 最前面的視窗，不是那個檔）\nTextEdit 的視窗「未命名」") == true)
 }
 
 @Test func aClickOnARowSendsItsElementTokenAndCarriesTheFreshRead() async throws {

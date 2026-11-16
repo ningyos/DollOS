@@ -320,11 +320,16 @@ public actor Mac {
         guard let pid = j["pid"] as? Int else { throw ComputerError("開不了 \(app)：cua-driver 沒給 pid") }
         let info = known ?? AppInfo(name: j["name"] as? String ?? app, bundleID: j["bundle_id"] as? String ?? "", pid: pid, path: nil)
         let identity = Self.identity(info)
-        // A window may take a moment after launch_app returns.
+        // A window may take a moment after launch_app returns. With a file target: its window (by the
+        // file's name in the title), not just the app's front one (2026-11-16 d-1: TextEdit, running
+        // with 8 windows, never showed notes.txt; she was shown another document as if it were it).
+        let file = target.flatMap { $0.contains("://") ? nil : ($0 as NSString).lastPathComponent }
+        let stem = file.map { ($0 as NSString).deletingPathExtension }
+        func isTarget(_ w: Win) -> Bool { stem.map { !$0.isEmpty && w.title.contains($0) } ?? true }
         var wins: [Win] = []
         for attempt in 0..<cfg.windowWaitTries {
             wins = try await windows(pid: pid)
-            if !wins.isEmpty || attempt == cfg.windowWaitTries - 1 { break }
+            if wins.contains(where: isTarget) || attempt == cfg.windowWaitTries - 1 { break }
             try await Task.sleep(for: .seconds(cfg.windowWaitS))
         }
         guard let front = wins.first else {
@@ -337,9 +342,13 @@ public actor Mac {
                              element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
             return r
         }
-        try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: front.title,
+        let shown = wins.first(where: isTarget) ?? front
+        try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: shown.title,
                          element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
-        var r = try await read(pid: pid, app: identity, window: front, of: wins.count)
+        var r = try await read(pid: pid, app: identity, window: shown, of: wins.count)
+        if let file, !isTarget(shown) {
+            r.window = "（沒看到標題有「\(file)」的視窗：檔案可能沒有開起來（例如 app 有對話框擋著）。下面是 \(identity.name) 最前面的視窗，不是那個檔）\n" + (r.window ?? "")
+        }
         r.step = "open \(identity.name)" + (target.map { " \($0)" } ?? "")
         return r
     }
@@ -563,7 +572,7 @@ public actor Mac {
         }
         try log(record)
         try await Task.sleep(for: .seconds(cfg.settleS))
-        var r = try await reread(c)
+        var r = await readAfter("\(Self.toolName(a)) 做了", app: c.app) { try await self.reread(c) }
         r.text = [said, r.text].filter { !$0.isEmpty }.joined(separator: "\n")
         r.step = Self.step(a, element)
         return r
@@ -658,9 +667,21 @@ public actor Mac {
             return MacResult(text: "選了「\(path.joined(separator: " › "))」，\(identity.name) 還是沒有視窗。", image: nil, window: nil,
                              app: identity, step: "menu " + path.joined(separator: " › "))
         }
-        var r = try await read(pid: pid, app: identity, window: front, of: now.count)
+        var r = await readAfter("選單「\(path.joined(separator: " › "))」選了", app: identity) { try await self.read(pid: pid, app: identity, window: front, of: now.count) }
         r.step = "menu " + path.joined(separator: " › ")
         return r
+    }
+
+    /// The read after an action that was sent. Its failure is not the action's: the action already
+    /// happened (2026-11-16 c-1: TextEdit's window was gone by the time it was read, she was told
+    /// "menu failed", then `read_window` without an app failed too because no read was current).
+    func readAfter(_ done: String, app: AppIdentity, _ read: () async throws -> MacResult) async -> MacResult {
+        do { return try await read() } catch {
+            var r = MacResult(text: "\(done)，可是之後讀視窗失敗：\(Self.said(error))\n動作已經送出了，不要因為這個再做一次；先 read_window(app: \"\(app.name)\") 看現在的樣子。",
+                              image: nil, window: nil)
+            r.app = app
+            return r
+        }
     }
 
     // the action log -------------------------------------------------------------
