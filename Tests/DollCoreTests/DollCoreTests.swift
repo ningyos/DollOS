@@ -6592,10 +6592,10 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
     open = await d.dashboardDrives().open
     // Only the next step, one per sub-goal; the "no next step" one ended.
-    #expect(open.map(\.text) == ["目標樹的下一步：「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2）"])
+    #expect(open.map(\.text) == ["目標樹的下一步：#3「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2，那一項開頭寫 #3）"])
     #expect(Concerns.wanderText(open[0]).contains("程式從你的目標樹記的"))
     _ = try await d.goalEnd(3, how: "drop", by: "her")
-    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：「整理筆記」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2）"])
+    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：#4「整理筆記」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2，那一項開頭寫 #4）"])
     // The 【狀況】 line names the open goals only.
     #expect(await d.goalStatusLine() == "- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）")
 }
@@ -6612,7 +6612,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let before = await d.testDrive()
     await d.ownerSaid("（你閒著）")
     // One existing step, one new: the new one joins the tree.
-    try await h.turn(Scripted("", todoSetSub(s.id, "讀維基的鯊魚條目", "鯊魚分類寫成筆記"), screenshotCall))
+    try await h.turn(Scripted("", todoSetSub(s.id, "#3 讀完維基的鯊魚條目，記下各目", "鯊魚分類寫成筆記"), screenshotCall))
     #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }!.text.contains("新的步驟加進樹裡了：「鯊魚分類寫成筆記」"))
     #expect(try await d.status().contains("（子目標 #2 的步驟）"))
     try await h.turn(Scripted("", done("讀完了")))
@@ -6620,6 +6620,8 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     try await h.turn(Scripted("", screenshotCall, done("寫好了")))
     let rec = await d.dashboardGoals().record
     #expect(rec.map(\.kind) == ["step", "step"] && rec.map(\.text) == ["鯊魚分類寫成筆記", "讀維基的鯊魚條目"])
+    // A number that is not one of its open steps is refused before anything changes.
+    await #expect { try await d.linkTodo(["#99 不存在"], subgoal: s.id) } throws: { "\($0)".contains("#99 不是子目標 #2 還沒做的步驟") }
     let last = try h.toolResults().last { $0.text.hasPrefix("完成，記下了。") }!.text
     #expect(last.contains("子目標 #2「弄懂鯊魚的分類」的步驟都做完了"))
     // The sub-goal done by her: a bigger record; its concern is gone.

@@ -265,7 +265,7 @@ extension Doll {
         let now = wallClock.now()
         if how == "done" {
             if n.level == .step, by == "her" {
-                throw ToolError(description: "步驟要真的做：用 todo.set 列它（給 subgoal \(n.parent!)），做完 todo.done 就記上了")
+                throw ToolError(description: "步驟要真的做：用 todo.set 列它（給 subgoal \(n.parent!)，那一項開頭寫 #\(id)），做完 todo.done 就記上了")
             }
             let open = openChildren(id)
             guard open.isEmpty else {
@@ -307,7 +307,7 @@ extension Doll {
         for g in openGoals {
             for s in openChildren(g.id) {
                 if let st = openChildren(s.id).first {
-                    want["goal:\(st.id)"] = ("目標樹的下一步：「\(st.text)」（子目標 #\(s.id)「\(s.text)」；做的時候用 todo.set 列，給 subgoal \(s.id)）", st.id)
+                    want["goal:\(st.id)"] = ("目標樹的下一步：#\(st.id)「\(st.text)」（子目標 #\(s.id)「\(s.text)」；做的時候用 todo.set 列，給 subgoal \(s.id)，那一項開頭寫 #\(st.id)）", st.id)
                 } else {
                     want["goalsub:\(s.id)"] = ("子目標 #\(s.id)「\(s.text)」還沒有下一步（目標「\(g.text)」；想好了用 goal.add 加步驟）", s.id)
                 }
@@ -332,7 +332,8 @@ extension Doll {
 
     func goalAddTool(text: String, parent: Int?) throws -> Outcome {
         let n = try goalAdd(text, parent: parent, by: "her")
-        let hint = n.level == .subgoal ? "要做的時候把一步一步列成 todo：todo.set(items, subgoal: \(n.id))。" : ""
+        let hint = n.level == .subgoal ? "要做的時候把一步一步列成 todo：todo.set(items, subgoal: \(n.id))。"
+            : n.level == .step ? "做的時候用 todo.set 列，給 subgoal \(n.parent!)，那一項開頭寫 #\(n.id)。" : ""
         return Outcome(text: "加好了：\(nodeLine(n))。\(hint)", actions: ["goal add"])
     }
 
@@ -347,6 +348,20 @@ extension Doll {
 
     // todo ↔ steps -----------------------------------------------------------------------------------
 
+    /// The step an item names: it begins with `#<id>` (「#3 shark-list.md 寫好了」). A todo item is
+    /// written as what done looks like, so it rarely equals the step's own words (real runs t,
+    /// 2026-11-16: 3 of 3 rephrased it and the step stayed open beside a new one); the number ties them.
+    static func stepRef(_ item: String) -> Int? {
+        guard item.hasPrefix("#") else { return nil }
+        return Int(item.dropFirst().prefix { $0.isNumber })
+    }
+
+    /// The open step of `subgoal` an item is: by its `#<id>`, else by the same words.
+    func stepIndex(_ item: String, subgoal: Int) -> Int? {
+        if let id = Self.stepRef(item) { return goalFile.nodes.firstIndex { $0.id == id && $0.parent == subgoal && $0.ended == nil } }
+        return goalFile.nodes.firstIndex { $0.parent == subgoal && $0.ended == nil && $0.text == item }
+    }
+
     /// `todo.set` with a sub-goal: checks it and adds the items that are not yet its open steps
     /// (all or none, within `steps_open_max`). Returns the note for her result.
     func linkTodo(_ items: [String], subgoal: Int) throws -> String {
@@ -354,14 +369,21 @@ extension Doll {
         guard let s = node(subgoal), s.ended == nil, s.level == .subgoal else {
             throw ToolError(description: "#\(subgoal) 不是還開著的子目標；現在的樹：\n" + goalTreeText())
         }
+        for i in items {
+            if let id = Self.stepRef(i), stepIndex(i, subgoal: subgoal) == nil {
+                throw ToolError(description: "#\(id) 不是子目標 #\(subgoal) 還沒做的步驟；它的步驟：" + openChildren(subgoal).map { nodeLine($0) }.joined(separator: "、"))
+            }
+        }
         let open = openChildren(subgoal)
-        let new = items.filter { i in !open.contains { $0.text == i } }
+        let new = items.filter { stepIndex($0, subgoal: subgoal) == nil }
         guard open.count + new.count <= goalsConfig.stepsOpenMax else {
             throw ToolError(description: "#\(subgoal) 最多 \(goalsConfig.stepsOpenMax) 個還沒做的步驟；這樣會有 \(open.count + new.count) 個")
         }
         for i in new { _ = try goalText(i) }
         for i in new { _ = try goalAdd(i, parent: subgoal, by: "her") }
-        return new.isEmpty ? "這份清單是子目標 #\(subgoal) 的步驟。" : "這份清單是子目標 #\(subgoal) 的步驟；新的步驟加進樹裡了：" + new.map { "「\($0)」" }.joined() + "。"
+        let bound = items.compactMap { stepIndex($0, subgoal: subgoal).map { goalFile.nodes[$0].id } }
+        return "這份清單是子目標 #\(subgoal) 的步驟" + (bound.isEmpty ? "" : "（" + bound.map { "#\($0)" }.joined(separator: "、") + "）")
+            + (new.isEmpty ? "。" : "；新的步驟加進樹裡了：" + new.map { "「\($0)」" }.joined() + "。")
     }
 
     /// A list starts (from 待命中) or is rewritten: which sub-goal it works on.
@@ -378,8 +400,7 @@ extension Doll {
         var note = ""
         if goalFile.link == nil { goalFile.link = TodoLink() }
         goalFile.link!.done.append(item)
-        if let sub = goalFile.link?.subgoal,
-           let i = goalFile.nodes.firstIndex(where: { $0.parent == sub && $0.ended == nil && $0.text == item }) {
+        if let sub = goalFile.link?.subgoal, let i = stepIndex(item, subgoal: sub) {
             goalFile.nodes[i].ended = wallClock.now()
             goalFile.nodes[i].end = "done"
             let n = goalFile.nodes[i]
