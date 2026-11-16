@@ -6587,15 +6587,15 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
     let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
     var open = await d.dashboardDrives().open
-    #expect(open.map(\.text) == ["子目標 #2「弄懂鯊魚的分類」還沒有下一步（目標「懂海洋生物」）"] && open[0].about == .own && open[0].source == "goal")
+    #expect(open.map(\.text) == ["子目標 #2「弄懂鯊魚的分類」還沒有下一步（目標「懂海洋生物」；想好了用 goal.add 加步驟）"] && open[0].about == .own && open[0].source == "goal")
     _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
     _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
     open = await d.dashboardDrives().open
     // Only the next step, one per sub-goal; the "no next step" one ended.
-    #expect(open.map(\.text) == ["目標樹的下一步：「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」）"])
+    #expect(open.map(\.text) == ["目標樹的下一步：「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2）"])
     #expect(Concerns.wanderText(open[0]).contains("程式從你的目標樹記的"))
     _ = try await d.goalEnd(3, how: "drop", by: "her")
-    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：「整理筆記」（子目標 #2「弄懂鯊魚的分類」）"])
+    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：「整理筆記」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2）"])
     // The 【狀況】 line names the open goals only.
     #expect(await d.goalStatusLine() == "- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）")
 }

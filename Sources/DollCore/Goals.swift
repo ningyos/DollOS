@@ -307,9 +307,9 @@ extension Doll {
         for g in openGoals {
             for s in openChildren(g.id) {
                 if let st = openChildren(s.id).first {
-                    want["goal:\(st.id)"] = ("目標樹的下一步：「\(st.text)」（子目標 #\(s.id)「\(s.text)」）", st.id)
+                    want["goal:\(st.id)"] = ("目標樹的下一步：「\(st.text)」（子目標 #\(s.id)「\(s.text)」；做的時候用 todo.set 列，給 subgoal \(s.id)）", st.id)
                 } else {
-                    want["goalsub:\(s.id)"] = ("子目標 #\(s.id)「\(s.text)」還沒有下一步（目標「\(g.text)」）", s.id)
+                    want["goalsub:\(s.id)"] = ("子目標 #\(s.id)「\(s.text)」還沒有下一步（目標「\(g.text)」；想好了用 goal.add 加步驟）", s.id)
                 }
             }
         }
