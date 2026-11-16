@@ -4848,6 +4848,8 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     #expect(Traditional.fix("叫我来语音频道干嘛？").text == "叫我來語音頻道干嘛？")
     #expect(Traditional.fix("公里、皇后、干擾、台北、一隻貓、裡面、頭髮").changes.isEmpty)
     #expect(Traditional.fix("这个 app 的 TextEdit 说明 123").text == "這個 app 的 TextEdit 說明 123")
+    // 么 is Big5-encodable, yet simplified here; 老么 stays.
+    #expect(Traditional.fix("牙齒怎么了，什么事？").text == "牙齒怎麼了，什麼事？" && Traditional.fix("家裡的老么").changes.isEmpty)
     #expect(Traditional.fix("来来去去").changes == ["来→來"])
     let h = try await Harness()
     await h.doll.ownerSaid("在嗎")

@@ -17,6 +17,13 @@ enum Traditional {
         var out = "", changes: [String] = [], seen = Set<Character>()
         out.reserveCapacity(text.utf8.count)
         for ch in text {
+            // 么 is in Big5 (a form of 幺, as in 老么), so the rule below takes it for traditional; in
+            // her texts it is the simplified 麼 (「牙齒怎么了」 reached the owner, 2026-11-16).
+            if ch == "么", out.last != "老" {
+                out += "麼"
+                if seen.insert(ch).inserted { changes.append("么→麼") }
+                continue
+            }
             guard let s = ch.unicodeScalars.first, ch.unicodeScalars.count == 1, (0x4E00...0x9FFF).contains(s.value),
                   String(ch).data(using: big5) == nil,
                   let t = String(ch).applyingTransform(hansToHant, reverse: false), t != String(ch) else {
