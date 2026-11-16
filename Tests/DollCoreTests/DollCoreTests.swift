@@ -6851,3 +6851,35 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     #expect(await dash.respond(method: "POST", target: "/api/record/eval?id=7&kind=good").status == 409)
     #expect(await dash.respond(method: "POST", target: "/api/ideal/nope").status == 404)
 }
+
+@Test func aRestartDuringMaintenanceGoesOnWithTheReviewAndItsWordsReachTheNotice() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let tune: (inout Config) -> Void = {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.drives.closenessHalfLifeH = 1000
+    }
+    let h = try await Harness([Scripted("", dm("嘿"))], clock: clock, tune: tune)
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("你查得好快")
+    try await waitUntil { h.said == ["嘿"] }
+    await doll.stop()
+    try await runner.value
+    // The process stopped while maintenance ran, after its concerns task.
+    var m = MaintenanceFile()
+    m.due = at("2026-11-17", "03:00"); m.running = at("2026-11-17", "03:00"); m.done = ["concerns"]
+    m.words = ["從今天的對話沒有另外記掛著的事。"]
+    try JSONEncoder().encode(m).write(to: h.dir.appending(path: "maintenance.json"))
+    clock.set(at("2026-11-17", "03:05"))
+    let b = try await Harness([reviewReply("我想當查資料最快的幫手。"), planReply, summaryReply], dir: h.dir, clock: clock, tune: tune)
+    let doll2 = b.doll
+    let runner2 = Task { try await doll2.run() }
+    try await waitUntil { b.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(await b.model.requests.count == 3)
+    let end = try segmentTexts(b).last![0]
+    #expect(end.hasPrefix("【系統維護】結束，現在 03:05。從今天的對話沒有另外記掛著的事。回顧今天，你想成為的樣子改了"))
+    #expect(await doll2.ideal == "我想當查資料最快的幫手。")
+    await doll2.stop()
+    try await runner2.value
+}
