@@ -37,6 +37,17 @@ public struct TodoState: Sendable, Equatable, Codable {
     /// The current item's span starts after this seq: everything after it, up to its end, is what
     /// its compaction replaces.
     public var startSeq: Int64 = 0
+    /// Rounds the current item has been 進行中 (2026-11-16, design C): one round = one model reply
+    /// written while this item was 進行中 (an interrupted call that is rerun counts once). A new item
+    /// starts at 0. Stored with the list, so a restart or a compaction keeps it.
+    public var rounds = 0
+    /// The round count at which the next decision point comes (`[computer] decide_after_rounds`, then
+    /// `decide_every_rounds` after each choice); 0 = none set (an item from an older timeline).
+    public var decideAt = 0
+    /// The decision point came and she has not chosen yet: the computer tools are refused.
+    public var deciding = false
+    /// Her `todo.continue` reasons for this item, oldest first: 「第 N 回合：還缺…；值得繼續因為…」.
+    public var goOn: [String] = []
 
     public init() {}
 }

@@ -118,7 +118,8 @@ function renderStatus(s) {
   $("state").textContent = (names[s.state] || s.state) + (s.maintenance ? "：" + s.maintenance : "");
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
-  $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」` : "") + (s.pending.length ? `；後面 ${s.pending.length} 項` : "");
+  $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」第 ${s.rounds} 回合` : "") + (s.deciding ? "（等她決定：繼續／問你／失敗）" : "")
+    + (s.pending.length ? `；後面 ${s.pending.length} 項` : "") + s.goOn.map(g => "；她選了繼續：" + g).join("");
   $("ctx").textContent = `context 約 ${s.contextTokens} token`;
   $("effort").textContent = "effort：" + s.effort;
   $("queued").textContent = `排隊 ${s.queued} 件 · 第 ${s.turn} 回合`;

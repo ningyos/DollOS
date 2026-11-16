@@ -191,6 +191,14 @@ public actor Doll {
     /// Her computer calls that failed, in a row, as `name + arguments` → how many times (2026-11-16:
     /// the same failing step was retried for 15 rounds); reset by any computer call that succeeds.
     var failedCalls: [String: Int] = [:]
+    /// What `todo.done`'s evidence is matched against (2026-11-16, design A): the latest window read
+    /// (its element list, the head line left out) or the file of the latest file tool, whichever came
+    /// last in the current item. In memory: a new process, or a new item, starts with none.
+    enum LatestRead { case window(String), file(String) }
+    var latestRead: LatestRead?
+    /// The screenshot of her latest window read, for her next line to the owner (design B); cleared
+    /// once a line carried it, and after the turn in which the item ended.
+    var ownerShot: String?
     /// Screenshot file → its `data:` URI, so a stored image is read and encoded once.
     var imageURIs: [String: String] = [:]
     var observer: (@Sendable (TurnReport) -> Void)?
@@ -966,6 +974,11 @@ public actor Doll {
         taskTurn = false
         tokenRatio = Double(reply.usage.promptTokens) / Double(max(1, guess))
         var actions: [String] = []
+        // One round of the item in progress (design C): this reply was written while it was 進行中.
+        if todo.phase == .doing {
+            todo.rounds += 1
+            if todo.decideAt == 0 { todo.decideAt = computerConfig.decideAfterRounds }
+        }
 
         // She saw every event, so a secret seen marks her reply (5.1). Stored as returned: re-sent byte-identical.
         var replyEvent = Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret))
@@ -1006,6 +1019,8 @@ public actor Doll {
                               actions: ["error \(name)"], background: true)
             } else if Tools.gated.contains(call.name), todo.phase != .doing {
                 out = Outcome(text: gateText(name), actions: ["refused \(name)"])
+            } else if Tools.gated.contains(call.name), todo.deciding {
+                out = Outcome(text: "失敗：\(name) 沒有執行。" + decideText, actions: ["refused \(name)"])
             } else if isAction, let failed {
                 out = Outcome(text: "失敗：前面第 \(failed.step) 步（\(failed.line)）失敗了，這一步沒做",
                               actions: ["skipped \(name)"], background: true)
@@ -1062,9 +1077,18 @@ public actor Doll {
         }
         if startAfterTurn { todo.startSeq = timeline.lastSeq }
         if waitNow, todo.phase == .doing { todo.phase = .waiting }
+        // The decision point (design C): the item has run `decideAt` rounds and is still in progress.
+        if todo.phase == .doing, todo.current == before.current, !todo.deciding, todo.rounds >= todo.decideAt {
+            todo.deciding = true
+            try append(Event(.memory, .internal, "【該決定了】" + decideText))
+            actions.append("decision point")
+            log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at round \(todo.rounds)")
+        }
         if todo != before {
             try timeline.recordTodo(todo, seq: stored.seq!)
-            log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
+            if todo.phase != before.phase || todo.current != before.current || todo.pending != before.pending {
+                log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
+            }
         }
         // The phase decides the next turn (2026-11-14): 進行中 gets one after every reply; 等待中
         // none until an event; the reply that ended the list (done with nothing next, or an empty
@@ -1207,8 +1231,8 @@ public actor Doll {
                 return try await recall(query, seen: events)
             case .todoSet(let items, let subgoal):
                 return try todoSet(items, subgoal: subgoal, reply: reply)
-            case .todoDone(let result):
-                return try await todoDone(result, reply: reply)
+            case .todoDone(let result, let evidence):
+                return try await todoDone(result, evidence: evidence, reply: reply)
             case .todoFail(let reason, let tried):
                 return try todoFail(reason: reason, tried: tried)
             case .todoWait:
@@ -1222,6 +1246,8 @@ public actor Doll {
                 warnedTurns = 0
                 return Outcome(text: "前面的過程收起來了，之後只留你寫的進度和這份動作清單：\(Self.actionList(itemSteps.map(\.line)))。「\(item)」還在進行中，接著做。",
                                actions: ["todo progress"], ends: true)
+            case .todoContinue(let missing, let why):
+                return try todoContinue(missing: missing, why: why)
             case .apps:
                 return Outcome(text: try await mac.apps(), actions: [name])
             case .open(let app, let target):
@@ -1238,16 +1264,19 @@ public actor Doll {
                 let text = try FileText.decode(try LocalFiles.read(path), path: path)
                 let out = try FileText.read(text, path: path, from: from, to: to, max: filesConfig.maxReadLines)
                 itemSteps.append((timeline.lastSeq + 1, "read_file \(path)"))
+                latestRead = .file(path)
                 return Outcome(text: out, actions: [name])
             case .writeFile(let path, let text):
                 try LocalFiles.write(path, Data(text.utf8))
                 itemSteps.append((timeline.lastSeq + 1, "write_file \(path)（\(FileText.lines(text).count) 行）"))
+                latestRead = .file(path)
                 return Outcome(text: FileText.written(text, path: path), actions: [name])
             case .editFile(let path, let old, let new):
                 let text = try FileText.decode(try LocalFiles.read(path), path: path)
                 let (changed, out) = try FileText.edit(text, path: path, old: old, new: new)
                 try LocalFiles.write(path, Data(changed.utf8))
                 itemSteps.append((timeline.lastSeq + 1, "edit_file \(path)"))
+                latestRead = .file(path)
                 return Outcome(text: out, actions: [name])
             case .calendar(let r):
                 return Outcome(text: try calendarTool(r), actions: [name])
@@ -1280,6 +1309,7 @@ public actor Doll {
                     let r = try await mac.look()
                     out.image = r.image
                     out.window = r.window
+                    noteRead(r)
                 } catch {
                     out.text += "\n（重讀視窗也失敗：\(error)）"
                 }
@@ -1294,6 +1324,7 @@ public actor Doll {
     /// the 【相關記憶】 on a switch and the experience's entities; a success is a step of the item.
     func computerOutcome(_ r: MacResult, name: String, chain: Chain) -> Outcome {
         var out = Outcome(text: r.text, image: r.image, window: r.window, actions: [r.failed ? "error \(name)" : name])
+        noteRead(r)
         if r.failed {
             out.failedStep = name
         } else {
@@ -1310,6 +1341,91 @@ public actor Doll {
             if !itemApps.contains(where: { $0.bundleID == app.bundleID }) { itemApps.append(app) }
         }
         return out
+    }
+
+    /// A window read: the latest read her evidence is matched against, and the screenshot the owner
+    /// gets. An `open` that found no window is a read too: what she saw is that the app has none.
+    func noteRead(_ r: MacResult) {
+        guard let window = r.window ?? (r.failed || r.step?.hasPrefix("open ") != true ? nil : "open\n" + r.text) else { return }
+        latestRead = .window(window)
+        if let image = r.image { ownerShot = image }
+    }
+
+    /// The decision point's words (design C): how many rounds, and the three choices.
+    var decideText: String {
+        "「\(todo.current ?? "")」已經做了 \(todo.rounds) 回合（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
+            + "① \(Tools.Name.todoContinue)(missing, why)：還缺什麼、為什麼值得繼續（主人看得到）；② \(Tools.Name.askOwner) 問主人；③ \(Tools.Name.todoFail) 說卡在哪裡、試過什麼。"
+            + "選了繼續，再過 \(computerConfig.decideEveryRounds) 回合會再問一次。"
+    }
+
+    /// `todo.continue` (design C): her reason to go on, recorded with the list; the tools run again
+    /// until the next point.
+    func todoContinue(missing: String, why: String) throws -> Outcome {
+        let item = try currentItem(Tools.Name.todoContinue)
+        guard todo.deciding else {
+            throw ToolError(description: "現在不用決定：「\(item)」做了 \(todo.rounds) 回合，第 \(todo.decideAt) 回合才要選。接著做。")
+        }
+        todo.goOn.append("第 \(todo.rounds) 回合：還缺「\(missing)」；值得繼續因為「\(why)」")
+        decided()
+        log("INFO", "turn \(turnIndex): todo.continue「\(item)」round \(todo.rounds): missing「\(missing)」why「\(why)」")
+        return Outcome(text: "記下了，主人在後台看得到。電腦和檔案工具開放了；第 \(todo.decideAt) 回合會再問一次。", actions: ["todo continue"])
+    }
+
+    /// She chose at the decision point (go on, or asked the owner): the next point is `decide_every_rounds` on.
+    func decided() {
+        todo.deciding = false
+        todo.decideAt = todo.rounds + computerConfig.decideEveryRounds
+    }
+
+    /// What a quote and a read are compared as (design A): every whitespace and the list's `[n]` row
+    /// tags removed, and 「」“”＂ written as `"`, so an honest copy matches whatever spacing, line
+    /// breaks, row numbers or quote marks she kept. The quote marks themselves stay: `"7"` is not in `"78"`.
+    static func evidenceKey(_ s: String) -> String {
+        String(s.replacing(/\[\d+\]/, with: "").compactMap { c -> Character? in
+            c.isWhitespace ? nil : "「」“”＂".contains(c) ? "\"" : c
+        })
+    }
+
+    /// The lines of a read that hold values (`= "…"`, or a text element: AXStaticText, AXTextField,
+    /// AXTextArea), else its first lines; at most 6, each cut at 80 characters: what a refused
+    /// `todo.done` shows of where things stand.
+    static func valueLines(_ lines: [String]) -> String {
+        let trimmed = lines.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let values = trimmed.filter { l in l.contains(" = ") || ["AXStaticText", "AXTextField", "AXTextArea"].contains { l.contains($0) } }
+        return (values.isEmpty ? trimmed : values).prefix(6).map { "  " + String($0.prefix(80)) }.joined(separator: "\n")
+    }
+
+    /// Design A: the refusal for a `todo.done` of an item that used the computer or the file tools,
+    /// or nil when her evidence is in the latest read.
+    func evidenceRefusal(_ evidence: String?) -> String? {
+        let fix = "已經跟主人說了跟這裡不一樣的話，要再跟他說正確的。"
+        guard let latestRead else {
+            return "還沒完成：這一項用過電腦或檔案工具，可是這一項裡你還沒讀過視窗或檔案（或讀失敗了）。先 read_window 或 read_file 看做完的樣子，再從那裡照抄 evidence。"
+        }
+        let source: String, shown: String, haystack: String
+        switch latestRead {
+        case .window(let text):
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            source = "你最新一次讀到的視窗（\(lines.first.map { String($0.prefix { $0 != "；" }) } ?? "")）"
+            haystack = lines.dropFirst().joined(separator: "\n")
+            shown = Self.valueLines(Array(lines.dropFirst()))
+        case .file(let path):
+            let text: String
+            do { text = try FileText.decode(try LocalFiles.read(path), path: path) } catch {
+                return "還沒完成：你最後用的檔案 \(path) 現在讀不到（\(error)）。先 read_file 或 read_window 確認做完的樣子，再從那裡照抄 evidence。"
+            }
+            let lines = FileText.lines(text)
+            source = "\(path)（程式剛讀的，\(lines.count) 行）"
+            haystack = text
+            shown = lines.prefix(6).enumerated().map { "  \($0.offset + 1)→" + String($0.element.prefix(80)) }.joined(separator: "\n")
+        }
+        guard let evidence else {
+            return "還沒完成：這一項用過電腦或檔案工具，todo.done 要帶 evidence：從\(source)照抄證明做完的那段字。現在讀到的：\n\(shown)\n照這個判斷做完了沒有。"
+        }
+        let key = Self.evidenceKey(evidence)
+        if !key.isEmpty, Self.evidenceKey(haystack).contains(key) { return nil }
+        return "還沒完成：evidence「\(evidence)」不在\(source)裡。那裡現在是：\n\(shown)\n"
+            + "照這個判斷：真的做完了，就從那裡照抄證明的那段字（標點、寫法照抄）；還沒做完就接著做；做不到就 \(Tools.Name.todoFail)。\(fix)"
     }
 
     /// The same computer call failing again (2026-11-16: TextEdit, 15 rounds of the same step that
@@ -1343,6 +1459,8 @@ public actor Doll {
             return Outcome(text: "問了主人（私訊）。他回了你才會知道。", actions: ["ask owner"], background: true)
         }
         waitNow = true
+        // At a decision point (design C) asking the owner is one of the three choices.
+        if todo.deciding { decided() }
         return Outcome(text: "問了主人（私訊）。這則回覆的呼叫做完以後，「\(item)」就是等待中：他回了才會再有回合。",
                        actions: ["ask owner"], background: true)
     }
@@ -1377,6 +1495,11 @@ public actor Doll {
         itemUsedComputer = false
         itemActed = false
         warnedTurns = 0
+        latestRead = nil
+        todo.rounds = 0
+        todo.decideAt = computerConfig.decideAfterRounds
+        todo.deciding = false
+        todo.goOn = []
         forgetSeen()
     }
 
@@ -1431,12 +1554,19 @@ public actor Doll {
     /// experiences attached are scored as a success; an item that used the computer is written as
     /// an experience (her result and its steps; turns and seconds from the item's start); the watch
     /// stops; the next item is 進行中 after this turn, or the list is done (待命中).
-    func todoDone(_ result: String, reply: Event) async throws -> Outcome {
+    func todoDone(_ result: String, evidence: String? = nil, reply: Event) async throws -> Outcome {
         let item = try currentItem("todo.done")
         // Done needs something done or looked at (owner, 2026-11-14): in a real run she ended an
         // untouched item right after the previous one was compacted, with a made-up result.
         guard itemActed else {
             throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 read_window 或 read_file 親眼看過再說完成。")
+        }
+        // Evidence from the latest read (design A, 2026-11-16: she told the owner 「畫面顯示 1702」 while
+        // the display read "3"). Checked before the told-before-done rule: what she reports should be
+        // what the read shows, so the read is settled first.
+        if itemUsedComputer, let refusal = evidenceRefusal(evidence) {
+            log("INFO", "turn \(turnIndex): todo.done「\(item)」refused: evidence「\(evidence ?? "")」not in the latest read")
+            throw ToolError(description: refusal)
         }
         if todo.pending.isEmpty, let f = listFor, !listReported, !speaksLater.contains(f.to) {
             let tool = switch f.channel {

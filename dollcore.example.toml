@@ -39,6 +39,8 @@ settle_s = 0.4                # 每個動作做完、重讀視窗之前等這麼
 window_wait_tries = 5         # open／menu 之後最多看幾次 app 有沒有視窗，才說它沒有視窗
 window_wait_s = 0.6           # 兩次之間等多久。初始值理由：2026-11-16 TextEdit 選「檔案 › 新增」後 1.5 秒內新視窗已在；5×0.6＝3 秒
 auth_processes = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]   # 系統驗證視窗（Touch ID、管理者密碼）的擁有者 process 名字：畫面上有它們的視窗，結果就多一行【系統驗證】要她停下來告訴主人。哪些名字在這台 Mac 上真的會出現，見 DEMO.md「電腦」的 g3 量測
+decide_after_rounds = 15      # 一項 todo 進行了這麼多回合（她的一則回覆＝一回合），電腦和檔案工具先停：她要選「還缺什麼、為什麼值得繼續」（todo.continue）、問主人（ask_owner）或 todo.fail。初始值理由：2026-11-16 m7-mac 真模型，做得成的中位 11–14 回合（備忘錄 7），做不到的一路跑到 runner 的 30 回合上限、從沒 todo.fail；15 讓多數做得成的不會碰到
+decide_every_rounds = 10      # 選了繼續（或問了主人）以後，再過這麼多回合又要選一次。初始值理由：做得成的最長一次 20 回合（a-1），15＋10＝25 之內；做不到的 30 回合裡會被問 2 次
 
 [files]
 # 檔案工具（2026-11-09；2026-11-16 起讀寫這台 Mac 的檔案）：read_file／write_file／edit_file 直接讀寫文字檔，不經過 GUI；~ 是主人的家目錄

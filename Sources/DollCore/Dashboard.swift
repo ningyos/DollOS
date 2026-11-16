@@ -48,6 +48,10 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var item: String?
     /// The items after it.
     public var pending: [String]
+    /// Rounds the item has run, whether it waits for her choice, and her reasons to go on (design C, 2026-11-16).
+    public var rounds: Int
+    public var deciding: Bool
+    public var goOn: [String]
     /// The footer's context figure: the estimate scaled by the last real prompt size.
     public var contextTokens: Int
     /// thinking (model call in flight) | acting (her tool calls) | idle (waiting for the next
@@ -153,6 +157,7 @@ extension Doll {
     public func dashboardStatus() throws -> DashboardStatus {
         DashboardStatus(
             name: name, todo: todo.phase.label, item: todo.current, pending: todo.pending,
+            rounds: todo.rounds, deciding: todo.deciding, goOn: todo.goOn,
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
             paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,

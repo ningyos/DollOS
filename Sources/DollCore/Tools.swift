@@ -182,10 +182,13 @@ public enum Tools {
                  "required": ["items"],
              ], jsonParameters: ["items"]),
         Spec(name: Name.todoDone,
-             description: "這一項做完了。先看最新的截圖或檔案、對照這一項寫的做完的樣子：跟動手前比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案）就是還沒完成，先修好。「原本就是這樣」只有你動手前親眼看過才算。呼叫以後，這一項的過程（截圖、每一步的結果、那幾回合你的念頭）就從你眼前收起來，只留下你寫的 result 和程式列的動作清單；所以 result 寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。有下一項就接著進行中；沒有了就回到待命中，程式不會再為這件事叫你，要跟主人說的話用回話的工具寫在同一則回覆裡。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
+             description: "這一項做完了。先看最新的截圖或檔案、對照這一項寫的做完的樣子：跟動手前比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案）就是還沒完成，先修好。「原本就是這樣」只有你動手前親眼看過才算。這一項用過電腦或檔案工具，evidence 要從最新一次讀到的視窗清單或檔案裡一字不差抄一段證明做完的字，程式會對；不在裡面就退回，告訴你現在讀到的是什麼。呼叫以後，這一項的過程（截圖、每一步的結果、那幾回合你的念頭）就從你眼前收起來，只留下你寫的 result 和程式列的動作清單；所以 result 寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。有下一項就接著進行中；沒有了就回到待命中，程式不會再為這件事叫你，要跟主人說的話用回話的工具寫在同一則回覆裡。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
              parameters: [
                  "type": "object",
-                 "properties": ["result": ["type": "string", "description": "寫給以後的自己：做了什麼、怎麼做的、結果、怎麼確認的"]],
+                 "properties": .object([
+                     ("result", ["type": "string", "description": "寫給以後的自己：做了什麼、怎麼做的、結果、怎麼確認的"]),
+                     ("evidence", ["type": "string", "description": "用過電腦或檔案工具才要：從最新一次讀到的視窗清單（或最後用的檔案）照抄證明做完的那段字，例如計算機顯示的值、存好的檔名、檔案裡加的那行"]),
+                 ]),
                  "required": ["result"],
              ], jsonParameters: []),
         Spec(name: Name.todoFail,
@@ -211,6 +214,16 @@ public enum Tools {
                  "type": "object",
                  "properties": ["note": ["type": "string", "description": "做到哪裡、確認過什麼、接下來要做什麼"]],
                  "required": ["note"],
+             ], jsonParameters: []),
+        Spec(name: Name.todoContinue,
+             description: "程式說這一項已經做了很多回合、要你決定的時候用：寫還缺什麼、為什麼值得繼續。程式記下來（主人在後台看得到），電腦和檔案工具再開放。另外兩個選擇是 ask_owner 問主人，或 todo.fail。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("missing", ["type": "string", "description": "還缺什麼才算做完"]),
+                     ("why", ["type": "string", "description": "為什麼繼續值得：下一步要試的、跟之前不一樣的做法"]),
+                 ]),
+                 "required": ["missing", "why"],
              ], jsonParameters: []),
     ]
 
@@ -322,11 +335,12 @@ public enum Tools {
         static let todoFail = "todo.fail"
         static let todoWait = "todo.wait"
         static let todoProgress = "todo.progress"
+        static let todoContinue = "todo.continue"
         static let askOwner = "ask_owner"
     }
 
     /// Her todo tools; they stay (with their results) when an item's span is compacted.
-    static let todoNames: Set<String> = [Name.todoSet, Name.todoDone, Name.todoFail, Name.todoWait, Name.todoProgress]
+    static let todoNames: Set<String> = [Name.todoSet, Name.todoDone, Name.todoFail, Name.todoWait, Name.todoProgress, Name.todoContinue]
     /// The todo calls that end a span (the item, or her progress compaction): the calls after one in
     /// the same reply do not run, except the speaking tools.
     static let ending: Set<String> = [Name.todoDone, Name.todoFail, Name.todoProgress]
@@ -545,7 +559,9 @@ public enum Tools {
         case readWindow(app: String?, window: String?)
         case askOwner(what: String, where: String, why: String)
         case todoSet([String], subgoal: Int?)
-        case todoDone(String)
+        case todoDone(String, evidence: String?)
+        /// Her choice at a decision point to go on (2026-11-16, design C).
+        case todoContinue(missing: String, why: String)
         case todoFail(reason: String, tried: String)
         case todoWait(String)
         case todoProgress(String)
@@ -638,7 +654,10 @@ public enum Tools {
             guard !trimmed.contains(where: \.isEmpty) else { throw ToolError(description: "todo.set 的 items 裡有空的項目") }
             return .todoSet(trimmed, subgoal: try int("subgoal"))
         case Name.todoDone:
-            return .todoDone(try nonEmpty("result"))
+            // The evidence is matched with whitespace removed (`Doll.evidenceKey`): only emptiness is checked here.
+            return .todoDone(try nonEmpty("result"), evidence: given("evidence").flatMap { $0.isEmpty ? nil : value("evidence") })
+        case Name.todoContinue:
+            return .todoContinue(missing: try nonEmpty("missing"), why: try nonEmpty("why"))
         case Name.todoFail:
             return .todoFail(reason: try nonEmpty("reason"), tried: try nonEmpty("tried"))
         case Name.todoWait:

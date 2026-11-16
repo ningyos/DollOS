@@ -66,6 +66,11 @@ public struct ComputerConfig: Sendable {
     public var windowWaitS = 0.6
     /// Owner process names (`list_windows` app_name) of the system's authentication dialogs.
     public var authProcesses = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]
+    /// After this many rounds of one todo item, she must choose (go on with a reason, ask the owner,
+    /// or fail) before another computer or file call runs (2026-11-16, design C).
+    public var decideAfterRounds = 15
+    /// After each choice to go on (or ask), the next decision point comes this many rounds later.
+    public var decideEveryRounds = 10
 }
 
 /// Her file tools (2026-11-09; on this Mac since 2026-11-16): read_file, write_file, edit_file on text files.
@@ -476,11 +481,13 @@ public struct Config: Sendable {
         try v.read("window_wait_tries", &computer.windowWaitTries)
         try v.read("window_wait_s", &computer.windowWaitS)
         try v.read("auth_processes", &computer.authProcesses)
+        try v.read("decide_after_rounds", &computer.decideAfterRounds)
+        try v.read("decide_every_rounds", &computer.decideEveryRounds)
         try v.finish()
         guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
               computer.screenshotTokens >= 0, computer.settleS >= 0, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
-              !computer.authProcesses.isEmpty else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, window_wait_tries positive; screenshot_tokens, settle_s, window_wait_s 0 or more")
+              !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1 else {
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, window_wait_tries, decide_after_rounds, decide_every_rounds positive; screenshot_tokens, settle_s, window_wait_s 0 or more")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

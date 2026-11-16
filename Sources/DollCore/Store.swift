@@ -171,8 +171,9 @@ public struct Event: Sendable, Equatable {
 ///     {"type":"event","seq":1,"ts":…,"kind":"owner|developer|doll|tool|watch|memory","source":"owner|developer|internal",
 ///      "secret":false,"voice":false,"text":"…","image":"…","window":"…","channel":"discord_dm|discord_voice|dollctl"}
 ///     {"type":"footer","seq":2,"text":"【狀況】…"}               the footer her reply `seq` answered
-///     {"type":"todo","seq":5,"phase":"idle|doing|waiting|failed","current":"…","pending":["…"],"start_seq":4}
-///                                                                   the todo list after her reply `seq` changed it
+///     {"type":"todo","seq":5,"phase":"idle|doing|waiting|failed","current":"…","pending":["…"],"start_seq":4,
+///      "rounds":3,"decide_at":15,"deciding":false,"go_on":["…"]}    the todo list after her reply `seq` changed it
+///                                                                   (the last four from 2026-11-16; absent in older lines = 0/false/[])
 ///     {"type":"compact","kind":"done|failed|progress|forced","item":"…","from_seq":4,"to_seq":19,"text":"…"}
 ///                                                                   an item's events (from_seq, to_seq] left the request
 ///     {"type":"turn","seq":2,"started":…,"seconds":…,"prompt":…,"cached":…,"effort":"medium"}
@@ -246,6 +247,10 @@ public final class Timeline {
         var current: String?
         var pending: [String]
         var startSeq: Int64
+        var rounds: Int?
+        var decideAt: Int?
+        var deciding: Bool?
+        var goOn: [String]?
     }
     private struct CompactLine: Codable {
         var type = "compact"
@@ -390,6 +395,10 @@ public final class Timeline {
         s.current = l.current
         s.pending = l.pending
         s.startSeq = l.startSeq
+        s.rounds = l.rounds ?? 0
+        s.decideAt = l.decideAt ?? 0
+        s.deciding = l.deciding ?? false
+        s.goOn = l.goOn ?? []
         return s
     }
 
@@ -428,7 +437,8 @@ public final class Timeline {
 
     /// Records the todo list after her reply `seq` (or the program's change at the event `seq`).
     public func recordTodo(_ s: TodoState, seq: Int64) throws {
-        try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq))
+        try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
+                           rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn))
         todo = s
     }
 
