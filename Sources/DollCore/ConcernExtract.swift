@@ -118,7 +118,8 @@ enum ConcernExtraction {
                     continue
                 }
                 seen.insert(k)
-                plan.notes.append(Note(about: about, due: due, text: body))
+                // Without a closing 。: the notice puts its own after the list (real run: 「…再問一聲。。」).
+                plan.notes.append(Note(about: about, due: due, text: body.hasSuffix("。") ? String(body.dropLast()) : body))
             case "end":
                 guard head.count == 2, head[1].hasPrefix("#"), let id = Int(head[1].dropFirst()) else {
                     throw ModelError("concern extraction: unreadable line「\(line)」")

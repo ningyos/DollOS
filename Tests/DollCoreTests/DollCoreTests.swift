@@ -6444,6 +6444,7 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
         ownerLines: ["明天九點開會"], cap: 3, room: 20)
     #expect(plan.ends == [.init(id: 1, quote: "明天九點開會")] && plan.dropped.count == 2)
     #expect(try ConcernExtraction.parse("none", open: [], ownerLines: [], cap: 3, room: 20) == .init())
+    #expect(try ConcernExtraction.parse("note owner: 再問一聲。", open: [], ownerLines: [], cap: 3, room: 20).notes.map(\.text) == ["再問一聲"])
     #expect(throws: ModelError.self) { try ConcernExtraction.parse("我覺得主人很累", open: [], ownerLines: [], cap: 3, room: 20) }
     #expect(throws: ModelError.self) { try ConcernExtraction.parse("note friend: x", open: [], ownerLines: [], cap: 3, room: 20) }
     #expect(ConcernExtraction.doneText(added: [], ended: []) == "從今天的對話沒有另外記掛著的事。")
