@@ -218,6 +218,39 @@ public struct DrivesConfig: Sendable, Equatable {
     }
 }
 
+/// Her own direction (m6-drives phase 2, 2026-11-16, `Goals.swift`): the ideal self, the goal tree,
+/// the record of what she did, curiosity. On with `[drives] enabled` (they feed 動力 and the
+/// concerns). The reasons for each number are in `dollcore.example.toml`.
+public struct GoalsConfig: Sendable, Equatable {
+    public var goalsOpenMax = 3
+    public var subgoalsOpenMax = 3
+    public var stepsOpenMax = 6
+    public var textMaxChars = 60
+    /// 動力 for finishing, full amount (the owner's good confirms it): a step, a sub-goal, a goal of
+    /// the tree; a todo list that is not tree work (what the owner asked).
+    public var stepDrive = 0.05, subgoalDrive = 0.15, goalDrive = 0.3, listDrive = 0.1
+    /// The share given at once on completion; the rest when the evaluation is good.
+    public var nowShare = 0.5
+    /// `owner.feedback` without a record number lands on the newest record this recent.
+    public var feedbackHours = 12.0
+    public var idealMaxChars = 600
+    /// The maintenance proposes a revision at most this often.
+    public var reviseMinDays = 3.0
+    /// Off: no `review` maintenance task (runners and tests not about it).
+    public var review = true
+    /// Characters of the day the maintenance's review reads (the newest).
+    public var reviewChars = 6000
+    /// No new thing for this long: a wandering toward something not on the tree.
+    public var curiosityHours = 48.0
+    public var noveltyDrive = 0.08
+    /// At most one 動力 rise for new things in this span.
+    public var noveltyGapMin = 30.0
+    /// What she saw is remembered this long for "new".
+    public var seenDays = 90.0
+
+    public init() {}
+}
+
 /// The local API (2026-11-12): what `dollctl` and the Discord bridge talk to. It listens on
 /// 127.0.0.1 only (not configurable) and refuses any connection whose peer is not loopback.
 public struct ApiConfig: Sendable {
@@ -406,11 +439,12 @@ public struct Config: Sendable {
     public var maintenance: MaintenanceConfig
     public var drives = DrivesConfig()
     public var ownerSleep = OwnerSleepConfig()
+    public var goals = GoalsConfig()
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -652,9 +686,36 @@ public struct Config: Sendable {
         guard TimeOfDay(ownerSleep.start) != nil, TimeOfDay(ownerSleep.end) != nil, ownerSleep.start != ownerSleep.end else {
             throw TOMLError(description: "[owner_sleep] start and end HH:MM and not equal (an end before the start runs over midnight)")
         }
-        return Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
-                      api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, maintenance: maintenance,
-                      drives: drives, ownerSleep: ownerSleep)
+        var cfg = Config(llm: llm, core: core, context: context, computer: computer, files: files, idle: idle, memory: memory, dashboard: dashboard,
+                         api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, maintenance: maintenance,
+                         drives: drives, ownerSleep: ownerSleep)
+        cfg.goals = try Self.readGoals(raw["goals"] ?? [:])
+        return cfg
+    }
+
+    static func readGoals(_ raw: [String: TOMLValue]) throws -> GoalsConfig {
+        var s = Section(name: "goals", raw: raw)
+        var g = GoalsConfig()
+        try s.read("review", &g.review)
+        let ints: [(String, WritableKeyPath<GoalsConfig, Int>)] = [
+            ("goals_open_max", \.goalsOpenMax), ("subgoals_open_max", \.subgoalsOpenMax), ("steps_open_max", \.stepsOpenMax),
+            ("text_max_chars", \.textMaxChars), ("ideal_max_chars", \.idealMaxChars), ("review_chars", \.reviewChars),
+        ]
+        let nums: [(String, WritableKeyPath<GoalsConfig, Double>)] = [
+            ("step_drive", \.stepDrive), ("subgoal_drive", \.subgoalDrive), ("goal_drive", \.goalDrive), ("list_drive", \.listDrive),
+            ("now_share", \.nowShare), ("feedback_hours", \.feedbackHours), ("revise_min_days", \.reviseMinDays),
+            ("curiosity_hours", \.curiosityHours), ("novelty_drive", \.noveltyDrive), ("novelty_gap_min", \.noveltyGapMin),
+            ("seen_days", \.seenDays),
+        ]
+        for (k, p) in ints { try s.read(k, &g[keyPath: p]) }
+        for (k, p) in nums { try s.read(k, &g[keyPath: p]) }
+        try s.finish()
+        guard ints.allSatisfy({ g[keyPath: $0.1] >= 1 }),
+              [g.stepDrive, g.subgoalDrive, g.goalDrive, g.listDrive, g.noveltyDrive, g.nowShare].allSatisfy({ (0...1).contains($0) }),
+              g.feedbackHours > 0, g.reviseMinDays >= 0, g.curiosityHours > 0, g.noveltyGapMin >= 0, g.seenDays > 0 else {
+            throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days above 0; revise_min_days and novelty_gap_min 0 or more")
+        }
+        return g
     }
 
     static func readDrives(_ raw: [String: TOMLValue]) throws -> DrivesConfig {

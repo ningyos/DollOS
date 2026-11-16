@@ -283,6 +283,21 @@ public actor Doll {
     /// A concern held by the wandering just queued, then by the turn it gave her (`Concerns.swift`).
     var heldPending: Int?
     var heldTurn: Int?
+    /// `[goals]` (m6-drives phase 2, `Goals.swift`): her ideal self, goal tree, record, curiosity.
+    let goalsConfig: GoalsConfig
+    let goalsURL: URL
+    let recordURL: URL
+    let idealURL: URL
+    let idealLogURL: URL
+    let curiosityURL: URL
+    var goalFile: GoalFile
+    var recordFile: RecordFile
+    var idealLog: IdealLog
+    var curiosity: CuriosityFile
+    /// Her ideal self as it is now (empty with drives off).
+    var ideal = ""
+    /// The pack's name and aliases: what the ideal self may not rename.
+    var packNames: [String] = []
     /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
     func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
 
@@ -322,6 +337,16 @@ public actor Doll {
         let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals")
         drives = signals.map { Drives(config: config.drives, state: $0) } ?? Drives(config: config.drives, now: 0)
         signalsFresh = signals == nil
+        goalsConfig = config.goals
+        goalsURL = data.appending(path: "goals.json")
+        recordURL = data.appending(path: "record.json")
+        idealURL = data.appending(path: "ideal-self.md")
+        idealLogURL = data.appending(path: "ideal-self-log.json")
+        curiosityURL = data.appending(path: "curiosity.json")
+        goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
+        recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record") ?? RecordFile()
+        idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
+        curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity") ?? CuriosityFile()
         agenda = try Agenda(url: data.appending(path: "calendar.json"))
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
@@ -360,6 +385,26 @@ public actor Doll {
             examples = [Self.examplesHeader + "\n" + s.trimmingCharacters(in: .whitespacesAndNewlines)]
         }
         identity = (parts + examples).joined(separator: "\n\n")
+        var names = [name]
+        if case .array(let a)? = pack["meta"]?["aliases"] { for case .string(let s) in a { names.append(s) } }
+        packNames = names
+        // The ideal self (phase 2): from its file, else the pack's [identity].ideal (written once).
+        if config.drives.enabled {
+            if FileManager.default.fileExists(atPath: idealURL.path) {
+                ideal = try String(contentsOf: idealURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !ideal.isEmpty else { throw StoreError(description: "\(idealURL.path) is empty") }
+            } else {
+                guard case .string(let s)? = pack["identity"]?["ideal"] else {
+                    throw TOMLError(description: "\(packPath.path): [identity].ideal must be a string ([drives] enabled: her ideal self starts from it)")
+                }
+                ideal = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                idealLog.revisions.append(IdealRevision(id: idealLog.nextId, ts: Date().timeIntervalSince1970, by: "pack", before: "",
+                                                        after: ideal, why: "角色包的起點", basedOn: core.pack))
+                idealLog.nextId += 1
+                try Data((ideal + "\n").utf8).write(to: idealURL, options: .atomic)
+                try Concerns.write(idealLog, idealLogURL)
+            }
+        }
     }
 
     /// The line before a pack's example dialogues in the system prompt (fixed bytes).
@@ -611,13 +656,18 @@ public actor Doll {
     }
 
     // prompt -----------------------------------------------------------------
-    /// Fixed for the life of the process: the persona and how she works. Her tools go in the
-    /// request's `tools` (`toolsJSON`); the template renders them ahead of this text.
+    /// Fixed for the life of the process except her ideal self (phase 2): a revision takes effect at
+    /// the next request (one cache miss of the prefix). The persona and how she works. Her tools go
+    /// in the request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + Instructions.text(voice: voiceEnabled, context: contextConfig, maintenance: maintenanceConfig.enabled,
-                                                                       drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled)
+        "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n")
+            + Instructions.text(voice: voiceEnabled, context: contextConfig, maintenance: maintenanceConfig.enabled,
+                                drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled)
             + (voiceEnabled ? "\n\n" + Instructions.voice : "")
     }
+
+    /// The line before her ideal self (fixed bytes).
+    static let idealHeader = "你想成為的樣子（你自己寫的，會慢慢改；跟上面的設定衝突時以上面為準）："
 
     /// The request before the footer: the system prompt, then the timeline. Her replies carry the
     /// footer they were answering, her thought and her calls as the server returned them, so the
@@ -812,6 +862,7 @@ public actor Doll {
         let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
         if let felt = feltLine(now: now) { out.append("- " + felt) }
+        if let goals = goalStatusLine() { out.append(goals) }
         out.append(watch.map { "- watch：盯著 \($0.target)，最多等 \(seconds($0.maxWait))" } ?? "- watch：沒有")
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
         if let asleep = ownerSleepLine(now: now) { out.append("- " + asleep) }
@@ -835,7 +886,9 @@ public actor Doll {
 
     /// The todo line of 【狀況】.
     func todoLine() -> String {
-        let rest = todo.pending.isEmpty ? "" : "；後面還有：" + todo.pending.map { "「\($0)」" }.joined(separator: "")
+        let sub = todo.phase == .idle || todo.phase == .done ? nil : goalFile.link?.subgoal
+        let rest = (todo.pending.isEmpty ? "" : "；後面還有：" + todo.pending.map { "「\($0)」" }.joined(separator: ""))
+            + (sub.map { "（子目標 #\($0) 的步驟）" } ?? "")
         let item = "「\(todo.current ?? "")」"
         return switch todo.phase {
         case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
@@ -1184,8 +1237,8 @@ public actor Doll {
                 return await remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try await recall(query, seen: events)
-            case .todoSet(let items):
-                return todoSet(items, reply: reply)
+            case .todoSet(let items, let subgoal):
+                return try todoSet(items, subgoal: subgoal, reply: reply)
             case .todoDone(let result):
                 return try await todoDone(result, reply: reply)
             case .todoFail(let reason, let tried):
@@ -1241,8 +1294,18 @@ public actor Doll {
                 return try concernNote(text: text, about: about, due: due)
             case .concernEnd(let id, let how):
                 return try concernEnd(id: id, how: how)
-            case .ownerFeedback(let kind, let quote):
-                return try ownerFeedback(kind: kind, quote: quote)
+            case .ownerFeedback(let kind, let quote, let record):
+                return try ownerFeedback(kind: kind, quote: quote, record: record)
+            case .goalAdd(let text, let parent):
+                return try goalAddTool(text: text, parent: parent)
+            case .goalChange(let id, let text):
+                return try goalChangeTool(id: id, text: text)
+            case .goalEnd(let id, let how):
+                return try goalEndTool(id: id, how: how)
+            case .goalList:
+                return Outcome(text: goalTreeText(), actions: ["goal list"])
+            case .idealRevise(let text, let old, let new, let why, let basedOn):
+                return try idealReviseTool(text: text, old: old, new: new, why: why, basedOn: basedOn)
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
@@ -1321,6 +1384,7 @@ public actor Doll {
                     }
                 }
                 frontApp = app
+                noteSeen(app: app, line: state.line)
                 if !itemApps.contains(where: { $0.bundleID == app.bundleID }) { itemApps.append(app) }
             }
         } catch {
@@ -1629,27 +1693,32 @@ public actor Doll {
 
     /// `todo.set`: with no item in progress (待命中, 失敗) the list is replaced and its first item is
     /// 進行中 from her reply on (that reply is the item's first event); with one in progress only the
-    /// items after it are replaced. No items: the list ends (待命中).
-    func todoSet(_ items: [String], reply: Event) -> Outcome {
+    /// items after it are replaced. No items: the list ends (待命中). `subgoal` (phase 2): the list
+    /// works on that sub-goal; its items are its steps (new ones added to the tree first).
+    func todoSet(_ items: [String], subgoal: Int? = nil, reply: Event) throws -> Outcome {
         func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
+        let linkNote = try subgoal.map { try linkTodo(items, subgoal: $0) } ?? ""
         switch todo.phase {
         case .doing, .waiting:
             todo.pending = items
-            return Outcome(text: "後面的項目改成：\(listed(items))。現在\(todo.phase.label)的還是「\(todo.current ?? "")」。",
+            startLink(subgoal: subgoal, fresh: false)
+            return Outcome(text: "後面的項目改成：\(listed(items))。現在\(todo.phase.label)的還是「\(todo.current ?? "")」。" + linkNote,
                            actions: ["todo set"])
         case .idle, .done, .failed:
             guard let first = items.first else {
                 let ended = todo.phase == .failed
                 todo = TodoState()
                 listEndedNow = true
+                listDropped()
                 return Outcome(text: ended ? "清單結束了，現在待命中。" : "沒有項目，還是待命中。", actions: ["todo end"], background: true)
             }
+            startLink(subgoal: subgoal, fresh: todo.phase != .failed)
             todo.phase = .doing
             todo.current = first
             todo.pending = Array(items.dropFirst())
             todo.startSeq = reply.seq! - 1
             beginItem()
-            return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。", actions: ["todo set"])
+            return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
         }
     }
 
@@ -1678,9 +1747,11 @@ public actor Doll {
                 note = "這次的經驗沒存成：\(error)。"
             }
         }
+        let step = itemFinished(item)
         let next = advance()
+        let list = next == nil ? listFinished() : ""
         log("INFO", "turn \(turnIndex): todo 完成「\(item)」result「\(result)」, \(steps.count) actions")
-        signal(.itemDone, item)
+        note += step + list
         return Outcome(text: "完成，記下了。\(note)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
                        + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),

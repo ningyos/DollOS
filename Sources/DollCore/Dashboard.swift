@@ -270,7 +270,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit, drives }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -293,6 +293,12 @@ public final class Dashboard: @unchecked Sendable {
         ("POST", "/api/calendar/", .calendarEdit),
         // Her signals, concerns, wanderings and associations (m6-drives): read only.
         ("GET", "/api/drives", .drives),
+        // Her direction (phase 2): ideal self, tree, record. The owner's edits: `ideal/edit?text=`,
+        // `ideal/revert?id=`, `goals/add|change|done|drop?text=&parent=&id=`, `record/eval?id=&kind=good|bad|none`.
+        ("GET", "/api/goals", .goals),
+        ("POST", "/api/ideal/", .idealEdit),
+        ("POST", "/api/goals/", .goalEdit),
+        ("POST", "/api/record/", .recordEval),
     ]
 
     public struct Response: Sendable {
@@ -391,6 +397,24 @@ public final class Dashboard: @unchecked Sendable {
                 return .json(["id": id, "deep": kind == .deep ? "true" : "false"])
             case .calendar: return .json(await doll.dashboardCalendar())
             case .drives: return .json(await doll.dashboardDrives())
+            case .goals: return .json(await doll.dashboardGoals())
+            case .idealEdit, .goalEdit, .recordEval:
+                let q = Self.query(target)
+                do {
+                    switch (kind, rest) {
+                    case (.idealEdit, "edit"): try await doll.dashboardIdealEdit(text: q["text"] ?? "")
+                    case (.idealEdit, "revert"):
+                        guard let id = q["id"].flatMap({ Int($0) }) else { return .text(400, "id needed") }
+                        try await doll.dashboardIdealRevert(id)
+                    case (.goalEdit, let op) where ["add", "change", "done", "drop"].contains(op):
+                        return .json(try await doll.dashboardGoalEdit(op, q))
+                    case (.recordEval, "eval"):
+                        guard let id = q["id"].flatMap({ Int($0) }) else { return .text(400, "id needed") }
+                        return .json(try await doll.dashboardEvaluate(id, q["kind"] ?? ""))
+                    default: return .text(404, "not found")
+                    }
+                } catch let e as ToolError { return .text(409, e.description) }
+                return .json(await doll.dashboardGoals())
             case .calendarEdit:
                 guard ["add", "change", "delete"].contains(rest) else { return .text(404, "not found") }
                 do {

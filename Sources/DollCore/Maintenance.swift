@@ -54,6 +54,10 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
     /// Concerns from the day's conversation (`ConcernExtraction`); before consolidation, which
     /// closes the day's timeline.
     case concerns
+    /// The day against her ideal self and tree (`IdealReview`, phase 2): a revision only when the
+    /// day gives a reason, at most every `[goals] revise_min_days`; before consolidation, which
+    /// closes the day's timeline.
+    case review
     /// The timeline so far into long-term memory, then a new segment opened by the end notice and
     /// the day's summary.
     case consolidate
@@ -62,6 +66,7 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
     var label: String {
         switch self {
         case .concerns: "從今天的對話記掛念"
+        case .review: "回顧今天、看想成為的樣子要不要改"
         case .consolidate: "整理記憶、寫摘要"
         }
     }
@@ -79,6 +84,7 @@ struct MaintenanceDone {
 /// One task's prepared work: what `commit` writes.
 enum MaintenanceWork: Sendable {
     case concerns(ConcernExtraction.Answer)
+    case review(IdealReview.Answer)
     case consolidate(Consolidation.Request, Consolidation.Answer)
 }
 
@@ -344,6 +350,7 @@ extension Doll {
     func maintenanceDue(_ t: MaintenanceTask) -> Bool {
         switch t {
         case .concerns: drivesConfig.enabled && drivesConfig.maintenanceConcernsMax > 0 && dayToConsolidate
+        case .review: reviewDue
         case .consolidate: dayToConsolidate
         }
     }
@@ -353,6 +360,8 @@ extension Doll {
         switch t {
         case .concerns:
             return .concerns(try await prepareConcernExtraction())
+        case .review:
+            return .review(try await prepareIdealReview())
         case .consolidate:
             let request = try Consolidation.gather(timeline, memory: memory, config: config.consolidate)
             return .consolidate(request, try await Consolidation.ask(request, model: maintenanceModel, config: config))
@@ -362,6 +371,8 @@ extension Doll {
     /// Synchronous on the actor: all of the task's writes, with nothing in between.
     func maintenanceCommit(_ w: MaintenanceWork) throws -> MaintenanceDone {
         switch w {
+        case .review(let answer):
+            return try commitIdealReview(answer)
         case .concerns(let answer):
             return try commitConcernExtraction(answer)
         case .consolidate(let request, let answer):

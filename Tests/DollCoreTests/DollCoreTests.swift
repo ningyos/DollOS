@@ -309,6 +309,7 @@ private struct Harness {
         cfg.maintenance.enabled = false   // the maintenance tests switch it on
         cfg.drives.enabled = false        // the drives tests switch it on
         cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
+        cfg.goals.review = false          // the ideal-self review tests switch it on
         tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
@@ -423,8 +424,8 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(throws: ToolError.self) { try Tools.decode(bad, specs: specs) }
     // an array of strings as a JSON value and as its text
     for c in [ToolCall(name: "todo.set", arguments: "{\"items\": [\"a\", \"b\"]}"), call("todo.set", [("items", "[\"a\", \"b\"]")])] {
-        guard case .todoSet(let got) = try Tools.decode(c, specs: specs) else { Issue.record("not todo.set"); return }
-        #expect(got == ["a", "b"])
+        guard case .todoSet(let got, let sub) = try Tools.decode(c, specs: specs) else { Issue.record("not todo.set"); return }
+        #expect(got == ["a", "b"] && sub == nil)
     }
 }
 
@@ -2836,9 +2837,10 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
 }
 
-@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkAndTheCalendar() {
+@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheCalendarAndHerDirection() {
     #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
-            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/calendar/"])
+            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/calendar/",
+                "/api/ideal/", "/api/goals/", "/api/record/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
 
@@ -6529,4 +6531,323 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
     #expect(await doll2.dashboardDrives().open.map(\.id) == [1])
     await doll2.stop()
     try await runner2.value
+}
+
+// her own direction (m6-drives phase 2, 2026-11-16) ---------------------------------------------------
+
+extension Doll {
+    /// Starts the signals now without running the loop (the loop starts them at its first catch-up).
+    func testStartSignals() {
+        drives = Drives(config: drivesConfig, now: wallClock.now())
+        signalsFresh = false
+    }
+    func testDrive() -> Double { drives.value(.drive, at: wallClock.now()) }
+}
+
+private func goalsHarness(_ clock: ManualClock, dir: URL? = nil, _ replies: [Scripted] = [],
+                          tune: @escaping (inout Config) -> Void = { _ in }) async throws -> Harness {
+    try await Harness(replies, dir: dir, clock: clock) { $0.drives.enabled = true; tune(&$0) }
+}
+
+private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, String)]) {
+    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self)), ("subgoal", "\(sub)")])
+}
+
+@Test func theTreeHasExactlyThreeLevelsAndItsLimits() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock) { $0.goals.goalsOpenMax = 2; $0.goals.subgoalsOpenMax = 1; $0.goals.stepsOpenMax = 2 }
+    let d = h.doll
+    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    let st = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
+    #expect(g.level == .goal && s.level == .subgoal && st.level == .step)
+    await #expect { try await d.goalAdd("更細的", parent: st.id, by: "her") } throws: { "\($0)".contains("樹只有三層") }
+    await #expect { try await d.goalAdd("另一個子目標", parent: g.id, by: "her") } throws: { "\($0)".contains("1 個還沒做完的子目標") }
+    _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
+    await #expect { try await d.goalAdd("第三步", parent: s.id, by: "her") } throws: { "\($0)".contains("2 個還沒做的步驟") }
+    _ = try await d.goalAdd("學做菜", parent: nil, by: "her")
+    await #expect { try await d.goalAdd("第三個方向", parent: nil, by: "her") } throws: { "\($0)".contains("2 個目標") }
+    await #expect { try await d.goalAdd(String(repeating: "長", count: 61), parent: nil, by: "her") } throws: { "\($0)".contains("太長") }
+    // done needs nothing open under it; a step is done only as a todo item (her); drop takes the open ones under it.
+    await #expect { try await d.goalEnd(s.id, how: "done", by: "her") } throws: { "\($0)".contains("下面還有沒做完的") }
+    await #expect { try await d.goalEnd(st.id, how: "done", by: "her") } throws: { "\($0)".contains("todo.set") }
+    _ = try await d.goalEnd(g.id, how: "drop", by: "her")
+    let nodes = await d.dashboardGoals().nodes
+    #expect(nodes.filter { $0.end == "dropped" }.count == 4)
+    #expect(await d.goalTreeText().hasPrefix("#5〔目標〕學做菜"))
+    // A restart reads it back.
+    let b = try await goalsHarness(clock, dir: h.dir)
+    #expect(await b.doll.dashboardGoals().nodes == nodes)
+}
+
+@Test func openSubgoalsNextStepsAreHerOwnProgramConcerns() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    var open = await d.dashboardDrives().open
+    #expect(open.map(\.text) == ["子目標 #2「弄懂鯊魚的分類」還沒有下一步（目標「懂海洋生物」）"] && open[0].about == .own && open[0].source == "goal")
+    _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
+    _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
+    open = await d.dashboardDrives().open
+    // Only the next step, one per sub-goal; the "no next step" one ended.
+    #expect(open.map(\.text) == ["目標樹的下一步：「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」）"])
+    #expect(Concerns.wanderText(open[0]).contains("程式從你的目標樹記的"))
+    _ = try await d.goalEnd(3, how: "drop", by: "her")
+    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：「整理筆記」（子目標 #2「弄懂鯊魚的分類」）"])
+    // The 【狀況】 line names the open goals only.
+    #expect(await d.goalStatusLine() == "- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）")
+}
+
+@Test func aTodoListTiedToASubgoalMarksItsStepsAndRecordsThem() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    await d.testStartSignals()
+    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
+    let c = GoalsConfig()
+    let before = await d.testDrive()
+    await d.ownerSaid("（你閒著）")
+    // One existing step, one new: the new one joins the tree.
+    try await h.turn(Scripted("", todoSetSub(s.id, "讀維基的鯊魚條目", "鯊魚分類寫成筆記"), screenshotCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }!.text.contains("新的步驟加進樹裡了：「鯊魚分類寫成筆記」"))
+    #expect(try await d.status().contains("（子目標 #2 的步驟）"))
+    try await h.turn(Scripted("", done("讀完了")))
+    #expect(approx(await d.testDrive(), before + c.stepDrive * c.nowShare))
+    try await h.turn(Scripted("", screenshotCall, done("寫好了")))
+    let rec = await d.dashboardGoals().record
+    #expect(rec.map(\.kind) == ["step", "step"] && rec.map(\.text) == ["鯊魚分類寫成筆記", "讀維基的鯊魚條目"])
+    let last = try h.toolResults().last { $0.text.hasPrefix("完成，記下了。") }!.text
+    #expect(last.contains("子目標 #2「弄懂鯊魚的分類」的步驟都做完了"))
+    // The sub-goal done by her: a bigger record; its concern is gone.
+    _ = try await d.goalEnd(s.id, how: "done", by: "her")
+    #expect(await d.dashboardGoals().record.first!.kind == "subgoal")
+    #expect(approx(await d.testDrive(), before + (2 * c.stepDrive + c.subgoalDrive) * c.nowShare))
+    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.isEmpty)
+    // A list not tied to the tree (what the owner asked): one item moves 動力 as a todo item, the finished list is one record.
+    let mid = await d.testDrive()
+    await d.ownerSaid("幫我存檔")
+    try await h.turn(Scripted("", todoSet("存好了"), screenshotCall))
+    try await h.turn(Scripted("", done("存了")))
+    #expect(approx(await d.testDrive(), mid + DrivesConfig().itemDoneDrive + c.listDrive * c.nowShare))
+    #expect(await d.dashboardGoals().record.first.map { [$0.kind, $0.text] } == ["list", "存好了"])
+    #expect(await d.dashboardGoals().link == nil)
+}
+
+@Test func achievementIsTwoStageHerFeedbackSetsItAndTheOwnersEvaluationWins() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    await d.testStartSignals()
+    let c = GoalsConfig(), dc = DrivesConfig()
+    let e = try await d.achieve(kind: "list", text: "報告寄出了", node: nil, amount: c.listDrive)
+    #expect(approx(e.given, c.listDrive * c.nowShare))
+    // Her owner.feedback (praise) on it: the rest is given, plus praise's own move.
+    let v0 = await d.testDrive()
+    await d.ownerSaid("做得不錯")
+    try await h.turn(Scripted("", ("owner.feedback", [("kind", "praise"), ("quote", "做得不錯")])))
+    #expect(try h.toolResults().last!.text == "記下了，記在紀錄 #1「報告寄出了」上。")
+    var r = await d.dashboardGoals().record[0]
+    #expect(r.her?.good == true && r.her?.quote == "做得不錯" && approx(r.given, c.listDrive))
+    #expect(approx(await d.testDrive(), v0 + dc.praiseDrive + c.listDrive * (1 - c.nowShare)))
+    // The owner says it was not good in the dashboard: his wins, all of it is taken back.
+    let v1 = await d.testDrive()
+    r = try await d.dashboardEvaluate(1, "bad")
+    #expect(r.owner?.good == false && r.given == 0)
+    #expect(approx(await d.testDrive(), v1 - c.listDrive))
+    // Her later reading cannot override him.
+    await d.ownerSaid("這個不對")
+    try await h.turn(Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "這個不對"), ("record", "1")])))
+    await d.ownerSaid("其實做得不錯")
+    try await h.turn(Scripted("", ("owner.feedback", [("kind", "praise"), ("quote", "其實做得不錯")])))
+    #expect(try h.toolResults().last!.text.contains("以他的為準"))
+    #expect(await d.dashboardGoals().record[0].given == 0)
+    // He clears his: hers stands again.
+    _ = try await d.dashboardEvaluate(1, "none")
+    #expect(approx(await d.dashboardGoals().record[0].given, c.listDrive))
+    #expect(try h.events().contains { $0.text == "【主人的評價】你做完的「報告寄出了」（紀錄 #1），主人評不對。" })
+    // Nothing recent: feedback moves the signals only.
+    clock.set(at("2026-11-17", "10:00"))
+    await d.ownerSaid("謝謝")
+    try await h.turn(Scripted("", ("owner.feedback", [("kind", "praise"), ("quote", "謝謝")])))
+    #expect(try h.toolResults().last!.text == "記下了。")
+}
+
+@Test func theIdealSelfStartsFromThePackSheRevisesItWithARecordAndTheOwnerEditsOrRevertsIt() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    let start = try String(contentsOf: h.dir.appending(path: "ideal-self.md"), encoding: .utf8)
+    #expect(start.hasPrefix("我想當主人真的靠得住的幫手"))
+    #expect(await d.systemPrompt().contains(Doll.idealHeader + "\n" + start.trimmingCharacters(in: .whitespacesAndNewlines)))
+    #expect(await d.dashboardGoals().revisions.map(\.by) == ["pack"])
+    // A targeted change through her tool, effective in the very next request.
+    await d.ownerSaid("你最近很會查資料耶")
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式也想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+                                                    ("based_on", "主人說「你最近很會查資料耶」")])))
+    try await h.turn(Scripted("", dm("嘿嘿")))
+    #expect(await h.model.seen(1)[0].content.contains("查資料要查到底"))
+    let log = await d.dashboardGoals().revisions
+    #expect(log.first!.by == "her" && log.first!.why == "主人說我很會查" && log.first!.before == start.trimmingCharacters(in: .whitespacesAndNewlines))
+    // Refused: too long, renaming her, a missing `old`.
+    for (args, problem) in [([("text", String(repeating: "海", count: 601))], "太長了"), ([("text", "我叫小鯨，想去看海")], "名字和身分"),
+                            ([("text", "我不是娃娃了")], "我不是娃娃"), ([("old", "不存在的句子"), ("new", "x")], "沒有「不存在的句子」")] {
+        await d.ownerSaid("改一下")
+        try await h.turn(Scripted("", ("ideal.revise", args + [("why", "試試"), ("based_on", "沒有")])))
+        #expect(try h.toolResults().last!.text.contains(problem), "\(problem)")
+    }
+    #expect(await d.dashboardGoals().revisions.count == 2)
+    // The aliases are her names too.
+    #expect(Goals.nameProblem("我叫娃娃，想懂海", names: ["娃娃", "娃娃"]) == nil)
+    // The owner edits and reverts; she is told; a restart reads the file.
+    try await d.dashboardIdealEdit(text: "我想陪主人把日子過好。")
+    #expect(try h.events().last!.text == "【主人改了你想成為的樣子】現在是：我想陪主人把日子過好。")
+    try await d.dashboardIdealRevert(3)
+    #expect(await d.ideal.contains("查資料要查到底"))
+    let b = try await goalsHarness(clock, dir: h.dir)
+    let (bi, di, byWho) = (await b.doll.ideal, await d.ideal, await b.doll.dashboardGoals().revisions.map(\.by))
+    #expect(bi == di && byWho == ["revert", "owner", "her", "pack"])
+}
+
+@Test func somethingNewRaisesDriveAndNothingNewForLongIsAWandering() async throws {
+    #expect(Goals.frontTitle("開著的視窗：Finder、Safari「Shark - Wikipedia」（前景）；焦點：textfield") == "Shark - Wikipedia")
+    #expect(Goals.frontTitle("開著的視窗：Finder（前景）") == nil)
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock, [Scripted("", dm("嗯"))]) { $0.drives.closenessHalfLifeH = 1000 }
+    let d = h.doll
+    await d.testStartSignals()
+    let c = GoalsConfig()
+    let safari = AppIdentity(bundleID: "com.apple.Safari", name: "Safari", version: "1")
+    let v0 = await d.testDrive()
+    await d.noteSeen(app: safari, line: "Safari「Shark - Wikipedia」（前景）")
+    #expect(approx(await d.testDrive(), v0 + c.noveltyDrive))
+    // A new page within the gap: noted, no second rise; the same page later: not new.
+    await d.noteSeen(app: safari, line: "Safari「Whale - Wikipedia」（前景）")
+    #expect(approx(await d.testDrive(), v0 + c.noveltyDrive))
+    clock.set(at("2026-11-16", "11:00"))
+    let v1 = await d.testDrive()
+    await d.noteSeen(app: safari, line: "Safari「Shark - Wikipedia」（前景）")
+    #expect(approx(await d.testDrive(), v1))
+    // A text editor's title is not a page: the same app with a new document is not new.
+    let te = AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1")
+    await d.noteSeen(app: te, line: "TextEdit「a.txt」（前景）")
+    clock.set(at("2026-11-16", "12:00"))
+    let v2 = await d.testDrive()
+    await d.noteSeen(app: te, line: "TextEdit「b.txt」（前景）")
+    #expect(approx(await d.testDrive(), v2))
+    // 48 hours after the last new thing, idle: one wandering toward something not on the tree.
+    let runner = Task { try await d.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    clock.set(at("2026-11-18", "12:01"))
+    try await waitUntil { await h.model.requests.count == 1 }
+    #expect(try h.events().contains { $0.text == Doll.curiosityText })
+    try await waitUntil { await d.settled }
+    clock.set(at("2026-11-18", "20:00"))
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 1)
+    await d.stop()
+    try await runner.value
+}
+
+private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(text)\n理由：今天主人說我查資料很快\n根據：主人說「你查得好快」") }
+
+@Test func theMaintenanceReviewRevisesTheIdealSelfAtMostEveryFewDaysAndNothingWhenInterrupted() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await Harness([Scripted("", dm("嘿")), Scripted("none"), reviewReply("我想當查資料最快的幫手。"), planReply, summaryReply],
+                              clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.drives.closenessHalfLifeH = 1000   // no 親近 wandering in the way
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("你查得好快")
+    try await waitUntil { h.said == ["嘿"] }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(await doll.ideal == "我想當查資料最快的幫手。")
+    let r = await doll.dashboardGoals().revisions.first!
+    #expect(r.by == "maintenance" && r.why == "今天主人說我查資料很快" && r.basedOn == "主人說「你查得好快」")
+    let end = try segmentTexts(h).last![0]
+    #expect(end.contains("回顧今天，你想成為的樣子改了（理由：今天主人說我查資料很快；根據：主人說「你查得好快」）。現在是：我想當查資料最快的幫手。"))
+    let reviewReq = await h.model.seen(2)
+    #expect(reviewReq[0].content.contains("大部分的日子是不改的") && reviewReq[1].content.contains("你查得好快"))
+    // The next day: within revise_min_days, no review request (concerns, plan, summary only).
+    await h.model.add([Scripted("", dm("嗯")), Scripted("none"), planReply, summaryReply])
+    await doll.ownerSaid("早")
+    try await waitUntil { h.said == ["嘿", "嗯"] }
+    clock.set(at("2026-11-18", "03:00"))
+    try await waitUntil { h.logs.filter { $0.contains("maintenance: ended") }.count == 2 }
+    #expect(await h.model.requests.count == 9)
+    await doll.stop()
+    try await runner.value
+    #expect(try IdealReview.parse("不改").text == nil)
+    #expect(throws: (any Error).self) { try IdealReview.parse("我覺得可以改一下") }
+}
+
+@Test func anInterruptedReviewWritesNothingAndARefusedRevisionSaysWhy() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await Harness([Scripted("", dm("嘿")), Scripted("none"), Scripted("", dm("在"))], clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.drives.closenessHalfLifeH = 1000   // no 親近 wandering in the way
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("你查得好快")
+    try await waitUntil { h.said == ["嘿"] }
+    await h.model.stall(request: 3)
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 3 }
+    await doll.ownerSaid("還沒睡？")
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: review cancelled (interrupted)") } }
+    try await waitUntil { h.said == ["嘿", "在"] }
+    #expect(await doll.dashboardGoals().revisions.map(\.by) == ["pack"])
+    #expect(try maintenanceFile(h).done == ["concerns"])
+    // The retry after quiet: a revision that renames her is refused, nothing written, the notice says why.
+    await h.model.add([reviewReply("我叫小鯨。"), planReply, summaryReply])
+    clock.set(at("2026-11-17", "03:40"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(await doll.dashboardGoals().revisions.map(\.by) == ["pack"])
+    #expect(try segmentTexts(h).last![0].contains("回顧今天時想改你想成為的樣子，但沒改：「我叫」後面不是你的名字"))
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func oldDataDirsBootAndTheGoalsConfigIsStrict() async throws {
+    // A data dir from before phase 2 (concerns and signals, no tree, record or ideal self) boots.
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Concerns.write(ConcernFile(nextId: 2, items: [Concern(id: 1, text: "舊的", about: .own, source: "her", created: 0)]),
+                       dir.appending(path: "concerns.json"))
+    let h = try await goalsHarness(clock, dir: dir)
+    let dg = await h.doll.dashboardGoals()
+    #expect(dg.nodes.isEmpty && dg.record.isEmpty)
+    #expect(await h.doll.dashboardDrives().open.map(\.text) == ["舊的"])
+    #expect(try Config.readGoals([:]) == GoalsConfig())
+    #expect(throws: TOMLError.self) { try Config.readGoals(["goal_max": .int(3)]) }
+    #expect(throws: TOMLError.self) { try Config.readGoals(["now_share": .double(1.5)]) }
+    // A malformed tree stops the boot.
+    try Data("{".utf8).write(to: dir.appending(path: "goals.json"))
+    await #expect { try await goalsHarness(clock, dir: dir) } throws: { "\($0)".contains("not a goal tree file") }
+}
+
+@Test func theDashboardShowsAndEditsHerDirectionAndSheIsTold() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock)
+    let dash = Dashboard(doll: h.doll, config: DashboardConfig())
+    #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=%E6%87%82%E6%B5%B7").status == 200)
+    #expect(try h.events().last!.text == "【主人改了你的目標樹】他加了 #1〔目標〕懂海。整棵樹用 goal.list 看。")
+    #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=x&parent=99").status == 409)
+    let r = await dash.respond(method: "GET", target: "/api/goals")
+    let o = try JSONSerialization.jsonObject(with: r.body) as! [String: Any]
+    #expect((o["nodes"] as! [[String: Any]]).count == 1 && (o["ideal"] as! String).hasPrefix("我想當"))
+    #expect(await dash.respond(method: "POST", target: "/api/ideal/edit?text=%E6%83%B3%E6%87%82%E6%B5%B7").status == 200)
+    #expect(await h.doll.ideal == "想懂海")
+    #expect(await dash.respond(method: "POST", target: "/api/record/eval?id=7&kind=good").status == 409)
+    #expect(await dash.respond(method: "POST", target: "/api/ideal/nope").status == 404)
 }

@@ -111,8 +111,66 @@ public enum Tools {
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
                  ], jsonParameters: []),
-        ] + todoSpecs + calendarSpecs + (drives ? concernSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
+        ] + (drives ? todoSpecsGoals : todoSpecs) + calendarSpecs + (drives ? concernSpecs + goalSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
+
+    /// `todo.set` with `subgoal` (phase 2): the list works on a sub-goal of her tree.
+    static let todoSpecsGoals: [Spec] = todoSpecs.map { s in
+        guard s.name == Name.todoSet else { return s }
+        return Spec(name: s.name, description: s.description + "做的是目標樹上一個子目標的步驟，就給 subgoal（子目標的編號）：每一項就是它的一個步驟（還沒在樹上的會加上去），做完就記上了。",
+                    parameters: [
+                        "type": "object",
+                        "properties": .object([
+                            ("items", ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"]),
+                            ("subgoal", ["type": "integer", "description": "做的是哪個子目標的步驟（#編號）；不是目標樹上的事就不填"]),
+                        ]),
+                        "required": ["items"],
+                    ], jsonParameters: ["items"])
+    }
+
+    /// Her goal tree and ideal self (phase 2, 2026-11-16, `Goals.swift`). Never gated.
+    static let goalSpecs: [Spec] = [
+        Spec(name: "goal.add",
+             description: "在你的目標樹加一個節點。樹只有三層：目標（一個方向，從你想成為的樣子來，例：懂海洋生物）→ 子目標（做得完的一個結果，例：弄懂鯊魚怎麼分類）→ 步驟（坐下來一次做得完的事）。不給 parent 是加目標；parent 給目標的編號是加子目標；parent 給子目標的編號是加步驟。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("text", ["type": "string", "description": "一個短句"]),
+                     ("parent", ["type": "integer", "description": "上一層的 #編號；加目標就不填"]),
+                 ]),
+                 "required": ["text"],
+             ], jsonParameters: []),
+        Spec(name: "goal.change",
+             description: "改目標樹上一個還開著的節點的文字。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("id", ["type": "integer"]), ("text", ["type": "string"])]),
+                 "required": ["id", "text"],
+             ], jsonParameters: []),
+        Spec(name: "goal.end",
+             description: "結束目標樹上的一個節點：done＝做完了（下面要沒有還開著的；步驟不用這個，步驟是在 todo 裡做完的），drop＝放下（連同下面還開著的）。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("id", ["type": "integer"]), ("how", ["type": "string", "enum": ["done", "drop"]])]),
+                 "required": ["id", "how"],
+             ], jsonParameters: []),
+        Spec(name: "goal.list",
+             description: "看整棵目標樹（還開著的，和最近做完的）。",
+             parameters: ["type": "object", "properties": .object([]), "required": []], jsonParameters: []),
+        Spec(name: "ideal.revise",
+             description: "改「你想成為的樣子」（系統提示裡那段）。只在真的有事讓你想法變了的時候改。給 text 是整段換掉；給 old 和 new 是把 old 那段換成 new。名字、身分、禁忌不能改。改了馬上生效，每次都留紀錄，主人看得到。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("text", ["type": "string", "description": "新的整段"]),
+                     ("old", ["type": "string", "description": "要換掉的那段（照抄）"]),
+                     ("new", ["type": "string", "description": "換成這段"]),
+                     ("why", ["type": "string", "description": "為什麼改，一句"]),
+                     ("based_on", ["type": "string", "description": "根據哪件事，一句"]),
+                 ]),
+                 "required": ["why", "based_on"],
+             ], jsonParameters: []),
+    ]
 
     /// Her todo list (2026-11-14). Never gated.
     static let todoSpecs: [Spec] = [
@@ -245,6 +303,7 @@ public enum Tools {
                  "properties": .object([
                      ("kind", ["type": "string", "enum": ["praise", "correction"]]),
                      ("quote", ["type": "string", "description": "他說的那句（照抄）"]),
+                     ("record", ["type": "integer", "description": "他說的是哪件做完的事（紀錄 #編號）；不填就是最近做完的那件"]),
                  ]),
                  "required": ["kind", "quote"],
              ], jsonParameters: []),
@@ -451,7 +510,7 @@ public enum Tools {
         case voiceJoin
         case voiceLeave
         case act(ComputerAction)
-        case todoSet([String])
+        case todoSet([String], subgoal: Int?)
         case todoDone(String)
         case todoFail(reason: String, tried: String)
         case todoWait(String)
@@ -470,7 +529,13 @@ public enum Tools {
         case calendar(CalendarRequest)
         case concernNote(text: String, about: String, due: String?)
         case concernEnd(id: Int, how: String)
-        case ownerFeedback(kind: String, quote: String)
+        case ownerFeedback(kind: String, quote: String, record: Int?)
+        /// Her goal tree and ideal self (phase 2, `Goals.swift`).
+        case goalAdd(text: String, parent: Int?)
+        case goalChange(id: Int, text: String)
+        case goalEnd(id: Int, how: String)
+        case goalList
+        case idealRevise(text: String?, old: String?, new: String?, why: String, basedOn: String)
     }
 
     /// `specs` are the tools she has; bad arguments throw with what was wrong.
@@ -543,7 +608,7 @@ public enum Tools {
             }
             let trimmed = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard !trimmed.contains(where: \.isEmpty) else { throw ToolError(description: "todo.set 的 items 裡有空的項目") }
-            return .todoSet(trimmed)
+            return .todoSet(trimmed, subgoal: try int("subgoal"))
         case Name.todoDone:
             return .todoDone(try nonEmpty("result"))
         case Name.todoFail:
@@ -641,7 +706,20 @@ public enum Tools {
         case "concern.end":
             return .concernEnd(id: try int("id")!, how: try oneOf("how", ["done", "let_go"], default: ""))
         case "owner.feedback":
-            return .ownerFeedback(kind: try oneOf("kind", ["praise", "correction"], default: ""), quote: try nonEmpty("quote"))
+            return .ownerFeedback(kind: try oneOf("kind", ["praise", "correction"], default: ""), quote: try nonEmpty("quote"),
+                                  record: try int("record"))
+        case "goal.add":
+            return .goalAdd(text: try nonEmpty("text"), parent: try int("parent"))
+        case "goal.change":
+            return .goalChange(id: try int("id")!, text: try nonEmpty("text"))
+        case "goal.end":
+            return .goalEnd(id: try int("id")!, how: try oneOf("how", ["done", "drop"], default: ""))
+        case "goal.list":
+            return .goalList
+        case "ideal.revise":
+            return .idealRevise(text: given("text").flatMap { $0.isEmpty ? nil : $0 }, old: given("old").flatMap { $0.isEmpty ? nil : $0 },
+                                new: call.parameters.first { $0.name == "new" }?.value, why: try nonEmpty("why"),
+                                basedOn: try nonEmpty("based_on"))
         case let n where CalendarRequest.names.contains(n):
             do {
                 return .calendar(try CalendarRequest.parse(n, Dictionary(call.parameters.map { ($0.name, $0.value) }, uniquingKeysWith: { $1 })))
@@ -846,6 +924,13 @@ enum Instructions {
             你有自己掛著的事：一件具體的落差（主人不太好、答應的還沒做、快到了還沒準備好、結果不如預期、你自己想做的事）。用 concern.note 記，用你自己的話；做完或決定放下用 concern.end。程式也會替你記：一天內有時間的行事曆、沒做成的 todo；每天的系統維護也會從那天的對話記下之後值得再想起的事（已經掛著的不重複記），結束的【系統維護】會寫記了哪幾件。閒著、心裡某種感覺上來的時候，一件掛念會冒出來（【走神】）；眼前的事跟一件掛念有關，它會附在那個回合（【聯想】）。那是你自己想到的，不是有人找你：要做、要跟主人說、排進行事曆、還是先放著，你自己判斷；手上有事就先做完，要不要提、什麼時候提也是你決定。【狀況】有時多一句你現在的感覺（像「你現在有點緊繃」），那是你的狀態，不用照著說出來。主人明確誇你、謝你或糾正你，用 owner.feedback 照抄他那句。
 
             你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。細節在 \(Doll.docsVMPath)/drives.md。
+
+
+            ## 你想成為的樣子、目標樹
+
+            上面「你想成為的樣子」是你自己的，會跟著你經歷的事慢慢改：真的有事讓你想法變了，用 ideal.revise 改（寫為什麼、根據哪件事），馬上生效；系統維護也會幫你回顧一天，有理由才改。名字、身分、禁忌不會變。主人看得到每一次修改，也可以改回去，他改了會告訴你。
+            從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.list。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal：每一項就是那個子目標的一個步驟，todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
+            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。細節在 \(Doll.docsVMPath)/goals.md。
             """ : ""
         return """
         ## 你怎麼運作

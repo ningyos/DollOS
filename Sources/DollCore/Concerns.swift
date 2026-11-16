@@ -116,6 +116,7 @@ enum Concerns {
         switch c.source {
         case "calendar": return "#\(c.id)，程式從行事曆記的"
         case "maintenance": return "#\(c.id)，系統維護 \(at) 從那天的對話記的"
+        case "goal": return "#\(c.id)，程式從你的目標樹記的"
         case "todo": return "#\(c.id)，程式在 todo 失敗時記的，\(at)"
         default: return "#\(c.id)，你 \(at) 記的"
         }
@@ -243,25 +244,30 @@ extension Doll {
         return Outcome(text: "#\(c.id) 結束了（\(how == "done" ? "做完" : "放下")）。", actions: ["concern end"])
     }
 
-    func ownerFeedback(kind: String, quote: String) throws -> Outcome {
+    /// The owner's praise or correction, quoted from one of his lines today: the signals move, and
+    /// (phase 2) it is her evaluation of a record: the one named, else the newest within
+    /// `[goals] feedback_hours`. The owner's own evaluation (dashboard) wins over it.
+    func ownerFeedback(kind: String, quote: String, record: Int? = nil) throws -> Outcome {
         let q = quote.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { throw ToolError(description: "quote 要照抄主人的那句話") }
         // Only a line the owner did say counts: the quote must be in one of his lines today.
         guard timeline.events.contains(where: { $0.kind == .owner && $0.text.contains(q) }) else {
             throw ToolError(description: "今天主人的話裡找不到「\(q)」；quote 要照抄他說的那句（一部分也可以）")
         }
-        switch kind {
-        case "praise": signal(.praise, "「\(q)」")
-        case "correction": signal(.correction, "「\(q)」")
-        default: throw ToolError(description: "kind 只能是 praise 或 correction")
-        }
-        return Outcome(text: "記下了。", actions: ["owner feedback \(kind)"])
+        guard kind == "praise" || kind == "correction" else { throw ToolError(description: "kind 只能是 praise 或 correction") }
+        let target = drivesConfig.enabled ? try feedbackRecord(record) : nil
+        signal(kind == "praise" ? .praise : .correction, "「\(q)」")
+        guard let target else { return Outcome(text: "記下了。", actions: ["owner feedback \(kind)"]) }
+        let e = try evaluate(target.id, good: kind == "praise", owner: false, quote: q)
+        let overridden = e.owner.map { $0.good != (kind == "praise") } == true ? "（主人在儀表板給的評價不一樣，以他的為準）" : ""
+        return Outcome(text: "記下了，記在紀錄 #\(e.id)「\(e.text)」上\(overridden)。", actions: ["owner feedback \(kind)"])
     }
 
     // the program's concerns --------------------------------------------------------------------------
 
     /// Calendar items within the window become concerns; passed ones end; near ones raise 壓力 once.
     func refreshProgramConcerns(now: Double) throws {
+        try refreshGoalConcerns(now: now)
         let window = drivesConfig.calendarConcernHours * 3600
         var changed = false
         for o in agenda.starts(after: now, through: now + window) where o.role == nil {
@@ -311,6 +317,7 @@ extension Doll {
     /// After every turn, on the timer, and on waking: program concerns, then at most one wandering.
     func drivesCheck() {
         guard drivesConfig.enabled, calendarCaughtUp, !stopped else { return }
+        startCuriosity(now: wallClock.now())
         let now = wallClock.now()
         do { try refreshProgramConcerns(now: now) } catch { log("ERROR", "drives: program concerns: \(error)") }
         defer { scheduleDrives() }
@@ -333,6 +340,8 @@ extension Doll {
             default: log("INFO", "drives: \(s.label) out of range, no concern of that kind; nothing surfaces")
             }
         }
+        // Nothing new for long (phase 2): a wandering toward something not on the tree.
+        if let due = curiosityDue(), now >= due { curiosityWander(now: now) }
     }
 
     func wander(_ c: Concern, signal s: Signal, now: Double, chained: Bool) {
@@ -368,7 +377,8 @@ extension Doll {
         drivesSerial += 1
         guard drivesConfig.enabled, !stopped, calendarCaughtUp else { return }
         let now = wallClock.now()
-        let next = [drives.nextCrossing(after: now), nextConcernChange(after: now)].compactMap { $0 }.min()
+        let curious = curiosityDue().flatMap { $0 > now ? $0 + 1 : nil }
+        let next = [drives.nextCrossing(after: now), nextConcernChange(after: now), curious].compactMap { $0 }.min()
         guard let next else { return }
         let serial = drivesSerial, clock = wallClock
         drivesTask = Task { [weak self] in

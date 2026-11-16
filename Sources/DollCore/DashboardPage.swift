@@ -79,6 +79,7 @@ enum DashboardPage {
     <div class="muted">主人改的每一筆，她的時間線上都會多一則【行事曆】通知（不會叫醒她）。</div>
     <div id="calendar-body"></div></section>
   <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
+  <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -310,11 +311,59 @@ function renderDrives(d) {
   for (const c of d.changes.slice().reverse()) box.append(el("div", null, `${hm(c.ts)} ${label[c.signal]} ${c.before.toFixed(2)} → ${c.after.toFixed(2)}：${c.cause}`));
   const about = { owner: "主人", duty: "該做的", own: "自己的事" };
   box.append(el("h3", null, `還掛著的（${d.open.length}）`));
-  for (const c of d.open) box.append(el("div", null, `#${c.id}〔${about[c.about]}〕${c.text}（${c.source === "her" ? "她記的" : c.source === "calendar" ? "行事曆" : "todo 失敗"}，冒出來 ${c.surfaced.length} 次，聯想 ${c.associated.length} 次）`));
+  for (const c of d.open) box.append(el("div", null, `#${c.id}〔${about[c.about]}〕${c.text}（${({ her: "她記的", calendar: "行事曆", goal: "目標樹", maintenance: "系統維護" })[c.source] || "todo 失敗"}，冒出來 ${c.surfaced.length} 次，聯想 ${c.associated.length} 次）`));
   box.append(el("h3", null, `結束的（${d.ended.length}）`));
   for (const c of d.ended.slice(-20).reverse()) box.append(el("div", "muted", `#${c.id} ${c.text}（${({ done: "做完", let_go: "放下", passed: "時間過了" })[c.end] || c.end}）`));
   box.append(el("h3", null, `最近的走神和聯想（${d.thoughts.length}）`));
   for (const t of d.thoughts.slice().reverse()) box.append(el("div", null, `${hm(t.ts)} ${t.kind}：${t.text}`));
+}
+
+// Her direction (phase 2): the owner sees and edits; she is told of every edit.
+function btn(text, f) { const b = el("button", null, text); b.onclick = f; return b; }
+async function goalPost(path, params) {
+  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
+  const r = await fetch(`${path}?${q}`, { method: "POST" });
+  if (!r.ok) alert(await r.text());
+  refresh();
+}
+function renderGoals(g) {
+  const box = $("goals-body");
+  box.replaceChildren();
+  if (!g.enabled) { box.textContent = "關閉（[drives] enabled = false）"; return; }
+  box.append(el("h3", null, "她想成為的樣子"), el("pre", null, g.ideal));
+  const ta = el("textarea"); ta.rows = 4; ta.cols = 80; ta.value = g.ideal;
+  box.append(ta, btn("改成這樣（她會被告知）", () => goalPost("/api/ideal/edit", { text: ta.value })));
+  box.append(el("h3", null, `修改紀錄（${g.revisions.length}）`));
+  const who = { pack: "角色包", her: "她", maintenance: "系統維護", owner: "主人", revert: "主人退回" };
+  for (const r of g.revisions) {
+    const row = el("div", null, `第 ${r.id} 版 ${clock(r.ts)} ${who[r.by] || r.by}：${r.why}${r.basedOn ? "（根據：" + r.basedOn + "）" : ""} → ${r.after}`);
+    if (r.by !== "pack") row.append(" ", btn("退回這次", () => goalPost("/api/ideal/revert", { id: r.id })));
+    box.append(row);
+  }
+  box.append(el("h3", null, "目標樹（還開著的）"));
+  const level = { 1: "目標", 2: "子目標", 3: "步驟" };
+  const open = g.nodes.filter(n => !n.ended);
+  const show = (n, depth) => {
+    const row = el("div", null, "　".repeat(depth) + `#${n.id}〔${level[n.level]}〕${n.text}${n.by === "owner" ? "（主人加的）" : ""}`);
+    row.append(" ", btn("改", () => { const t = prompt("改成", n.text); if (t) goalPost("/api/goals/change", { id: n.id, text: t }); }));
+    if (n.level < 3) row.append(" ", btn("加下一層", () => { const t = prompt("加什麼"); if (t) goalPost("/api/goals/add", { parent: n.id, text: t }); }));
+    row.append(" ", btn("做完", () => goalPost("/api/goals/done", { id: n.id })), " ", btn("放下", () => goalPost("/api/goals/drop", { id: n.id })));
+    box.append(row);
+    for (const c of open.filter(c => c.parent === n.id)) show(c, depth + 1);
+  };
+  for (const n of open.filter(n => n.level === 1)) show(n, 0);
+  box.append(btn("加一個目標", () => { const t = prompt("目標"); if (t) goalPost("/api/goals/add", { text: t }); }));
+  if (g.link) box.append(el("div", "muted", `手上的 todo 清單：${g.link.subgoal ? "子目標 #" + g.link.subgoal + " 的步驟" : "不是目標樹的"}；做完了 ${g.link.done.length} 項`));
+  box.append(el("h3", null, `做完的事（${g.record.length}；動力：現在算數的／全額）`));
+  const kind = { step: "步驟", subgoal: "子目標", goal: "目標", list: "todo 清單" };
+  const ev = e => e ? (e.good ? "好" : "不對") + (e.quote ? `「${e.quote}」` : "") : "—";
+  for (const e of g.record) {
+    const row = el("div", null, `#${e.id} ${clock(e.ts)} ${kind[e.kind]}：${e.text}　她記的主人評價：${ev(e.her)}　主人：${ev(e.owner)}　${e.given.toFixed(2)}／${e.amount.toFixed(2)}`);
+    row.append(" ", btn("好", () => goalPost("/api/record/eval", { id: e.id, kind: "good" })), " ", btn("不好", () => goalPost("/api/record/eval", { id: e.id, kind: "bad" })));
+    if (e.owner) row.append(" ", btn("取消我的評價", () => goalPost("/api/record/eval", { id: e.id, kind: "none" })));
+    box.append(row);
+  }
+  box.append(el("div", "muted", `上次碰到新東西：${g.lastNew ? clock(g.lastNew) : "—"}；沒有新東西的話，${g.curiosityDue ? clock(g.curiosityDue) : "—"} 會冒一次好奇`));
 }
 
 async function calPost(op, params) {
@@ -346,8 +395,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c, dr] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr);
+    const [s, t, v, m, c, dr, go] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go);
   } catch (e) {
     console.error(e);
   } finally {
