@@ -33,11 +33,14 @@ class FakeCore:
 
 class FakeDM:
     def __init__(self) -> None:
-        self.sent: list[str] = []
+        self.sent: list[str | None] = []
+        #: The file each send carried (None for none), beside `sent`.
+        self.files: list[Any] = []
         self.typing = 0
 
-    async def send(self, content: str) -> None:
+    async def send(self, content: str | None = None, *, file: Any = None) -> None:
         self.sent.append(content)
+        self.files.append(file)
 
     async def trigger_typing(self) -> None:
         self.typing += 1
@@ -50,7 +53,7 @@ def message(author: int, content: str = "", guild: int | None = None, files: tup
 
 def bridge(core: FakeCore | None = None, typing_every_s: float = 8.0) -> tuple[Bridge, FakeCore, FakeDM]:
     core = core or FakeCore()
-    b = Bridge(OWNER, core, self_id=lambda: BOT, typing_every_s=typing_every_s)
+    b = Bridge(OWNER, core, self_id=lambda: BOT, attach=fake_file, typing_every_s=typing_every_s)
     b.dm = FakeDM()
     return b, core, b.dm
 
@@ -94,6 +97,32 @@ async def test_undelivered_owner_dm_is_told_to_the_owner() -> None:
     b, _, dm = bridge(FakeCore(fail=RuntimeError("dollcore answered 503")))
     await b.on_message(message(OWNER, "在嗎"))
     assert dm.sent == ["[系統] 這則沒送到她那裡：dollcore answered 503"]
+
+
+def fake_file(path: str) -> tuple[str, str]:
+    """What `attach` makes of a screenshot path in these tests; a missing one fails like discord.File."""
+    if path.startswith("/missing"):
+        raise FileNotFoundError(f"No such file: {path}")
+    return ("file", path)
+
+
+async def test_a_say_with_an_image_carries_it_on_its_last_piece() -> None:
+    b, _, dm = bridge()
+    await b.on_core({"type": "say", "text": "算好了，是 1,702", "image": "/shots/a.jpg"})
+    assert dm.sent == ["算好了，是 1,702"] and dm.files == [("file", "/shots/a.jpg")]
+    long = "\n".join(f"第 {i} 行" + "魚" * 90 for i in range(60))
+    await b.on_core({"type": "say", "text": long, "image": "/shots/b.jpg"})
+    assert dm.files[1:] == [None, None, ("file", "/shots/b.jpg")]
+    # Without an image nothing is attached.
+    await b.on_core({"type": "say", "text": "好"})
+    assert dm.files[-1] is None
+
+
+async def test_an_image_that_cannot_be_attached_still_sends_her_words_and_says_so() -> None:
+    b, _, dm = bridge()
+    await b.on_core({"type": "say", "text": "做好了", "image": "/missing/c.jpg"})
+    assert dm.sent == ["做好了", "[系統] 截圖沒附上：No such file: /missing/c.jpg"]
+    assert dm.files == [None, None]
 
 
 async def test_say_goes_to_the_owner_dm_split_at_2000() -> None:
@@ -186,7 +215,7 @@ async def test_core_api_round_trip_through_the_bridge() -> None:
     try:
         async with aiohttp.ClientSession() as s:
             core = CoreAPI(base, "k", s)
-            b = Bridge(OWNER, core, self_id=lambda: BOT)
+            b = Bridge(OWNER, core, self_id=lambda: BOT, attach=fake_file)
             b.dm = dm = FakeDM()
             await b.on_message(message(OWNER, "早安"))
             assert seen == [{"text": "早安"}]

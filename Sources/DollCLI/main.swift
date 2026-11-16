@@ -74,8 +74,8 @@ do {
     api = a
     let d = try Doll(
         config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: embedder, maintenanceModel: Consolidation.model(cfg),
-        deliver: { text, to in
-            let failed = a.deliver(text, to: to)
+        deliver: { text, to, image in
+            let failed = a.deliver(text, to: to, image: image)
             out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
             return failed
         })

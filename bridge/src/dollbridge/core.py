@@ -5,8 +5,8 @@
   one log line naming the author id and where, never the content. Her own messages are ignored
   without a log line. Attachments are text only for now: each becomes a line 「[附件：<filename>]」.
 - What dollcore streams out: `say` goes to the owner's DM in pieces of at most 2000 characters,
-  cut at line ends where possible; `typing` on/off keeps Discord's typing indicator up while her
-  turn runs.
+  cut at line ends where possible; a `say` with `image` (a screenshot path on this Mac) carries it
+  on its last piece; `typing` on/off keeps Discord's typing indicator up while her turn runs.
 """
 
 from __future__ import annotations
@@ -63,17 +63,21 @@ class Core(Protocol):
 class Channel(Protocol):
     """The owner's DM channel."""
 
-    async def send(self, content: str) -> Any: ...
+    async def send(self, content: str | None = None, *, file: Any = None) -> Any: ...
 
     async def trigger_typing(self) -> Any: ...
 
 
 class Bridge:
+    """`attach` turns a screenshot path from a `say` into what the channel's `send(file=…)` takes
+    (`discord.File` in the real bridge)."""
+
     def __init__(self, owner_id: int, core: Core, self_id: Callable[[], int | None],
-                 typing_every_s: float = TYPING_EVERY_S) -> None:
+                 attach: Callable[[str], Any], typing_every_s: float = TYPING_EVERY_S) -> None:
         self.owner_id = owner_id
         self.core = core
         self.self_id = self_id
+        self.attach = attach
         self.typing_every_s = typing_every_s
         self.dm: Channel | None = None
         self._typing: asyncio.Task[None] | None = None
@@ -104,8 +108,13 @@ class Bridge:
         kind = event.get("type")
         if kind == "say":
             self._stop_typing()
-            for piece in split_message(str(event.get("text", ""))):
+            pieces = split_message(str(event.get("text", "")))
+            image = event.get("image")
+            for piece in pieces[:-1] if image else pieces:
                 await self._send(piece)
+            if image:
+                # The screenshot of the window she last read (dollcore, 2026-11-16): with her last piece.
+                await self._send_with(pieces[-1] if pieces else None, str(image))
         elif kind == "typing":
             if event.get("on"):
                 self._start_typing()
@@ -121,6 +130,17 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             # She is not told (her say already returned); the log line reaches dollcore's stderr.
             log.error("could not send to the owner's DM: %s", e)
+
+    async def _send_with(self, content: str | None, image: str) -> None:
+        assert self.dm is not None, "the owner's DM channel is set before the stream starts"
+        try:
+            await self.dm.send(content, file=self.attach(image))
+        except Exception as e:  # noqa: BLE001
+            # Her words still go; the owner is told the picture did not.
+            log.error("could not attach %s to the owner's DM: %s", image, e)
+            if content:
+                await self._send(content)
+            await self._send(f"[系統] 截圖沒附上：{e}")
 
     async def _system(self, content: str) -> None:
         if self.dm is not None:

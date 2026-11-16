@@ -67,7 +67,7 @@ async def run(cfg: Config, base: str, key: str, config: Path) -> int:
     failure: list[str] = []
     async with aiohttp.ClientSession() as session:
         core = CoreAPI(base, key, session)
-        bridge = Bridge(owner_id, core, self_id=lambda: client.user.id if client.user else None)
+        bridge = Bridge(owner_id, core, self_id=lambda: client.user.id if client.user else None, attach=discord.File)
         voice = VoiceLink(cfg.voice, owner_id, client, core.voice)
         stream: asyncio.Task[None] | None = None
         voice_task: asyncio.Task[None] | None = None

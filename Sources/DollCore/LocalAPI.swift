@@ -54,9 +54,10 @@ public final class LocalAPI: @unchecked Sendable {
     public func listening(_ to: Addressee) -> Int { streams.withLock { $0[to]?.count ?? 0 } }
 
     /// Her `discord.dm` (owner) or `dollctl.reply` (developer): queued on every open stream for `to`
-    /// as a `say` line; nil, or why it went nowhere.
-    public func deliver(_ text: String, to: Addressee) -> String? {
-        let sent = send(.say(text), to: to)
+    /// as a `say` line; nil, or why it went nowhere. `image` (design B, 2026-11-16): a screenshot file
+    /// on this Mac, its absolute path in the line's `image` (the bridge runs here and attaches it).
+    public func deliver(_ text: String, to: Addressee, image: URL? = nil) -> String? {
+        let sent = send(.say(text, image: image?.path), to: to)
         guard sent == 0 else { return nil }
         switch to {
         case .owner: return "Discord 送不出去：bridge \(bridge)"
@@ -65,12 +66,12 @@ public final class LocalAPI: @unchecked Sendable {
     }
 
     enum Message {
-        case hello, say(String), typing(Bool)
+        case hello, say(String, image: String? = nil), typing(Bool)
 
         var line: Data {
             let obj: [String: Any] = switch self {
             case .hello: ["type": "hello"]
-            case .say(let t): ["type": "say", "text": t]
+            case .say(let t, let image): image.map { ["type": "say", "text": t, "image": $0] } ?? ["type": "say", "text": t]
             case .typing(let on): ["type": "typing", "on": on]
             }
             return (try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes])) + Data("\n".utf8)

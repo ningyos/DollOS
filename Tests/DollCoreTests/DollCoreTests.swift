@@ -127,6 +127,8 @@ private final class Recorder: Sendable {
     let said = Mutex<[String]>([])
     /// Who each `said` was delivered to (`discord.dm` → owner, `dollctl.reply` → developer).
     let saidTo = Mutex<[Addressee]>([])
+    /// The screenshot each `said` carried (design B), nil for none.
+    let images = Mutex<[URL?]>([])
     /// Set: every delivery fails with this reason (the bridge is down, no chat open).
     let undelivered = Mutex<String?>(nil)
     let reports = Mutex<[TurnReport]>([])
@@ -348,9 +350,10 @@ private struct Harness {
         let cua = FakeCua()
         self.cua = cua
         doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: cua,
-                        deliver: { text, to in
+                        deliver: { text, to, image in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
+                            rec.images.withLock { $0.append(image) }
                             return rec.undelivered.withLock { $0 }
                         })
         await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
@@ -361,6 +364,8 @@ private struct Harness {
 
     var said: [String] { rec.said.withLock { $0 } }
     var saidTo: [Addressee] { rec.saidTo.withLock { $0 } }
+    /// The screenshot file each delivered line carried (design B), nil for none.
+    var images: [String?] { rec.images.withLock { $0 }.map { $0?.lastPathComponent } }
     var reports: [TurnReport] { rec.reports.withLock { $0 } }
     var logs: [String] { rec.logs.withLock { $0 } }
     var last: TurnReport { reports.last! }
@@ -1244,7 +1249,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     // Her line to him comes first: the list is his.
     try await h.turn(Scripted("", key("cmd+s"), dm("存好了"), done("存好了"), key("cmd+q")))
     let end = Array(try h.toolResults().suffix(4))
-    #expect(end[0].image != nil && end[0].text == sent && end[1].text == "")
+    #expect(end[0].image != nil && end[0].text == sent && end[1].text == Doll.shotSent(end[0].image!))
     #expect(end[2].text.hasPrefix("完成，記下了。")
             && end[3].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
     #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+a\n2. key return\n3. key cmd+s") == true)
@@ -2677,7 +2682,7 @@ extension Doll {
     try await h.turn(Scripted("", done("存好了"), dm("存好了喔"), key("cmd+q")))
     #expect(h.said == ["存好了喔"] && h.cua.actions.isEmpty)
     let end = Array(try h.toolResults().suffix(3))
-    #expect(end[0].text.hasPrefix("完成，記下了。") && end[1].text == ""
+    #expect(end[0].text.hasPrefix("完成，記下了。") && end[1].text.hasPrefix("（附上了你最後讀的視窗截圖給主人：")
             && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
     #expect(h.last.actions == ["todo done", "said discord_dm", "error key"])
     #expect(!(await h.doll.followUp))
@@ -6537,4 +6542,38 @@ private func goOn(_ missing: String, _ why: String) -> (String, [(String, String
     try await h2.turn(Scripted("", readCall))
     let after = await h2.doll.todo.rounds
     #expect(h2.last.actions == ["refused read_window"] && after == 4)
+}
+
+// the owner sees what she saw (2026-11-16, design B) ------------------------------------------------
+
+@Test func herNextLineToTheOwnerCarriesTheLatestScreenshotOnce() async throws {
+    let h = try await menuHarness()
+    let first = try #require(try h.toolResults().last!.image)
+    try await h.turn(Scripted("", dm("我在算")))
+    #expect(h.images == [first])
+    #expect(try h.toolResults().last!.text == Doll.shotSent(first) && Doll.shotSent(first) == "（附上了你最後讀的視窗截圖給主人：\(first)）")
+    // The same screen is not sent twice.
+    try await h.turn(Scripted("", dm("還在算")))
+    let quiet = try h.toolResults().last!.text
+    #expect(h.images.last == .some(nil) && quiet == "")
+    // A new read: her next line to the owner carries it; a line to the developer never does.
+    try await h.turn(Scripted("", clickRow(2), reply("給開發者"), dm("按了 7")))
+    let second = try #require(try h.toolResults().last { $0.image != nil }?.image)
+    #expect(second != first && Array(h.images.suffix(2)) == [nil, second])
+}
+
+@Test func theReportAfterDoneCarriesItAndTheNextItemStartsWithout() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", clickRow(2)))
+    let shot = try #require(try h.toolResults().last!.image)
+    try await h.turn(Scripted("", done("7", evidence: #"AXStaticText "7""#), dm("是 7")))
+    #expect(h.last.itemEnd == "完成" && h.images.last == .some(shot))
+    await h.doll.ownerSaid("謝謝")
+    try await h.turn(Scripted("", dm("不客氣")))
+    #expect(h.images.last == .some(nil))
+}
+
+@Test func aSayLineCarriesTheScreenshotsPathForTheBridge() {
+    #expect(String(decoding: LocalAPI.Message.say("看", image: "/d/shots/a.jpg").line, as: UTF8.self) == "{\"image\":\"/d/shots/a.jpg\",\"text\":\"看\",\"type\":\"say\"}\n")
+    #expect(String(decoding: LocalAPI.Message.say("看").line, as: UTF8.self) == "{\"text\":\"看\",\"type\":\"say\"}\n")
 }

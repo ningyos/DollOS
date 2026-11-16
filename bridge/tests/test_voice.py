@@ -764,7 +764,7 @@ async def test_link_survives_dollcore_closing_mid_utterance(rig: Any, caplog: py
     bridge leaves the channel, reconnects with `hello` and the owner's state, the DM path keeps
     working, and she can join and speak again with a fresh player."""
     channel = owner_in(rig, "客廳")
-    dms = Bridge(OWNER, rig.api, self_id=lambda: BOT)
+    dms = Bridge(OWNER, rig.api, self_id=lambda: BOT, attach=lambda path: path)
     dms.dm = dm = FakeDM()
     dm_stream = asyncio.create_task(pump(rig.api.listen, dms.on_core))
     await start(rig)

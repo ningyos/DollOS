@@ -186,6 +186,9 @@ function renderTimeline(items) {
         if (!text) { div.append(renderCall(c)); continue; }
         div.append(el("div", "speech", `說（${c.channel}）：` + text.value.trim()));
         if (c.result) div.append(el("div", "muted", c.result));
+        // The screenshot that went with her words to the owner (Doll.shotSent, 2026-11-16).
+        const sent = c.result && c.result.match(/截圖給主人：([^）]+)）/);
+        if (sent) div.append(shot(sent[1], "thumb"));
       }
       if (it.footer) div.append(details("她看到的【狀況】", el("pre", "muted", it.footer)));
     }

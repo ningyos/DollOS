@@ -9,9 +9,10 @@ import Foundation
 /// and makes no model call.
 
 /// Delivers one text of hers to a person's stream (the owner's Discord DM through the bridge, the
-/// developer's `dollctl chat`): returns nil, or says why it could not be delivered (her
-/// `discord.dm` / `dollctl.reply` result then tells her so).
-public typealias Deliver = @Sendable (String, Addressee) -> String?
+/// developer's `dollctl chat`), with a screenshot file to attach (design B, 2026-11-16; only to the
+/// owner): returns nil, or says why it could not be delivered (her `discord.dm` / `dollctl.reply`
+/// result then tells her so).
+public typealias Deliver = @Sendable (String, Addressee, URL?) -> String?
 
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
@@ -1060,6 +1061,8 @@ public actor Doll {
             // What the program would attach for the span she just closed would leave with it.
             appSwitched = false
         }
+        // The item ended: its last screenshot went with it (her lines after this reply are about something else).
+        if itemEndNow != nil { ownerShot = nil }
         // A computer result worked on another app: one 【相關記憶】, after all of this reply's results.
         if appSwitched {
             appSwitched = false
@@ -1203,7 +1206,8 @@ public actor Doll {
                 // read, and nothing to wake her for. Not delivered (the bridge is down, no dollctl
                 // chat is open): her result says why and what she can do.
                 let to: Addressee = channel == .dollctl ? .developer : .owner
-                if let why = deliver(text, to) {
+                let shot = to == .owner ? ownerShot : nil
+                if let why = deliver(text, to, shot.map { shots.appending(path: $0) }) {
                     log("ERROR", "turn \(turnIndex): \(name) not delivered: \(why)")
                     let next = switch to {
                     case .owner: "這段話主人沒看到；Discord 連上之前 \(Tools.Name.dm) 都傳不出去，連上以後再傳一次。"
@@ -1213,7 +1217,9 @@ public actor Doll {
                 }
                 if to == .owner { reachedOwner() }
                 if listFor?.to == to, reply.seq != listReply { listReported = true }
-                return Outcome(text: fixed.isEmpty ? "" : Traditional.note(fixed), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
+                let lines = [fixed.isEmpty ? nil : Traditional.note(fixed), shot.map(Self.shotSent)].compactMap { $0 }
+                if shot != nil { ownerShot = nil }
+                return Outcome(text: lines.joined(separator: "\n"), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
             case .voiceJoin:
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
                 let ch = try await voice.join()
@@ -1348,8 +1354,11 @@ public actor Doll {
     func noteRead(_ r: MacResult) {
         guard let window = r.window ?? (r.failed || r.step?.hasPrefix("open ") != true ? nil : "open\n" + r.text) else { return }
         latestRead = .window(window)
-        if let image = r.image { ownerShot = image }
+        ownerShot = r.image
     }
+
+    /// Her result line when her words to the owner carried the screenshot (design B).
+    static func shotSent(_ file: String) -> String { "（附上了你最後讀的視窗截圖給主人：\(file)）" }
 
     /// The decision point's words (design C): how many rounds, and the three choices.
     var decideText: String {
@@ -1450,10 +1459,12 @@ public actor Doll {
     /// progress it becomes 等待中 after this reply's calls, and his answer (an owner line) resumes it.
     func askOwner(what: String, where place: String, why: String) throws -> Outcome {
         let text = "【\(name)想先問你】\n要做：\(what)\n在哪裡：\(place)\n為什麼：\(why)"
-        if let failure = deliver(text, .owner) {
+        let shot = ownerShot
+        if let failure = deliver(text, .owner, shot.map { shots.appending(path: $0) }) {
             log("ERROR", "turn \(turnIndex): ask_owner not delivered: \(failure)")
             throw ToolError(description: "主人沒收到：\(failure)。Discord 連上之前問不了；先不要做那件事。")
         }
+        ownerShot = nil
         reachedOwner()
         guard todo.phase == .doing, let item = todo.current else {
             return Outcome(text: "問了主人（私訊）。他回了你才會知道。", actions: ["ask owner"], background: true)
