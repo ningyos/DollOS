@@ -163,6 +163,8 @@ func m6GoalsWeek() throws {
     variants.append(("drive_rest 0.5, drive_high 0.7", both, cfg.goals))
     var both2 = cfg.drives; both2.driveRest = 0.45; both2.driveHigh = 0.65
     variants.append(("drive_rest 0.45, drive_high 0.65", both2, cfg.goals))
+    var small = cfg.goals; small.stepDrive = 0.02; small.subgoalDrive = 0.06; small.noveltyDrive = 0.03
+    variants.append(("drive_rest 0.45, drive_high 0.65, step 0.02, subgoal 0.06, novelty 0.03", both2, small))
     for (label, dc, gc) in variants {
         var ignore: [String] = []
         out += ["", label + ":", header] + simulateWeek(dc, gc, curves: &ignore)
