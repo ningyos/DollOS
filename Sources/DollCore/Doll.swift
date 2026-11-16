@@ -145,6 +145,16 @@ public actor Doll {
     /// The current item saw a call of hers other than the todo tools and `think` (a computer tool,
     /// a line to someone, remember, recall): what `todo.done` needs before it is accepted.
     var itemActed = false
+    /// The person whose line the current list answers and the channel that line came on; nil when
+    /// the list is her own (no person line was waiting for an answer when she set it). The
+    /// `todo.done` that would finish the list needs a line of hers to that person after the reply
+    /// that set the list (2026-11-16, m7-mac: in 3 of 4 Calculator runs the answer went only into
+    /// todo.done's result, which no one else sees, sometimes with 「已用 discord.dm 回報」 in it).
+    var listFor: (to: Addressee, channel: Channel)?
+    /// The reply that set the current list (a line in that same reply is an acknowledgement, not the result).
+    var listReply: Int64 = 0
+    /// She spoke to `listFor` after `listReply`.
+    var listReported = false
     /// The compaction her todo call made this turn; recorded once the turn's results are in (its span
     /// ends at the turn's last event).
     var compacting: Compaction?
@@ -488,6 +498,15 @@ public actor Doll {
     /// shown "typing".
     public static func lastSpeaker(_ events: [Event]) -> Addressee {
         events.last { $0.speaker != nil }?.speaker ?? .owner
+    }
+
+    /// The last person line and its channel, when no line of hers went to that person after it
+    /// (her `discord.dm`, `voice.say` or `dollctl.reply` results carry the channel they went to).
+    static func unanswered(_ events: [Event]) -> (to: Addressee, channel: Channel)? {
+        guard let i = events.lastIndex(where: { $0.speaker != nil }), let who = events[i].speaker else { return nil }
+        let theirs: Set<Channel> = who == .owner ? [.discordDM, .discordVoice] : [.dollctl]
+        if events[(i + 1)...].contains(where: { $0.kind == .tool && $0.channel.map(theirs.contains) == true }) { return nil }
+        return (who, events[i].channel ?? (who == .owner ? .discordDM : .dollctl))
     }
 
     /// While a turn runs: whose line it follows (the local API shows that person "typing"); nil
@@ -1144,6 +1163,7 @@ public actor Doll {
                 if report.interrupted, report.heard.cut != nil { voiceCut = true }
                 log("INFO", "turn \(turnIndex): said in voice「\(report.heardText)」" + (report.interrupted ? "（被打斷）" : ""))
                 let note = fixed.isEmpty ? "" : (report.resultText.isEmpty ? "" : "\n") + Traditional.note(fixed)
+                if listFor?.to == .owner, reply.seq != listReply { listReported = true }
                 return Outcome(text: report.resultText + note, actions: ["said \(Channel.discordVoice.rawValue)" + (report.interrupted ? " (cut)" : "")],
                                background: true, channel: .discordVoice)
             case .speak(let raw, let channel):
@@ -1161,6 +1181,7 @@ public actor Doll {
                     return Outcome(text: "失敗：\(to.label)沒收到：\(why)。\(next)", actions: ["error \(name)"], background: true)
                 }
                 if to == .owner { reachedOwner() }
+                if listFor?.to == to, reply.seq != listReply { listReported = true }
                 return Outcome(text: fixed.isEmpty ? "" : Traditional.note(fixed), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
             case .voiceJoin:
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
@@ -1390,6 +1411,9 @@ public actor Doll {
             todo.pending = Array(items.dropFirst())
             todo.startSeq = reply.seq! - 1
             beginItem()
+            listFor = Self.unanswered(timeline.events)
+            listReply = reply.seq!
+            listReported = false
             return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
         }
     }
@@ -1403,7 +1427,16 @@ public actor Doll {
         // Done needs something done or looked at (owner, 2026-11-14): in a real run she ended an
         // untouched item right after the previous one was compacted, with a made-up result.
         guard itemActed else {
-            throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 screenshot 或 read_file 親眼看過再說完成。")
+            throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 read_window 或 read_file 親眼看過再說完成。")
+        }
+        if todo.pending.isEmpty, let f = listFor, !listReported {
+            let tool = switch f.channel {
+            case .discordDM: Tools.Name.dm
+            case .discordVoice: voice == nil ? Tools.Name.dm : Tools.Name.voiceSay
+            case .dollctl: Tools.Name.reply
+            }
+            throw ToolError(description: "還沒完成：這份清單是\(f.to.label)交代的，你列 todo 以後還沒跟\(f.to.label)說過話；todo.done 的 result 只有你自己看得到，寫「已回報」不會讓他收到。"
+                            + "先用 \(tool) 跟\(f.to.label)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以，\(tool) 寫在 todo.done 前面。")
         }
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
@@ -1604,7 +1637,7 @@ public actor Doll {
 
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
-    static let observingTools: Set<String> = ["click", "type", "key", "scroll", "drag", "screenshot", "read_file", "edit_file"]
+    static let observingTools: Set<String> = ["open", "read_window", "click", "type", "key", "scroll", "menu", "read_file", "edit_file"]
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her
