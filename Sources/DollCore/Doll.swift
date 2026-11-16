@@ -155,6 +155,10 @@ public actor Doll {
     var listReply: Int64 = 0
     /// She spoke to `listFor` after `listReply`.
     var listReported = false
+    /// Whom the calls written after the current one in this reply speak to: `todo.done` followed by
+    /// her line to that person in the same reply is a report too (speaking after an ending call has
+    /// always run, 2026-11-11), so it costs no extra round.
+    var speaksLater: Set<Addressee> = []
     /// The compaction her todo call made this turn; recorded once the turn's results are in (its span
     /// ends at the turn's last event).
     var compacting: Compaction?
@@ -991,6 +995,9 @@ public actor Doll {
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
         var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?
         for (i, call) in calls.enumerated() {
+            speaksLater = Set(calls[(i + 1)...].compactMap { c in
+                c.arguments == nil ? nil : c.name == Tools.Name.reply ? .developer : Tools.speaking[c.name] != nil ? .owner : nil
+            })
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = Tools.actionNames.contains(call.name)
             var out: Outcome
@@ -1429,14 +1436,14 @@ public actor Doll {
         guard itemActed else {
             throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 read_window 或 read_file 親眼看過再說完成。")
         }
-        if todo.pending.isEmpty, let f = listFor, !listReported {
+        if todo.pending.isEmpty, let f = listFor, !listReported, !speaksLater.contains(f.to) {
             let tool = switch f.channel {
             case .discordDM: Tools.Name.dm
             case .discordVoice: voice == nil ? Tools.Name.dm : Tools.Name.voiceSay
             case .dollctl: Tools.Name.reply
             }
             throw ToolError(description: "還沒完成：這份清單是\(f.to.label)交代的，你列 todo 以後還沒跟\(f.to.label)說過話；todo.done 的 result 只有你自己看得到，寫「已回報」不會讓他收到。"
-                            + "先用 \(tool) 跟\(f.to.label)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以，\(tool) 寫在 todo.done 前面。")
+                            + "先用 \(tool) 跟\(f.to.label)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以。")
         }
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
