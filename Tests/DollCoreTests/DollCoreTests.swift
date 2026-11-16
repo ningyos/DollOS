@@ -1723,6 +1723,63 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(!request.contains { $0.content.hasPrefix("失敗：這則回覆前面已經用") || !$0.images.isEmpty })
 }
 
+/// The refusal of a `todo.done` that would finish a list `who` gave before she told them, naming `tool`.
+private func notTold(_ who: String, _ tool: String) -> String {
+    "失敗：還沒完成：這份清單是\(who)交代的，你列 todo 以後還沒跟\(who)說過話；todo.done 的 result 只有你自己看得到，寫「已回報」不會讓他收到。"
+        + "先用 \(tool) 跟\(who)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以。"
+}
+
+@Test func theDoneThatFinishesTheOwnersListNeedsALineToHimFirst() async throws {
+    // m7-mac (2026-11-16): the answer went only into todo.done's result, which he never sees.
+    let h = try await Harness()
+    await h.doll.ownerSaid("7 加 8 是多少")
+    // Her DM after todo.set in the reply that set the list is an acknowledgement, not the result.
+    try await h.turn(Scripted("", todoSet("算出 7+8"), readCall, dm("我算算")))
+    try await h.turn(Scripted("", clickRow(2), done("15")))
+    #expect(try h.toolResults().last!.text == notTold("主人", "discord.dm"))
+    #expect(h.last.actions == ["click", "error todo.done"] && h.last.itemEnd == nil)
+    #expect(await h.doll.todo.phase == .doing)
+    // A line to him in a later reply: the done goes through.
+    try await h.turn(Scripted("", dm("是 15")))
+    try await h.turn(Scripted("", done("15")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。") && h.last.itemEnd == "完成")
+    #expect(await h.doll.todo.phase == .idle)
+    // Only the done that finishes the list is gated: an item with more after it goes through untold.
+    await h.doll.ownerSaid("再算 8 加 8，然後 7 加 7")
+    try await h.turn(Scripted("", todoSet("算出 8+8", "算出 7+7"), readCall))
+    try await h.turn(Scripted("", done("16")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+    #expect(await h.doll.todo.current == "算出 7+7")
+    try await h.turn(Scripted("", readCall, done("14")))
+    #expect(try h.toolResults().last!.text == notTold("主人", "discord.dm"))
+    // Her line written after the done in the same reply counts too.
+    try await h.turn(Scripted("", done("14"), dm("16 和 14")))
+    #expect(try h.toolResults().suffix(2).first!.text.hasPrefix("完成，記下了。") && h.last.actions == ["todo done", "said discord_dm"])
+    #expect(h.said.last == "16 和 14")
+    #expect(await h.doll.todo.phase == .idle)
+}
+
+@Test func herOwnListIsNotGatedAndTheDevelopersListNeedsHisChannel() async throws {
+    let h = try await Harness()
+    // Nobody's line is waiting (only a wake of hers): her own list, done without a line to anyone.
+    await h.doll.put(Event(.watch, .internal, "想整理一下計算機"))
+    try await h.turn(Scripted("", todoSet("計算機歸零"), readCall))
+    try await h.turn(Scripted("", done("看過了，是 0")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。") && h.said.isEmpty)
+    // The owner's line answered before she listed: the list is hers too.
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn(Scripted("", dm("在"), todoSet("看一下計算機"), readCall))
+    try await h.turn(Scripted("", done("看過了")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+    // The developer's list: a DM to the owner is not a line to him; his channel is dollctl.reply.
+    await h.doll.developerSaid("讀一下計算機的畫面")
+    try await h.turn(Scripted("", todoSet("讀了計算機"), readCall))
+    try await h.turn(Scripted("", dm("我在讀計算機"), done("讀了")))
+    #expect(try h.toolResults().last!.text == notTold("開發者", "dollctl.reply"))
+    try await h.turn(Scripted("", done("讀了"), reply("讀了，顯示 0")))
+    #expect(h.last.actions == ["todo done", "said dollctl"] && h.last.itemEnd == "完成")
+}
+
 @Test func anExperienceIsCutToTheCapFromTheMiddleSteps() {
     let steps = (1...12).map { "key cmd+\($0) then a long enough line" }
     let full = Doll.experienceText(task: "做事", summary: "做好了，看過了", steps: steps, maxChars: 10_000)
