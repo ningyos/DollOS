@@ -12,7 +12,7 @@ import Foundation
 ///                        signal surfaces and she gets a turn (`Doll.drivesCheck`); signals in range,
 ///                        nothing and no model call. One timer waits for the next crossing.
 ///   association (【聯想】) at the start of any turn, what is in front of her (the new lines and
-///                        results) against her open concerns; one above `[select] similarity` is
+///                        results) against her open concerns; one at or above `[drives] association_similarity` is
 ///                        attached in that turn, no extra turn (`Doll.associate`).
 ///
 /// `<data_dir>/concerns.json` and `<data_dir>/signals.json`; malformed = an error at boot.
@@ -53,7 +53,9 @@ public struct Concern: Sendable, Codable, Equatable {
 }
 
 struct ConcernFile: Codable, Equatable {
-    var nextID = 1
+    /// `nextId`, not `nextID`: the snake-case coders write "next_id" and read it back as "nextId", so
+    /// `nextID` could not be read and a restart with a concerns file failed (found 2026-11-16).
+    var nextId = 1
     var items: [Concern] = []
 }
 
@@ -110,6 +112,7 @@ enum Concerns {
         let at = Doll.nowText(c.created)
         switch c.source {
         case "calendar": return "#\(c.id)，程式從行事曆記的"
+        case "maintenance": return "#\(c.id)，系統維護 \(at) 從那天的對話記的"
         case "todo": return "#\(c.id)，程式在 todo 失敗時記的，\(at)"
         default: return "#\(c.id)，你 \(at) 記的"
         }
@@ -168,8 +171,8 @@ extension Doll {
 
     @discardableResult
     func addConcern(_ text: String, about: Concern.About, source: String, key: String? = nil, due: Double? = nil) throws -> Concern {
-        let c = Concern(id: concernFile.nextID, text: text, about: about, source: source, key: key, created: wallClock.now(), due: due)
-        concernFile.nextID += 1
+        let c = Concern(id: concernFile.nextId, text: text, about: about, source: source, key: key, created: wallClock.now(), due: due)
+        concernFile.nextId += 1
         concernsNew.insert(c.id)
         concernFile.items.append(c)
         try saveConcerns()
@@ -386,8 +389,8 @@ extension Doll {
             guard let qv = try embedder.embed([query], as: .query).first else { return }
             let scored = candidates.map { c in (c, zip(qv, concernVectors[c.id]!).reduce(0.0) { $0 + Double($1.0 * $1.1) }) }
             guard let best = scored.max(by: { $0.1 < $1.1 }) else { return }
-            log("INFO", String(format: "drives: association best #%d %.3f (threshold %.2f)", best.0.id, best.1, selectConfig.similarity))
-            guard best.1 >= selectConfig.similarity else { return }
+            log("INFO", String(format: "drives: association best #%d %.3f (threshold %.2f)", best.0.id, best.1, drivesConfig.associationSimilarity))
+            guard best.1 >= drivesConfig.associationSimilarity else { return }
             associatedIDs.insert(best.0.id)
             if let i = concernFile.items.firstIndex(where: { $0.id == best.0.id }) { concernFile.items[i].associated.append(wallClock.now()) }
             try saveConcerns()
