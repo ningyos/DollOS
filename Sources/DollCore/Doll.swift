@@ -372,6 +372,8 @@ public actor Doll {
 
     /// The whole timeline, oldest first, footers attached to her replies.
     public func timelineEvents() -> [Event] { timeline.events }
+    /// What each turn took and why it stopped, keyed by her reply's seq (for runners and transcripts).
+    public func turnStats() -> [Int64: Timeline.TurnStats] { timeline.turnStats }
 
     /// Appends one event to the timeline file, then to the today index, then tells the dashboard.
     @discardableResult
@@ -712,8 +714,20 @@ public actor Doll {
         if let w = ev.window { extra.append(.text(w)) }
         switch ev.kind {
         case .doll:
-            return (ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? [])
-                + [ChatMessage(role: "assistant", content: ev.text, toolCalls: ev.calls)]
+            let footer = ev.footer.map { [ChatMessage(role: "user", content: $0)] } ?? []
+            // A reply without any call goes back as a line of the program's, not as her assistant turn
+            // (2026-11-16). Measured on the n-5 owner-sleep run (experiments/m6-drives/real/replay.py,
+            // 5 replays each): with her three earlier call-less replies sent as assistant turns, the
+            // owner's 「早～」 got an empty reply 5/5 (finish_reason stop after 2–13 tokens); with them
+            // removed 0/5, sent as this line 0/5, with only one of them left 2/5. The 06:00 turn after
+            // one such reply was cut mid-sentence 3/5, 0/5 with it removed or sent as this line. The
+            // model imitates a run of turns that end without a call, shorter each time. An empty one
+            // sends nothing.
+            guard !ev.calls.isEmpty else {
+                let text = ev.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return footer + (text.isEmpty ? [] : [ChatMessage(role: "user", content: Self.thoughtOnlyTag + text)])
+            }
+            return footer + [ChatMessage(role: "assistant", content: ev.text, toolCalls: ev.calls)]
         case .owner, .developer: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
@@ -723,6 +737,8 @@ public actor Doll {
 
     /// What an older result says where its screenshots were (fixed bytes).
     static let imagesPutAway = "（這回合的截圖已收起；只有最近幾回合帶圖）"
+    /// What a reply of hers without any call is sent as (2026-11-16, see `render`); the wording measured.
+    static let thoughtOnlyTag = "[她那回合只想了，沒呼叫工具] "
 
     func imageURI(_ file: String) throws -> String {
         if let uri = imageURIs[file] { return uri }
@@ -1067,11 +1083,14 @@ public actor Doll {
                                 todo: todo.phase.label, compacted: compactedNow,
                                 cheatsheets: cheatsheetNow, selections: selectionsNow)
         log("INFO", "turn \(turnIndex) effort=\(effort) todo=\(todo.phase.label) actions=\(actions) prompt=\(reply.usage.promptTokens) "
-            + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?")")
+            + "prefilled=\(reply.usage.prefilled.map(String.init) ?? "?") cached=\(reply.usage.cached.map(String.init) ?? "?") "
+            + reply.usage.stopLine)
         observer?(report)
         try timeline.recordTurn(Timeline.TurnStats(seq: stored.seq!, started: started,
                                                    seconds: Date().timeIntervalSince1970 - started,
-                                                   prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort))
+                                                   prompt: reply.usage.promptTokens, cached: reply.usage.cached, effort: effort,
+                                                   completion: reply.usage.completionTokens, finish: reply.usage.finish,
+                                                   reasoningChars: reply.usage.reasoningChars))
     }
 
     /// The program's line after a reply without a call while an item is in progress (fixed bytes).
