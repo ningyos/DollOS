@@ -1184,11 +1184,12 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
     #expect(h.cua.actions == ["hotkey", "click", "press_key"])
     // todo.done after actions in the same reply still ends the item; the action before it is the last.
-    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("cmd+q")))
-    let end = Array(try h.toolResults().suffix(3))
-    #expect(end[0].image != nil && end[0].text == sent)
-    #expect(end[1].text.hasPrefix("完成，記下了。")
-            && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
+    // Her line to him comes first: the list is his.
+    try await h.turn(Scripted("", key("cmd+s"), dm("存好了"), done("存好了"), key("cmd+q")))
+    let end = Array(try h.toolResults().suffix(4))
+    #expect(end[0].image != nil && end[0].text == sent && end[1].text == "")
+    #expect(end[2].text.hasPrefix("完成，記下了。")
+            && end[3].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
     #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+a\n2. key return\n3. key cmd+s") == true)
     #expect(await h.doll.todo.phase != .doing && h.cua.actions.count == 4)
 }
@@ -1630,8 +1631,8 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", clickRow(2), readCall))
     try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("count", "2")]),
                               ("type", [("text", "娃娃來過")]), key("cmd+s")))
-    // She looks, then answers in the same reply.
-    try await h.turn(Scripted("", readCall, done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
+    // She looks, tells him, then answers in the same reply.
+    try await h.turn(Scripted("", readCall, dm("存好了，標題列沒有「已編輯」"), done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
     #expect(h.last.footer.contains("- todo：進行中「標題沒有「已編輯」」"))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。"))
     let text = "經驗：把 notes 存檔\n這一項：標題沒有「已編輯」\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
@@ -1704,11 +1705,11 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 
 @Test func callsAfterDoneInTheSameReplyAreRefused() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("Return"), readCall))
+    try await h.turn(Scripted("", key("cmd+s"), dm("存好了"), done("存好了"), key("Return"), readCall))
     let refused = "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"
     let results = try h.toolResults().suffix(3).map(\.text)
     #expect(results.first!.hasPrefix("完成，記下了。") && Array(results.dropFirst()) == [refused, refused])
-    #expect(h.last.actions == ["key", "todo done", "error key", "error read_window"])
+    #expect(h.last.actions == ["key", "said discord_dm", "todo done", "error key", "error read_window"])
     #expect(h.cua.actions == ["hotkey"])
     #expect(await !h.doll.followUp)
     #expect(await h.doll.todo.phase == .idle)
@@ -1859,7 +1860,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     let attached = try #require(h.reports[0].attached.first)
     #expect(attached.contains("成績：這次 9 回合、150 秒；附上後照做 0 次，成功 0 次"))
     try await h.turn(Scripted("", clickRow(2), key("cmd+s")))
-    try await h.turn(Scripted("", done("存好了")))
+    try await h.turn(Scripted("", dm("存好了"), done("存好了")))
     #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
@@ -2061,7 +2062,7 @@ extension Harness {
     await h.doll.ownerSaid("改 todo")
     try await h.turn(Scripted("", todoSet("todo.txt 第一行是買豆漿")))
     try await h.turn(Scripted("", readFile(todo), writeFile(a, "一\n二\n"), editFile(todo, "沒有這段", "x"),
-                              editFile(todo, "買牛奶", "買豆漿"), done("第一行是買豆漿")))
+                              editFile(todo, "買牛奶", "買豆漿"), dm("改好了"), done("第一行是買豆漿")))
     #expect(h.last.experience == "經驗：改 todo\n這一項：todo.txt 第一行是買豆漿\n第一行是買豆漿\n步驟：\n1. read_file \(todo)\n2. write_file \(a)（2 行）\n3. edit_file \(todo)")
     func same(_ a: String, _ b: String) -> Bool { StepShape(a).matches(StepShape(b)) }
     #expect(same("write_file ~/a.txt（2 行）", "write_file ~/a.txt（5 行）") && same("read_file ~/a.txt", "read_file ~/a.txt"))
@@ -3076,7 +3077,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 }
 
 @Test func programWrittenMemoriesCarryWhatTheProgramKnows() async throws {
-    let h = try await Harness([Scripted("", todoSet(), openTextEdit), Scripted("", done("開好了"))])
+    let h = try await Harness([Scripted("", todoSet(), openTextEdit), Scripted("", dm("開好了"), done("開好了"))])
     await h.doll.ownerSaid("開 TextEdit")
     try await h.turn()
     try await h.turn()
@@ -4079,7 +4080,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(h.last.actions == ["error todo.done"])
     // Having looked, she may.
     try await h.turn(Scripted("", readCall))
-    try await h.turn(Scripted("", done("桌面看得到 copy.txt。")))
+    try await h.turn(Scripted("", dm("copy.txt 在桌面了"), done("桌面看得到 copy.txt。")))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
 }
 
@@ -4208,7 +4209,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     #expect(!h.reports[4].footer.contains("快滿了"))
     #expect(after.filter { !$0.images.isEmpty }.isEmpty && after.contains { $0.toolCalls.first?.name == "todo.progress" })
     // Then done: the whole item, the progress note included, compacts from the same start.
-    try await h.turn(Scripted("", done("刪好了")))
+    try await h.turn(Scripted("", done("刪好了"), dm("刪好了")))
     try await h.turn(Scripted("", dm("好了")))
     let comps = try h.timeline().compactions
     #expect(comps.map(\.kind) == [.progress, .done] && comps[0].fromSeq == comps[1].fromSeq)
@@ -5998,7 +5999,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(try await d.status().contains("（子目標 #2 的步驟）"))
     try await h.turn(Scripted("", done("讀完了")))
     #expect(approx(await d.testDrive(), before + c.stepDrive * c.nowShare))
-    try await h.turn(Scripted("", readCall, done("寫好了")))
+    try await h.turn(Scripted("", readCall, dm("筆記寫好了"), done("寫好了")))
     let rec = await d.dashboardGoals().record
     #expect(rec.map(\.kind) == ["step", "step"] && rec.map(\.text) == ["鯊魚分類寫成筆記", "讀維基的鯊魚條目"])
     // A number that is not one of its open steps is refused before anything changes.
@@ -6014,7 +6015,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let mid = await d.testDrive()
     await d.ownerSaid("幫我存檔")
     try await h.turn(Scripted("", todoSet("存好了"), readCall))
-    try await h.turn(Scripted("", done("存了")))
+    try await h.turn(Scripted("", dm("存了"), done("存了")))
     #expect(approx(await d.testDrive(), mid + DrivesConfig().itemDoneDrive + c.listDrive * c.nowShare))
     #expect(await d.dashboardGoals().record.first.map { [$0.kind, $0.text] } == ["list", "存好了"])
     #expect(await d.dashboardGoals().link == nil)
