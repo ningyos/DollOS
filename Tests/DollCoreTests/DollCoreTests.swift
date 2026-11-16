@@ -101,7 +101,8 @@ private actor FakeModel: MainModel {
         guard !replies.isEmpty else { throw ModelError("script ran out at request \(requests.count)") }
         let r = replies.removeFirst()
         let prompt = messages.reduce(0) { $0 + estimateTokens($1.content) + 4 + $1.images.count * imageTokens }
-        return ModelReply(content: r.content, calls: r.toolCalls, usage: ModelUsage(promptTokens: prompt, completionTokens: 10))
+        return ModelReply(content: r.content, calls: r.toolCalls, usage: ModelUsage(promptTokens: prompt, completionTokens: 10,
+                                                                                        finish: r.toolCalls.isEmpty ? "stop" : "tool_calls"))
     }
 
     func stall() { stallNext = true }
@@ -652,7 +653,8 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     try await h.turn("好")
     let msgs = await h.model.seen(1)
     let i = msgs.firstIndex { $0.content == first }!
-    #expect(msgs[i].role == "user" && msgs[i + 1] == ChatMessage(role: "assistant", content: "哈囉"))
+    // A reply without a call goes back as a program line, not as her assistant turn (2026-11-16).
+    #expect(msgs[i].role == "user" && msgs[i + 1] == ChatMessage(role: "user", content: Doll.thoughtOnlyTag + "哈囉"))
     #expect(msgs.last!.content == h.last.footer && msgs.last!.content != first)
     #expect(try h.events().filter { $0.text.contains("【狀況】") }.isEmpty)   // footers are not events
 }
@@ -2740,6 +2742,8 @@ private final class FakeStrata: Sendable {
     #expect(r.calls.map(\.name) == ["discord.dm", "voice.join", "bogus", ""])
     #expect(r.calls[0].arguments == "{\"text\": \"在\"}" && r.calls[0].parameters == [.init("text", "在")])
     #expect(r.calls[2].malformed == "沒有 bogus 這個工具，沒有執行" && r.calls[3].malformed == ToolCall.unreadable)
+    // Why it stopped is kept (2026-11-16).
+    #expect(r.usage.finish == "tool_calls" && r.usage.stopLine == "finish=tool_calls completion=3 reasoning_chars=0")
     let body = sent.withLock { $0 }
     // `tools` as written; her calls as `tool_calls`, arguments verbatim; the failed one not sent
     #expect((body["tools"] as? NSArray) == (try JSONSerialization.jsonObject(with: Data(tools.utf8)) as? NSArray))
@@ -5490,7 +5494,7 @@ private let planReply = Scripted("""
     ```
     """)
 private let summaryReply = Scripted("今天主人跟她說了晚安。")
-private let startNotice = "【系統維護】開始，現在 03:00。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+private let startNotice = "【系統維護】開始，現在 03:00。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
 private let didOne = "整理了之前的事：新記了 1 條記憶，改了 0 條，0 條舊的換掉了，0 條又遇到一次、記得更牢了。"
 
 /// `notice`: minutes she is told ahead (`[maintenance] notice_min`); 0 here unless a test is about the notice.
@@ -5668,7 +5672,7 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     try await waitUntil { await doll.settled }
     #expect(h.logs.contains { $0.contains("maintenance: busy 3.0 h since due") })
     let segs = try segmentTexts(h)
-    #expect(segs[0].last == "【系統維護】開始，現在 06:00。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
+    #expect(segs[0].last == "【系統維護】開始，現在 06:00。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
     #expect(segs[1][0].hasPrefix("【系統維護】結束，現在 06:00。") && segs[1][0].hasSuffix("你手上的「報告寄給主人了」還在，接著做。"))
     // The item went on in the new day, and her turn after the end continued it.
     #expect(try h.timeline().todo.current == "報告寄給主人了")
@@ -6019,7 +6023,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await waitUntil { await doll.settled && h.reports.count == 4 }
     #expect(await h.model.requests.count == 4)
     #expect(await h.model.seen(3).contains { $0.content.hasSuffix("【聯想】（想到）鯊魚分類還剩兩步沒弄完（#1）") })
-    #expect(h.logs.contains { $0.contains("drives: association best #1") && $0.contains("(threshold 0.55)") })
+    #expect(h.logs.contains { $0.contains("drives: association best #1") && $0.contains("(threshold 0.42)") })
     await doll.stop()
     try await runner.value
 }
@@ -6205,7 +6209,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 
 @Test func theSpanGivesNoTurnAndTheNoticeAndWanderingInsideItCarryTheFactAndADMStillGoes() async throws {
     let clock = ManualClock(at("2026-11-16", "21:00"))
-    let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")), Scripted(""), planReply, summaryReply,
+    let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")), Scripted(""), Scripted("none"), planReply, summaryReply,
                                Scripted("", dm("醫生到底說什麼啦？"))], clock: clock) {
         $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"
         $0.maintenance.enabled = true; $0.maintenance.noticeMin = 10; $0.drives.enabled = true
@@ -6238,8 +6242,8 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await waitUntil { await doll.settled }
     clock.set(at("2026-11-17", "07:00"))
     try await Task.sleep(for: .milliseconds(150))
-    #expect(await h.model.requests.count == 6)
-    #expect(!h.logs.contains { $0.contains("consolidate failed") })
+    #expect(await h.model.requests.count == 7)
+    #expect(!h.logs.contains { $0.contains("consolidate failed") || $0.contains("concerns failed") })
     await doll.stop()
     try await runner.value
 }
@@ -6295,4 +6299,195 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await b.doll.announceBoot()
     #expect(try b.events().allSatisfy { !$0.text.contains("沒開機的時候過了") })
     #expect(await b.doll.dashboardCalendar().items.count == 1)
+}
+
+// pre-swap fixes (2026-11-16) ------------------------------------------------------------------
+
+@Test func eachTurnRecordsWhyTheModelStoppedInTheLogAndTheTimelineAcrossARestart() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("嗨")
+    try await h.turn("想一下")
+    await h.doll.ownerSaid("再來")
+    try await h.turn(Scripted("", dm("好")))
+    #expect(h.logs.contains { $0.contains("turn 1 ") && $0.contains("finish=stop completion=10 reasoning_chars=0") })
+    #expect(h.logs.contains { $0.contains("turn 2 ") && $0.contains("finish=tool_calls completion=10") })
+    let replies = try h.events().filter { $0.kind == .doll }.map { $0.seq! }
+    let stats = await h.doll.turnStats()
+    #expect(replies.map { stats[$0]?.finish } == ["stop", "tool_calls"] && replies.allSatisfy { stats[$0]?.completion == 10 })
+    // Read back from the timeline file.
+    let again = try Timeline(dir: h.dir.appending(path: "timeline"))
+    #expect(replies.map { again.turnStats[$0]?.finish } == ["stop", "tool_calls"])
+}
+
+@Test func aReplyWithoutACallIsSentBackAsAProgramLineAndAnEmptyOneNotAtAll() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("嗨")
+    try await h.turn("[思考] 現在是")
+    await h.doll.ownerSaid("在嗎")
+    try await h.turn("")
+    await h.doll.ownerSaid("早～")
+    try await h.turn(Scripted("", dm("早")))
+    let msgs = await h.model.seen(2)
+    #expect(msgs.contains(ChatMessage(role: "user", content: Doll.thoughtOnlyTag + "[思考] 現在是")))
+    #expect(!msgs.contains { $0.role == "assistant" })
+    #expect(!msgs.contains { $0.content == Doll.thoughtOnlyTag })
+}
+
+@Test func theAssociationThresholdIsItsOwnDrivesSetting() throws {
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).drives.associationSimilarity == DrivesConfig().associationSimilarity)
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appending(path: "c.toml")
+    let example = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
+    func with(_ key: String, _ value: String) -> String {
+        example.split(separator: "\n", omittingEmptySubsequences: false).map { $0.hasPrefix(key + " =") ? Substring(key + " = " + value) : $0 }.joined(separator: "\n")
+    }
+    try with("association_similarity", "0.3").write(to: file, atomically: true, encoding: .utf8)
+    #expect(try Config.load(file).drives.associationSimilarity == 0.3)
+    try with("association_similarity", "1.5").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+    try with("maintenance_concerns_max", "-1").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+}
+
+@Test func anAssociationFiresAtTheConfiguredThresholdNotSelects() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", noteCall("主人的牙齒", "owner")), Scripted("", dm("嗯")), Scripted("", dm("好"))], clock: clock) {
+        $0.drives.enabled = true; $0.drives.associationSimilarity = -1; $0.select.similarity = 0.99
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("記一下")
+    try await waitUntil { h.said == ["嗯"] }
+    await doll.ownerSaid("今天好熱")
+    try await waitUntil { h.said == ["嗯", "好"] }
+    #expect(h.logs.contains { $0.contains("drives: association best #1") && $0.contains("(threshold -1.00)") })
+    #expect(try h.events().contains { $0.text == "【聯想】（想到）主人的牙齒（#1）" })
+    await doll.stop()
+    try await runner.value
+}
+
+/// The maintenance's concern extraction: a day with one owner line, then the extraction reply.
+private func extractionDay(_ extraction: Scripted, noted: Bool = false, notice: Int = 0) async throws -> (Harness, ManualClock, Task<Void, any Error>) {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    var replies: [Scripted] = noted ? [Scripted("", noteCall("主人明天九點開會，有點壓力", "owner"))] : []
+    replies += [Scripted("", dm("辛苦了")), extraction, planReply, summaryReply]
+    let h = try await maintenanceHarness(clock, drives: true, notice: notice, replies)
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("我回來了，今天去看了牙醫，醫生說下週三下午兩點還要再去一次。明天九點開會")
+    try await waitUntil { h.said == ["辛苦了"] }
+    return (h, clock, runner)
+}
+
+private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
+    let o = try JSONSerialization.jsonObject(with: Data(contentsOf: h.dir.appending(path: "concerns.json"))) as! [String: Any]
+    return o["items"] as! [[String: Any]]
+}
+
+@Test func maintenanceNotesConcernsFromTheDayAndSaysSoInTheEndNotice() async throws {
+    let (h, clock, runner) = try await extractionDay(Scripted("""
+        note owner: 主人看完牙醫，問他牙齒還痛不痛
+        note duty due 2026-11-25 12:30: 提醒主人下週三兩點複診
+        """))
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    let reqs = await h.model.requests
+    // The extraction is one request before the consolidation, with the consolidation's effort and no tools.
+    #expect(reqs.count == 4 && reqs[1].effort == reqs[2].effort && reqs[1].messages[0].content == ConcernExtraction.system(cap: 3))
+    #expect(reqs[1].messages[1].content.contains("今天去看了牙醫") && reqs[1].messages[1].content.contains("已經掛著的：\n（沒有）"))
+    let items = try concernsFile(h)
+    #expect(items.map { $0["text"] as? String } == ["主人看完牙醫，問他牙齒還痛不痛", "提醒主人下週三兩點複診"])
+    #expect(items.allSatisfy { $0["source"] as? String == "maintenance" } && items.map { $0["about"] as? String } == ["owner", "duty"])
+    #expect(items[1]["due"] as? Double == Day("2026-11-25")!.at(TimeOfDay("12:30")!) && items[0]["due"] == nil)
+    let end = try segmentTexts(h)[1][0]
+    #expect(end.hasPrefix("【系統維護】結束，現在 03:00。從今天的對話記了 2 件掛著的事：#1〔主人〕主人看完牙醫，問他牙齒還痛不痛；#2〔該做的〕提醒主人下週三兩點複診。\(didOne)"))
+    #expect(Concerns.origin(Concern(id: 1, text: "", about: .owner, source: "maintenance", created: at("2026-11-17", "03:00")))
+            == "#1，系統維護 2026-11-17（星期二） 03:00 從那天的對話記的")
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func maintenanceDoesNotRepeatAHeldConcernAndKeepsToTheCap() async throws {
+    let (h, clock, runner) = try await extractionDay(Scripted("""
+        note owner: 主人明天九點開會，有點壓力。
+        note owner: 問主人牙齒還痛不痛
+        note owner: 問主人牙齒還痛不痛
+        note own: 想學畫鯊魚
+        note duty: 提醒主人複診
+        note owner: 主人晚餐吃太辣
+        """), noted: true)
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    let reqs = await h.model.requests
+    #expect(reqs[2].messages[1].content.contains("已經掛著的：\n#1〔owner〕主人明天九點開會，有點壓力"))
+    // The held one (same text but for punctuation) and the repeat are dropped; three fit under the cap.
+    #expect(try concernsFile(h).map { $0["text"] as? String } == ["主人明天九點開會，有點壓力", "問主人牙齒還痛不痛", "想學畫鯊魚", "提醒主人複診"])
+    #expect(h.logs.contains { $0.contains("maintenance concern left out: duplicate「主人明天九點開會，有點壓力。」") })
+    #expect(h.logs.contains { $0.contains("maintenance concern left out: duplicate「問主人牙齒還痛不痛」") })
+    #expect(h.logs.contains { $0.contains("maintenance concern left out: over the cap (3)「主人晚餐吃太辣」") })
+    #expect(h.logs.contains { $0.contains("maintenance: concerns done") && $0.contains("3 noted, 0 ended, 3 left out") })
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func maintenanceEndsAConcernOnlyWithTheOwnersOwnWords() async throws {
+    let plan = try ConcernExtraction.parse("""
+        end #1: 明天九點開會
+        end #2: 牙齒不痛了
+        end #3: 明天九點開會
+        """, open: [Concern(id: 1, text: "開會", about: .owner, source: "her", created: 0),
+                    Concern(id: 2, text: "牙齒", about: .owner, source: "maintenance", created: 0),
+                    Concern(id: 3, text: "開會（行事曆）", about: .duty, source: "calendar", created: 0)],
+        ownerLines: ["明天九點開會"], cap: 3, room: 20)
+    #expect(plan.ends == [.init(id: 1, quote: "明天九點開會")] && plan.dropped.count == 2)
+    #expect(try ConcernExtraction.parse("none", open: [], ownerLines: [], cap: 3, room: 20) == .init())
+    #expect(throws: ModelError.self) { try ConcernExtraction.parse("我覺得主人很累", open: [], ownerLines: [], cap: 3, room: 20) }
+    #expect(throws: ModelError.self) { try ConcernExtraction.parse("note friend: x", open: [], ownerLines: [], cap: 3, room: 20) }
+    #expect(ConcernExtraction.doneText(added: [], ended: []) == "從今天的對話沒有另外記掛著的事。")
+    #expect(ConcernExtraction.doneText(added: [], ended: [(Concern(id: 1, text: "開會", about: .owner, source: "her", created: 0), "開完了")])
+            == "結束了 1 件：#1 開會（主人說「開完了」）。")
+}
+
+@Test func anInterruptedExtractionWritesNothingAndARestartGoesOnWithItsWordsKept() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await maintenanceHarness(clock, drives: true, [Scripted("", dm("辛苦了")), Scripted("note owner: 問主人牙齒還痛不痛"),
+                                                               Scripted("", dm("還沒睡？"))])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("今天去看了牙醫")
+    try await waitUntil { h.said == ["辛苦了"] }
+    await h.model.stall(request: 2)
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 2 }
+    await doll.ownerSaid("欸你還在嗎")
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: concerns cancelled (interrupted)") } }
+    try await waitUntil { h.said == ["辛苦了", "還沒睡？"] }
+    let noted = FileManager.default.fileExists(atPath: h.dir.appending(path: "concerns.json").path) ? try concernsFile(h) : []
+    #expect(noted.isEmpty)
+    #expect(try maintenanceFile(h).done.isEmpty)
+    await doll.stop()
+    try await runner.value
+    // A restart in the middle (concerns done, consolidation not yet) keeps the concerns' words for the notice.
+    var m = try maintenanceFile(h)
+    m.running = at("2026-11-17", "04:00"); m.interrupted = false; m.done = ["concerns"]; m.words = ["從今天的對話記了 1 件掛著的事：#1〔主人〕問主人牙齒還痛不痛。"]
+    let enc = JSONEncoder()
+    try enc.encode(m).write(to: h.dir.appending(path: "maintenance.json"))
+    try Concerns.write(ConcernFile(nextId: 2, items: [Concern(id: 1, text: "問主人牙齒還痛不痛", about: .owner, source: "maintenance", created: 0)]),
+                       h.dir.appending(path: "concerns.json"))
+    clock.set(at("2026-11-17", "04:00"))
+    let b = try await maintenanceHarness(clock, dir: h.dir, drives: true, [planReply, summaryReply])
+    let doll2 = b.doll
+    let runner2 = Task { try await doll2.run() }
+    try await waitUntil { b.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(await b.model.requests.count == 2)
+    let end = try segmentTexts(b).last![0]
+    #expect(end.hasPrefix("【系統維護】結束，現在 04:00。從今天的對話記了 1 件掛著的事：#1〔主人〕問主人牙齒還痛不痛。\(didOne)"))
+    // The concerns file written as "next_id" reads back (it could not before 2026-11-16).
+    #expect(await doll2.dashboardDrives().open.map(\.id) == [1])
+    await doll2.stop()
+    try await runner2.value
 }

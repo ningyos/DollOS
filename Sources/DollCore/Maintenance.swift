@@ -45,10 +45,15 @@ struct MaintenanceFile: Codable, Equatable {
     var done: [String] = []
     /// This maintenance's tasks that failed, with the error (the next maintenance tries again).
     var failed: [String: String] = [:]
+    /// What the tasks done so far did, in her words, for the end notice (kept across a restart).
+    var words: [String]?
 }
 
 /// The maintenance's tasks, run in this order.
 public enum MaintenanceTask: String, CaseIterable, Sendable {
+    /// Concerns from the day's conversation (`ConcernExtraction`); before consolidation, which
+    /// closes the day's timeline.
+    case concerns
     /// The timeline so far into long-term memory, then a new segment opened by the end notice and
     /// the day's summary.
     case consolidate
@@ -56,6 +61,7 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
     /// How the notices name it.
     var label: String {
         switch self {
+        case .concerns: "從今天的對話記掛念"
         case .consolidate: "整理記憶、寫摘要"
         }
     }
@@ -66,12 +72,13 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
 struct MaintenanceDone {
     var log: String
     var words: String
-    var summary: String
+    var summary: String?
     var kept: TodoState?
 }
 
 /// One task's prepared work: what `commit` writes.
 enum MaintenanceWork: Sendable {
+    case concerns(ConcernExtraction.Answer)
     case consolidate(Consolidation.Request, Consolidation.Answer)
 }
 
@@ -175,7 +182,7 @@ extension Doll {
     }
 
     static func maintenanceNotice(_ lead: Int) -> String {
-        "【系統維護】時間到了，\(minutes(lead))後開始：程式要整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。"
+        "【系統維護】時間到了，\(minutes(lead))後開始：程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。"
             + "要收尾、要跟誰說一聲，現在做；今天這個時間不方便，就用 calendar.change 把今天的系統維護往後移。"
             + "你手上沒事它就開始，不會再另外通知。"
     }
@@ -246,7 +253,7 @@ extension Doll {
         maintenanceState.running = now
         maintenanceState.forced = forced
         saveMaintenanceLogged()
-        let text = "【系統維護】開始，現在 \(Self.hhmm(now))。程式要整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+        let text = "【系統維護】開始，現在 \(Self.hhmm(now))。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
             + (forced ? "你手上的「\(todo.current ?? "")」先停著，結束後接著做。" : "")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: start notice not written: \(error)") }
         log("INFO", "maintenance: started\(forced ? " (busy limit)" : ""); \(timeline.events.count) events in segment \(timeline.segment)")
@@ -279,6 +286,7 @@ extension Doll {
                 let d = try maintenanceCommit(work)
                 done = d
                 maintenanceState.done.append(t.rawValue)
+                maintenanceState.words = (maintenanceState.words ?? []) + [d.words]
                 try saveMaintenance()
                 log("INFO", String(format: "maintenance: %@ done in %.1f s: %@", t.rawValue, Date().timeIntervalSince(started), d.log))
             } catch {
@@ -305,7 +313,7 @@ extension Doll {
         saveMaintenanceLogged()
         let kept = done?.kept ?? (ended.forced && todoBusy ? todo : nil)
         var text = "【系統維護】結束，現在 \(Self.hhmm(now))。"
-        if let w = done?.words { text += w }
+        text += (ended.words ?? []).joined()
         let failed = MaintenanceTask.allCases.filter { ended.failed[$0.rawValue] != nil }
         if !failed.isEmpty {
             text += "沒做成：\(failed.map(\.label).joined(separator: "、"))（程式出錯），明天維護的時候再做"
@@ -335,6 +343,7 @@ extension Doll {
 
     func maintenanceDue(_ t: MaintenanceTask) -> Bool {
         switch t {
+        case .concerns: drivesConfig.enabled && drivesConfig.maintenanceConcernsMax > 0 && dayToConsolidate
         case .consolidate: dayToConsolidate
         }
     }
@@ -342,6 +351,8 @@ extension Doll {
     /// Writes nothing; cancellable (its model requests end with the task).
     func maintenancePrepare(_ t: MaintenanceTask) async throws -> MaintenanceWork {
         switch t {
+        case .concerns:
+            return .concerns(try await prepareConcernExtraction())
         case .consolidate:
             let request = try Consolidation.gather(timeline, memory: memory, config: config.consolidate)
             return .consolidate(request, try await Consolidation.ask(request, model: maintenanceModel, config: config))
@@ -351,6 +362,8 @@ extension Doll {
     /// Synchronous on the actor: all of the task's writes, with nothing in between.
     func maintenanceCommit(_ w: MaintenanceWork) throws -> MaintenanceDone {
         switch w {
+        case .concerns(let answer):
+            return try commitConcernExtraction(answer)
         case .consolidate(let request, let answer):
             let old = timeline
             let kept = todoBusy ? todo : nil

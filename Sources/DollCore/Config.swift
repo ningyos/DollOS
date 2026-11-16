@@ -187,6 +187,11 @@ public struct DrivesConfig: Sendable, Equatable {
     public var logDays = 7.0
     /// Most concerns open at once (her `concern.note` refused above it).
     public var maxOpen = 20
+    /// Most concerns the maintenance notes from one day's conversation (`[drives] maintenance_concerns_max`).
+    public var maintenanceConcernsMax = 3
+    /// The cosine at or above which an open concern is attached to the turn it relates to
+    /// (`[drives] association_similarity`; it was `[select] similarity` until 2026-11-16).
+    public var associationSimilarity = 0.42
 
     public init() {}
 
@@ -673,6 +678,8 @@ public struct Config: Sendable {
         ]
         for (k, p) in nums { try s.read(k, &d[keyPath: p]) }
         try s.read("max_open", &d.maxOpen)
+        try s.read("maintenance_concerns_max", &d.maintenanceConcernsMax)
+        try s.read("association_similarity", &d.associationSimilarity)
         try s.finish()
         let signals = order.compactMap(Signal.init(rawValue:))
         guard signals.count == order.count, Set(signals).count == Signal.allCases.count, order.count == Signal.allCases.count else {
@@ -683,8 +690,9 @@ public struct Config: Sendable {
         guard unit.allSatisfy({ (0...1).contains($0) }), d.driveRest < d.driveHigh, d.stressRest < d.stressHigh,
               d.closenessRest < d.closenessLow, d.closenessStart > d.closenessLow,
               d.driveHalfLifeH > 0, d.stressHalfLifeH > 0, d.closenessHalfLifeH > 0,
-              d.nearHours > 0, d.calendarConcernHours > 0, d.logDays > 0, d.maxOpen >= 1 else {
-            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, near_hours, calendar_concern_hours, log_days above 0; max_open at least 1")
+              d.nearHours > 0, d.calendarConcernHours > 0, d.logDays > 0, d.maxOpen >= 1,
+              d.maintenanceConcernsMax >= 0, (0...1).contains(d.associationSimilarity) else {
+            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, near_hours, calendar_concern_hours, log_days above 0; max_open at least 1; maintenance_concerns_max 0 or more; association_similarity 0…1")
         }
         return d
     }
