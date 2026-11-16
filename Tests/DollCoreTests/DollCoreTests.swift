@@ -34,9 +34,6 @@ private func key(_ chord: String) -> (String, [(String, String)]) {
     let mods = parts.dropLast().map { "\"\($0)\"" }.joined(separator: ", ")
     return ("key", [("key", parts.last!)] + (mods.isEmpty ? [] : [("modifiers", "[\(mods)]")]))
 }
-private func watch(_ target: String, _ maxWait: Int? = nil) -> (String, [(String, String)]) {
-    ("watch", [("target", target)] + (maxWait.map { [("max_wait_s", "\($0)")] } ?? []))
-}
 /// `todo.set(items)`; the default item stands for what `use_computer(expect)` said before 2026-11-14.
 private func todoSet(_ items: String...) -> (String, [(String, String)]) {
     let list = items.isEmpty ? ["畫面上看得到結果"] : items
@@ -48,7 +45,12 @@ private func fail(_ reason: String, tried: String = "試過了") -> (String, [(S
 }
 private func todoWait(_ reason: String) -> (String, [(String, String)]) { ("todo.wait", [("reason", reason)]) }
 private func progress(_ note: String) -> (String, [(String, String)]) { ("todo.progress", [("note", note)]) }
-private let screenshotCall: (String, [(String, String)]) = ("screenshot", [])
+/// Reads Calculator's front window (the fake driver's one app with a window from the start).
+private let readCall: (String, [(String, String)]) = ("read_window", [("app", "Calculator")])
+/// `click(row:)` on the latest read.
+private func clickRow(_ row: Int, count: Int? = nil) -> (String, [(String, String)]) {
+    ("click", [("row", "\(row)")] + (count.map { [("count", "\($0)")] } ?? []))
+}
 private func dm(_ text: String) -> (String, [(String, String)]) { ("discord.dm", [("text", text)]) }
 private func reply(_ text: String) -> (String, [(String, String)]) { ("dollctl.reply", [("text", text)]) }
 private func voiceSay(_ text: String) -> (String, [(String, String)]) { ("voice.say", [("text", text)]) }
@@ -126,128 +128,150 @@ private final class Recorder: Sendable {
     let logs = Mutex<[String]>([])
 }
 
-/// The VM: records actions; a screenshot is "frame <n> <region or full>", the window crop "frame <n>
-/// crop <region>", so bytes change only when the test moves the frame (or `changing` moves it on
-/// every capture). With `screenSize` / `cropSize` set, a PNG header of that size comes first. The
-/// window outline names the frame too, or fails with `windowFailure`; the window sits at `place`.
-private final class FakeComputer: ComputerDriver, Sendable {
+/// A fake `cua-driver`: answers each tool the way the real one did (2026-11-16, Calculator and
+/// TextEdit) from a scripted desktop, writes some bytes as the screenshot of every window read, and
+/// records every call (tool, JSON arguments). Calculator (pid 100) has one window; TextEdit (pid
+/// 200) runs without one until 檔案 › 新增.
+private final class FakeCua: ComputerDriver, Sendable {
+    struct Element {
+        var role: String
+        var label: String?
+        var parent: Int? = 0
+        var id: String?
+        var subrole: String?
+    }
+    struct Window {
+        var id: Int
+        var pid: Int
+        var app: String
+        var title: String
+        var elements: [Element]
+        var z = 0
+        var onScreen = true
+        var truncated = false
+    }
+    struct App {
+        var name: String
+        var bundleID: String
+        var pid: Int
+        var running = true
+    }
     struct State {
-        var actions: [ComputerAction] = []
-        var failNext: String?
-        /// Actions that still pass before `failNext` fires.
-        var failAfter = 0
-        var frame = 0
-        var changing = false
-        var captures = 0
-        var windowFailure: String?
-        var desktopFailure: String?
-        var place = FrontWindow.Place.at(Region(10, 20, 300, 200))
-        var screenSize: (Int, Int)?
-        var cropSize: (Int, Int)?
-        var app: AppIdentity?
-        var shortcuts: [MenuShortcut] = []
-        var frontAppReads = 0
-        var menuReads: [String] = []
-        var windowsLine = fakeWindowsLine
-        var stateFailure: String?
-        var menuFailure: String?
-        /// The VM's files by absolute path (`~` is /Users/doll); folders are implied.
-        var files: [String: Data] = [:]
+        var apps: [App] = [App(name: "Calculator", bundleID: "com.apple.calculator", pid: 100),
+                           App(name: "TextEdit", bundleID: "com.apple.TextEdit", pid: 200)]
+        var windows: [Window] = [FakeCua.calculator]
+        var calls: [(tool: String, json: String)] = []
+        var snapshots = 0
+        /// Tool → the driver's refusal (its JSON answer), thrown on that tool's next call.
+        var refuse: [String: String] = [:]
+        /// After a successful action or menu call: how the desktop changes (default: `FakeCua.press`).
+        var after: @Sendable (String, [String: Any], inout State) -> Void = FakeCua.press
     }
     let state = Mutex(State())
 
-    func act(_ action: ComputerAction) async throws -> String {
-        try state.withLock { s in
-            s.actions.append(action)
-            if let f = s.failNext {
-                if s.failAfter > 0 { s.failAfter -= 1 } else {
-                    s.failNext = nil
-                    throw ComputerError(f)
+    static let calculator = Window(id: 62541, pid: 100, app: "計算機", title: "計算機", elements: [
+        Element(role: "AXWindow", label: "計算機", parent: nil, id: "main"),
+        Element(role: "AXStaticText", label: "0"),
+        Element(role: "AXButton", label: "7", id: "Seven"),
+        Element(role: "AXButton", label: "8", id: "Eight"),
+        Element(role: "AXButton", label: "+", id: "Add"),
+        Element(role: "AXButton", label: "=", id: "Equals"),
+    ])
+    static let untitled = Window(id: 63000, pid: 200, app: "TextEdit", title: "未命名", elements: [
+        Element(role: "AXWindow", label: "未命名", parent: nil),
+        Element(role: "AXTextArea", label: nil, id: "First Text View"),
+    ])
+
+    /// A digit button pressed shows on Calculator's display (row 1); TextEdit's 檔案 › 新增 opens a window.
+    static func press(_ tool: String, _ args: [String: Any], _ s: inout State) {
+        if tool == "invoke_menu", args["pid"] as? Int == 200, args["path"] as? [String] == ["檔案", "新增"] {
+            s.windows.append(untitled)
+            return
+        }
+        guard tool == "click", let token = args["element_token"] as? String, let row = Int(token.split(separator: ":").last ?? ""),
+              let w = s.windows.firstIndex(where: { $0.id == args["window_id"] as? Int }), s.windows[w].pid == 100,
+              let label = s.windows[w].elements[row].label, Int(label) != nil else { return }
+        let shown = s.windows[w].elements[1].label ?? "0"
+        s.windows[w].elements[1].label = shown == "0" ? label : shown + label
+    }
+
+    func call(_ tool: String, _ json: String) async throws -> String {
+        let args = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
+        return try state.withLock { s in
+            s.calls.append((tool, json))
+            if let refusal = s.refuse.removeValue(forKey: tool) { throw ComputerError(refusal) }
+            switch tool {
+            case "list_apps":
+                return Self.text(["apps": s.apps.map { ["name": $0.name, "bundle_id": $0.bundleID, "pid": $0.pid, "running": $0.running] }])
+            case "list_windows":
+                let pid = args["pid"] as? Int
+                return Self.text(["windows": s.windows.filter { pid == nil || $0.pid == pid }.map {
+                    ["window_id": $0.id, "pid": $0.pid, "app_name": $0.app, "title": $0.title, "layer": 0, "is_on_screen": $0.onScreen, "z_index": $0.z]
+                }])
+            case "launch_app":
+                guard let i = s.apps.firstIndex(where: { $0.bundleID == args["bundle_id"] as? String || $0.name == args["name"] as? String }) else {
+                    throw ComputerError(#"{"error":"no app named \#(args["name"] ?? "?")"}"#)
                 }
+                s.apps[i].running = true
+                let a = s.apps[i]
+                return Self.text(["pid": a.pid, "bundle_id": a.bundleID, "name": a.name, "windows": [] as [Any]])
+            case "get_window_state":
+                guard let w = s.windows.first(where: { $0.id == args["window_id"] as? Int }) else {
+                    throw ComputerError(#"{"refusal":{"code":"window_not_found","message":"no such window"}}"#)
+                }
+                s.snapshots += 1
+                let snapshot = String(format: "s%08d", s.snapshots)
+                if let out = args["screenshot_out_file"] as? String {
+                    let url = URL(filePath: out)
+                    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data("shot \(snapshot) \(w.title)".utf8).write(to: url)
+                }
+                return Self.text(["snapshot_id": snapshot, "tree_markdown": Self.markdown(w), "window_title": w.title, "truncated": w.truncated,
+                                  "screenshot_width": 460, "screenshot_height": 816,
+                                  "elements": w.elements.enumerated().map { i, e in
+                                      var d: [String: Any] = ["element_index": i, "element_token": "\(snapshot):\(i)", "role": e.role]
+                                      if let l = e.label { d["label"] = l }
+                                      if let p = e.parent { d["parent_index"] = p }
+                                      if let r = e.subrole { d["subrole"] = r }
+                                      return d
+                                  }])
+            case "click", "double_click", "type_text", "press_key", "hotkey", "scroll", "invoke_menu":
+                let after = s.after
+                after(tool, args, &s)
+                return #"{"effect":"unverifiable"}"#
+            default:
+                throw ComputerError("fake cua-driver: unexpected tool \(tool)")
             }
-            return "Done: 1 action in 0.1 s."
         }
     }
 
-    func screenshot(region: Region?) async throws -> Data {
-        state.withLock { s in
-            s.captures += 1
-            if s.changing { s.frame += 1 }
-            let head = region == nil ? s.screenSize.map { pngHeader($0.0, $0.1) } ?? Data() : Data()
-            return head + Data("frame \(s.frame) \(region.map { "\($0)" } ?? "full")".utf8)
-        }
+    static func text(_ j: [String: Any]) -> String {
+        String(decoding: try! JSONSerialization.data(withJSONObject: j, options: [.sortedKeys]), as: UTF8.self)
     }
 
-    func windowShot(_ region: Region) async throws -> Data {
-        state.withLock { s in (s.cropSize.map { pngHeader($0.0, $0.1) } ?? Data()) + Data("frame \(s.frame) crop \(region)".utf8) }
+    /// The tree as cua-driver writes it: `- [row] Role "label" [id=… actions=[press]]`, indented by depth.
+    static func markdown(_ w: Window) -> String {
+        w.elements.enumerated().map { i, e in
+            var depth = 0, p = e.parent
+            while let pi = p { depth += 1; p = w.elements[pi].parent }
+            return String(repeating: "    ", count: depth) + "- [\(i)] \(e.role)" + (e.label.map { " \"\($0)\"" } ?? "")
+                + " [" + (e.id.map { "id=\($0) " } ?? "") + "actions=[press]]"
+        }.joined(separator: "\n")
     }
 
-    func frontWindow() async throws -> FrontWindow {
-        try state.withLock { s in
-            if let f = s.windowFailure { throw ComputerError(f) }
-            return FrontWindow(summary: "前景 app：Fake，視窗標題「frame \(s.frame)」\nwindow \"frame \(s.frame)\"\n  button \"OK\"",
-                               place: s.place)
-        }
+    func refuse(_ tool: String, _ answer: String) { state.withLock { $0.refuse[tool] = answer } }
+    func change(_ f: (inout State) -> Void) { state.withLock { f(&$0) } }
+    /// Every call's tool name, in order.
+    var tools: [String] { state.withLock { $0.calls.map(\.tool) } }
+    /// The arguments of every call of `tool`, in order.
+    func args(_ tool: String) -> [[String: Any]] {
+        state.withLock { $0.calls.filter { $0.tool == tool }.map { try! JSONSerialization.jsonObject(with: Data($0.json.utf8)) as! [String: Any] } }
     }
-
-    func desktopSummary() async throws -> String {
-        try state.withLock { s in
-            if let f = s.desktopFailure { throw ComputerError(f) }
-            return "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
-        }
+    /// The actions sent (not the reads): tool names in order.
+    var actions: [String] {
+        tools.filter { ["click", "double_click", "type_text", "press_key", "hotkey", "scroll", "invoke_menu"].contains($0) }
     }
-
-    func frontApp() async throws -> AppIdentity? { state.withLock { $0.frontAppReads += 1; return $0.app } }
-
-    func menuShortcuts(_ bundleID: String) async throws -> [MenuShortcut] {
-        try state.withLock {
-            $0.menuReads.append(bundleID)
-            if let f = $0.menuFailure { throw ComputerError(f) }
-            return $0.shortcuts
-        }
-    }
-    func failMenus(_ text: String?) { state.withLock { $0.menuFailure = text } }
-    func setApp(_ app: AppIdentity?, _ shortcuts: [MenuShortcut]) { state.withLock { $0.app = app; $0.shortcuts = shortcuts } }
-
-    func frontState() async throws -> FrontState {
-        try state.withLock { s in
-            if let f = s.stateFailure { throw ComputerError(f) }
-            return FrontState(line: s.windowsLine, app: s.app)
-        }
-    }
-    func failState(_ text: String?) { state.withLock { $0.stateFailure = text } }
-
-    func setFrame(_ n: Int) { state.withLock { $0.frame = n } }
-    func setChanging(_ on: Bool) { state.withLock { $0.changing = on } }
-    func failNext(_ text: String, after: Int = 0) { state.withLock { $0.failNext = text; $0.failAfter = after } }
-    func failWindow(_ text: String?) { state.withLock { $0.windowFailure = text } }
-    func failDesktop(_ text: String?) { state.withLock { $0.desktopFailure = text } }
-    func setPlace(_ p: FrontWindow.Place) { state.withLock { $0.place = p } }
-    func setSizes(screen: (Int, Int)?, crop: (Int, Int)?) { state.withLock { $0.screenSize = screen; $0.cropSize = crop } }
-
-    static func expand(_ path: String) -> String {
-        path == "~" ? "/Users/doll" : path.hasPrefix("~/") ? "/Users/doll" + path.dropFirst() : path.hasPrefix("/") ? path : "/Users/doll/" + path
-    }
-    func readFile(_ path: String) async throws -> Data {
-        try state.withLock { s in
-            if let f = s.failNext { s.failNext = nil; throw ComputerError(f) }
-            guard let d = s.files[Self.expand(path)] else { throw ComputerError("沒有這個檔案：\(path)") }
-            return d
-        }
-    }
-    func writeFile(_ path: String, _ data: Data) async throws {
-        try state.withLock { s in
-            if let f = s.failNext { s.failNext = nil; throw ComputerError(f) }
-            s.files[Self.expand(path)] = data
-        }
-    }
-    func put(_ path: String, _ text: String) { state.withLock { $0.files[Self.expand(path)] = Data(text.utf8) } }
-    func file(_ path: String) -> String? { state.withLock { $0.files[Self.expand(path)].map { String(decoding: $0, as: UTF8.self) } } }
-    var actions: [ComputerAction] { state.withLock { $0.actions } }
 }
-
-/// The fake's open windows and focus line, the last line of every computer result.
-private let fakeWindowsLine = "開著的視窗：Finder、Fake「frame」（前景）；焦點：button \"OK\""
 
 /// The embedding model's stand-in: a bag of the text's characters and character pairs, each hashed
 /// (FNV-1a) into one of 512 dimensions, L2-normalized. Texts sharing more characters are nearer;
@@ -281,17 +305,10 @@ final class FakeEmbedder: Embedder, Sendable {
 /// meaning: the M3a corpus and recall by meaning. Needs the weights in the Hugging Face cache.
 private let qwen3 = Task { try await MLXEmbedder.load(try Config.load(root.appending(path: "dollcore.example.toml")).memory) }
 
-/// A PNG's signature and IHDR: enough for its pixel size.
-private func pngHeader(_ width: Int, _ height: Int) -> Data {
-    func be32(_ v: Int) -> [UInt8] { [24, 16, 8, 0].map { UInt8((v >> $0) & 0xFF) } }
-    return Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13] + Array("IHDR".utf8) + be32(width) + be32(height)
-                + [8, 2, 0, 0, 0])
-}
-
 private struct Harness {
     let doll: Doll
     let model: FakeModel
-    let vm: FakeComputer
+    let cua: FakeCua
     let rec: Recorder
     let dir: URL
     let store: Store      // a second connection to the memory index, for checks
@@ -302,10 +319,9 @@ private struct Harness {
         dir = reuse ?? FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
         var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
         cfg.core.dataDir = dir.path
-        cfg.computer.watchPollS = 0.02
-        cfg.computer.watchMinIntervalS = 0
+        cfg.computer.settleS = 0
+        cfg.computer.windowWaitS = 0
         cfg.memory.dir = dir.appending(path: "memory").path
-        cfg.computer.cheatsheet = false   // the cheatsheet's own tests switch it on
         cfg.maintenance.enabled = false   // the maintenance tests switch it on
         cfg.drives.enabled = false        // the drives tests switch it on
         cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
@@ -314,9 +330,9 @@ private struct Harness {
         model = FakeModel(replies)
         let rec = Recorder()
         self.rec = rec
-        let vm = FakeComputer()
-        self.vm = vm
-        doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: vm,
+        let cua = FakeCua()
+        self.cua = cua
+        doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: cua,
                         deliver: { text, to in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
@@ -391,8 +407,8 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
         try Tools.decode(call("key", params), specs: specs)
     }
     func chord(_ params: [(String, String)]) throws -> String? {
-        guard case .act(.key(let k)) = try decode(params) else { return nil }
-        return k
+        guard case .act(.key(let k, let mods)) = try decode(params) else { return nil }
+        return Tools.chord(key: k, modifiers: mods)
     }
     #expect(try chord([("key", "Return")]) == "return")
     // Any order, case or repeat she writes comes out as the one order, so the same chord is the same step.
@@ -445,8 +461,8 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
     #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
-                      "todo.wait", "todo.progress", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "click", "type", "key", "scroll", "drag", "read_file", "write_file",
-                      "edit_file", "screenshot", "watch"])
+                      "todo.wait", "todo.progress", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
+                      "click", "type", "key", "scroll", "menu", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
     // every request sends the same list
     await h.doll.ownerSaid("在嗎")
@@ -499,7 +515,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let h = try await Harness()
     await h.doll.ownerSaid("試試")
     try await h.turn(Scripted("", ("bogus", []), ("recall", [("q", "ls")]), think("low"),
-                              remember(kinds: [("會失敗的記憶", false, "done"), ("主人喜歡貓", false, nil)]), ("recall", []), todoSet(), screenshotCall,
+                              remember(kinds: [("會失敗的記憶", false, "done"), ("主人喜歡貓", false, nil)]), ("recall", []), todoSet(), readCall,
                               ("remember", [("items", "主人養貓")])))
     let results = try h.toolResults()
     #expect(results.count == 8)
@@ -509,10 +525,10 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
     #expect(results[5].text.hasPrefix("todo 列好了。"))                     // later calls still run
-    #expect(results[6].text.hasPrefix("現在的畫面：\n"))
+    #expect(results[6].text == "" && results[6].window?.hasPrefix(calculatorHead) == true)
     #expect(results[7].text.hasPrefix("失敗：remember 的 items 要是 JSON 陣列"))
     #expect(h.last.actions == ["error bogus", "error recall", "error think", "error remember", "remember public",
-                               "error recall", "todo set", "screenshot", "error remember"])
+                               "error recall", "todo set", "read_window", "error remember"])
     #expect(await h.doll.effortNext == nil)
 }
 
@@ -528,62 +544,34 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 @Test func aPastToolRoundRendersByteIdenticallyOnLaterTurnsImagesIncluded() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("記一下我養貓，然後看電腦")
-    try await h.turn(Scripted("好", remember([("主人養貓", false)]), todoSet(), screenshotCall))
-    h.vm.setFrame(7)                                                    // the screen changes in between
-    try await h.turn(Scripted("再看一次", screenshotCall))
-    try await h.turn("記好了，畫面看過了")
+    try await h.turn(Scripted("好", remember([("主人養貓", false)]), todoSet(), readCall))
+    try await h.turn(Scripted("記好了", think("medium")))
+    try await h.turn(Scripted("畫面看過了", done("看過了")))
     await h.doll.ownerSaid("謝謝")
     try await h.turn("不客氣")
     let reqs = await h.model.requests.map(\.messages)
     let enc = { (m: [ChatMessage]) in try ChatMessage.encoder.encode(m) }
-    // Each request is the previous one plus new messages: same bytes, footer and images included.
-    for i in 1..<reqs.count {
+    // Each request is the previous one plus new messages: same bytes, footer and image included
+    // (one read, so nothing is put away in between; done compacts only the turn after it).
+    for i in 1..<3 {
         #expect(try enc(Array(reqs[i].prefix(reqs[i - 1].count))) == (try enc(reqs[i - 1])))
     }
-    // Two computer results, each a full screenshot and a window crop: the stored files' exact bytes,
-    // as data URIs in the tool messages, full screen first.
+    // The read: the stored screenshot's exact bytes, as a data URI in the tool message.
     let results = try h.toolResults().filter { $0.image != nil }
-    #expect(results.count == 2 && results.allSatisfy { $0.crop != nil })
-    let files = results.flatMap { [$0.image!, $0.crop!] }
-    let bytes = try files.map { try Data(contentsOf: h.dir.appending(path: "shots/\($0)")) }
-    #expect(bytes.map { String(decoding: $0, as: UTF8.self) }
-            == ["frame 0 full", "frame 0 crop 10,20,300,200", "frame 7 full", "frame 7 crop 10,20,300,200"])
-    let uris = bytes.map { "data:image/jpeg;base64," + $0.base64EncodedString() }
-    #expect(reqs[3].flatMap(\.images) == uris)
-    #expect(reqs[3].filter { !$0.images.isEmpty }.allSatisfy { $0.role == "tool" })
-    // On the wire: [text, full screenshot, the crop's place, the crop, window outline].
-    let wire = String(decoding: try enc([reqs[3].first { !$0.images.isEmpty }!]), as: UTF8.self)
+    #expect(results.count == 1)
+    let bytes = try Data(contentsOf: h.dir.appending(path: "shots/\(results[0].image!)"))
+    #expect(String(decoding: bytes, as: UTF8.self) == "shot s00000001 計算機")
+    let uri = "data:image/jpeg;base64," + bytes.base64EncodedString()
+    #expect(reqs[2].flatMap(\.images) == [uri])
+    #expect(reqs[2].filter { !$0.images.isEmpty }.allSatisfy { $0.role == "tool" })
+    // On the wire: [her text, the screenshot, the element list].
+    let wire = String(decoding: try enc([reqs[2].first { !$0.images.isEmpty }!]), as: UTF8.self)
     #expect(wire.contains(#""content":[{"text":"#)
-            && wire.contains(#"{"image_url":{"url":"\#(uris[0])"},"type":"image_url"},"#
-                             + #"{"text":"\n視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。","type":"text"},"#
-                             + #"{"image_url":{"url":"\#(uris[1])"},"type":"image_url"},{"text":"\n前景 app：Fake"#))
+            && wire.contains(#"{"image_url":{"url":"\#(uri)"},"type":"image_url"},{"text":"\n\#(calculatorHead)"#))
     // The system prompt is the same on every turn, and so is `tools`.
     #expect(Set(reqs.map { $0[0] }.map { "\($0.role)|\($0.content)" }).count == 1)
     let toolLists = Set(await h.model.tools)
     #expect(reqs[0][0].role == "system" && reqs[0][0].content.hasPrefix("你是") && toolLists.count == 1)
-}
-
-@Test func toolResultsGiveHerTheNextTurnButAWatchAckAloneDoesNot() async throws {
-    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", dm("盯著"), watch("window", 1)),
-                               Scripted("", dm("沒變"), done("盯完了，畫面沒變"))])
-    let doll = h.doll
-    let runner = Task { try await doll.run() }
-    // Poll instead of fixed sleeps: a busy parallel suite made the 500 ms waits race.
-    func waitFor(_ n: Int, said s: Int, _ seconds: Double = 20) async throws {
-        let deadline = ContinuousClock.now + .seconds(seconds)
-        while (await h.model.requests.count < n || h.said.count < s), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-    }
-    await h.doll.ownerSaid("開電腦盯著畫面")
-    try await waitFor(2, said: 1)
-    #expect(await h.model.requests.count == 2 && h.said == ["盯著"])     // the results woke her once
-    try await Task.sleep(for: .milliseconds(200))                       // well inside max_wait (1 s)
-    #expect(await h.model.requests.count == 2)                          // neither the watch ack nor say woke her: 等待中
-    try await waitFor(3, said: 2)                                       // max_wait passing does
-    #expect(await h.model.requests.count == 3 && h.said.last == "沒變")
-    await h.doll.stop()
-    try await runner.value
 }
 
 // queue and turns ------------------------------------------------------------
@@ -647,7 +635,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     try await h.turn("哈囉")
     let first = h.last.footer
     #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）")
-            && first.contains("- watch：沒有") && first.contains("- context：") && first.contains("下一回合 effort：medium")
+            && !first.contains("watch") && first.contains("- context：") && first.contains("下一回合 effort：medium")
             && !first.contains("選單"))
     #expect(try h.events().last!.footer == first)
     await h.doll.ownerSaid("再來")
@@ -996,803 +984,342 @@ private func waitUntil(seconds: Double = 3, _ cond: () async -> Bool) async thro
     }
 }
 
-private func watchWakes(_ h: Harness) async -> [Event] { await h.doll.queue.filter { $0.kind == .watch } }
-
-/// A harness whose first turn listed one todo item (in progress) and took a screenshot.
+/// A harness whose first turn listed one todo item (in progress) and read Calculator's window.
 private func menuHarness(tune: (inout Config) -> Void = { _ in }) async throws -> Harness {
     let h = try await Harness(tune: tune)
     await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", todoSet(), readCall))
     return h
 }
 
-@Test func onlyTheLastImageTurnsKeepTheirScreenshotsAndThePrefixBreaksOnlyThere() async throws {
-    // spec 3.1, 2026-11-09: image_turns_kept = 2 here (the default 0 keeps every turn's images: on
-    // Qwen3-Next the cache resumes only from checkpoints). A turn's images are the results after her reply.
-    // Request k is the one that produced turn k+1's reply, so it holds the results up to turn k.
-    let h = try await Harness(tune: { $0.computer.imageTurnsKept = 2 })
-    await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))                     // turn 1: image turn A (its screenshot)
-    try await h.turn(Scripted("", key("cmd+n")))                                  // turn 2: image turn B
-    try await h.turn(Scripted("", key("cmd+s"), screenshotCall))                  // turn 3: image turn C, two results with images
-    try await h.turn(Scripted("", screenshotCall))                                // turn 4
-    let two = await h.model.seen(2), three = await h.model.seen(3)
-    // Request 2 holds A and B: both carry images. Request 3 holds A, B, C: A's images are gone, B's
-    // and C's stay; A's result keeps its text and says where the images were.
-    #expect(two.filter { !$0.images.isEmpty }.count == 2)
-    let shotA = three.first { $0.content.hasPrefix("現在的畫面：") }!
-    #expect(shotA.images.isEmpty && shotA.extra.contains(.text(Doll.imagesPutAway)))
-    let firstLine = { (m: ChatMessage) in String(m.content.split(separator: "\n").first ?? "") }
-    #expect(three.filter { !$0.images.isEmpty }.map(firstLine) == [fakeWindowsLine, fakeWindowsLine, "現在的畫面："])
-    // Everything before A's result is byte-identical; A's result is the first difference; the text
-    // after it is unchanged.
-    let a = two.firstIndex { $0.content.hasPrefix("現在的畫面：") }!
-    #expect(Array(three.prefix(a)) == Array(two.prefix(a)) && three[a] != two[a])
-    #expect(three[a].content == two[a].content && three[a + 1...a + 2].map(\.content) == two[a + 1...a + 2].map(\.content))
-    // The files stay.
-    #expect(try h.events().filter { $0.image != nil }.count == 5)
-    // image_turns_kept = 1: in request 3 only C's results carry images.
-    let one = try await Harness(tune: { $0.computer.imageTurnsKept = 1 })
-    await one.doll.ownerSaid("用電腦")
-    try await one.turn(Scripted("", todoSet(), screenshotCall))
-    try await one.turn(Scripted("", key("cmd+n")))
-    try await one.turn(Scripted("", key("cmd+s"), screenshotCall))
-    try await one.turn(Scripted("", screenshotCall))
-    #expect((await one.model.seen(3)).filter { !$0.images.isEmpty }.map(firstLine) == [fakeWindowsLine, "現在的畫面："])
-    // The default keeps them all.
-    let all = try await Harness()
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.imageTurnsKept == 0)
-    await all.doll.ownerSaid("用電腦")
-    try await all.turn(Scripted("", todoSet(), screenshotCall))
-    try await all.turn(Scripted("", key("cmd+n")))
-    try await all.turn(Scripted("", key("cmd+s"), screenshotCall))
-    try await all.turn(Scripted("", screenshotCall))
-    #expect((await all.model.seen(3)).filter { !$0.images.isEmpty }.count == 4)
+/// What a successful action says: cua-driver cannot confirm it; the read after it shows.
+private let sent = "（送出了，cua-driver 沒法確認有沒有作用；看下面這次讀到的視窗）"
+/// The head line of a Calculator read.
+private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×816"
+
+@Test func eachComputerToolDecodesItsArgumentsAndRefusesBadOnes() throws {
+    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let specs = Tools.specs(memory: cfg.memory, voice: false, computer: cfg.computer, files: cfg.files)
+    func decode(_ name: String, _ params: [(String, String)]) throws -> Tools.Request { try Tools.decode(call(name, params), specs: specs) }
+    func error(_ name: String, _ params: [(String, String)]) -> String? {
+        do { _ = try decode(name, params); return nil } catch { return "\(error)" }
+    }
+    guard case .apps = try decode("apps", []) else { Issue.record("apps"); return }
+    guard case .open("TextEdit", "~/notes.txt"?) = try decode("open", [("app", "TextEdit"), ("target", "~/notes.txt")]),
+          case .open("Calculator", nil) = try decode("open", [("app", " Calculator "), ("target", "")]) else { Issue.record("open"); return }
+    guard case .readWindow(nil, nil) = try decode("read_window", []),
+          case .readWindow("TextEdit"?, "未命名"?) = try decode("read_window", [("app", "TextEdit"), ("window", "未命名")]) else {
+        Issue.record("read_window"); return
+    }
+    guard case .act(.click(5?, nil, nil, "left", 1)) = try decode("click", [("row", "5")]),
+          case .act(.click(nil, 10?, 20?, "right", 2)) = try decode("click", [("x", "10"), ("y", "20"), ("button", "right"), ("count", "2")]) else {
+        Issue.record("click"); return
+    }
+    guard case .act(.type(" a\n", 3?)) = try decode("type", [("text", " a\n"), ("row", "3")]),
+          case .act(.type("x", nil)) = try decode("type", [("text", "x")]) else { Issue.record("type"); return }
+    guard case .act(.key("s", ["cmd", "shift"])) = try decode("key", [("key", "S"), ("modifiers", "[\"shift\", \"cmd\"]")]) else {
+        Issue.record("key"); return
+    }
+    guard case .act(.scroll("down", 3, nil)) = try decode("scroll", [("direction", "down")]),
+          case .act(.scroll("up", 5, 2?)) = try decode("scroll", [("direction", "up"), ("amount", "5"), ("row", "2")]) else {
+        Issue.record("scroll"); return
+    }
+    guard case .act(.menu("TextEdit"?, ["檔案", "新增"])) = try decode("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")]),
+          case .act(.menu(nil, ["檔案"])) = try decode("menu", [("path", "[\"檔案\"]")]) else { Issue.record("menu"); return }
+    guard case .askOwner("付款", "Safari", "買書") = try decode("ask_owner", [("what", "付款"), ("where", "Safari"), ("why", "買書")]) else {
+        Issue.record("ask_owner"); return
+    }
+    #expect(error("open", []) == "open 少了參數 app")
+    #expect(error("open", [("app", " ")]) == "open 的 app 是空的")
+    #expect(error("read_window", [("title", "x")]) == "read_window 沒有 title 這個參數")
+    #expect(error("click", []) == "click 要給 row（清單裡的行號），清單裡沒有才給 x 和 y")
+    #expect(error("click", [("x", "1")]) == "click 的 x 和 y 要一起給")
+    #expect(error("click", [("row", "1"), ("x", "1"), ("y", "2")]) == "click 的 row 和 x/y 只能給一種；清單裡有就用 row")
+    #expect(error("click", [("row", "1"), ("count", "3")]) == "click 的 count 只能是 1 或 2，收到 3")
+    #expect(error("click", [("row", "1"), ("button", "middle")]) == "click 的 button 只能是 left、right，收到 middle")
+    #expect(error("click", [("row", "a")]) == "click 的 row 要是整數，收到 a")
+    #expect(error("type", [("text", "")]) == "type 的 text 是空的")
+    #expect(error("key", [("key", "cmd+s")])?.hasPrefix("key 只放一個鍵，收到 cmd+s") == true)
+    #expect(error("key", [("key", "a"), ("modifiers", "[\"hyper\"]")])?.hasPrefix("key 的 modifiers 只能是 ") == true)
+    #expect(error("scroll", [("direction", "sideways")]) == "scroll 的 direction 只能是 up、down、left、right，收到 sideways")
+    #expect(error("scroll", [("direction", "up"), ("amount", "0")]) == "scroll 的 amount 至少是 1，收到 0")
+    #expect(error("menu", [("path", "檔案")])?.hasPrefix("menu 的 path 要是字串的 JSON 陣列") == true)
+    #expect(error("menu", [("path", "[]")])?.hasPrefix("menu 的 path 要是字串的 JSON 陣列") == true)
+    #expect(error("ask_owner", [("what", "付款"), ("where", "Safari")]) == "ask_owner 少了參數 why")
+    #expect(error("ask_owner", [("what", "付款"), ("where", " "), ("why", "x")]) == "ask_owner 的 where 是空的")
+    // The removed VM tools are unknown.
+    for gone in ["screenshot", "drag", "watch"] { #expect(error(gone, []) == "沒有 \(gone) 這個工具") }
 }
 
-@Test func onlyTheLastActionOfAReplyCarriesTheObservation() async throws {
+@Test func openReadsTheFrontWindowAsItsTreeAndScreenshotAndIsAStep() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("開計算機")
+    try await h.turn(Scripted("", todoSet(), ("apps", []), ("open", [("app", "Calculator")])))
+    let results = Array(try h.toolResults().suffix(2))
+    #expect(results[0].text == "開著的 app（有視窗的列出視窗標題，前面的在上）：\n- Calculator：「計算機」\n- TextEdit（沒有視窗）")
+    let r = results[1]
+    #expect(r.text == "" && r.window == calculatorHead + "\n" + FakeCua.markdown(FakeCua.calculator))
+    #expect(r.window!.contains("- [2] AXButton \"7\" [id=Seven actions=[press]]"))
+    let shot = try String(decoding: Data(contentsOf: h.dir.appending(path: "shots/\(try #require(r.image))")), as: UTF8.self)
+    #expect(shot == "shot s00000001 計算機")
+    #expect(h.last.actions == ["todo set", "apps", "open"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["open Calculator"])
+    // The read asked for both tree formats and a jpeg screenshot into her shots folder, with this session.
+    let read = try #require(h.cua.args("get_window_state").first)
+    let maxElements = try Config.load(root.appending(path: "dollcore.example.toml")).computer.maxElements
+    #expect(read["pid"] as? Int == 100 && read["window_id"] as? Int == 62541 && read["tree_format"] as? String == "both"
+            && read["screenshot_format"] as? String == "jpeg" && read["max_elements"] as? Int == maxElements
+            && (read["screenshot_out_file"] as? String)?.hasPrefix(h.dir.appending(path: "shots").path) == true
+            && read["session"] as? String == h.cua.args("launch_app").first?["session"] as? String)
+    #expect(h.cua.args("launch_app").first?["bundle_id"] as? String == "com.apple.calculator")
+}
+
+@Test func openWithNoWindowSaysHowToGetOneAndMenuOnTheAppReadsTheNewWindow() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("開一份新文件")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
+    let none = try h.toolResults().last!
+    #expect(none.text == "TextEdit 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 menu(app: \"TextEdit\", path: [\"檔案\", \"新增\"])"
+            + "（英文選單是 File › New，選單名字以 app 自己的為準）；要開某個檔案就 open 帶 target。")
+    #expect(none.image == nil && none.window == nil && h.last.actions == ["todo set", "open"])
+    // The tools fit to that window need one: read_window says so.
+    try await h.turn(Scripted("", ("read_window", [("app", "TextEdit")])))
+    #expect(try h.toolResults().last!.text == "失敗：TextEdit 現在沒有視窗。新文件用 menu 選「檔案 › 新增」；開檔用 open 帶 target。")
+    try await h.turn(Scripted("", ("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")])))
+    let menu = try #require(h.cua.args("invoke_menu").first)
+    #expect(menu["pid"] as? Int == 200 && menu["path"] as? [String] == ["檔案", "新增"] && menu["window_id"] == nil)
+    let r = try h.toolResults().last!
+    #expect(r.window?.hasPrefix("TextEdit 的視窗「未命名」；截圖 460×816\n- [0] AXWindow \"未命名\"") == true && r.image != nil)
+    #expect(h.last.actions == ["menu"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["open TextEdit", "menu 檔案 › 新增"])
+    // The next action works on the new window.
+    try await h.turn(Scripted("", ("type", [("text", "娃娃"), ("row", "1")])))
+    let typed = try #require(h.cua.args("type_text").first)
+    #expect(typed["pid"] as? Int == 200 && typed["window_id"] as? Int == 63000 && typed["text"] as? String == "娃娃"
+            && (typed["element_token"] as? String)?.hasSuffix(":1") == true)
+}
+
+@Test func aClickOnARowSendsItsElementTokenAndCarriesTheFreshRead() async throws {
     let h = try await menuHarness()
-    // Three actions in one reply: two text-only results, one observation at the end, three steps.
-    try await h.turn(Scripted("", ("click", [("text", "Save"), ("button", "right"), ("count", "2")]),
-                              ("type", [("text", "sw_vers\n")]), key("cmd+s")))
+    try await h.turn(Scripted("", clickRow(2)))
+    let click = try #require(h.cua.args("click").first)
+    #expect(click["element_token"] as? String == "s00000001:2" && click["pid"] as? Int == 100 && click["window_id"] as? Int == 62541)
+    let r = try h.toolResults().last!
+    // The window read again after it: Calculator's display shows the 7.
+    #expect(r.text == sent && r.window?.contains("- [1] AXStaticText \"7\"") == true && r.image != nil)
+    // Sent, then the same window read again, then the check for a system authentication window.
+    #expect(h.cua.tools.suffix(4) == ["click", "list_windows", "get_window_state", "list_windows"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\""])
+    // A double click, a right click and coordinates on the screenshot.
+    try await h.turn(Scripted("", clickRow(3, count: 2)))
+    try await h.turn(Scripted("", ("click", [("x", "10"), ("y", "20"), ("button", "right")])))
+    #expect(h.cua.actions == ["click", "double_click", "click"])
+    let xy = try #require(h.cua.args("click").last)
+    #expect(xy["x"] as? Int == 10 && xy["y"] as? Int == 20 && xy["button"] as? String == "right" && xy["element_token"] == nil)
+    #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\"", "click AXButton \"8\" 雙擊", "click 10,20 right"])
+}
+
+@Test func aRowNotInTheLatestReadIsRefusedBeforeAnythingIsSent() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("按 7")
+    // Nothing read yet.
+    try await h.turn(Scripted("", todoSet(), clickRow(2)))
+    #expect(try h.toolResults().last!.text == "失敗：沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。")
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", clickRow(9)))
+    #expect(try h.toolResults().last!.text
+            == "失敗：沒有做：第 9 行不在最新一次讀到的清單裡（Calculator「計算機」，行號 0–5）。重新 read_window，用新清單的行號。")
+    // Off the screenshot: not clicked either.
+    try await h.turn(Scripted("", ("click", [("x", "460"), ("y", "5")])))
+    #expect(try h.toolResults().last!.text == "失敗：沒有點：460,5 在截圖外（截圖 460×816）")
+    #expect(h.cua.actions.isEmpty && h.last.actions == ["error click"])
+}
+
+@Test func aRowAnEarlierActionOfTheReplyChangedIsRefusedAndAnUnchangedOnePasses() async throws {
+    let h = try await menuHarness()
+    // Calculator's first press adds a C button before 8: row 3 is no longer the 8 she saw.
+    h.cua.change {
+        $0.after = { tool, args, s in
+            FakeCua.press(tool, args, &s)
+            if tool == "click", s.windows[0].elements[3].label == "8" {
+                s.windows[0].elements.insert(FakeCua.Element(role: "AXButton", label: "C", id: "Clear"), at: 3)
+            }
+        }
+    }
+    try await h.turn(Scripted("", clickRow(2), clickRow(3), clickRow(5)))
+    let results = Array(try h.toolResults().suffix(3))
+    #expect(results[0].text == sent && results[0].image == nil)
+    #expect(results[1].text == "失敗：沒有做：這則回覆前面的動作改變了視窗，第 3 行現在是 AXButton \"C\"，你看到的是 AXButton \"8\"。看新清單再選。")
+    // The first action answered with its line only, so the refusal shows the window as it is now.
+    #expect(results[1].image != nil && results[1].window?.contains("- [3] AXButton \"C\"") == true)
+    #expect(results[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做")
+    #expect(h.cua.actions == ["click"] && h.last.actions == ["click", "error click", "skipped click"])
+    // The next reply means the new read: 7, 8 (now row 4), +, =: rows unchanged by the presses pass.
+    try await h.turn(Scripted("", clickRow(2), clickRow(4), clickRow(5), clickRow(6)))
+    #expect(h.cua.actions == ["click", "click", "click", "click", "click"])
+    #expect(h.cua.args("click").suffix(4).map { ($0["element_token"] as? String)?.split(separator: ":").last.map(String.init) } == ["2", "4", "5", "6"])
+    #expect(try h.toolResults().suffix(4).map(\.text) == [sent, sent, sent, sent])
+    #expect(try h.toolResults().last!.window?.contains("- [1] AXStaticText \"778\"") == true)
+}
+
+@Test func aDriverRefusalIsAFailedResultWithTheWindowReadAgainAndStopsTheChain() async throws {
+    let h = try await menuHarness()
+    let refusal = #"{"refusal":{"code":"stale_element_token","message":"element token s00000002:2 is from an old snapshot"},"hint":"call get_window_state again"}"#
+    h.cua.refuse("click", refusal)
+    try await h.turn(Scripted("", key("cmd+a"), clickRow(2), ("type", [("text", "copy")]), readCall))
+    let results = Array(try h.toolResults().suffix(4))
+    #expect(results.map(\.text) == [sent,
+                                    "失敗：[stale_element_token] element token s00000002:2 is from an old snapshot call get_window_state again",
+                                    "失敗：前面第 2 步（click）失敗了，這一步沒做",
+                                    ""])
+    #expect(results.map { $0.image != nil } == [false, true, false, true])
+    #expect(h.cua.actions == ["hotkey", "click"] && h.last.actions == ["key", "error click", "skipped type", "read_window"])
+    // Only the done actions are steps.
+    #expect(await h.doll.itemSteps.map(\.line) == ["key cmd+a"])
+    // Bad arguments after a line-only step: the failure shows the window, since nothing of this reply did yet.
+    try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
+    let bad = Array(try h.toolResults().suffix(3))
+    #expect(bad[0].text == sent && bad[0].image == nil)
+    #expect(bad[1].text == "失敗：沒有點：99999,1 在截圖外（截圖 460×816）" && bad[1].image != nil && bad[1].window != nil)
+    #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
+    #expect(h.cua.actions == ["hotkey", "click", "press_key"])
+    // todo.done after actions in the same reply still ends the item; the action before it is the last.
+    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("cmd+q")))
+    let end = Array(try h.toolResults().suffix(3))
+    #expect(end[0].image != nil && end[0].text == sent)
+    #expect(end[1].text.hasPrefix("完成，記下了。")
+            && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
+    #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+a\n2. key return\n3. key cmd+s") == true)
+    #expect(await h.doll.todo.phase != .doing && h.cua.actions.count == 4)
+}
+
+@Test func onlyTheLastActionOfAReplyCarriesTheRead() async throws {
+    let h = try await menuHarness()
+    // Three actions in one reply: two line-only results, the read at the end, three steps.
+    try await h.turn(Scripted("", clickRow(2), ("type", [("text", "sw_vers\n")]), key("cmd+s")))
     var results = Array(try h.toolResults().suffix(3))
-    // Her call is in the context; a result says only what is new (2026-11-10).
-    #expect(results.map(\.text) == ["", "", fakeWindowsLine])
+    #expect(results.map(\.text) == [sent, sent, sent])
     #expect(results.map { $0.image != nil } == [false, false, true] && results.map { $0.window != nil } == [false, false, true])
-    #expect(h.vm.actions == [.clickText("Save", button: "right", count: 2), .type("sw_vers\n"), .key("cmd+s")])
-    #expect(h.last.actions == ["click", "type", "key"])
-    #expect(await h.doll.itemSteps.map(\.line) == ["click「Save」 right 雙擊", "type 「sw_vers\n」", "key cmd+s"])
+    #expect(h.cua.actions == ["click", "type_text", "hotkey"] && h.last.actions == ["click", "type", "key"])
+    #expect(h.cua.args("hotkey").first?["keys"] as? [String] == ["cmd", "s"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\"", "type「sw_vers\n」", "key cmd+s"])
     // Every other tool between them keeps its result; the last action is the last one written, wherever it is.
-    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), screenshotCall,
-                              ("drag", [("x0", "1"), ("y0", "2"), ("x1", "3"), ("y1", "4")]), ("click", [("x", "100"), ("y", "200")]), think("medium")))
-    results = Array(try h.toolResults().suffix(5))
-    #expect(results.map { $0.text.components(separatedBy: "\n")[0] } == ["", "現在的畫面：", "", fakeWindowsLine, "下一回合 effort：medium"])
-    #expect(results.map { $0.image != nil } == [false, true, false, true, false])
-    #expect(h.last.actions == ["scroll", "screenshot", "drag", "click", "think medium"])
-    // A single action is unchanged: its line, the VM's answer, the observation.
+    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), readCall, ("click", [("x", "100"), ("y", "200")]), think("medium")))
+    results = Array(try h.toolResults().suffix(4))
+    #expect(results.map(\.text) == [sent, "", sent, "下一回合 effort：medium"])
+    #expect(results.map { $0.image != nil } == [false, true, true, false])
+    #expect(h.last.actions == ["scroll", "read_window", "click", "think medium"])
+    // A single action: its line and the read.
     try await h.turn(Scripted("", key("Return")))
     let one = try h.toolResults().last!
-    #expect(one.text == fakeWindowsLine && one.image != nil && one.window != nil)
-    // Bad arguments alone: a text result, no screenshot, as before.
-    try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("text", "A")]),
+    #expect(one.text == sent && one.image != nil && one.window != nil && h.cua.args("press_key").last?["key"] as? String == "return")
+    // Bad arguments alone: a text result, no read.
+    try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("row", "1")]),
                               ("scroll", [("direction", "sideways")])))
     #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：click 的 x 和 y 要一起給",
                                                           "失敗：前面第 1 步（click）失敗了，這一步沒做",
                                                           "失敗：前面第 1 步（click）失敗了，這一步沒做"])
     #expect(try h.toolResults().suffix(3).allSatisfy { $0.image == nil })
-    #expect(h.last.actions == ["error click", "skipped click", "skipped scroll"] && h.vm.actions.count == 7)
+    #expect(h.last.actions == ["error click", "skipped click", "skipped scroll"] && h.cua.actions.count == 6)
 }
 
-@Test func aFailedActionStopsTheReplysChainAndShowsTheScreen() async throws {
+@Test func onlyTheLatestReadKeepsItsScreenshotAndListOlderOnesAreOneLine() async throws {
     let h = try await menuHarness()
-    let err = "vmpal: Stopped at action 1 of 1 (left_click): No text “Save” on the screen after 3.1 s."
-    try await h.turn(Scripted("", key("cmd+shift+s"), ("click", [("text", "Save")]), ("type", [("text", "copy")])))
-    #expect(h.vm.actions == [.key("cmd+shift+s"), .clickText("Save", button: "left", count: 1), .type("copy")])
-    // Step 1 runs text-only; step 2 fails in the VM with the observation; step 3 is refused, not run.
-    h.vm.failNext(err, after: 1)
-    try await h.turn(Scripted("", key("cmd+shift+s"), ("click", [("text", "Save")]), ("type", [("text", "copy")]), screenshotCall))
-    let results = Array(try h.toolResults().suffix(4))
-    #expect(results.map(\.text) == ["",
-                                    "失敗：click「Save」\n\(err)\n" + fakeWindowsLine,
-                                    "失敗：前面第 2 步（click「Save」）失敗了，這一步沒做",
-                                    "現在的畫面：\n" + fakeWindowsLine])
-    #expect(results.map { $0.image != nil } == [false, true, false, true])
-    #expect(h.vm.actions.count == 5 && h.vm.actions.last == .clickText("Save", button: "left", count: 1))
-    #expect(h.last.actions == ["key", "error click", "skipped type", "screenshot"])
-    // Only the done actions are steps.
-    #expect(await h.doll.itemSteps.map(\.line) == ["key cmd+shift+s", "click「Save」", "type 「copy」", "key cmd+shift+s"])
-    // Bad arguments after a text-only step: the failure shows the screen, since nothing of this reply did yet.
-    try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
-    let bad = Array(try h.toolResults().suffix(3))
-    #expect(bad[0].text == "" && bad[0].image == nil)
-    #expect(bad[1].text.hasPrefix("失敗：沒有點：99999,1 在螢幕外") && bad[1].text.hasSuffix("\n" + fakeWindowsLine) && bad[1].image != nil)
-    #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
-    #expect(h.vm.actions.count == 6)
-    // todo.done after actions in the same reply still ends the item; the action before it is the last.
-    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("cmd+q")))
-    let end = Array(try h.toolResults().suffix(3))
-    #expect(end[0].image != nil && end[0].text == fakeWindowsLine)
-    #expect(end[1].text.hasPrefix("完成，記下了。")
-            && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
-    #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+shift+s\n2. click「Save」\n3. type 「copy」\n4. key cmd+shift+s\n5. key return\n6. key cmd+s") == true)
-    #expect(await h.doll.todo.phase != .doing && h.vm.actions.count == 7)
+    try await h.turn(Scripted("", clickRow(2)))
+    try await h.turn("看到了")
+    let reqs = await h.model.requests.map(\.messages)
+    let reads = { (msgs: [ChatMessage]) in msgs.filter { $0.role == "tool" && $0.extra.contains { if case .text(let t) = $0 { t.hasPrefix(calculatorHead) || t.hasPrefix("（較早讀到的") } else { false } } } }
+    // Request 2 holds the first read in full; request 3 has a newer one, so the first is one line.
+    #expect(reads(reqs[1]).count == 1 && reads(reqs[1])[0].images.count == 1)
+    let three = reads(reqs[2])
+    #expect(three.count == 2 && three[0].images.isEmpty && three.map { $0.images.count } == [0, 1])
+    #expect(three[0].extra == [.text("（較早讀到的：\(calculatorHead)；清單和截圖已收起，只有最新一次讀到的留著）")])
+    #expect(three[0].extra == [.text(Doll.readPutAway(try h.toolResults()[1].window))])
+    let results = try h.toolResults()
+    let uri = "data:image/jpeg;base64," + (try Data(contentsOf: h.dir.appending(path: "shots/\(results.last!.image!)"))).base64EncodedString()
+    #expect(three[1].extra == [.image(uri), .text(results.last!.window!)])
+    // Everything before the older read is byte-identical between the two requests.
+    let a = try #require(reqs[1].firstIndex { $0 == reads(reqs[1])[0] })
+    #expect(Array(reqs[2].prefix(a)) == Array(reqs[1].prefix(a)))
+    // The files stay.
+    #expect(try h.events().filter { $0.image != nil }.count == 2)
 }
 
-@Test func clickTakesExactlyOneOfElementTextOrCoordinates() async throws {
+@Test func aSystemAuthenticationWindowOrAPasswordFieldIsCalledOut() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", ("click", [("element", "button \"Save\""), ("count", "2")]),
-                              ("click", [("element", "notes.txt")]),
-                              ("click", [("element", #"{"role": "image", "name": "notes.txt"}"#), ("button", "right")]),
-                              ("click", [("element", "\"Open Recent\"")]),
-                              ("click", [("text", "Save")]),
-                              ("click", [("x", "100"), ("y", "200"), ("on", "screen")])))
-    #expect(h.vm.actions == [.clickElement(role: "button", name: "Save", button: "left", count: 2),
-                             .clickElement(role: nil, name: "notes.txt", button: "left", count: 1),
-                             .clickElement(role: "image", name: "notes.txt", button: "right", count: 1),
-                             .clickElement(role: nil, name: "Open Recent", button: "left", count: 1),
-                             .clickText("Save", button: "left", count: 1),
-                             .click(x: 100, y: 200, button: "left", count: 1)])
-    // One bad call per reply: after a failed action the rest of a reply is not run.
-    for bad in [("click", []), ("click", [("element", "OK"), ("x", "1"), ("y", "2")]),
-                ("click", [("element", "OK"), ("text", "OK")]), ("click", [("text", "OK"), ("on", "window")])] as [(String, [(String, String)])] {
-        try await h.turn(Scripted("", bad))
-    }
-    #expect(try h.toolResults().suffix(4).map(\.text) == ["失敗：click 要給 element、text 或 x 和 y 其中一種",
-                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
-                                                          "失敗：click 的 element、text、x/y 只能給一種，不要同時給",
-                                                          "失敗：click 的 on 只配 x、y 用"])
-    #expect(h.vm.actions.count == 6)
-    // Escaped quotes read as quotes (round 6: textfield \"Search\"); a role word alone is a role.
-    try await h.turn(Scripted("", ("click", [("element", #"textfield \"Search\""#)]), ("click", [("element", "textfield")])))
-    #expect(h.vm.actions.suffix(2) == [.clickElement(role: "textfield", name: "Search", button: "left", count: 1),
-                                       .clickElement(role: "textfield", name: nil, button: "left", count: 1)])
-}
-
-@Test func anElementTextParsesEscapedQuotesAndARoleAlone() throws {
-    let cases: [(String, String?, String?)] = [
-        (#"textfield "Search""#, "textfield", "Search"), (#"textfield \"Search\""#, "textfield", "Search"),
-        (#"\"Open Recent\""#, nil, "Open Recent"), (#"{\"role\": \"button\", \"name\": \"OK\"}"#, "button", "OK"),
-        (#"{"name": "say \"hi\""}"#, nil, #"say "hi""#),
-        ("textfield", "textfield", nil), ("TextField", "textfield", nil), (#"{"role": "Button"}"#, "button", nil),
-        ("Finder", nil, "Finder"),
-    ]
-    for (raw, role, name) in cases {
-        let got = try Tools.clickElement(raw)
-        #expect(got.role == role && got.name == name, "\(raw) → \(String(describing: got))")
-    }
-    #expect(throws: ToolError.self) { try Tools.clickElement(#"{"role": "", "name": ""}"#) }
-}
-
-@Test func windowCoordinatesAreConvertedThroughTheLastCropAndOffImagePointsAreNeverClicked() async throws {
-    let h = try await menuHarness()
-    // The crop: full-screen (10,20)–(300,200), 290×180 pixels of screen shown as a 580×360 image.
-    h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
-    try await h.turn(Scripted("", screenshotCall))
-    #expect(try h.toolResults().last!.cropNote == "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)，圖 580×360；用這張圖上的座標點要加 on: window。")
-    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")])))
-    #expect(h.vm.actions == [.click(x: 60, y: 45, button: "left", count: 2)])
+    #expect(try h.toolResults().last!.text == "")
+    h.cua.change { $0.windows.append(FakeCua.Window(id: 7, pid: 999, app: "SecurityAgent", title: "驗證", elements: [])) }
+    try await h.turn(Scripted("", clickRow(2)))
+    #expect(try h.toolResults().last!.text == sent + "\n【系統驗證】畫面上有系統的驗證視窗（SecurityAgent「驗證」：Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。")
+    // Off screen it is not there.
+    h.cua.change { $0.windows[1].onScreen = false; $0.windows[0].elements.append(FakeCua.Element(role: "AXSecureTextField", label: "密碼")) }
+    try await h.turn(Scripted("", readCall))
     let r = try h.toolResults().last!
-    #expect(r.text == "視窗圖 100,50 → 全螢幕 60,45\n" + fakeWindowsLine && r.image != nil)
-    // Off the crop, off the screen: an error, nothing clicked (one per reply: a failed action ends the reply's chain).
-    for bad in [[("x", "580"), ("y", "10"), ("on", "window")], [("x", "640"), ("y", "800")], [("x", "-1"), ("y", "5")]] {
-        try await h.turn(Scripted("", ("click", bad)))
-        #expect(h.last.actions == ["error click"])
-    }
-    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：沒有點：580,10 不在視窗圖裡（視窗圖 580×360）",
-                                                          "失敗：沒有點：640,800 在螢幕外（全螢幕截圖 1280×800）",
-                                                          "失敗：沒有點：-1,5 在螢幕外（全螢幕截圖 1280×800）"])
-    #expect(h.vm.actions.count == 1)
-    // The last result had no crop: window coordinates cannot be converted.
-    h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
-    try await h.turn(Scripted("", screenshotCall, ("click", [("x", "10"), ("y", "10"), ("on", "window")])))
-    #expect(try h.toolResults().last!.text == "失敗：沒有點：最近的結果沒有視窗圖，on: window 換算不了；用全螢幕截圖的座標")
-    #expect(h.vm.actions.count == 1)
+    #expect(r.text == "" && r.window?.hasSuffix("\n【注意】這個視窗有密碼欄位。密碼不要自己打：停下來，用 ask_owner 跟主人說要做什麼、在哪裡、為什麼。") == true)
 }
 
-@Test func imageSizeReadsPNGAndJPEGHeaders() {
-    #expect(ImageSize.of(pngHeader(1280, 609)).map { [$0.width, $0.height] } == [1280, 609])
-    // SOI, an APP0 segment, then SOF0: precision, height, width.
-    let jpeg = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x4A, 0x46, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x61, 0x05, 0x00, 0x03,
-                     0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01])
-    #expect(ImageSize.of(jpeg).map { [$0.width, $0.height] } == [1280, 609])
-    #expect(ImageSize.of(Data("frame 0 full".utf8)) == nil)
-}
-
-/// agent-desktop in the VM for `click(element:)`, answering by command as 2.6 did in the Doll VM
-/// (2026-11-09, Finder's Documents window, answers cut to the fields read). Records the scripts.
-/// The click script's shell is played here: the accessibility press answers `press`; only when that
-/// says not_delivered does the `--headed` press run and answer `headed`.
-private final class FakeAgentDesktop: Sendable {
-    let calls = Mutex<[[String]]>([])
-    let found: String
-    let windows: String
-    let press: String, headed: String
-    init(found: [(role: String, name: String, ref: String)], focused: Bool = true,
-         press: String = FakeAgentDesktop.clicked, headed: String = FakeAgentDesktop.clicked) {
-        let ms = found.map { #"{"interactive":true,"name":"\#($0.name)","ref_id":"\#($0.ref)","role":"\#($0.role)","states":[],"value":null}"# }
-        self.found = #"{"version":"2.6","ok":true,"command":"find","data":{"matches":["# + ms.joined(separator: ",") + #"],"total_matches":\#(ms.count)}}"#
-        windows = #"{"version":"2.6","ok":true,"command":"list-windows","data":["#
-            + #"{"app_name":"Calendar","id":"w-1","is_focused":false,"title":"Calendar","visible":true},"#
-            + #"{"app_name":"Finder","id":"w-2","is_focused":\#(focused),"title":"Finder","visible":true}]}"#
-        (self.press, self.headed) = (press, headed)
-    }
-    static let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
-    /// Every ref's bounds: e1 at (465,186) 64×64 points, e2 at (260,301) 171×32, e3 at (500,120) 160×20,
-    /// e4 same as e2 (a cell inside its row). Any other ref's bounds cannot be read.
-    static let places = ["@s:e1": (465.0, 186.0, 64.0, 64.0), "@s:e2": (260.0, 301.0, 171.0, 32.0),
-                         "@s:e3": (500.0, 120.0, 160.0, 20.0), "@s:e4": (260.0, 301.0, 171.0, 32.0)]
-    static func bounds(_ ref: String) -> String {
-        guard let p = places[ref] else {
-            return #"{"version":"2.6","ok":false,"command":"get","error":{"code":"STALE_REF","message":"gone"}}"#
-        }
-        return #"{"version":"2.6","ok":true,"command":"get","data":{"property":"bounds","ref":"\#(ref)","value":{"height":\#(p.3),"width":\#(p.2),"x":\#(p.0),"y":\#(p.1)}}}"#
-    }
-    static let snapshot = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Finder","tree":{"role":"window","name":"Documents","bounds":{"height":436.0,"width":920.0,"x":260.0,"y":120.0},"children":["#
-        + #"{"role":"treeitem","name":"Recents","ref_id":"@s:e5","bounds":{"height":32.0,"width":171.0,"x":260.0,"y":172.0}},"#
-        + #"{"role":"image","name":"notes.txt","ref_id":"@s:e1","bounds":{"height":64.0,"width":64.0,"x":465.0,"y":186.0}}]}}}"#
-    /// With no window (2026-11-09, Finder frontmost and windowless): the app menus cannot be read; the
-    /// menu bar extras and the Dock can. Dock icons 54×70 points from x 48, the extras in the top row.
-    static let surfaces = "@@menubar\n"
-        + #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No window found to identify the application owning surface 'menubar'"}}"#
-        + "\n@@menu-bar-extras\n"
-        + #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"SystemUIServer","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"children":["#
-        + #"{"role":"menuitem","name":"Text Input","ref_id":"@m:e1","bounds":{"height":24.0,"width":30.0,"x":1250.0,"y":0.0}},"#
-        + #"{"role":"menuitem","name":"Clock","ref_id":"@m:e2","bounds":{"height":24.0,"width":120.0,"x":1300.0,"y":0.0}}]}}}"#
-        + "\n@@dock\n"
-        + #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Dock","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"children":[{"role":"list","ref_id":"@d:e1","bounds":{"height":70.0,"width":1360.0,"x":40.0,"y":820.0},"children":["#
-        + #"{"role":"dockitem","name":"Finder","ref_id":"@d:e2","bounds":{"height":70.0,"width":54.0,"x":48.0,"y":825.0}},"#
-        + #"{"role":"dockitem","name":"TextEdit","ref_id":"@d:e3","bounds":{"height":70.0,"width":54.0,"x":102.0,"y":825.0}}]}]}}}"#
-    static let clicked = #"{"version":"2.6","ok":true,"command":"click","data":{"action":"click","disposition":{"delivery":"delivered_unverified","retry":"unsafe"},"steps":[]}}"#
-    /// A Finder file icon's double-click without --headed (2026-11-09, cut).
-    static let denied = #"{"version":"2.6","ok":false,"command":"double-click","error":{"code":"POLICY_DENIED","message":"Target is not actionable: supported_action (semantic gesture is unavailable and physical fallback is denied)","disposition":{"delivery":"not_delivered","retry":"safe"}}}"#
-    /// A sheet's Save with --headed (2026-11-09).
-    static let noWindow = #"{"version":"2.6","ok":false,"command":"click","error":{"code":"ACTION_FAILED","message":"Physical input target has no verified owning window","details":{"physical_delivery_started":false},"disposition":{"delivery":"not_delivered","retry":"safe"}}}"#
-
-    /// `vmpal ui …` calls (the settle after an element click), kept apart from the exec scripts.
-    let uiCalls = Mutex<[[String]]>([])
-
-    func run(_ args: [String]) throws -> String {
-        if args.first == "ui" { uiCalls.withLock { $0.append(args) }; return "" }
-        calls.withLock { $0.append(args) }
-        let script = args[5], a = Array(args.dropFirst(8))   // exec <vm> -- /bin/sh -c <script> sh <agent-desktop> <args…>
-        if script.contains("list-windows") { return windows + "\n@@displays\n" + Self.displays }
-        if script.contains(" find ") { return found }
-        if script.contains("snapshot --window-id") { return Self.snapshot }
-        if script.contains("snapshot --surface") { return Self.surfaces }
-        if script.contains("@@semantic") {
-            return Self.bounds(a[0]) + "\n@@semantic\n" + press
-                + (press.contains(#""delivery":"not_delivered""#) ? "\n@@headed\n" + headed : "")
-        }
-        if script.contains("for r in") { return a.map { "@@\($0)\n" + Self.bounds($0) }.joined(separator: "\n") }
-        throw ComputerError("unexpected script \(script)")
-    }
-    var scripts: [String] { calls.withLock { $0.map { $0[5] } } }
-}
-
-@Test func anElementIsFoundFreshInTheFrontWindowAndClickedOnlyWhenItIsTheOneMatch() async throws {
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    // One match: found in the focused window, pressed through accessibility with its fresh ref, said
-    // with its center in full-screenshot pixels ((465 + 32) × 1280/1440, (186 + 32) × 1280/1440),
-    // the way it went and the disposition.
-    let one = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
-    let said = try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-    #expect(said == "")
-    let calls = one.calls.withLock { $0 }
-    #expect(calls.count == 3 && calls.allSatisfy { Array($0.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] })
-    #expect(Array(calls[1].suffix(5)) == ["sh", cfg.agentDesktop, "w-2", "--name", "notes.txt"]
-            && calls[1][5].contains("find --window-id \"$2\" \"$3\" \"$4\""))
-    // The press first; `--headed` only in the branch for agent-desktop's not_delivered.
-    #expect(calls[2][5].contains(#"a=$("$1" double-click "$2")"#) && calls[2].last == "@s:e1")
-    #expect(calls[2][5].contains(#"*'"delivery":"not_delivered"'*) echo @@headed; "$1" double-click --headed "$2";;"#))
-    // Then, like every other action, the screen settles before the screenshot is taken.
-    #expect(one.uiCalls.withLock { $0 }.map { Array($0.dropFirst(2)) } == [["wait", "--settled", "--observe", "none"]])
-
-    // Exact name beats a name that only contains it; the role narrows.
-    let exact = FakeAgentDesktop(found: [("statictext", "notes.txt backup", "@s:e3"), ("image", "Notes.txt", "@s:e1")])
-    #expect(try await VMPalDriver(cfg, vmpal: { try exact.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 1))
-                == "")
-    #expect(exact.scripts.last!.contains(#"a=$("$1" click "$2")"#) && exact.calls.withLock { $0.last!.last } == "@s:e1")
-
-    // Several: no click; each candidate with its role, name and center. The cell at its row's exact
-    // spot is the same target and is not listed twice.
-    let many = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4"), ("statictext", "Documents", "@s:e3")])
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try many.run($0) }).act(.clickElement(role: nil, name: "documents", button: "left", count: 1))
-        Issue.record("an ambiguous element was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == """
-            沒有點：最前面的視窗（Finder）裡有 2 個符合「documents」，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
-            treeitem "Documents" (307,282)
-            statictext "Documents" (516,116)
-            """)
-    }
-    #expect(!many.scripts.contains { $0.contains("@@semantic") })
-    // The same row and cell alone are one target: clicked.
-    let same = FakeAgentDesktop(found: [("treeitem", "Documents", "@s:e2"), ("cell", "Documents", "@s:e4")])
-    #expect(try await VMPalDriver(cfg, vmpal: { try same.run($0) }).act(.clickElement(role: nil, name: "Documents", button: "right", count: 1))
-                == "")
-    #expect(same.scripts.last!.contains(#"a=$("$1" right-click "$2")"#) && same.calls.withLock { $0.last!.last } == "@s:e2")
-
-    // None: no click; the window's similar names with their centers.
-    let none = FakeAgentDesktop(found: [])
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try none.run($0) }).act(.clickElement(role: nil, name: "nots.txt", button: "left", count: 1))
-        Issue.record("a missing element was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有「nots.txt」。名字相近的（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
-    }
-    #expect(!none.scripts.contains { $0.contains("@@semantic") })
-    // The name fits but not the role: those are listed.
-    let role = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")])
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try role.run($0) }).act(.clickElement(role: "button", name: "notes.txt", button: "left", count: 1))
-        Issue.record("an element of another role was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有button「notes.txt」；名字對、角色不同的有（全螢幕截圖座標）：\nimage \"notes.txt\" (442,194)")
-    }
-}
-
-@Test func aRoleAloneIsMatchedByRole() async throws {
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    // One: `find --role` in the focused window; it has no name and is said by its role.
-    let one = FakeAgentDesktop(found: [("textfield", "", "@s:e1")])
-    #expect(try await VMPalDriver(cfg, vmpal: { try one.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
-                == "")
-    #expect(Array(one.calls.withLock { $0[1] }.suffix(4)) == [cfg.agentDesktop, "w-2", "--role", "textfield"])
-    // Several: no click, each with its center.
-    let two = FakeAgentDesktop(found: [("textfield", "", "@s:e1"), ("textfield", "Save As:", "@s:e3")])
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try two.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
-        Issue.record("an ambiguous role was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == """
-            沒有點：最前面的視窗（Finder）裡有 2 個符合textfield，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
-            textfield (442,194)
-            textfield "Save As:" (516,116)
-            """)
-    }
-    #expect(!two.scripts.contains { $0.contains("@@semantic") })
-    // None: no click.
-    let none = FakeAgentDesktop(found: [])
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try none.run($0) }).act(.clickElement(role: "textfield", name: nil, button: "left", count: 1))
-        Issue.record("a missing role was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == "沒有點：最前面的視窗（Finder）裡沒有textfield。")
-    }
-    #expect(!none.scripts.contains { $0.contains("@@semantic") })
-}
-
-@Test func withNoFrontWindowAnElementIsSearchedInTheDockAndTheMenuBar() async throws {
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    func driver(_ fake: FakeAgentDesktop) -> VMPalDriver { VMPalDriver(cfg, vmpal: { try fake.run($0) }) }
-    // One: the Dock's Finder from the surfaces' snapshot (no `find`), its center from that snapshot
-    // when its bounds cannot be read again: (48 + 27, 825 + 35) × 1280/1440.
-    let finder = FakeAgentDesktop(found: [], focused: false)
-    #expect(try await driver(finder).act(.clickElement(role: nil, name: "finder", button: "left", count: 1))
-            == "")
-    let scripts = finder.scripts
-    #expect(scripts.count == 3 && scripts[1].contains("menubar menu-bar-extras dock") && !scripts.contains { $0.contains(" find ") })
-    #expect(finder.calls.withLock { $0[2].last } == "@d:e2")
-    // The role narrows, the same way as in a window.
-    let clock = FakeAgentDesktop(found: [], focused: false)
-    #expect(try await driver(clock).act(.clickElement(role: "menuitem", name: "clock", button: "left", count: 1))
-                == "")
-    #expect(clock.calls.withLock { $0[2].last } == "@m:e2")
-    // Several: no click; candidates from the menu bar and the Dock with their centers.
-    let text = FakeAgentDesktop(found: [], focused: false)
-    do {
-        _ = try await driver(text).act(.clickElement(role: nil, name: "text", button: "left", count: 1))
-        Issue.record("an ambiguous Dock item was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == """
-            沒有點：Dock 和選單列（現在沒有最前面的視窗）裡有 2 個符合「text」，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：
-            menuitem "Text Input" (1124,11)
-            dockitem "TextEdit" (115,764)
-            """)
-    }
-    #expect(!text.scripts.contains { $0.contains("@@semantic") })
-    // A role alone: the Dock's two items.
-    do {
-        _ = try await driver(FakeAgentDesktop(found: [], focused: false)).act(.clickElement(role: "dockitem", name: nil, button: "left", count: 1))
-        Issue.record("an ambiguous role was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description.hasSuffix("有 2 個符合dockitem，不知道是哪一個。要點的那個用它的座標 click x、y（全螢幕截圖座標）：\ndockitem \"Finder\" (67,764)\ndockitem \"TextEdit\" (115,764)"))
-    }
-    // None: near names from the same items.
-    let typo = FakeAgentDesktop(found: [], focused: false)
-    do {
-        _ = try await driver(typo).act(.clickElement(role: nil, name: "Findr", button: "left", count: 1))
-        Issue.record("a missing Dock item was clicked")
-    } catch let e as ComputerError {
-        #expect(e.description == "沒有點：Dock 和選單列（現在沒有最前面的視窗）裡沒有「Findr」。名字相近的（全螢幕截圖座標）：\ndockitem \"Finder\" (67,764)")
-    }
-    #expect(typo.scripts.count == 2)
-}
-
-@Test func aPressNotDeliveredIsRetriedWithRealPointerInputAndTheResultSaysWhichWayWent() async throws {
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    let denied = "POLICY_DENIED: Target is not actionable: supported_action (semantic gesture is unavailable and physical fallback is denied)"
-    // A Finder icon's double-click: the press is not delivered, the pointer is.
-    let icon = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied)
-    #expect(try await VMPalDriver(cfg, vmpal: { try icon.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-            == "無障礙按壓沒送出，改用實體滑鼠。")
-    #expect(icon.calls.withLock { $0.count } == 3)
-    // Neither way: an error with both answers.
-    let neither = FakeAgentDesktop(found: [("image", "notes.txt", "@s:e1")], press: FakeAgentDesktop.denied, headed: FakeAgentDesktop.noWindow)
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try neither.run($0) }).act(.clickElement(role: nil, name: "notes.txt", button: "left", count: 2))
-        Issue.record("an undelivered click was a success")
-    } catch let e as ComputerError {
-        #expect(e.description == "沒有點成 image \"notes.txt\" (442,194)：無障礙按壓沒送出（agent-desktop：\(denied)；delivery=not_delivered, retry=safe），"
-                + "實體滑鼠（headed）也沒有（agent-desktop：ACTION_FAILED: Physical input target has no verified owning window；delivery=not_delivered, retry=safe）。")
-    }
-    // A press that failed after it was delivered is not pressed again.
-    let failed = #"{"version":"2.6","ok":false,"command":"click","error":{"code":"ACTION_FAILED","message":"press went wrong","disposition":{"delivery":"delivered_unverified","retry":"unsafe"}}}"#
-    let once = FakeAgentDesktop(found: [("button", "Save", "@s:e3")], press: failed, headed: FakeAgentDesktop.denied)
-    do {
-        _ = try await VMPalDriver(cfg, vmpal: { try once.run($0) }).act(.clickElement(role: "button", name: "Save", button: "left", count: 1))
-        Issue.record("a failed press was a success")
-    } catch let e as ComputerError {
-        #expect(e.description == "click button \"Save\" (516,116) 失敗（無障礙按壓）：ACTION_FAILED: press went wrong（agent-desktop：delivery=delivered_unverified, retry=unsafe）")
-    }
-}
-
-@Test func aVMPalFailureIsAFailedResultNeverASuccess() async throws {
+@Test func everyActionIsOneLineOfTheActionLogWithTheElementsIdentity() async throws {
     let h = try await menuHarness()
-    let err = "vmpal: Stopped at action 1 of 1 (left_click): No text “紫色按鈕” on the screen after 3.1 s."
-    h.vm.failNext(err)
-    try await h.turn(Scripted("", ("click", [("text", "紫色按鈕")])))
-    let r = try h.toolResults().last!
-    #expect(r.text == "失敗：click「紫色按鈕」\n\(err)\n" + fakeWindowsLine)
-    #expect(r.image != nil && h.last.actions == ["error click"])
+    try await h.turn(Scripted("", clickRow(2), key("cmd+s")))
+    h.cua.refuse("scroll", #"{"refusal":{"code":"not_scrollable","message":"nothing to scroll"}}"#)
+    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("row", "1")])))
+    let lines = try String(contentsOf: h.dir.appending(path: "computer-actions.jsonl"), encoding: .utf8).split(separator: "\n")
+    let records = try lines.map { try JSONDecoder().decode(ActionRecord.self, from: Data($0.utf8)) }
+    #expect(records.map(\.tool) == ["click", "key", "scroll"])
+    #expect(records.allSatisfy { $0.item == "畫面上看得到結果" && $0.app == "Calculator" && $0.bundleID == "com.apple.calculator" && $0.window == "計算機" })
+    #expect(records[0].element == ElementIdentity(row: 2, role: "AXButton", subrole: nil, axID: "Seven", label: "7", title: nil, path: ["AXWindow \"計算機\""]))
+    #expect(records[0].args == [:] && records[0].ok && records[0].error == nil)
+    #expect(records[1].element == nil && records[1].args == ["key": "s", "modifiers": "cmd"])
+    #expect(records[2].element?.label == "7" && records[2].args == ["direction": "down", "amount": "3"])
+    #expect(!records[2].ok && records[2].error == "[not_scrollable] nothing to scroll")
 }
 
-@Test func theVMPalDriverTurnsANonZeroExitIntoAnErrorWithItsText() async throws {
-    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-vmpal-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let script = dir.appending(path: "vmpal")
-    try "#!/bin/sh\nif [ \"$4\" = click ]; then echo 'vmpal: No text “紫色按鈕” on the screen' >&2; exit 1; fi\necho \"Done: $*\"\n"
-        .write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    cfg.vmpal = script.path
-    let d = VMPalDriver(cfg)
+@Test func theSameFailingComputerCallTheSecondTimeInARowSaysSo() async throws {
+    let h = try await menuHarness()
+    let refusal = #"{"refusal":{"code":"element_disabled","message":"button is disabled"}}"#
+    h.cua.refuse("click", refusal)
+    try await h.turn(Scripted("", clickRow(5)))
+    #expect(try h.toolResults().last!.text == "失敗：[element_disabled] button is disabled")
+    h.cua.refuse("click", refusal)
+    try await h.turn(Scripted("", clickRow(5)))
+    let again = try h.toolResults().last!.text
+    #expect(again.hasPrefix("失敗：[element_disabled] button is disabled\n【同一步又失敗】一模一樣的 click 已經失敗 2 次了，再做一次也會一樣。"))
+    #expect(h.logs.contains { $0.contains("click failed 2 times in a row with the same arguments") })
+    // A success starts the count over.
+    try await h.turn(Scripted("", clickRow(2)))
+    h.cua.refuse("click", refusal)
+    try await h.turn(Scripted("", clickRow(5)))
+    #expect(!(try h.toolResults().last!.text.contains("【同一步又失敗】")))
+}
+
+@Test func askOwnerDMsHimTheItemWaitsAndHisLineResumesIt() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", ("ask_owner", [("what", "付款買書"), ("where", "Safari 的博客來結帳頁"), ("why", "要花錢")])))
+    #expect(h.said.last?.hasSuffix("想先問你】\n要做：付款買書\n在哪裡：Safari 的博客來結帳頁\n為什麼：要花錢") == true && h.saidTo.last == .owner)
+    #expect(try h.toolResults().last!.text == "問了主人（私訊）。這則回覆的呼叫做完以後，「畫面上看得到結果」就是等待中：他回了才會再有回合。")
+    #expect(h.last.actions == ["ask owner"])
+    #expect(await h.doll.todo.phase == .waiting)
+    #expect(await !h.doll.followUp)
+    await h.doll.ownerSaid("買吧")
+    try await h.turn(Scripted("", clickRow(2)))
+    #expect(await h.doll.todo.phase == .doing && h.last.actions == ["click"])
+    // Discord down: not asked, the item goes on.
+    h.rec.undelivered.withLock { $0 = "Discord 斷線" }
+    try await h.turn(Scripted("", ("ask_owner", [("what", "刪檔"), ("where", "Finder"), ("why", "清空間")])))
+    #expect(try h.toolResults().last!.text == "失敗：主人沒收到：Discord 斷線。Discord 連上之前問不了；先不要做那件事。")
+    #expect(h.last.actions == ["error ask_owner"])
+    #expect(await h.doll.todo.phase == .doing)
+}
+
+@Test func theDaemonCheckNamesTheFixWhenTheDriverIsMissing() async throws {
+    let path = FileManager.default.temporaryDirectory.appending(path: "no-cua-\(UUID().uuidString)/cua-driver").path
     do {
-        _ = try await d.act(.clickText("紫色按鈕", button: "left", count: 1))
-        Issue.record("a failed vmpal call came back as a success")
+        _ = try await CuaDaemon.ensure(driver: path, startWait: 1)
+        Issue.record("a missing driver came up")
     } catch let e as ComputerError {
-        #expect(e.description == "vmpal: No text “紫色按鈕” on the screen")
+        #expect(e.description.hasPrefix("沒有 cua-driver：\(path) 不存在或不能執行。修法：安裝 CuaDriver.app")
+                && e.description.contains("[computer] driver"))
     }
-    #expect(try await d.act(.key("cmd+s")) == "Done: --cli ui E6813EBA key cmd+s --observe none")
-}
-
-@Test func everyComputerResultIsFullScreenThenWindowCropThenOutlineStoredVerbatim() async throws {
-    let h = try await menuHarness()
-    h.vm.setFrame(1)
-    try await h.turn(Scripted("", key("cmd+n"), screenshotCall))
-    let results = Array(try h.toolResults().suffix(3))                 // the first screenshot's, key's, screenshot's
-    #expect(results.count == 3 && results.allSatisfy { $0.image != nil && $0.crop != nil })
-    let note = "視窗圖：最前面的視窗，在全螢幕 (10,20)–(300,200)；用這張圖上的座標點要加 on: window。"
-    #expect(results.allSatisfy { $0.cropNote == note })
-    let shot = { (f: String) in String(decoding: try Data(contentsOf: h.dir.appending(path: "shots/\(f)")), as: UTF8.self) }
-    #expect(try results.map { try shot($0.image!) } == ["frame 0 full", "frame 1 full", "frame 1 full"])
-    #expect(try results.map { try shot($0.crop!) }
-            == ["frame 0 crop 10,20,300,200", "frame 1 crop 10,20,300,200", "frame 1 crop 10,20,300,200"])
-    #expect(results[0].window == "前景 app：Fake，視窗標題「frame 0」\nwindow \"frame 0\"\n  button \"OK\"")
-    #expect(results[1].window == "前景 app：Fake，視窗標題「frame 1」\nwindow \"frame 1\"\n  button \"OK\"")
-    #expect(results[2].window == results[1].window)
-    #expect(h.last.actions == ["key", "screenshot"])
-    // The screen moves on; later requests still send the stored images and lines, byte for byte.
-    h.vm.setFrame(2)
-    try await h.turn("好")
-    try await h.turn("嗯")
-    let earlier = await h.model.seen(2), later = await h.model.seen(3)
-    #expect(try ChatMessage.encoder.encode(Array(later.prefix(earlier.count))) == ChatMessage.encoder.encode(earlier))
-    let message = try #require(earlier.last { $0.role == "tool" })
-    let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
-    let parts = json["content"] as! [[String: Any]]
-    #expect(parts.map { $0["type"] as! String } == ["text", "image_url", "text", "image_url", "text"])
-    let uri = { (f: String) in "data:image/jpeg;base64," + Data(try shot(f).utf8).base64EncodedString() }
-    #expect((parts[1]["image_url"] as? [String: String])?["url"] == (try uri(results[2].image!)))
-    #expect(parts[2]["text"] as? String == "\n" + note)
-    #expect((parts[3]["image_url"] as? [String: String])?["url"] == (try uri(results[2].crop!)))
-    #expect(parts[4]["text"] as? String == "\n" + results[2].window!)
-}
-
-@Test func noFrontWindowMeansNoCropButTheMenuBarAndDockStoredVerbatim() async throws {
-    let h = try await menuHarness()
-    h.vm.failWindow("WINDOW_NOT_FOUND: No focused window found")
-    try await h.turn(Scripted("", key("Escape")))
-    let r = try h.toolResults().last!
-    #expect(r.text == fakeWindowsLine && r.image != nil)
-    #expect(r.crop == nil && r.cropNote == nil)
-    let desktop = "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\n"
-        + "Dock 和選單列（項目中心，全螢幕截圖座標）：\ndockitem \"Finder\" (67,765)\nmenuitem \"Clock\" (1205,13)"
-    #expect(r.window == desktop)
-    #expect(h.last.actions == ["key", "error window"])
-    #expect(h.logs.contains { $0.contains("window outline failed") })
-    // Re-sent byte-identical on the next turn, as the last text part.
-    try await h.turn("嗯")
-    let sent = try #require(await h.model.seen(2).last { $0.role == "tool" })
-    let sentJSON = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(sent)) as! [String: Any]
-    #expect((sentJSON["content"] as! [[String: Any]]).last?["text"] as? String == "\n" + desktop)
-    // The summary failing too: the result says so.
-    h.vm.failDesktop("agent-desktop: not found")
-    try await h.turn(Scripted("", key("Escape")))
-    #expect(try h.toolResults().last!.window
-            == "沒有視窗圖和視窗概要：WINDOW_NOT_FOUND: No focused window found\nDock 和選單列概要失敗：agent-desktop: not found")
-    #expect(h.last.actions == ["key", "error window", "error desktop"])
-    h.vm.failDesktop(nil)
-    // A window with no place to crop: the outline still comes, the crop's line says why.
-    h.vm.failWindow(nil)
-    h.vm.setPlace(.unknown("最前面的視窗不在螢幕上"))
-    try await h.turn(Scripted("", screenshotCall))
-    let s = try h.toolResults().last!
-    #expect(s.crop == nil && s.cropNote == "沒有視窗圖：最前面的視窗不在螢幕上" && s.window!.hasPrefix("前景 app：Fake"))
-    try await h.turn("嗯")
-    let message = try #require(await h.model.seen(5).last { $0.role == "tool" })
-    let json = try JSONSerialization.jsonObject(with: ChatMessage.encoder.encode(message)) as! [String: Any]
-    #expect((json["content"] as! [[String: Any]]).map { $0["type"] as! String } == ["text", "image_url", "text", "text"])
-}
-
-@Test func theMenuBarAndDockAreOneLinePerItemWithItsCenterInScreenshotPixels() async throws {
-    // Answers as agent-desktop 2.6 gave them in the Doll VM (2026-11-09, Finder frontmost, no window),
-    // cut to a few items.
-    let menubar = #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No window found to identify the application owning surface 'menubar'"}}"#
-    let extras = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"MenuBarAgent","tree":{"bounds":{"height":30.0,"width":170.0,"x":1250.0,"y":0.0},"children":["#
-        + #"{"bounds":{"height":30.0,"width":26.0,"x":1250.0,"y":0.0},"role":"group","children":[{"bounds":{"height":22.0,"width":26.0,"x":1250.0,"y":4.0},"name":"Control Center","ref_id":"@s:e1","role":"menuitem"}]},"#
-        + #"{"bounds":{"height":30.0,"width":128.0,"x":1292.0,"y":0.0},"role":"group","children":[{"bounds":{"height":22.0,"width":128.0,"x":1292.0,"y":4.0},"name":"Clock","ref_id":"@s:e2","role":"menuitem"}]}]}}}"#
-    let dock = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Dock","tree":{"bounds":{"height":0.0,"width":0.0,"x":0.0,"y":0.0},"role":"application","name":"Dock","children":["#
-        + #"{"bounds":{"height":70.0,"width":1360.0,"x":40.0,"y":820.0},"role":"list","children":["#
-        + #"{"bounds":{"height":69.9776611328125,"width":53.977691650390625,"x":47.97772216796875,"y":825.0223388671875},"name":"Finder","role":"dockitem"},"#
-        + #"{"bounds":{"height":69.9776611328125,"width":24.0,"x":1073.0,"y":825.0223388671875},"role":"separator"},"#
-        + #"{"bounds":{"height":69.9776611328125,"width":53.977691650390625,"x":1205.0,"y":825.0223388671875},"name":"Terminal","role":"dockitem"}]}]}}}"#
-    let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    let seen = Mutex<[[String]]>([])
-    let driver = VMPalDriver(cfg, vmpal: { args in
-        seen.withLock { $0.append(args) }
-        return ["@@menubar", menubar, "@@menu-bar-extras", extras, "@@dock", dock, "@@displays", displays].joined(separator: "\n")
-    })
-    // One `vmpal exec`: agent-desktop's path as $1. Centers: (x + width/2) × 1280/1440, rounded.
-    #expect(try await driver.desktopSummary() == """
-        Dock 和選單列（項目中心，全螢幕截圖座標）：
-        選單列讀不到：WINDOW_NOT_FOUND: No window found to identify the application owning surface 'menubar'
-        menuitem "Control Center" (1123,13)
-        menuitem "Clock" (1205,13)
-        dockitem "Finder" (67,764)
-        dockitem "Terminal" (1095,764)
-        """)
-    let calls = seen.withLock { $0 }
-    #expect(calls.count == 1)
-    let call = try #require(calls.first)
-    #expect(Array(call.prefix(5)) == ["exec", "E6813EBA", "--", "/bin/sh", "-c"] && call.suffix(2) == ["sh", cfg.agentDesktop])
-    #expect(call[5].contains("for s in menubar menu-bar-extras dock;") && call[5].contains("\"$1\" list-displays"))
-    // agent-desktop missing or no screen: the whole summary fails with the VM's text.
-    let bad = VMPalDriver(cfg, vmpal: { _ in throw ComputerError("sh: agent-desktop: not found") })
-    await #expect(throws: ComputerError.self) { try await bad.desktopSummary() }
-}
-
-@Test func theWindowOutlineIsOneLinePerElementWithoutRefsAndItsBoundsPlaceTheCrop() async throws {
-    let ok = #"{"version":"2.6","ok":true,"command":"snapshot","data":{"app":"Safari","ref_count":2,"snapshot_id":"s1","#
-        + #""window":{"id":"w-1","title":"Safari"},"tree":{"name":"Apple","role":"window","#
-        + #""bounds":{"height":499.0,"width":860.0,"x":40.0,"y":54.0},"children":["#
-        + #"{"role":"group","bounds":{"height":10.0,"width":10.0,"x":0.0,"y":0.0},"#
-        + #""children":[{"role":"scrollarea","children_count":2,"ref_id":"@s1:e1"}]},"#
-        + #"{"role":"button","name":"Go back","ref_id":"@s1:e2","states":["disabled"]}]}}}"#
-    let displays = #"{"version":"2.6","ok":true,"command":"list-displays","data":[{"bounds":{"height":900.0,"width":1440.0,"x":0.0,"y":0.0},"id":"1","is_primary":true,"scale":2.0}]}"#
-    let want = "前景 app：Safari，視窗標題「Apple」\nwindow \"Apple\"\n  group\n    scrollarea (2)\n  button \"Go back\""
-    let err = #"{"version":"2.6","ok":false,"command":"snapshot","error":{"code":"WINDOW_NOT_FOUND","message":"No focused window found"}}"#
-    // Through the driver: agent-desktop in the VM via `vmpal exec`, its path as $1; a 1440×900-point
-    // screen in a 1280-wide screenshot.
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    cfg.jpegQuality = 0   // VMPal's bytes as they are; re-encoding has its own test
-    let seen = Mutex<[[String]]>([])
-    let good = VMPalDriver(cfg, vmpal: { args in
-        seen.withLock { $0.append(args) }
-        if args[0] == "ui" { try Data("png".utf8).write(to: URL(filePath: args[4])); return "Image written." }
-        return args[5].contains("list-displays") ? displays : ok
-    })
-    #expect(try await good.frontWindow() == FrontWindow(summary: want, place: .at(Region(35, 48, 800, 492))))
-    #expect(seen.withLock { $0 } == [
-        ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" snapshot --skeleton -i --compact --include-bounds", "sh", cfg.agentDesktop],
-        ["exec", "E6813EBA", "--", "/bin/sh", "-c", "\"$1\" list-displays", "sh", cfg.agentDesktop],
-    ])
-    // The crop: her full-screen pixels, VMPal's 1280-wide space, at most the crop width.
-    seen.withLock { $0 = [] }
-    #expect(try await good.windowShot(Region(35, 48, 800, 492)) == Data("png".utf8))
-    let shot = try #require(seen.withLock { $0 }.first)
-    #expect(Array(shot.prefix(4)) == ["ui", "E6813EBA", "screenshot", "-o"]
-            && Array(shot.dropFirst(5)) == ["--region", "35,48,800,492", "--max-width", "1280"])
-    // Clipped to the screen; a window wholly off it has no place.
-    let screen = WindowSummary.Rect(x: 0, y: 0, width: 1440, height: 900)
-    #expect(WindowSummary.place(.init(x: -100, y: 800, width: 400, height: 300), on: screen, width: 1280) == .at(Region(0, 711, 267, 800)))
-    #expect(WindowSummary.place(.init(x: 1500, y: 0, width: 100, height: 100), on: screen, width: 1280) == .unknown("最前面的視窗不在螢幕上"))
-    let bad = VMPalDriver(cfg, vmpal: { _ in throw ComputerError(err) })   // agent-desktop exits 1 with its JSON answer
-    do {
-        _ = try await bad.frontWindow()
-        Issue.record("a failed outline came back as a success")
-    } catch let e as ComputerError {
-        #expect(e.description == "WINDOW_NOT_FOUND: No focused window found")
-    }
-}
-
-/// A JPEG screenshot is re-encoded at the configured quality: same pixel size, a valid and smaller
-/// file, the same bytes every time for the same input (old screenshots are re-sent byte-identical);
-/// quality 0 keeps VMPal's bytes.
-@Test func jpegScreenshotsAreReencodedAtTheConfiguredQuality() throws {
-    // A 320×200 photo-like image (noise) saved at maximum quality, like VMPal's own file.
-    let w = 320, h = 200
-    var pixels = [UInt8](repeating: 0, count: w * h * 4)
-    var seed: UInt32 = 7
-    for i in 0..<pixels.count { seed = seed &* 1_664_525 &+ 1_013_904_223; pixels[i] = UInt8(truncatingIfNeeded: seed >> 24) }
-    let ctx = try #require(CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                     space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
-    let image = try #require(ctx.makeImage())
-    let original = NSMutableData()
-    let dst = try #require(CGImageDestinationCreateWithData(original, "public.jpeg" as CFString, 1, nil))
-    CGImageDestinationAddImage(dst, image, [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
-    #expect(CGImageDestinationFinalize(dst))
-    let vmpal = original as Data
-
-    let smaller = try VMPalDriver.reencodeJPEG(vmpal, quality: 40)
-    #expect(smaller.count < vmpal.count / 2)
-    let size = try #require(ImageSize.of(smaller))
-    #expect(size.width == w && size.height == h)
-    #expect(try VMPalDriver.reencodeJPEG(vmpal, quality: 40) == smaller)
-    #expect(try VMPalDriver.reencodeJPEG(vmpal, quality: 0) == vmpal)
-    #expect(throws: ComputerError.self) { try VMPalDriver.reencodeJPEG(Data("png".utf8), quality: 40) }
-}
-
-/// The VM side of `VMPalDriver` for typing: files `vmpal cp` put there, its clipboard, and what
-/// reached the focused app.
-private final class FakeVMPal: Sendable {
-    struct State {
-        var files: [String: String] = [:]
-        var clipboard = ""
-        var typed = ""
-        var calls: [[String]] = []
-        var failPaste = false
-    }
-    let state = Mutex(State())
-
-    func run(_ args: [String]) throws -> String {
-        try state.withLock { s in
-            s.calls.append(args)
-            switch args[0] {
-            case "cp":
-                s.files[String(args[2].split(separator: ":", maxSplits: 1)[1])] =
-                    try String(contentsOf: URL(filePath: args[1]), encoding: .utf8)
-            case "exec":    // exec <vm> -- /bin/sh -c <script> sh <args…>
-                let script = args[5], a = Array(args.dropFirst(7))
-                if script.contains("pbpaste >") { s.files[a[0]] = s.clipboard }
-                if script.contains("pbcopy <") { s.clipboard = s.files[a[0]] ?? "" }
-                if script.contains("rm -f") { for f in a { s.files[f] = nil } }
-            default:        // ui <vm> <command…>
-                let cmd = Array(args.dropFirst(2))
-                switch (cmd[0], cmd[1]) {
-                case ("key", "cmd+v"):
-                    if s.failPaste { throw ComputerError("vmpal: key failed") }
-                    s.typed += s.clipboard
-                case ("key", "Return"): s.typed += "\n"
-                case ("type", _): s.typed += String(try String(contentsOf: URL(filePath: cmd[2]), encoding: .utf8).dropLast())
-                default: break
-                }
-            }
-            return "Done: 1 action in 0.1 s."
-        }
-    }
-}
-
-@Test func nonASCIITextIsPastedThroughTheClipboardWhichComesBack() async throws {
-    let vm = FakeVMPal()
-    vm.state.withLock { $0.clipboard = "主人原本複製的" }
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    let d = VMPalDriver(cfg, vmpal: { try vm.run($0) })
-    let text = "你好，我是娃娃\n\nsecond"
-    let said = try await d.act(.type(text))
-    var s = vm.state.withLock { $0 }
-    #expect(s.typed == text && s.clipboard == "主人原本複製的" && s.files.isEmpty)
-    #expect(said.hasPrefix("經剪貼簿貼上（cmd+v），剪貼簿已還原。"))
-    #expect(!s.calls.joined().contains { $0.contains("你好") || $0.contains("second") })   // never a process argument
-    #expect(s.calls.filter { $0.starts(with: ["ui", "E6813EBA", "key", "cmd+v"]) }.count == 2)
-    // ASCII-only text is still typed.
-    vm.state.withLock { $0.calls = []; $0.typed = "" }
-    _ = try await d.act(.type("ls -la\n"))
-    s = vm.state.withLock { $0 }
-    #expect(s.typed == "ls -la\n" && s.calls.count == 1 && s.calls[0].starts(with: ["ui", "E6813EBA", "type", "--file"]))
-    // A failed paste is a failure, and the clipboard still comes back.
-    vm.state.withLock { $0.failPaste = true; $0.typed = "" }
-    do {
-        _ = try await d.act(.type("娃娃"))
-        Issue.record("a failed paste came back as a success")
-    } catch let e as ComputerError {
-        #expect(e.description == "vmpal: key failed")
-    }
-    s = vm.state.withLock { $0 }
-    #expect(s.typed == "" && s.clipboard == "主人原本複製的" && s.files.isEmpty)
-}
-
-@Test func aChangeInTheWatchedRegionWakesHerAndANewWatchReplacesTheOld() async throws {
-    let h = try await menuHarness { $0.computer.watchStopAfter = 10 }
-    try await h.turn(Scripted("", watch("0,0,100,50", 60)))
-    #expect(try h.toolResults().last!.text
-            == "開始盯著0,0,100,50，最多等 60 秒；有變化或時間到會叫你。這則回覆的呼叫做完以後，這一項就是等待中。")
-    #expect(await !h.doll.followUp)                                     // the ack alone is no new turn
-    await h.doll.ownerSaid("換盯那裡")                                  // waiting: a line puts the item back in progress
-    try await h.turn(Scripted("", watch("10,10,20,20", 60)))
-    #expect(try h.toolResults().last!.text.contains("（取代了上一個 watch）"))
-    try await Task.sleep(for: .milliseconds(200))
-    #expect(await watchWakes(h).isEmpty)                                // nothing changed yet
-    h.vm.setFrame(1)
-    try await waitUntil { await watchWakes(h).count == 1 }
-    let wakes = await watchWakes(h)
-    #expect(wakes.count == 1 && wakes[0].text == "盯著的10,10,20,20變了。" && wakes[0].image != nil)
-    try await Task.sleep(for: .milliseconds(200))
-    #expect(await watchWakes(h).count == 1)                             // the replaced watch is gone
-}
-
-@Test func wakesAreRateLimited() async throws {
-    let h = try await menuHarness { $0.computer.watchMinIntervalS = 0.4; $0.computer.watchStopAfter = 100 }
-    h.vm.setChanging(true)                                              // every capture differs
-    try await h.turn(Scripted("", watch("window", 60)))
-    try await Task.sleep(for: .seconds(1))
-    // The first change at once, then one per 0.4 s; unlimited, a 0.02 s poll would wake her ~50 times.
-    let n = await watchWakes(h).count
-    #expect((2...3).contains(n), "\(n) wakes")
-}
-
-@Test func maxWaitWakesHerWhenNothingChanges() async throws {
-    let h = try await menuHarness()
-    try await h.turn(Scripted("", watch("window", 1)))
-    try await Task.sleep(for: .milliseconds(600))
-    #expect(await watchWakes(h).isEmpty)
-    try await waitUntil { await watchWakes(h).count == 1 }
-    #expect(await watchWakes(h).map(\.text) == ["盯著的整個畫面 1 秒沒變化。"])
-}
-
-@Test func theWatchStopsAfterMWakesWithNoActionAndAnActionResetsTheCount() async throws {
-    let h = try await menuHarness { $0.computer.watchStopAfter = 2 }
-    try await h.turn(Scripted("", watch("window", 60)))
-    h.vm.setFrame(1)
-    try await waitUntil { await watchWakes(h).count == 1 }
-    try await h.turn(Scripted("", key("Escape")))                      // takes the wake; an action resets the count
-    let afterAction = (await h.doll.watchIdle, await h.doll.watch?.id)
-    #expect(afterAction.0 == 0 && afterAction.1 == 1)
-    h.vm.setFrame(2)
-    try await waitUntil { await watchWakes(h).count == 1 }
-    h.vm.setFrame(3)
-    try await waitUntil { await watchWakes(h).count == 2 }
-    let wakes = await watchWakes(h)
-    #expect(wakes.count == 2 && !wakes[0].text.contains("停了"))
-    #expect(wakes[1].text.contains("（連續 2 次叫你都沒操作電腦，watch 停了）"))
-    let stopped = await h.doll.watch?.id
-    #expect(stopped == nil)
-    #expect(h.logs.contains { $0.contains("watch 1 stopped after 2 wakes in a row without a computer action") })
-    h.vm.setFrame(4)
-    try await Task.sleep(for: .milliseconds(200))
-    #expect(await watchWakes(h).count == 2)
-}
-
-@Test func failingTheItemStopsTheWatch() async throws {
-    let h = try await menuHarness()
-    try await h.turn(Scripted("", watch("window", 60)))
-    await h.doll.ownerSaid("不用等了")                                    // 等待中: his line puts the item back in progress
-    try await h.turn(Scripted("", fail("沒好")))
-    #expect(h.last.itemEnd == "失敗")
-    h.vm.setFrame(1)
-    try await Task.sleep(for: .milliseconds(200))
-    let left = await h.doll.watch?.id
-    #expect(await watchWakes(h).isEmpty && left == nil)
 }
 
 // memory folders (2026-11-08: secret / own / public) ----------------------------
@@ -1827,12 +1354,6 @@ private final class FakeVMPal: Sendable {
     #expect(try memory.search("VM 登入密碼", visible: Memory.visible(.doll, sawSecret: false), limit: 5).contains { $0.folder == "own" })
 }
 
-// shortcut memory (spec 3.1, 2026-11-09) ---------------------------------------------
-
-private let textEdit = AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1.21")
-private let textEditKeys = [MenuShortcut(path: "File › Save", keys: "⌘S"), MenuShortcut(path: "File › Save As…", keys: "⇧⌥⌘S"),
-                            MenuShortcut(path: "Format › Font › Bold", keys: "⌘B")]
-
 /// Her public memory files, parsed, by text.
 private func publicMemories(_ h: Harness) throws -> [(text: String, tier: SourceTier, confidence: Double, kind: String, app: String, version: String)] {
     let dir = h.dir.appending(path: "memory/public")
@@ -1842,64 +1363,7 @@ private func publicMemories(_ h: Harness) throws -> [(text: String, tier: Source
     }.sorted { $0.text < $1.text }
 }
 
-@Test func theFrontAppsShortcutsBecomeOneProgramMemoryEachOncePerVersion() async throws {
-    let h = try await Harness()
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    let mems = try publicMemories(h)
-    #expect(mems.map(\.text) == ["TextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）", "TextEdit：File › Save＝⌘S（TextEdit 1.21）",
-                                 "TextEdit：Format › Font › Bold＝⌘B（TextEdit 1.21）"])
-    let program = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.program]!
-    #expect(program > 0.85)
-    #expect(mems.allSatisfy { $0.tier == .program && $0.confidence == program && $0.kind == "" && $0.app == "com.apple.TextEdit" && $0.version == "1.21" })
-    // The same app at the same version is never read again.
-    try await h.turn(Scripted("", screenshotCall, key("cmd+s")))
-    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
-    #expect(try publicMemories(h).count == 3)
-    // She finds them with recall, as 確定.
-    await h.doll.ownerSaid("另存新檔怎麼按？")
-    try await h.turn(Scripted("", recall("TextEdit 另存")))
-    #expect(try h.toolResults().last!.text.contains("〔確定｜public〕\nTextEdit：File › Save As…＝⇧⌥⌘S（TextEdit 1.21）"))
-    // A new version rewrites that app's records.
-    h.vm.setApp(AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1.22"), [MenuShortcut(path: "File › Save", keys: "⌘S")])
-    try await h.turn(Scripted("", screenshotCall))
-    #expect(try publicMemories(h).map(\.text) == ["TextEdit：File › Save＝⌘S（TextEdit 1.22）"])
-    // Another app gets its own; the first app's stay.
-    h.vm.setApp(AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0"), [MenuShortcut(path: "File › New Finder Window", keys: "⌘N")])
-    try await h.turn(Scripted("", key("cmd+n")))
-    #expect(try publicMemories(h).map(\.text) == ["Finder：File › New Finder Window＝⌘N（Finder 15.0）", "TextEdit：File › Save＝⌘S（TextEdit 1.22）"])
-    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.TextEdit", "com.apple.finder"])
-    #expect(try h.store.countMemoryIndex() == 2)
-
-    // A new process on the same memory knows what is recorded from the files.
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
-    cfg.core.dataDir = h.dir.path
-    cfg.memory.dir = h.dir.appending(path: "memory").path
-    let again = try Doll(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(),
-                         computer: h.vm, deliver: { _, _ in nil })
-    try await again.learnFrontApp()
-    #expect(h.vm.state.withLock { $0.menuReads }.count == 3)
-}
-
-@Test func learnShortcutsOffReadsNoMenus() async throws {
-    let off = try await Harness(tune: { $0.computer.learnShortcuts = false })
-    off.vm.setApp(textEdit, textEditKeys)
-    await off.doll.ownerSaid("用電腦")
-    try await off.turn(Scripted("", todoSet(), screenshotCall))
-    try await off.turn(Scripted("", key("cmd+s")))
-    #expect(off.vm.state.withLock { $0.menuReads.isEmpty })
-    #expect(try publicMemories(off).isEmpty)
-}
-
-@Test func axmenusOutputParses() {
-    #expect(VMPalDriver.parseFrontApp("com.apple.TextEdit\tTextEdit\t1.21\n") == textEdit)
-    #expect(VMPalDriver.parseFrontApp("") == nil && VMPalDriver.parseFrontApp("\tSomething\t1\n") == nil)
-    #expect(VMPalDriver.parseShortcuts("File › Save\t⌘S\nEdit › Complete\t⌥Esc\nbroken line\n")
-            == [MenuShortcut(path: "File › Save", keys: "⌘S"), MenuShortcut(path: "Edit › Complete", keys: "⌥Esc")])
-}
-
-// auto-attached memories and the open windows line (spec 3.1, 2026-11-09) ----------------
+// auto-attached memories (spec 3.1, 2026-11-09) ----------------------------------------
 
 /// Writes one record file into her memory folder and re-indexes, as if remembered just now. Default:
 /// an experience (tier self_reported, 0.4 = 大概), the only kind the program attaches.
@@ -1944,14 +1408,14 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
 
 @Test func onlyExperiencesAreAttachedNeverShortcutsOrHerOtherMemories() async throws {
     let h = try await Harness()
-    h.vm.setApp(textEdit, textEditKeys)
+    h.cua.change { $0.windows.append(FakeCua.untitled) }
     try await seedMemory(h, "public", "TextEdit 存檔按 cmd+s", tier: "owner", confidence: 0.9)
     try await seedMemory(h, "public", "TextEdit：File › Save＝⌘S（TextEdit 1.20）", tier: "program", confidence: 0.95)
     try await seedMemory(h, "public", "經驗：用 TextEdit 存檔\n1. key cmd+s → Done\n結果：存好了")
     await h.doll.ownerSaid("用 TextEdit 存檔")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    // The owner's line: the experience only. The screenshot shows TextEdit (a switch, its shortcuts
-    // learned now): nothing new to attach, no event.
+    try await h.turn(Scripted("", todoSet(), ("read_window", [("app", "TextEdit")])))
+    // The owner's line: the experience only. The read shows TextEdit (a switch): nothing new to
+    // attach, no event.
     let mem = try memoryEvents(h)
     #expect(mem.count == 1 && mem[0].text.contains("經驗：用 TextEdit 存檔") && !mem[0].text.contains("⌘S（"))
     #expect(!mem[0].text.contains("TextEdit 存檔按 cmd+s"))
@@ -1970,11 +1434,10 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
 @Test func attachedMemoriesAreResentByteIdentical() async throws {
     // FakeEmbedder: the short owner line against the longer experience is under 0.55.
     let h = try await Harness(tune: { $0.select.similarity = 0.2 })
-    h.vm.setApp(textEdit, textEditKeys)
     try await seedMemory(h, "public", "經驗：用電腦存檔\n1. key cmd+s → Done")
     await h.doll.ownerSaid("用電腦存檔")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    try await h.turn(Scripted("", key("cmd+s")))
+    try await h.turn(Scripted("", todoSet(), readCall))
+    try await h.turn(Scripted("", think("medium")))
     try await h.turn("好了")
     let reqs = await h.model.requests.map(\.messages)
     #expect(reqs.count == 3)
@@ -2027,19 +1490,18 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     let h = try await Harness(tune: { $0.select.similarity = 0.2 })
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn(Scripted("", todoSet("標題沒有「已編輯」")))
-    // An action that fails is not a step; each step is only what she did, no VM answer text.
-    h.vm.failNext("boom\nsecond line")
-    try await h.turn(Scripted("", ("click", [("text", "Save")]), screenshotCall))
-    h.vm.setSizes(screen: (1280, 800), crop: (580, 360))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), screenshotCall))
-    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("on", "window"), ("count", "2")]),
+    // An action that fails is not a step; each step is only what she did, no driver answer text.
+    h.cua.refuse("click", "boom\nsecond line")
+    try await h.turn(Scripted("", readCall, clickRow(3)))
+    try await h.turn(Scripted("", clickRow(2), readCall))
+    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("count", "2")]),
                               ("type", [("text", "娃娃來過")]), key("cmd+s")))
     // She looks, then answers in the same reply.
-    try await h.turn(Scripted("", screenshotCall, done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
+    try await h.turn(Scripted("", readCall, done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
     #expect(h.last.footer.contains("- todo：進行中「標題沒有「已編輯」」"))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。"))
     let text = "經驗：把 notes 存檔\n這一項：標題沒有「已編輯」\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
-        + "1. click dockitem \"Finder\"\n2. click 60,45 雙擊\n3. type 「娃娃來過」\n4. key cmd+s"
+        + "1. click AXButton \"7\"\n2. click 100,50 雙擊\n3. type「娃娃來過」\n4. key cmd+s"
     #expect(h.last.itemEnd == "完成" && h.last.experience == text && h.last.actions.contains("todo done"))
     let mems = try experiences(h)
     let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
@@ -2054,7 +1516,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
     // Only the program's steps count as steps, not a numbered line in her result.
     #expect(Experience(id: "", folder: "public", secret: false, level: "", file: files[0]).steps
-            == ["click dockitem \"Finder\"", "click 60,45 雙擊", "type 「娃娃來過」", "key cmd+s"])
+            == ["click AXButton \"7\"", "click 100,50 雙擊", "type「娃娃來過」", "key cmd+s"])
     #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
             && stats == ExperienceStats(turns: 5, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
     // The next time the owner asks the same, it is attached whole, its stats line first.
@@ -2074,18 +1536,17 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", dm("好"), done("說了")))
     #expect(h.last.itemEnd == "完成" && h.last.experience == nil)
     #expect(try experiences(h).isEmpty)
-    // An item still in progress when the program stops: the watch stops, it stays in the timeline's todo.
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    // An item still in progress when the program stops: it stays in the timeline's todo.
+    try await h.turn(Scripted("", todoSet(), readCall))
     try await h.turn(Scripted("", key("Return")))
     await h.doll.shutdown()
-    #expect(await h.doll.watch == nil)
     #expect(h.logs.contains { $0.contains("todo: stopping with「畫面上看得到結果」進行中") })
     #expect(try h.timeline().todo.phase == .doing)
     #expect(try experiences(h).isEmpty)
 }
 
 @Test func doneEndsTheListAndNothingWakesHerForIt() async throws {
-    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", dm("存好了"), key("cmd+s"), done("看到了"))])
+    let h = try await Harness([Scripted("", todoSet(), readCall), Scripted("", dm("存好了"), key("cmd+s"), done("看到了"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await h.doll.ownerSaid("存檔")
@@ -2097,7 +1558,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(await h.model.requests.count == 2 && h.said == ["存好了"])  // her words came with the done
     #expect(await h.doll.settled)
     #expect(await h.doll.todo.phase == .idle)
-    #expect(h.last.itemEnd == "完成" && h.vm.actions == [.key("cmd+s")])
+    #expect(h.last.itemEnd == "完成" && h.cua.actions == ["hotkey"])
     // The result is still in the timeline, right after her reply.
     let events = try h.events()
     #expect(events.last?.kind == .tool && events.last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。")
@@ -2109,12 +1570,12 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 
 @Test func callsAfterDoneInTheSameReplyAreRefused() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("Return"), screenshotCall))
+    try await h.turn(Scripted("", key("cmd+s"), done("存好了"), key("Return"), readCall))
     let refused = "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"
     let results = try h.toolResults().suffix(3).map(\.text)
     #expect(results.first!.hasPrefix("完成，記下了。") && Array(results.dropFirst()) == [refused, refused])
-    #expect(h.last.actions == ["key", "todo done", "error key", "error screenshot"])
-    #expect(h.vm.actions == [.key("cmd+s")])
+    #expect(h.last.actions == ["key", "todo done", "error key", "error read_window"])
+    #expect(h.cua.actions == ["hotkey"])
     #expect(await !h.doll.followUp)
     #expect(await h.doll.todo.phase == .idle)
     // The next request: the item is compacted to her todo calls and their results; the refused
@@ -2138,36 +1599,6 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // Header and summary alone over the cap: hard cut.
     let tiny = Doll.experienceText(task: String(repeating: "長", count: 500), summary: "y", steps: steps, maxChars: 100)
     #expect(tiny.count == 100 && tiny.hasSuffix("…"))
-}
-
-@Test func everyComputerResultEndsWithTheOpenWindowsAndFocusOrWhyNot() async throws {
-    let h = try await menuHarness()
-    #expect(try h.toolResults().last!.text.hasSuffix("\n" + fakeWindowsLine))
-    h.vm.failState("vmpal: exec failed")
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try h.toolResults().last!.text == "開著的視窗和焦點讀不到：vmpal: exec failed")
-    #expect(h.last.actions == ["key", "error windows"])
-}
-
-@Test func openWindowsAndFocusRenderFromAgentDesktop() {
-    let windows = Data("""
-        {"ok":true,"data":[{"id":"w-1","app_name":"Finder","title":"Finder","is_focused":false,"visible":true},
-        {"id":"w-2","app_name":"TextEdit","title":"TextEdit","is_focused":true,"visible":true},
-        {"id":"w-3","app_name":"Caffeine","title":"Caffeine","is_focused":false,"visible":false},
-        {"id":"w-4","app_name":"Safari","title":"Apple","is_focused":false,"visible":true}]}
-        """.utf8)
-    let focused = Data("""
-        {"ok":true,"data":{"window":{"id":"w-2"},"tree":{"role":"window","name":"notes.txt","children":[
-        {"role":"scrollarea","children":[{"role":"textarea","value":"第一行\\n第二行很長很長很長很長很長很長很長很長","states":["focused"]}]},
-        {"role":"combobox","name":"font size","value":12},{"role":"button","name":"Close"}]}}}
-        """.utf8)
-    #expect(OpenWindows.line(windows: windows, focused: focused)
-            == "開著的視窗：Finder、TextEdit「notes.txt」（前景）、Safari「Apple」；焦點：textarea「第一行⏎第二行很長很長很長很長很長很長很…」")
-    let notFound = Data(#"{"ok":false,"error":{"code":"WINDOW_NOT_FOUND","message":"No window found"}}"#.utf8)
-    #expect(OpenWindows.line(windows: Data(#"{"ok":true,"data":[]}"#.utf8), focused: notFound)
-            == "開著的視窗：沒有；焦點讀不到：WINDOW_NOT_FOUND: No window found")
-    #expect(OpenWindows.line(windows: Data("boom".utf8), focused: Data(#"{"ok":true,"data":{"tree":{"role":"window"}}}"#.utf8))
-            == "開著的視窗讀不到：agent-desktop 的回答不是 JSON：boom；焦點：沒有")
 }
 
 // experience stats, groups and ranking (spec 3.1, 2026-11-09) ------------------------------
@@ -2286,25 +1717,28 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
 @Test func aFollowedExperienceCountsHowHerItemEndedAndRanksBy() async throws {
     let h = try await Harness()
     let task = "把 notes 存檔"
-    try await seedExperience(h, "1-seed", task: task, steps: ["click dockitem \"Finder\"", "key cmd+s", "key cmd+w", "type 「娃娃來過」"],
+    try await seedExperience(h, "1-seed", task: task, steps: ["click AXButton \"7\"", "key cmd+s", "key cmd+w", "type 「娃娃來過」"],
                              stats: ExperienceStats(turns: 9, seconds: 150))
     // 1: two of its four steps in order (ratio 0.5 = experience_follow_ratio): followed, her success counted.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", todoSet(), readCall))
     let attached = try #require(h.reports[0].attached.first)
     #expect(attached.contains("成績：這次 9 回合、150 秒；附上後照做 0 次，成功 0 次"))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s")))
+    try await h.turn(Scripted("", clickRow(2), key("cmd+s")))
     try await h.turn(Scripted("", done("存好了")))
     #expect(h.last.follows == ["experience 1-seed: 2/4 steps done in order (ratio 0.50), followed, counted success: 照做 1、成功 1、失敗 0"])
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
     // The attached event in the timeline is not re-rendered with the new stats: every request while
-    // the item runs starts with the whole one before it, and the first after it with the one that
-    // listed it, up to that reply's footer (the item's turns are compacted).
+    // the item runs starts with the one before it (up to the older read, put away to one line once a
+    // newer one exists), and the first after it with the one that listed it, up to that reply's
+    // footer (the item's turns are compacted).
     try await h.turn("好了")
     #expect(try memoryEvents(h).first?.text == attached)
     let reqs = await h.model.requests.map(\.messages)
-    for i in 1..<3 { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
+    #expect(Array(reqs[1].prefix(reqs[0].count)) == reqs[0])
+    let firstRead = try #require(reqs[1].firstIndex { !$0.images.isEmpty })
+    #expect(Array(reqs[2].prefix(firstRead)) == Array(reqs[1].prefix(firstRead)) && reqs[2][firstRead].images.isEmpty)
     #expect(reqs.count == 4 && Array(reqs[3].prefix(reqs[0].count - 1)) == Array(reqs[0].dropLast()))
     // Her new experience (3 turns: todo.set, the actions, todo.done) now leads the group.
     let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 3 })
@@ -2312,7 +1746,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
 
     // 2: the new one is attached; none of its steps done: not followed, nothing counted.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", todoSet(), readCall))
     #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 3 回合") && !h.last.attached[0].contains("9 回合"))
     try await h.turn(Scripted("", key("cmd+q"), fail("沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].hasSuffix("0/2 steps done in order (ratio 0.00), not followed"))
@@ -2321,139 +1755,24 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     // 3: followed, and she says it failed: counted as a failure, and the failure demotes it below
     // the 9-turn one that succeeded.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("CMD+S"), fail("沒存到")))
+    try await h.turn(Scripted("", todoSet(), readCall))
+    try await h.turn(Scripted("", clickRow(2), key("CMD+S"), fail("沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].contains("2/2 steps done in order (ratio 1.00), followed, counted failure: 照做 1、成功 0、失敗 1"))
     let ranking = try await h.doll.experienceRanking()
     #expect(ranking.count == 1 && ranking[0].count == 2 && ranking[0][0].hasPrefix("1-seed: 成績：這次 9 回合、150 秒；附上後照做 1 次，成功 1 次；失敗 0 次"))
     #expect(ranking[0][1].contains("3 回合") && ranking[0][1].hasSuffix("附上後照做 1 次，成功 0 次；失敗 1 次"))
     // An item still in progress when the program stops: only logged.
     await h.doll.ownerSaid(task)
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    try await h.turn(Scripted("", ("click", [("element", "dockitem \"Finder\"")]), key("cmd+s"), key("cmd+w")))
+    try await h.turn(Scripted("", todoSet(), readCall))
+    try await h.turn(Scripted("", clickRow(2), key("cmd+s"), key("cmd+w")))
     await h.doll.shutdown()
     #expect(h.logs.contains { $0.contains("experience 1-seed: 3/4 steps done in order (ratio 0.75), followed; outcome unknown, nothing counted") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
 }
 
-// the front app's cheatsheet (spec 3.1, 2026-11-09) -------------------------------------
-
-private let finder = AppIdentity(bundleID: "com.apple.finder", name: "Finder", version: "15.0")
-private let finderKeys = [MenuShortcut(path: "File › New Finder Window", keys: "⌘N"), MenuShortcut(path: "Go › Desktop", keys: "⇧⌘D")]
-private let textEditSheet = "【快捷鍵】TextEdit 1.21\nFile › Save = ⌘S\nFile › Save As… = ⇧⌥⌘S\nFormat › Font › Bold = ⌘B"
-private let finderSheet = "【快捷鍵】Finder 15.0\nFile › New Finder Window = ⌘N\nGo › Desktop = ⇧⌘D"
-private func sheets(_ h: Harness) throws -> [String] { try memoryEvents(h).map(\.text).filter { $0.hasPrefix("【快捷鍵】") } }
-
-@Test func cheatsheetIsOnByDefault() throws {
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.cheatsheet)
-}
-
-@Test func aSwitchedToAppGetsItsCheatsheetOncePerTaskInReaderOrder() async throws {
-    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用 TextEdit 另存一份")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    // The first result shows TextEdit: its whole list, in the reader's order, after the result.
-    #expect(try sheets(h) == [textEditSheet])
-    #expect(h.last.cheatsheets == [textEditSheet])
-    let tail = try h.events().suffix(2).map(\.kind)
-    #expect(tail == [.tool, .memory])
-    // Learning and the cheatsheet share one read.
-    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
-    // The same app again: nothing.
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h).count == 1 && h.last.cheatsheets.isEmpty)
-    // Another app: its own; back to the first: nothing, no read.
-    h.vm.setApp(finder, finderKeys)
-    try await h.turn(Scripted("", key("cmd+n")))
-    #expect(try sheets(h) == [textEditSheet, finderSheet])
-    h.vm.setApp(textEdit, textEditKeys)
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h) == [textEditSheet, finderSheet])
-    #expect(h.logs.contains { $0.contains("快捷鍵 of com.apple.TextEdit 1.21: 3 lines") })
-
-    // The owner's next line starts a task: on the next switch each app gets it again, from the cache.
-    await h.doll.ownerSaid("再存一份")
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h).count == 2)
-    h.vm.setApp(finder, finderKeys)
-    try await h.turn(Scripted("", key("cmd+n")))
-    h.vm.setApp(textEdit, textEditKeys)
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h) == [textEditSheet, finderSheet, finderSheet, textEditSheet])
-    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit", "com.apple.finder"])
-}
-
-@Test func theFrontAppAtAnItemsStartGetsItsCheatsheetEvenIfItWasInFrontBefore() async throws {
-    // Chained E→F (2026-11-09): TextEdit stayed in front across the two tasks, so F got no sheet;
-    // the first task's sheet had left the context with it. A new item resets what counts as a switch.
-    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("先存檔")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    try await h.turn(Scripted("", key("cmd+s"), done("存了")))
-    #expect(try sheets(h) == [textEditSheet])
-    await h.doll.ownerSaid("再另存一份")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    #expect(try sheets(h) == [textEditSheet, textEditSheet] && h.last.cheatsheets == [textEditSheet])
-    // The same owner line, a third item: again, since the second's sheet is gone from the context too.
-    try await h.turn(Scripted("", done("好了")))
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    #expect(try sheets(h).count == 3)
-    #expect(h.vm.state.withLock { $0.menuReads } == ["com.apple.TextEdit"])
-}
-
-@Test func cheatsheetsAreResentByteIdentical() async throws {
-    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用電腦存檔")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    try await h.turn(Scripted("", key("cmd+s")))
-    try await h.turn("好了")
-    let reqs = await h.model.requests.map(\.messages)
-    #expect(reqs.count == 3)
-    let rendered = reqs[1].filter { $0.content.contains("【快捷鍵】") }
-    #expect(rendered.count == 1 && rendered[0].role == "user" && rendered[0].content.hasSuffix("程式] " + textEditSheet))
-    for i in 1..<reqs.count { #expect(Array(reqs[i].prefix(reqs[i - 1].count)) == reqs[i - 1]) }
-}
-
-@Test func noCheatsheetForAnUnknownAppOrAFailedReadWhichOnlyTheLogSays() async throws {
-    let h = try await Harness(tune: { $0.computer.cheatsheet = true })
-    // No front app: nothing to read, no event.
-    h.vm.setApp(nil, [])
-    await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    #expect(try sheets(h).isEmpty && h.vm.state.withLock { $0.menuReads.isEmpty })
-    // The reader fails: the log says so; no event, nothing in her results.
-    h.vm.setApp(textEdit, textEditKeys)
-    h.vm.failMenus("axmenus: no accessibility access")
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h).isEmpty && h.last.cheatsheets.isEmpty)
-    #expect(h.logs.contains { $0.hasPrefix("ERROR") && $0.contains("快捷鍵 of com.apple.TextEdit 1.21 failed") && $0.contains("no accessibility access") })
-    #expect(try h.events().allSatisfy { !$0.text.contains("快捷鍵") && !$0.text.contains("accessibility") })
-    // Not counted as sent: the next switch to it tries again.
-    h.vm.failMenus(nil)
-    h.vm.setApp(finder, finderKeys)
-    try await h.turn(Scripted("", key("cmd+n")))
-    h.vm.setApp(textEdit, textEditKeys)
-    try await h.turn(Scripted("", key("cmd+s")))
-    #expect(try sheets(h) == [finderSheet, textEditSheet])
-}
-
-@Test func cheatsheetOffSendsNothing() async throws {
-    let h = try await Harness(tune: { $0.computer.cheatsheet = false; $0.computer.learnShortcuts = false })
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    h.vm.setApp(finder, finderKeys)
-    try await h.turn(Scripted("", key("cmd+n")))
-    #expect(try sheets(h).isEmpty && h.reports.allSatisfy { $0.cheatsheets.isEmpty })
-    #expect(h.vm.state.withLock { $0.menuReads.isEmpty })
-}
-
 // file tools ------------------------------------------------------------------
 
-private let todoPath = "~/Documents/todo.txt"
+/// Her file tools work on this Mac's files; the tests use absolute paths under the harness's data dir.
 private let todoBefore = "買牛奶\n洗衣服\n寫作業\n"
 private func readFile(_ path: String, from: Int? = nil, to: Int? = nil) -> (String, [(String, String)]) {
     ("read_file", [("path", path)] + (from.map { [("from", "\($0)")] } ?? []) + (to.map { [("to", "\($0)")] } ?? []))
@@ -2462,194 +1781,158 @@ private func writeFile(_ path: String, _ text: String) -> (String, [(String, Str
 private func editFile(_ path: String, _ old: String, _ new: String) -> (String, [(String, String)]) {
     ("edit_file", [("path", path), ("old", old), ("new", new)])
 }
+extension Harness {
+    /// An absolute path under this harness's `files/` (not created).
+    func path(_ name: String) -> String { dir.appending(path: "files/\(name)").path }
+    /// Writes `text` as `files/<name>` and returns its absolute path.
+    @discardableResult func put(_ name: String, _ text: String) throws -> String {
+        let p = path(name)
+        try FileManager.default.createDirectory(at: URL(filePath: p).deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: URL(filePath: p))
+        return p
+    }
+    /// The file's text, nil when there is none.
+    func file(_ path: String) -> String? { FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } }
+}
 
 @Test func readFileNumbersLinesReadsARangeAndCapsAtTheConfiguredCount() async throws {
     let h = try await menuHarness(tune: { $0.files.maxReadLines = 3 })
-    h.vm.put(todoPath, todoBefore)
-    try await h.turn(Scripted("", readFile(todoPath), readFile(todoPath, from: 2, to: 3), readFile(todoPath, from: 3)))
+    let todo = try h.put("todo.txt", todoBefore)
+    let actionsBefore = h.cua.actions
+    try await h.turn(Scripted("", readFile(todo), readFile(todo, from: 2, to: 3), readFile(todo, from: 3)))
     var results = Array(try h.toolResults().suffix(3))
-    #expect(results[0].text == "read_file ~/Documents/todo.txt：共 3 行\n     1\t買牛奶\n     2\t洗衣服\n     3\t寫作業")
-    #expect(results[1].text == "read_file ~/Documents/todo.txt：共 3 行，這裡是第 2–3 行\n     2\t洗衣服\n     3\t寫作業")
-    #expect(results[2].text == "read_file ~/Documents/todo.txt：共 3 行，這裡是第 3–3 行\n     3\t寫作業")
-    // Text only: no screenshot, no crop, no outline, no open-windows line; the screen did not change.
-    #expect(results.allSatisfy { $0.image == nil && $0.crop == nil && $0.cropNote == nil && $0.window == nil && !$0.text.contains("開著的視窗") })
-    #expect(h.last.actions == ["read_file", "read_file", "read_file"] && h.vm.actions.isEmpty)
+    #expect(results[0].text == "read_file \(todo)：共 3 行\n     1\t買牛奶\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[1].text == "read_file \(todo)：共 3 行，這裡是第 2–3 行\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[2].text == "read_file \(todo)：共 3 行，這裡是第 3–3 行\n     3\t寫作業")
+    // Text only: no screenshot, no element list; nothing sent to the driver.
+    #expect(results.allSatisfy { $0.image == nil && $0.window == nil })
+    #expect(h.last.actions == ["read_file", "read_file", "read_file"] && h.cua.actions == actionsBefore)
     // Over the cap: the first lines and how many are left; from reads on. `to` past the end is the end.
-    h.vm.put("~/five.txt", "1\n2\n3\n4\n5\n")
-    try await h.turn(Scripted("", readFile("~/five.txt"), readFile("~/five.txt", from: 4, to: 99), readFile("~/five.txt", from: 2, to: 2)))
+    let five = try h.put("five.txt", "1\n2\n3\n4\n5\n")
+    try await h.turn(Scripted("", readFile(five), readFile(five, from: 4, to: 99), readFile(five, from: 2, to: 2)))
     results = Array(try h.toolResults().suffix(3))
-    #expect(results[0].text == "read_file ~/five.txt：共 5 行，這裡是第 1–3 行\n     1\t1\n     2\t2\n     3\t3\n還有 2 行（read_file 加 from: 4 讀下去）")
-    #expect(results[1].text == "read_file ~/five.txt：共 5 行，這裡是第 4–5 行\n     4\t4\n     5\t5")
-    #expect(results[2].text == "read_file ~/five.txt：共 5 行，這裡是第 2–2 行\n     2\t2")
+    #expect(results[0].text == "read_file \(five)：共 5 行，這裡是第 1–3 行\n     1\t1\n     2\t2\n     3\t3\n還有 2 行（read_file 加 from: 4 讀下去）")
+    #expect(results[1].text == "read_file \(five)：共 5 行，這裡是第 4–5 行\n     4\t4\n     5\t5")
+    #expect(results[2].text == "read_file \(five)：共 5 行，這裡是第 2–2 行\n     2\t2")
     // An empty file, a last line without a newline, CRLF lines (the CR stays on its line).
-    h.vm.put("~/empty.txt", "")
-    h.vm.put("~/noeol.txt", "a\nb")
-    h.vm.put("~/crlf.txt", "a\r\nb\r\n")
-    try await h.turn(Scripted("", readFile("~/empty.txt"), readFile("~/noeol.txt"), readFile("~/crlf.txt")))
+    let empty = try h.put("empty.txt", ""), noeol = try h.put("noeol.txt", "a\nb"), crlf = try h.put("crlf.txt", "a\r\nb\r\n")
+    try await h.turn(Scripted("", readFile(empty), readFile(noeol), readFile(crlf)))
     results = Array(try h.toolResults().suffix(3))
-    #expect(results[0].text == "read_file ~/empty.txt：空檔案，0 行")
-    #expect(results[1].text == "read_file ~/noeol.txt：共 2 行\n     1\ta\n     2\tb")
-    #expect(results[2].text == "read_file ~/crlf.txt：共 2 行\n     1\ta\r\n     2\tb\r")
-    // Bad arguments and a missing file: an error each, nothing read, no step.
-    try await h.turn(Scripted("", readFile(todoPath, from: 0), readFile(todoPath, from: 3, to: 2), ("read_file", [("path", todoPath), ("from", "abc")]),
-                              readFile(todoPath, from: 9), ("read_file", [("path", "  ")]), readFile("~/nope.txt")))
-    #expect(try h.toolResults().suffix(6).map(\.text) == [
+    #expect(results[0].text == "read_file \(empty)：空檔案，0 行")
+    #expect(results[1].text == "read_file \(noeol)：共 2 行\n     1\ta\n     2\tb")
+    #expect(results[2].text == "read_file \(crlf)：共 2 行\n     1\ta\r\n     2\tb\r")
+    // Bad arguments, a missing file and a folder: an error each, nothing read, no step.
+    let nope = h.path("nope.txt"), folder = URL(filePath: todo).deletingLastPathComponent().path
+    try await h.turn(Scripted("", readFile(todo, from: 0), readFile(todo, from: 3, to: 2), ("read_file", [("path", todo), ("from", "abc")]),
+                              readFile(todo, from: 9), ("read_file", [("path", "  ")]), readFile(nope), readFile(folder)))
+    #expect(try h.toolResults().suffix(7).map(\.text) == [
         "失敗：read_file 的 from 從 1 算起，收到 0",
         "失敗：read_file 的 from 要小於等於 to，收到 from 3、to 2",
         "失敗：read_file 的 from 要是整數，收到 abc",
-        "失敗：~/Documents/todo.txt 只有 3 行，from 是 9；from 最多 3",
+        "失敗：\(todo) 只有 3 行，from 是 9；from 最多 3",
         "失敗：read_file 的 path 是空的",
-        "失敗：沒有這個檔案：~/nope.txt",
+        "失敗：沒有這個檔案：\(nope)",
+        "失敗：\(folder) 是資料夾，不是檔案",
     ])
-    #expect(h.last.actions == Array(repeating: "error read_file", count: 6))
+    #expect(h.last.actions == Array(repeating: "error read_file", count: 7))
 }
 
 @Test func writeFileCreatesOrOverwritesTheWholeFileAndReportsLinesAndBytes() async throws {
     let h = try await menuHarness()
     let text = "你好，我是娃娃\n第二行\n"
-    try await h.turn(Scripted("", writeFile("~/Desktop/new/hello.txt", text)))
-    #expect(try h.toolResults().last!.text == "write_file ~/Desktop/new/hello.txt：寫好了，2 行、\(text.utf8.count) bytes")
-    #expect(try h.vm.file("~/Desktop/new/hello.txt") == text && h.toolResults().last!.image == nil)
+    let hello = h.path("new/hello.txt")
+    try await h.turn(Scripted("", writeFile(hello, text)))
+    #expect(try h.toolResults().last!.text == "write_file \(hello)：寫好了，2 行、\(text.utf8.count) bytes")
+    #expect(h.file(hello) == text)
+    #expect(try h.toolResults().last!.image == nil)
     // Overwritten whole; no trailing newline stays that way; an empty text empties the file.
-    try await h.turn(Scripted("", writeFile("~/Desktop/new/hello.txt", "x"), writeFile("~/Desktop/new/hello.txt", "")))
-    #expect(try h.toolResults().suffix(2).map(\.text) == ["write_file ~/Desktop/new/hello.txt：寫好了，1 行、1 bytes",
-                                                          "write_file ~/Desktop/new/hello.txt：寫好了，0 行、0 bytes"])
-    #expect(h.vm.file("~/Desktop/new/hello.txt") == "")
-    try await h.turn(Scripted("", ("write_file", [("path", ""), ("text", "a")]), ("write_file", [("path", "~/a.txt")])))
+    try await h.turn(Scripted("", writeFile(hello, "x"), writeFile(hello, "")))
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["write_file \(hello)：寫好了，1 行、1 bytes",
+                                                          "write_file \(hello)：寫好了，0 行、0 bytes"])
+    #expect(h.file(hello) == "")
+    try await h.turn(Scripted("", ("write_file", [("path", ""), ("text", "a")]), ("write_file", [("path", h.path("a.txt"))])))
     #expect(try h.toolResults().suffix(2).map(\.text) == ["失敗：write_file 的 path 是空的", "失敗：write_file 少了參數 text"])
-    h.vm.failNext("寫不進 ~/b.txt")
-    try await h.turn(Scripted("", writeFile("~/b.txt", "a")))
-    #expect(try h.toolResults().last!.text == "失敗：寫不進 ~/b.txt" && h.last.actions == ["error write_file"])
+    // A folder is not written over.
+    let folder = h.path("new")
+    try await h.turn(Scripted("", writeFile(folder, "a")))
+    #expect(try h.toolResults().last!.text == "失敗：\(folder) 是資料夾，不能當檔案寫" && h.last.actions == ["error write_file"])
 }
 
 @Test func editFileReplacesTheOneOccurrenceOrSaysHowManyAndTheNearestLines() async throws {
     let h = try await menuHarness()
-    h.vm.put(todoPath, todoBefore)
-    try await h.turn(Scripted("", editFile(todoPath, "買牛奶", "買豆漿"), editFile(todoPath, "寫作業", "寫作業\n交房租")))
+    let todo = try h.put("todo.txt", todoBefore)
+    try await h.turn(Scripted("", editFile(todo, "買牛奶", "買豆漿"), editFile(todo, "寫作業", "寫作業\n交房租")))
     var results = Array(try h.toolResults().suffix(2))
-    #expect(results[0].text == "edit_file ~/Documents/todo.txt：改好了，第 1 行起（1 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業")
-    #expect(results[1].text == "edit_file ~/Documents/todo.txt：改好了，第 3 行起（1 行 → 2 行），現在共 4 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業\n     4\t交房租")
-    #expect(h.vm.file(todoPath) == "買豆漿\n洗衣服\n寫作業\n交房租\n")
+    #expect(results[0].text == "edit_file \(todo)：改好了，第 1 行起（1 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業")
+    #expect(results[1].text == "edit_file \(todo)：改好了，第 3 行起（1 行 → 2 行），現在共 4 行\n     1\t買豆漿\n     2\t洗衣服\n     3\t寫作業\n     4\t交房租")
+    #expect(h.file(todo) == "買豆漿\n洗衣服\n寫作業\n交房租\n")
     #expect(results.allSatisfy { $0.image == nil && $0.window == nil } && h.last.actions == ["edit_file", "edit_file"])
     // A multi-line old, a deletion (empty new), context around a change deep in a file.
-    try await h.turn(Scripted("", editFile(todoPath, "洗衣服\n寫作業", "寫作業\n洗衣服"), editFile(todoPath, "交房租\n", "")))
-    #expect(h.vm.file(todoPath) == "買豆漿\n寫作業\n洗衣服\n")
-    #expect(try h.toolResults().last!.text == "edit_file ~/Documents/todo.txt：改好了，第 4 行起（2 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t寫作業\n     3\t洗衣服")
-    h.vm.put("~/long.txt", (1...12).map { "line \($0)" }.joined(separator: "\n") + "\n")
-    try await h.turn(Scripted("", editFile("~/long.txt", "line 7", "seven")))
-    #expect(try h.toolResults().last!.text == "edit_file ~/long.txt：改好了，第 7 行起（1 行 → 1 行），現在共 12 行\n"
+    try await h.turn(Scripted("", editFile(todo, "洗衣服\n寫作業", "寫作業\n洗衣服"), editFile(todo, "交房租\n", "")))
+    #expect(h.file(todo) == "買豆漿\n寫作業\n洗衣服\n")
+    #expect(try h.toolResults().last!.text == "edit_file \(todo)：改好了，第 4 行起（2 行 → 1 行），現在共 3 行\n     1\t買豆漿\n     2\t寫作業\n     3\t洗衣服")
+    let long = try h.put("long.txt", (1...12).map { "line \($0)" }.joined(separator: "\n") + "\n")
+    try await h.turn(Scripted("", editFile(long, "line 7", "seven")))
+    #expect(try h.toolResults().last!.text == "edit_file \(long)：改好了，第 7 行起（1 行 → 1 行），現在共 12 行\n"
             + "     4\tline 4\n     5\tline 5\n     6\tline 6\n     7\tseven\n     8\tline 8\n     9\tline 9\n    10\tline 10")
     // 0 occurrences: the count and the nearest lines (most shared characters), exact whitespace included;
     // several: the count; neither changes the file. Empty old and old == new never reach the file.
-    let before = h.vm.file(todoPath)
-    h.vm.put("~/dup.txt", "a\nb\na\n")
-    try await h.turn(Scripted("", editFile(todoPath, "買牛乳", "買豆漿"), editFile(todoPath, "買豆漿 ", "x"), editFile(todoPath, "zzz", "x"),
-                              editFile("~/dup.txt", "a", "c"), editFile(todoPath, "", "x"), editFile(todoPath, "洗衣服", "洗衣服")))
+    let before = h.file(todo)
+    let dup = try h.put("dup.txt", "a\nb\na\n")
+    try await h.turn(Scripted("", editFile(todo, "買牛乳", "買豆漿"), editFile(todo, "買豆漿 ", "x"), editFile(todo, "zzz", "x"),
+                              editFile(dup, "a", "c"), editFile(todo, "", "x"), editFile(todo, "洗衣服", "洗衣服")))
     results = Array(try h.toolResults().suffix(6))
-    let zero = "失敗：edit_file ~/Documents/todo.txt：old 在檔案裡出現 0 次，沒改。old 要跟檔案裡一字不差（含空白、換行、標點）；"
+    let zero = "失敗：edit_file \(todo)：old 在檔案裡出現 0 次，沒改。old 要跟檔案裡一字不差（含空白、換行、標點）；"
     #expect(results[0].text == zero + "最接近的幾行（照這裡的字寫 old）：\n     1\t買豆漿\n     2\t寫作業")
     #expect(results[1].text == zero + "最接近的幾行（照這裡的字寫 old）：\n     1\t買豆漿\n     2\t寫作業")
     #expect(results[2].text == zero + "檔案裡也沒有相近的行，先 read_file 看一下")
-    #expect(results[3].text == "失敗：edit_file ~/dup.txt：old 在檔案裡出現 2 次，不知道改哪一個，沒改。old 多帶幾行前後文，讓它只出現一次")
+    #expect(results[3].text == "失敗：edit_file \(dup)：old 在檔案裡出現 2 次，不知道改哪一個，沒改。old 多帶幾行前後文，讓它只出現一次")
     #expect(results[4].text == "失敗：edit_file 的 old 是空的；要加字就把它旁邊現有的那段當 old，new 填那段加上新的字")
     #expect(results[5].text == "失敗：edit_file 的 old 和 new 一樣，沒有要改什麼")
-    #expect(h.vm.file(todoPath) == before && h.vm.file("~/dup.txt") == "a\nb\na\n")
+    #expect(h.file(todo) == before && h.file(dup) == "a\nb\na\n")
     #expect(h.last.actions == Array(repeating: "error edit_file", count: 6))
     // The nearest line for a multi-line old is judged by its first non-blank line, shown with its neighbours.
-    try await h.turn(Scripted("", editFile("~/long.txt", "\nline 9x\nline 10", "y")))
+    try await h.turn(Scripted("", editFile(long, "\nline 9x\nline 10", "y")))
     #expect(try h.toolResults().last!.text.hasSuffix("最接近的幾行（照這裡的字寫 old）：\n     8\tline 8\n     9\tline 9\n    10\tline 10"))
 }
 
 @Test func fileToolsAreRefusedWithoutAnItemInProgressAndRefuseNonUTF8Files() async throws {
     let h = try await Harness()
-    h.vm.put(todoPath, todoBefore)
+    let todo = try h.put("todo.txt", todoBefore)
     await h.doll.ownerSaid("看一下 todo")
-    try await h.turn(Scripted("", readFile(todoPath), writeFile("~/a.txt", "a"), editFile(todoPath, "買牛奶", "買豆漿")))
+    try await h.turn(Scripted("", readFile(todo), writeFile(h.path("a.txt"), "a"), editFile(todo, "買牛奶", "買豆漿")))
     let refused = { (tool: String) in "失敗：現在沒有進行中的 todo，\(tool) 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。" }
     #expect(try h.toolResults().suffix(3).map(\.text) == [refused("read_file"), refused("write_file"), refused("edit_file")])
     #expect(h.last.actions == ["refused read_file", "refused write_file", "refused edit_file"])
-    #expect(h.vm.file(todoPath) == todoBefore && h.vm.file("~/a.txt") == nil)
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
-    h.vm.state.withLock { $0.files["/Users/doll/bin.dat"] = Data([0xFF, 0xFE, 0x41]) }
-    try await h.turn(Scripted("", readFile("~/bin.dat"), editFile("~/bin.dat", "A", "B")))
-    let text = "失敗：~/bin.dat 不是 UTF-8 文字檔（3 bytes），read_file、write_file、edit_file 只處理文字檔"
+    #expect(h.file(todo) == todoBefore && h.file(h.path("a.txt")) == nil)
+    try await h.turn(Scripted("", todoSet(), readCall))
+    let bin = h.path("bin.dat")
+    try Data([0xFF, 0xFE, 0x41]).write(to: URL(filePath: bin))
+    try await h.turn(Scripted("", readFile(bin), editFile(bin, "A", "B")))
+    let text = "失敗：\(bin) 不是 UTF-8 文字檔（3 bytes），read_file、write_file、edit_file 只處理文字檔"
     #expect(try h.toolResults().suffix(2).map(\.text) == [text, text])
-    #expect(h.vm.state.withLock { $0.files["/Users/doll/bin.dat"] } == Data([0xFF, 0xFE, 0x41]))
+    #expect(FileManager.default.contents(atPath: bin) == Data([0xFF, 0xFE, 0x41]))
+}
+
+@Test func aPathWithATildeIsTheOwnersHome() {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    #expect(Mac.expand("~") == home && Mac.expand("~/Documents/todo.txt") == home + "/Documents/todo.txt"
+            && Mac.expand("Documents/a.txt") == home + "/Documents/a.txt" && Mac.expand("/tmp/a") == "/tmp/a")
 }
 
 @Test func fileStepsRecordThePathOnlyAndMatchByPath() async throws {
     let h = try await Harness()
-    h.vm.put(todoPath, todoBefore)
+    let todo = try h.put("todo.txt", todoBefore)
+    let a = h.path("a.txt")
     await h.doll.ownerSaid("改 todo")
     try await h.turn(Scripted("", todoSet("todo.txt 第一行是買豆漿")))
-    try await h.turn(Scripted("", readFile(todoPath), writeFile("~/Desktop/a.txt", "一\n二\n"), editFile(todoPath, "沒有這段", "x"),
-                              editFile(todoPath, "買牛奶", "買豆漿"), done("第一行是買豆漿")))
-    #expect(h.last.experience == "經驗：改 todo\n這一項：todo.txt 第一行是買豆漿\n第一行是買豆漿\n步驟：\n1. read_file ~/Documents/todo.txt\n2. write_file ~/Desktop/a.txt（2 行）\n3. edit_file ~/Documents/todo.txt")
+    try await h.turn(Scripted("", readFile(todo), writeFile(a, "一\n二\n"), editFile(todo, "沒有這段", "x"),
+                              editFile(todo, "買牛奶", "買豆漿"), done("第一行是買豆漿")))
+    #expect(h.last.experience == "經驗：改 todo\n這一項：todo.txt 第一行是買豆漿\n第一行是買豆漿\n步驟：\n1. read_file \(todo)\n2. write_file \(a)（2 行）\n3. edit_file \(todo)")
     func same(_ a: String, _ b: String) -> Bool { StepShape(a).matches(StepShape(b)) }
     #expect(same("write_file ~/a.txt（2 行）", "write_file ~/a.txt（5 行）") && same("read_file ~/a.txt", "read_file ~/a.txt"))
     #expect(!same("read_file ~/a.txt", "edit_file ~/a.txt") && !same("read_file ~/a.txt", "read_file ~/b.txt") && !same("read_file ~/a.txt", "type 「~/a.txt」"))
     #expect(Doll.matchedSteps(["read_file ~/t.txt", "edit_file ~/t.txt"], ["read_file ~/t.txt", "write_file ~/t.txt（3 行）", "edit_file ~/t.txt"]) == 2)
-}
-
-/// `vmpal` replaced by this Mac: `exec` runs the driver's `/bin/sh -c` script here with a temporary
-/// HOME, `cp` copies the file. The shell fragments the driver sends to the VM are exercised for real.
-private func localVMPal(home: URL) -> VMPalRun {
-    { args in
-        switch args[0] {
-        case "cp":
-            let to = String(args[2].split(separator: ":", maxSplits: 1)[1])
-            try FileManager.default.copyItem(at: URL(filePath: args[1]), to: URL(filePath: to))
-            return ""
-        case "exec":    // exec <vm> -- /bin/sh -c <script> sh <args…>
-            let p = Process()
-            p.executableURL = URL(filePath: args[3])
-            p.arguments = Array(args.dropFirst(4))
-            p.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
-            p.currentDirectoryURL = home
-            let out = Pipe(), err = Pipe()
-            p.standardOutput = out
-            p.standardError = err
-            try p.run()
-            let o = out.fileHandleForReading.readDataToEndOfFile(), e = err.fileHandleForReading.readDataToEndOfFile()
-            p.waitUntilExit()
-            let text = String(decoding: o, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard p.terminationStatus == 0 else {
-                let stderr = String(decoding: e, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw ComputerError(stderr.isEmpty ? text : stderr)
-            }
-            return text
-        default:
-            throw ComputerError("unexpected vmpal \(args)")
-        }
-    }
-}
-
-@Test func theVMPalDriverMovesFileBytesExactlyThroughCpAndBase64() async throws {
-    let home = FileManager.default.temporaryDirectory.appending(path: "dollos-vmhome-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: home) }
-    var cfg = ComputerConfig()
-    cfg.vmID = "E6813EBA"
-    let d = VMPalDriver(cfg, vmpal: localVMPal(home: home))
-    // Written through a folder that did not exist; CR, non-ASCII, two trailing newlines all arrive.
-    let bytes = Data("a\n\n你\r\n-x\n\n".utf8)
-    try await d.writeFile("~/Documents/todo.txt", bytes)
-    #expect(try Data(contentsOf: home.appending(path: "Documents/todo.txt")) == bytes)
-    #expect(try await d.readFile("~/Documents/todo.txt") == bytes)
-    // A relative path is under the home; ~ alone is the home; an empty file reads back empty.
-    try await d.writeFile("notes/a.txt", Data())
-    #expect(FileManager.default.fileExists(atPath: home.appending(path: "notes/a.txt").path))
-    #expect(try await d.readFile(home.appending(path: "notes/a.txt").path) == Data())
-    await #expect(throws: ComputerError.self) { try await d.readFile("~") }
-    // The driver's own error texts.
-    func failure(_ body: () async throws -> Void) async -> String {
-        do { try await body() } catch { return "\(error)" }
-        return "no error"
-    }
-    #expect(await failure { _ = try await d.readFile("~/nope.txt") } == "沒有這個檔案：~/nope.txt")
-    #expect(await failure { _ = try await d.readFile("~/Documents") } == "~/Documents 是資料夾，不是檔案")
-    #expect(await failure { try await d.writeFile("~/Documents", Data("x".utf8)) } == "~/Documents 是資料夾，不能當檔案寫")
-    #expect(try Data(contentsOf: home.appending(path: "Documents/todo.txt")) == bytes)
 }
 
 // pictures by reference (spec 3.1, 2026-11-09) ---------------------------------------------------
@@ -2787,24 +2070,23 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     let h = try await Harness()
     let d = dashboard(h)
     await h.doll.ownerSaid("用電腦看一下 macOS 版本")
-    try await h.turn(Scripted("好，我看看", todoSet(), screenshotCall,
+    try await h.turn(Scripted("好，我看看", todoSet(), readCall,
                               remember(folders: [("我的信箱密碼是 hunter2", "own", nil), ("主人怕打雷", "secret", "happened"),
                                                  ("天空是藍的", "public", nil)])))
-    h.vm.setFrame(1)
-    try await h.turn(Scripted("", key("cmd+space")))
+    try await h.turn(Scripted("", clickRow(2)))
 
     let s = try json(DashboardStatus.self, await d.respond(method: "GET", target: "/api/status"))
-    #expect(s.todo == "進行中" && s.item == "畫面上看得到結果" && s.pending.isEmpty && s.watch == nil)
+    #expect(s.todo == "進行中" && s.item == "畫面上看得到結果" && s.pending.isEmpty)
     #expect(s.state == "idle" && !s.paused && s.turn == 2 && s.queued == 0 && s.effort == "medium" && s.contextTokens > 0)
 
     let t = try json([DashboardItem].self, await d.respond(method: "GET", target: "/api/timeline"))
     #expect(t.map(\.type) == ["turn", "turn", "owner"])
     #expect(t[2].text == "用電腦看一下 macOS 版本" && t[2].voice == false)
-    #expect(t[1].thought == "好，我看看" && t[1].calls?.map(\.name) == ["todo.set", "screenshot", "remember"])
+    #expect(t[1].thought == "好，我看看" && t[1].calls?.map(\.name) == ["todo.set", "read_window", "remember"])
     #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image == nil && t[1].calls?[1].image != nil
             && t[1].calls?[2].image == nil)
     #expect(t[1].calls?[2].result?.contains("own/") == true)
-    #expect(t[0].calls?.map(\.name) == ["key"] && t[0].calls?[0].parameters.map(\.name) == ["key", "modifiers"])
+    #expect(t[0].calls?.map(\.name) == ["click"] && t[0].calls?[0].parameters.map(\.name) == ["row"])
     for turn in t.prefix(2) {
         #expect(turn.prompt != nil && turn.prompt! > 0 && turn.seconds != nil && turn.effort == "medium" && turn.footer?.hasPrefix("【狀況】") == true)
     }
@@ -2813,8 +2095,8 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 
     let v = try json(DashboardVision.self, await d.respond(method: "GET", target: "/api/vision"))
     let last = try h.toolResults().last!
-    #expect(v.image == last.image && v.crop == last.crop && v.window == last.window && v.cropNote == last.cropNote)
-    #expect(v.window?.contains("frame 1") == true && v.windows == fakeWindowsLine)
+    #expect(v.image == last.image && v.window == last.window && v.image != nil)
+    #expect(v.window?.contains("- [1] AXStaticText \"7\"") == true)
 
     let m = try json(DashboardMemory.self, await d.respond(method: "GET", target: "/api/memory"))
     let byFolder = Dictionary(uniqueKeysWithValues: m.folders.map { ($0.folder, $0.entries) })
@@ -2848,7 +2130,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     let h = try await Harness()
     let d = dashboard(h)
     await h.doll.ownerSaid("開電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))
+    try await h.turn(Scripted("", todoSet(), readCall))
     let name = try h.toolResults().last!.image!
     let ok = await d.respond(method: "GET", target: "/shots/\(name)")
     let stored = try Data(contentsOf: h.doll.shots.appending(path: name))
@@ -2938,7 +2220,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 
 @Test func dashboardConfigRejectsUnknownKeysAndBadValues() throws {
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cfg-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     try (head + "[dashboard]\nport = 9000\nbind = \"127.0.0.1\"\ntimeline_items = 5\nenabled = false\n")
         .write(to: file, atomically: true, encoding: .utf8)
@@ -2950,16 +2232,6 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     }
     let example = try Config.load(root.appending(path: "dollcore.example.toml")).dashboard
     #expect(example.enabled && example.port == 8790 && example.bind == "127.0.0.1")
-}
-
-@Test func actionResultsLeaveOutVMPalsBookkeepingLines() {
-    // 2026-11-10: these lines were most of a result's ~90 tokens and are kept in every later turn.
-    let vmpal = "Done: 1 action in 0.7 s. Screen 1280×800 (screenshot pixels), frame 8386.\nleft_click at (558, 328).\n"
-        + "Nothing changed near the left_click at (558, 328): it may have missed, or what's there doesn't respond.\nChanged: 43,0–1110,569."
-    #expect(Doll.condense(vmpal) == "Nothing changed near the left_click at (558, 328): it may have missed, or what's there doesn't respond.\nChanged: 43,0–1110,569.")
-    #expect(Doll.condense("Done: 1 action in 1.4 s. Screen 1280×800 (screenshot pixels), frame 8479.\nTyped 24 characters.\nChanged: 1,2–3,4.") == "Changed: 1,2–3,4.")
-    #expect(Doll.condense("Done: 1 action in 0.6 s.\ndouble_click on “notes.txt” at (441, 235).") == "")
-    #expect(Doll.condense("something VMPal says that is not bookkeeping") == "something VMPal says that is not bookkeeping")
 }
 
 // timeline files and today's recall (2026-11-10) ------------------------------------
@@ -2980,13 +2252,13 @@ private func hhmm(_ ts: Double) -> String {
 @Test func aRestartedDollRebuildsTheSameRequestFromTheTimelineFile() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔")
-    try await h.turn(Scripted("好，我來", todoSet(), screenshotCall))
+    try await h.turn(Scripted("好，我來", todoSet(), readCall))
     try await h.turn(Scripted("", key("cmd+s")))
     try await h.turn(Scripted("", dm("存好了。"), done("按 ⌘S 存了檔。")))
     await h.doll.ownerSaid("謝謝")
     try await h.turn(Scripted("", dm("不客氣")))
     await h.doll.ownerSaid("再開一次電腦")
-    try await h.turn(Scripted("", todoSet(), screenshotCall))                                    // an item in progress, with images
+    try await h.turn(Scripted("", todoSet(), readCall))                                    // an item in progress, with images
     let events = await h.doll.timelineEvents()
     let before = try await h.doll.context(events)
     #expect(before.contains { !$0.images.isEmpty })                                // screenshots in it
@@ -3141,7 +2413,7 @@ extension Doll {
     // 2026-11-11: she wrote her words after ending the work; the owner heard nothing.
     let h = try await menuHarness()
     try await h.turn(Scripted("", done("存好了"), dm("存好了喔"), key("cmd+q")))
-    #expect(h.said == ["存好了喔"] && h.vm.actions.isEmpty)
+    #expect(h.said == ["存好了喔"] && h.cua.actions.isEmpty)
     let end = Array(try h.toolResults().suffix(3))
     #expect(end[0].text.hasPrefix("完成，記下了。") && end[1].text == ""
             && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
@@ -3167,9 +2439,8 @@ private func consolidationConfig(_ h: Harness) throws -> Config {
 
 /// An event as the timeline stores it, a minute after the one before.
 private func stamped(_ kind: Event.Kind, _ text: String, _ seq: Int64, secret: Bool = false, image: String? = nil,
-                     cropNote: String? = nil, crop: String? = nil, window: String? = nil) -> Event {
-    var e = Event(kind, kind == .owner ? .owner : .internal, text, secret: secret, image: image, cropNote: cropNote,
-                  crop: crop, window: window)
+                     window: String? = nil) -> Event {
+    var e = Event(kind, kind == .owner ? .owner : .internal, text, secret: secret, image: image, window: window)
     e.seq = seq
     e.ts = 1794337154 + Double(seq) * 60
     return e
@@ -3209,8 +2480,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
         stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
         stamped(.tool, "", 6),
-        stamped(.tool, "開著的視窗：TextEdit「另存」；焦點：textfield", 7, image: "b.jpg", cropNote: "視窗圖在 10,20",
-                crop: "c.jpg", window: "前景 app：TextEdit\nwindow \"Save\""),
+        stamped(.tool, sent, 7, image: "b.jpg", window: "TextEdit 的視窗「另存」；截圖 460×816\n- [0] AXWindow \"Save\""),
         stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
         stamped(Scripted("", recall("另存")), 9),
         stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
@@ -3229,7 +2499,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         [\(t(3)) todo.set 的結果] todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。
         [\(t(5)) 她說｜Discord 私訊] 好
         [\(t(5)) 她呼叫] key(key: s; modifiers: ["cmd", "shift", "alt"])
-        [\(t(7)) key 的結果] 開著的視窗：TextEdit「另存」；焦點：textfield
+        [\(t(7)) key 的結果] \(sent)
         [\(t(9)) 她呼叫] recall(query: 另存)
         [\(t(11)) 她呼叫] todo.done(result: 按 ⇧⌥⌘S 另存好了)
         [\(t(12)) todo.done 的結果] 完成，記下了。
@@ -3238,7 +2508,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(tasks[1].text == "[\(t(13)) 主人｜秘密] 我的密碼是 1234\n[\(t(14)) watch] 盯著的畫面變了。")
     // Nothing of the images, the window outline, the program's lines or recall's copy.
     let all = tasks.map(\.text).joined(separator: "\n")
-    for gone in [".jpg", "視窗圖在", "window \"Save\"", "【快捷鍵】", "【相關記憶】", "另存：1 條"] {
+    for gone in [".jpg", "AXWindow", "【快捷鍵】", "【相關記憶】", "另存：1 條"] {
         #expect(!all.contains(gone), "\(gone)")
     }
     // Events before the first owner line are a task of their own.
@@ -3438,7 +2708,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let c = try Config.load(root.appending(path: "dollcore.example.toml")).consolidate
     #expect(c.effort == "high" && c.retiredKeepDays == 30 && c.recallK >= 1 && c.registryK >= 1)
     let file = FileManager.default.temporaryDirectory.appending(path: "consolidate-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     for bad in ["effort = \"max\"", "max_tokens = 0", "timeout_s = 0", "recall_k = -1", "registry_k = -1", "retired_keep_days = -1", "bogus = 1"] {
         try (head + "[consolidate]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
@@ -3496,6 +2766,11 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         #expect(throws: MemoryError.self, "\(bad)") { try Registry.parseFile(bad, id: "e1") }
     }
 }
+
+/// TextEdit as an experience names it.
+private let textEdit = AppIdentity(bundleID: "com.apple.TextEdit", name: "TextEdit", version: "1.21")
+/// Opens TextEdit (the fake driver's app without a window): the front app of her results becomes TextEdit.
+private let openTextEdit: (String, [(String, String)]) = ("open", [("app", "TextEdit")])
 
 @Test func theProgramsEntriesAreExactAndAnAppNeverResolvesToAnotherType() async throws {
     let h = try await Harness()
@@ -3555,8 +2830,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 @Test func noNameIsExtractedAndTheFrontAppsEntryIsTheOnlyTriggerEntity() async throws {
     // No embedding channel here (similarity 1): only FTS, the front app's entry and the hop. None
     // reaches the attach floor (cosine at least `similarity`), so none is attached.
-    let h = try await Harness([Scripted("", todoSet(), screenshotCall)], tune: { $0.select.similarity = 1.0; $0.select.entityWeight = 1 })
-    h.vm.setApp(textEdit, textEditKeys)
+    let h = try await Harness([Scripted("", todoSet(), openTextEdit)], tune: { $0.select.similarity = 1.0; $0.select.entityWeight = 1 })
     let app = try entry(h, .app, "TextEdit", "macOS 內建的文字編輯 app", aliases: ["com.apple.TextEdit"])
     // The wrong merge of real runs: a shortcut entry with the app's names as aliases.
     let bad = try entry(h, .shortcut, "⇧⌘T", "鍵盤快捷鍵 ⇧⌘T", aliases: ["文字編輯", "com.apple.TextEdit"])
@@ -3668,20 +2942,16 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 }
 
 @Test func programWrittenMemoriesCarryWhatTheProgramKnows() async throws {
-    let h = try await Harness([Scripted("", todoSet(), screenshotCall), Scripted("", done("存好了"))])
-    h.vm.setApp(textEdit, textEditKeys)
-    await h.doll.ownerSaid("用 TextEdit 存檔")
+    let h = try await Harness([Scripted("", todoSet(), openTextEdit), Scripted("", done("開好了"))])
+    await h.doll.ownerSaid("開 TextEdit")
     try await h.turn()
     try await h.turn()
     let cfg = try consolidationConfig(h)
     let registry = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store,
                               embedder: FakeEmbedder()).registry
     let app = try #require(try registry.exact("com.apple.TextEdit").first)
-    let keys = try #require(try registry.exact("⇧⌥⌘S").first)
-    #expect(app.name == "TextEdit" && app.aliases == ["com.apple.TextEdit"] && keys.type == .shortcut)
+    #expect(app.name == "TextEdit" && app.aliases == ["com.apple.TextEdit"] && app.type == .app)
     let files = try memoryFilesByID(h).values.map(\.file)
-    let saveAs = try #require(files.first { $0.tier == .program && $0.body.contains("Save As…") })
-    #expect(saveAs.entities == [MemoryEntity(app.id, "TextEdit"), MemoryEntity(keys.id, "⇧⌥⌘S")])
     let experience = try #require(files.first { $0.tier == .selfReported })
     #expect(experience.entities == [MemoryEntity(app.id, "TextEdit")])
 }
@@ -3690,7 +2960,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     let s = try Config.load(root.appending(path: "dollcore.example.toml")).select
     #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 3 && s.recallCandidates == 5)
     let file = FileManager.default.temporaryDirectory.appending(path: "select-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     for bad in ["similarity = 1.5", "entity_weight = -0.1", "attach_max = 0", "recall_limit = 0", "lookup_k = 5",
                 "align_threshold = 7", "prefilter = 8", "threshold = 7", "candidate_max_chars = 1500", "seed_k = 10", "bogus = 1"] {
@@ -3800,7 +3070,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
     #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"])
     let file = FileManager.default.temporaryDirectory.appending(path: "api-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     try head.write(to: file, atomically: true, encoding: .utf8)
     #expect(try Config.load(file).api.port == 8791)
@@ -3821,13 +3091,6 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     // And wander (m6-drives): a config from before it must place it.
     try (head + "[core]\npriority = [\"owner_voice\", \"owner_text\", \"developer_text\", \"calendar\", \"watch\"]\n").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
-    // The tracked experiment configs that loaded before (automem and shortcuts predate the
-    // self_reported and consolidated tiers and did not load already).
-    for tracked in ["experiments/dashboard/dollcore.toml", "experiments/m2/cheatsheet/cheatsheet.toml",
-                    "experiments/m2/experience/experience.toml", "experiments/m2/experience2/experience2.toml",
-                    "experiments/m2/expstats/expstats.toml"] {
-        _ = try Config.load(root.appending(path: tracked))
-    }
 }
 
 /// A started local API on a free port over the harness's doll.
@@ -4650,17 +3913,17 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 @Test func withoutAnItemInProgressTheComputerToolsAreRefused() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("按一下 Return")
-    try await h.turn(Scripted("", key("Return"), screenshotCall))
+    try await h.turn(Scripted("", key("Return"), readCall))
     #expect(try h.toolResults().map(\.text) == ["失敗：現在沒有進行中的 todo，key 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。",
-                                                "失敗：現在沒有進行中的 todo，screenshot 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。"])
-    #expect(h.last.actions == ["refused key", "refused screenshot"] && h.vm.actions.isEmpty && h.last.todo == "待命中")
+                                                "失敗：現在沒有進行中的 todo，read_window 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。"])
+    #expect(h.last.actions == ["refused key", "refused read_window"] && h.cua.tools.isEmpty && h.last.todo == "待命中")
     #expect(h.last.footer.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）"))
     // Her refused calls are results she has not seen: she gets the next turn to list the todo.
     #expect(await h.doll.followUp)
     // The list and the action in one reply: the item is in progress before the action runs.
-    try await h.turn(Scripted("", todoSet("畫面上按過 Return", "存好檔"), key("Return")))
-    #expect(h.vm.actions == [.key("return")] && h.last.todo == "進行中")
-    #expect(try h.toolResults().suffix(2).first?.text == "todo 列好了。現在進行中：「畫面上按過 Return」；後面：「存好檔」。")
+    try await h.turn(Scripted("", todoSet("畫面上按過 Return", "存好檔"), readCall, key("Return")))
+    #expect(h.cua.actions == ["press_key"] && h.last.todo == "進行中")
+    #expect(try h.toolResults().suffix(3).first?.text == "todo 列好了。現在進行中：「畫面上按過 Return」；後面：「存好檔」。")
     // 進行中: a reply that only speaks still gets the next turn.
     try await h.turn(Scripted("", dm("按了")))
     #expect(await h.doll.followUp)
@@ -4673,7 +3936,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 @Test func doneIsRefusedForAnItemSheNeverTouched() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("存檔，再另存到桌面")
-    try await h.turn(Scripted("", todoSet("notes 存好檔", "桌面有 copy.txt"), key("cmd+s")))
+    try await h.turn(Scripted("", todoSet("notes 存好檔", "桌面有 copy.txt"), readCall, key("cmd+s")))
     try await h.turn(Scripted("", done("⌘S 存好了。")))
     // The second item is in progress and untouched: a made-up done is refused and it stays in progress.
     try await h.turn(Scripted("", done("另存好了，read_file 確認過。")))
@@ -4681,7 +3944,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(refused.text.hasPrefix("失敗：「桌面有 copy.txt」這一項你還沒做任何動作，也沒看過結果，不能說完成。"))
     #expect(h.last.actions == ["error todo.done"])
     // Having looked, she may.
-    try await h.turn(Scripted("", screenshotCall))
+    try await h.turn(Scripted("", readCall))
     try await h.turn(Scripted("", done("桌面看得到 copy.txt。")))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
 }
@@ -4689,10 +3952,10 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 @Test func doneCompactsTheItemKeepsTheConversationAndMovesOn() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("把 notes 存檔，再關掉")
-    try await h.turn(Scripted("好，先看畫面", todoSet("notes 存好檔，標題沒有「已編輯」", "TextEdit 關掉了"), screenshotCall))  // request 0
+    try await h.turn(Scripted("好，先看畫面", todoSet("notes 存好檔，標題沒有「已編輯」", "TextEdit 關掉了"), readCall))  // request 0
     try await h.turn(Scripted("我按 ⌘S", key("cmd+s")))                                                                  // request 1
     await h.doll.ownerSaid("順便問，晚餐吃什麼？")
-    try await h.turn(Scripted("先回他", dm("等我存完再想"), ("click", [("text", "Save")])))                             // request 2
+    try await h.turn(Scripted("先回他", dm("等我存完再想"), clickRow(5)))                                                // request 2
     try await h.turn(Scripted("看起來好了", dm("存好了。"), done("按 ⌘S、點 Save 存檔，標題列沒有「已編輯」。")))         // request 3
     try await h.turn(Scripted("", key("cmd+q")))                                                                        // request 4
     try await h.turn(Scripted("", dm("關了")))                                                                          // request 5
@@ -4702,7 +3965,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(before.contains { !$0.images.isEmpty } && before.contains { $0.content.hasPrefix("先回他") || $0.content == "我按 ⌘S" })
     // After: no screenshot, no computer result, no thought, no footer of the item's replies.
     let item = Array(after.dropFirst(2).dropLast())
-    #expect(item.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty && $0.content != fakeWindowsLine && !$0.content.hasPrefix("【狀況】") })
+    #expect(item.allSatisfy { $0.images.isEmpty && $0.extra.isEmpty && !$0.content.hasPrefix("【狀況】") })
     #expect(item.filter { $0.role == "assistant" }.allSatisfy { $0.content.isEmpty })
     // What stays, in order: her todo.set (and its result), the owner's line verbatim, what she told him, her done with the action list.
     #expect(item.map(\.role) == ["assistant", "tool", "user", "assistant", "tool", "assistant", "tool", "tool"])
@@ -4711,7 +3974,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(item[3].toolCalls.map(\.name) == ["discord.dm"] && item[3].toolCalls[0].arguments!.contains("等我存完再想"))
     #expect(item[5].toolCalls.map(\.name) == ["discord.dm", "todo.done"])
     #expect(item[7].content.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。")
-            && item[7].content.contains("動作清單：key cmd+s、click「Save」。下一項「TextEdit 關掉了」現在進行中。"))
+            && item[7].content.contains("動作清單：key cmd+s、click AXButton \"=\"。下一項「TextEdit 關掉了」現在進行中。"))
     // The next item is in progress from right after the turn that finished the first.
     let t = try h.timeline().todo
     let last = try h.events().last { $0.kind == .doll && $0.calls.contains { $0.name == "todo.done" } }!
@@ -4724,13 +3987,13 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(try enc(next).starts(with: enc(after).dropLast()))
     #expect(Array(next.prefix(after.count - 1)) == Array(after.dropLast()))
     // The originals stay in the timeline.
-    #expect(try h.events().contains { $0.kind == .tool && $0.text == fakeWindowsLine && $0.image != nil })
+    #expect(try h.events().contains { $0.kind == .tool && $0.window != nil && $0.image != nil })
 }
 
 @Test func failBlocksTheComputerUntilSheDecidesWhatIsLeft() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("買票、再訂餐廳")
-    try await h.turn(Scripted("", todoSet("票買好了", "餐廳訂好了"), key("cmd+n")))
+    try await h.turn(Scripted("", todoSet("票買好了", "餐廳訂好了"), readCall, key("cmd+n")))
     try await h.turn(Scripted("", fail("要主人的信用卡驗證碼", tried: "填了卡號，跳出簡訊驗證"), key("Return")))
     #expect(try h.toolResults().suffix(2).map(\.text) == [
         "記下了：「票買好了」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：key cmd+n。電腦工具先鎖著。現在決定剩下的（剩下：「餐廳訂好了」）：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
@@ -4739,15 +4002,15 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     // She gets the turn in which she decides; the computer stays locked meanwhile.
     #expect(await h.doll.followUp)
     try await h.turn(Scripted("", key("Return")))
-    #expect(try h.toolResults().last!.text.hasPrefix("失敗：「票買好了」失敗了，key 先鎖著。") && h.vm.actions == [.key("cmd+n")])
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：「票買好了」失敗了，key 先鎖著。") && h.cua.actions == ["hotkey"])
     #expect(h.last.footer.contains("- todo：失敗「票買好了」：電腦工具鎖著"))
     // The failed item's reason and what she tried stay (her call); the action list is its result.
     let msgs = await h.model.seen(2)
     #expect(msgs.contains { $0.toolCalls.first?.name == "todo.fail" && $0.toolCalls[0].arguments!.contains("填了卡號，跳出簡訊驗證") })
-    #expect(!msgs.contains { $0.content == fakeWindowsLine })
+    #expect(!msgs.contains { !$0.extra.isEmpty })
     // She continues with the next item: in progress again, computer unlocked.
     try await h.turn(Scripted("", todoSet("餐廳訂好了"), key("cmd+t")))
-    #expect(h.vm.actions.last == .key("cmd+t") && h.last.todo == "進行中")
+    #expect(h.cua.args("hotkey").last?["keys"] as? [String] == ["cmd", "t"] && h.cua.actions.count == 2 && h.last.todo == "進行中")
 }
 
 @Test func anEmptyListAfterAFailureEndsItAndNothingWakesHer() async throws {
@@ -4765,25 +4028,21 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 @Test func waitingGetsNoTurnsUntilSomethingHappens() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("幫我登入")
-    try await h.turn(Scripted("", todoSet("登入好了"), key("cmd+n")))
+    try await h.turn(Scripted("", todoSet("登入好了"), readCall, key("cmd+n")))
     try await h.turn(Scripted("", dm("要你的驗證碼"), todoWait("主人的驗證碼"), key("Return")))
     // The wait applies once the reply's calls ran: the key after it still ran.
-    #expect(h.vm.actions == [.key("cmd+n"), .key("return")])
+    #expect(h.cua.actions == ["hotkey", "press_key"])
     #expect(h.last.todo == "等待中")
     #expect(await !h.doll.followUp)
     #expect(try h.timeline().todo.phase == .waiting)
     await h.doll.ownerSaid("123456")
     try await h.turn(Scripted("", ("type", [("text", "123456")])))
-    #expect(h.reports[2].footer.contains("- todo：進行中「登入好了」") && h.vm.actions.last == .type("123456"))
-    // A watch waits too, and its wake brings the item back.
-    try await h.turn(Scripted("", watch("window", 1)))
-    #expect(h.last.todo == "等待中")
-    try await h.waitFor(.watch)
-    try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.todo == "進行中" && h.vm.actions.last == .key("return"))
+    #expect(h.reports[2].footer.contains("- todo：進行中「登入好了」") && h.cua.args("type_text").last?["text"] as? String == "123456")
 }
 
-/// A harness whose context is near full after a screenshot or two: a small limit and big screenshots.
+/// A harness whose context is near full after a read and one long thought of hers (`longThought`):
+/// a small limit and big screenshots. Only the latest read keeps its screenshot, so reads alone never
+/// fill it; her thoughts in the item's replies do, and a compaction drops them.
 private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness {
     let h = try await Harness(tune: {
         $0.context.limit = 20_000
@@ -4794,12 +4053,14 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     await h.model.setImageTokens(5_000)
     return h
 }
+/// 9,000 tokens of her thinking: with one read in the request, past the warning share of the tight limit.
+private let longThought = String(repeating: "想", count: 9_000)
 
 @Test func nearFullSheCompactsWithProgressAndTheItemGoesOn() async throws {
     let h = try await tightHarness()
     await h.doll.ownerSaid("整理桌面")
-    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), screenshotCall))
-    try await h.turn(Scripted("", key("cmd+a")))
+    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), readCall))
+    try await h.turn(Scripted(longThought, key("cmd+a")))
     try await h.turn(Scripted("", key("cmd+c")))
     let warned = h.last.footer
     #expect(warned.contains("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；再 3 回合沒收，程式會自己收（留動作清單和最近 2 回合）。"))
@@ -4823,10 +4084,11 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
 @Test func nearFullWithoutHerCompactionTheProgramForcesItKeepingTheLastTurns() async throws {
     let h = try await tightHarness()
     await h.doll.ownerSaid("整理桌面")
-    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), screenshotCall))   // turn 1
-    try await h.turn(Scripted("", key("a")))                                          // 2: warned (0 → 1)?
+    try await h.turn(Scripted("", todoSet("桌面只剩 notes.txt"), readCall))   // turn 1
+    try await h.turn(Scripted(longThought, key("a")))                                 // 2: past the warning share from turn 3
     for k in ["b", "c", "d", "e", "f"] { try await h.turn(Scripted("", key(k))) }
     let warnings = h.reports.map { $0.footer.contains("context 快滿了：用 todo.progress") }
+    #expect(!h.reports[1].footer.contains("快滿了"))
     let first = warnings.firstIndex(of: true)!
     // Three warned turns, then the program compacts at the start of the next one.
     let forcedTurn = h.reports.firstIndex { $0.compacted == ["forced"] }!
@@ -4910,7 +4172,7 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
     #expect(try h.timeline().compactions.count == 1)
     // Never into the item in progress: with an item running, only what came before it can go.
     await h.doll.ownerSaid("幫我存檔")
-    try await h.turn(Scripted("聊了天氣。"), Scripted("", todoSet("notes 存好檔"), screenshotCall))
+    try await h.turn(Scripted("聊了天氣。"), Scripted("", todoSet("notes 存好檔"), readCall))
     try await h.turn(Scripted("聊了晚餐。"), Scripted("", key("cmd+s")))   // what was left before the item
     try await h.turn(Scripted("", key("cmd+w")))                        // nothing before the item left: no summary request
     #expect(h.logs.contains { $0.contains("no conversation before the item in progress") })
@@ -4929,10 +4191,10 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
 @Test func compactionsAndTheTodoListSurviveARestartByteForByte() async throws {
     let h = try await tightHarness()
     await h.doll.ownerSaid("兩件事")
-    try await h.turn(Scripted("", todoSet("A 好了", "B 好了"), screenshotCall))
+    try await h.turn(Scripted("", todoSet("A 好了", "B 好了"), readCall))
     try await h.turn(Scripted("", key("a")))
     try await h.turn(Scripted("", done("A 做完")))
-    try await h.turn(Scripted("", key("b")))
+    try await h.turn(Scripted(longThought, key("b")))
     for k in ["c", "d", "e", "f", "g"] { try await h.turn(Scripted("", key(k))) }
     #expect(try h.timeline().compactions.map(\.kind) == [.done, .forced])
     let events = await h.doll.timelineEvents()
@@ -4945,22 +4207,6 @@ private func tightHarness(after: Int = 3, keep: Int = 2) async throws -> Harness
         .map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }.map { $0["type"] as! String }
     #expect(Set(types) == ["event", "footer", "turn", "todo", "compact"])
     await h.doll.stop()
-}
-
-@Test func theDocsGoIntoHerComputerAndAFailedCopyIsInTheBootNotice() async throws {
-    let h = try await Harness()
-    #expect(await h.doll.syncDocs() == nil)
-    let docs = root.appending(path: "dolldocs")
-    let names = try FileManager.default.contentsOfDirectory(atPath: docs.path).filter { $0.hasSuffix(".md") }.sorted()
-    #expect(names.contains("README.md") && names.count >= 6)
-    for n in names {
-        #expect(h.vm.file("\(Doll.docsVMPath)/\(n)") == String(decoding: try Data(contentsOf: docs.appending(path: n)), as: UTF8.self))
-    }
-    h.vm.failNext("vm is asleep")
-    let why = try #require(await h.doll.syncDocs())
-    try await h.doll.announceBoot(docsFailure: why)
-    #expect(try h.events().last!.text == "【開機】你剛被開機了。DollOS 文件這次沒有複製進你的電腦（\(why)）；~/DollOS/docs 裡可能是舊的或沒有。今天的行事曆：沒有。")
-    #expect(h.logs.contains { $0.hasPrefix("ERROR docs: copying") })
 }
 
 
@@ -5151,7 +4397,7 @@ private func day(_ days: Double) -> Double {
     #expect(c.memory.strengthDecay == 0.5 && c.memory.strengthUnitDays == 7 && c.memory.strengthSettled == 0.75)
     #expect(c.select.strengthFloor == -0.75 && c.select.strengthWeight == 0.1)
     let file = FileManager.default.temporaryDirectory.appending(path: "strength-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"V\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     // Absent keys: the defaults (a config written before 2026-11-15 boots unchanged).
     try head.write(to: file, atomically: true, encoding: .utf8)
@@ -6138,7 +5384,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func theExampleDrivesSectionIsTheDefaultsAndBadValuesAreRefused() throws {
     #expect(try Config.load(root.appending(path: "dollcore.example.toml")).drives == DrivesConfig())
     let file = FileManager.default.temporaryDirectory.appending(path: "drives-\(UUID().uuidString).toml")
-    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[computer]\nvm_id = \"v\"\n[memory]\n"
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
     for bad in ["[drives]\norder = [\"stress\"]\n", "[drives]\nsleepiness_high = 0.8\n", "[drives]\nstress_high = 0.05\n",
                 "[drives]\ncloseness_start = 0.1\n", "[drives]\nmood = 1\n"] {
@@ -6298,9 +5544,9 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 }
 
 @Test func theInstructionsTellHerTheFactNotARule() {
-    let t = Instructions.text(voice: false, context: ContextConfig(), drives: true, ownerSleep: true)
+    let t = Instructions.text(voice: false, context: ContextConfig(), docs: "/d", drives: true, ownerSleep: true)
     #expect(t.contains("行事曆上的「主人睡覺」是主人平常睡覺的時間，開始和結束都不會叫你；在那段時間裡【狀況】會寫他應該在睡。那時候想到要跟他說的事，不急就用 concern.note 記著，等他醒了再說；急事（像他交代要叫他起床）照樣可以找他。"))
-    #expect(!Instructions.text(voice: false, context: ContextConfig()).contains("主人睡覺"))
+    #expect(!Instructions.text(voice: false, context: ContextConfig(), docs: "/d").contains("主人睡覺"))
 }
 
 @Test func ownerSleepConfigIsStrict() throws {
@@ -6609,15 +5855,16 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
     _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
     let c = GoalsConfig()
-    let before = await d.testDrive()
+    // Her first read meets an app she has not seen (Calculator): 碰到新東西 moves 動力 once too.
+    let before = await d.testDrive() + c.noveltyDrive
     await d.ownerSaid("（你閒著）")
     // One existing step, one new: the new one joins the tree.
-    try await h.turn(Scripted("", todoSetSub(s.id, "#3 讀完維基的鯊魚條目，記下各目", "鯊魚分類寫成筆記"), screenshotCall))
+    try await h.turn(Scripted("", todoSetSub(s.id, "#3 讀完維基的鯊魚條目，記下各目", "鯊魚分類寫成筆記"), readCall))
     #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }!.text.contains("新的步驟加進樹裡了：「鯊魚分類寫成筆記」"))
     #expect(try await d.status().contains("（子目標 #2 的步驟）"))
     try await h.turn(Scripted("", done("讀完了")))
     #expect(approx(await d.testDrive(), before + c.stepDrive * c.nowShare))
-    try await h.turn(Scripted("", screenshotCall, done("寫好了")))
+    try await h.turn(Scripted("", readCall, done("寫好了")))
     let rec = await d.dashboardGoals().record
     #expect(rec.map(\.kind) == ["step", "step"] && rec.map(\.text) == ["鯊魚分類寫成筆記", "讀維基的鯊魚條目"])
     // A number that is not one of its open steps is refused before anything changes.
@@ -6632,7 +5879,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     // A list not tied to the tree (what the owner asked): one item moves 動力 as a todo item, the finished list is one record.
     let mid = await d.testDrive()
     await d.ownerSaid("幫我存檔")
-    try await h.turn(Scripted("", todoSet("存好了"), screenshotCall))
+    try await h.turn(Scripted("", todoSet("存好了"), readCall))
     try await h.turn(Scripted("", done("存了")))
     #expect(approx(await d.testDrive(), mid + DrivesConfig().itemDoneDrive + c.listDrive * c.nowShare))
     #expect(await d.dashboardGoals().record.first.map { [$0.kind, $0.text] } == ["list", "存好了"])
