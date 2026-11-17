@@ -1039,7 +1039,7 @@ public actor Doll {
         await mac.beginReply(item: todo.current)
         let live = calls.prefix { !Tools.ending.contains($0.name) }
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
-        var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?
+        var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?, setRefused = false
         for (i, call) in calls.enumerated() {
             speaksLater = Set(calls[(i + 1)...].compactMap { c in
                 c.arguments == nil ? nil : c.name == Tools.Name.reply ? .developer : Tools.speaking[c.name] != nil ? .owner : nil
@@ -1051,7 +1051,10 @@ public actor Doll {
                 out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
             } else if Tools.gated.contains(call.name), todo.phase != .doing {
-                out = Outcome(text: gateText(name), actions: ["refused \(name)"])
+                // A refused todo.set ahead of it in this reply (2026-11-17: the list and its first action
+                // go in one reply): nothing it would have started runs.
+                out = Outcome(text: setRefused ? "失敗：這則回覆前面的 todo.set 沒收（看它的結果），\(name) 沒有執行；改好 todo.set 再做。" : gateText(name),
+                              actions: ["refused \(name)"])
             } else if Tools.gated.contains(call.name), todo.deciding {
                 out = Outcome(text: "失敗：\(name) 沒有執行。" + decideText, actions: ["refused \(name)"])
             } else if isAction, let failed {
@@ -1065,6 +1068,7 @@ public actor Doll {
                 out = await execute(call, seen: events, reply: stored, chain: chain)
                 if Tools.gated.contains(call.name) { out = noteRepeats(call, out) }
                 if out.ends { ended = name }
+                if call.name == Tools.Name.todoSet, out.actions.contains("error \(name)") { setRefused = true }
                 if isAction {
                     if let line = out.failedStep {
                         failed = (step, line)
@@ -1792,6 +1796,24 @@ public actor Doll {
         return nil
     }
 
+    /// Words that say "no limits" without saying one, as letters and digits (`plainKey`), longest first.
+    static let noLimitWords = ["不適用", "不适用", "because", "boundary", "沒有", "没有", "限制", "邊界", "边界", "界限", "特別", "特别",
+                               "因為", "因为", "limits", "limit", "none", "無", "无", "no", "na"]
+
+    /// `limits` says a limit or why there is none (2026-11-17, m7-mac seq a-2, a-3: 「無」 was refused as
+    /// too short and the rewrite cost a round; owner: an honest none is fine when she says why). With
+    /// every `noLimitWords` word taken out of its letters and digits, at least `[computer] plan_min_chars`
+    /// must remain: 「沒有，因為只在計算機裡按幾個鍵、不動別的」 keeps 「只在計算機裡按幾個鍵不動別的」 and passes;
+    /// 「無」「沒有限制」「沒有，因為沒有」「none」 keep nothing and are refused. The other filler rules follow.
+    func limitsRefusal(_ limits: String?) -> String? {
+        guard let limits, !limits.isEmpty else { return nil }
+        var rest = Self.plainKey(limits)
+        for word in Self.noLimitWords { rest = rest.replacingOccurrences(of: word, with: "") }
+        let min = computerConfig.planMinChars
+        guard rest.count < min else { return nil }
+        return "limits「\(limits)」沒寫出邊界：寫不能碰的、做不到的、有限的是什麼；真的沒有，就寫「沒有，因為…」把理由寫出來（理由至少 \(min) 個字）。"
+    }
+
     /// Hook 1: the plan of a `todo.set` that starts a list, or a refusal (thrown) without it. Every
     /// field passes the filler rules; each fact (1 to `[computer] plan_max_facts`) has a quote that
     /// is in something she can cite (`citable`), matched as `todo.done`'s evidence; the program records
@@ -1807,7 +1829,8 @@ public actor Doll {
         guard let given = p.facts, !given.isEmpty else { throw refuse("少了 facts。") }
         let max = computerConfig.planMaxFacts
         guard given.count <= max else { throw refuse("facts 最多 \(max) 條，你寫了 \(given.count) 條：留最要緊的。") }
-        if let problem = fillerRefusal([("assumptions", p.assumptions), ("limits", p.limits), ("check", p.check)], copies: copies)
+        if let problem = limitsRefusal(p.limits)
+            ?? fillerRefusal([("assumptions", p.assumptions), ("limits", p.limits), ("check", p.check)], copies: copies)
             ?? (p.estimate == nil ? "少了 estimate。" : p.estimate! < 1 ? "estimate 要是 1 以上的整數（回合數）。" : nil) {
             throw refuse(problem)
         }

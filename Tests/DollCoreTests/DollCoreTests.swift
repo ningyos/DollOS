@@ -2025,10 +2025,10 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // FakeEmbedder: the short owner line against the whole experience is under 0.55.
     let h = try await Harness(tune: { $0.select.similarity = 0.2 })
     await h.doll.ownerSaid("把 notes 存檔")
-    try await h.turn(Scripted("", todoSet("標題沒有「已編輯」")))
+    try await h.turn(Scripted("", todoSet("標題沒有「已編輯」"), readCall))
     // An action that fails is not a step; each step is only what she did, no driver answer text.
     h.cua.refuse("click", "boom\nsecond line")
-    try await h.turn(Scripted("", readCall, clickRow(3)))
+    try await h.turn(Scripted("", clickRow(3)))
     try await h.turn(Scripted("", clickRow(2), readCall))
     try await h.turn(Scripted("", act(#"{"click": {"x": 100, "y": 50}, "count": 2}"#),
                               act(#"{"type": "娃娃來過"}"#), key("cmd+s")))
@@ -7209,4 +7209,75 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     try await h.turn(Scripted("", fail("主人還沒決定去哪，沒辦法列", evidence: "還不知道要去哪"), dm("等你決定了再說")))
     #expect(await h.doll.todo.phase == .failed)
     #expect(await h.doll.estimateFile.records.last?.evidence == "還不知道要去哪")
+}
+
+// Fewer rounds (2026-11-17, owner: about three replies for 37×46) ---------------------------------
+
+@Test func limitsTakesAnExplainedNoneAndRefusesABareOne() async throws {
+    // m7-mac seq a-2, a-3: 「無」 was refused as too short; the rewrite cost a round.
+    let h = try await Harness()
+    await h.doll.ownerSaid("幫我算 12 乘 34")
+    func set(_ limits: String) -> Scripted {
+        Scripted("", ("todo.set", [("items", "[\"計算機顯示 408\"]")] + planArgs.map { $0.0 == "limits" ? ("limits", limits) : $0 }))
+    }
+    for made in ["無", "沒有", "同上", "沒有限制", "沒有，因為沒有", "無特別限制", "None", "N/A", "no limits"] {
+        try await h.turn(set(made))
+        #expect(try h.toolResults().last!.text.hasSuffix("limits「\(made)」沒寫出邊界：寫不能碰的、做不到的、有限的是什麼；真的沒有，就寫「沒有，因為…」把理由寫出來（理由至少 4 個字）。"))
+        #expect(await h.doll.todo.phase == .idle)
+    }
+    // A copy of the question is still refused.
+    try await h.turn(set("幫我算 12 乘 34"))
+    #expect(try h.toolResults().last!.text.hasSuffix("limits 只是照抄了對方說的話：寫你自己的。"))
+    // An honest none with its reason passes; so does a limit that starts with 沒有.
+    try await h.turn(set("沒有，因為只在計算機裡按幾個鍵、不動別的"))
+    #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了"))
+    #expect(try h.timeline().todo.plan?.limits == "沒有，因為只在計算機裡按幾個鍵、不動別的")
+    #expect(await h.doll.limitsRefusal("沒有限制，只動計算機") == nil)
+    #expect(await h.doll.limitsRefusal("只算這一題，不碰計算機其他設定") == nil)
+}
+
+@Test func evidenceIsTheReadsOwnWordsWhetherJoinedOrNot() {
+    // m7-mac seq a-2 (2026-11-17): her second piece was reworded (上一個表示式 "37 × 46"), not copied.
+    let read = "- [0] AXWindow \"計算機\" [id=main actions=[raise]]\n    - AXStaticText = \"37 × 46\" (上一個表示式)\n    - AXStaticText = \"1,702\" (編輯欄位)"
+    #expect(Doll.quoted(#"AXStaticText = "37 × 46" (上一個表示式)；AXStaticText = "1,702" (編輯欄位)"#, in: read))
+    #expect(Doll.quoted("AXStaticText = \"37 × 46\" (上一個表示式)\n    - AXStaticText = \"1,702\" (編輯欄位)", in: read))
+    #expect(Doll.quoted("  - AXStaticText = \"1,702\" (編輯欄位)", in: read))
+    // The expect an act confirmed is in the read that act returned: copying it passes.
+    #expect(Doll.quoted("1,702", in: read))
+    #expect(!Doll.quoted(#"AXStaticText = "1,702" (編輯欄位)；上一個表示式 "37 × 46""#, in: read))
+    #expect(!Doll.quoted(#"AXStaticText = "1,703" (編輯欄位)"#, in: read))
+}
+
+@Test func theListAndItsFirstActionGoInOneReplyAndARefusedListStopsWhatFollows() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("按 7，跟我說畫面")
+    // A refused todo.set: nothing after it in that reply touches the computer.
+    let bare = ("todo.set", [("items", "[\"畫面顯示 7\"]")] + planArgs.map { $0.0 == "limits" ? ("limits", "無") : $0 })
+    try await h.turn(Scripted("", bare, ("open", [("app", "Calculator")]), act(#"{"click": {"name": "7"}}"#)))
+    #expect(h.last.actions == ["error todo.set", "refused open", "refused act"])
+    #expect(try h.toolResults().suffix(2).map(\.text) == ["失敗：這則回覆前面的 todo.set 沒收（看它的結果），open 沒有執行；改好 todo.set 再做。",
+                                                          "失敗：這則回覆前面的 todo.set 沒收（看它的結果），act 沒有執行；改好 todo.set 再做。"])
+    #expect(await h.doll.todo.phase == .idle && h.cua.actions.isEmpty && !h.cua.tools.contains("launch_app"))
+    // Accepted: the open runs in the same reply. A row of the read that open made is not one she has seen.
+    try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")]), clickRow(2)))
+    #expect(h.last.actions.prefix(2) == ["todo set", "open"] && h.cua.actions.isEmpty)
+    #expect(try h.toolResults().last!.text.contains("沒有做：第 2 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用 name 指定。"))
+    // The reply that set the list is not one of the list's rounds.
+    #expect(await h.doll.todo.rounds == 0)
+    // The next reply presses the row she saw; then the line to him and the done in one reply.
+    try await h.turn(Scripted("", clickRow(2)))
+    #expect(try h.toolResults().last!.window?.contains(#"AXStaticText "7""#) == true && h.cua.actions == ["click"])
+    #expect(await h.doll.todo.rounds == 1)
+    try await h.turn(Scripted("", dm("畫面是 7"), done("按了 7，畫面顯示 7", evidence: #"AXStaticText "7""#)))
+    #expect(h.last.actions == ["said discord_dm", "todo done"] && h.said == ["畫面是 7"])
+    #expect(await h.doll.todo.phase == .idle)
+    #expect(await h.doll.estimateFile.records.last?.rounds == 2)
+}
+
+@Test func aNamedElementCanFollowTheOpenInTheSameReply() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("按 7")
+    try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")]), act(#"{"click": {"name": "7"}}"#)))
+    #expect(h.last.actions == ["todo set", "open", "act"] && h.cua.actions == ["click"])
+    #expect(await h.doll.itemSteps.map(\.line).first == "open Calculator")
 }

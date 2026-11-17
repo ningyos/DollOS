@@ -695,9 +695,14 @@ public actor Mac {
                 guard let e = c.rows[n] else {
                     throw StepRefused(description: "沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。重新 read_window，用新清單的行號；之後才出現的元素用 name 指定。")
                 }
-                // An earlier call of this reply read the window again: the row must still be the
-                // element she saw, or it is not hers to press.
-                if let s = seen, s.snapshot != c.snapshot {
+                // A row means the read she saw before this reply (2026-11-17: the list and its first
+                // `open` go in one reply): with no read before it, the read is this reply's own and
+                // she has not seen it. An earlier call of this reply read the window again: the row
+                // must still be the element she saw, or it is not hers to press.
+                guard let s = seen else {
+                    throw StepRefused(description: "沒有做：第 \(n) 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用 name 指定。")
+                }
+                if s.snapshot != c.snapshot {
                     guard s.windowID == c.windowID, let was = s.rows[n], Self.same(was, e) else {
                         let was = s.rows[n].map(Self.describe) ?? "沒有這一行"
                         throw StepRefused(description: "沒有做：這則回覆前面的呼叫改變了視窗，第 \(n) 行現在是 \(Self.describe(e))，你看到的是 \(was)。看新清單再選。")
