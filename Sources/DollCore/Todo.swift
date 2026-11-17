@@ -56,6 +56,10 @@ public struct TodoState: Sendable, Equatable, Codable {
     public var listRounds = 0
     /// When the `todo.set` that started the list was written (its reply's time).
     public var listStart = 0.0
+    /// What later lists compare with this one (`EstimateRecord.text`), and the estimate check made
+    /// at its `todo.set` (2026-11-18); nil for a list from an older timeline or with nothing alike.
+    public var listText: String?
+    public var estimateCheck: EstimateCheck?
 
     public init() {}
 
@@ -127,6 +131,7 @@ public struct PlanFact: Sendable, Equatable, Codable {
 
 /// One finished list, estimate against what it took (2026-11-17, hook 2 = feedback loop): written
 /// when the list ends (its last `todo.done`, or a `todo.fail`), to `<data_dir>/estimates.json`.
+/// A record written before 2026-11-18 has no `text` and is never compared (`Doll.estimateCheck`).
 public struct EstimateRecord: Sendable, Equatable, Codable {
     /// When the list ended.
     public var ts: Double
@@ -139,6 +144,31 @@ public struct EstimateRecord: Sendable, Equatable, Codable {
     /// A failed list: her root cause and the text she quoted for it (hook 4).
     public var cause: String?
     public var evidence: String?
+    /// What later lists are compared by (2026-11-18): the line the list answered, else her items
+    /// one per line (`Doll.listText`). Its vector is computed again when needed, never stored.
+    public var text: String?
+    /// What the program compared her estimate with at `todo.set`; nil when no past list was like it.
+    public var check: EstimateCheck?
+}
+
+/// The estimate check of one list (2026-11-18, owner: the program compares): the like past lists,
+/// the median of what they took, and what happened.
+public struct EstimateCheck: Sendable, Equatable, Codable {
+    /// The like past lists (oldest first): her items then, her estimate, the rounds they took.
+    public struct Past: Sendable, Equatable, Codable {
+        public var items: [String]
+        public var estimate: Int
+        public var rounds: Int
+    }
+    public var past: [Past]
+    /// The median of `past` rounds, and the estimates that count as close to it.
+    public var reference: Int
+    public var low: Int
+    public var high: Int
+    /// Her estimate the program refused (nil: her first estimate was close).
+    public var refused: Int?
+    /// What she wrote, after the refusal, for keeping an estimate outside low...high.
+    public var reason: String?
 }
 
 /// The five `todo.set` fields as she gave them (trimmed; nil = not given), before `Doll.planRefusal`.
@@ -153,6 +183,9 @@ struct PlanInput: Sendable, Equatable {
     var limits: String?
     var estimate: Int?
     var check: String?
+    /// Why this list will take a number of rounds the program called far from what like lists took
+    /// (2026-11-18); counted only on the `todo.set` after that refusal.
+    var estimateReason: String? = nil
 }
 
 public struct EstimateFile: Sendable, Equatable, Codable {

@@ -254,6 +254,8 @@ public final class Timeline {
         var plan: TodoPlan?
         var listRounds: Int?
         var listStart: Double?
+        var listText: String?
+        var estimateCheck: EstimateCheck?
     }
     private struct CompactLine: Codable {
         var type = "compact"
@@ -405,6 +407,8 @@ public final class Timeline {
         s.plan = l.plan
         s.listRounds = l.listRounds ?? 0
         s.listStart = l.listStart ?? 0
+        s.listText = l.listText
+        s.estimateCheck = l.estimateCheck
         return s
     }
 
@@ -445,7 +449,8 @@ public final class Timeline {
     public func recordTodo(_ s: TodoState, seq: Int64) throws {
         try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
                            rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
-                           plan: s.plan, listRounds: s.listRounds, listStart: s.listStart))
+                           plan: s.plan, listRounds: s.listRounds, listStart: s.listStart,
+                           listText: s.listText, estimateCheck: s.estimateCheck))
         todo = s
     }
 

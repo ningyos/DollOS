@@ -139,6 +139,12 @@ public actor Doll {
     /// Her finished lists, estimate against actual (2026-11-17, hook 2): `<data_dir>/estimates.json`.
     let estimatesURL: URL
     var estimateFile: EstimateFile
+    /// The estimate refusal given for the list about to start (2026-11-18): its text, the check, and
+    /// whether a reason was already asked for. The next `todo.set` with the same text is the second
+    /// attempt. In memory only: after a restart the first attempt is refused again.
+    var estimateRefusal: (text: String, check: EstimateCheck, reasonAsked: Bool)?
+    /// Vectors of list texts (digits masked) already embedded, so past lists are embedded once per process.
+    var listVectors: [String: [Float]] = [:]
     /// The current item's actions that went through, one short line each (`Doll.step`) with the seq
     /// of the result that answered it: its action list and its experience's steps. In memory: a new
     /// process starts the list of an item still in progress empty.
@@ -883,8 +889,6 @@ public actor Doll {
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
-        // Hook 2: while no item is in progress her next todo.set may estimate; her past lists are here.
-        if todo.phase != .doing, todo.phase != .waiting, let history = estimateHistoryLine() { out.append(history) }
         if let felt = feltLine(now: now) { out.append("- " + felt) }
         if let goals = goalStatusLine() { out.append(goals) }
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
@@ -1665,8 +1669,15 @@ public actor Doll {
         func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
         // Hook 1 (2026-11-17): a list that starts hands in its plan; checked before anything changes.
         var plan: TodoPlan?
+        var check: EstimateCheck?
+        var listTextNow: String?
         if todo.phase != .doing, todo.phase != .waiting, !items.isEmpty {
-            do { plan = try checkedPlan(p, items: items, reply: reply) } catch {
+            do {
+                plan = try checkedPlan(p, items: items, reply: reply)
+                let text = listText(items, reply: reply)
+                check = try estimateCheck(p, estimate: plan!.estimate, text: text, items: items, reply: reply)
+                listTextNow = text
+            } catch {
                 log("INFO", "turn \(turnIndex): todo.set refused: \(error)")
                 throw error
             }
@@ -1693,6 +1704,9 @@ public actor Doll {
             todo.startSeq = reply.seq! - 1
             beginItem()
             todo.plan = plan!
+            todo.listText = listTextNow
+            todo.estimateCheck = check
+            estimateRefusal = nil
             todo.listRounds = 0
             // The decision point counts the list's rounds (design C): a new list starts it again.
             todo.decideAt = computerConfig.decideAfterRounds
@@ -1704,7 +1718,13 @@ public actor Doll {
             listFor = Self.unanswered(timeline.events.filter { ($0.seq ?? 0) <= reply.seq! })
             listReply = reply.seq!
             listReported = false
-            return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
+            let compared = check.map { c in
+                c.reason != nil ? "（跟以前像這樣的清單實際 \(c.reference) 回合不一樣，你寫的理由記下了，主人看得到）"
+                    : c.refused == nil ? ""
+                    : (c.low...c.high).contains(p.estimate!) ? "（以前像這樣的清單實際 \(c.reference) 回合）"
+                    : "（跟以前像這樣的清單實際 \(c.reference) 回合差很多，沒寫理由，照收了；主人看得到）"
+            } ?? ""
+            return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合\(compared)。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
         }
     }
 
@@ -1756,7 +1776,7 @@ public actor Doll {
             let line = estimateLine(plan, rounds: todo.totalRounds, seconds: Int((reply.ts - todo.listStart).rounded()))
             if todo.pending.isEmpty {
                 _ = try recordEstimate(outcome: .done, at: reply.ts)
-                estimate = "這一項做了 \(todo.rounds) 回合；整份清單做完了：\(line)（記下了，下次估的時候【狀況】會給你看）。"
+                estimate = "這一項做了 \(todo.rounds) 回合；整份清單做完了：\(line)（記下了，下次列像這樣的清單，程式會拿來對你估的）。"
             } else {
                 estimate = "這一項做了 \(todo.rounds) 回合；\(line)。"
             }
@@ -1876,10 +1896,7 @@ public actor Doll {
     /// is in something she can cite (`citable`), matched as `todo.done`'s evidence; the program records
     /// where it found it. It cannot judge whether the fact follows from its quote.
     func checkedPlan(_ p: PlanInput, items: [String], reply: Event) throws -> TodoPlan {
-        var copies = items.map { (what: "項目", text: $0) }
-        if let line = timeline.events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) {
-            copies.append((what: "對方說的話", text: line.text))
-        }
+        let copies = planCopies(items, reply: reply)
         func refuse(_ problem: String) -> ToolError {
             ToolError(description: "清單沒有列：開始一份清單要一起寫 facts（確定的事實，每條帶出處）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。\(problem)")
         }
@@ -2011,6 +2028,100 @@ public actor Doll {
             .reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
     }
 
+    /// What a plan field may not merely copy: her items and the last line someone said before her reply.
+    func planCopies(_ items: [String], reply: Event) -> [(what: String, text: String)] {
+        var copies = items.map { (what: "項目", text: $0) }
+        if let line = timeline.events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) {
+            copies.append((what: "對方說的話", text: line.text))
+        }
+        return copies
+    }
+
+    /// What a list is compared by (2026-11-18, estimate check): the last line someone said before
+    /// her reply when it came after the last finished list ended (the list answers it), else her
+    /// items one per line (a list of her own, or one re-set after a failure). Measured on 109 lists:
+    /// the owner's line separates kinds (different kinds at most 0.847, same kind at least 0.94 with
+    /// digits masked); her items do not (different kinds up to 0.90, same kind down to 0.48).
+    func listText(_ items: [String], reply: Event) -> String {
+        let since = estimateFile.records.last?.ts ?? 0
+        if let line = timeline.events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }), line.ts > since {
+            return line.text
+        }
+        return items.joined(separator: "\n")
+    }
+
+    /// A list text with its digits masked (numbers, the numbers in a path): a list's kind is not its numbers.
+    static func maskedDigits(_ s: String) -> String {
+        s.replacing(/[0-9０-９]+([.,][0-9]+)*/, with: "#")
+    }
+
+    /// Her estimate is far from `reference` (`[computer] estimate_far_ratio`, `estimate_far_rounds`):
+    /// the larger is more than ratio times the smaller and they differ by at least that many rounds.
+    func estimateFar(_ estimate: Int, _ reference: Int) -> Bool {
+        let (lo, hi) = (min(estimate, reference), max(estimate, reference))
+        return Double(hi) > computerConfig.estimateFarRatio * Double(lo) && hi - lo >= computerConfig.estimateFarRounds
+    }
+
+    /// The estimate check at the `todo.set` that starts a list (2026-11-18, owner: the program
+    /// compares). Past lists with a text whose cosine to `text` (digits masked, both embedded as
+    /// documents) is at least `[computer] estimate_similarity`; the most recent `estimate_similar_max`
+    /// of them; the reference is the median of their actual rounds (rounded half up; the median, so
+    /// one slow list, e.g. one that also saved a tool, does not move it). None alike: nil, accepted.
+    /// Her estimate far from the reference (`estimateFar`) is refused once with what they took. The
+    /// next `todo.set` with the same text: an estimate not far passes; one still far passes with an
+    /// `estimate_reason` that passes the filler rules (recorded); without one it is refused once more,
+    /// for the reason only; after that it passes, whatever the estimate. An embedding failure is
+    /// logged and the estimate accepted (as a tool offer is skipped).
+    func estimateCheck(_ p: PlanInput, estimate: Int, text: String, items: [String], reply: Event) throws -> EstimateCheck? {
+        let past = estimateFile.records.filter { $0.text != nil }
+        guard !past.isEmpty else { return nil }
+        let like: [EstimateRecord]
+        do {
+            let keys = ([text] + past.map { $0.text! }).map(Self.maskedDigits)
+            let missing = Array(Set(keys.filter { listVectors[$0] == nil }))
+            if !missing.isEmpty {
+                for (k, v) in zip(missing, try embedder.embed(missing, as: .document)) { listVectors[k] = v }
+            }
+            let q = listVectors[keys[0]]!
+            let scored = zip(past, keys.dropFirst()).map { r, k in (r, Double(zip(q, listVectors[k]!).reduce(Float(0)) { $0 + $1.0 * $1.1 })) }
+            log("INFO", "turn \(turnIndex): estimate check cosine " + scored.map { String(format: "%.3f", $0.1) }.joined(separator: " "))
+            like = scored.filter { $0.1 >= computerConfig.estimateSimilarity }.map(\.0).suffix(computerConfig.estimateSimilarMax)
+        } catch {
+            log("ERROR", "turn \(turnIndex): estimate check skipped: \(error)")
+            return nil
+        }
+        guard !like.isEmpty else { return nil }
+        let rounds = like.map(\.rounds).sorted()
+        let n = rounds.count
+        let reference = n % 2 == 1 ? rounds[n / 2] : Int((Double(rounds[n / 2 - 1] + rounds[n / 2]) / 2).rounded())
+        let close = (1...max(1, reference * Int(computerConfig.estimateFarRatio.rounded(.up)) + computerConfig.estimateFarRounds))
+            .filter { !estimateFar($0, reference) }
+        var check = EstimateCheck(past: like.map { .init(items: $0.plan.items, estimate: $0.plan.estimate, rounds: $0.rounds) },
+                                  reference: reference, low: close.first!, high: close.last!, refused: nil, reason: nil)
+        if let prior = estimateRefusal, prior.text == text {
+            check.refused = prior.check.refused
+            guard estimateFar(estimate, reference) else { return check }
+            let copies = planCopies(items, reply: reply)
+            if p.estimateReason != nil, fillerRefusal([("estimate_reason", p.estimateReason)], copies: copies) == nil {
+                check.reason = p.estimateReason
+                return check
+            }
+            if prior.reasonAsked { return check }
+            estimateRefusal!.reasonAsked = true
+            let problem = p.estimateReason.flatMap { fillerRefusal([("estimate_reason", $0)], copies: copies) } ?? ""
+            throw ToolError(description: "清單沒有列：estimate 還是 \(estimate) 回合，不在 \(check.low) 到 \(check.high) 之間。"
+                            + "改成這中間的數；或照你的估法，在 estimate_reason 寫這次跟以前那幾份哪裡不一樣。\(problem)")
+        }
+        guard estimateFar(estimate, reference) else { return check }
+        check.refused = estimate
+        estimateRefusal = (text, check, false)
+        let listed = like.map { r in "「\(r.plan.items.joined(separator: "、"))」你估 \(r.plan.estimate)、實際 \(r.rounds) 回合" }.joined(separator: "；")
+        let way = estimate < reference ? "少" : "多"
+        throw ToolError(description: "清單沒有列：你估整份 \(estimate) 回合，可是以前做過像這次的清單：\(listed)。"
+                        + "實際的中位數是 \(reference) 回合，你估的比它\(way)太多；估 \(check.low) 到 \(check.high) 回合才算接近。"
+                        + "再列一次：改 estimate；或照你的估法，加 estimate_reason 寫這次跟以前那幾份哪裡不一樣。")
+    }
+
     /// Hook 2: the estimate-vs-actual line of the list so far.
     func estimateLine(_ plan: TodoPlan, rounds: Int, seconds: Int) -> String {
         "你估整份清單 \(plan.estimate) 回合，實際到現在 \(rounds) 回合、\(seconds) 秒"
@@ -2021,21 +2132,14 @@ public actor Doll {
     func recordEstimate(outcome: TodoPhase, at ts: Double, cause: String? = nil, evidence: String? = nil) throws -> EstimateRecord? {
         guard let plan = todo.plan else { return nil }
         let r = EstimateRecord(ts: ts, plan: plan, rounds: todo.totalRounds,
-                               seconds: Int((ts - todo.listStart).rounded()), outcome: outcome.label, cause: cause, evidence: evidence)
+                               seconds: Int((ts - todo.listStart).rounded()), outcome: outcome.label, cause: cause, evidence: evidence,
+                               text: todo.listText, check: todo.estimateCheck)
         estimateFile.records.append(r)
         try Concerns.write(estimateFile, estimatesURL)
         log("INFO", "turn \(turnIndex): estimate recorded: \(plan.estimate) rounds estimated, \(r.rounds) rounds \(r.seconds) s, \(r.outcome)")
         return r
     }
 
-    /// Hook 2, where her next estimate is written: 【狀況】 while no item is in progress shows her last
-    /// `[computer] estimate_history` lists, estimate against actual; nil when there are none.
-    func estimateHistoryLine() -> String? {
-        let n = computerConfig.estimateHistory
-        guard n > 0, !estimateFile.records.isEmpty else { return nil }
-        let shown = estimateFile.records.suffix(n).map { "估 \($0.plan.estimate) → 實際 \($0.rounds) 回合（\($0.outcome)）" }
-        return "- 你最近幾份清單估的回合和實際（舊到新）：" + shown.joined(separator: "；")
-    }
 
     /// Hook 4: what a root cause may quote: the latest read (window list, or the file read again) and,
     /// from the current item, every tool result other than her todo calls' (window lists included)

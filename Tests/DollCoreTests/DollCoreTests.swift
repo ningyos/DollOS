@@ -375,6 +375,7 @@ private struct Harness {
         cfg.drives.enabled = false        // the drives tests switch it on
         cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
         cfg.goals.review = false          // the ideal-self review tests switch it on
+        cfg.computer.estimateSimilarity = 2   // the estimate check tests switch it on (no cosine reaches 2)
         tune(&cfg)
         model = FakeModel(replies)
         let rec = Recorder()
@@ -7201,24 +7202,23 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     #expect(Doll.withoutArguments("失敗：Calculator 沒有「檔案」選單，找不到「匯出為 PDF」", of: menu) == "失敗： 沒有「」選單，找不到「」")
 }
 
-@Test func doneShowsTheEstimateAgainstWhatItTookRecordsItAndTheNextListSeesIt() async throws {
+@Test func doneShowsTheEstimateAgainstWhatItTookAndRecordsIt() async throws {
     let h = try await menuHarness()
     try await h.turn(Scripted("", readCall))
     try await h.turn(Scripted("", done("看到了"), dm("好了")))
     let text = try h.toolResults().suffix(2).first!.text
     #expect(text.contains("這一項做了 2 回合；整份清單做完了：你估整份清單 5 回合，實際到現在 2 回合、"))
-    #expect(text.contains("（記下了，下次估的時候【狀況】會給你看）。"))
+    #expect(text.contains("（記下了，下次列像這樣的清單，程式會拿來對你估的）。"))
     let rec = try #require(await h.doll.estimateFile.records.last)
     #expect(rec.plan.estimate == 5 && rec.rounds == 2 && rec.outcome == "完成" && rec.cause == nil && rec.plan.items == ["畫面上看得到結果"])
+    #expect(rec.text == "用電腦" && rec.check == nil)
     #expect(try await h.doll.dashboardStatus().estimates == [rec])
-    // On disk: a new process reads it, and 【狀況】 shows it while no item is in progress.
+    // On disk: a new process reads it. 【狀況】 no longer lists past estimates (2026-11-18: it was never used).
     let b = try await Harness(dir: h.dir)
     #expect(await b.doll.estimateFile.records == [rec])
     await b.doll.ownerSaid("再算一次")
     try await b.turn(Scripted("", todoSet(), readCall))
-    #expect(b.last.footer.contains("\n- 你最近幾份清單估的回合和實際（舊到新）：估 5 → 實際 2 回合（完成）\n"))
-    try await b.turn(Scripted("", readCall))
-    #expect(!b.last.footer.contains("你最近幾份清單"))
+    #expect(!b.last.footer.contains("估 5 → 實際"))
 }
 
 @Test func aListOfTwoItemsComparesTheWholeListAndRecordsOnce() async throws {
@@ -7714,4 +7714,143 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     h.cua.change { $0.windows[$0.windows.count - 1].elements.append(FakeCua.Element(role: "AXTextArea", label: nil)) }
     try await h.turn(Scripted("", toolRun("新備忘錄", ["內容": "買蛋"])))
     #expect(try h.toolResults().last!.text.contains("工具「新備忘錄」停了：第 3 步沒做成：沒有做：role 是 AXTextArea的有 2 個：[2] AXTextArea \"記得買雞蛋\"、[3] AXTextArea。"))
+}
+
+// The estimate check (2026-11-18, owner: the program compares) -------------------------------
+
+/// The estimate check is off in the harness (tests about something else finish lists estimated 5 in 2
+/// rounds); these switch it on with the shipped value.
+private func checking(_ c: inout Config) { c.computer.estimateSimilarity = 0.90 }
+
+/// A `todo.set` of `items` with the plan fields, its estimate and an optional reason.
+private func estimated(_ estimate: Int, reason: String? = nil, items: [String] = ["畫面上看得到結果"]) -> (String, [(String, String)]) {
+    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self))]
+        + planArgs.map { $0.0 == "estimate" ? ("estimate", "\(estimate)") : $0 } + (reason.map { [("estimate_reason", $0)] } ?? []))
+}
+
+/// One finished list: the owner's line, `todo.set` with `estimate`, then `rounds` rounds (reads, then done).
+private func finishedList(_ h: Harness, _ line: String, estimate: Int, rounds: Int, items: [String] = ["畫面上看得到結果"]) async throws {
+    await h.doll.ownerSaid(line)
+    try await h.turn(Scripted("", estimated(estimate, items: items), readCall))
+    for _ in 1..<rounds { try await h.turn(Scripted("", readCall)) }
+    try await h.turn(Scripted("", done("看到了"), dm("好了")))
+}
+
+private let farRefusal = "失敗：清單沒有列：你估整份 2 回合，可是以前做過像這次的清單：「畫面上看得到結果」你估 3、實際 7 回合。"
+    + "實際的中位數是 7 回合，你估的比它少太多；估 4 到 14 回合才算接近。再列一次：改 estimate；或照你的估法，加 estimate_reason 寫這次跟以前那幾份哪裡不一樣。"
+
+@Test func withNoLikePastListTheEstimateIsAccepted() async throws {
+    let h = try await Harness(tune: checking)
+    await h.doll.ownerSaid("幫我用計算機算 37×46，跟我說答案")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().first!.text == "todo 列好了，你估整份 2 回合。現在進行中：「畫面上看得到結果」；後面：沒有。")
+    let todo = await h.doll.todo
+    #expect(todo.estimateCheck == nil && todo.listText == "幫我用計算機算 37×46，跟我說答案")
+}
+
+@Test func aFarEstimateIsRefusedOnceWithWhatLikeListsTookAndACorrectedOnePasses() async throws {
+    let h = try await Harness(tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    // Other numbers, the same kind: digits are masked.
+    await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().first { $0.text.hasPrefix("失敗：清單沒有列：你估") }?.text == farRefusal)
+    #expect(await h.doll.todo.phase == .idle)
+    try await h.turn(Scripted("", estimated(5), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text
+            == "todo 列好了，你估整份 5 回合（以前像這樣的清單實際 7 回合）。現在進行中：「畫面上看得到結果」；後面：沒有。")
+    let check = try #require(await h.doll.todo.estimateCheck)
+    #expect(check == EstimateCheck(past: [.init(items: ["畫面上看得到結果"], estimate: 3, rounds: 7)], reference: 7, low: 4, high: 14, refused: 2, reason: nil))
+    // The list's record keeps the check; the dashboard shows it.
+    #expect(try await h.doll.dashboardStatus().estimateCheck == check)
+    try await h.turn(Scripted("", done("看到了"), dm("好了")))
+    #expect(await h.doll.estimateFile.records.last?.check == check)
+}
+
+@Test func aFarEstimateKeptPassesWithAReasonAndTheReasonIsRecorded() async throws {
+    let h = try await Harness(tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    // A reason before any refusal does not count.
+    try await h.turn(Scripted("", estimated(2, reason: "這次有存好的乘法工具，一次按完"), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("失敗：清單") }?.text == farRefusal)
+    // Kept without a reason, or with filler: refused for the reason only.
+    try await h.turn(Scripted("", estimated(2, reason: "沒有"), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("失敗：清單") }?.text
+            == "失敗：清單沒有列：estimate 還是 2 回合，不在 4 到 14 之間。改成這中間的數；或照你的估法，在 estimate_reason 寫這次跟以前那幾份哪裡不一樣。estimate_reason「沒有」太短：至少 4 個字，寫具體的。")
+    try await h.turn(Scripted("", estimated(2, reason: "這次有存好的乘法工具，一次按完"), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text
+            == "todo 列好了，你估整份 2 回合（跟以前像這樣的清單實際 7 回合不一樣，你寫的理由記下了，主人看得到）。現在進行中：「畫面上看得到結果」；後面：沒有。")
+    #expect(await h.doll.todo.estimateCheck?.reason == "這次有存好的乘法工具，一次按完")
+    #expect(await h.doll.todo.estimateCheck?.refused == 2)
+}
+
+@Test func theEstimateIsNeverRefusedAThirdTime() async throws {
+    let h = try await Harness(tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("失敗：清單") }?.text
+            == "失敗：清單沒有列：estimate 還是 2 回合，不在 4 到 14 之間。改成這中間的數；或照你的估法，在 estimate_reason 寫這次跟以前那幾份哪裡不一樣。")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text
+            == "todo 列好了，你估整份 2 回合（跟以前像這樣的清單實際 7 回合差很多，沒寫理由，照收了；主人看得到）。現在進行中：「畫面上看得到結果」；後面：沒有。")
+    #expect(try h.toolResults().filter { $0.text.hasPrefix("失敗：清單") }.count == 2)
+}
+
+@Test func anEstimateAlreadyCloseIsAcceptedUntouched() async throws {
+    let h = try await Harness(tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    try await h.turn(Scripted("", estimated(6), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text == "todo 列好了，你估整份 6 回合。現在進行中：「畫面上看得到結果」；後面：沒有。")
+    let check = await h.doll.todo.estimateCheck
+    #expect(check?.refused == nil && check?.reference == 7)
+    // 2 against 3 is not far (the ratio alone would call it so).
+    let far = await [h.doll.estimateFar(2, 3), h.doll.estimateFar(2, 7), h.doll.estimateFar(1, 3), h.doll.estimateFar(2, 5)]
+    #expect(far == [false, true, false, true])
+}
+
+@Test func aDifferentKindOfListIsNotComparedWithTheRealEmbedder() async throws {
+    // The closest pair of different kinds measured (0.847): multiply, and multiply then by n.txt's number.
+    let h = try await Harness(embedder: try await qwen3.value, tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    await h.doll.ownerSaid("幫我用計算機算 37×46，再把答案乘上 ~/DollOS-test/n.txt 裡寫的數字，跟我說最後的答案")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text.hasPrefix("todo 列好了，你估整份 2 回合。") == true)
+    #expect(await h.doll.todo.estimateCheck == nil)
+    try await h.turn(Scripted("", done("看到了"), dm("好了")))
+    // The same kind with other numbers is.
+    await h.doll.ownerSaid("幫我用計算機算 204×9，跟我說答案")
+    try await h.turn(Scripted("", estimated(2), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("失敗：清單") }?.text == farRefusal)
+}
+
+@Test func pastListsAreComparedAfterARestart() async throws {
+    let h = try await Harness(tune: checking)
+    try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
+    let b = try await Harness(dir: h.dir, tune: checking)
+    await b.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    try await b.turn(Scripted("", estimated(2), readCall))
+    #expect(try b.toolResults().last { $0.text.hasPrefix("失敗：清單") }?.text == farRefusal)
+    // The list in progress keeps its text and check across a restart.
+    try await b.turn(Scripted("", estimated(5), readCall))
+    let c = try await Harness(dir: h.dir, tune: checking)
+    let todo = await c.doll.todo
+    #expect(todo.estimateCheck?.refused == 2 && todo.listText == "幫我用計算機算 58×13，跟我說答案")
+}
+
+@Test func anOldEstimatesFileLoadsAndItsListsAreNotCompared() async throws {
+    let h = try await Harness(tune: checking)
+    // As written on 2026-11-17: no text, no check.
+    let old = #"{"records":[{"outcome":"完成","plan":{"assumptions":"a","check":"c","estimate":3,"facts":[{"fact":"f","quote":"q","source":"主人說的"}],"items":["畫面上看得到結果"],"limits":"l"},"rounds":8,"seconds":36,"ts":1794941993.8}]}"#
+    try old.write(to: await h.doll.estimatesURL, atomically: true, encoding: .utf8)
+    let b = try await Harness(dir: h.dir, tune: checking)
+    let records = await b.doll.estimateFile.records
+    #expect(records.count == 1 && records[0].text == nil)
+    await b.doll.ownerSaid("幫我用計算機算 37×46，跟我說答案")
+    try await b.turn(Scripted("", estimated(2), readCall))
+    #expect(try b.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text.hasPrefix("todo 列好了，你估整份 2 回合。") == true)
+    #expect(await b.doll.todo.estimateCheck == nil)
 }

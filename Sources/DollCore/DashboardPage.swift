@@ -140,9 +140,16 @@ function renderMind(s) {
   const fact = f => `事實：${f.fact}` + (f.source ? `（出處：${f.source}「${f.quote}」）` : "（沒有出處：舊的清單）");
   const plan = p => [`項目：${p.items.map(i => "「" + i + "」").join("")}`, ...p.facts.map(fact), `假設：${p.assumptions}`,
     `邊界：${p.limits}`, `估：${p.estimate} 回合`, `怎麼確認：${p.check}`];
+  // The estimate check (2026-11-18): what the like past lists took, a refusal, and her reason.
+  const check = (c, est) => !c ? ["程式比對：沒有像這次的舊清單，估的照收"] : [
+    `程式比對：像這次的舊清單 ${c.past.length} 份，實際中位數 ${c.reference} 回合（${c.low} 到 ${c.high} 算接近）`,
+    ...c.past.map(p => `　${p.items.map(i => "「" + i + "」").join("")}：估 ${p.estimate} → 實際 ${p.rounds} 回合`),
+    ...(c.refused != null ? [`程式退回了她先估的 ${c.refused} 回合`] : []),
+    ...(c.reason ? [`她說這次不一樣：${c.reason}`] : c.refused != null && (est < c.low || est > c.high) ? ["她沒給理由，第三次程式照收"] : [])];
   if (s.plan) {
     box.append(el("div", null, `現在的清單（到現在 ${s.listRounds} 回合）`));
     for (const l of plan(s.plan)) box.append(el("div", "muted", l));
+    for (const l of check(s.estimateCheck, s.plan.estimate)) box.append(el("div", "muted", l));
     for (const g of s.goOn) box.append(el("div", null, "她選了繼續：" + g));
   }
   if (s.estimates.length) {
@@ -150,8 +157,11 @@ function renderMind(s) {
     for (const r of [...s.estimates].reverse()) {
       const body = el("div");
       for (const l of plan(r.plan)) body.append(el("div", "muted", l));
+      if (r.text) for (const l of check(r.check, r.plan.estimate)) body.append(el("div", "muted", l));
       if (r.cause) body.append(el("div", null, `根本原因：${r.cause}`), el("div", "muted", `她照抄的根據：${r.evidence}`));
-      box.append(details(`${clock(r.ts)} ${r.outcome}：估 ${r.plan.estimate} 回合 → 實際 ${r.rounds} 回合、${r.seconds} 秒`, body));
+      const was = r.check && r.check.refused != null ? `（先估 ${r.check.refused} 被退回）` : "";
+      const why = r.check && r.check.reason ? `；她的理由：${r.check.reason}` : "";
+      box.append(details(`${clock(r.ts)} ${r.outcome}：估 ${r.plan.estimate} 回合${was} → 實際 ${r.rounds} 回合、${r.seconds} 秒${why}`, body));
     }
   }
   if (!s.plan && !s.estimates.length) { box.className = "muted"; box.textContent = "還沒有清單"; }

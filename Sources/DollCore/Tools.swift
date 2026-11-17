@@ -271,6 +271,7 @@ public enum Tools {
         ("limits", ["type": "string", "description": "邊界：不能碰的、做不到的、有限的（時間、回合、權限）；真的沒有，寫「沒有，因為…」和理由"]),
         ("estimate", ["type": "integer", "description": "估整份清單要幾回合（項目進行中你的一則回覆＝一回合）"]),
         ("check", ["type": "string", "description": "做完是什麼樣子、你要怎麼確認（讀哪個視窗或檔案、看到什麼）"]),
+        ("estimate_reason", ["type": "string", "description": "只在 estimate 被退回以後用：你還是要估那個數，寫這次跟以前那幾份哪裡不一樣"]),
     ]
 
     /// Her todo list (2026-11-14). Never gated.
@@ -765,7 +766,7 @@ public enum Tools {
                 return f
             }
             let plan = PlanInput(facts: facts, assumptions: given("assumptions"), limits: given("limits"),
-                                 estimate: try int("estimate"), check: given("check"))
+                                 estimate: try int("estimate"), check: given("check"), estimateReason: given("estimate_reason"))
             return .todoSet(trimmed, subgoal: try int("subgoal"), plan: plan)
         case Name.todoDone:
             // The evidence is matched with whitespace removed (`Doll.evidenceKey`): only emptiness is checked here.
@@ -1100,7 +1101,7 @@ enum Instructions {
         - 卡住的時候找最慢、最卡的那一步，先處理它；別的地方再快也沒用。
         - 出錯時從現象往回找真正的原因，找到了要驗證（再讀一次、再試一次），不要把現象當原因。
         - 第一次不必完美：做、試、看結果、改，再做；但每一次都要跟上一次不一樣。
-        程式會在幾個地方要你寫出來：todo.set 寫事實（每條照抄出處的字）、假設、邊界、估幾回合、怎麼確認；todo.done 會告訴你估的和實際的；決定點要寫最卡的一步和下一次哪裡不一樣；todo.fail 要寫根本原因、照抄支持它的字。
+        程式會在幾個地方要你寫出來：todo.set 寫事實（每條照抄出處的字）、假設、邊界、估幾回合、怎麼確認；以前做過像這樣的清單，估的跟它們實際做的差太遠，程式會退回一次，給你看以前做了幾回合；todo.done 會告訴你估的和實際的；決定點要寫最卡的一步和下一次哪裡不一樣；todo.fail 要寫根本原因、照抄支持它的字。
 
         ## 做事的規矩
 

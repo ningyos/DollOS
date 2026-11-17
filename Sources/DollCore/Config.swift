@@ -90,9 +90,17 @@ public struct ComputerConfig: Sendable {
     /// At most this many facts in a plan (2026-11-17, facts need a source): each is a statement and
     /// a copied quote, about 30–60 tokens in her call; the morning runs wrote 1–3 facts per plan.
     public var planMaxFacts = 5
-    /// How many of her past lists' estimate-vs-actual lines 【狀況】 shows while no item is in
-    /// progress, i.e. when her next `todo.set` estimates (2026-11-17, hook 2).
-    public var estimateHistory = 3
+    /// The estimate check (2026-11-18, m7-mac estcheck): a past list is like the new one when the
+    /// cosine of their texts (the line the list answers, else her items; digits masked) is at least
+    /// this. Measured over 109 finished lists, 7 kinds: different kinds at most 0.847 (multiply vs
+    /// multiply-then-read-n.txt), the same kind at least 0.94 except the saved-tool phrasing (0.85).
+    public var estimateSimilarity = 0.90
+    /// The reference is the median of the actual rounds of at most this many most recent like lists.
+    public var estimateSimilarMax = 3
+    /// Her estimate is far from the reference when the larger is more than this many times the
+    /// smaller and they differ by at least `estimateFarRounds`: 2 vs 7 is far, 2 vs 3 and 1 vs 3 are not.
+    public var estimateFarRatio = 2.0
+    public var estimateFarRounds = 3
     /// Her own tools (2026-11-17, `OwnTools.swift`): at most this many (owner decision 4).
     public var ownToolsMax = 30
     /// A tool is offered in the 【相關記憶】 when the cosine of the owner's line (and front app) to
@@ -519,7 +527,10 @@ public struct Config: Sendable {
         try v.read("decide_every_rounds", &computer.decideEveryRounds)
         try v.read("plan_min_chars", &computer.planMinChars)
         try v.read("plan_max_facts", &computer.planMaxFacts)
-        try v.read("estimate_history", &computer.estimateHistory)
+        try v.read("estimate_similarity", &computer.estimateSimilarity)
+        try v.read("estimate_similar_max", &computer.estimateSimilarMax)
+        try v.read("estimate_far_ratio", &computer.estimateFarRatio)
+        try v.read("estimate_far_rounds", &computer.estimateFarRounds)
         try v.read("own_tools_max", &computer.ownToolsMax)
         try v.read("own_tool_offer_similarity", &computer.ownToolOfferSimilarity)
         try v.read("own_tool_offer_max", &computer.ownToolOfferMax)
@@ -529,10 +540,12 @@ public struct Config: Sendable {
               computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.sequenceMaxSteps >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
               (0...60000).contains(computer.cursorIdleHideMs),
               !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1,
-              computer.planMinChars >= 1, computer.planMaxFacts >= 1, computer.estimateHistory >= 0,
+              computer.planMinChars >= 1, computer.planMaxFacts >= 1,
+              (-1.0...1.0).contains(computer.estimateSimilarity), computer.estimateSimilarMax >= 1,
+              computer.estimateFarRatio >= 1, computer.estimateFarRounds >= 1,
               computer.ownToolsMax >= 1, (-1.0...1.0).contains(computer.ownToolOfferSimilarity), computer.ownToolOfferMax >= 1,
               computer.ownToolRetireFailures >= 1 else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, sequence_max_steps, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts, own_tools_max, own_tool_offer_max, own_tool_retire_failures positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more; cursor_idle_hide_ms 0 to 60000; own_tool_offer_similarity from -1 to 1")
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, sequence_max_steps, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts, estimate_similar_max, estimate_far_rounds, own_tools_max, own_tool_offer_max, own_tool_retire_failures positive; screenshot_tokens, settle_s, window_wait_s 0 or more; estimate_far_ratio 1 or more; cursor_idle_hide_ms 0 to 60000; estimate_similarity, own_tool_offer_similarity from -1 to 1")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])
