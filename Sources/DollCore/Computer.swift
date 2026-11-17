@@ -446,7 +446,7 @@ public actor Mac {
         if let warn = Self.passwordField(elements) { body += "\n" + warn }
         var r = MacResult(text: "", image: image, window: body)
         r.app = app
-        if let auth = await authLine() { r.text = auth }
+        if let auth = await authLine() { r.text = auth } else if Self.authSheet(elements) { r.text = Self.authSheetLine(app.name) }
         return r
     }
 
@@ -497,6 +497,35 @@ public actor Mac {
     static func passwordField(_ elements: [[String: Any]]) -> String? {
         guard elements.contains(where: { ($0["role"] as? String) == "AXSecureTextField" || ($0["subrole"] as? String) == "AXSecureTextField" }) else { return nil }
         return "【注意】這個視窗有密碼欄位。密碼不要自己打：停下來，用 ask_owner 跟主人說要做什麼、在哪裡、為什麼。"
+    }
+
+    /// A password sheet inside an app's own window: a secure text field under an AXSheet. The real
+    /// administrator prompt of System Settings › 使用者與群組 › 加入使用者⋯ (2026-11-17, this Mac) is
+    /// such a sheet in System Settings' own window, owned by System Settings, not by any of
+    /// `authProcesses`; the window check alone never saw it.
+    static func authSheet(_ elements: [[String: Any]]) -> Bool {
+        var parent: [Int: Int] = [:]
+        var sheets = Set<Int>()
+        for e in elements {
+            guard let i = e["element_index"] as? Int else { continue }
+            if let p = e["parent_index"] as? Int { parent[i] = p }
+            if e["role"] as? String == "AXSheet" { sheets.insert(i) }
+        }
+        guard !sheets.isEmpty else { return false }
+        return elements.contains { e in
+            guard e["role"] as? String == "AXSecureTextField" || e["subrole"] as? String == "AXSecureTextField",
+                  var i = e["element_index"] as? Int else { return false }
+            for _ in 0..<elements.count {
+                guard let p = parent[i], p != i else { return false }
+                if sheets.contains(p) { return true }
+                i = p
+            }
+            return false
+        }
+    }
+
+    static func authSheetLine(_ app: String) -> String {
+        "【系統驗證】\(app) 的視窗跳出要密碼的驗證（Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。"
     }
 
     /// A system authentication dialog on screen (Touch ID, an administrator password): its owner

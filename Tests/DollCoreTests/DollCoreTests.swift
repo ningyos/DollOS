@@ -1340,6 +1340,16 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     try await h.turn(Scripted("", readCall))
     let r = try h.toolResults().last!
     #expect(r.text == "" && r.window?.hasSuffix("\n【注意】這個視窗有密碼欄位。密碼不要自己打：停下來，用 ask_owner 跟主人說要做什麼、在哪裡、為什麼。") == true)
+    // The real administrator prompt (System Settings › 加入使用者⋯, 2026-11-17): a sheet in the app's own
+    // window with a secure field under it, owned by the app, not by an authentication agent.
+    h.cua.change { s in
+        let sheet = s.windows[0].elements.count
+        s.windows[0].elements += [FakeCua.Element(role: "AXSheet", label: nil),
+                                  FakeCua.Element(role: "AXTextField", label: "密碼", parent: sheet, subrole: "AXSecureTextField")]
+    }
+    try await h.turn(Scripted("", clickRow(2)))
+    let line = try h.toolResults().last!.text
+    #expect(line.hasPrefix(sent + "\n【系統驗證】") && line.hasSuffix("的視窗跳出要密碼的驗證（Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。"))
 }
 
 @Test func everyActionIsOneLineOfTheActionLogWithTheElementsIdentity() async throws {
