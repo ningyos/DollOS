@@ -6440,6 +6440,17 @@ private func display(_ value: String) -> String { #"  - [1] AXStaticText ""# + v
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
 }
 
+@Test func evidenceOfSeveralCopiedPiecesJoinedBySemicolonsOrLinesIsAccepted() async throws {
+    // m7-mac a-2 (2026-11-17): two real lines of the read joined by 「；」 were refused.
+    let h = try await menuHarness()
+    h.cua.change { $0.windows[0].elements[1].label = "1,702" }
+    try await h.turn(Scripted("", readCall, dm("是 1,702")))
+    try await h.turn(Scripted("", done("1,702", evidence: #"AXStaticText "1,702"；AXStaticText "37 × 46""#)))
+    #expect(try h.toolResults().last!.text == evidenceRefused(#"AXStaticText "1,702"；AXStaticText "37 × 46""#, source: latestCalculator, shown: display("1,702")))
+    try await h.turn(Scripted("", done("1,702", evidence: "AXStaticText \"1,702\"；\n；AXButton \"7\"")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+}
+
 @Test func aFileItemQuotesTheFileAsItIsNow() async throws {
     let h = try await Harness()
     let todo = try h.put("todo.txt", todoBefore)

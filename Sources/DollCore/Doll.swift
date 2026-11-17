@@ -1431,8 +1431,12 @@ public actor Doll {
         guard let evidence else {
             return "還沒完成：這一項用過電腦或檔案工具，todo.done 要帶 evidence：從\(source)照抄證明做完的那段字。現在讀到的：\n\(shown)\n照這個判斷做完了沒有。"
         }
+        // Several copied pieces joined by ；, ; or line breaks (m7-mac a-2, 2026-11-17: two real lines
+        // of the read joined by 「；」 were refused) count when every piece is in the read.
+        let read = Self.evidenceKey(haystack)
+        let keys = evidence.split(whereSeparator: { "；;\n".contains($0) }).map { Self.evidenceKey(String($0)) }.filter { !$0.isEmpty }
         let key = Self.evidenceKey(evidence)
-        if !key.isEmpty, Self.evidenceKey(haystack).contains(key) { return nil }
+        if !key.isEmpty, read.contains(key) || (!keys.isEmpty && keys.allSatisfy(read.contains)) { return nil }
         return "還沒完成：evidence「\(evidence)」不在\(source)裡。那裡現在是：\n\(shown)\n"
             + "照這個判斷：真的做完了，就從那裡照抄證明的那段字（標點、寫法照抄）；還沒做完就接著做；做不到就 \(Tools.Name.todoFail)。\(fix)"
     }
