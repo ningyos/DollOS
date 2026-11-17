@@ -71,9 +71,13 @@ extension Doll {
         func refuse(_ s: String) -> ToolError { ToolError(description: "沒有改：" + s) }
         let notFound = "沒有 id 是 \(id) 的記憶。id 照抄【相關記憶】或 recall 結果裡〔…｜記憶 <id>〕的那一串。"
         guard let (folder, file) = try memory.file(id) else { throw refuse(notFound) }
-        // A memory this turn may not read is one she has no id for: the same answer as none.
-        let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
+        // Whose turn it is decides the folders, not whether a secret was seen yet (m8 scenarios 5, 6:
+        // she wrote her memory into secret herself, then could not fix it in the next plain turn). A
+        // memory of a folder this audience never reads is one she has no id for: the same answer as
+        // none. A secret one makes the result a secret event (5.1, as a secret recall hit does).
+        let visible = Memory.visible(Self.audience(events), sawSecret: true)
         guard visible.contains(folder) else { throw refuse(notFound) }
+        let secret = folder == .secret
         if let r = file.retired {
             throw refuse("記憶 \(id) 已經收起來了（\(r.reason)）" + (r.supersededBy.isEmpty ? "。" : "，換成了記憶 \(r.supersededBy)；要改就改那一條。"))
         }
@@ -119,9 +123,9 @@ extension Doll {
         log("INFO", "turn \(turnIndex): memory.fix #\(r.id) \(id) → \(replacement ?? "retired") (\(tier.rawValue)) basis「\(b)」from \(source.source)")
         let owner = "舊的收起來了，主人在儀表板看得到，可以還原。"
         if let replacement, let text {
-            return Outcome(text: "改好了：記憶 \(id)「\(file.body)」換成記憶 \(replacement)「\(text)」。\(owner)", actions: ["memory fix"])
+            return Outcome(text: "改好了：記憶 \(id)「\(file.body)」換成記憶 \(replacement)「\(text)」。\(owner)", secret: secret, actions: ["memory fix"])
         }
-        return Outcome(text: "收起來了：記憶 \(id)「\(file.body)」不再算數。\(owner)", actions: ["memory fix"])
+        return Outcome(text: "收起來了：記憶 \(id)「\(file.body)」不再算數。\(owner)", secret: secret, actions: ["memory fix"])
     }
 
     /// The owner's revert on the dashboard: the old memory counts again; the one that replaced it is

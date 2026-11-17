@@ -7952,20 +7952,20 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
     #expect(try h.toolResults().last!.text.contains("是程式自己記的（做事的經驗或快捷鍵），不能用 memory.fix 改。"))
 }
 
-@Test func aCorrectionNeverLeaksASecretAndASecretMemoryIsUnknownWhereSecretsAreNotSeen() async throws {
+@Test func aCorrectionNeverLeaksASecretAndASecretMemoryIsUnknownToTheDeveloper() async throws {
     let h = try await Harness()
     try await seedMemory(h, "public", "主人的密碼提示是貓", tier: "doll", id: "1-aaaaaa")
     try await seedMemory(h, "secret", "主人的銀行在信義區", tier: "doll", id: "1-bbbbbb")
-    await h.doll.ownerSaid("查一下")
-    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在大安區", basis: "查一下就好")))
+    await h.doll.developerSaid("銀行在大安區")
+    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在大安區", basis: "銀行在大安區")))
     #expect(try h.toolResults().last!.text.contains("沒有 id 是 1-bbbbbb 的記憶"))
+    // In the owner's plain turn she may fix a secret one she wrote (m8 scenario 5); the result is a secret event.
+    await h.doll.ownerSaid("銀行搬到中山區了")
+    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在中山區", basis: "銀行搬到中山區了")))
+    #expect(try h.toolResults().last!.secret && memoryFilesByID(h)[memoryID(h, "主人的銀行在中山區")]!.folder == "secret")
     await h.doll.ownerSaid("其實我的密碼提示是狗", secret: true)
     try await h.turn(Scripted("", fix("1-aaaaaa", "主人的密碼提示是狗", basis: "我的密碼提示是狗")))
     #expect(try h.toolResults().last!.text.contains("沒有改：依據是主人的秘密，這條記憶在 public，改了別人也看得到。要記這件事，用 remember 記進 secret。"))
-    // In a secret turn the secret one may be corrected; it stays in secret.
-    await h.doll.ownerSaid("銀行在大安區", secret: true)
-    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在大安區", basis: "銀行在大安區")))
-    #expect(try memoryFilesByID(h)[memoryID(h, "主人的銀行在大安區")]!.folder == "secret")
 }
 
 @Test func aCorrectedConsolidatedMemoryIsStillAttachedAndTheOldOneNoLonger() async throws {
