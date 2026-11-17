@@ -537,7 +537,7 @@ public enum Tools {
             // Her own tools (2026-11-17): two fixed specs, whatever she has saved (the list is part
             // of the cached prefix; one spec per saved tool would void it at every save).
             Spec(name: Name.toolSave,
-                 description: "把你剛做成的一串動作存成你自己的工具，之後一次 \(Name.toolRun) 就照順序重做。程式從你真的做過的動作存：這一項（沒有進行中的就是剛做完的那一項）裡的 open 和做成的 act；讀視窗不存，沒做成或跟 expect 不一樣的那幾次 act 不存；最後一次 act 要有 expect 而且一樣才能存。元素存名字，不存行號。會變的部分寫進 params，每個給 name（參數名）、value（這次做的時候的值）、about（它是什麼）；value 要是你打的字（或其中一段）、open 的檔案或網址，或連著按的按鈕名字（例：按了 3、7，value 寫 \"37\"，之後給 \"58\" 就按 5、8）。",
+                 description: "把你剛做成的一串動作存成你自己的工具，之後一次 \(Name.toolRun) 就照順序重做。程式從你真的做過的動作存：這一項（沒有進行中的就是剛做完的那一項）裡的 open 和做成的 act；讀視窗不存；做完但跟 expect 不一樣的 act 整個不存；中途停下來的 act 只存停下來之前做成的那幾步；最後一次 act 要有 expect 而且一樣才能存。元素存名字，不存行號。會變的部分寫進 params，每個給 name（參數名）、value（這次做的時候的值）、about（它是什麼）；value 要是你打的字（或其中一段）、open 的檔案或網址，或連著按的按鈕名字（例：按了 3、7，value 寫 \"37\"，之後給 \"58\" 就按 5、8）。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
