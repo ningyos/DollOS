@@ -1906,8 +1906,12 @@ public actor Doll {
                 throw refuse("\(name)的 quote「\(quote)」太短：至少 \(computerConfig.planMinChars) 個字，照抄一整段。")
             }
             guard let source = sources.first(where: { Self.quoted(quote, in: $0.text) }) else {
-                // Her own words inside a program line (a tool's `when`) are cut before the match: say which.
-                let mine = ownToolWords().first { quote.contains($0) && Self.plainKey($0).count >= computerConfig.planMinChars }
+                // Her own words inside a program line about her tools (a tool's `when`, a value she gave
+                // `tool.save`) are cut before the match: say which (2026-11-18, m7-mac p-1, p-2).
+                let saveArgs = timeline.events.filter { $0.kind == .doll && $0.seq! < reply.seq! }.flatMap(\.calls)
+                    .filter { $0.name == Tools.Name.toolSave }.flatMap { Self.argumentStrings($0, except: ["name"]) }
+                let mine = (ownToolWords() + saveArgs.sorted { $0.count > $1.count })
+                    .first { quote.contains($0) && Self.plainKey($0).count >= computerConfig.planMinChars }
                 let own = mine.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? ""
                 throw ToolError(description: "清單沒有列：\(name)「\(fact)」的 quote「\(quote)」不在你看得到的地方（\(places)）。\(own)fact 要有出處：quote 一字不差照抄那裡的字。"
                                 + "找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。")

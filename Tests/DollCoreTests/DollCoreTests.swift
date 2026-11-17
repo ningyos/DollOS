@@ -7492,6 +7492,22 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     ("todo.set", [("items", "[\"\(item)\"]"), ("facts", facts)] + planArgs.filter { $0.0 != "facts" })
 }
 
+@Test func aQuoteOfAToolSaveRefusalIsToldWhichPartSheWrote() async throws {
+    // 2026-11-18 (m7-mac p-1, p-2): she quoted the refusal whole; its item holds the value she gave tool.save.
+    let h = try await calcHarness()
+    await h.doll.ownerSaid("打開計算機給我看")
+    try await h.turn(Scripted("", todoSet("打開計算機給主人看"), openCalc))
+    try await h.turn(Scripted("", dm("開好了"), done("開好了")))
+    try await h.turn(Scripted("", toolSave("看計算機", "主人要看計算機的時候", [("a", "打開計算機", "要開的東西")])))
+    let refusal = try h.toolResults().last!.text
+    #expect(refusal == "失敗：沒存：「打開計算機給主人看」裡沒有做成的 act。工具只能從真的做過、結果跟你預期一樣的動作存；先做一次，再存。")
+    let whole = String(refusal.dropFirst(3))
+    try await h.turn(Scripted("", setFacts("存好工具", #"[{"fact":"上次沒存成","quote":"\#(whole)"}]"#)))
+    #expect(try h.toolResults().last!.text.contains("quote 裡的「打開計算機」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。"))
+    try await h.turn(Scripted("", setFacts("存好工具", #"[{"fact":"上次沒存成","quote":"裡沒有做成的 act。工具只能從真的做過、結果跟你預期一樣的動作存"}]"#)))
+    #expect(await h.doll.todo.plan?.facts.map(\.source) == ["tool.save 的結果"])
+}
+
 @Test func aFactMayQuoteTheProgramsLinesAboutHerToolsButNotWhatSheWroteInThem() async throws {
     // 2026-11-18 (m7-mac tools): 5 of 7 refused plans quoted the tool.save result or the 〔工具〕 offer.
     let h = try await calcHarness { $0.computer.ownToolOfferSimilarity = 0.3 }
