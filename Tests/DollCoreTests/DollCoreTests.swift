@@ -1605,6 +1605,26 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
     #expect(throws: TOMLError.self) { try Config.load(file) }
 }
 
+@Test func aRowAfterTheCheckBetweenStepsGoesWithTheFreshTokenOnlyIfItIsTheSameElement() async throws {
+    // 2026-11-17 n-1: the check between steps reads the window (a new snapshot); a later row sent with
+    // the token of her older read was refused by the driver as stale.
+    let h = try await Harness()
+    await h.doll.ownerSaid("算 78")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "Calculator")])))
+    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": 3}"#, expect: "78")))
+    let tokens = h.cua.args("click").map { $0["element_token"] as? String ?? "" }
+    #expect(tokens.count == 2 && tokens[0].hasSuffix(":2") && tokens[1].hasSuffix(":3"))
+    #expect(tokens.count == 2 && tokens[0].split(separator: ":").first != tokens[1].split(separator: ":").first)
+    // The element under a later row changed after step 1: that step is refused, nothing more is sent.
+    h.cua.change { $0.after = { tool, args, s in
+        FakeCua.press(tool, args, &s)
+        if tool == "click" { s.windows[0].elements[3].label = "9" }
+    } }
+    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": 3}"#, expect: "787")))
+    #expect(h.cua.args("click").count == 3)
+    #expect(try h.toolResults().last!.text.contains("前面的步驟改變了視窗，第 3 行現在是 AXButton \"9\""))
+}
+
 @Test func herOneSessionStartsWithACursorThatNeverHidesIsOnEveryCallAndEndsAtExit() async throws {
     // 2026-11-17, owner: several agent cursors on screen at once; he wants one, hers, that stays.
     let h = try await Harness()

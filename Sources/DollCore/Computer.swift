@@ -200,6 +200,10 @@ public actor Mac {
     /// The read she saw when her reply was written (`beginReply`): a row in that reply means this
     /// read's element, also after an earlier action of the reply read the window again.
     var seen: Read?
+    /// The check between two steps of a sequence read the window again (a new snapshot): its rows,
+    /// so a later row of the sequence goes to the driver with a fresh token, and only when that row
+    /// is still the element she saw (2026-11-17, n-1: a token from before the check was refused as stale).
+    var between: (windowID: Int, snapshot: String, rows: [Int: ElementIdentity])?
 
     public init(driver: any ComputerDriver, config: ComputerConfig, session: String, shots: URL, log: URL) {
         self.driver = driver
@@ -621,6 +625,7 @@ public actor Mac {
             throw ComputerError("沒有做：一次最多 \(cfg.sequenceMaxSteps) 步，你給了 \(steps.count) 步。分成幾次送，每次送到要看結果的地方為止。")
         }
         let sequence = UUID().uuidString.lowercased()
+        between = nil
         // The app the steps work on: the latest read's, or the one a menu step names.
         var here: (pid: Int, app: AppIdentity)? = current.map { ($0.pid, $0.app) }
         var before = Set<Int>()
@@ -700,6 +705,13 @@ public actor Mac {
                 }
                 element = e
                 args["element_token"] = "\(c.snapshot):\(n)"
+                if let b = between, b.windowID == c.windowID {
+                    guard let now = b.rows[n], Self.same(now, e) else {
+                        let now = b.rows[n].map(Self.describe) ?? "沒有這一行"
+                        throw StepRefused(description: "沒有做：前面的步驟改變了視窗，第 \(n) 行現在是 \(now)，你看到的是 \(Self.describe(e))。看新清單再選。")
+                    }
+                    args["element_token"] = "\(b.snapshot):\(n)"
+                }
             case .named(let name, let role):
                 // The app's front window, found fresh by the driver (waits up to 3 s for it to appear).
                 args = ["app": app.bundleID.isEmpty ? app.name : app.bundleID, "name": name]
@@ -776,7 +788,11 @@ public actor Mac {
             guard let w = wins.first(where: { $0.id == current?.windowID }) ?? wins.first else { return nil }
             let j = try await call("get_window_state", ["pid": pid, "window_id": w.id, "session": session, "tree_format": "both",
                                                         "include_screenshot": false, "max_elements": cfg.maxElements])
-            return Self.authSheet(j["elements"] as? [[String: Any]] ?? []) ? Self.authSheetLine(app.name) : nil
+            let elements = j["elements"] as? [[String: Any]] ?? []
+            if w.id == current?.windowID, let snapshot = j["snapshot_id"] as? String {
+                between = (w.id, snapshot, Self.identities(elements, markdown: j["tree_markdown"] as? String ?? ""))
+            }
+            return Self.authSheet(elements) ? Self.authSheetLine(app.name) : nil
         } catch {
             return "（沒查到畫面上有沒有系統驗證視窗：\(Self.said(error))，所以先停下來）"
         }
