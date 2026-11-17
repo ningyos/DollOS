@@ -37,16 +37,20 @@ private func key(_ chord: String) -> (String, [(String, String)]) {
 /// `todo.set(items)`; the default item stands for what `use_computer(expect)` said before 2026-11-14.
 private func todoSet(_ items: String...) -> (String, [(String, String)]) {
     let list = items.isEmpty ? ["畫面上看得到結果"] : items
-    return ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(list), as: UTF8.self))])
+    return ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(list), as: UTF8.self))] + planArgs)
 }
+/// The five fields a `todo.set` that starts a list hands in (2026-11-17, hook 1), for tests about something else.
+private let planArgs: [(String, String)] = [("facts", "主人交代了這件事"), ("assumptions", "需要的 app 已經開著"),
+                                            ("limits", "只動這一件，不碰別的"), ("estimate", "5"), ("check", "讀視窗看到做完的樣子")]
 /// Evidence any Calculator read holds (its window line), the default for tests about something other
 /// than the evidence check (design A); ignored for an item that used neither the computer nor files.
 private let seenCalculator = #"AXWindow "計算機""#
 private func done(_ result: String, evidence: String? = seenCalculator) -> (String, [(String, String)]) {
     ("todo.done", [("result", result)] + (evidence.map { [("evidence", $0)] } ?? []))
 }
-private func fail(_ reason: String, tried: String = "試過了") -> (String, [(String, String)]) {
-    ("todo.fail", [("reason", reason), ("tried", tried)])
+/// `todo.fail`; the default evidence is Calculator's window line, in any read of the fake driver (hook 4).
+private func fail(_ cause: String, tried: String = "試過了", evidence: String = seenCalculator) -> (String, [(String, String)]) {
+    ("todo.fail", [("cause", cause), ("evidence", evidence), ("tried", tried)])
 }
 private func todoWait(_ reason: String) -> (String, [(String, String)]) { ("todo.wait", [("reason", reason)]) }
 private func progress(_ note: String) -> (String, [(String, String)]) { ("todo.progress", [("note", note)]) }
@@ -460,7 +464,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(throws: ToolError.self) { try Tools.decode(bad, specs: specs) }
     // an array of strings as a JSON value and as its text
     for c in [ToolCall(name: "todo.set", arguments: "{\"items\": [\"a\", \"b\"]}"), call("todo.set", [("items", "[\"a\", \"b\"]")])] {
-        guard case .todoSet(let got, let sub) = try Tools.decode(c, specs: specs) else { Issue.record("not todo.set"); return }
+        guard case .todoSet(let got, let sub, _) = try Tools.decode(c, specs: specs) else { Issue.record("not todo.set"); return }
         #expect(got == ["a", "b"] && sub == nil)
     }
 }
@@ -544,7 +548,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(results[2].text == "失敗：think 的 level 只能是 medium，收到 low")
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
-    #expect(results[5].text.hasPrefix("todo 列好了。"))                     // later calls still run
+    #expect(results[5].text.hasPrefix("todo 列好了，"))                     // later calls still run
     #expect(results[6].text == "" && results[6].window?.hasPrefix(calculatorHead) == true)
     #expect(results[7].text.hasPrefix("失敗：remember 的 items 要是 JSON 陣列"))
     #expect(h.last.actions == ["error bogus", "error recall", "error think", "error remember", "remember public",
@@ -1756,7 +1760,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
 
 @Test func aFailedItemOrOneWithoutTheComputerWritesNoExperience() async throws {
     let h = try await menuHarness()
-    try await h.turn(Scripted("", key("cmd+s"), fail("還有點")))
+    try await h.turn(Scripted("", key("cmd+s"), fail("還有點問題沒解決")))
     #expect(h.last.itemEnd == "失敗" && h.last.experience == nil)
     #expect(try experiences(h).isEmpty)
     // An item that never used the computer: done, no experience.
@@ -1811,7 +1815,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     await h.doll.ownerSaid("好吧")
     try await h.turn("嗯")
     let request = await h.model.requests.last!.messages
-    #expect(request.contains { $0.role == "tool" && $0.content.hasPrefix("todo 列好了。") })
+    #expect(request.contains { $0.role == "tool" && $0.content.hasPrefix("todo 列好了，") })
     #expect(request.contains { $0.role == "tool" && $0.content.hasPrefix("完成，記下了。") })
     #expect(!request.contains { $0.content.hasPrefix("失敗：這則回覆前面已經用") || !$0.images.isEmpty })
 }
@@ -2045,7 +2049,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     await h.doll.ownerSaid(task)
     try await h.turn(Scripted("", todoSet(), readCall))
     #expect(h.last.attached.count == 1 && h.last.attached[0].contains("成績：這次 3 回合") && !h.last.attached[0].contains("9 回合"))
-    try await h.turn(Scripted("", key("cmd+q"), fail("沒存到")))
+    try await h.turn(Scripted("", key("cmd+q"), fail("存檔沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].hasSuffix("0/2 steps done in order (ratio 0.00), not followed"))
     #expect(try experienceFiles(h).first { $0.stats?.turns == 3 }?.stats?.attachedFollowed == 0)
 
@@ -2053,7 +2057,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     // the 9-turn one that succeeded.
     await h.doll.ownerSaid(task)
     try await h.turn(Scripted("", todoSet(), readCall))
-    try await h.turn(Scripted("", clickRow(2), key("CMD+S"), fail("沒存到")))
+    try await h.turn(Scripted("", clickRow(2), key("CMD+S"), fail("存檔沒存到")))
     #expect(h.last.follows.count == 1 && h.last.follows[0].contains("2/2 steps done in order (ratio 1.00), followed, counted failure: 照做 1、成功 0、失敗 1"))
     let ranking = try await h.doll.experienceRanking()
     #expect(ranking.count == 1 && ranking[0].count == 2 && ranking[0][0].hasPrefix("1-seed: 成績：這次 9 回合、150 秒；附上後照做 1 次，成功 1 次；失敗 0 次"))
@@ -2772,7 +2776,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func consolidationRendersTheDayAsTextWithoutImagesOrProgramLines() {
     let events = [
         stamped(.owner, "用 TextEdit 另存一份", 1),
-        stamped(Scripted("我先列 todo。", todoSet()), 2),
+        stamped(Scripted("我先列 todo。", ("todo.set", [("items", "[\"畫面上看得到結果\"]")])), 2),
         stamped(.tool, "todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。", 3),
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
         stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
@@ -4220,7 +4224,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     // The list and the action in one reply: the item is in progress before the action runs.
     try await h.turn(Scripted("", todoSet("畫面上按過 Return", "存好檔"), readCall, key("Return")))
     #expect(h.cua.actions == ["press_key"] && h.last.todo == "進行中")
-    #expect(try h.toolResults().suffix(3).first?.text == "todo 列好了。現在進行中：「畫面上按過 Return」；後面：「存好檔」。")
+    #expect(try h.toolResults().suffix(3).first?.text == "todo 列好了，你估整份 5 回合。現在進行中：「畫面上按過 Return」；後面：「存好檔」。")
     // 進行中: a reply that only speaks still gets the next turn.
     try await h.turn(Scripted("", dm("按了")))
     #expect(await h.doll.followUp)
@@ -4266,7 +4270,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(item.filter { $0.role == "assistant" }.allSatisfy { $0.content.isEmpty })
     // What stays, in order: her todo.set (and its result), the owner's line verbatim, what she told him, her done with the action list.
     #expect(item.map(\.role) == ["assistant", "tool", "user", "assistant", "tool", "assistant", "tool", "tool"])
-    #expect(item[0].toolCalls.map(\.name) == ["todo.set"] && item[1].content.hasPrefix("todo 列好了。"))
+    #expect(item[0].toolCalls.map(\.name) == ["todo.set"] && item[1].content.hasPrefix("todo 列好了，"))
     #expect(item[2].content.hasSuffix("主人｜Discord 私訊｜文字] 順便問，晚餐吃什麼？"))
     #expect(item[3].toolCalls.map(\.name) == ["discord.dm"] && item[3].toolCalls[0].arguments!.contains("等我存完再想"))
     #expect(item[5].toolCalls.map(\.name) == ["discord.dm", "todo.done"])
@@ -4293,7 +4297,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     try await h.turn(Scripted("", todoSet("票買好了", "餐廳訂好了"), readCall, key("cmd+n")))
     try await h.turn(Scripted("", fail("要主人的信用卡驗證碼", tried: "填了卡號，跳出簡訊驗證"), key("Return")))
     #expect(try h.toolResults().suffix(2).map(\.text) == [
-        "記下了：「票買好了」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：key cmd+n。電腦工具先鎖著。現在決定剩下的（剩下：「餐廳訂好了」）：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
+        "記下了：「票買好了」沒做成。你估整份清單 5 回合，實際到現在 1 回合、0 秒（記下了）。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：key cmd+n。電腦工具先鎖著。現在決定剩下的（剩下：「餐廳訂好了」）：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。",
         "失敗：這則回覆前面已經用 todo.fail 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"])
     #expect(h.last.itemEnd == "失敗" && h.last.compacted == ["failed"] && h.last.todo == "失敗")
     // She gets the turn in which she decides; the computer stays locked meanwhile.
@@ -4313,8 +4317,8 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 @Test func anEmptyListAfterAFailureEndsItAndNothingWakesHer() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("買票")
-    try await h.turn(Scripted("", todoSet("票買好了"), key("cmd+n")))
-    try await h.turn(Scripted("", fail("沒票了")))
+    try await h.turn(Scripted("", todoSet("票買好了"), readCall, key("cmd+n")))
+    try await h.turn(Scripted("", fail("網站上沒票了")))
     try await h.turn(Scripted("", dm("沒票了"), ("todo.set", [("items", "[]")])))
     #expect(try h.toolResults().last!.text == "清單結束了，現在待命中。" && h.last.todo == "待命中")
     #expect(await !h.doll.followUp)
@@ -5190,7 +5194,7 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     #expect(first.messages.last!.content.contains("- 系統維護：2026-11-17（星期二） 03:00（還有 10 分鐘）"))
     // The owner answers; she ends the list and tells him; once those turns are over it starts, with
     // no turn of its own.
-    await h.model.add([Scripted("", fail("主人說檔案不用寄了")), Scripted("", ("todo.set", [("items", "[]")]), dm("好，那我等你回來再說")),
+    await h.model.add([Scripted("", fail("主人說檔案不用寄了", evidence: "檔案在桌面")), Scripted("", ("todo.set", [("items", "[]")]), dm("好，那我等你回來再說")),
                        planReply, summaryReply])
     clock.set(at("2026-11-17", "03:20"))
     await doll.ownerSaid("檔案在桌面")
@@ -5578,7 +5582,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func theProgramNotesCalendarAndFailedItemsAndEndsPassedOnes() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let add = ("calendar.add", [("title", "主人看牙醫"), ("date", "2026-11-17"), ("start", "09:00")])
-    let h = try await Harness([Scripted("", add), Scripted("", dm("記好了")), Scripted("", todoSet("報告寄出了"), fail("沒有檔案")),
+    let h = try await Harness([Scripted("", add), Scripted("", dm("記好了")), Scripted("", todoSet("報告寄出了"), readCall, fail("沒有檔案")),
                                Scripted("", ("todo.set", [("items", "[]")]))], clock: clock) {
         $0.drives.enabled = true
         $0.drives.closenessHalfLifeH = 1000
@@ -6093,7 +6097,7 @@ private func goalsHarness(_ clock: ManualClock, dir: URL? = nil, _ replies: [Scr
 }
 
 private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, String)]) {
-    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self)), ("subgoal", "\(sub)")])
+    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self)), ("subgoal", "\(sub)")] + planArgs)
 }
 
 @Test func theTreeHasExactlyThreeLevelsAndItsLimits() async throws {
@@ -6513,7 +6517,9 @@ private func display(_ value: String) -> String { #"  - [1] AXStaticText ""# + v
 private func decideHarness() async throws -> Harness {
     try await menuHarness { $0.computer.decideAfterRounds = 3; $0.computer.decideEveryRounds = 2 }
 }
-private func goOn(_ missing: String, _ why: String) -> (String, [(String, String)]) { ("todo.continue", [("missing", missing), ("why", why)]) }
+private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (String, [(String, String)]) {
+    ("todo.continue", [("missing", missing), ("stuck", stuck), ("change", change)])
+}
 
 @Test func theDecisionPointComesAtNRoundsThenEveryMAndRefusesTheComputerUntilAChoice() async throws {
     let h = try await decideHarness()
@@ -6525,7 +6531,7 @@ private func goOn(_ missing: String, _ why: String) -> (String, [(String, String
     try await h.turn(Scripted("", readCall))
     let point = try #require(try h.events().last { $0.text.hasPrefix("【該決定了】") })
     #expect(point.text == "【該決定了】「畫面上看得到結果」已經做了 3 回合（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
-            + "① todo.continue(missing, why)：還缺什麼、為什麼值得繼續（主人看得到）；② ask_owner 問主人；③ todo.fail 說卡在哪裡、試過什麼。選了繼續，再過 2 回合會再問一次。")
+            + "① todo.continue(missing, stuck, change)：還缺什麼、最卡的是哪一步、下一次跟試過的哪裡不一樣（主人看得到）；② ask_owner 問主人；③ todo.fail 寫根本原因、照抄支持它的字。選了繼續，再過 2 回合會再問一次。")
     #expect(h.last.actions == ["read_window", "decision point"])
     #expect(await h.doll.todo.deciding)
     // Until she chooses, every computer or file call is refused before it is sent.
@@ -6534,13 +6540,13 @@ private func goOn(_ missing: String, _ why: String) -> (String, [(String, String
     #expect(h.cua.tools.count == sentBefore && h.last.actions == ["refused click", "refused read_file"])
     #expect(try h.toolResults().suffix(2).first!.text.hasPrefix("失敗：click 沒有執行。「畫面上看得到結果」已經做了 4 回合"))
     // Go on, because…: recorded with the list and on the dashboard; the tools run again.
-    try await h.turn(Scripted("", goOn("等於還沒按", "只差按等於，改用鍵盤 Return"), readCall))
+    try await h.turn(Scripted("", goOn("等於還沒按", "按等於那一步，點了沒反應", "改用鍵盤 Return"), readCall))
     #expect(h.last.actions == ["todo continue", "read_window"])
     let status = try await h.doll.dashboardStatus()
-    #expect(status.goOn == ["第 5 回合：還缺「等於還沒按」；值得繼續因為「只差按等於，改用鍵盤 Return」"] && !status.deciding && status.rounds == 5)
+    #expect(status.goOn == ["第 5 回合：還缺「等於還沒按」；最卡的是「按等於那一步，點了沒反應」；跟之前不同的是「改用鍵盤 Return」"] && !status.deciding && status.rounds == 5)
     #expect(try h.timeline().todo.goOn == status.goOn)
     // Outside a decision point there is nothing to choose.
-    try await h.turn(Scripted("", goOn("x", "y")))
+    try await h.turn(Scripted("", goOn("還缺等於", "按等於那一步", "改用選單")))
     #expect(try h.toolResults().last!.text == "失敗：現在不用決定：「畫面上看得到結果」做了 6 回合，第 7 回合才要選。接著做。")
     // M (2) rounds after the choice: again.
     try await h.turn(Scripted("", readCall))
@@ -6638,4 +6644,131 @@ private func goOn(_ missing: String, _ why: String) -> (String, [(String, String
     try await h.turn(Scripted("", readCall, ("apps", [])))
     #expect(try h.toolResults().suffix(2).first!.window?.hasPrefix("Calculator 的視窗「計算機」") == true)
     #expect(try h.toolResults().last!.text.contains("- Calculator：「」、「計算機」"))
+}
+
+// The ten ways of thinking (2026-11-17, owner): hooks 1–4 -------------------------------------
+
+@Test func aListWithoutItsPlanIsRefusedAndOneWithItIsAccepted() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("幫我算 12 乘 34")
+    let items = ("items", "[\"計算機顯示 408\"]")
+    func set(_ extra: [(String, String)]) -> Scripted { Scripted("", ("todo.set", [items] + extra)) }
+    func with(_ name: String, _ value: String) -> [(String, String)] { planArgs.map { $0.0 == name ? (name, value) : $0 } }
+    try await h.turn(set([]))
+    #expect(try h.toolResults().last!.text == "失敗：清單沒有列：開始一份清單要一起寫 facts（確定的事實）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。少了 facts。")
+    #expect(await h.doll.todo.phase == .idle)
+    // The filler rules, one each.
+    try await h.turn(set(with("assumptions", "沒有")))
+    #expect(try h.toolResults().last!.text.hasSuffix("assumptions「沒有」太短：至少 4 個字，寫具體的。"))
+    try await h.turn(set(with("check", "計算機顯示 408。")))
+    #expect(try h.toolResults().last!.text.hasSuffix("check 只是照抄了項目：寫你自己的。"))
+    try await h.turn(set(with("facts", "幫我算 12 乘 34")))
+    #expect(try h.toolResults().last!.text.hasSuffix("facts 只是照抄了對方說的話：寫你自己的。"))
+    try await h.turn(set(with("limits", "主人交代了這件事！")))
+    #expect(try h.toolResults().last!.text.hasSuffix("limits 跟 facts 寫得一模一樣：各寫各的。"))
+    try await h.turn(set(with("estimate", "0")))
+    #expect(try h.toolResults().last!.text.hasSuffix("estimate 要是 1 以上的整數（回合數）。"))
+    try await h.turn(set(with("estimate", "幾回合")))
+    #expect(try h.toolResults().last!.text == "失敗：todo.set 的 estimate 要是整數，收到 幾回合")
+    #expect(await h.doll.todo.phase == .idle && h.cua.actions.isEmpty)
+    // With it: accepted; the plan stays with the list (timeline, dashboard).
+    try await h.turn(set(planArgs))
+    #expect(try h.toolResults().last!.text == "todo 列好了，你估整份 5 回合。現在進行中：「計算機顯示 408」；後面：沒有。")
+    let plan = TodoPlan(items: ["計算機顯示 408"], facts: "主人交代了這件事", assumptions: "需要的 app 已經開著",
+                        limits: "只動這一件，不碰別的", estimate: 5, check: "讀視窗看到做完的樣子")
+    #expect(try h.timeline().todo.plan == plan)
+    #expect(try await h.doll.dashboardStatus().plan == plan)
+    // Changing the items after the one in progress needs no plan: it is the same list.
+    try await h.turn(Scripted("", ("todo.set", [("items", "[\"記下結果\"]")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("後面的項目改成：「記下結果」"))
+    #expect(try h.timeline().todo.plan == plan)
+}
+
+@Test func doneShowsTheEstimateAgainstWhatItTookRecordsItAndTheNextListSeesIt() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", done("看到了"), dm("好了")))
+    let text = try h.toolResults().suffix(2).first!.text
+    #expect(text.contains("這一項做了 2 回合；整份清單做完了：你估整份清單 5 回合，實際到現在 2 回合、"))
+    #expect(text.contains("（記下了，下次估的時候【狀況】會給你看）。"))
+    let rec = try #require(await h.doll.estimateFile.records.last)
+    #expect(rec.plan.estimate == 5 && rec.rounds == 2 && rec.outcome == "完成" && rec.cause == nil && rec.plan.items == ["畫面上看得到結果"])
+    #expect(try await h.doll.dashboardStatus().estimates == [rec])
+    // On disk: a new process reads it, and 【狀況】 shows it while no item is in progress.
+    let b = try await Harness(dir: h.dir)
+    #expect(await b.doll.estimateFile.records == [rec])
+    await b.doll.ownerSaid("再算一次")
+    try await b.turn(Scripted("", todoSet(), readCall))
+    #expect(b.last.footer.contains("\n- 你最近幾份清單估的回合和實際（舊到新）：估 5 → 實際 2 回合（完成）\n"))
+    try await b.turn(Scripted("", readCall))
+    #expect(!b.last.footer.contains("你最近幾份清單"))
+}
+
+@Test func aListOfTwoItemsComparesTheWholeListAndRecordsOnce() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("先讀再讀")
+    try await h.turn(Scripted("", todoSet("讀了一次", "讀了兩次"), readCall))
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", done("讀了")))
+    #expect(try h.toolResults().last!.text.contains("這一項做了 2 回合；你估整份清單 5 回合，實際到現在 2 回合、"))
+    #expect(await h.doll.estimateFile.records.isEmpty)
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", done("又讀了"), dm("讀好了")))
+    #expect(try h.toolResults().suffix(2).first!.text.contains("這一項做了 2 回合；整份清單做完了：你估整份清單 5 回合，實際到現在 4 回合、"))
+    #expect(await h.doll.estimateFile.records.map(\.rounds) == [4])
+}
+
+@Test func goingOnNeedsTheStuckStepAndADifferentAttempt() async throws {
+    let h = try await decideHarness()
+    for _ in 0..<3 { try await h.turn(Scripted("", readCall)) }
+    #expect(await h.doll.todo.deciding)
+    try await h.turn(Scripted("", ("todo.continue", [("missing", "還缺等於"), ("why", "再試試")])))
+    #expect(try h.toolResults().last!.text == "失敗：todo.continue 沒有 why 這個參數")
+    try await h.turn(Scripted("", goOn("還缺按等於", "按等於", "改用鍵盤 Return")))
+    #expect(try h.toolResults().last!.text == "失敗：還不能繼續：stuck「按等於」太短：至少 4 個字，寫具體的。")
+    try await h.turn(Scripted("", goOn("還缺按等於", "按等於那一步", "按等於那一步")))
+    #expect(try h.toolResults().last!.text == "失敗：還不能繼續：change 跟 stuck 寫得一模一樣：各寫各的。")
+    #expect(await h.doll.todo.deciding)
+    try await h.turn(Scripted("", goOn("還缺按等於", "按等於那一步點了沒反應", "改用鍵盤 Return")))
+    #expect(await !h.doll.todo.deciding)
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", readCall))
+    #expect(await h.doll.todo.deciding)
+    let point = try #require(try h.events().last { $0.text.hasPrefix("【該決定了】") })
+    #expect(point.text.hasSuffix("你之前選繼續時寫的：第 7 回合：還缺「還缺按等於」；最卡的是「按等於那一步點了沒反應」；跟之前不同的是「改用鍵盤 Return」"))
+    // The same attempt again (spacing, case and punctuation aside) is not a different one.
+    try await h.turn(Scripted("", goOn("還缺按等於", "還是按等於那一步", "改用 鍵盤 return！")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還不能繼續：change 跟你之前選繼續時寫的一樣（第 7 回合："))
+    #expect(await h.doll.todo.deciding)
+    try await h.turn(Scripted("", goOn("還缺按等於", "還是按等於那一步", "先讀選單找計算的指令")))
+    #expect(try h.timeline().todo.goOn.count == 2)
+}
+
+@Test func failNeedsARootCauseBackedByWhatTheItemSaw() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", fail("網路斷了所以算不出來", evidence: "Network unreachable")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒記成失敗：evidence「Network unreachable」不在這一項你看過的東西裡"))
+    #expect(await h.doll.todo.phase == .doing)
+    try await h.turn(Scripted("", fail(seenCalculator)))
+    #expect(try h.toolResults().last!.text.hasSuffix("cause 只是照抄了你的 evidence：寫你自己的。"))
+    try await h.turn(Scripted("", fail("不知道")))
+    #expect(try h.toolResults().last!.text.hasSuffix("cause「不知道」太短：至少 4 個字，寫具體的。"))
+    try await h.turn(Scripted("", fail("計算機視窗在，但等號按鈕不在清單裡")))
+    #expect(await h.doll.todo.phase == .failed)
+    #expect(try h.toolResults().last!.text.contains("沒做成。你估整份清單 5 回合，實際到現在 4 回合、"))
+    let rec = try #require(await h.doll.estimateFile.records.last)
+    #expect(rec.outcome == "失敗" && rec.cause == "計算機視窗在，但等號按鈕不在清單裡" && rec.evidence == seenCalculator && rec.rounds == 4)
+}
+
+@Test func aListWithoutTheComputerQuotesWhatWasSaidAndCannotFailOnNothing() async throws {
+    // The hooks apply to every list: the program cannot know beforehand whether it will use the computer.
+    let h = try await Harness()
+    await h.doll.ownerSaid("幫我想想明天要帶什麼")
+    try await h.turn(Scripted("", todoSet("想好明天要帶的東西"), fail("主人沒說要去哪裡", evidence: "幫我想想明天要帶什麼")))
+    #expect(try h.toolResults().last!.text == "失敗：還沒記成失敗：這一項還沒有任何東西可以支持原因（沒讀過視窗或檔案、工具還沒有結果、也沒有人說過話）。先動手做一次、看清楚卡在哪，或用 ask_owner 問主人。")
+    try await h.turn(Scripted("", dm("要去哪裡？")))
+    await h.doll.ownerSaid("我也還不知道要去哪")
+    try await h.turn(Scripted("", fail("主人還沒決定去哪，沒辦法列", evidence: "還不知道要去哪"), dm("等你決定了再說")))
+    #expect(await h.doll.todo.phase == .failed)
+    #expect(await h.doll.estimateFile.records.last?.evidence == "還不知道要去哪")
 }

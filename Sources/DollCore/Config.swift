@@ -74,6 +74,13 @@ public struct ComputerConfig: Sendable {
     public var decideAfterRounds = 15
     /// After each choice to go on (or ask), the next decision point comes this many rounds later.
     public var decideEveryRounds = 10
+    /// Her written fields (the plan at `todo.set`, the stuck step and the difference at
+    /// `todo.continue`, the root cause at `todo.fail`; 2026-11-17) need at least this many letters or
+    /// digits, punctuation and spaces not counted: 「沒有」「無」「同上」「N/A」 are refused.
+    public var planMinChars = 4
+    /// How many of her past lists' estimate-vs-actual lines 【狀況】 shows while no item is in
+    /// progress, i.e. when her next `todo.set` estimates (2026-11-17, hook 2).
+    public var estimateHistory = 3
 }
 
 /// Her file tools (2026-11-09; on this Mac since 2026-11-16): read_file, write_file, edit_file on text files.
@@ -487,11 +494,14 @@ public struct Config: Sendable {
         try v.read("auth_processes", &computer.authProcesses)
         try v.read("decide_after_rounds", &computer.decideAfterRounds)
         try v.read("decide_every_rounds", &computer.decideEveryRounds)
+        try v.read("plan_min_chars", &computer.planMinChars)
+        try v.read("estimate_history", &computer.estimateHistory)
         try v.finish()
         guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
               computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
-              !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1 else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, window_wait_tries, decide_after_rounds, decide_every_rounds positive; screenshot_tokens, settle_s, window_wait_s 0 or more")
+              !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1,
+              computer.planMinChars >= 1, computer.estimateHistory >= 0 else {
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

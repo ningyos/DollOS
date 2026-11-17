@@ -52,6 +52,11 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var rounds: Int
     public var deciding: Bool
     public var goOn: [String]
+    /// The current list's plan and its rounds so far, and every finished list, estimate against
+    /// actual, with a failed one's root cause (2026-11-17, hooks 1, 2, 4), as she wrote them.
+    public var plan: TodoPlan?
+    public var listRounds: Int
+    public var estimates: [EstimateRecord]
     /// The footer's context figure: the estimate scaled by the last real prompt size.
     public var contextTokens: Int
     /// thinking (model call in flight) | acting (her tool calls) | idle (waiting for the next
@@ -158,6 +163,7 @@ extension Doll {
         DashboardStatus(
             name: name, todo: todo.phase.label, item: todo.current, pending: todo.pending,
             rounds: todo.rounds, deciding: todo.deciding, goOn: todo.goOn,
+            plan: todo.plan, listRounds: todo.totalRounds, estimates: estimateFile.records,
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
             paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,

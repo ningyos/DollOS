@@ -11,7 +11,7 @@ import Foundation
 ///     think(level: medium)               the next model call thinks first (2026-11-11: `none` removed; 2026-11-15: `high` removed)
 ///     remember(items: [{text, folder, kind?, deep?}])  one memory per item; folder: secret | own | public; deep: never fades
 ///     recall(query)                      search her memories and today's timeline
-///     todo.set(items) / todo.done(result) / todo.fail(reason, tried) / todo.wait(reason) / todo.progress(note)
+///     todo.set(items, facts, assumptions, limits, estimate, check) / todo.done(result, evidence) / todo.fail(cause, evidence, tried) / todo.wait(reason) / todo.progress(note) / todo.continue(missing, stuck, change)
 ///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
 ///                                        only while an item is 進行中
 ///     calendar.add / calendar.change / calendar.delete / calendar.list
@@ -123,7 +123,7 @@ public enum Tools {
                         "properties": .object([
                             ("items", ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"]),
                             ("subgoal", ["type": "integer", "description": "做的是哪個子目標的步驟（#編號）；不是目標樹上的事就不填"]),
-                        ]),
+                        ] + planProperties),
                         "required": ["items"],
                     ], jsonParameters: ["items"])
     }
@@ -172,13 +172,22 @@ public enum Tools {
              ], jsonParameters: []),
     ]
 
+    /// What a `todo.set` that starts a list hands in (2026-11-17, hook 1; `TodoPlan`, `Doll.planRefusal`).
+    static let planProperties: [(String, JSONValue)] = [
+        ("facts", ["type": "string", "description": "已經確定的事實：你親眼看過的、主人說的"]),
+        ("assumptions", ["type": "string", "description": "你只是假設、還沒確認的"]),
+        ("limits", ["type": "string", "description": "邊界：不能碰的、做不到的、有限的（時間、回合、權限）"]),
+        ("estimate", ["type": "integer", "description": "估整份清單要幾回合（項目進行中你的一則回覆＝一回合）"]),
+        ("check", ["type": "string", "description": "做完是什麼樣子、你要怎麼確認（讀哪個視窗或檔案、看到什麼）"]),
+    ]
+
     /// Her todo list (2026-11-14). Never gated.
     static let todoSpecs: [Spec] = [
         Spec(name: Name.todoSet,
-             description: "列 todo：要做事之前先列。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；打開、修改、存檔、確認是同一項裡的步驟，不要拆開（確認本來就是說完成之前要做的）。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼（例：桌面有 copy.rtf，內容跟 notes.txt 一樣）。沒有進行中的項目時，第一項馬上變成進行中；有進行中的項目時，只換掉它後面還沒開始的那些。一項失敗以後也用它決定剩下的：重寫剩下的項目、照原樣再列一次就是接著做下一項；items 給空的陣列就是結束清單。",
+             description: "列 todo：要做事之前先列。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；打開、修改、存檔、確認是同一項裡的步驟，不要拆開（確認本來就是說完成之前要做的）。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼（例：桌面有 copy.rtf，內容跟 notes.txt 一樣）。開始一份新清單（沒有進行中的項目時給項目）要一起寫 facts、assumptions、limits、estimate、check；少了，或只寫「沒有」「同上」、照抄項目或對方的話，就不收。沒有進行中的項目時，第一項馬上變成進行中；有進行中的項目時，只換掉它後面還沒開始的那些（不用再寫那五個）。一項失敗以後也用它決定剩下的：重寫剩下的項目、照原樣再列一次就是接著做下一項（都是新清單）；items 給空的陣列就是結束清單。",
              parameters: [
                  "type": "object",
-                 "properties": ["items": ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"]],
+                 "properties": .object([("items", ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"])] + planProperties),
                  "required": ["items"],
              ], jsonParameters: ["items"]),
         Spec(name: Name.todoDone,
@@ -192,14 +201,15 @@ public enum Tools {
                  "required": ["result"],
              ], jsonParameters: []),
         Spec(name: Name.todoFail,
-             description: "確定這一項做不到才用；還在試、或在等主人，都不是失敗。呼叫以後這一項的過程收起來，留下你寫的原因、試過什麼和動作清單；電腦工具先鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目，或跟主人說了以後用 todo.set 給空的陣列結束清單，或用 todo.set 照原樣列剩下的、接著做下一項。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
+             description: "確定這一項做不到才用；還在試、或在等主人，都不是失敗。cause 寫根本原因，evidence 照抄支持它的字，程式會對；不在你這一項看過的東西裡就退回。呼叫以後這一項的過程收起來，留下你寫的原因、試過什麼和動作清單；電腦工具先鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目，或跟主人說了以後用 todo.set 給空的陣列結束清單，或用 todo.set 照原樣列剩下的、接著做下一項。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
              parameters: [
                  "type": "object",
                  "properties": .object([
-                     ("reason", ["type": "string", "description": "為什麼確定做不到"]),
+                     ("cause", ["type": "string", "description": "根本原因：為什麼做不到；不是「按了沒反應」這種現象，是造成它的原因"]),
+                     ("evidence", ["type": "string", "description": "照抄支持這個原因的字：從最新讀到的視窗或檔案、這一項裡工具的結果，或主人說的話"]),
                      ("tried", ["type": "string", "description": "試過什麼、各自的結果"]),
                  ]),
-                 "required": ["reason", "tried"],
+                 "required": ["cause", "evidence", "tried"],
              ], jsonParameters: []),
         Spec(name: Name.todoWait,
              description: "這一項要等主人（回話、幫你做什麼）才能往下：這一項變成等待中，程式不再叫你，直到有事發生（有人說話、watch 叫你）。要主人做的事先用回話的工具跟他說清楚。",
@@ -216,14 +226,15 @@ public enum Tools {
                  "required": ["note"],
              ], jsonParameters: []),
         Spec(name: Name.todoContinue,
-             description: "程式說這一項已經做了很多回合、要你決定的時候用：寫還缺什麼、為什麼值得繼續。程式記下來（主人在後台看得到），電腦和檔案工具再開放。另外兩個選擇是 ask_owner 問主人，或 todo.fail。",
+             description: "程式說這一項已經做了很多回合、要你決定的時候用：寫還缺什麼、最卡的是哪一步、下一次跟已經試過的哪裡不一樣。程式記下來（主人在後台看得到），電腦和檔案工具再開放。另外兩個選擇是 ask_owner 問主人，或 todo.fail。",
              parameters: [
                  "type": "object",
                  "properties": .object([
                      ("missing", ["type": "string", "description": "還缺什麼才算做完"]),
-                     ("why", ["type": "string", "description": "為什麼繼續值得：下一步要試的、跟之前不一樣的做法"]),
+                     ("stuck", ["type": "string", "description": "最慢或最卡的那一步：哪一步、卡在哪裡"]),
+                     ("change", ["type": "string", "description": "下一次跟已經試過的哪裡不一樣；跟這一項之前寫過的一樣就不收"]),
                  ]),
-                 "required": ["missing", "why"],
+                 "required": ["missing", "stuck", "change"],
              ], jsonParameters: []),
     ]
 
@@ -558,11 +569,13 @@ public enum Tools {
         case open(app: String, target: String?)
         case readWindow(app: String?, window: String?)
         case askOwner(what: String, where: String, why: String)
-        case todoSet([String], subgoal: Int?)
+        /// `plan`: the five fields as given (trimmed; absent = nil), checked by `Doll.planRefusal`
+        /// only when the call starts a list.
+        case todoSet([String], subgoal: Int?, plan: PlanInput)
         case todoDone(String, evidence: String?)
-        /// Her choice at a decision point to go on (2026-11-16, design C).
-        case todoContinue(missing: String, why: String)
-        case todoFail(reason: String, tried: String)
+        /// Her choice at a decision point to go on (2026-11-16, design C; stuck and change 2026-11-17).
+        case todoContinue(missing: String, stuck: String, change: String)
+        case todoFail(cause: String, evidence: String, tried: String)
         case todoWait(String)
         case todoProgress(String)
         /// The file tools (2026-11-09): `from`/`to` 1-based inclusive, checked ≥ 1 and from ≤ to here.
@@ -652,14 +665,16 @@ public enum Tools {
             }
             let trimmed = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard !trimmed.contains(where: \.isEmpty) else { throw ToolError(description: "todo.set 的 items 裡有空的項目") }
-            return .todoSet(trimmed, subgoal: try int("subgoal"))
+            let plan = PlanInput(facts: given("facts"), assumptions: given("assumptions"), limits: given("limits"),
+                                 estimate: try int("estimate"), check: given("check"))
+            return .todoSet(trimmed, subgoal: try int("subgoal"), plan: plan)
         case Name.todoDone:
             // The evidence is matched with whitespace removed (`Doll.evidenceKey`): only emptiness is checked here.
             return .todoDone(try nonEmpty("result"), evidence: given("evidence").flatMap { $0.isEmpty ? nil : value("evidence") })
         case Name.todoContinue:
-            return .todoContinue(missing: try nonEmpty("missing"), why: try nonEmpty("why"))
+            return .todoContinue(missing: try nonEmpty("missing"), stuck: try nonEmpty("stuck"), change: try nonEmpty("change"))
         case Name.todoFail:
-            return .todoFail(reason: try nonEmpty("reason"), tried: try nonEmpty("tried"))
+            return .todoFail(cause: try nonEmpty("cause"), evidence: try nonEmpty("evidence"), tried: try nonEmpty("tried"))
         case Name.todoWait:
             return .todoWait(try nonEmpty("reason"))
         case Name.todoProgress:
@@ -949,7 +964,7 @@ enum Instructions {
         - 進行中：正在做一項。電腦工具可以用；你每回覆一次就會再有下一回合，直到這一項結束。
         - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有事發生之前不會有回合；有事發生就回到進行中。
         - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
-        - 失敗：你確定做不到，用 todo.fail(reason, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後電腦工具鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
+        - 失敗：你確定做不到，用 todo.fail(cause, evidence, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後電腦工具鎖著，下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 
         一項完成或失敗的時候，這一項做事的過程（每一步的呼叫和結果、截圖、那幾回合你的念頭）就從你眼前收起來了，只留下：你寫的 result（失敗時是原因和試過什麼）、程式列的動作清單（像「key cmd+shift+s、type 「copy」、click "Save"」，沒有截圖，沒有每一步的結果），和中間你跟別人說的話、別人跟你說的話（原樣留著）。所以 result 要寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。收起來的東西還在時間線檔裡，recall 查得到。
 
@@ -985,6 +1000,21 @@ enum Instructions {
         你自己這套系統（DollOS）其他的事寫在這台 Mac 的 \(docs)/：README.md 是目錄；computer.md 是電腦怎麼用、常見的狀況；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: "\(docs)/memory.md")。read_file 是電腦工具，要有進行中的 todo。
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
+
+        ## 怎麼想事情
+
+        做事的時候這樣想：
+        - 分清事實和假設：哪些是你親眼看過、主人說過的，哪些只是你以為的。從確定的事實推做法，不要照習慣套。
+        - 先找邊界：不能碰的、做不到的、時間和回合有限的；只在做得到的範圍裡挑做法。
+        - 先估量級：大概幾步、幾回合；估出來大得離譜，就先換做法或問主人。
+        - 大事拆成小事，一件一件做、一件一件確認。
+        - 看整體：這一步會動到什麼別的（別的視窗、檔案、主人正在用的東西），不要只盯著一個按鈕。
+        - 不能全要的時候，選一個平衡，說得出要什麼、放掉什麼、為什麼。
+        - 每一步做完就量：讀結果、跟預期比、不對就改，再做下一步。
+        - 卡住的時候找最慢、最卡的那一步，先處理它；別的地方再快也沒用。
+        - 出錯時從現象往回找真正的原因，找到了要驗證（再讀一次、再試一次），不要把現象當原因。
+        - 第一次不必完美：做、試、看結果、改，再做；但每一次都要跟上一次不一樣。
+        程式會在幾個地方要你寫出來：todo.set 寫事實、假設、邊界、估幾回合、怎麼確認；todo.done 會告訴你估的和實際的；決定點要寫最卡的一步和下一次哪裡不一樣；todo.fail 要寫根本原因、照抄支持它的字。
 
         ## 做事的規矩
 

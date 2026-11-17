@@ -46,9 +46,77 @@ public struct TodoState: Sendable, Equatable, Codable {
     public var decideAt = 0
     /// The decision point came and she has not chosen yet: the computer tools are refused.
     public var deciding = false
-    /// Her `todo.continue` reasons for this item, oldest first: 「第 N 回合：還缺…；值得繼續因為…」.
+    /// Her `todo.continue` reasons for this item, oldest first: 「第 N 回合：還缺…；最卡的是…；跟之前不同的是…」.
     public var goOn: [String] = []
+    /// Her plan for the list (2026-11-17, `TodoPlan`): set by the `todo.set` that started it, kept
+    /// while its items run; nil for a list from an older timeline.
+    public var plan: TodoPlan?
+    /// Rounds of the list's items before the current one (the current one's are `rounds`).
+    public var listRounds = 0
+    /// When the `todo.set` that started the list was written (its reply's time).
+    public var listStart = 0.0
 
+    public init() {}
+
+    /// Rounds of the whole list so far: what her estimate is compared with.
+    public var totalRounds: Int { listRounds + rounds }
+}
+
+/// What she hands in with a `todo.set` that starts a list (2026-11-17, owner: the ten ways of
+/// thinking in every doll; hook 1 = first principles, limits, order-of-magnitude estimate). The
+/// program checks that each is written and is not filler (`Doll.planRefusal`); it cannot judge
+/// whether her facts are right.
+public struct TodoPlan: Sendable, Equatable, Codable {
+    /// The items the list started with.
+    public var items: [String]
+    /// What is established: seen with her own eyes, or said by the owner.
+    public var facts: String
+    /// What she only assumes and has not checked.
+    public var assumptions: String
+    /// What she must not touch, what cannot be done.
+    public var limits: String
+    /// Rounds the whole list will take (one round = one reply of hers while an item is 進行中).
+    public var estimate: Int
+    /// What done looks like and how she will check it.
+    public var check: String
+
+    public init(items: [String], facts: String, assumptions: String, limits: String, estimate: Int, check: String) {
+        self.items = items
+        self.facts = facts
+        self.assumptions = assumptions
+        self.limits = limits
+        self.estimate = estimate
+        self.check = check
+    }
+}
+
+/// One finished list, estimate against what it took (2026-11-17, hook 2 = feedback loop): written
+/// when the list ends (its last `todo.done`, or a `todo.fail`), to `<data_dir>/estimates.json`.
+public struct EstimateRecord: Sendable, Equatable, Codable {
+    /// When the list ended.
+    public var ts: Double
+    public var plan: TodoPlan
+    /// Rounds of the whole list while an item was 進行中, and seconds from its `todo.set` to its end.
+    public var rounds: Int
+    public var seconds: Int
+    /// 完成 or 失敗 (`TodoPhase.label`).
+    public var outcome: String
+    /// A failed list: her root cause and the text she quoted for it (hook 4).
+    public var cause: String?
+    public var evidence: String?
+}
+
+/// The five `todo.set` fields as she gave them (trimmed; nil = not given), before `Doll.planRefusal`.
+struct PlanInput: Sendable, Equatable {
+    var facts: String?
+    var assumptions: String?
+    var limits: String?
+    var estimate: Int?
+    var check: String?
+}
+
+public struct EstimateFile: Sendable, Equatable, Codable {
+    public var records: [EstimateRecord] = []
     public init() {}
 }
 

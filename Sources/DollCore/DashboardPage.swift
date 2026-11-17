@@ -58,6 +58,7 @@ enum DashboardPage {
 <main>
   <section id="vision"><h2>視覺</h2><div id="vision-body" class="muted">還沒有截圖</div></section>
   <section id="actions"><h2>動作</h2><div id="timeline"></div></section>
+  <section id="mind"><h2>她怎麼想（清單的計畫、估的和實際、卡住和失敗的原因）</h2><div id="mind-body" class="muted">還沒有清單</div></section>
   <section id="memory"><h2>記憶</h2>
     <label class="muted"><input type="checkbox" id="show-program"> 顯示程式讀的快捷鍵（tier program）</label>
     <div id="memory-body"></div></section>
@@ -120,12 +121,37 @@ function renderStatus(s) {
   $("paused").hidden = !s.paused;
   $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」第 ${s.rounds} 回合` : "") + (s.deciding ? "（等她決定：繼續／問你／失敗）" : "")
     + (s.pending.length ? `；後面 ${s.pending.length} 項` : "") + s.goOn.map(g => "；她選了繼續：" + g).join("");
+  renderMind(s);
   $("ctx").textContent = `context 約 ${s.contextTokens} token`;
   $("effort").textContent = "effort：" + s.effort;
   $("queued").textContent = `排隊 ${s.queued} 件 · 第 ${s.turn} 回合`;
   $("interrupted").textContent = s.lastInterrupt ? "上次中斷 " + clock(s.lastInterrupt) : "";
   $("btn-interrupt").disabled = s.state !== "thinking";
   $("btn-pause").textContent = s.paused ? "繼續" : "暫停";
+}
+
+// Hook 1–4 (2026-11-17): what she wrote, verbatim.
+function renderMind(s) {
+  const box = $("mind-body");
+  box.replaceChildren();
+  box.className = "";
+  const plan = p => [`項目：${p.items.map(i => "「" + i + "」").join("")}`, `事實：${p.facts}`, `假設：${p.assumptions}`,
+    `邊界：${p.limits}`, `估：${p.estimate} 回合`, `怎麼確認：${p.check}`];
+  if (s.plan) {
+    box.append(el("div", null, `現在的清單（到現在 ${s.listRounds} 回合）`));
+    for (const l of plan(s.plan)) box.append(el("div", "muted", l));
+    for (const g of s.goOn) box.append(el("div", null, "她選了繼續：" + g));
+  }
+  if (s.estimates.length) {
+    box.append(el("div", null, "做完或失敗的清單（新到舊）："));
+    for (const r of [...s.estimates].reverse()) {
+      const body = el("div");
+      for (const l of plan(r.plan)) body.append(el("div", "muted", l));
+      if (r.cause) body.append(el("div", null, `根本原因：${r.cause}`), el("div", "muted", `她照抄的根據：${r.evidence}`));
+      box.append(details(`${clock(r.ts)} ${r.outcome}：估 ${r.plan.estimate} 回合 → 實際 ${r.rounds} 回合、${r.seconds} 秒`, body));
+    }
+  }
+  if (!s.plan && !s.estimates.length) { box.className = "muted"; box.textContent = "還沒有清單"; }
 }
 
 function renderVision(v) {

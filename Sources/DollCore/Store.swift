@@ -251,6 +251,9 @@ public final class Timeline {
         var decideAt: Int?
         var deciding: Bool?
         var goOn: [String]?
+        var plan: TodoPlan?
+        var listRounds: Int?
+        var listStart: Double?
     }
     private struct CompactLine: Codable {
         var type = "compact"
@@ -399,6 +402,9 @@ public final class Timeline {
         s.decideAt = l.decideAt ?? 0
         s.deciding = l.deciding ?? false
         s.goOn = l.goOn ?? []
+        s.plan = l.plan
+        s.listRounds = l.listRounds ?? 0
+        s.listStart = l.listStart ?? 0
         return s
     }
 
@@ -438,7 +444,8 @@ public final class Timeline {
     /// Records the todo list after her reply `seq` (or the program's change at the event `seq`).
     public func recordTodo(_ s: TodoState, seq: Int64) throws {
         try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
-                           rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn))
+                           rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
+                           plan: s.plan, listRounds: s.listRounds, listStart: s.listStart))
         todo = s
     }
 

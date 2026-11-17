@@ -134,6 +134,9 @@ public actor Doll {
     var docsPath: String { docsDir.standardizedFileURL.path }
     /// Her todo list (`Todo.swift`), as the timeline last recorded it.
     var todo: TodoState
+    /// Her finished lists, estimate against actual (2026-11-17, hook 2): `<data_dir>/estimates.json`.
+    let estimatesURL: URL
+    var estimateFile: EstimateFile
     /// The current item's actions that went through, one short line each (`Doll.step`) with the seq
     /// of the result that answered it: its action list and its experience's steps. In memory: a new
     /// process starts the list of an item still in progress empty.
@@ -328,6 +331,8 @@ public actor Doll {
         drivesConfig = config.drives
         concernsURL = data.appending(path: "concerns.json")
         signalsURL = data.appending(path: "signals.json")
+        estimatesURL = data.appending(path: "estimates.json")
+        estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates") ?? EstimateFile()
         concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns") ?? ConcernFile()
         let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals")
         drives = signals.map { Drives(config: config.drives, state: $0) } ?? Drives(config: config.drives, now: 0)
@@ -852,6 +857,8 @@ public actor Doll {
     func footer(used: Int, process: (tokens: Int, images: Int), advice: Advice) -> String {
         let now = wallClock.now()
         var out = ["【狀況】", "- 現在 \(nowLine(now))", "- todo：" + todoLine()]
+        // Hook 2: while no item is in progress her next todo.set may estimate; her past lists are here.
+        if todo.phase != .doing, todo.phase != .waiting, let history = estimateHistoryLine() { out.append(history) }
         if let felt = feltLine(now: now) { out.append("- " + felt) }
         if let goals = goalStatusLine() { out.append(goals) }
         out.append("- 今天的行事曆：" + calendarStatus(now: now))
@@ -1247,12 +1254,12 @@ public actor Doll {
                 return await remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try await recall(query, seen: events)
-            case .todoSet(let items, let subgoal):
-                return try todoSet(items, subgoal: subgoal, reply: reply)
+            case .todoSet(let items, let subgoal, let plan):
+                return try todoSet(items, subgoal: subgoal, plan: plan, reply: reply)
             case .todoDone(let result, let evidence):
                 return try await todoDone(result, evidence: evidence, reply: reply)
-            case .todoFail(let reason, let tried):
-                return try todoFail(reason: reason, tried: tried)
+            case .todoFail(let cause, let evidence, let tried):
+                return try todoFail(cause: cause, evidence: evidence, tried: tried, reply: reply)
             case .todoWait:
                 let item = try currentItem("todo.wait")
                 waitNow = true
@@ -1264,8 +1271,8 @@ public actor Doll {
                 warnedTurns = 0
                 return Outcome(text: "前面的過程收起來了，之後只留你寫的進度和這份動作清單：\(Self.actionList(itemSteps.map(\.line)))。「\(item)」還在進行中，接著做。",
                                actions: ["todo progress"], ends: true)
-            case .todoContinue(let missing, let why):
-                return try todoContinue(missing: missing, why: why)
+            case .todoContinue(let missing, let stuck, let change):
+                return try todoContinue(missing: missing, stuck: stuck, change: change)
             case .apps:
                 return Outcome(text: try await mac.apps(), actions: [name])
             case .open(let app, let target):
@@ -1375,21 +1382,37 @@ public actor Doll {
     /// The decision point's words (design C): how many rounds, and the three choices.
     var decideText: String {
         "「\(todo.current ?? "")」已經做了 \(todo.rounds) 回合（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
-            + "① \(Tools.Name.todoContinue)(missing, why)：還缺什麼、為什麼值得繼續（主人看得到）；② \(Tools.Name.askOwner) 問主人；③ \(Tools.Name.todoFail) 說卡在哪裡、試過什麼。"
+            + "① \(Tools.Name.todoContinue)(missing, stuck, change)：還缺什麼、最卡的是哪一步、下一次跟試過的哪裡不一樣（主人看得到）；② \(Tools.Name.askOwner) 問主人；③ \(Tools.Name.todoFail) 寫根本原因、照抄支持它的字。"
             + "選了繼續，再過 \(computerConfig.decideEveryRounds) 回合會再問一次。"
+            + (todo.goOn.isEmpty ? "" : "你之前選繼續時寫的：" + todo.goOn.joined(separator: "／"))
     }
 
-    /// `todo.continue` (design C): her reason to go on, recorded with the list; the tools run again
-    /// until the next point.
-    func todoContinue(missing: String, why: String) throws -> Outcome {
+    /// `todo.continue` (design C; hook 3, 2026-11-17: bottleneck and iteration): what is missing, the
+    /// step that is slowest or most stuck, and how the next attempt differs from what she tried;
+    /// recorded with the list; the tools run again until the next point. The three pass the filler
+    /// rules (copies: the item), and `change` may not repeat one she gave earlier on this item.
+    func todoContinue(missing: String, stuck: String, change: String) throws -> Outcome {
         let item = try currentItem(Tools.Name.todoContinue)
         guard todo.deciding else {
             throw ToolError(description: "現在不用決定：「\(item)」做了 \(todo.rounds) 回合，第 \(todo.decideAt) 回合才要選。接著做。")
         }
-        todo.goOn.append("第 \(todo.rounds) 回合：還缺「\(missing)」；值得繼續因為「\(why)」")
+        if let problem = fillerRefusal([("missing", missing), ("stuck", stuck), ("change", change)], copies: [(what: "項目", text: item)]) {
+            throw ToolError(description: "還不能繼續：\(problem)")
+        }
+        let changeKey = Self.plainKey(change)
+        if let earlier = todo.goOn.first(where: { $0.hasPrefix("第") && Self.plainKey(Self.changePart($0)) == changeKey }) {
+            throw ToolError(description: "還不能繼續：change 跟你之前選繼續時寫的一樣（\(earlier)）。同樣的做法已經試過一輪了；下一次要哪裡不一樣？想不到就 ask_owner 或 todo.fail。")
+        }
+        todo.goOn.append("第 \(todo.rounds) 回合：還缺「\(missing)」；最卡的是「\(stuck)」；跟之前不同的是「\(change)」")
         decided()
-        log("INFO", "turn \(turnIndex): todo.continue「\(item)」round \(todo.rounds): missing「\(missing)」why「\(why)」")
+        log("INFO", "turn \(turnIndex): todo.continue「\(item)」round \(todo.rounds): missing「\(missing)」stuck「\(stuck)」change「\(change)」")
         return Outcome(text: "記下了，主人在後台看得到。電腦和檔案工具開放了；第 \(todo.decideAt) 回合會再問一次。", actions: ["todo continue"])
+    }
+
+    /// The `change` part of a stored `goOn` line (what follows 「跟之前不同的是「」).
+    static func changePart(_ line: String) -> String {
+        guard let r = line.range(of: "跟之前不同的是「") else { return "" }
+        return String(line[r.upperBound...].dropLast())
     }
 
     /// She chose at the decision point (go on, or asked the owner): the next point is `decide_every_rounds` on.
@@ -1445,10 +1468,7 @@ public actor Doll {
         }
         // Several copied pieces joined by ；, ; or line breaks (m7-mac a-2, 2026-11-17: two real lines
         // of the read joined by 「；」 were refused) count when every piece is in the read.
-        let read = Self.evidenceKey(haystack)
-        let keys = evidence.split(whereSeparator: { "；;\n".contains($0) }).map { Self.evidenceKey(String($0)) }.filter { !$0.isEmpty }
-        let key = Self.evidenceKey(evidence)
-        if !key.isEmpty, read.contains(key) || (!keys.isEmpty && keys.allSatisfy(read.contains)) { return nil }
+        if Self.quoted(evidence, in: haystack) { return nil }
         return "還沒完成：evidence「\(evidence)」不在\(source)裡。那裡現在是：\n\(shown)\n"
             + "照這個判斷：真的做完了，就從那裡照抄證明的那段字（標點、寫法照抄）；還沒做完就接著做；做不到就 \(Tools.Name.todoFail)。\(fix)"
     }
@@ -1545,8 +1565,13 @@ public actor Doll {
     /// 進行中 from her reply on (that reply is the item's first event); with one in progress only the
     /// items after it are replaced. No items: the list ends (待命中). `subgoal` (phase 2): the list
     /// works on that sub-goal; its items are its steps (new ones added to the tree first).
-    func todoSet(_ items: [String], subgoal: Int? = nil, reply: Event) throws -> Outcome {
+    func todoSet(_ items: [String], subgoal: Int? = nil, plan p: PlanInput, reply: Event) throws -> Outcome {
         func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
+        // Hook 1 (2026-11-17): a list that starts hands in its plan; checked before anything changes.
+        if todo.phase != .doing, todo.phase != .waiting, !items.isEmpty, let refusal = planRefusal(p, items: items, reply: reply) {
+            log("INFO", "turn \(turnIndex): todo.set refused: \(refusal)")
+            throw ToolError(description: refusal)
+        }
         let linkNote = try subgoal.map { try linkTodo(items, subgoal: $0) } ?? ""
         switch todo.phase {
         case .doing, .waiting:
@@ -1568,12 +1593,15 @@ public actor Doll {
             todo.pending = Array(items.dropFirst())
             todo.startSeq = reply.seq! - 1
             beginItem()
+            todo.plan = TodoPlan(items: items, facts: p.facts!, assumptions: p.assumptions!, limits: p.limits!, estimate: p.estimate!, check: p.check!)
+            todo.listRounds = 0
+            todo.listStart = reply.ts
             // Whose line was waiting before this reply: a 「好，我來」 she wrote ahead of todo.set in the
             // same reply is an acknowledgement and does not make the list her own.
             listFor = Self.unanswered(timeline.events.filter { ($0.seq ?? 0) <= reply.seq! })
             listReply = reply.seq!
             listReported = false
-            return Outcome(text: "todo 列好了。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
+            return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
         }
     }
 
@@ -1617,36 +1645,64 @@ public actor Doll {
                 note = "這次的經驗沒存成：\(error)。"
             }
         }
+        // Hook 2 (2026-11-17, feedback loop): her estimate next to what the list took so far; the
+        // list's last item records it.
+        var estimate = ""
+        if let plan = todo.plan {
+            let line = estimateLine(plan, rounds: todo.totalRounds, seconds: Int((reply.ts - todo.listStart).rounded()))
+            if todo.pending.isEmpty {
+                _ = try recordEstimate(outcome: .done, at: reply.ts)
+                estimate = "這一項做了 \(todo.rounds) 回合；整份清單做完了：\(line)（記下了，下次估的時候【狀況】會給你看）。"
+            } else {
+                estimate = "這一項做了 \(todo.rounds) 回合；\(line)。"
+            }
+        }
         let step = itemFinished(item)
         let next = advance()
         let list = next == nil ? listFinished() : ""
         log("INFO", "turn \(turnIndex): todo 完成「\(item)」result「\(result)」, \(steps.count) actions")
         note += step + list
-        return Outcome(text: "完成，記下了。\(note)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
+        return Outcome(text: "完成，記下了。\(note)\(estimate)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
                        + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),
                        actions: ["todo done"], ends: true)
     }
 
-    /// `todo.fail` (only when she is sure): the item is 失敗; its span is compacted (her reason and
-    /// what she tried stay in her call); the experiences attached are scored as a failure; the watch
-    /// stops; the computer tools stay refused until her `todo.set`.
-    func todoFail(reason: String, tried: String) throws -> Outcome {
+    /// `todo.fail` (only when she is sure): the item is 失敗; its span is compacted (her cause, the text
+    /// she quoted for it and what she tried stay in her call); the experiences attached are scored as
+    /// a failure; the watch stops; the computer tools stay refused until her `todo.set`. Hook 4
+    /// (2026-11-17, failure analysis): the root cause passes the filler rules and is not the quote
+    /// itself; the quote is in what the item saw (`itemTexts`), matched as `todo.done`'s evidence.
+    func todoFail(cause: String, evidence: String, tried: String, reply: Event) throws -> Outcome {
         let item = try currentItem("todo.fail")
+        if let problem = fillerRefusal([("cause", cause)], copies: [(what: "項目", text: item), (what: "你的 evidence", text: evidence)]) {
+            throw ToolError(description: "還沒記成失敗：cause 要寫根本原因（造成它的原因，不是現象）。\(problem)")
+        }
+        let texts = itemTexts()
+        guard !texts.isEmpty else {
+            throw ToolError(description: "還沒記成失敗：這一項還沒有任何東西可以支持原因（沒讀過視窗或檔案、工具還沒有結果、也沒有人說過話）。先動手做一次、看清楚卡在哪，或用 ask_owner 問主人。")
+        }
+        guard Self.quoted(evidence, in: texts.joined(separator: "\n")) else {
+            log("INFO", "turn \(turnIndex): todo.fail「\(item)」refused: evidence「\(evidence)」not in what the item saw")
+            throw ToolError(description: "還沒記成失敗：evidence「\(evidence)」不在這一項你看過的東西裡（最新讀到的視窗或檔案、工具的結果、別人說的話）。"
+                            + "從那裡照抄支持原因的字（標點、寫法照抄）；找不到支持的字，就是還不知道真正的原因：再查一下，或用 ask_owner 問主人。")
+        }
         let steps = itemSteps.map(\.line)
         compacting = Compaction(kind: .failed, item: item, fromSeq: todo.startSeq, toSeq: 0)
         scoreAttached(steps: steps, outcome: "failure")
         itemEndNow = TodoPhase.failed.label
+        let record = try recordEstimate(outcome: .failed, at: reply.ts, cause: cause, evidence: evidence)
         todo.phase = .failed
-        log("INFO", "turn \(turnIndex): todo 失敗「\(item)」reason「\(reason)」")
+        log("INFO", "turn \(turnIndex): todo 失敗「\(item)」cause「\(cause)」evidence「\(evidence)」")
         signal(.itemFailed, item)
         var concernNote = ""
         if drivesConfig.enabled {
-            let c = try addConcern("沒做成：\(item)（\(reason)）", about: .duty, source: "todo", key: "todo:\(todo.startSeq)")
+            let c = try addConcern("沒做成：\(item)（\(cause)）", about: .duty, source: "todo", key: "todo:\(todo.startSeq)")
             concernNote = "這件事程式記成你的掛念 #\(c.id)；之後做成或決定放下，用 concern.end 結束它。"
         }
+        let estimate = record.map { estimateLine($0.plan, rounds: $0.rounds, seconds: $0.seconds) + "（記下了）。" } ?? ""
         let rest = todo.pending.isEmpty ? "（後面沒有別的項目了）" : "（剩下：" + todo.pending.map { "「\($0)」" }.joined() + "）"
-        return Outcome(text: "記下了：「\(item)」沒做成。這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：\(Self.actionList(steps))。"
+        return Outcome(text: "記下了：「\(item)」沒做成。\(estimate)這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：\(Self.actionList(steps))。"
                        + "電腦工具先鎖著。現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。" + concernNote,
                        actions: ["todo fail"], ends: true)
     }
@@ -1660,8 +1716,102 @@ public actor Doll {
         todo.current = todo.pending.removeFirst()
         todo.phase = .doing
         startAfterTurn = true
+        todo.listRounds += todo.rounds
         beginItem()
         return todo.current
+    }
+
+    // The ten ways of thinking (2026-11-17, owner) ----------------------------------
+    /// Letters and digits only, lowercased: what the filler rules count and compare.
+    static func plainKey(_ s: String) -> String { String(s.filter { $0.isLetter || $0.isNumber }).lowercased() }
+
+    /// The filler rules, the same for every written field of hooks 1, 3 and 4. A field is refused when
+    /// (1) it is missing or empty; (2) it has fewer than `[computer] plan_min_chars` letters or digits
+    /// (「沒有」「無」「同上」「N/A」); (3) its letters and digits are exactly those of another of the
+    /// fields; (4) they are exactly those of one of `copies` (the item, the line she was given): a
+    /// copy of the question. Nothing judges whether what she wrote is right.
+    func fillerRefusal(_ fields: [(name: String, value: String?)], copies: [(what: String, text: String)]) -> String? {
+        let min = computerConfig.planMinChars
+        for (i, f) in fields.enumerated() {
+            guard let v = f.value, !v.isEmpty else { return "少了 \(f.name)。" }
+            let key = Self.plainKey(v)
+            guard key.count >= min else { return "\(f.name)「\(v)」太短：至少 \(min) 個字，寫具體的。" }
+            if let other = fields[..<i].first(where: { $0.value.map(Self.plainKey) == key }) {
+                return "\(f.name) 跟 \(other.name) 寫得一模一樣：各寫各的。"
+            }
+            if let copy = copies.first(where: { Self.plainKey($0.text) == key }) {
+                return "\(f.name) 只是照抄了\(copy.what)：寫你自己的。"
+            }
+        }
+        return nil
+    }
+
+    /// Hook 1: the refusal for a `todo.set` that starts a list without its plan, or nil with the plan.
+    func planRefusal(_ p: PlanInput, items: [String], reply: Event) -> String? {
+        var copies = items.map { (what: "項目", text: $0) }
+        if let line = timeline.events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) {
+            copies.append((what: "對方說的話", text: line.text))
+        }
+        let problem = fillerRefusal([("facts", p.facts), ("assumptions", p.assumptions), ("limits", p.limits), ("check", p.check)], copies: copies)
+            ?? (p.estimate == nil ? "少了 estimate。" : p.estimate! < 1 ? "estimate 要是 1 以上的整數（回合數）。" : nil)
+        return problem.map { "清單沒有列：開始一份清單要一起寫 facts（確定的事實）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。\($0)" }
+    }
+
+    /// Hook 2: the estimate-vs-actual line of the list so far.
+    func estimateLine(_ plan: TodoPlan, rounds: Int, seconds: Int) -> String {
+        "你估整份清單 \(plan.estimate) 回合，實際到現在 \(rounds) 回合、\(seconds) 秒"
+    }
+
+    /// Hook 2: the list ended (its last `todo.done`, or a `todo.fail`): its estimate against what it
+    /// took goes to `estimates.json`. A list from an older timeline has no plan and is not recorded.
+    func recordEstimate(outcome: TodoPhase, at ts: Double, cause: String? = nil, evidence: String? = nil) throws -> EstimateRecord? {
+        guard let plan = todo.plan else { return nil }
+        let r = EstimateRecord(ts: ts, plan: plan, rounds: todo.totalRounds,
+                               seconds: Int((ts - todo.listStart).rounded()), outcome: outcome.label, cause: cause, evidence: evidence)
+        estimateFile.records.append(r)
+        try Concerns.write(estimateFile, estimatesURL)
+        log("INFO", "turn \(turnIndex): estimate recorded: \(plan.estimate) rounds estimated, \(r.rounds) rounds \(r.seconds) s, \(r.outcome)")
+        return r
+    }
+
+    /// Hook 2, where her next estimate is written: 【狀況】 while no item is in progress shows her last
+    /// `[computer] estimate_history` lists, estimate against actual; nil when there are none.
+    func estimateHistoryLine() -> String? {
+        let n = computerConfig.estimateHistory
+        guard n > 0, !estimateFile.records.isEmpty else { return nil }
+        let shown = estimateFile.records.suffix(n).map { "估 \($0.plan.estimate) → 實際 \($0.rounds) 回合（\($0.outcome)）" }
+        return "- 你最近幾份清單估的回合和實際（舊到新）：" + shown.joined(separator: "；")
+    }
+
+    /// Hook 4: what a root cause may quote: the latest read (window list, or the file read again) and,
+    /// from the current item, every tool result other than her todo calls' (window lists included)
+    /// and every line a person said. Empty: the item has nothing yet to support a cause with.
+    func itemTexts() -> [String] {
+        var out: [String] = []
+        switch latestRead {
+        case .window(let text): out.append(text.split(separator: "\n", omittingEmptySubsequences: false).dropFirst().joined(separator: "\n"))
+        case .file(let path): if let t = try? FileText.decode(try LocalFiles.read(path), path: path) { out.append(t) }
+        case nil: break
+        }
+        var names: [String] = []
+        for e in timeline.events where e.seq! > todo.startSeq {
+            if e.kind == .doll { names = e.calls.map(\.name); continue }
+            if e.speaker != nil { out.append(e.text); continue }
+            guard e.kind == .tool else { continue }
+            let name = names.isEmpty ? "" : names.removeFirst()
+            if name.hasPrefix("todo.") { continue }
+            out.append(e.text)
+            if let w = e.window { out.append(w) }
+        }
+        return out.filter { !$0.isEmpty }
+    }
+
+    /// `evidence` is in `haystack` (design A's matching): whole, or every piece of it split at ；, ; or line breaks.
+    static func quoted(_ evidence: String, in haystack: String) -> Bool {
+        let read = evidenceKey(haystack)
+        let keys = evidence.split(whereSeparator: { "；;\n".contains($0) }).map { evidenceKey(String($0)) }.filter { !$0.isEmpty }
+        let key = evidenceKey(evidence)
+        return !key.isEmpty && (read.contains(key) || (!keys.isEmpty && keys.allSatisfy(read.contains)))
     }
 
     /// One experience memory for an item that used the computer and is done: the owner's last line
