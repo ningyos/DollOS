@@ -173,9 +173,14 @@ public enum Tools {
     ]
 
     /// What a `todo.set` that starts a list hands in (2026-11-17, hook 1; `TodoPlan`, `Doll.planRefusal`).
+    /// Facts carry a quote the program finds (2026-11-17, owner: a fact needs where she saw it).
+    /// `assumptions` says that every plan has some, with examples (2026-11-17 morning: 6 of 14 first
+    /// `todo.set` left it out — a-1, a-2, a-4, b-2, m-2, m-3, all simple tasks where she saw nothing
+    /// uncertain; x, the impossible one, 4 of 4 had it; facts and check were never left out).
     static let planProperties: [(String, JSONValue)] = [
-        ("facts", ["type": "string", "description": "已經確定的事實：你親眼看過的、主人說的"]),
-        ("assumptions", ["type": "string", "description": "你只是假設、還沒確認的"]),
+        ("facts", ["type": "array", "description": "確定的事實，每條都要有出處：fact 寫事實，quote 從主人說的話、工具的結果、讀過的視窗或檔案、【狀況】一字不差照抄撐住它的字，程式會對。找不到出處的就是假設，寫到 assumptions",
+                   "items": ["type": "object", "properties": .object([("fact", ["type": "string"]), ("quote", ["type": "string"])]), "required": ["fact", "quote"]]]),
+        ("assumptions", ["type": "string", "description": "還沒親眼確認、但做法靠它的事；每份計畫都有（例：app 打得開、檔案在那裡、檔案是 UTF-8、那個功能存在）"]),
         ("limits", ["type": "string", "description": "邊界：不能碰的、做不到的、有限的（時間、回合、權限）"]),
         ("estimate", ["type": "integer", "description": "估整份清單要幾回合（項目進行中你的一則回覆＝一回合）"]),
         ("check", ["type": "string", "description": "做完是什麼樣子、你要怎麼確認（讀哪個視窗或檔案、看到什麼）"]),
@@ -184,12 +189,12 @@ public enum Tools {
     /// Her todo list (2026-11-14). Never gated.
     static let todoSpecs: [Spec] = [
         Spec(name: Name.todoSet,
-             description: "列 todo：要做事之前先列。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；打開、修改、存檔、確認是同一項裡的步驟，不要拆開（確認本來就是說完成之前要做的）。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼（例：桌面有 copy.rtf，內容跟 notes.txt 一樣）。開始一份新清單（沒有進行中的項目時給項目）要一起寫 facts、assumptions、limits、estimate、check；少了，或只寫「沒有」「同上」、照抄項目或對方的話，就不收。沒有進行中的項目時，第一項馬上變成進行中；有進行中的項目時，只換掉它後面還沒開始的那些（不用再寫那五個）。一項失敗以後也用它決定剩下的：重寫剩下的項目、照原樣再列一次就是接著做下一項（都是新清單）；items 給空的陣列就是結束清單。",
+             description: "列 todo：要做事之前先列。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；打開、修改、存檔、確認是同一項裡的步驟，不要拆開（確認本來就是說完成之前要做的）。每一項寫成做完的樣子：做完的時候畫面上、檔案裡應該看到什麼（例：桌面有 copy.rtf，內容跟 notes.txt 一樣）。開始一份新清單（沒有進行中的項目時給項目）要一起寫 facts、assumptions、limits、estimate、check；少了，或只寫「沒有」「同上」、照抄項目或對方的話，或 fact 的 quote 找不到出處，就不收。動手前確定的通常只有主人說的話；你以為、還沒看過的寫進 assumptions，做的時候再確認。沒有進行中的項目時，第一項馬上變成進行中；有進行中的項目時，只換掉它後面還沒開始的那些（不用再寫那五個）。一項失敗以後也用它決定剩下的：重寫剩下的項目、照原樣再列一次就是接著做下一項（都是新清單）；items 給空的陣列就是結束清單。",
              parameters: [
                  "type": "object",
                  "properties": .object([("items", ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"])] + planProperties),
                  "required": ["items"],
-             ], jsonParameters: ["items"]),
+             ], jsonParameters: ["items", "facts"]),
         Spec(name: Name.todoDone,
              description: "這一項做完了。先看最新的截圖或檔案、對照這一項寫的做完的樣子：跟動手前比，多出或少掉不該有的東西（多一行空行、多一個字、少一個檔案）就是還沒完成，先修好。「原本就是這樣」只有你動手前親眼看過才算。這一項用過電腦或檔案工具，evidence 要從最新一次讀到的視窗清單或檔案裡一字不差抄一段證明做完的字，程式會對；不在裡面就退回，告訴你現在讀到的是什麼。呼叫以後，這一項的過程（截圖、每一步的結果、那幾回合你的念頭）就從你眼前收起來，只留下你寫的 result 和程式列的動作清單；所以 result 寫給以後的自己看：做了什麼、怎麼做的、結果、怎麼確認的。有下一項就接著進行中；沒有了就回到待命中，程式不會再為這件事叫你，要跟主人說的話用回話的工具寫在同一則回覆裡。同一則回覆裡寫在它後面的呼叫，除了回話的工具都不會執行。",
              parameters: [
@@ -665,7 +670,13 @@ public enum Tools {
             }
             let trimmed = items.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             guard !trimmed.contains(where: \.isEmpty) else { throw ToolError(description: "todo.set 的 items 裡有空的項目") }
-            let plan = PlanInput(facts: given("facts"), assumptions: given("assumptions"), limits: given("limits"),
+            let facts = try given("facts").map { raw -> [PlanInput.Fact] in
+                guard let f = try? JSONDecoder().decode([PlanInput.Fact].self, from: Data(raw.utf8)) else {
+                    throw ToolError(description: "todo.set 的 facts 要是 JSON 陣列，每條 {\"fact\": 確定的事實, \"quote\": 照抄出處的字}；收到 \(raw)")
+                }
+                return f
+            }
+            let plan = PlanInput(facts: facts, assumptions: given("assumptions"), limits: given("limits"),
                                  estimate: try int("estimate"), check: given("check"))
             return .todoSet(trimmed, subgoal: try int("subgoal"), plan: plan)
         case Name.todoDone:
@@ -1014,7 +1025,7 @@ enum Instructions {
         - 卡住的時候找最慢、最卡的那一步，先處理它；別的地方再快也沒用。
         - 出錯時從現象往回找真正的原因，找到了要驗證（再讀一次、再試一次），不要把現象當原因。
         - 第一次不必完美：做、試、看結果、改，再做；但每一次都要跟上一次不一樣。
-        程式會在幾個地方要你寫出來：todo.set 寫事實、假設、邊界、估幾回合、怎麼確認；todo.done 會告訴你估的和實際的；決定點要寫最卡的一步和下一次哪裡不一樣；todo.fail 要寫根本原因、照抄支持它的字。
+        程式會在幾個地方要你寫出來：todo.set 寫事實（每條照抄出處的字）、假設、邊界、估幾回合、怎麼確認；todo.done 會告訴你估的和實際的；決定點要寫最卡的一步和下一次哪裡不一樣；todo.fail 要寫根本原因、照抄支持它的字。
 
         ## 做事的規矩
 

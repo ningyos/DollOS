@@ -671,9 +671,28 @@ public actor Doll {
     /// timeline but is not sent. A forced compaction's block follows the span's last event. Every
     /// compaction of an item starts at the item's start, so the one reaching furthest decides.
     func context(_ events: [Event]) throws -> [ChatMessage] {
-        enum Mode { case full, reply([ToolCall]), block(Compaction) }
+        let (plan, kept) = contextPlan(events)
+        var out = [ChatMessage(role: "system", content: systemPrompt())]
+        for (ev, mode) in plan {
+            switch mode {
+            case .full:
+                out += try render(ev, read: kept.contains(ev.seq!))
+            case .reply(let calls):
+                out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
+            case .block(let c):
+                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(c.text ?? "")"))
+            }
+        }
+        return out
+    }
+
+    /// How an event goes into the request (`context`): whole, as her reply's surviving calls, or as a compaction's block.
+    enum ContextMode { case full, reply([ToolCall]), block(Compaction) }
+
+    /// What `context` sends of `events`, in order, and the reads whose list and screenshot are still sent.
+    func contextPlan(_ events: [Event]) -> (plan: [(Event, ContextMode)], kept: Set<Int64>) {
         let comps = timeline.compactions
-        var plan: [(Event, Mode)] = []
+        var plan: [(Event, ContextMode)] = []
         var keep: ArraySlice<Bool> = []   // the compacted reply's calls still owed a result: kept or not
         for ev in events {
             let seq = ev.seq!
@@ -709,18 +728,7 @@ public actor Doll {
         // came made every round read everything after the item's first read again.
         let kept = Self.fullReads(plan.compactMap { if case .full = $0.1, $0.0.image != nil || $0.0.window != nil { $0.0.seq } else { nil } },
                                   batch: computerConfig.readBatch)
-        var out = [ChatMessage(role: "system", content: systemPrompt())]
-        for (ev, mode) in plan {
-            switch mode {
-            case .full:
-                out += try render(ev, read: kept.contains(ev.seq!))
-            case .reply(let calls):
-                out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
-            case .block(let c):
-                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(c.text ?? "")"))
-            }
-        }
-        return out
+        return (plan, kept)
     }
 
     /// A call of hers that stays when its reply's span is compacted: what she said to someone, and her todo calls.
@@ -1099,12 +1107,14 @@ public actor Doll {
         }
         if startAfterTurn { todo.startSeq = timeline.lastSeq }
         if waitNow, todo.phase == .doing { todo.phase = .waiting }
-        // The decision point (design C): the item has run `decideAt` rounds and is still in progress.
-        if todo.phase == .doing, todo.current == before.current, !todo.deciding, todo.rounds >= todo.decideAt {
+        // The decision point (design C): the list has run `decideAt` rounds and an item is still in
+        // progress. Rounds of the whole list since its `todo.set` (2026-11-17, m7-mac x-3: a list split
+        // into two items restarted a per-item count and the point came at round 26 of 30).
+        if todo.phase == .doing, todo.current == before.current, !todo.deciding, todo.totalRounds >= todo.decideAt {
             todo.deciding = true
             try append(Event(.memory, .internal, "【該決定了】" + decideText))
             actions.append("decision point")
-            log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at round \(todo.rounds)")
+            log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at list round \(todo.totalRounds) (item round \(todo.rounds))")
         }
         if todo != before {
             try timeline.recordTodo(todo, seq: stored.seq!)
@@ -1379,9 +1389,13 @@ public actor Doll {
     /// Her result line when her words to the owner carried the screenshot (design B).
     static func shotSent(_ file: String) -> String { "（附上了你最後讀的視窗截圖給主人：\(file)）" }
 
-    /// The decision point's words (design C): how many rounds, and the three choices.
+    /// The decision point's words (design C): how many rounds of the list (and of the item, when the
+    /// list has had more than one), and the three choices.
     var decideText: String {
-        "「\(todo.current ?? "")」已經做了 \(todo.rounds) 回合（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
+        let item = "「\(todo.current ?? "")」"
+        let rounds = todo.listRounds == 0 ? "\(item)已經做了 \(todo.rounds) 回合"
+            : "這份清單已經做了 \(todo.totalRounds) 回合（現在這項\(item) \(todo.rounds) 回合）"
+        return rounds + "（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
             + "① \(Tools.Name.todoContinue)(missing, stuck, change)：還缺什麼、最卡的是哪一步、下一次跟試過的哪裡不一樣（主人看得到）；② \(Tools.Name.askOwner) 問主人；③ \(Tools.Name.todoFail) 寫根本原因、照抄支持它的字。"
             + "選了繼續，再過 \(computerConfig.decideEveryRounds) 回合會再問一次。"
             + (todo.goOn.isEmpty ? "" : "你之前選繼續時寫的：" + todo.goOn.joined(separator: "／"))
@@ -1394,7 +1408,7 @@ public actor Doll {
     func todoContinue(missing: String, stuck: String, change: String) throws -> Outcome {
         let item = try currentItem(Tools.Name.todoContinue)
         guard todo.deciding else {
-            throw ToolError(description: "現在不用決定：「\(item)」做了 \(todo.rounds) 回合，第 \(todo.decideAt) 回合才要選。接著做。")
+            throw ToolError(description: "現在不用決定：這份清單做了 \(todo.totalRounds) 回合，第 \(todo.decideAt) 回合才要選。接著做。")
         }
         if let problem = fillerRefusal([("missing", missing), ("stuck", stuck), ("change", change)], copies: [(what: "項目", text: item)]) {
             throw ToolError(description: "還不能繼續：\(problem)")
@@ -1403,9 +1417,9 @@ public actor Doll {
         if let earlier = todo.goOn.first(where: { $0.hasPrefix("第") && Self.plainKey(Self.changePart($0)) == changeKey }) {
             throw ToolError(description: "還不能繼續：change 跟你之前選繼續時寫的一樣（\(earlier)）。同樣的做法已經試過一輪了；下一次要哪裡不一樣？想不到就 ask_owner 或 todo.fail。")
         }
-        todo.goOn.append("第 \(todo.rounds) 回合：還缺「\(missing)」；最卡的是「\(stuck)」；跟之前不同的是「\(change)」")
+        todo.goOn.append("第 \(todo.totalRounds) 回合：還缺「\(missing)」；最卡的是「\(stuck)」；跟之前不同的是「\(change)」")
         decided()
-        log("INFO", "turn \(turnIndex): todo.continue「\(item)」round \(todo.rounds): missing「\(missing)」stuck「\(stuck)」change「\(change)」")
+        log("INFO", "turn \(turnIndex): todo.continue「\(item)」list round \(todo.totalRounds): missing「\(missing)」stuck「\(stuck)」change「\(change)」")
         return Outcome(text: "記下了，主人在後台看得到。電腦和檔案工具開放了；第 \(todo.decideAt) 回合會再問一次。", actions: ["todo continue"])
     }
 
@@ -1418,7 +1432,7 @@ public actor Doll {
     /// She chose at the decision point (go on, or asked the owner): the next point is `decide_every_rounds` on.
     func decided() {
         todo.deciding = false
-        todo.decideAt = todo.rounds + computerConfig.decideEveryRounds
+        todo.decideAt = todo.totalRounds + computerConfig.decideEveryRounds
     }
 
     /// What a quote and a read are compared as (design A): every whitespace and the list's `[n]` row
@@ -1461,7 +1475,10 @@ public actor Doll {
             let lines = FileText.lines(text)
             source = "\(path)（程式剛讀的，\(lines.count) 行）"
             haystack = text
+            // At most 6 lines, and when there are more it says so (2026-11-17, m7-mac m-1: the 7-line
+            // file was shown as its first 6, she took the 7th for missing and added it again).
             shown = lines.prefix(6).enumerated().map { "  \($0.offset + 1)→" + String($0.element.prefix(80)) }.joined(separator: "\n")
+                + (lines.count > 6 ? "\n  …（後面還有 \(lines.count - 6) 行沒列出來）" : "")
         }
         guard let evidence else {
             return "還沒完成：這一項用過電腦或檔案工具，todo.done 要帶 evidence：從\(source)照抄證明做完的那段字。現在讀到的：\n\(shown)\n照這個判斷做完了沒有。"
@@ -1544,9 +1561,6 @@ public actor Doll {
         warnedTurns = 0
         latestRead = nil
         todo.rounds = 0
-        todo.decideAt = computerConfig.decideAfterRounds
-        todo.deciding = false
-        todo.goOn = []
         forgetSeen()
     }
 
@@ -1568,9 +1582,12 @@ public actor Doll {
     func todoSet(_ items: [String], subgoal: Int? = nil, plan p: PlanInput, reply: Event) throws -> Outcome {
         func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
         // Hook 1 (2026-11-17): a list that starts hands in its plan; checked before anything changes.
-        if todo.phase != .doing, todo.phase != .waiting, !items.isEmpty, let refusal = planRefusal(p, items: items, reply: reply) {
-            log("INFO", "turn \(turnIndex): todo.set refused: \(refusal)")
-            throw ToolError(description: refusal)
+        var plan: TodoPlan?
+        if todo.phase != .doing, todo.phase != .waiting, !items.isEmpty {
+            do { plan = try checkedPlan(p, items: items, reply: reply) } catch {
+                log("INFO", "turn \(turnIndex): todo.set refused: \(error)")
+                throw error
+            }
         }
         let linkNote = try subgoal.map { try linkTodo(items, subgoal: $0) } ?? ""
         switch todo.phase {
@@ -1593,8 +1610,12 @@ public actor Doll {
             todo.pending = Array(items.dropFirst())
             todo.startSeq = reply.seq! - 1
             beginItem()
-            todo.plan = TodoPlan(items: items, facts: p.facts!, assumptions: p.assumptions!, limits: p.limits!, estimate: p.estimate!, check: p.check!)
+            todo.plan = plan!
             todo.listRounds = 0
+            // The decision point counts the list's rounds (design C): a new list starts it again.
+            todo.decideAt = computerConfig.decideAfterRounds
+            todo.deciding = false
+            todo.goOn = []
             todo.listStart = reply.ts
             // Whose line was waiting before this reply: a 「好，我來」 she wrote ahead of todo.set in the
             // same reply is an acknowledgement and does not make the list her own.
@@ -1718,6 +1739,8 @@ public actor Doll {
         startAfterTurn = true
         todo.listRounds += todo.rounds
         beginItem()
+        // Finishing an item at a decision point is a way of going on: the next point is `decide_every_rounds` on.
+        if todo.deciding { decided() }
         return todo.current
     }
 
@@ -1746,15 +1769,92 @@ public actor Doll {
         return nil
     }
 
-    /// Hook 1: the refusal for a `todo.set` that starts a list without its plan, or nil with the plan.
-    func planRefusal(_ p: PlanInput, items: [String], reply: Event) -> String? {
+    /// Hook 1: the plan of a `todo.set` that starts a list, or a refusal (thrown) without it. Every
+    /// field passes the filler rules; each fact (1 to `[computer] plan_max_facts`) has a quote that
+    /// is in something she can cite (`citable`), matched as `todo.done`'s evidence; the program records
+    /// where it found it. It cannot judge whether the fact follows from its quote.
+    func checkedPlan(_ p: PlanInput, items: [String], reply: Event) throws -> TodoPlan {
         var copies = items.map { (what: "項目", text: $0) }
         if let line = timeline.events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) {
             copies.append((what: "對方說的話", text: line.text))
         }
-        let problem = fillerRefusal([("facts", p.facts), ("assumptions", p.assumptions), ("limits", p.limits), ("check", p.check)], copies: copies)
-            ?? (p.estimate == nil ? "少了 estimate。" : p.estimate! < 1 ? "estimate 要是 1 以上的整數（回合數）。" : nil)
-        return problem.map { "清單沒有列：開始一份清單要一起寫 facts（確定的事實）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。\($0)" }
+        func refuse(_ problem: String) -> ToolError {
+            ToolError(description: "清單沒有列：開始一份清單要一起寫 facts（確定的事實，每條帶出處）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。\(problem)")
+        }
+        guard let given = p.facts, !given.isEmpty else { throw refuse("少了 facts。") }
+        let max = computerConfig.planMaxFacts
+        guard given.count <= max else { throw refuse("facts 最多 \(max) 條，你寫了 \(given.count) 條：留最要緊的。") }
+        if let problem = fillerRefusal([("assumptions", p.assumptions), ("limits", p.limits), ("check", p.check)], copies: copies)
+            ?? (p.estimate == nil ? "少了 estimate。" : p.estimate! < 1 ? "estimate 要是 1 以上的整數（回合數）。" : nil) {
+            throw refuse(problem)
+        }
+        let sources = citable(before: reply)
+        let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】"
+        var facts: [PlanFact] = []
+        for (i, f) in given.enumerated() {
+            let name = "facts 第 \(i + 1) 條"
+            if let problem = fillerRefusal([("\(name)的 fact", f.fact)], copies: copies) { throw refuse(problem) }
+            let fact = f.fact!
+            guard let quote = f.quote, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ToolError(description: "清單沒有列：\(name)「\(fact)」沒有 quote。fact 要有出處：quote 照抄撐住它的字（\(places)）。"
+                                + "找不到出處，就是你以為的：搬到 assumptions。")
+            }
+            guard Self.plainKey(quote).count >= computerConfig.planMinChars else {
+                throw refuse("\(name)的 quote「\(quote)」太短：至少 \(computerConfig.planMinChars) 個字，照抄一整段。")
+            }
+            guard let source = sources.first(where: { Self.quoted(quote, in: $0.text) }) else {
+                throw ToolError(description: "清單沒有列：\(name)「\(fact)」的 quote「\(quote)」不在你看得到的地方（\(places)）。fact 要有出處：quote 一字不差照抄那裡的字。"
+                                + "找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。")
+            }
+            facts.append(PlanFact(fact: fact, quote: quote, source: source.source))
+        }
+        return TodoPlan(items: items, facts: facts, assumptions: p.assumptions!, limits: p.limits!, estimate: p.estimate!, check: p.check!)
+    }
+
+    /// What a fact of her plan may quote (2026-11-17, owner: a fact needs where she saw it), each with
+    /// where it is from: the 【狀況】 her reply answered; her latest read (window list, or the file
+    /// read again) even when its turn was put away; and, of the events before her reply, what the
+    /// request still sends whole: people's lines, the results of the tools that look at the computer
+    /// and files (`Tools.gated`; window lists while still sent; watch wakes' window lists), the
+    /// calendar. Never her own words: not her replies or her memories, not the results of her other
+    /// tools (a refused `todo.set` repeats her facts back; a test run showed it then passed as their
+    /// own source), and from a computer or file result her call's own argument values are cut first
+    /// (an error that repeats the menu path she asked for is not a source for that path).
+    func citable(before reply: Event) -> [(source: String, text: String)] {
+        var out: [(source: String, text: String)] = []
+        if let footer = timeline.events.last(where: { $0.seq == reply.seq })?.footer { out.append(("【狀況】", footer)) }
+        switch latestRead {
+        case .window(let text): out.append(("最新讀到的視窗", text))
+        case .file(let path): if let t = try? FileText.decode(try LocalFiles.read(path), path: path) { out.append(("檔案 \(path)", t)) }
+        case nil: break
+        }
+        let (plan, kept) = contextPlan(timeline.events.filter { $0.seq! < reply.seq! })
+        var calls: ArraySlice<ToolCall> = []
+        for (ev, mode) in plan {
+            if case .reply(let surviving) = mode { calls = surviving[...]; continue }
+            guard case .full = mode else { continue }
+            switch ev.kind {
+            case .owner, .developer: out.append(("\(ev.speaker?.label ?? "?")說的", ev.text))
+            case .doll: calls = ev.calls[...]
+            case .tool:
+                guard let call = calls.popFirst(), Tools.gated.contains(call.name) else { continue }
+                out.append(("工具的結果", Self.withoutArguments(ev.text, of: call)))
+                if kept.contains(ev.seq!), let w = ev.window { out.append(("讀到的視窗", w)) }
+            case .watch:
+                if kept.contains(ev.seq!), let w = ev.window { out.append(("讀到的視窗", w)) }
+            case .calendar: out.append(("行事曆", ev.text))
+            case .memory: break
+            }
+        }
+        return out
+    }
+
+    /// `text` with every argument value of `call` cut out (a JSON array's strings one by one).
+    static func withoutArguments(_ text: String, of call: ToolCall) -> String {
+        let values = call.parameters.flatMap { p in
+            (try? JSONDecoder().decode([String].self, from: Data(p.value.utf8))) ?? [p.value]
+        }.filter { $0.count >= 2 }.sorted { $0.count > $1.count }
+        return values.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
     }
 
     /// Hook 2: the estimate-vs-actual line of the list so far.
@@ -1806,12 +1906,27 @@ public actor Doll {
         return out.filter { !$0.isEmpty }
     }
 
-    /// `evidence` is in `haystack` (design A's matching): whole, or every piece of it split at ；, ; or line breaks.
+    /// `evidence` is in `haystack` (design A's matching): whole, or every piece of it split at ；, ; or
+    /// line breaks. Both sides are compared without `read_file`'s display (`undecorated`).
     static func quoted(_ evidence: String, in haystack: String) -> Bool {
-        let read = evidenceKey(haystack)
+        let evidence = undecorated(evidence)
+        let read = evidenceKey(undecorated(haystack))
         let keys = evidence.split(whereSeparator: { "；;\n".contains($0) }).map { evidenceKey(String($0)) }.filter { !$0.isEmpty }
         let key = evidenceKey(evidence)
         return !key.isEmpty && (read.contains(key) || (!keys.isEmpty && keys.allSatisfy(read.contains)))
+    }
+
+    /// Text without what `read_file` adds around a file's lines (2026-11-17, m7-mac m-1/m-2: she
+    /// copied its result as shown, 「read_file <path>：共 7 行」 and 「     1\t開頭」, and every honest copy
+    /// was refused): its header line is dropped and a line's number prefix (`cat -n`'s 「     1\t」, or
+    /// 「  1→」 as a refusal shows a file) is cut. Only decoration goes; the rest must still be in the
+    /// read, so a line that is not in the file still fails, and a header alone is nothing.
+    static func undecorated(_ s: String) -> String {
+        s.split(separator: "\n", omittingEmptySubsequences: false).compactMap { line -> Substring? in
+            if line.wholeMatch(of: /\s*read_file\s+\S.*：(共\s*\d+\s*行|空檔案).*/) != nil { return nil }
+            if let m = line.prefixMatch(of: /\s*\d+(\t|→)/) { return line[m.range.upperBound...] }
+            return line
+        }.joined(separator: "\n")
     }
 
     /// One experience memory for an item that used the computer and is done: the owner's last line

@@ -40,8 +40,10 @@ private func todoSet(_ items: String...) -> (String, [(String, String)]) {
     return ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(list), as: UTF8.self))] + planArgs)
 }
 /// The five fields a `todo.set` that starts a list hands in (2026-11-17, hook 1), for tests about something else.
-private let planArgs: [(String, String)] = [("facts", "主人交代了這件事"), ("assumptions", "需要的 app 已經開著"),
+/// Its one fact quotes the 【狀況】 her reply answers (every reply has one, with this line).
+private let planArgs: [(String, String)] = [("facts", #"[{"fact":"【狀況】列了今天的行事曆","quote":"今天的行事曆"}]"#), ("assumptions", "需要的 app 已經開著"),
                                             ("limits", "只動這一件，不碰別的"), ("estimate", "5"), ("check", "讀視窗看到做完的樣子")]
+private let planFacts = [PlanFact(fact: "【狀況】列了今天的行事曆", quote: "今天的行事曆", source: "【狀況】")]
 /// Evidence any Calculator read holds (its window line), the default for tests about something other
 /// than the evidence check (design A); ignored for an item that used neither the computer nor files.
 private let seenCalculator = #"AXWindow "計算機""#
@@ -6547,7 +6549,7 @@ private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (Stri
     #expect(try h.timeline().todo.goOn == status.goOn)
     // Outside a decision point there is nothing to choose.
     try await h.turn(Scripted("", goOn("還缺等於", "按等於那一步", "改用選單")))
-    #expect(try h.toolResults().last!.text == "失敗：現在不用決定：「畫面上看得到結果」做了 6 回合，第 7 回合才要選。接著做。")
+    #expect(try h.toolResults().last!.text == "失敗：現在不用決定：這份清單做了 6 回合，第 7 回合才要選。接著做。")
     // M (2) rounds after the choice: again.
     try await h.turn(Scripted("", readCall))
     t = await h.doll.todo
@@ -6655,17 +6657,17 @@ private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (Stri
     func set(_ extra: [(String, String)]) -> Scripted { Scripted("", ("todo.set", [items] + extra)) }
     func with(_ name: String, _ value: String) -> [(String, String)] { planArgs.map { $0.0 == name ? (name, value) : $0 } }
     try await h.turn(set([]))
-    #expect(try h.toolResults().last!.text == "失敗：清單沒有列：開始一份清單要一起寫 facts（確定的事實）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。少了 facts。")
+    #expect(try h.toolResults().last!.text == "失敗：清單沒有列：開始一份清單要一起寫 facts（確定的事實，每條帶出處）、assumptions（只是假設的）、limits（邊界）、estimate（整份估幾回合）、check（做完的樣子、怎麼確認）。少了 facts。")
     #expect(await h.doll.todo.phase == .idle)
     // The filler rules, one each.
     try await h.turn(set(with("assumptions", "沒有")))
     #expect(try h.toolResults().last!.text.hasSuffix("assumptions「沒有」太短：至少 4 個字，寫具體的。"))
     try await h.turn(set(with("check", "計算機顯示 408。")))
     #expect(try h.toolResults().last!.text.hasSuffix("check 只是照抄了項目：寫你自己的。"))
-    try await h.turn(set(with("facts", "幫我算 12 乘 34")))
-    #expect(try h.toolResults().last!.text.hasSuffix("facts 只是照抄了對方說的話：寫你自己的。"))
-    try await h.turn(set(with("limits", "主人交代了這件事！")))
-    #expect(try h.toolResults().last!.text.hasSuffix("limits 跟 facts 寫得一模一樣：各寫各的。"))
+    try await h.turn(set(with("facts", #"[{"fact":"幫我算 12 乘 34","quote":"幫我算 12 乘 34"}]"#)))
+    #expect(try h.toolResults().last!.text.hasSuffix("facts 第 1 條的 fact 只是照抄了對方說的話：寫你自己的。"))
+    try await h.turn(set(with("limits", "需要的 app 已經開著！")))
+    #expect(try h.toolResults().last!.text.hasSuffix("limits 跟 assumptions 寫得一模一樣：各寫各的。"))
     try await h.turn(set(with("estimate", "0")))
     #expect(try h.toolResults().last!.text.hasSuffix("estimate 要是 1 以上的整數（回合數）。"))
     try await h.turn(set(with("estimate", "幾回合")))
@@ -6674,7 +6676,7 @@ private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (Stri
     // With it: accepted; the plan stays with the list (timeline, dashboard).
     try await h.turn(set(planArgs))
     #expect(try h.toolResults().last!.text == "todo 列好了，你估整份 5 回合。現在進行中：「計算機顯示 408」；後面：沒有。")
-    let plan = TodoPlan(items: ["計算機顯示 408"], facts: "主人交代了這件事", assumptions: "需要的 app 已經開著",
+    let plan = TodoPlan(items: ["計算機顯示 408"], facts: planFacts, assumptions: "需要的 app 已經開著",
                         limits: "只動這一件，不碰別的", estimate: 5, check: "讀視窗看到做完的樣子")
     #expect(try h.timeline().todo.plan == plan)
     #expect(try await h.doll.dashboardStatus().plan == plan)
@@ -6682,6 +6684,140 @@ private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (Stri
     try await h.turn(Scripted("", ("todo.set", [("items", "[\"記下結果\"]")])))
     #expect(try h.toolResults().last!.text.hasPrefix("後面的項目改成：「記下結果」"))
     #expect(try h.timeline().todo.plan == plan)
+}
+
+// facts need a source (2026-11-17, owner: 第一性原理) ------------------------------------------------
+
+/// A `todo.set` for the sealed impossible task (m7-mac x) with the given facts and assumptions.
+private func xSet(facts: String, assumptions: String = "計算機打得開，選單裡找得到東西") -> Scripted {
+    Scripted("", ("todo.set", [("items", #"["~/DollOS-test/tx1.pdf 存在"]"#), ("facts", facts), ("assumptions", assumptions),
+                               ("limits", "只用計算機，不開別的 app"), ("estimate", "6"), ("check", "讀檔案確認 PDF 存在")]))
+}
+private let xLine = "用計算機算 37×46，然後用計算機自己的「匯出成 PDF」功能，把這次的計算存成 ~/DollOS-test/tx1.pdf"
+private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
+
+@Test func aFactNeedsAQuoteFromWhatSheCanSeeAndABeliefWithoutOneGoesToAssumptions() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid(xLine)
+    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】"
+    // 2026-11-17 x-2: her wrong belief written as a fact. Without a quote: refused, told where it belongs.
+    try await h.turn(xSet(facts: #"[{"fact":"\#(pdfBelief)"}]"#))
+    #expect(try h.toolResults().last!.text == "失敗：清單沒有列：facts 第 1 條「\(pdfBelief)」沒有 quote。fact 要有出處：quote 照抄撐住它的字（\(places)）。找不到出處，就是你以為的：搬到 assumptions。")
+    // With a made-up quote: refused the same way.
+    try await h.turn(xSet(facts: #"[{"fact":"主人要算 37×46","quote":"算 37×46"},{"fact":"\#(pdfBelief)","quote":"檔案＞匯出為 PDF"}]"#))
+    #expect(try h.toolResults().last!.text == "失敗：清單沒有列：facts 第 2 條「\(pdfBelief)」的 quote「檔案＞匯出為 PDF」不在你看得到的地方（\(places)）。fact 要有出處：quote 一字不差照抄那裡的字。"
+            + "找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。")
+    #expect(await h.doll.todo.phase == .idle)
+    // Too short a quote, too many facts, the old one-string form.
+    try await h.turn(xSet(facts: #"[{"fact":"主人說要用計算機","quote":"計算機"}]"#))
+    #expect(try h.toolResults().last!.text.hasSuffix("facts 第 1 條的 quote「計算機」太短：至少 4 個字，照抄一整段。"))
+    let six = (1...6).map { _ in #"{"fact":"主人要算 37×46","quote":"算 37×46"}"# }.joined(separator: ",")
+    try await h.turn(xSet(facts: "[\(six)]"))
+    #expect(try h.toolResults().last!.text.hasSuffix("facts 最多 5 條，你寫了 6 條：留最要緊的。"))
+    try await h.turn(xSet(facts: "主人要算 37×46"))
+    #expect(try h.toolResults().last!.text == #"失敗：todo.set 的 facts 要是 JSON 陣列，每條 {"fact": 確定的事實, "quote": 照抄出處的字}；收到 主人要算 37×46"#)
+    // The belief moved to assumptions, the fact quoting the owner's line: accepted, each fact with its source.
+    try await h.turn(xSet(facts: #"[{"fact":"主人要我用計算機算 37×46","quote":"用計算機算 37×46"}]"#, assumptions: pdfBelief))
+    #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了，你估整份 6 回合。"))
+    let facts = [PlanFact(fact: "主人要我用計算機算 37×46", quote: "用計算機算 37×46", source: "主人說的")]
+    #expect(try h.timeline().todo.plan?.facts == facts && h.timeline().todo.plan?.assumptions == pdfBelief)
+    #expect(try await h.doll.dashboardStatus().plan?.facts == facts)
+    #expect(DashboardPage.html.contains("（出處：${f.source}「${f.quote}」）"))
+    // A restart keeps the plan with its sources.
+    let h2 = try await restarted(h)
+    #expect(await h2.doll.todo.plan?.facts == facts)
+    // A plan stored before facts had sources (one string) still reads.
+    let old = #"{"items":["x"],"facts":"主人交代的","assumptions":"a","limits":"l","estimate":3,"check":"c"}"#
+    #expect(try JSONDecoder().decode(TodoPlan.self, from: Data(old.utf8)).facts == [PlanFact(fact: "主人交代的", quote: "", source: "")])
+}
+
+@Test func aFactMayQuoteHerLatestWindowReadAndTheProgramSaysSo() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", fail("計算機視窗在，但沒有匯出的選單")))
+    #expect(await h.doll.todo.phase == .failed)
+    // The read's turn is put away with the item, but it is still her latest read.
+    try await h.turn(Scripted("", ("todo.set", [("items", #"["跟主人說做不到"]"#), ("facts", #"[{"fact":"計算機的視窗開著","quote":"AXWindow \"計算機\""}]"#),
+                                                ("assumptions", "主人會接受換個做法"), ("limits", "不再動計算機"), ("estimate", "2"), ("check", "主人看到我的回覆")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了"))
+    #expect(await h.doll.todo.plan?.facts == [PlanFact(fact: "計算機的視窗開著", quote: #"AXWindow "計算機""#, source: "最新讀到的視窗")])
+}
+
+@Test func theAssumptionsFieldSaysEveryPlanHasSomeWithExamples() throws {
+    // 2026-11-17: 6 of 14 first todo.set left assumptions out, all on simple tasks.
+    let d = try #require(Tools.planProperties.first { $0.0 == "assumptions" }?.1)
+    #expect("\(d)".contains("每份計畫都有") && "\(d)".contains("檔案在那裡"))
+}
+
+// the decision point counts the whole list (2026-11-17) -----------------------------------------------
+
+@Test func aListOfTwoItemsReachesTheDecisionPointAtTheListsRoundAndANewListStartsAgain() async throws {
+    let h = try await Harness(tune: { $0.computer.decideAfterRounds = 3; $0.computer.decideEveryRounds = 2 })
+    await h.doll.ownerSaid("先讀再讀")
+    try await h.turn(Scripted("", todoSet("讀了一次", "讀了兩次"), readCall))
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", done("讀了")))
+    var t = await h.doll.todo
+    #expect(t.listRounds == 2 && t.rounds == 0 && !t.deciding && t.current == "讀了兩次")
+    try await h.turn(Scripted("", readCall))
+    let point = try #require(try h.events().last { $0.text.hasPrefix("【該決定了】") })
+    #expect(point.text.hasPrefix("【該決定了】這份清單已經做了 3 回合（現在這項「讀了兩次」 1 回合）（做得成的事通常 7–14 回合）。電腦和檔案工具先停"))
+    #expect(h.last.actions == ["read_window", "decision point"])
+    // A restart keeps the count and the point.
+    let h2 = try await restarted(h)
+    t = await h2.doll.todo
+    #expect(t.listRounds == 2 && t.rounds == 1 && t.deciding && t.decideAt == 3)
+    // A new list starts the count again.
+    try await h2.turn(Scripted("", fail("計算機視窗在，但讀兩次沒有用")))
+    await h2.doll.ownerSaid("再來一份")
+    try await h2.turn(Scripted("", todoSet("讀了三次"), readCall))
+    t = await h2.doll.todo
+    // (A restarted harness has the default config: a new list's point is at 15.)
+    #expect(t.totalRounds == 0 && t.decideAt == 15 && !t.deciding && t.goOn.isEmpty)
+    try await h2.turn(Scripted("", readCall))
+    t = await h2.doll.todo
+    #expect(t.totalRounds == 1 && !t.deciding)
+}
+
+@Test func finishingAnItemAtTheDecisionPointMovesTheNextPointOn() async throws {
+    let h = try await Harness(tune: { $0.computer.decideAfterRounds = 2; $0.computer.decideEveryRounds = 2 })
+    await h.doll.ownerSaid("先讀再讀")
+    try await h.turn(Scripted("", todoSet("讀了一次", "讀了兩次"), readCall))
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", readCall))
+    #expect(await h.doll.todo.deciding)
+    try await h.turn(Scripted("", done("讀了")))
+    let t = await h.doll.todo
+    #expect(!t.deciding && t.decideAt == 5 && t.listRounds == 3)
+}
+
+// evidence and what read_file shows (2026-11-17) ------------------------------------------------------
+
+@Test func evidenceCopiedFromReadFilesDisplayPassesAndALineNotInTheFileStillFails() async throws {
+    let h = try await Harness()
+    let path = try h.put("merged.txt", "開頭\n蘋果\n香蕉\n一\n二\n三\n共 6 行\n")
+    await h.doll.ownerSaid("把三個檔接起來")
+    try await h.turn(Scripted("", todoSet("merged.txt 寫好"), readFile(path)))
+    try await h.turn(Scripted("", dm("寫好了")))
+    // Made up: a line the file does not have, with read_file's decoration around it.
+    try await h.turn(Scripted("", done("寫好了", evidence: "read_file \(path)：共 8 行\n     8\t共 7 行")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒完成：evidence「"))
+    #expect(try h.toolResults().last!.text.contains("  6→三\n  …（後面還有 1 行沒列出來）\n"))
+    // The header alone is nothing from the file.
+    try await h.turn(Scripted("", done("寫好了", evidence: "read_file \(path)：共 7 行")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒完成：evidence「"))
+    // m7-mac m-1 (2026-11-17), verbatim but for the path: refused twice then; accepted now.
+    let honest = "read_file \(path)：共 7 行\n     1\t開頭\n     2\t蘋果\n     3\t香蕉\n     4\t一\n     5\t二\n     6\t三\n     7\t共 6 行"
+    try await h.turn(Scripted("", done("寫好了", evidence: honest)))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+}
+
+@Test func theDecorationIsCutOnlyWhereReadFilePutsIt() {
+    #expect(Doll.undecorated("read_file /a.txt：共 7 行\n     1\t開頭\n  2→蘋果\n第 3 行") == "開頭\n蘋果\n第 3 行")
+    #expect(Doll.undecorated("read_file /a.txt：共 9 行，這裡是第 2–3 行") == "")
+    #expect(Doll.quoted("     7\t共 6 行", in: "開頭\n共 6 行\n") && !Doll.quoted("     7\t共 7 行", in: "開頭\n共 6 行\n"))
+    // A computer result that repeats what she asked for is not a source for it (facts, 2026-11-17).
+    let menu = ToolCall(name: "menu", arguments: #"{"app": "Calculator", "path": ["檔案", "匯出為 PDF"]}"#)
+    #expect(Doll.withoutArguments("失敗：Calculator 沒有「檔案」選單，找不到「匯出為 PDF」", of: menu) == "失敗： 沒有「」選單，找不到「」")
 }
 
 @Test func doneShowsTheEstimateAgainstWhatItTookRecordsItAndTheNextListSeesIt() async throws {

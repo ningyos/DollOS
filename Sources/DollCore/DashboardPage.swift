@@ -135,7 +135,9 @@ function renderMind(s) {
   const box = $("mind-body");
   box.replaceChildren();
   box.className = "";
-  const plan = p => [`項目：${p.items.map(i => "「" + i + "」").join("")}`, `事實：${p.facts}`, `假設：${p.assumptions}`,
+  // Each fact with where the program found its quote (2026-11-17); a plan from before has none.
+  const fact = f => `事實：${f.fact}` + (f.source ? `（出處：${f.source}「${f.quote}」）` : "（沒有出處：舊的清單）");
+  const plan = p => [`項目：${p.items.map(i => "「" + i + "」").join("")}`, ...p.facts.map(fact), `假設：${p.assumptions}`,
     `邊界：${p.limits}`, `估：${p.estimate} 回合`, `怎麼確認：${p.check}`];
   if (s.plan) {
     box.append(el("div", null, `現在的清單（到現在 ${s.listRounds} 回合）`));

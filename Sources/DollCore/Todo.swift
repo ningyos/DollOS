@@ -41,12 +41,13 @@ public struct TodoState: Sendable, Equatable, Codable {
     /// written while this item was 進行中 (an interrupted call that is rerun counts once). A new item
     /// starts at 0. Stored with the list, so a restart or a compaction keeps it.
     public var rounds = 0
-    /// The round count at which the next decision point comes (`[computer] decide_after_rounds`, then
-    /// `decide_every_rounds` after each choice); 0 = none set (an item from an older timeline).
+    /// The list round count (`totalRounds`) at which the next decision point comes (`[computer]
+    /// decide_after_rounds` from the list's `todo.set`, then `decide_every_rounds` after each choice or
+    /// finished item; 2026-11-17: counted over the whole list, not per item); 0 = none set (an older timeline).
     public var decideAt = 0
     /// The decision point came and she has not chosen yet: the computer tools are refused.
     public var deciding = false
-    /// Her `todo.continue` reasons for this item, oldest first: 「第 N 回合：還缺…；最卡的是…；跟之前不同的是…」.
+    /// Her `todo.continue` reasons for this list, oldest first: 「第 N 回合：還缺…；最卡的是…；跟之前不同的是…」 (N = list round).
     public var goOn: [String] = []
     /// Her plan for the list (2026-11-17, `TodoPlan`): set by the `todo.set` that started it, kept
     /// while its items run; nil for a list from an older timeline.
@@ -64,13 +65,14 @@ public struct TodoState: Sendable, Equatable, Codable {
 
 /// What she hands in with a `todo.set` that starts a list (2026-11-17, owner: the ten ways of
 /// thinking in every doll; hook 1 = first principles, limits, order-of-magnitude estimate). The
-/// program checks that each is written and is not filler (`Doll.planRefusal`); it cannot judge
-/// whether her facts are right.
+/// program checks that each is written and is not filler, and that each fact quotes something she
+/// read or was told (`Doll.planRefusal`); it cannot judge whether a fact follows from its quote.
 public struct TodoPlan: Sendable, Equatable, Codable {
     /// The items the list started with.
     public var items: [String]
-    /// What is established: seen with her own eyes, or said by the owner.
-    public var facts: String
+    /// What is established, each with the text it rests on (2026-11-17, owner: 第一性原理, a fact
+    /// needs where she saw it).
+    public var facts: [PlanFact]
     /// What she only assumes and has not checked.
     public var assumptions: String
     /// What she must not touch, what cannot be done.
@@ -80,13 +82,46 @@ public struct TodoPlan: Sendable, Equatable, Codable {
     /// What done looks like and how she will check it.
     public var check: String
 
-    public init(items: [String], facts: String, assumptions: String, limits: String, estimate: Int, check: String) {
+    public init(items: [String], facts: [PlanFact], assumptions: String, limits: String, estimate: Int, check: String) {
         self.items = items
         self.facts = facts
         self.assumptions = assumptions
         self.limits = limits
         self.estimate = estimate
         self.check = check
+    }
+
+    enum CodingKeys: String, CodingKey { case items, facts, assumptions, limits, estimate, check }
+
+    /// A plan stored before facts had sources (2026-11-17 morning: facts was one string) reads as one
+    /// fact without a source.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decode([String].self, forKey: .items)
+        if let old = try? c.decode(String.self, forKey: .facts) {
+            facts = [PlanFact(fact: old, quote: "", source: "")]
+        } else {
+            facts = try c.decode([PlanFact].self, forKey: .facts)
+        }
+        assumptions = try c.decode(String.self, forKey: .assumptions)
+        limits = try c.decode(String.self, forKey: .limits)
+        estimate = try c.decode(Int.self, forKey: .estimate)
+        check = try c.decode(String.self, forKey: .check)
+    }
+}
+
+/// One fact of her plan: what she states, the text she copied for it, and where the program found
+/// that text (「主人說的」, 「工具的結果」, 「最新讀到的視窗」, 「檔案 <path>」, 「【狀況】」, 「行事曆」).
+/// Quote and source are empty only for a plan stored before facts had sources.
+public struct PlanFact: Sendable, Equatable, Codable {
+    public var fact: String
+    public var quote: String
+    public var source: String
+
+    public init(fact: String, quote: String, source: String) {
+        self.fact = fact
+        self.quote = quote
+        self.source = source
     }
 }
 
@@ -108,7 +143,12 @@ public struct EstimateRecord: Sendable, Equatable, Codable {
 
 /// The five `todo.set` fields as she gave them (trimmed; nil = not given), before `Doll.planRefusal`.
 struct PlanInput: Sendable, Equatable {
-    var facts: String?
+    /// Each fact as she wrote it: `{"fact": …, "quote": …}`; a missing key is nil.
+    struct Fact: Sendable, Equatable, Decodable {
+        var fact: String?
+        var quote: String?
+    }
+    var facts: [Fact]?
     var assumptions: String?
     var limits: String?
     var estimate: Int?

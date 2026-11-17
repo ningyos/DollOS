@@ -69,8 +69,9 @@ public struct ComputerConfig: Sendable {
     public var windowWaitS = 0.6
     /// Owner process names (`list_windows` app_name) of the system's authentication dialogs.
     public var authProcesses = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]
-    /// After this many rounds of one todo item, she must choose (go on with a reason, ask the owner,
-    /// or fail) before another computer or file call runs (2026-11-16, design C).
+    /// After this many rounds of one todo list (all its items, from its `todo.set`; 2026-11-17, was per
+    /// item), she must choose (go on with a reason, ask the owner, or fail) before another computer
+    /// or file call runs (2026-11-16, design C).
     public var decideAfterRounds = 15
     /// After each choice to go on (or ask), the next decision point comes this many rounds later.
     public var decideEveryRounds = 10
@@ -78,6 +79,9 @@ public struct ComputerConfig: Sendable {
     /// `todo.continue`, the root cause at `todo.fail`; 2026-11-17) need at least this many letters or
     /// digits, punctuation and spaces not counted: 「沒有」「無」「同上」「N/A」 are refused.
     public var planMinChars = 4
+    /// At most this many facts in a plan (2026-11-17, facts need a source): each is a statement and
+    /// a copied quote, about 30–60 tokens in her call; the morning runs wrote 1–3 facts per plan.
+    public var planMaxFacts = 5
     /// How many of her past lists' estimate-vs-actual lines 【狀況】 shows while no item is in
     /// progress, i.e. when her next `todo.set` estimates (2026-11-17, hook 2).
     public var estimateHistory = 3
@@ -495,13 +499,14 @@ public struct Config: Sendable {
         try v.read("decide_after_rounds", &computer.decideAfterRounds)
         try v.read("decide_every_rounds", &computer.decideEveryRounds)
         try v.read("plan_min_chars", &computer.planMinChars)
+        try v.read("plan_max_facts", &computer.planMaxFacts)
         try v.read("estimate_history", &computer.estimateHistory)
         try v.finish()
         guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
               computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
               !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1,
-              computer.planMinChars >= 1, computer.estimateHistory >= 0 else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more")
+              computer.planMinChars >= 1, computer.planMaxFacts >= 1, computer.estimateHistory >= 0 else {
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])
