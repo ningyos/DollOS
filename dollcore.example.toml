@@ -38,6 +38,7 @@ screenshot_tokens = 600       # 只用來估【狀況】的 context 長度：一
 settle_s = 0.4                # 每個動作做完、重讀視窗之前等這麼久。初始值理由：cua-driver 自己的動作已等到 300 ms 看有沒有新視窗；多等 0.4 秒讓按下去的結果畫出來
 read_batch = 4               # 最多這麼多次視窗讀取留著清單和截圖；再來一次，前面的每一次一起收成一行，只留最新的，再往下累積（2026-11-17）。理由：Strata 只能從之前某個請求的結尾接著讀，每回合收一次＝每回合從這一項第一次讀取重讀；成批收，中間的回合只讀新加的。4：25 回合的計算機估計重讀從約 10.7 萬降到約 5 萬 token（多留最多 3 次讀取，計算機約 3–4k token），8 只再省約 1 萬卻多留一倍。量測見 DEMO.md「電腦」和 experiments/m7-mac/cacheprobe
 sequence_max_steps = 20      # 一次 act 最多幾步（2026-11-17）。理由：cua-driver 一批最多 64 步、整批最多 60 秒；一步約 0.5 秒，用名字找的元素最多等 3 秒；不看畫面連做太多步，走偏了也不知道
+cursor_idle_hide_ms = 0       # 她的游標閒置多久會藏起來（毫秒，0＝永遠不藏；cua-driver 限 0–60000，預設 15000）。理由（2026-11-17，主人）：要隨時看得到她在哪裡；15 秒會在她大部分回合之間藏起來（她一回合 5–80 秒）
 window_wait_tries = 5         # open／menu 之後最多看幾次 app 有沒有視窗，才說它沒有視窗
 window_wait_s = 0.6           # 兩次之間等多久。初始值理由：2026-11-16 TextEdit 選「檔案 › 新增」後 1.5 秒內新視窗已在；5×0.6＝3 秒
 auth_processes = ["SecurityAgent", "coreautha", "LocalAuthenticationRemoteService", "AuthenticationServicesAgent"]   # 系統驗證視窗（Touch ID、管理者密碼）的擁有者 process 名字：畫面上有它們的視窗，結果就多一行【系統驗證】要她停下來告訴主人。哪些名字在這台 Mac 上真的會出現，見 DEMO.md「電腦」的 g3 量測

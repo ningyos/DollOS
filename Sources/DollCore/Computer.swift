@@ -222,13 +222,48 @@ public actor Mac {
     }
 
     // driver plumbing --------------------------------------------------------
+    /// Her session was started (`start_session` with the cursor that never hides); false = not yet.
+    var started: Bool = false
+
+    /// Every call carries the one session label (2026-11-17, owner: several agent cursors on screen at
+    /// once): every driver tool she uses accepts `session`, and one without it falls to the CLI
+    /// process's own implicit session, a new one per call, each able to show its own cursor. The
+    /// first call starts the session with `[computer] cursor_idle_hide_ms` (0: her cursor stays).
     func call(_ tool: String, _ args: [String: Any]) async throws -> [String: Any] {
+        if !started {
+            started = true
+            do {
+                _ = try await send("start_session", ["session": session, "cursor_motion": ["idle_hide_ms": cfg.cursorIdleHideMs]])
+            } catch {
+                started = false
+                throw ComputerError("cua-driver 的工作階段開不起來：\(Self.said(error))")
+            }
+        }
+        var args = args
+        if args["session"] == nil { args["session"] = session }
+        return try await send(tool, args)
+    }
+
+    func send(_ tool: String, _ args: [String: Any]) async throws -> [String: Any] {
         let data = try JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])
         let out = try await driver.call(tool, String(decoding: data, as: UTF8.self))
         guard let j = try? JSONSerialization.jsonObject(with: Data(out.utf8)) as? [String: Any] else {
             throw ComputerError("cua-driver \(tool) 的回答讀不懂：\(out.prefix(300))")
         }
         return j
+    }
+
+    /// At exit: ends her session so its cursor goes with her (`end_session`). Nil when done or never
+    /// started; else why it failed.
+    public func endSession() async -> String? {
+        guard started else { return nil }
+        do {
+            _ = try await send("end_session", ["session": session])
+            started = false
+            return nil
+        } catch {
+            return Self.said(error)
+        }
     }
 
     /// The driver's refusal in her words: its message and hint, without the JSON around them.

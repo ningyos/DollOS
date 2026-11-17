@@ -541,6 +541,11 @@ public actor Doll {
         waiter = nil
     }
 
+    /// At exit, after `stop`: her driver session ends, and with it her cursor (2026-11-17). A failure is logged.
+    public func endComputer() async {
+        if let problem = await mac.endSession() { log("ERROR", "cua-driver session not ended: \(problem)") }
+    }
+
     /// Stops giving turns (2026-11-09, dashboard). The turn in flight finishes; events keep queueing.
     public func pause() {
         paused = true

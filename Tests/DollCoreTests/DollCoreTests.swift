@@ -188,6 +188,8 @@ private final class FakeCua: ComputerDriver, Sendable {
         /// launch_app with `urls`: each file gets a window titled by its name, behind the others
         /// (false: the app shows nothing for it, as TextEdit with a dialog open did on 2026-11-16).
         var opensFiles = true
+        /// start_session / end_session calls (tool, arguments), kept apart from `calls`.
+        var sessions: [(tool: String, json: String)] = []
     }
     let state = Mutex(State())
 
@@ -220,6 +222,10 @@ private final class FakeCua: ComputerDriver, Sendable {
     func call(_ tool: String, _ json: String) async throws -> String {
         let args = try JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
         return try state.withLock { s in
+            if tool == "start_session" || tool == "end_session" {
+                s.sessions.append((tool, json))
+                return "{}"
+            }
             s.calls.append((tool, json))
             if let refusal = s.refuse.removeValue(forKey: tool) { throw ComputerError(refusal) }
             switch tool {
@@ -1596,6 +1602,35 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
     try example.replacingOccurrences(of: "\nsequence_max_steps = 20", with: "\nsequence_max_steps = 7").write(to: file, atomically: true, encoding: .utf8)
     #expect(try Config.load(file).computer.sequenceMaxSteps == 7)
     try example.replacingOccurrences(of: "\nsequence_max_steps = 20", with: "\nsequence_max_steps = 0").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+}
+
+@Test func herOneSessionStartsWithACursorThatNeverHidesIsOnEveryCallAndEndsAtExit() async throws {
+    // 2026-11-17, owner: several agent cursors on screen at once; he wants one, hers, that stays.
+    let h = try await Harness()
+    await h.doll.ownerSaid("算 7+8")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "Calculator")]), clickRow(2)))
+    func parsed(_ json: String) -> [String: Any] { (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]) ?? [:] }
+    let sessions = h.cua.state.withLock { $0.sessions }
+    #expect(sessions.count == 1 && sessions[0].tool == "start_session")
+    let label = try #require(parsed(sessions[0].json)["session"] as? String)
+    #expect((parsed(sessions[0].json)["cursor_motion"] as? [String: Any])?["idle_hide_ms"] as? Int == 0)
+    // Every call carries the label (none falls to an implicit session of its own). The fake also
+    // records each run_steps step's inner tool; those are arguments of the run_steps call, not calls.
+    let inner: Set<String> = ["click", "double_click", "type_text", "press_key", "hotkey", "scroll"]
+    let calls = h.cua.state.withLock { $0.calls }.filter { !inner.contains($0.tool) }
+    #expect(!calls.isEmpty && calls.allSatisfy { c in
+        (try? JSONSerialization.jsonObject(with: Data(c.json.utf8)) as? [String: Any])?["session"] as? String == label })
+    await h.doll.endComputer()
+    await h.doll.endComputer()
+    let after = h.cua.state.withLock { $0.sessions }
+    #expect(after.count == 2 && after[1].tool == "end_session" && parsed(after[1].json)["session"] as? String == label)
+    // The config key: 0 by default, read from the file, outside 0...60000 refused.
+    let example = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.cursorIdleHideMs == 0)
+    let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cursor-\(UUID().uuidString).toml")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try example.replacingOccurrences(of: "\ncursor_idle_hide_ms = 0", with: "\ncursor_idle_hide_ms = 60001").write(to: file, atomically: true, encoding: .utf8)
     #expect(throws: TOMLError.self) { try Config.load(file) }
 }
 

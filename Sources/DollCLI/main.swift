@@ -149,5 +149,7 @@ await doll.stop()
 await bridge?.waitUntilExit(seconds: 5)
 runner.cancel()
 await runner.value
+// Her cursor goes with her: the session ends before the daemon stops (a daemon left running keeps no cursor of hers).
+await doll.endComputer()
 await daemon?.stop()
 _ = signalSources
