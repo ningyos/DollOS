@@ -23,8 +23,9 @@ import Foundation
 /// One request (the consolidation's model and effort), no persona. Each memory gets `ok`, `unsure`
 /// or `wrong`; a `wrong` carries a quote of the source that contradicts it and the corrected text
 /// (empty: retire it). The program acts only on a verified quote (`refusal`): in the memory's own
-/// source, at least `[computer] plan_min_chars` letters, not a passage that says what the memory
-/// says, and a corrected text that differs. Then `[audit] mode` `change` replaces or retires it
+/// source, at least `[computer] plan_min_chars` letters, and a corrected text that differs; a quote
+/// the memory itself repeats only supports taking out what the memory adds (m8 day A: the addition
+/// 「…，是去參加朋友的婚禮」 is shown by the passage without it), not a different text. Then `[audit] mode` `change` replaces or retires it
 /// (as `memory.fix` does, the old one retired with the quote as its reason; tier and strength
 /// stay), `flag` only records it for the owner. Every checked memory loses its mark, whatever the
 /// verdict: an `unsure` one, or one whose quote failed the check, is left as it is and not asked
@@ -205,9 +206,22 @@ enum Audit {
     static func refusal(_ v: Verdict, memory: String, source: String, minChars: Int) -> String? {
         if Doll.plainKey(v.quote).count < minChars { return "quote shorter than \(minChars) letters" }
         if !Doll.quoted(v.quote, in: source) { return "quote not in the source" }
-        if Doll.quoted(v.quote, in: memory) { return "quote says what the memory says" }
+        // A passage the memory repeats can only show that the memory adds something to it: the fix
+        // may then only take words out (an addition the source never said), never say something else.
+        if Doll.quoted(v.quote, in: memory), v.fixed.isEmpty || !Self.removesOnly(v.fixed, from: memory) {
+            return "quote says what the memory says"
+        }
         if !v.fixed.isEmpty, Doll.sameText(v.fixed, memory) { return "fixed text is the memory unchanged" }
         return nil
+    }
+
+    /// `fixed` is `memory` with some letters and digits taken out and none added or changed (in order).
+    static func removesOnly(_ fixed: String, from memory: String) -> Bool {
+        let f = Array(Doll.plainKey(fixed)), m = Array(Doll.plainKey(memory))
+        guard f.count < m.count else { return false }
+        var i = 0
+        for c in m where i < f.count && c == f[i] { i += 1 }
+        return i == f.count
     }
 
     /// The end notice's words, for her (and the owner reads them on the dashboard's timeline).

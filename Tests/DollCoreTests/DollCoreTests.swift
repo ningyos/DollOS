@@ -8158,7 +8158,12 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     #expect(Audit.refusal(v("下週四下午三點"), memory: "主人週三看牙", source: source, minChars: 4) == nil)
     #expect(Audit.refusal(v("下週四下午兩點"), memory: "主人週三看牙", source: source, minChars: 4) == "quote not in the source")
     #expect(Audit.refusal(v("週四"), memory: "主人週三看牙", source: source, minChars: 4) == "quote shorter than 4 letters")
-    #expect(Audit.refusal(v("中山牙醫看牙"), memory: "主人在中山牙醫看牙", source: source, minChars: 4) == "quote says what the memory says")
+    #expect(Audit.refusal(v("中山牙醫看牙", "主人在台大醫院看牙"), memory: "主人在中山牙醫看牙", source: source, minChars: 4) == "quote says what the memory says")
+    // A passage the memory repeats may show an addition: the fix only takes words out.
+    #expect(Audit.refusal(v("下週四下午三點要去中山牙醫看牙", "主人下週四下午三點要去中山牙醫看牙"),
+                          memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒", source: source, minChars: 4) == nil)
+    #expect(Audit.refusal(v("下週四下午三點要去中山牙醫看牙", ""), memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒", source: source, minChars: 4)
+            == "quote says what the memory says")
     #expect(Audit.refusal(v("可能會跟阿凱", "主人今晚跟阿凱吃拉麵。"), memory: "主人今晚跟阿凱吃拉麵", source: source, minChars: 4) == "fixed text is the memory unchanged")
     // Her own words are not in the source.
     let day = [Event(.owner, .owner, "牙醫週四"), Event(.doll, .internal, "我記得是週三")]
