@@ -277,6 +277,10 @@ public actor Doll {
     let concernsURL: URL
     let signalsURL: URL
     var concernFile: ConcernFile
+    /// Corrections of her memories and the audit's flags (2026-11-18, `MemoryFix.swift`).
+    let fixesURL: URL
+    var fixFile: MemoryFixFile
+    let auditConfig: AuditConfig
     var drives: Drives
     /// No signals file yet: every signal starts at its start value when the calendar is first
     /// caught up (the clock then is the right one).
@@ -350,6 +354,9 @@ public actor Doll {
         concernsURL = data.appending(path: "concerns.json")
         signalsURL = data.appending(path: "signals.json")
         estimatesURL = data.appending(path: "estimates.json")
+        fixesURL = data.appending(path: "memory-fixes.json")
+        fixFile = try Concerns.read(MemoryFixFile.self, fixesURL, what: "memory fixes") ?? MemoryFixFile()
+        auditConfig = config.audit
         toolStore = ToolStore(dir: data.appending(path: "tools"))
         estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates") ?? EstimateFile()
         concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns") ?? ConcernFile()
@@ -1317,6 +1324,8 @@ public actor Doll {
                 return await remember(items, seen: events, reply: reply)
             case .recall(let query):
                 return try await recall(query, seen: events)
+            case .memoryFix(let id, let text, let basis, let why):
+                return try memoryFix(id: id, text: text, basis: basis, why: why, seen: events, reply: reply)
             case .todoSet(let items, let subgoal, let plan):
                 return try todoSet(items, subgoal: subgoal, plan: plan, reply: reply)
             case .todoDone(let result, let evidence):
@@ -2357,7 +2366,7 @@ public actor Doll {
                     throw ToolError(description: "kind 只能是 happened、intended、uncertain，或不填；收到 \(bad)")
                 }
                 let id = try memory.write(item.text, folder: item.folder, sourceSeq: seq, tier: tier, kind: item.kind,
-                                          entities: [], deep: item.deep, now: now)
+                                          entities: [], deep: item.deep, auditSegment: timeline.segment, now: now)
                 log("INFO", "turn \(turnIndex): remember \(id)\(item.deep ? " (deep)" : "")")
                 let kind = item.kind.map { "，kind \($0.rawValue)" } ?? ""
                 lines.append("第 \(i + 1) 條已存入 \(folder)/\(id).md（confidence \(memoryConfig.confidence[tier]!)\(kind)\(item.deep ? "，deep：不會淡" : "")）")
@@ -2484,7 +2493,7 @@ public actor Doll {
             let from = frontApp.map { "主人的話和前景 app「\($0.name)」" } ?? "主人的話"
             var text = fresh.isEmpty ? "【相關記憶】程式用\(from)查到你存的工具（字面相近，不一定用得上）：" : "【相關記憶】程式用\(from)查到、最相近的過去經驗："
             for e in fresh {
-                text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
+                text += "\n〔\(e.label)｜\(e.folder)｜記憶 \(e.id)〕\n\(e.attachedText)"
             }
             if !offered.isEmpty {
                 text += (fresh.isEmpty ? "" : "\n你存的工具裡可能用得上的：") + offered.map { "\n〔工具〕" + $0.offerLine }.joined()

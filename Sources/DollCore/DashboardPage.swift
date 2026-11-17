@@ -258,6 +258,27 @@ function memEntry(e, unmark) {
   return d;
 }
 
+function fixEntry(f) {
+  const who = { her: "她改的", audit: "系統維護改的", flag: "系統維護標的（沒改）" }[f.by] || f.by;
+  const what = f.by === "flag" ? (f.after == null ? "可能整條都錯" : `可能該是「${f.after}」`)
+    : f.after == null ? "收起來了" : `改成「${f.after}」`;
+  const sum = el("summary");
+  sum.append(document.createTextNode(`#${f.id} ${who}：「${f.before}」${what} `));
+  sum.append(el("span", "meta", clock(f.ts) + (f.reverted ? ` · ${clock(f.reverted)} 還原了` : "")));
+  const body = el("div");
+  body.append(el("div", "meta", `依據（${f.basisFrom}）：「${f.basis}」`));
+  body.append(el("div", "meta", `為什麼：${f.why} · 記憶 ${f.memory}` + (f.replacement ? ` → ${f.replacement}` : "")));
+  if (f.by !== "flag" && !f.reverted) {
+    const b = el("button", null, "還原");
+    b.onclick = () => post("/api/memory/revert/" + f.id);
+    body.append(b);
+  }
+  const d = details(sum, body);
+  d.className = "mem";
+  d.dataset.key = "f:" + f.id;
+  return d;
+}
+
 function deepForm() {
   const form = el("form");
   const input = el("input");
@@ -288,6 +309,8 @@ function renderMemory(m) {
     d.dataset.key = "s:" + s.seq;
     box.append(d);
   }
+  box.append(el("h3", null, `改過的記憶（${m.fixes.length}）：她改的、系統維護改的、系統維護標出來沒改的`));
+  for (const f of m.fixes) box.append(fixEntry(f));
   const titles = { own: "own（她自己的秘密）", public: "public", secret: "secret（主人的秘密）" };
   for (const f of m.folders) {
     const shown = f.entries.filter(e => showProgram || e.tier !== "program");

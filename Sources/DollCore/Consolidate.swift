@@ -228,13 +228,13 @@ public enum Consolidation {
             case .add(let ref, let text, let folder, let kind, let entities):
                 let list = try aligned(entities)
                 let id = try memory.write(text, folder: folder, sourceSeq: r.lastSeq, tier: .consolidated, kind: kind,
-                                          entities: list, now: now)
+                                          entities: list, auditSegment: r.segment, now: now)
                 refs[ref] = id
                 applied.append("add \(memory.dirName(folder))/\(id) (ref \(ref), kind \(kind?.rawValue ?? "none"), entities \(MemoryEntity.json(list))): \(text)")
             case .update(let id, let text, let entities):
                 let list = try aligned(entities)
                 let before = try memory.file(id)?.file.body ?? ""
-                try memory.update(id, text: text, entities: list)
+                try memory.update(id, text: text, entities: list, auditSegment: r.segment)
                 applied.append("update \(id) (entities \(MemoryEntity.json(list))): \(before) ⇒ \(text)")
             case .retire(let id, let by, let reason):
                 let target = refs[by] ?? by

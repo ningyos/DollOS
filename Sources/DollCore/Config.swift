@@ -369,6 +369,26 @@ public struct ConsolidateConfig: Sendable {
     public var retiredKeepDays = 30
 }
 
+/// The maintenance's audit of the day's new memories (2026-11-18, `Audit.swift`). One request (the
+/// consolidation's model, effort and max_tokens) per maintenance.
+public struct AuditConfig: Sendable {
+    /// Off: no `audit` maintenance task (runners and tests not about it).
+    public var enabled = true
+    /// `change`: a memory with a verified contradicting quote is replaced (or retired) at once;
+    /// `flag`: it is only listed for the owner (dashboard, end notice). Which one is the default is
+    /// measured in experiments/m8-memory-fix (a correct memory changed into a wrong one is worse than
+    /// a miss).
+    public var mode = "flag"
+    /// Most memories one audit checks: one request reads the day plus every memory, and a long list
+    /// is checked less carefully; the rest stay unchecked for the next maintenance (oldest first).
+    /// 20: a busy day in the m6 runs wrote 5 to 15.
+    public var maxMemories = 20
+    /// Most characters of source text (the day's lines from others and tool results) one audit
+    /// reads, newest kept: about 15k prompt tokens, inside what the consolidation request already
+    /// handles on the same server.
+    public var maxSourceChars = 30000
+}
+
 /// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device model at all): the
 /// 【相關記憶】 the program attaches and her `recall` results both come from one pipeline
 /// (`Selector`): everything related (FTS and two-character words, embedding, the front app's
@@ -459,11 +479,12 @@ public struct Config: Sendable {
     public var drives = DrivesConfig()
     public var ownerSleep = OwnerSleepConfig()
     public var goals = GoalsConfig()
+    public var audit = AuditConfig()
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -720,6 +741,15 @@ public struct Config: Sendable {
                          api: api, bridge: bridge, consolidate: consolidate, select: select, voice: voice, calendar: calendar, maintenance: maintenance,
                          drives: drives, ownerSleep: ownerSleep)
         cfg.goals = try Self.readGoals(raw["goals"] ?? [:])
+        var au = Section(name: "audit", raw: raw["audit"] ?? [:])
+        try au.read("enabled", &cfg.audit.enabled)
+        try au.read("mode", &cfg.audit.mode)
+        try au.read("max_memories", &cfg.audit.maxMemories)
+        try au.read("max_source_chars", &cfg.audit.maxSourceChars)
+        try au.finish()
+        guard ["change", "flag"].contains(cfg.audit.mode), cfg.audit.maxMemories >= 1, cfg.audit.maxSourceChars >= 1000 else {
+            throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000")
+        }
         return cfg
     }
 

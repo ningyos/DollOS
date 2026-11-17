@@ -11,6 +11,7 @@ import Foundation
 ///     think(level: medium)               the next model call thinks first (2026-11-11: `none` removed; 2026-11-15: `high` removed)
 ///     remember(items: [{text, folder, kind?, deep?}])  one memory per item; folder: secret | own | public; deep: never fades
 ///     recall(query)                      search her memories and today's timeline
+///     memory.fix(id, text?, basis, why)  correct or retire one of her memories, with a copied basis (2026-11-18, `MemoryFix.swift`)
 ///     todo.set(items, facts, assumptions, limits, estimate, check) / todo.done(result, evidence) / todo.fail(cause, evidence, tried) / todo.wait(reason) / todo.progress(note) / todo.continue(missing, stuck, change)
 ///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
 ///                                        only while an item is 進行中
@@ -197,6 +198,18 @@ public enum Tools {
                      "type": "object",
                      "properties": ["query": ["type": "string", "description": "要查的事"]],
                      "required": ["query"],
+                 ], jsonParameters: []),
+            Spec(name: Name.memoryFix,
+                 description: "改正你記錯的一條記憶：【相關記憶】或 recall 結果裡標〔…｜記憶 <id>〕的那條。要有依據：basis 一字不差照抄主人說的話，或你讀到的視窗、檔案、工具結果裡寫的字；你自己說的、想的、記的都不算。給 text 就換成改好的這條；不給 text 就只把它收起來（整條都錯、沒有對的可留）。舊的不會刪，會標成被換掉、寫上原因和依據，主人在儀表板看得到、可以還原。只是覺得不對、找不到依據，就先去查或問主人，不要改。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("id", ["type": "string", "description": "要改的那條記憶的 id，例如 12-ab34cd"]),
+                         ("text", ["type": "string", "description": "改好的整條記憶；不給就只把舊的收起來"]),
+                         ("basis", ["type": "string", "description": "依據：照抄主人的話，或讀到的視窗、檔案、工具結果裡的字"]),
+                         ("why", ["type": "string", "description": "哪裡錯了，一句"]),
+                     ]),
+                     "required": ["id", "basis", "why"],
                  ], jsonParameters: []),
         ] + (drives ? todoSpecsGoals : todoSpecs) + calendarSpecs + (drives ? concernSpecs + goalSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
@@ -441,6 +454,7 @@ public enum Tools {
         static let todoProgress = "todo.progress"
         static let todoContinue = "todo.continue"
         static let askOwner = "ask_owner"
+        static let memoryFix = "memory.fix"
         static let act = "act"
         static let toolSave = "tool.save"
         static let toolRun = "tool.run"
@@ -652,6 +666,8 @@ public enum Tools {
         case think(String)
         case remember([Item])
         case recall(String)
+        /// `memory.fix` (2026-11-18, `MemoryFix.swift`): no `text` = retire only.
+        case memoryFix(id: String, text: String?, basis: String, why: String)
         case voiceJoin
         case voiceLeave
         /// `act` (2026-11-17): her steps in order and the text she expects in the window after the last.
@@ -752,6 +768,9 @@ public enum Tools {
             return .remember(items)
         case "recall":
             return .recall(try nonEmpty("query"))
+        case Name.memoryFix:
+            let text = given("text").flatMap { $0.isEmpty ? nil : $0 }
+            return .memoryFix(id: try nonEmpty("id"), text: text, basis: try nonEmpty("basis"), why: try nonEmpty("why"))
         case Name.todoSet:
             let raw = value("items")
             guard let items = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else {
@@ -1038,7 +1057,7 @@ enum Instructions {
 
         別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字，看起來怪就先猜原意，猜不出來就問；回語音要短、口語。時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
 
-        回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
+        回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall；記錯了（主人糾正你、或你讀到的跟記的不一樣），用 \(Tools.Name.memoryFix) 改那一條，不要另外再記一條。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
 
         每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、今天的行事曆、context 用了多少、下一回合的 effort。
 

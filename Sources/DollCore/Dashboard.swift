@@ -6,8 +6,9 @@ import Synchronization
 /// actions updated live over SSE, plus the system operations, interrupt (cancel the model call in
 /// flight) and pause/resume (no new turns; events keep queueing), and (2026-11-15) marking a memory
 /// deep or not, and editing her calendar (each edit a 【行事曆】 program event in her timeline, no
-/// turn). Nothing here can say anything to her or change a memory's text: the only POST routes
-/// are those operations.
+/// turn), and (2026-11-18) reverting a correction of a memory (hers or the audit's; she is told).
+/// Nothing here can say anything to her or write a memory's text: the only POST routes are those
+/// operations.
 
 /// Wakes the dashboard's live connections: every appended event, a turn starting or ending, the
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
@@ -159,6 +160,8 @@ public struct DashboardMemory: Codable, Sendable, Equatable {
     public var deep: [DashboardMemoryEntry]
     /// 【快捷鍵】 events since the owner's last line.
     public var cheatsheets: [Sheet]
+    /// Her corrections, the audit's changes and its flags (2026-11-18, `MemoryFix.swift`), newest first.
+    public var fixes: [MemoryFixRecord]
 }
 
 extension Doll {
@@ -254,7 +257,7 @@ extension Doll {
             DashboardMemory.Sheet(seq: $0.seq!, title: String($0.text.split(separator: "\n").first ?? ""), text: $0.text)
         }
         let deep = folders.flatMap { f in f.entries.filter(\.deep) }.sorted { ($0.ts, $1.id) > ($1.ts, $0.id) }
-        return DashboardMemory(folders: folders, attached: attached, deep: deep, cheatsheets: sheets)
+        return DashboardMemory(folders: folders, attached: attached, deep: deep, cheatsheets: sheets, fixes: fixFile.items.reversed())
     }
 
     /// The dashboard's mark (2026-11-15): memory `id` deep or not, through `Memory` (its file; the
@@ -270,7 +273,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -287,6 +290,8 @@ public final class Dashboard: @unchecked Sendable {
         ("POST", "/api/resume", .resume),
         ("POST", "/api/memory/deep/", .deep),
         ("POST", "/api/memory/undeep/", .undeep),
+        // The owner's revert of a memory correction (2026-11-18): `/api/memory/revert/<record id>`.
+        ("POST", "/api/memory/revert/", .memoryRevert),
         ("GET", "/api/calendar", .calendar),
         // The owner's calendar edits (2026-11-15): `add`, `change`, `delete`, with her tool's
         // parameters in the query string (`?title=…&date=2026-11-18&start=10:00`).
@@ -398,6 +403,10 @@ public final class Dashboard: @unchecked Sendable {
                 guard let id = Self.validShotName(rest) else { return .text(400, "bad memory id") }
                 do { try await doll.dashboardSetDeep(id, kind == .deep) } catch let e as MemoryError { return .text(409, e.description) }
                 return .json(["id": id, "deep": kind == .deep ? "true" : "false"])
+            case .memoryRevert:
+                guard let id = Int(rest) else { return .text(400, "bad memory fix id") }
+                do { try await doll.dashboardMemoryRevert(id) } catch let e as MemoryError { return .text(409, e.description) }
+                return .json(["reverted": "\(id)"])
             case .calendar: return .json(await doll.dashboardCalendar())
             case .drives: return .json(await doll.dashboardDrives())
             case .goals: return .json(await doll.dashboardGoals())

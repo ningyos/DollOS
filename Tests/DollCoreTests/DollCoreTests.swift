@@ -354,6 +354,9 @@ final class FakeEmbedder: Embedder, Sendable {
 /// meaning: the M3a corpus and recall by meaning. Needs the weights in the Hugging Face cache.
 private let qwen3 = Task { try await MLXEmbedder.load(try Config.load(root.appending(path: "dollcore.example.toml")).memory) }
 
+/// A memory's id as she sees it (〔…｜記憶 12-ab34cd〕, 2026-11-18) left out, for texts compared whole.
+func noIDs(_ s: String) -> String { s.replacing(/｜記憶 [0-9]+-[0-9a-f]{6}〕/, with: "〕") }
+
 private struct Harness {
     let doll: Doll
     let model: FakeModel
@@ -375,6 +378,7 @@ private struct Harness {
         cfg.drives.enabled = false        // the drives tests switch it on
         cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
         cfg.goals.review = false          // the ideal-self review tests switch it on
+        cfg.audit.enabled = false         // the memory audit tests switch it on
         cfg.computer.estimateSimilarity = 2   // the estimate check tests switch it on (no cosine reaches 2)
         tune(&cfg)
         model = FakeModel(replies)
@@ -512,7 +516,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
-    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "todo.set", "todo.done", "todo.fail",
                       "todo.wait", "todo.progress", "todo.continue", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
                       "act", "tool.save", "tool.run", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
@@ -788,7 +792,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let meta = try #require(try h.store.memoryMeta(ids[0]))
     #expect(meta.folder == "public" && meta.confidence > 0.8)
     // the tool result in her timeline carries the indexed text
-    #expect(try h.toolResults().last!.text.contains("〔確定｜public〕\n主人的伺服器叫 Strata"))
+    #expect(noIDs(try h.toolResults().last!.text).contains("〔確定｜public〕\n主人的伺服器叫 Strata"))
     await h.doll.stop()
 }
 
@@ -967,7 +971,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     #expect(!(try h.toolResults().last!.secret))
     // Now a secret enters the timeline (spec 5.1: the same rule that marks her replies).
     let withSecret = try await ask(h, "跟姐姐吵架了", secret: true)
-    #expect(withSecret.contains(secretText) && withSecret.contains("〔確定｜secret〕"))
+    #expect(withSecret.contains(secretText) && noIDs(withSecret).contains("〔確定｜secret〕"))
     #expect(try h.toolResults().last!.secret)          // a secret hit marks the tool result
 }
 
@@ -1017,7 +1021,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     try await h.turn(Scripted("", remember(kinds: [("主人下個月要去大阪", false, "intended"), ("主人的貓叫麻糬", false, nil)])))
     await h.doll.ownerSaid("你記得我什麼？")
     try await h.turn(Scripted("", recall("主人下個月 主人的貓")))
-    let out = try h.toolResults().last!.text
+    let out = noIDs(try h.toolResults().last!.text)
     #expect(out.contains("〔確定的打算｜public〕\n主人下個月要去大阪"))
     #expect(out.contains("〔確定｜public〕\n主人的貓叫麻糬"))
     #expect(!out.contains("未判"))
@@ -1916,7 +1920,7 @@ private let allowed = #"{"accessibility": true, "screen_recording": true}"#
     await h.doll.ownerSaid("我的 VM 密碼是什麼")
     try await h.turn(Scripted("", recall("VM 登入密碼")))
     let owner = try h.toolResults().last!
-    #expect(owner.text.contains("〔確定｜own〕\n我的 VM 登入密碼是 fish123") && !owner.secret)
+    #expect(noIDs(owner.text).contains("〔確定｜own〕\n我的 VM 登入密碼是 fish123") && !owner.secret)
     // Her own turn (her watch woke her): own is still visible.
     await h.doll.put(Event(.watch, .internal, "盯著的整個畫面變了。"))
     try await h.turn(Scripted("", recall("VM 登入密碼")))
@@ -1963,7 +1967,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     await h.doll.ownerSaid("幫我用 TextEdit 寫筆記")
     try await h.turn("好")
     let mem = try memoryEvents(h)
-    #expect(mem.map(\.text) == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\n經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點"])
+    #expect(mem.map { noIDs($0.text) } == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\n經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點"])
     // Right after the owner's line, before the footer.
     let seen = await h.model.seen(0)
     #expect(seen[seen.count - 2].content.hasSuffix("] " + mem[0].text) && seen[seen.count - 2].role == "user")
@@ -2034,12 +2038,12 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     try await h.turn("好")
     let first = try memoryEvents(h)
     #expect(first.count == 1 && !first[0].secret && !first[0].text.contains("1234"))
-    #expect(first[0].text.contains("〔大概｜own〕\n經驗：我的 TextEdit 帳號是 doll") && first[0].text.contains("〔大概｜public〕\n經驗：TextEdit 存檔按 cmd+s"))
+    #expect(noIDs(first[0].text).contains("〔大概｜own〕\n經驗：我的 TextEdit 帳號是 doll") && noIDs(first[0].text).contains("〔大概｜public〕\n經驗：TextEdit 存檔按 cmd+s"))
     // A secret owner line: the turn has seen a secret, so secret/ is read, and the event is a secret one.
     await h.doll.ownerSaid("TextEdit 的秘密筆記", secret: true)
     try await h.turn("好")
     let second = try memoryEvents(h)
-    #expect(second.count == 2 && second[1].secret && second[1].text.contains("〔大概｜secret〕\n經驗：TextEdit 的秘密筆記密碼是 1234"))
+    #expect(second.count == 2 && second[1].secret && noIDs(second[1].text).contains("〔大概｜secret〕\n經驗：TextEdit 的秘密筆記密碼是 1234"))
 }
 
 // todo items that used the computer, and experiences (spec 3.1, 2026-11-09; todo 2026-11-14) ------
@@ -2101,7 +2105,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     await h.doll.ownerSaid("把 notes 存檔")
     try await h.turn("好")
     #expect(stats.line == "成績：這次 5 回合、\(stats.seconds) 秒；附上後照做 0 次，成功 0 次（這是已知可行的做法；如果看到更短的走法，可以直接走；結果猜得到的幾步可以寫在同一則回覆裡。）")
-    #expect(h.last.attached.count == 1 && h.last.attached[0].hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
+    #expect(h.last.attached.count == 1 && noIDs(h.last.attached[0]).hasSuffix("〔大概｜public〕\n" + stats.line + "\n" + text))
 }
 
 @Test func aFailedItemOrOneWithoutTheComputerWritesNoExperience() async throws {
@@ -2766,9 +2770,9 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
 }
 
-@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheCalendarHerDirectionAndHerTools() {
+@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheRevertTheCalendarHerDirectionAndHerTools() {
     #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
-            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/calendar/",
+            == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/memory/revert/", "/api/calendar/",
                 "/api/ideal/", "/api/goals/", "/api/record/", "/api/tools/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
@@ -3383,7 +3387,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     try await seedMemory(h, "public", "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", tier: "consolidated", confidence: 0.6)
     await h.doll.ownerSaid("用 TextEdit 另存一份")
     try await h.turn("好")
-    #expect(try memoryEvents(h).map(\.text) == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
+    #expect(try memoryEvents(h).map { noIDs($0.text) } == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
     try await h.turn(Scripted("", recall("另存對話框")))
     let result = try h.toolResults().last!.text
     #expect(result.contains("跳出另存對話框") && !result.contains("File 選單點"))
@@ -3600,7 +3604,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     await h.doll.ownerSaid("我媽打電話來，問我今年過年要不要回台南")
     try await h.turn(Scripted("", dm("好")))
     try await h.turn(Scripted("", recall("花生 過敏")))
-    #expect(try h.toolResults().last!.text == "花生 過敏：1 條\n\n〔確定｜public〕\n我對花生過敏，吃到會起疹子")
+    #expect(noIDs(try h.toolResults().last!.text) == "花生 過敏：1 條\n\n〔確定｜public〕\n我對花生過敏，吃到會起疹子")
     #expect(h.last.selections.first?.contains("fts 1,") == true)
     await h.doll.ownerSaid("你查查看")
     try await h.turn(Scripted("", recall("過年")))
@@ -7854,4 +7858,320 @@ private let farRefusal = "失敗：清單沒有列：你估整份 2 回合，可
     try await b.turn(Scripted("", estimated(2), readCall))
     #expect(try b.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text.hasPrefix("todo 列好了，你估整份 2 回合。") == true)
     #expect(await b.doll.todo.estimateCheck == nil)
+}
+
+// correcting a memory (2026-11-18, `MemoryFix.swift`, `Audit.swift`) --------------------------------------
+
+private func fix(_ id: String, _ text: String?, basis: String, why: String = "記錯了") -> (String, [(String, String)]) {
+    ("memory.fix", [("id", id)] + (text.map { [("text", $0)] } ?? []) + [("basis", basis), ("why", why)])
+}
+
+/// The one memory whose body is `body`.
+private func memoryID(_ h: Harness, _ body: String) throws -> String {
+    guard let id = try memoryFilesByID(h).first(where: { $0.value.file.body == body })?.key else {
+        throw MemoryError(description: "no memory「\(body)」")
+    }
+    return id
+}
+
+private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
+    try Concerns.read(MemoryFixFile.self, h.dir.appending(path: "memory-fixes.json"), what: "memory fixes") ?? MemoryFixFile()
+}
+
+@Test func herCorrectionWithTheOwnersWordsReplacesTheMemoryKeepsTheOldRetiredAndRecallGivesOnlyTheNew() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("牙醫約在週三下午兩點")
+    try await h.turn(Scripted("", remember(kinds: [("主人的牙醫約在週三下午兩點", false, "intended")])))
+    let old = try memoryID(h, "主人的牙醫約在週三下午兩點")
+    #expect(try memoryFilesByID(h)[old]!.file.auditSegment == h.timeline().segment)
+    // What she sees names it by id.
+    try await h.turn(Scripted("", recall("牙醫")))
+    #expect(try h.toolResults().last!.text.contains("〔確定的打算｜public｜記憶 \(old)〕\n主人的牙醫約在週三下午兩點"))
+    await h.doll.ownerSaid("不對，是週四下午三點")
+    try await h.turn(Scripted("", fix(old, "主人的牙醫約在週四下午三點", basis: "是週四下午三點", why: "主人說時間記錯了")))
+    let files = try memoryFilesByID(h)
+    let new = try memoryID(h, "主人的牙醫約在週四下午三點")
+    #expect(try h.toolResults().last!.text == "改好了：記憶 \(old)「主人的牙醫約在週三下午兩點」換成記憶 \(new)「主人的牙醫約在週四下午三點」。舊的收起來了，主人在儀表板看得到，可以還原。")
+    // The old one stays, retired with what replaced it and why; the new one keeps its kind and evidence, takes the owner's tier.
+    let r = files[old]!.file.retired!
+    #expect(r.supersededBy == new && r.reason == "她改的：主人說時間記錯了；依據（主人說的）「是週四下午三點」")
+    let n = files[new]!.file
+    #expect(n.tier == .owner && n.kind == "intended" && n.allEvidence == files[old]!.file.allEvidence && files[new]!.folder == "public")
+    #expect(n.auditSegment == (try h.timeline().segment))
+    let rec = try fixesFile(h).items
+    #expect(rec.count == 1 && rec[0].by == "her" && rec[0].memory == old && rec[0].replacement == new && rec[0].basis == "是週四下午三點"
+            && rec[0].basisFrom == "主人說的" && rec[0].after == "主人的牙醫約在週四下午三點")
+    // Recall: only the new one is current.
+    try await h.turn(Scripted("", recall("牙醫")))
+    let out = try h.toolResults().last!.text
+    #expect(out.contains("記憶 \(new)〕") && !out.contains("記憶 \(old)〕"))
+    // Fixing the retired one again is refused with where it went.
+    try await h.turn(Scripted("", fix(old, "x", basis: "是週四下午三點")))
+    #expect(try h.toolResults().last!.text.hasSuffix("已經收起來了（她改的：主人說時間記錯了；依據（主人說的）「是週四下午三點」），換成了記憶 \(new)；要改就改那一條。"))
+}
+
+@Test func aReadFileIsABasisAndWithoutTextTheMemoryIsOnlyRetired() async throws {
+    let h = try await menuHarness()
+    let path = try h.put("dentist.txt", "看牙：週五上午十點，中山牙醫\n")
+    try await h.turn(Scripted("", remember([("主人週四去看牙", false), ("中山牙醫在三樓", false)])))
+    let a = try memoryID(h, "主人週四去看牙"), b = try memoryID(h, "中山牙醫在三樓")
+    try await h.turn(Scripted("", readFile(path)))
+    try await h.turn(Scripted("", fix(a, "主人週五上午十點去中山牙醫看牙", basis: "看牙：週五上午十點")))
+    let new = try memoryID(h, "主人週五上午十點去中山牙醫看牙")
+    #expect(try memoryFilesByID(h)[new]!.file.tier == .tool)
+    #expect(try fixesFile(h).items[0].basisFrom == "檔案 \(path)")
+    try await h.turn(Scripted("", fix(b, nil, basis: "週五上午十點，中山牙醫", why: "檔案沒說在三樓，是我自己猜的")))
+    #expect(try h.toolResults().last!.text == "收起來了：記憶 \(b)「中山牙醫在三樓」不再算數。舊的收起來了，主人在儀表板看得到，可以還原。")
+    #expect(try memoryFilesByID(h)[b]!.file.retired?.supersededBy == "")
+}
+
+@Test func aCorrectionWithoutARealBasisIsRefusedAndWritesNothing() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("牙醫約在週三下午兩點")
+    try await h.turn(Scripted("", remember([("主人的牙醫約在週三下午兩點", false)]), dm("我記得是週日早上九點喔")))
+    let id = try memoryID(h, "主人的牙醫約在週三下午兩點")
+    await h.doll.ownerSaid("嗯")
+    let refused = "不在主人說的話、你讀到的視窗或檔案、工具的結果裡。"
+    for (call, want) in [
+        (fix(id, "主人的牙醫約在週六", basis: "是週六下午"), "沒有改：basis「是週六下午」\(refused)依據要一字不差照抄那裡的字；只是覺得不對、找不到依據，就先去查（讀檔案、看視窗）或問主人。"),
+        (fix(id, "主人的牙醫約在週日", basis: "我記得是週日早上九點"), "沒有改：basis「我記得是週日早上九點」\(refused)那是你自己寫的字（你說的、想的或記的），不算依據。依據要一字不差照抄那裡的字；只是覺得不對、找不到依據，就先去查（讀檔案、看視窗）或問主人。"),
+        (fix(id, "主人的牙醫約在週日", basis: "主人的牙醫約在週三"), "那是你自己寫的字（你說的、想的或記的），不算依據。"),
+        (fix(id, "主人的牙醫約在週日", basis: "不對"), "沒有改：basis「不對」太短：至少 4 個字，照抄一整段。"),
+        (fix(id, "主人的牙醫約在週三下午兩點。", basis: "牙醫約在週三下午兩點"), "沒有改：text 跟原本那條一樣；要改就寫改好的整條，整條都錯就不給 text。"),
+        (fix("9-abcdef", "x", basis: "牙醫約在週三下午兩點"), "沒有改：沒有 id 是 9-abcdef 的記憶。id 照抄【相關記憶】或 recall 結果裡〔…｜記憶 <id>〕的那一串。"),
+        (("memory.fix", [("id", id), ("why", "x")]), "memory.fix 少了參數 basis"),
+    ] {
+        try await h.turn(Scripted("", call))
+        let text = try h.toolResults().last!.text
+        #expect(text.hasPrefix("失敗：") && text.contains(want), "\(text)")
+    }
+    #expect(try memoryFilesByID(h)[id]!.file.retired == nil && fixesFile(h).items.isEmpty)
+    // The program's own records are not hers to fix.
+    try await seedMemory(h, "public", "經驗：TextEdit 存檔", id: "1-eeeeee")
+    try await h.turn(Scripted("", fix("1-eeeeee", "y", basis: "牙醫約在週三下午兩點")))
+    #expect(try h.toolResults().last!.text.contains("是程式自己記的（做事的經驗或快捷鍵），不能用 memory.fix 改。"))
+}
+
+@Test func aCorrectionNeverLeaksASecretAndASecretMemoryIsUnknownWhereSecretsAreNotSeen() async throws {
+    let h = try await Harness()
+    try await seedMemory(h, "public", "主人的密碼提示是貓", tier: "doll", id: "1-aaaaaa")
+    try await seedMemory(h, "secret", "主人的銀行在信義區", tier: "doll", id: "1-bbbbbb")
+    await h.doll.ownerSaid("查一下")
+    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在大安區", basis: "查一下就好")))
+    #expect(try h.toolResults().last!.text.contains("沒有 id 是 1-bbbbbb 的記憶"))
+    await h.doll.ownerSaid("其實我的密碼提示是狗", secret: true)
+    try await h.turn(Scripted("", fix("1-aaaaaa", "主人的密碼提示是狗", basis: "我的密碼提示是狗")))
+    #expect(try h.toolResults().last!.text.contains("沒有改：依據是主人的秘密，這條記憶在 public，改了別人也看得到。要記這件事，用 remember 記進 secret。"))
+    // In a secret turn the secret one may be corrected; it stays in secret.
+    await h.doll.ownerSaid("銀行在大安區", secret: true)
+    try await h.turn(Scripted("", fix("1-bbbbbb", "主人的銀行在大安區", basis: "銀行在大安區")))
+    #expect(try memoryFilesByID(h)[memoryID(h, "主人的銀行在大安區")]!.folder == "secret")
+}
+
+@Test func aCorrectedConsolidatedMemoryIsStillAttachedAndTheOldOneNoLonger() async throws {
+    let h = try await Harness()
+    try await seedMemory(h, "public", "TextEdit 存檔按 ⌘S", tier: "consolidated", id: "1-cccccc")
+    await h.doll.ownerSaid("TextEdit 存檔")
+    try await h.turn(Scripted("", dm("好")))
+    #expect(try memoryEvents(h).last!.text.contains("〔大概｜public｜記憶 1-cccccc〕\nTextEdit 存檔按 ⌘S"))
+    await h.doll.ownerSaid("不對，TextEdit 存檔要按 ⇧⌘S")
+    try await h.turn(Scripted("", fix("1-cccccc", "TextEdit 存檔按 ⇧⌘S", basis: "TextEdit 存檔要按 ⇧⌘S")))
+    let new = try memoryID(h, "TextEdit 存檔按 ⇧⌘S")
+    #expect(try memoryFilesByID(h)[new]!.file.tier == .consolidated)
+    await h.doll.ownerSaid("TextEdit 存檔")
+    try await h.turn(Scripted("", dm("好")))
+    let last = try memoryEvents(h).last!.text
+    #expect(last.contains("記憶 \(new)〕") && !last.contains("1-cccccc"))
+}
+
+@Test func theOwnerRevertsACorrectionOnTheDashboardAndSheIsTold() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("牙醫約在週三下午兩點")
+    try await h.turn(Scripted("", remember([("主人的牙醫約在週三下午兩點", false)])))
+    let old = try memoryID(h, "主人的牙醫約在週三下午兩點")
+    await h.doll.ownerSaid("不對，是週四下午三點")
+    try await h.turn(Scripted("", fix(old, "主人的牙醫約在週四下午三點", basis: "是週四下午三點")))
+    let new = try memoryID(h, "主人的牙醫約在週四下午三點")
+    #expect(try await h.doll.dashboardMemory().fixes.map(\.id) == [1])
+    let d = Dashboard(doll: h.doll, config: DashboardConfig())
+    #expect(await d.respond(method: "POST", target: "/api/memory/revert/1").status == 200)
+    let files = try memoryFilesByID(h)
+    #expect(files[old]!.file.retired == nil && files[new]!.file.retired?.supersededBy == old)
+    #expect(try fixesFile(h).items[0].reverted != nil)
+    #expect(try h.events().last { $0.kind == .memory }!.text
+            == "【主人還原了一條記憶】你改掉的「主人的牙醫約在週三下午兩點」他還原了，又算數了；改成的「主人的牙醫約在週四下午三點」收起來了。")
+    try await h.turn(Scripted("", recall("牙醫")))
+    let out = try h.toolResults().last!.text
+    #expect(out.contains("記憶 \(old)〕") && !out.contains("記憶 \(new)〕"))
+    #expect(await d.respond(method: "POST", target: "/api/memory/revert/1").status == 409)
+    #expect(await d.respond(method: "POST", target: "/api/memory/revert/x").status == 400)
+}
+
+// the maintenance's audit (2026-11-18, `Audit.swift`) ------------------------------------------------------
+
+private let auditReply = Scripted("""
+    ```json
+    {"results": [{"m": "m1", "verdict": "wrong", "quote": "下週四下午三點", "fixed": "主人的牙醫約在下週四下午三點"},
+                 {"m": "m2", "verdict": "ok"},
+                 {"m": "m3", "verdict": "wrong", "quote": "主人說他很怕打針", "fixed": ""}]}
+    ```
+    """)
+
+/// A day: the owner's line, her three memories (one wrong value, one right, one the line never said),
+/// then the maintenance's replies after `before` (her own replies when interrupted come in `extra`).
+private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after: [Scripted]) async throws -> (Harness, ManualClock, Task<Void, any Error>) {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let h = try await Harness([Scripted("", remember([("主人的牙醫約在週三下午兩點", false)]), remember([("主人在中山牙醫看牙", false)]),
+                                        remember([("主人怕打針", false)])), Scripted("", dm("記下了"))] + after, clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.audit.enabled = true; $0.audit.mode = mode
+    }
+    if let stall { await h.model.stall(request: stall) }
+    let runner = Task { [doll = h.doll] in try await doll.run() }
+    await h.doll.ownerSaid("下週四下午三點要去中山牙醫看牙")
+    try await waitUntil { h.said == ["記下了"] }
+    return (h, clock, runner)
+}
+
+@Test func theAuditChangesAMemoryOnlyWithAVerifiedContradictingQuoteAndSaysSoAtTheEnd() async throws {
+    let (h, clock, runner) = try await auditDay(mode: "change", [auditReply, planReply, summaryReply])
+    let seg = try h.timeline().segment
+    let ids = try ["主人的牙醫約在週三下午兩點", "主人在中山牙醫看牙", "主人怕打針"].map { try memoryID(h, $0) }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    let reqs = await h.model.requests
+    // One request before the consolidation: the day without her own words, the memories by ref.
+    #expect(reqs.count == 5 && reqs[2].messages[0].content == Audit.instructions && reqs[2].effort == reqs[3].effort)
+    let user = reqs[2].messages[1].content
+    #expect(user.contains("## 原文 \(seg)\n[21:00 主人說] 下週四下午三點要去中山牙醫看牙") && !user.contains("記下了"))
+    #expect(user.contains("[m1｜原文：\(seg)]\n主人的牙醫約在週三下午兩點\n\n[m2｜原文：\(seg)]\n主人在中山牙醫看牙\n\n[m3｜原文：\(seg)]\n主人怕打針"))
+    let files = try memoryFilesByID(h)
+    let new = try memoryID(h, "主人的牙醫約在下週四下午三點")
+    #expect(files[ids[0]]!.file.retired == Retirement(ts: at("2026-11-17", "03:00"), supersededBy: new, reason: "系統維護查對：原文「下週四下午三點」跟它不合"))
+    #expect(files[new]!.file.tier == .owner && files[new]!.file.auditSegment == nil)
+    // The made-up quote changed nothing; every checked one lost its mark.
+    #expect(files[ids[2]]!.file.retired == nil && files[ids[1]]!.file.retired == nil)
+    #expect(ids.allSatisfy { files[$0]!.file.auditSegment == nil })
+    #expect(h.logs.contains { $0.contains("audit: quote rejected: \(ids[2]) quote not in the source「主人說他很怕打針」") })
+    #expect(h.logs.contains { $0.contains("maintenance: audit done") && $0.contains("3 checked (0 priority), 1 ok, 0 unsure, 1 changed, 0 flagged, 1 quotes rejected") })
+    let rec = try fixesFile(h).items
+    #expect(rec.count == 1 && rec[0].by == "audit" && rec[0].basis == "下週四下午三點" && rec[0].replacement == new)
+    #expect(try segmentTexts(h)[1][0].hasPrefix("【系統維護】結束，現在 03:00。查對了新記的 3 條記憶。改了 1 條：「主人的牙醫約在週三下午兩點」改成「主人的牙醫約在下週四下午三點」（原文：「下週四下午三點」）。舊的留著，主人在儀表板看得到、可以還原。\(didOne)"))
+    // What tonight's consolidation wrote waits for the next audit.
+    #expect(try memoryFilesByID(h).values.filter { $0.file.auditSegment != nil }.map(\.file.body) == ["主人今天跟我說晚安"])
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func inFlagModeTheAuditOnlyListsItForTheOwner() async throws {
+    let (h, clock, runner) = try await auditDay(mode: "flag", [auditReply, planReply, summaryReply])
+    let id = try memoryID(h, "主人的牙醫約在週三下午兩點")
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(try memoryFilesByID(h)[id]!.file.retired == nil && memoryFilesByID(h).values.filter { $0.file.retired != nil }.isEmpty)
+    let rec = try await h.doll.dashboardMemory().fixes
+    #expect(rec.count == 1 && rec[0].by == "flag" && rec[0].memory == id && rec[0].after == "主人的牙醫約在下週四下午三點" && rec[0].replacement == nil)
+    #expect(try segmentTexts(h)[1][0].hasPrefix("【系統維護】結束，現在 03:00。查對了新記的 3 條記憶。有 1 條可能記錯了，先沒改，留給主人看：「主人的牙醫約在週三下午兩點」（原文：「下週四下午三點」，可能該是「主人的牙醫約在下週四下午三點」）。\(didOne)"))
+    await #expect(throws: MemoryError.self) { try await h.doll.dashboardMemoryRevert(1) }
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func theMemoriesInFrontOfHerWhenTheOwnerCorrectedHerAreAuditedFirstWithinTheCap() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let reply = Scripted("""
+        ```json
+        {"results": [{"m": "m1", "verdict": "wrong", "quote": "不對，是週四下午三點", "fixed": "主人的牙醫約在週四下午三點"}]}
+        ```
+        """)
+    let h = try await Harness([Scripted("", recall("牙醫")), Scripted("", remember([("主人喜歡貓", false)])), Scripted("", dm("週三下午兩點")),
+                               Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "不對，是週四下午三點")])), Scripted("", dm("好，週四下午三點")),
+                               Scripted("none"), reply, planReply, summaryReply], clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true
+        $0.audit.enabled = true; $0.audit.mode = "change"; $0.audit.maxMemories = 1
+    }
+    try await seedMemory(h, "public", "主人的牙醫約在週三下午兩點", tier: "consolidated", id: "1-aaaaaa")
+    let runner = Task { [doll = h.doll] in try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await h.doll.ownerSaid("牙醫是哪天")
+    try await waitUntil { h.said == ["週三下午兩點"] }
+    await h.doll.ownerSaid("不對，是週四下午三點")
+    try await waitUntil { h.said == ["週三下午兩點", "好，週四下午三點"] }
+    let seg = try h.timeline().segment
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    let user = await h.model.seen(6)[1].content
+    #expect(user.hasSuffix("# 要查的記憶\n\n[m1｜原文：\(seg)｜主人糾正她的時候她眼前的記憶]\n主人的牙醫約在週三下午兩點") && !user.contains("主人喜歡貓"))
+    #expect(try memoryFilesByID(h)["1-aaaaaa"]!.file.retired != nil && memoryID(h, "主人的牙醫約在週四下午三點") != "")
+    #expect(try memoryFilesByID(h)[memoryID(h, "主人喜歡貓")]!.file.auditSegment == seg)
+    #expect(try segmentTexts(h)[1][0].contains("查對了新記的 1 條記憶（主人糾正你的時候你眼前的 1 條先查）。改了 1 條：「主人的牙醫約在週三下午兩點」改成「主人的牙醫約在週四下午三點」（原文：「不對，是週四下午三點」）。舊的留著，主人在儀表板看得到、可以還原。還有 1 條這次沒查，下次維護再查。"))
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func anInterruptedAuditWritesNothingAndARestartGoesOnWithIt() async throws {
+    // Interrupted at the audit's request: nothing written, the marks stay.
+    let (h, clock, runner) = try await auditDay(mode: "change", stall: 3, [Scripted("", dm("在"))])
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 3 }
+    await h.doll.ownerSaid("還在嗎")
+    try await waitUntil { h.said == ["記下了", "在"] }
+    #expect(h.logs.contains { $0.contains("maintenance: audit cancelled (interrupted)") })
+    #expect(try fixesFile(h).items.isEmpty && memoryFilesByID(h).values.allSatisfy { $0.file.retired == nil && $0.file.auditSegment != nil })
+    await h.doll.stop()
+    try await runner.value
+    // A restart in the middle: the maintenance goes on with the audit.
+    let (a, clockA, ra) = try await auditDay(mode: "change", stall: 3, [])
+    clockA.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await a.model.requests.count == 3 }
+    await a.doll.stop()
+    try await ra.value
+    #expect(try fixesFile(a).items.isEmpty)
+    let b = try await Harness([auditReply, planReply, summaryReply], dir: a.dir, clock: clockA) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.audit.enabled = true; $0.audit.mode = "change"
+    }
+    try await b.doll.announceBoot()
+    let rb = Task { [doll = b.doll] in try await doll.run() }
+    try await waitUntil { b.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(b.logs.contains { $0.contains("maintenance: was running at the restart") })
+    #expect(try fixesFile(b).items.map(\.basis) == ["下週四下午三點"])
+    await b.doll.stop()
+    try await rb.value
+}
+
+@Test func theAuditReplyIsCheckedWholeAndAQuoteMustStandOnItsOwn() throws {
+    let refs = ["m1", "m2"]
+    func block(_ s: String) -> String { "```json\n" + s + "\n```" }
+    #expect(try Audit.parse(block(#"{"results": [{"m": "m2", "verdict": "unsure"}, {"m": "m1", "verdict": "wrong", "quote": "週四", "fixed": ""}]}"#), refs: refs)
+            == [Audit.Verdict(ref: "m2", verdict: "unsure", quote: "", fixed: ""), Audit.Verdict(ref: "m1", verdict: "wrong", quote: "週四", fixed: "")])
+    for (bad, why) in [
+        (block(#"{"results": [{"m": "m1", "verdict": "ok"}]}"#), "no result for m2"),
+        (block(#"{"results": [{"m": "m1", "verdict": "ok"}, {"m": "m3", "verdict": "ok"}]}"#), "m m3 is not a memory"),
+        (block(#"{"results": [{"m": "m1", "verdict": "ok"}, {"m": "m1", "verdict": "ok"}]}"#), "given twice"),
+        (block(#"{"results": [{"m": "m1", "verdict": "wrong", "fixed": "x"}, {"m": "m2", "verdict": "ok"}]}"#), "wrong needs a quote"),
+        (block(#"{"results": [{"m": "m1", "verdict": "maybe"}, {"m": "m2", "verdict": "ok"}]}"#), "verdict must be ok, unsure or wrong"),
+        ("沒有區塊", "exactly one ```json block"),
+    ] {
+        #expect { _ = try Audit.parse(bad, refs: refs) } throws: { "\($0)".contains(why) }
+    }
+    let source = "[09:00 主人說] 下週四下午三點要去中山牙醫看牙\n[09:05 主人說] 晚上可能會跟阿凱去吃拉麵"
+    func v(_ q: String, _ f: String = "x") -> Audit.Verdict { Audit.Verdict(ref: "m1", verdict: "wrong", quote: q, fixed: f) }
+    #expect(Audit.refusal(v("下週四下午三點"), memory: "主人週三看牙", source: source, minChars: 4) == nil)
+    #expect(Audit.refusal(v("下週四下午兩點"), memory: "主人週三看牙", source: source, minChars: 4) == "quote not in the source")
+    #expect(Audit.refusal(v("週四"), memory: "主人週三看牙", source: source, minChars: 4) == "quote shorter than 4 letters")
+    #expect(Audit.refusal(v("中山牙醫看牙"), memory: "主人在中山牙醫看牙", source: source, minChars: 4) == "quote says what the memory says")
+    #expect(Audit.refusal(v("可能會跟阿凱", "主人今晚跟阿凱吃拉麵。"), memory: "主人今晚跟阿凱吃拉麵", source: source, minChars: 4) == "fixed text is the memory unchanged")
+    // Her own words are not in the source.
+    let day = [Event(.owner, .owner, "牙醫週四"), Event(.doll, .internal, "我記得是週三")]
+    #expect(Audit.sourceLines(day).count == 1)
+}
+
+@Test func theAuditSectionIsValidated() throws {
+    let file = FileManager.default.temporaryDirectory.appending(path: "audit-\(UUID().uuidString).toml")
+    let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n" + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
+    for bad in ["[audit]\nmode = \"fix\"\n", "[audit]\nmax_memories = 0\n", "[audit]\nmax_source_chars = 10\n", "[audit]\ncap = 3\n"] {
+        try (head + bad).write(to: file, atomically: true, encoding: .utf8)
+        #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
+    }
+    let example = try Config.load(root.appending(path: "dollcore.example.toml")).audit
+    #expect(example.enabled && example.mode == "flag" && example.maxMemories == 20 && example.maxSourceChars == 30000)
 }

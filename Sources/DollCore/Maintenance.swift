@@ -58,6 +58,9 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
     /// day gives a reason, at most every `[goals] revise_min_days`; before consolidation, which
     /// closes the day's timeline.
     case review
+    /// Her new memories checked against where they came from (`Audit.swift`); before
+    /// consolidation, so its corrections are in place before consolidation recalls related memories.
+    case audit
     /// The timeline so far into long-term memory, then a new segment opened by the end notice and
     /// the day's summary.
     case consolidate
@@ -67,6 +70,7 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
         switch self {
         case .concerns: "從今天的對話記掛念"
         case .review: "回顧今天、看想成為的樣子要不要改"
+        case .audit: "查對新記的記憶"
         case .consolidate: "整理記憶、寫摘要"
         }
     }
@@ -85,6 +89,7 @@ struct MaintenanceDone {
 enum MaintenanceWork: Sendable {
     case concerns(ConcernExtraction.Answer)
     case review(IdealReview.Answer)
+    case audit(Audit.Answer)
     case consolidate(Consolidation.Request, Consolidation.Answer)
 }
 
@@ -350,6 +355,7 @@ extension Doll {
         switch t {
         case .concerns: drivesConfig.enabled && drivesConfig.maintenanceConcernsMax > 0 && dayToConsolidate
         case .review: reviewDue
+        case .audit: auditDue
         case .consolidate: dayToConsolidate
         }
     }
@@ -361,6 +367,8 @@ extension Doll {
             return .concerns(try await prepareConcernExtraction())
         case .review:
             return .review(try await prepareIdealReview())
+        case .audit:
+            return .audit(try await prepareAudit())
         case .consolidate:
             let request = try Consolidation.gather(timeline, memory: memory, config: config.consolidate)
             return .consolidate(request, try await Consolidation.ask(request, model: maintenanceModel, config: config))
@@ -372,6 +380,8 @@ extension Doll {
         switch w {
         case .review(let answer):
             return try commitIdealReview(answer)
+        case .audit(let answer):
+            return try commitAudit(answer)
         case .concerns(let answer):
             return try commitConcernExtraction(answer)
         case .consolidate(let request, let answer):

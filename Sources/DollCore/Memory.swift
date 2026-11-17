@@ -221,6 +221,9 @@ public struct MemoryFile: Sendable, Equatable {
     /// When its strength first reached `[memory] strength_settled`: from then on it no longer fades.
     /// Stored, so it never flips back (not even when the config's lines change).
     public var settled: Double?
+    /// Not yet checked by the maintenance's audit (2026-11-18, `Audit.swift`): the timeline segment
+    /// it was written from. Set when she or consolidation writes or rewrites it; the audit clears it.
+    public var auditSegment: String?
     public var body: String
 
     /// Every piece of evidence: `evidence`, or (never confirmed, and every file written before
@@ -243,6 +246,7 @@ public struct MemoryFile: Sendable, Equatable {
         if deep { lines.append("deep = true") }
         if !evidence.isEmpty { lines.append("evidence = " + Evidence.json(evidence)) }
         if let settled { lines.append("settled_ts = \(settled)") }
+        if let auditSegment { lines.append("audit_pending = \"\(auditSegment)\"") }
         if !entities.isEmpty { lines.append("entities = " + MemoryEntity.json(entities)) }
         return (lines + ["+++", body]).joined(separator: "\n")
     }
@@ -344,10 +348,11 @@ public enum RecallHit: Sendable {
         }
     }
 
-    /// 〔確定的打算｜public〕 or 〔今天 14:05｜主人說〕, then the text.
+    /// 〔確定的打算｜public｜記憶 12-ab34cd〕 or 〔今天 14:05｜主人說〕, then the text. A memory's id is
+    /// what she names it by to correct it (`memory.fix`, 2026-11-18).
     public var rendered: String {
         switch self {
-        case .memory(let h): "〔\(h.label)｜\(h.folder)〕\n\(h.text)"
+        case .memory(let h): "〔\(h.label)｜\(h.folder)｜記憶 \(h.id)〕\n\(h.text)"
         case .today(let h): "〔\(h.tag)〕\n\(h.text)"
         }
     }
@@ -569,6 +574,9 @@ public final class Memory {
             case "settled_ts":
                 guard let t = Double(bare) else { throw MemoryError(description: "settled_ts is not a number: \(value)") }
                 f.settled = t
+            case "audit_pending":
+                guard !bare.isEmpty else { throw MemoryError(description: "audit_pending is empty") }
+                f.auditSegment = bare
             default: break
             }
         }
@@ -613,7 +621,7 @@ public final class Memory {
     @discardableResult
     public func write(_ text: String, folder f: MemoryFolder, sourceSeq: Int64, tier: SourceTier, kind: MemoryKind?,
                       app: AppIdentity? = nil, experience: (task: String, stats: ExperienceStats)? = nil,
-                      entities: [MemoryEntity] = [], deep: Bool = false, now: Double) throws -> String {
+                      entities: [MemoryEntity] = [], deep: Bool = false, auditSegment: String? = nil, now: Double) throws -> String {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "remember item with no text") }
         guard let confidence = config.confidence[tier] else {
@@ -628,7 +636,8 @@ public final class Memory {
         let url = directory(f).appending(path: "\(id).md")
         let file = MemoryFile(sourceSeq: sourceSeq, ts: now, confidence: confidence, kind: kind?.rawValue ?? "", tier: tier,
                               app: app?.bundleID ?? "", appVersion: app?.version ?? "",
-                              task: experience?.task, stats: experience?.stats, entities: entities, deep: deep, body: body)
+                              task: experience?.task, stats: experience?.stats, entities: entities, deep: deep,
+                              auditSegment: auditSegment, body: body)
         try file.text.write(to: url, atomically: true, encoding: .utf8)
         try index(id, url: url, folder: dirName(f), file)
         return id
@@ -770,8 +779,8 @@ public final class Memory {
     }
 
     /// Replaces a memory's text and entities (consolidation's update); the rest of its front-matter
-    /// stays, the index follows.
-    func update(_ id: String, text: String, entities: [MemoryEntity]) throws {
+    /// stays, the index follows. `auditSegment`: the segment the new text came from (the audit checks it).
+    func update(_ id: String, text: String, entities: [MemoryEntity], auditSegment: String? = nil) throws {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "update of \(id) with no text") }
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
@@ -779,9 +788,57 @@ public final class Memory {
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
         parsed.body = body
         parsed.entities = MemoryEntity.unique(entities)
+        if let auditSegment { parsed.auditSegment = auditSegment }
         try checkEntities(parsed.entities)
         try parsed.text.write(to: url, atomically: true, encoding: .utf8)
         try index(id, url: url, folder: url.deletingLastPathComponent().lastPathComponent, parsed)
+    }
+
+    /// A correction (2026-11-18, `MemoryFix.swift`): a new memory with `text` in `old`'s folder takes its
+    /// place and `old` is retired with `reason`, superseded by it. It is about the same thing, so it keeps
+    /// `old`'s kind (unless `kind` is given), entities, evidence, deep mark and settled time; its tier,
+    /// confidence and `source_seq` are its basis's. Returns the new id.
+    func replace(_ old: String, text: String, tier: SourceTier, sourceSeq: Int64, kind: MemoryKind?, reason: String,
+                 auditSegment: String?, now: Double) throws -> String {
+        guard let (folder, parsed) = try file(old) else { throw MemoryError(description: "no memory file \(old)") }
+        guard parsed.retired == nil else { throw MemoryError(description: "memory \(old) is already retired") }
+        let id = try write(text, folder: folder, sourceSeq: sourceSeq, tier: tier, kind: kind ?? MemoryKind(rawValue: parsed.kind),
+                           entities: parsed.entities, deep: parsed.deep && Self.strengthTiers.contains(tier),
+                           auditSegment: auditSegment, now: now)
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var fresh = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        fresh.evidence = parsed.allEvidence
+        fresh.settled = parsed.settled
+        try fresh.text.write(to: url, atomically: true, encoding: .utf8)
+        try retire(old, Retirement(ts: now, supersededBy: id, reason: reason))
+        return id
+    }
+
+    /// Takes a retirement back (the owner's revert on the dashboard): the file loses its retirement and
+    /// is indexed again.
+    func unretire(_ id: String) throws {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.retired != nil else { throw MemoryError(description: "memory \(id) is not retired") }
+        parsed.retired = nil
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try index(id, url: url, folder: url.deletingLastPathComponent().lastPathComponent, parsed)
+    }
+
+    /// Every memory the audit has not checked yet (`audit_pending`), not retired, oldest first.
+    func pendingAudit() throws -> [(id: String, folder: MemoryFolder, file: MemoryFile)] {
+        try MemoryFolder.allCases.flatMap { f in
+            try list(f).filter { $0.file.auditSegment != nil && $0.file.retired == nil }.map { ($0.id, f, $0.file) }
+        }.sorted { ($0.file.ts, $0.id) < ($1.file.ts, $1.id) }
+    }
+
+    /// The audit checked it: its `audit_pending` mark goes (text and index stay).
+    func clearAudit(_ id: String) throws {
+        guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
+        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        guard parsed.auditSegment != nil else { return }
+        parsed.auditSegment = nil
+        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     /// Marks a memory retired in its front-matter and takes it out of the index; the file stays.

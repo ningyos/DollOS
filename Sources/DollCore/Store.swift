@@ -304,6 +304,17 @@ public final class Timeline {
         try load()
     }
 
+    /// Opens the existing segment `segment` under `dir` to read it (the audit reads a past day,
+    /// 2026-11-18). A segment that is not there is an error.
+    public init(dir: URL, segment: String) throws {
+        self.segment = segment
+        file = dir.appending(path: segment + ".jsonl")
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            throw StoreError(description: "no timeline segment \(segment) in \(dir.path)")
+        }
+        try load()
+    }
+
     /// The local time now as `yyyyMMdd-HHmmss`; when that does not sort after `newest` (same second),
     /// `newest` with `-1` appended, which does.
     private static func newName(after newest: String?) -> String {
