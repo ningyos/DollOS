@@ -275,34 +275,17 @@ private final class FakeCua: ComputerDriver, Sendable {
                 after(tool, args, &s)
                 return #"{"effect":"unverifiable"}"#
             case "run_steps":
-                // Each step as the inner tool's own call (after this one), a named target resolved
-                // to the app's front window element with that label, the way cua-driver does.
+                // Each step as the inner tool's own call (after this one). Names never reach the
+                // driver: dollcore resolves them to an element token (`Mac.resolve`).
                 var results: [[String: Any]] = []
                 for (i, step) in (args["steps"] as? [[String: Any]] ?? []).enumerated() {
                     let inner = step["tool"] as? String ?? ""
-                    var a = step["args"] as? [String: Any] ?? [:]
+                    let a = step["args"] as? [String: Any] ?? [:]
                     s.calls.append((inner, Self.text(a)))
                     if let refusal = s.refuse.removeValue(forKey: inner) { throw ComputerError(refusal) }
-                    var element: String?
-                    if let name = a["name"] as? String {
-                        let app = a["app"] as? String
-                        let role = (a["role"] as? String).map { $0.lowercased().replacingOccurrences(of: "ax", with: "") }
-                        let pid = s.apps.first { $0.bundleID == app || $0.name == app }?.pid
-                        guard let w = s.windows.first(where: { $0.pid == pid && $0.onScreen }),
-                              let row = w.elements.firstIndex(where: { $0.label == name && (role == nil || $0.role.lowercased() == "ax" + role!) }) else {
-                            throw ComputerError(Self.text(["ok": false, "failed_step": i, "steps": [["index": i, "ok": false, "code": "not_found", "phase": "find",
-                                                                                                   "message": "no \(a["role"] ?? "element") \"\(name)\" in \(app ?? "?")'s front window"]]]))
-                        }
-                        a["pid"] = w.pid
-                        a["window_id"] = w.id
-                        a["element_token"] = "named:\(row)"
-                        element = "[\(row)] \(w.elements[row].role)" + (w.elements[row].label.map { " \"\($0)\"" } ?? "")
-                    }
                     let after = s.after
                     after(inner, a, &s)
-                    var r: [String: Any] = ["index": i, "ok": true, "message": "Sent, effect not verified"]
-                    if let element { r["target"] = ["element": element] }
-                    results.append(r)
+                    results.append(["index": i, "ok": true, "message": "Sent, effect not verified"])
                 }
                 return Self.text(["executed": results.count, "ok": true, "steps": results])
             default:
@@ -1090,6 +1073,10 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(try steps(#"[{"click": {"name": "儲存", "role": "button"}, "count": 2, "button": "right"}]"#, expect: "x")
             == [.click(.named(name: "儲存", role: "button"), button: "right", count: 2)])
     #expect(try steps(#"[{"click": {"name": " 儲存 "}}]"#) == [.click(.named(name: "儲存", role: nil), button: "left", count: 1)])
+    // A name is a string; a row is a number (the "7" button and row 7 are different targets).
+    #expect(try steps(#"[{"click": " 7 "}, {"click": 7}]"#, expect: "x") == [.click(.named(name: "7", role: nil), button: "left", count: 1),
+                                                                           .click(.row(7), button: "left", count: 1)])
+    #expect(try steps(#"[{"type": "x", "in": "收件人"}]"#) == [.type(text: "x", into: .named(name: "收件人", role: nil))])
     #expect(try steps(#"[{"click": {"x": 10, "y": 20}}]"#) == [.click(.point(x: 10, y: 20), button: "left", count: 1)])
     #expect(try steps(#"[{"type": " a\n", "in": 3}]"#) == [.type(text: " a\n", into: .row(3))])
     #expect(try steps(#"[{"type": "x"}]"#) == [.type(text: "x", into: nil)])
@@ -1115,17 +1102,17 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     func actError(_ json: String, expect: String? = nil) -> String? {
         error("act", [("steps", json)] + (expect.map { [("expect", $0)] } ?? []))
     }
-    #expect(actError(#"{"click": 1}"#) == #"act 的 steps 要是步驟的 JSON 陣列，例：[{"click": 5}, {"type": "你好"}]；收到 {"click": 1}"#)
+    #expect(actError(#"{"click": 1}"#) == #"act 的 steps 要是步驟的 JSON 陣列，例：[{"click": "儲存"}, {"type": "你好"}]；收到 {"click": 1}"#)
     #expect(actError("[]")?.hasPrefix("act 的 steps 要是步驟的 JSON 陣列") == true)
-    #expect(actError(#"[5]"#) == #"act 的第 1 步要是一個物件，例：{"click": 5}"#)
+    #expect(actError(#"[5]"#) == #"act 的第 1 步要是一個物件，例：{"click": "儲存"}"#)
     #expect(actError(#"[{"press": 1}]"#) == "act 的第 1 步要剛好有 click、type、key、scroll、menu 其中一個，收到 press")
     #expect(actError(#"[{"click": 1}, {"click": 2, "type": "x"}]"#, expect: "x") == "act 的第 2 步要剛好有 click、type、key、scroll、menu 其中一個，收到 click、type")
     #expect(actError(#"[{"click": 1, "row": 1}]"#) == "act 的第 1 步（click）沒有 row 這一欄")
     #expect(actError(#"[{"click": 1, "count": 3}]"#) == "act 的第 1 步的 count 只能是 1 或 2")
     #expect(actError(#"[{"click": 1, "button": "middle"}]"#) == "act 的第 1 步的 button 只能是 left、right")
-    #expect(actError(#"[{"click": "a"}]"#)?.hasPrefix("act 的第 1 步的 click 要是行號（例：5）") == true)
-    #expect(actError(#"[{"click": {"x": 1}}]"#)?.hasPrefix("act 的第 1 步的 click 要是行號（例：5）") == true)
-    #expect(actError(#"[{"type": "x", "in": {"x": 1, "y": 2}}]"#) == "act 的第 1 步的 in 要是行號或名字，不能是 x、y")
+    #expect(actError(#"[{"click": " "}]"#)?.hasPrefix(#"act 的第 1 步的 click 要是名字（例："儲存"）"#) == true)
+    #expect(actError(#"[{"click": {"x": 1}}]"#)?.hasPrefix(#"act 的第 1 步的 click 要是名字（例："儲存"）"#) == true)
+    #expect(actError(#"[{"type": "x", "in": {"x": 1, "y": 2}}]"#) == "act 的第 1 步的 in 要是名字或行號，不能是 x、y")
     #expect(actError(#"[{"scroll": "sideways"}]"#) == "act 的第 1 步的 scroll 只能是 up、down、left、right")
     #expect(actError(#"[{"scroll": "up", "amount": 0}]"#) == "act 的第 1 步的 amount 要是 1 以上的整數")
     #expect(actError(#"[{"key": "cmd+s"}]"#)?.hasPrefix("act 的第 1 步的 key 只放一個鍵（例：\"return\"），修飾鍵放 modifiers") == true)
@@ -1264,7 +1251,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     try await h.turn(Scripted("", readCall))
     try await h.turn(Scripted("", clickRow(9)))
     let notThere = try h.toolResults().last!.text
-    #expect(notThere == "失敗：沒有做：第 9 行不在最新一次讀到的清單裡（Calculator「計算機」，行號 0–5）。重新 read_window，用新清單的行號；之後才出現的元素用 name 指定。")
+    #expect(notThere == "失敗：沒有做：第 9 行不在最新一次讀到的清單裡（Calculator「計算機」，行號 0–5）。用名字指定，或重新 read_window 用新清單的行號。")
     // Off the screenshot: not clicked either.
     try await h.turn(Scripted("", act(#"{"click": {"x": 460, "y": 5}}"#)))
     #expect(try h.toolResults().last!.text == "失敗：沒有點：460,5 在截圖外（截圖 460×816）")
@@ -1353,7 +1340,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     // Bad arguments alone: a text result, no read.
     try await h.turn(Scripted("", act(#"{"click": {"x": 1}}"#), act(#"{"click": 1, "x": 1}"#), act(#"{"scroll": "sideways"}"#)))
     let badTexts = try h.toolResults().suffix(3).map(\.text)
-    #expect(badTexts[0].hasPrefix("失敗：act 的第 1 步的 click 要是行號（例：5）")
+    #expect(badTexts[0].hasPrefix(#"失敗：act 的第 1 步的 click 要是名字（例："儲存"）"#)
             && badTexts.dropFirst() == ["失敗：前面第 1 步（act）失敗了，這一步沒做", "失敗：前面第 1 步（act）失敗了，這一步沒做"])
     #expect(try h.toolResults().suffix(3).allSatisfy { $0.image == nil })
     #expect(h.last.actions == ["error act", "skipped act", "skipped act"] && h.cua.actions.count == 6)
@@ -1532,25 +1519,78 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
             FakeCua.press(tool, args, &s)
             if tool == "click", args["element_token"] as? String == "s00000001:2" {
                 s.windows.insert(FakeCua.Window(id: 70000, pid: 100, app: "計算機", title: "關於", elements: [
-                    FakeCua.Element(role: "AXWindow", label: "關於", parent: nil), FakeCua.Element(role: "AXButton", label: "好")]), at: 0)
+                    FakeCua.Element(role: "AXWindow", label: "關於", parent: nil), FakeCua.Element(role: "AXButton", label: "好")], z: 1), at: 0)
             }
         }
     }
-    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": {"name": "好", "role": "button"}}"#, expect: "好")))
-    let named = try #require((h.cua.args("run_steps").last?["steps"] as? [[String: Any]])?.first?["args"] as? [String: Any])
-    #expect(named["app"] as? String == "com.apple.calculator" && named["name"] as? String == "好" && named["role"] as? String == "button"
-            && named["element_token"] == nil && named["pid"] == nil)
+    try await h.turn(Scripted("", act(#"{"click": "7"}"#, #"{"click": {"name": "好", "role": "button"}}"#, expect: "好")))
+    // Not in her read nor in the read between the steps: the app's front window, read again, by its token.
+    let named = try #require(h.cua.args("click").last)
+    #expect(named["window_id"] as? Int == 70000 && named["pid"] as? Int == 100 && named["name"] == nil
+            && (named["element_token"] as? String)?.hasSuffix(":1") == true)
     let r = try h.toolResults().last!
     #expect(r.text == "2 步都做了：click AXButton \"7\"、click AXButton \"好\"。\n跟你預期的一樣：視窗裡有「好」。")
     #expect(r.window?.contains("的視窗「關於」") == true && r.window?.contains("- [1] AXButton \"好\"") == true)
-    // The log keeps the element the driver found for the named step.
+    // The log keeps the element as that read has it.
     let records = try actionRecords(h)
     #expect(records.count == 2 && records[0].sequence == records[1].sequence)
-    #expect(records[1].element == ElementIdentity(row: 1, role: "AXButton", subrole: nil, axID: nil, label: "好", title: nil, path: [])
+    #expect(records[1].element?.row == 1 && records[1].element?.label == "好" && records[1].element?.path == [#"AXWindow "關於""#]
             && records[1].args == ["name": "好", "role": "button"])
-    // A name the window does not have: the driver's not_found stops it like any failed step.
-    try await h.turn(Scripted("", act(#"{"click": {"name": "取消"}}"#)))
-    #expect(try h.toolResults().last!.text.hasPrefix("第 1 步（click \"取消\"）沒做成：") && h.last.actions == ["error act"])
+    // A name her latest read does not have, as a first step: refused with nothing sent.
+    try await h.turn(Scripted("", act(#"{"click": "取消"}"#)))
+    #expect(try h.toolResults().last!.text == "失敗：沒有做：最新讀到的清單（Calculator「關於」）裡沒有名字叫「取消」的元素。名字要跟清單上引號或括號裡的字一字不差；沒有名字的元素用行號。")
+    #expect(h.last.actions == ["error act"] && h.cua.actions == ["click", "click"])
+}
+
+@Test func aNameIsResolvedInHerLatestReadAndSentAsThatElementsToken() async throws {
+    let h = try await menuHarness()
+    // By label, by AX id in any case, by label and role; each the token of the latest read of the window.
+    try await h.turn(Scripted("", act(#"{"click": "7"}"#, #"{"click": "eight"}"#, #"{"click": {"name": "=", "role": "AXButton"}}"#, expect: "78")))
+    #expect(try h.toolResults().last!.text.hasPrefix("3 步都做了：click AXButton \"7\"、click AXButton \"8\"、click AXButton \"=\"。\n跟你預期的一樣"))
+    let clicks = h.cua.args("click")
+    #expect(clicks.map { $0["element_token"] as? String } == ["s00000001:2", "s00000002:3", "s00000003:5"])
+    #expect(clicks.allSatisfy { $0["window_id"] as? Int == 62541 && $0["name"] == nil })
+    let records = try actionRecords(h)
+    #expect(records.map { $0.element?.axID } == ["Seven", "Eight", "Equals"] && records[1].args == ["name": "eight"])
+    #expect(records.allSatisfy { $0.element?.path == [#"AXWindow "計算機""#] })
+}
+
+@Test func anAmbiguousNameIsRefusedWithItsCandidatesAndARoleSettlesIt() async throws {
+    let h = try await menuHarness()
+    h.cua.change { $0.windows[0].elements.append(FakeCua.Element(role: "AXMenuItem", label: "7")) }
+    try await h.turn(Scripted("", readCall))
+    try await h.turn(Scripted("", act(#"{"click": "7"}"#)))
+    #expect(try h.toolResults().last!.text == #"失敗：沒有做：名字叫「7」的有 2 個：[2] AXButton "7"、[6] AXMenuItem "7"。加 role（例：{"name": "7", "role": "button"}），或用行號。"#)
+    #expect(h.cua.actions.isEmpty)
+    try await h.turn(Scripted("", act(#"{"click": {"name": "7", "role": "button"}}"#)))
+    #expect(h.cua.args("click").map { $0["element_token"] as? String } == ["s00000002:2"])
+    #expect(try h.toolResults().last!.window?.contains(#"AXStaticText "7""#) == true)
+}
+
+@Test func aNameThatMatchesNothingIsRefusedWithTheNearOnes() async throws {
+    let h = try await menuHarness { $0.computer.windowWaitS = 0 }
+    // In her read, as the first step: the near names; never a part of a name.
+    try await h.turn(Scripted("", act(#"{"click": "78"}"#)))
+    #expect(try h.toolResults().last!.text
+            == #"失敗：沒有做：最新讀到的清單（Calculator「計算機」）裡沒有名字叫「78」的元素；像的有：[2] AXButton "7"、[3] AXButton "8"。名字要跟清單上引號或括號裡的字一字不差；沒有名字的元素用行號。"#)
+    #expect(h.cua.actions.isEmpty)
+    // After an earlier step: the front window is read again (as long as `open` waits), then refused.
+    try await h.turn(Scripted("", act(#"{"click": "7"}"#, #"{"click": "取消"}"#, expect: "7")))
+    #expect(try h.toolResults().last!.text.hasPrefix("第 2 步（click \"取消\"）沒做成：沒有做：Calculator最前面的視窗「計算機」裡沒有名字叫「取消」的元素（等了 0 秒）。名字要跟清單上引號或括號裡的字一字不差。前面 1 步做了，下面是現在的視窗。"))
+    #expect(h.cua.actions == ["click"])
+}
+
+@Test func aRowWrittenAsTheNumberAnotherElementIsNamedIsRefused() async throws {
+    let h = try await menuHarness()
+    h.cua.change { $0.windows[0].elements.append(FakeCua.Element(role: "AXButton", label: "2", id: "Two")) }
+    try await h.turn(Scripted("", readCall))
+    // m7-mac rounds (2026-11-17): rows written for the digits they were not.
+    try await h.turn(Scripted("", clickRow(2)))
+    #expect(try h.toolResults().last!.text == #"失敗：沒有做：2 是第 2 行（AXButton "7"），可是清單上名字叫「2」的是 [6] AXButton "2"。要按「2」寫 "2"（加引號是名字）；要第 2 行就寫它的名字。"#)
+    #expect(h.cua.actions.isEmpty)
+    // Rows still work where no other element has that number for a name.
+    try await h.turn(Scripted("", clickRows(3, 6, expect: "82")))
+    #expect(h.cua.args("click").map { $0["element_token"] as? String } == ["s00000002:3", "s00000003:6"])
 }
 
 @Test func anAuthenticationWindowOrAPasswordSheetBetweenStepsStopsTheSequence() async throws {
@@ -7261,7 +7301,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     // Accepted: the open runs in the same reply. A row of the read that open made is not one she has seen.
     try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")]), clickRow(2)))
     #expect(h.last.actions.prefix(2) == ["todo set", "open"] && h.cua.actions.isEmpty)
-    #expect(try h.toolResults().last!.text.contains("沒有做：第 2 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用 name 指定。"))
+    #expect(try h.toolResults().last!.text.contains("沒有做：第 2 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用名字指定。"))
     // The reply that set the list is not one of the list's rounds.
     #expect(await h.doll.todo.rounds == 0)
     // The next reply presses the row she saw; then the line to him and the done in one reply.
@@ -7277,7 +7317,9 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
 @Test func aNamedElementCanFollowTheOpenInTheSameReply() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("按 7")
-    try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")]), act(#"{"click": {"name": "7"}}"#)))
+    try await h.turn(Scripted("", todoSet("畫面顯示 7"), ("open", [("app", "Calculator")]), act(#"{"click": "7"}"#)))
     #expect(h.last.actions == ["todo set", "open", "act"] && h.cua.actions == ["click"])
+    // A name is not a row: it holds on the read open made in this reply, and goes as that read's token.
+    #expect(h.cua.args("click").last?["element_token"] as? String == "s00000001:2")
     #expect(await h.doll.itemSteps.map(\.line).first == "open Calculator")
 }

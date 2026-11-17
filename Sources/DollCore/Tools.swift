@@ -38,17 +38,17 @@ public enum Tools {
     }
 
     /// `act`'s steps (2026-11-17) from her JSON array: each step is one object with exactly one of
-    /// click / type / key / scroll / menu; a target is a row number, {"name", "role"?} or {"x", "y"}.
-    /// Anything else throws with the step's number and what was wrong.
+    /// click / type / key / scroll / menu; a target is a name ("7"), {"name", "role"?}, a row number
+    /// or {"x", "y"}. Anything else throws with the step's number and what was wrong.
     static func steps(_ raw: String) throws -> [Mac.Step] {
         guard let list = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [Any], !list.isEmpty else {
-            throw ToolError(description: "act 的 steps 要是步驟的 JSON 陣列，例：[{\"click\": 5}, {\"type\": \"你好\"}]；收到 \(raw.prefix(200))")
+            throw ToolError(description: "act 的 steps 要是步驟的 JSON 陣列，例：[{\"click\": \"儲存\"}, {\"type\": \"你好\"}]；收到 \(raw.prefix(200))")
         }
         let kinds = ["click", "type", "key", "scroll", "menu"]
         return try list.enumerated().map { i, any in
             let n = i + 1
             func bad(_ why: String) -> ToolError { ToolError(description: "act 的第 \(n) 步\(why)") }
-            guard let s = any as? [String: Any] else { throw bad("要是一個物件，例：{\"click\": 5}") }
+            guard let s = any as? [String: Any] else { throw bad("要是一個物件，例：{\"click\": \"儲存\"}") }
             let given = kinds.filter { s[$0] != nil }
             guard given.count == 1, let kind = given.first else {
                 throw bad("要剛好有 click、type、key、scroll、menu 其中一個，收到 \(s.keys.sorted().joined(separator: "、"))")
@@ -69,6 +69,7 @@ public enum Tools {
             func target(_ v: Any?, field: String) throws -> Mac.Target? {
                 guard let v else { return nil }
                 if let row = int(v) { return .row(row) }
+                if let name = (v as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty { return .named(name: name, role: nil) }
                 if let o = v as? [String: Any] {
                     if let name = (o["name"] as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
                         guard Set(o.keys).isSubset(of: ["name", "role"]) else { throw bad("的 \(field) 用名字指定時只能有 name、role") }
@@ -77,7 +78,7 @@ public enum Tools {
                     }
                     if let x = int(o["x"]), let y = int(o["y"]), o.count == 2 { return .point(x: x, y: y) }
                 }
-                throw bad("的 \(field) 要是行號（例：5）、{\"name\": \"儲存\", \"role\": \"button\"} 或 {\"x\": 100, \"y\": 50}")
+                throw bad("的 \(field) 要是名字（例：\"儲存\"）、{\"name\": \"儲存\", \"role\": \"button\"}、行號（例：5）或 {\"x\": 100, \"y\": 50}")
             }
             switch kind {
             case "click":
@@ -89,7 +90,7 @@ public enum Tools {
             case "type":
                 // Not trimmed: what she writes is inserted exactly.
                 guard let text = s["type"] as? String, !text.isEmpty else { throw bad("的 type 要是不空的字串") }
-                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是行號或名字，不能是 x、y") }
+                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是名字或行號，不能是 x、y") }
                 return .type(text: text, into: try target(s["in"], field: "in"))
             case "key":
                 guard let key = (s["key"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(), !key.isEmpty,
@@ -110,7 +111,7 @@ public enum Tools {
                 guard let d = s["scroll"] as? String, ["up", "down", "left", "right"].contains(d) else { throw bad("的 scroll 只能是 up、down、left、right") }
                 let amount = s["amount"] == nil ? 3 : int(s["amount"])
                 guard let amount, amount >= 1 else { throw bad("的 amount 要是 1 以上的整數") }
-                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是行號或名字，不能是 x、y") }
+                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是名字或行號，不能是 x、y") }
                 return .scroll(direction: d, amount: amount, at: try target(s["in"], field: "in"))
             default:
                 guard let path = s["menu"] as? [String], !path.isEmpty,
@@ -501,7 +502,7 @@ public enum Tools {
                      "required": ["app"],
                  ], jsonParameters: []),
             Spec(name: "read_window",
-                 description: "讀一個視窗：元素清單（能操作的元素前面有 [行號]）和這個視窗的截圖。act 的行號只看最新一次讀到的。",
+                 description: "讀一個視窗：元素清單（能操作的元素前面有 [行號]，名字在引號或括號裡）和這個視窗的截圖。act 用名字指定元素；行號只看最新一次讀到的。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
@@ -514,12 +515,12 @@ public enum Tools {
                  description: """
                      在最新讀的視窗上照順序做一串動作，做完讀一次視窗。先想好到下一個「要看到結果才知道怎麼做」的地方為止要做哪些步驟，一次送出，expect 寫你預期最後會在視窗裡看到的字。程式照順序做，有一步失敗或跳出系統驗證就停；做完拿 expect 跟讀到的視窗比，一樣就說一樣，不一樣就告訴你現在畫面上是什麼。結果猜得到的步驟（打數字、填表、走知道的選單）放在同一串；猜不到結果的那一步就是這一串的最後一步。能打字的地方就打整段字，不要一個鍵一個鍵按。
                      每一步是下面一種：
-                     {"click": 5}：點清單第 5 行。{"click": {"name": "儲存", "role": "button"}}：點名字叫「儲存」的元素，前面的步驟做完才會出現的東西（打開的選單、跳出的對話框）用這個。{"click": {"x": 100, "y": 50}}：點截圖上的點，清單裡沒有才用。可以加 "count": 2 雙擊、"button": "right" 右鍵。
-                     {"type": "要打的字", "in": 3}：打字進第 3 行（in 也可以是 {"name": …}；不給就打進有焦點的地方）。只放字不按鍵。
+                     {"click": "儲存"}：點名字叫「儲存」的元素。名字照抄清單上引號或括號裡的字（例：- [12] AXButton (7) 的名字是 "7"），一字不差；前面的步驟做完才出現的東西（打開的選單、跳出的對話框）也用名字。同名的有兩個以上，加 role：{"click": {"name": "儲存", "role": "button"}}。{"click": 5}（不加引號）是清單第 5 行，只給沒有名字的元素用。{"click": {"x": 100, "y": 50}}：點截圖上的點，清單裡沒有才用。可以加 "count": 2 雙擊、"button": "right" 右鍵。
+                     {"type": "要打的字", "in": "收件人"}：打字進名字叫「收件人」的欄位（in 也可以是行號；不給就打進有焦點的地方）。只放字不按鍵。
                      {"key": "return"}、{"key": "s", "modifiers": ["cmd"]}：按一個鍵。
-                     {"scroll": "down", "amount": 3, "in": 2}：捲動。
+                     {"scroll": "down", "amount": 3, "in": "內容"}：捲動。
                      {"menu": ["檔案", "新增"], "app": "TextEdit"}：選選單列上的項目（app 沒有視窗也可以；不給 app 是最新讀的那個）。
-                     例：表單填兩欄再送出：steps [{"type": "王小明", "in": 4}, {"type": "0912345678", "in": 6}, {"click": {"name": "送出", "role": "button"}}]，expect "已送出"。
+                     例：計算機算 12×3：steps [{"click": "1"}, {"click": "2"}, {"click": "乘"}, {"click": "3"}, {"click": "等於"}]，expect "36"。
                      """,
                  parameters: [
                      "type": "object",
@@ -1007,8 +1008,8 @@ enum Instructions {
 
         你的電腦就是主人這台 Mac。你在背景操作他的 app，不會搶他的滑鼠、鍵盤和前景視窗，所以他用電腦的時候你也可以做事。只有進行中的項目能用電腦工具。
 
-        怎麼看：open 打開（或叫到）一個 app，read_window 讀它的一個視窗。讀到的是兩樣東西：元素清單（能操作的元素前面有 [行號]）和那個視窗的截圖。兩樣都看：清單告訴你有什麼可以按、可以打字，截圖告訴你看起來怎樣。不知道開著什麼就用 apps。
-        怎麼做：用 act 送一串步驟（click、type、key、scroll、menu）。行號用最新一次讀到的清單的；前面的步驟做完才會出現的東西（打開的選單、跳出的對話框）用名字指定。整串做完程式讀一次視窗，結果裡是新的清單和截圖，行號會變，只用最新的。只有最新一次讀到的視窗會留著清單和截圖，之前讀的會收成一行。清單裡找不到的東西才用截圖上的 x、y。
+        怎麼看：open 打開（或叫到）一個 app，read_window 讀它的一個視窗。讀到的是兩樣東西：元素清單（能操作的元素前面有 [行號]，名字在引號或括號裡）和那個視窗的截圖。兩樣都看：清單告訴你有什麼可以按、可以打字，截圖告訴你看起來怎樣。不知道開著什麼就用 apps。
+        怎麼做：用 act 送一串步驟（click、type、key、scroll、menu）。元素用名字指定（清單上引號或括號裡的字，一字不差），前面的步驟做完才會出現的東西（打開的選單、跳出的對話框）也一樣；沒有名字的元素才用行號，行號只用最新一次讀到的清單的。整串做完程式讀一次視窗，結果裡是新的清單和截圖。只有最新一次讀到的視窗會留著清單和截圖，之前讀的會收成一行。清單裡找不到的東西才用截圖上的 x、y。
         主人說：想事情的時候就計劃具體要做什麼，結果猜得到的動作在一個回合做完。所以動手前，把到下一個「要看到結果才知道下一步」的地方為止的步驟全部想好，用一個 act 送出，expect 寫你預期會看到的字（例：計算機算完顯示的數字、你打進去的那段字）。按一個鍵、看一次、再按下一個，主人要等很久。能打字的地方就打一整段，不要一個字一個字按。猜不到結果的那一步（不知道會跳出什麼、要看了才知道點哪裡）放在這一串的最後，看了再送下一串。
         按了不代表成功：程式會拿 expect 跟讀到的視窗比，不一樣就停下來看清楚為什麼。\(Tools.chaining)
         一則回覆寫到下一個要先看到結果才能往下的地方為止，不只是 act：列清單和第一步（例如 open）放同一則；看過結果、確定做完了，跟主人說結果和 todo.done 放同一則（先說再 done）。例：主人叫你用計算機算 12×34：① todo.set＋open Calculator ② 看了清單，一個 act 按完 1、2、×、3、4、=，expect「408」③ 看到 408，\(Tools.Name.dm) 跟他說答案＋todo.done。

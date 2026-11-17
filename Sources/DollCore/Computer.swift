@@ -596,9 +596,10 @@ public actor Mac {
 
 
     // acting -------------------------------------------------------------------
-    /// What a step acts on: a row of her latest read; an element named by its label (and role) in the
-    /// app's front window, for one that appears only after an earlier step (a menu that opened, a
-    /// dialog); or a point of the latest screenshot.
+    /// What a step acts on: a row of her latest read; an element named by its label, title or AX id
+    /// (and role), found in her latest read, or, for one that appears only after an earlier step (a
+    /// menu that opened, a dialog), in the app's front window read again; or a point of the latest
+    /// screenshot.
     public enum Target: Sendable, Equatable {
         case row(Int)
         case named(name: String, role: String?)
@@ -614,12 +615,13 @@ public actor Mac {
     }
 
     /// `act` (2026-11-17, owner: 可以預測結果的行為可以在一個回合做完): her steps, in order, without a
-    /// read in between; each goes to the driver as a one-step `run_steps` (its own stale-token refind,
-    /// ~0.45 s against ~0.95 s for the plain tool). Between two steps the screen is checked for a
-    /// system authentication dialog or a password sheet in the window (that stops the sequence). The
-    /// first step that fails stops it; the window is read once, after the last step that ran. A row
-    /// means the read she saw when her reply was written (`beginReply`); a row the program cannot
-    /// vouch for is refused before anything is sent.
+    /// read in between; each goes to the driver as a one-step `run_steps` with an element token (its
+    /// own stale-token refind, ~0.45 s against ~0.95 s for the plain tool). Between two steps the
+    /// screen is checked for a system authentication dialog or a password sheet in the window (that
+    /// stops the sequence). The first step that fails stops it; the window is read once, after the
+    /// last step that ran. A row means the read she saw when her reply was written (`beginReply`); a
+    /// row the program cannot vouch for is refused before anything is sent. A name is resolved by the
+    /// program (`resolve`), never by the driver's own name search.
     public func act(_ steps: [Step]) async throws -> MacResult {
         guard steps.count <= cfg.sequenceMaxSteps else {
             throw ComputerError("沒有做：一次最多 \(cfg.sequenceMaxSteps) 步，你給了 \(steps.count) 步。分成幾次送，每次送到要看結果的地方為止。")
@@ -648,13 +650,16 @@ public actor Mac {
                     done.append(Self.step(step, nil))
                 } else {
                     guard let here else { throw StepRefused(description: "沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。") }
-                    done.append(try await run(step, pid: here.pid, app: here.app, read: current?.pid == here.pid ? current : nil, sequence: sequence))
+                    done.append(try await run(step, pid: here.pid, app: here.app, read: current?.pid == here.pid ? current : nil,
+                                              sequence: sequence, earlier: !done.isEmpty))
                 }
             } catch {
                 let refused = (error as? StepRefused) != nil
                 // The first step refused before anything was sent: nothing happened, the call fails as a whole.
                 if refused, n == 1 { throw ComputerError(Self.said(error)) }
-                stop = "第 \(n) 步（\(Self.step(step, nil))）沒做成：\(Self.said(error))。"
+                // A refusal's own text ends with 。; one 。 either way.
+                let said = Self.said(error)
+                stop = "第 \(n) 步（\(Self.step(step, nil))）沒做成：\(said.hasSuffix("。") ? String(said.dropLast()) : said)。"
                     + (n > 1 ? "前面 \(n - 1) 步做了，" : "") + (rest > 0 ? "後面 \(rest) 步沒做，" : "") + "下面是現在的視窗。"
                 break
             }
@@ -681,8 +686,16 @@ public actor Mac {
 
     /// One step (not a menu) on the app the sequence works on: its line for the action list. A row
     /// or a point needs that app's latest read (`c`); a named element, typing into the focus, a key
-    /// or a scroll do not (a menu step may have opened the app's first window).
-    func run(_ step: Step, pid: Int, app: AppIdentity, read c: Read?, sequence: String) async throws -> String {
+    /// or a scroll do not (a menu step may have opened the app's first window). `earlier`: a step of
+    /// this sequence already ran, so an element may have appeared that no read has seen.
+    func run(_ step: Step, pid: Int, app: AppIdentity, read c: Read?, sequence: String, earlier: Bool) async throws -> String {
+        // A named target is resolved first (it may read the window again), outside `aim`.
+        var found: (element: ElementIdentity, windowID: Int, snapshot: String)?
+        switch step {
+        case .click(.named(let name, let role), _, _), .type(_, .named(let name, let role)?), .scroll(_, _, .named(let name, let role)?):
+            found = try await resolve(name, role: role, pid: pid, app: app, read: c, earlier: earlier)
+        default: break
+        }
         var args: [String: Any] = c.map { ["pid": pid, "window_id": $0.windowID] } ?? ["pid": pid]
         var element: ElementIdentity?
         var logArgs: [String: String] = [:]
@@ -693,14 +706,21 @@ public actor Mac {
                     throw StepRefused(description: "沒有做：第 \(n) 行要對讀過的視窗，\(app.name) 還沒讀過視窗。之後才出現的元素用 name 指定，或先 read_window。")
                 }
                 guard let e = c.rows[n] else {
-                    throw StepRefused(description: "沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。重新 read_window，用新清單的行號；之後才出現的元素用 name 指定。")
+                    throw StepRefused(description: "沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。用名字指定，或重新 read_window 用新清單的行號。")
+                }
+                // A row written as the number another element is named (2026-11-17: she pressed row 1
+                // for the button 7): refused, the name is what she meant or the row has a name to use.
+                let named = Self.match(String(n), role: nil, in: c.rows)
+                if !named.isEmpty, !named.contains(where: { $0.row == n }) {
+                    throw StepRefused(description: "沒有做：\(n) 是第 \(n) 行（\(Self.describe(e))），可是清單上名字叫「\(n)」的是 "
+                                      + named.map(Self.candidate).joined(separator: "、") + "。要按「\(n)」寫 \"\(n)\"（加引號是名字）；要第 \(n) 行就寫它的名字。")
                 }
                 // A row means the read she saw before this reply (2026-11-17: the list and its first
                 // `open` go in one reply): with no read before it, the read is this reply's own and
                 // she has not seen it. An earlier call of this reply read the window again: the row
                 // must still be the element she saw, or it is not hers to press.
                 guard let s = seen else {
-                    throw StepRefused(description: "沒有做：第 \(n) 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用 name 指定。")
+                    throw StepRefused(description: "沒有做：第 \(n) 行是這則回覆裡才讀到的清單，你還沒看過。看了結果再選行號；這一步就要按，用名字指定。")
                 }
                 if s.snapshot != c.snapshot {
                     guard s.windowID == c.windowID, let was = s.rows[n], Self.same(was, e) else {
@@ -718,11 +738,13 @@ public actor Mac {
                     args["element_token"] = "\(b.snapshot):\(n)"
                 }
             case .named(let name, let role):
-                // The app's front window, found fresh by the driver (waits up to 3 s for it to appear).
-                args = ["app": app.bundleID.isEmpty ? app.name : app.bundleID, "name": name]
-                if let role { args["role"] = role }
                 logArgs["name"] = name
                 if let role { logArgs["role"] = role }
+                guard let found else { fatalError("a named target is resolved before aim") }
+                element = found.element
+                args["pid"] = pid
+                args["window_id"] = found.windowID
+                args["element_token"] = "\(found.snapshot):\(found.element.row)"
             case .point(let x, let y):
                 guard let c else { throw StepRefused(description: "沒有點：\(x),\(y) 要對讀過的截圖，\(app.name) 還沒讀過視窗。") }
                 if let s = c.size, !(0..<s.w).contains(x) || !(0..<s.h).contains(y) {
@@ -759,11 +781,6 @@ public actor Mac {
             let j = try await call("run_steps", ["session": session, "steps": [["tool": tool, "args": args]]])
             let first = (j["steps"] as? [[String: Any]])?.first
             if j["ok"] as? Bool == false || first?["ok"] as? Bool == false { throw ComputerError(Self.text(j)) }
-            // A named target: the element the driver found is the one the log keeps.
-            if element == nil, let found = (first?["target"] as? [String: Any])?["element"] as? String {
-                element = Self.found(found)
-                record.element = element
-            }
         } catch {
             record.ok = false
             record.error = Self.said(error)
@@ -774,10 +791,78 @@ public actor Mac {
         return Self.step(step, element)
     }
 
-    /// The driver's line for an element it found (`[20] AXButton "等於"`) as an identity: row, role, label.
-    static func found(_ s: String) -> ElementIdentity? {
-        guard let m = s.firstMatch(of: /^\[(\d+)\] (\S+)(?: "(.*)")?$/), let row = Int(m.1) else { return nil }
-        return ElementIdentity(row: row, role: String(m.2), subrole: nil, axID: nil, label: m.3.map(String.init), title: nil, path: [])
+    /// Where a name points (2026-11-17). Matching: the name equals an element's label, title or AX id
+    /// (`id=` in the list), ignoring case and surrounding spaces, never a part of one; a role, when
+    /// given, must equal the element's role or subrole (`button`, `AXButton` alike). One match: that
+    /// element. Two or more: refused with each candidate and its row. None: refused with the near
+    /// ones. Where: the window of her latest read (`c`; after a step of this sequence, the read made
+    /// between steps); not there and a step already ran (or the app had no read), the app's front
+    /// window read again, waiting for the element as long as `open` waits for a window. The driver's
+    /// own name search is not used: it also searches the collapsed menus and falls back to a prefix
+    /// or part of a name, so 「清除」 pressed the hidden menu item 「清除選單」 (measured 2026-11-17).
+    func resolve(_ name: String, role: String?, pid: Int, app: AppIdentity, read c: Read?, earlier: Bool) async throws
+        -> (element: ElementIdentity, windowID: Int, snapshot: String) {
+        func pick(_ rows: [Int: ElementIdentity], where place: String) throws -> ElementIdentity? {
+            let hits = Self.match(name, role: role, in: rows)
+            guard hits.count < 2 else {
+                throw StepRefused(description: "沒有做：\(place)名字叫「\(name)」的有 \(hits.count) 個：" + hits.map(Self.candidate).joined(separator: "、")
+                                  + "。加 role（例：{\"name\": \"\(name)\", \"role\": \"\(Self.roleKey(hits[0].role))\"}），或用行號。")
+            }
+            return hits.first
+        }
+        if let c {
+            let (snapshot, rows) = between.flatMap { $0.windowID == c.windowID ? ($0.snapshot, $0.rows) : nil } ?? (c.snapshot, c.rows)
+            if let e = try pick(rows, where: "") { return (e, c.windowID, snapshot) }
+            guard earlier else {
+                throw StepRefused(description: "沒有做：最新讀到的清單（\(c.app.name)「\(c.title)」）裡沒有名字叫「\(name)」\(role.map { "、role 是 \($0)" } ?? "")的元素"
+                                  + Self.near(name, in: rows) + "。名字要跟清單上引號或括號裡的字一字不差；沒有名字的元素用行號。")
+            }
+        }
+        var last: (title: String, rows: [Int: ElementIdentity])?
+        for attempt in 0..<cfg.windowWaitTries {
+            if attempt > 0 { try await Task.sleep(for: .seconds(cfg.windowWaitS)) }
+            guard let w = try await windows(pid: pid).first else { continue }
+            let j = try await call("get_window_state", ["pid": pid, "window_id": w.id, "session": session, "tree_format": "both",
+                                                        "include_screenshot": false, "max_elements": cfg.maxElements])
+            guard let snapshot = j["snapshot_id"] as? String else { continue }
+            let rows = Self.identities(j["elements"] as? [[String: Any]] ?? [], markdown: j["tree_markdown"] as? String ?? "")
+            last = (w.title, rows)
+            if let e = try pick(rows, where: "\(app.name)「\(w.title)」裡") { return (e, w.id, snapshot) }
+        }
+        let waited = String(format: "%g", Double(cfg.windowWaitTries - 1) * cfg.windowWaitS)
+        throw StepRefused(description: "沒有做：\(app.name)" + (last.map { "最前面的視窗「\($0.title)」" } ?? "沒有視窗") + "裡沒有名字叫「\(name)」"
+                          + (role.map { "、role 是 \($0)" } ?? "") + "的元素（等了 \(waited) 秒）" + (last.map { Self.near(name, in: $0.rows) } ?? "")
+                          + "。名字要跟清單上引號或括號裡的字一字不差。")
+    }
+
+    /// The elements named exactly `name` (label, title or AX id; case and outer spaces ignored), of `role` when given, by row.
+    static func match(_ name: String, role: String?, in rows: [Int: ElementIdentity]) -> [ElementIdentity] {
+        let q = norm(name)
+        guard !q.isEmpty else { return [] }
+        return rows.values.filter { e in
+            [e.label, e.title, e.axID].contains { $0.map(norm) == q }
+                && (role.map { r in roleKey(r) == roleKey(e.role) || e.subrole.map(roleKey) == roleKey(r) } ?? true)
+        }.sorted { $0.row < $1.row }
+    }
+
+    static func norm(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+    /// `AXButton`, `button` and `Button` alike.
+    static func roleKey(_ r: String) -> String {
+        let k = r.lowercased().filter { !$0.isWhitespace }
+        return k.hasPrefix("ax") ? String(k.dropFirst(2)) : k
+    }
+
+    /// `[12] AXButton "7"`: a candidate as she can write it next.
+    static func candidate(_ e: ElementIdentity) -> String { "[\(e.row)] " + describe(e) }
+
+    /// The elements whose name contains `name` or is contained in it, up to five; empty when none.
+    static func near(_ name: String, in rows: [Int: ElementIdentity]) -> String {
+        let q = norm(name)
+        let near = rows.values.filter { e in
+            [e.label, e.title, e.axID].contains { v in v.map(norm).map { !$0.isEmpty && ($0.contains(q) || q.contains($0)) } ?? false }
+        }.sorted { $0.row < $1.row }.prefix(5)
+        return near.isEmpty ? "" : "；像的有：" + near.map(candidate).joined(separator: "、")
     }
 
     static func text(_ j: [String: Any]) -> String {
