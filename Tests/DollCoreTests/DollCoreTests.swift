@@ -634,7 +634,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     await h.doll.ownerSaid("text")
     await h.doll.ownerSaid("voice", voice: true)
     try await h.turn("好")
-    let events = try h.events()
+    let events = Array(try h.events().prefix(5))   // then the 【提醒】 for her call-less reply (2026-11-18)
     // Developer text sits just below owner text by default (2026-11-12).
     #expect(events.map(\.text) == ["voice", "text", "dev", "r", "好"])
     #expect(events.map(\.priority) == [.ownerVoice, .ownerText, .developerText, .watch, .watch])
@@ -688,7 +688,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     #expect(first.hasPrefix("【狀況】\n- 現在 ") && first.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）")
             && !first.contains("watch") && first.contains("- context：") && first.contains("下一回合 effort：medium")
             && !first.contains("選單"))
-    #expect(try h.events().last!.footer == first)
+    #expect(try h.events().last { $0.kind == .doll }!.footer == first)
     await h.doll.ownerSaid("再來")
     try await h.turn("好")
     let msgs = await h.model.seen(1)
@@ -1953,7 +1953,8 @@ private func seedMemory(_ h: Harness, _ folder: String, _ text: String, tier: St
     try await h.doll.rebuildMemory()
 }
 
-private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filter { $0.kind == .memory } }
+/// The 【相關記憶】 events (not the program's 【提醒】 after a call-less reply to the owner, 2026-11-18).
+private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filter { $0.kind == .memory && !$0.text.hasPrefix("【提醒】") } }
 
 @Test func anOwnerLineAttachesRelatedExperiencesWholeBeforeHerTurn() async throws {
     let h = try await Harness()
@@ -3052,6 +3053,44 @@ extension Doll {
     try await h.turn(Scripted("", key("cmd+s")))
     try await h.turn("")
     #expect(await h.doll.followUp)
+}
+
+@Test func aPersonsLineLeftUnansweredByACallLessReplyIsToldOnce() async throws {
+    // 2026-11-18 (m7-mac tools k-2): no item in progress, the owner's request got one empty reply and nothing else.
+    let h = try await Harness()
+    await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
+    try await h.turn("")
+    #expect(await h.doll.followUp && h.last.actions == ["reminded unanswered"])
+    #expect(try h.events().last?.text == Doll.unansweredReminder(.owner))
+    #expect(h.logs.contains { $0.contains("unanswered: reminded") })
+    // Once per line: a second call-less reply to the same line only logs, and nothing wakes her.
+    try await h.turn("嗯")
+    #expect(!(await h.doll.followUp) && h.last.actions.isEmpty)
+    #expect(h.logs.contains { $0.contains("still unanswered after the reminder") })
+    #expect(try h.events().filter { $0.text == Doll.unansweredReminder(.owner) }.count == 1)
+    // Her next reply answers.
+    try await h.turn(Scripted("", dm("754")))
+    #expect(h.said == ["754"])
+    // A new line is told again.
+    await h.doll.developerSaid("還在嗎")
+    try await h.turn("")
+    #expect(h.last.actions == ["reminded unanswered"])
+    #expect(try h.events().last?.text == Doll.unansweredReminder(.developer))
+}
+
+@Test func aCallLessReplyAfterAnAnswerOrToAProgramEventIsNotToldItIsUnanswered() async throws {
+    let h = try await Harness()
+    // She already answered the line; the reply after her answer has no call.
+    await h.doll.ownerSaid("早～")
+    try await h.turn(Scripted("", dm("早安")))
+    try await h.turn("")
+    #expect(h.last.actions.isEmpty)
+    #expect(try !h.events().contains { $0.text.hasPrefix("【提醒】") })
+    // A program event, not a person's line.
+    await h.doll.voiceNotice("【語音】主人離開了語音頻道。")
+    try await h.turn("")
+    #expect(h.last.actions.isEmpty)
+    #expect(try !h.events().contains { $0.text.hasPrefix("【提醒】") })
 }
 
 @Test func aSayAfterDoneIsStillSaidAndKeptWhenTheItemIsCompacted() async throws {
@@ -7041,7 +7080,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
 @Test func aFactNeedsAQuoteFromWhatSheCanSeeAndABeliefWithoutOneGoesToAssumptions() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid(xLine)
-    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】"
+    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行"
     // 2026-11-17 x-2: her wrong belief written as a fact. Without a quote: refused, told where it belongs.
     try await h.turn(xSet(facts: #"[{"fact":"\#(pdfBelief)"}]"#))
     #expect(try h.toolResults().last!.text == "失敗：清單沒有列：facts 第 1 條「\(pdfBelief)」沒有 quote。fact 要有出處：quote 照抄撐住它的字（\(places)）。找不到出處，就是你以為的：搬到 assumptions。")
@@ -7435,6 +7474,55 @@ private func toolFile(_ h: Harness, _ name: String) throws -> OwnTool {
     try await h.turn(Scripted("", toolRun("乘法", ["a": "2", "b": "3"])))
     #expect(try h.toolResults().last!.text.contains("要給 expect：這次做完視窗裡會出現的字，照畫面的寫法（存的那次是「1,702」）"))
     #expect(try toolFile(h, "乘法").uses == 1)
+}
+
+@Test func aRefusedTodoSetStopsTheToolRunInTheSameReply() async throws {
+    let h = try await calcHarness()
+    try await savedMultiply(h)
+    await h.doll.ownerSaid("再算 58×13")
+    let before = h.cua.actions.count
+    try await h.turn(Scripted("", ("todo.set", [("items", #"["計算機顯示 58×13 的答案"]"#)]), toolRun("乘法", ["a": "58", "b": "13"], expect: "754")))
+    #expect(try h.toolResults().last!.text == "失敗：這則回覆前面的 todo.set 沒收（看它的結果），tool.run 沒有執行；改好 todo.set 再做。")
+    #expect(h.cua.actions.count == before)
+    #expect(try toolFile(h, "乘法").uses == 0)
+}
+
+/// A `todo.set` with these facts (JSON) and the other plan fields of `planArgs`.
+private func setFacts(_ item: String, _ facts: String) -> (String, [(String, String)]) {
+    ("todo.set", [("items", "[\"\(item)\"]"), ("facts", facts)] + planArgs.filter { $0.0 != "facts" })
+}
+
+@Test func aFactMayQuoteTheProgramsLinesAboutHerToolsButNotWhatSheWroteInThem() async throws {
+    // 2026-11-18 (m7-mac tools): 5 of 7 refused plans quoted the tool.save result or the 〔工具〕 offer.
+    let h = try await calcHarness { $0.computer.ownToolOfferSimilarity = 0.3 }
+    try await savedMultiply(h)
+    try await h.turn(Scripted("", dm("我覺得這個乘法工具很好用喔")))
+    await h.doll.ownerSaid("幫我用計算機算 58×13")
+    let item = "計算機顯示 58×13 的答案"
+    func refusal(_ quote: String, own: String?) -> String {
+        "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行）。"
+            + (own.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? "")
+            + "fact 要有出處：quote 一字不差照抄那裡的字。找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。"
+    }
+    // Her own earlier line is not a source.
+    try await h.turn(Scripted("", setFacts(item, #"[{"fact":"我有乘法工具","quote":"這個乘法工具很好用"}]"#)))
+    #expect(try h.toolResults().last!.text == refusal("這個乘法工具很好用", own: nil))
+    // The offer's words she wrote when saving (its `when`, a parameter's `about`) are not a source (j-1, z-1).
+    try await h.turn(Scripted("", setFacts(item, #"[{"fact":"我有乘法工具","quote":"「乘法」：用計算機算兩個數相乘"}]"#)))
+    #expect(try h.toolResults().last!.text == refusal("「乘法」：用計算機算兩個數相乘", own: "用計算機算兩個數相乘"))
+    try await h.turn(Scripted("", setFacts(item, #"[{"fact":"我有乘法工具","quote":"參數 a（第一個數；存的時候是「37」）"}]"#)))
+    #expect(try h.toolResults().last!.text == refusal("參數 a（第一個數；存的時候是「37」）", own: "第一個數"))
+    // Her own tool argument alone.
+    try await h.turn(Scripted("", setFacts(item, #"[{"fact":"我有乘法工具","quote":"用計算機算兩個數相乘"}]"#)))
+    #expect(try h.toolResults().last!.text == refusal("用計算機算兩個數相乘", own: "用計算機算兩個數相乘"))
+    #expect(await h.doll.todo.phase == .idle)
+    // What the program wrote passes, with where it is from: the tool.save result (k-2, k-3) and the offer's usage (z-2).
+    let facts = #"[{"fact":"我存了工具「乘法」","quote":"存好了：工具「乘法」（tools/乘法.json）"},"#
+        + #"{"fact":"乘法工具要給 expect","quote":"用法：tool.run(name: \"乘法\", args: {\"a\": …, \"b\": …}，要給 expect)"}]"#
+    try await h.turn(Scripted("", setFacts(item, facts), toolRun("乘法", ["a": "58", "b": "13"], expect: "754")))
+    #expect(try h.toolResults().suffix(2).first!.text.hasPrefix("todo 列好了"))
+    #expect(await h.doll.todo.plan?.facts.map(\.source) == ["tool.save 的結果", "【相關記憶】提的工具"])
+    #expect(try h.toolResults().last!.text.contains("跟你預期的一樣：視窗裡有「754」。"))
 }
 
 @Test func savingIsRefusedWhenTheChainDidNotRunThroughOrDidNotMatch() async throws {

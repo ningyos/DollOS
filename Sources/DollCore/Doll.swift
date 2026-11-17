@@ -113,6 +113,8 @@ public actor Doll {
     var turnIndex = 0
     /// Consecutive turns without a tool call.
     var idleTurns = 0
+    /// The owner or developer line (seq) she was last told was left unanswered: told once per line.
+    var remindedLine: Int64?
     /// Set by `think`; consumed by the next model call.
     var effortNext: String?
     /// The next call is part of a task: the events drained since her last answered call include an
@@ -1178,6 +1180,20 @@ public actor Doll {
                 try append(Event(.memory, .internal, Self.noCallReminder))
                 followUp = true
                 actions.append("reminded")
+            } else if let line = unansweredLine(before: stored), let who = line.speaker {
+                // No item in progress and a person's line has had no call of hers since (2026-11-18,
+                // m7-mac tools k-2: the owner's request got one empty reply and nothing else; the same
+                // request replayed 14 times got a call every time). Told once per line, visibly, like
+                // the reminder during an item; the second call-less reply to the same line only logs.
+                if remindedLine != line.seq {
+                    remindedLine = line.seq
+                    try append(Event(.memory, .internal, Self.unansweredReminder(who)))
+                    followUp = true
+                    actions.append("reminded unanswered")
+                    log("INFO", "turn \(turnIndex): reply without a call; \(who.label)'s line (seq \(line.seq!)) unanswered: reminded")
+                } else {
+                    log("INFO", "turn \(turnIndex): reply without a call; \(who.label)'s line (seq \(line.seq!)) still unanswered after the reminder")
+                }
             }
         }
 
@@ -1199,6 +1215,18 @@ public actor Doll {
 
     /// The program's line after a reply without a call while an item is in progress (fixed bytes).
     static let noCallReminder = "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生。每一則回覆都至少要呼叫一個工具：要回話用回話的工具（看對方從哪裡來），要做事就呼叫那個工具。"
+    /// The program's line after a call-less reply that left a person's line with no call of hers since
+    /// (no item in progress; fixed bytes per speaker).
+    static func unansweredReminder(_ who: Addressee) -> String {
+        "【提醒】你上一則回覆沒有呼叫工具，所以什麼都沒發生：\(who.label)剛剛那句還沒有得到回應。每一則回覆都至少要呼叫一個工具：要回話用回話的工具（看對方從哪裡來），要做事就呼叫那個工具。"
+    }
+    /// The latest owner or developer line before `reply` when none of her replies since it called a tool.
+    func unansweredLine(before reply: Event) -> Event? {
+        let events = timeline.events
+        guard let line = events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) else { return nil }
+        let answered = events.contains { $0.kind == .doll && $0.seq! > line.seq! && $0.seq! < reply.seq! && !$0.calls.isEmpty }
+        return answered ? nil : line
+    }
     /// A voice tool's result when `[voice] enabled` but no voice link is wired (fixed bytes).
     static let voiceUnwired = "語音還沒接上，語音頻道現在用不了；要跟主人說話用 \(Tools.Name.dm)。"
 
@@ -1864,7 +1892,7 @@ public actor Doll {
             throw refuse(problem)
         }
         let sources = citable(before: reply)
-        let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】"
+        let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行"
         var facts: [PlanFact] = []
         for (i, f) in given.enumerated() {
             let name = "facts 第 \(i + 1) 條"
@@ -1878,7 +1906,10 @@ public actor Doll {
                 throw refuse("\(name)的 quote「\(quote)」太短：至少 \(computerConfig.planMinChars) 個字，照抄一整段。")
             }
             guard let source = sources.first(where: { Self.quoted(quote, in: $0.text) }) else {
-                throw ToolError(description: "清單沒有列：\(name)「\(fact)」的 quote「\(quote)」不在你看得到的地方（\(places)）。fact 要有出處：quote 一字不差照抄那裡的字。"
+                // Her own words inside a program line (a tool's `when`) are cut before the match: say which.
+                let mine = ownToolWords().first { quote.contains($0) && Self.plainKey($0).count >= computerConfig.planMinChars }
+                let own = mine.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? ""
+                throw ToolError(description: "清單沒有列：\(name)「\(fact)」的 quote「\(quote)」不在你看得到的地方（\(places)）。\(own)fact 要有出處：quote 一字不差照抄那裡的字。"
                                 + "找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。")
             }
             facts.append(PlanFact(fact: fact, quote: quote, source: source.source))
@@ -1891,10 +1922,14 @@ public actor Doll {
     /// read again) even when its turn was put away; and, of the events before her reply, what the
     /// request still sends whole: people's lines, the results of the tools that look at the computer
     /// and files (`Tools.gated`; window lists while still sent; watch wakes' window lists), the
-    /// calendar. Never her own words: not her replies or her memories, not the results of her other
-    /// tools (a refused `todo.set` repeats her facts back; a test run showed it then passed as their
-    /// own source), and from a computer or file result her call's own argument values are cut first
-    /// (an error that repeats the menu path she asked for is not a source for that path).
+    /// calendar, and two lines the program writes about her own tools (2026-11-18, m7-mac tools: 5
+    /// of 7 refused plans quoted them): a `tool.save` result and the 〔工具〕 lines of 【相關記憶】.
+    /// Never her own words: not her replies or her memories, not the results of her other tools (a
+    /// refused `todo.set` repeats her facts back; a test run showed it then passed as their own
+    /// source); from a computer or file result her call's own argument values are cut first (an
+    /// error that repeats the menu path she asked for is not a source for that path); from a
+    /// `tool.save` result its call's argument values except the name, and from both tool lines what
+    /// she wrote about her tools (`ownToolWords`).
     func citable(before reply: Event) -> [(source: String, text: String)] {
         var out: [(source: String, text: String)] = []
         if let footer = timeline.events.last(where: { $0.seq == reply.seq })?.footer { out.append(("【狀況】", footer)) }
@@ -1904,6 +1939,11 @@ public actor Doll {
         case nil: break
         }
         let (plan, kept) = contextPlan(timeline.events.filter { $0.seq! < reply.seq! })
+        var own: [String]?
+        func cut(_ text: String) -> String {
+            if own == nil { own = ownToolWords() }
+            return own!.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
+        }
         var calls: ArraySlice<ToolCall> = []
         for (ev, mode) in plan {
             if case .reply(let surviving) = mode { calls = surviving[...]; continue }
@@ -1912,21 +1952,41 @@ public actor Doll {
             case .owner, .developer: out.append(("\(ev.speaker?.label ?? "?")說的", ev.text))
             case .doll: calls = ev.calls[...]
             case .tool:
-                guard let call = calls.popFirst(), Tools.gated.contains(call.name) else { continue }
+                guard let call = calls.popFirst() else { continue }
+                if call.name == Tools.Name.toolSave {
+                    // The program's name for the file it keeps stays: 「存好了：工具「乘法」」 is its word that it exists.
+                    let rest = Self.argumentStrings(call, except: ["name"]).filter { $0.count >= 2 }.sorted { $0.count > $1.count }
+                    out.append(("tool.save 的結果", cut(rest.reduce(ev.text) { $0.replacingOccurrences(of: $1, with: "") })))
+                    continue
+                }
+                guard Tools.gated.contains(call.name) else { continue }
                 out.append(("工具的結果", Self.withoutArguments(ev.text, of: call)))
                 if kept.contains(ev.seq!), let w = ev.window { out.append(("讀到的視窗", w)) }
             case .watch:
                 if kept.contains(ev.seq!), let w = ev.window { out.append(("讀到的視窗", w)) }
             case .calendar: out.append(("行事曆", ev.text))
-            case .memory: break
+            case .memory:
+                for line in ev.text.split(separator: "\n") where line.hasPrefix("〔工具〕") {
+                    out.append(("【相關記憶】提的工具", cut(String(line))))
+                }
             }
         }
         return out
     }
 
-    /// `text` with every argument value of `call` cut out (a JSON value's strings one by one, also
-    /// inside `act`'s steps: a menu path, a typed text, a name, her expect).
-    static func withoutArguments(_ text: String, of call: ToolCall) -> String {
+    /// What she wrote about her saved tools (2026-11-18), cut from the program's lines about them
+    /// before they count as a source: of every saved tool its `when`, each parameter's `about` and
+    /// the item it was saved from (she wrote them, maybe on another day: what she believed then, not
+    /// something the program found). Its name, step lines, values found in the steps, counts and
+    /// usage stay. At least 2 characters, longest first.
+    func ownToolWords() -> [String] {
+        let words = ((try? toolStore.all()) ?? []).flatMap { [$0.when, $0.origin.item] + $0.params.map(\.about) }
+        return Set(words.filter { $0.count >= 2 }).sorted { $0.count > $1.count }
+    }
+
+    /// Every string of `call`'s argument values (a JSON value's strings one by one, also inside
+    /// `act`'s steps: a menu path, a typed text, a name, her expect), the parameters in `except` left out.
+    static func argumentStrings(_ call: ToolCall, except: Set<String> = []) -> [String] {
         func leaves(_ v: Any) -> [String] {
             switch v {
             case let s as String: [s]
@@ -1935,11 +1995,16 @@ public actor Doll {
             default: []
             }
         }
-        let values = call.parameters.flatMap { p -> [String] in
+        return call.parameters.filter { !except.contains($0.name) }.flatMap { p -> [String] in
             guard let j = try? JSONSerialization.jsonObject(with: Data(p.value.utf8), options: [.fragmentsAllowed]), j is [Any] || j is [String: Any] else { return [p.value] }
             return leaves(j)
-        }.filter { $0.count >= 2 }.sorted { $0.count > $1.count }
-        return values.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
+        }
+    }
+
+    /// `text` with every argument value of `call` cut out (`argumentStrings` of at least 2 characters, longest first).
+    static func withoutArguments(_ text: String, of call: ToolCall) -> String {
+        argumentStrings(call).filter { $0.count >= 2 }.sorted { $0.count > $1.count }
+            .reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
     }
 
     /// Hook 2: the estimate-vs-actual line of the list so far.
