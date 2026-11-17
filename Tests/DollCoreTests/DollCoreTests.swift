@@ -8178,5 +8178,6 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
     let example = try Config.load(root.appending(path: "dollcore.example.toml")).audit
-    #expect(example.enabled && example.mode == "flag" && example.maxMemories == 20 && example.maxSourceChars == 30000)
+    #expect(example.enabled && example.mode == "change" && example.maxMemories == 20 && example.maxSourceChars == 30000)
+    #expect(AuditConfig().mode == "change")
 }
