@@ -7458,7 +7458,7 @@ private func toolFile(_ h: Harness, _ name: String) throws -> OwnTool {
     try await h.turn(Scripted("", act(#"{"click": "3"}"#, #"{"click": "7"}"#, #"{"click": "乘"}"#, #"{"click": "4"}"#, #"{"click": "6"}"#, #"{"click": "等於"}"#, expect: "1,702")))
     try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
     let ok = try h.toolResults().last!.text
-    #expect(ok.contains("沒存進去的：第 1 次 act（click \"3\"、click \"7\"）沒做成或跟預期不一樣；第 2 次 act（click \"全部清除\"）沒做成或跟預期不一樣。"))
+    #expect(ok.contains("沒存進去的：第 1 次 act（click \"3\"、click \"7\"）做完了可是跟你預期的不一樣，整次沒存；第 2 次 act 從第 1 步（click \"全部清除\"）起沒做成，那幾步沒存。"))
     #expect(try toolFile(h, "乘法").stepLines == ["open Calculator", "click AXButton \"全部清除\"", "click AXButton \"3\"", "click AXButton \"7\"", "click AXButton \"乘\"",
                                                  "click AXButton \"4\"", "click AXButton \"6\"", "click AXButton \"等於\"", "（預期視窗裡有「1,702」）"])
     // A value that is nowhere in the steps, and a failed item.
@@ -7579,4 +7579,35 @@ private func toolFile(_ h: Harness, _ name: String) throws -> OwnTool {
     let specs = Tools.specs(memory: MemoryConfig(), voice: false, computer: ComputerConfig(), files: FilesConfig())
     #expect(specs.filter { $0.name.hasPrefix("tool.") }.map(\.name) == ["tool.save", "tool.run"])
     #expect(Tools.gated.contains("tool.run") && !Tools.gated.contains("tool.save") && Tools.actionNames.contains("tool.run"))
+}
+
+@Test func theStepsBeforeAFailedStepAreKeptAndANameThatChangesEveryTimeIsKeptByItsRole() async throws {
+    // Notes on this Mac (2026-11-17, j-1): 新增備忘錄 went through, typing into the focus was refused,
+    // then she typed into the new note's body by its row, whose only name is the note's own id.
+    let h = try await calcHarness()
+    let noteBody = FakeCua.Element(role: "AXTextArea", label: nil, id: "Note[id=0772C119-5372-4A30-BF06-7E309824E2AF]")
+    h.cua.change { s in
+        s.windows.append(FakeCua.Window(id: 70000, pid: 200, app: "TextEdit", title: "備忘錄", elements: [
+            FakeCua.Element(role: "AXWindow", label: "備忘錄", parent: nil), FakeCua.Element(role: "AXButton", label: "新增備忘錄"), noteBody]))
+    }
+    await h.doll.ownerSaid("新增一則備忘錄寫買牛奶")
+    try await h.turn(Scripted("", todoSet("備忘錄寫著買牛奶"), ("open", [("app", "TextEdit")])))
+    h.cua.refuse("type_text", #"{"error":"minimized_or_hidden_window"}"#)
+    try await h.turn(Scripted("", act(#"{"click": "新增備忘錄"}"#, #"{"type": "記得買牛奶"}"#, expect: "記得買牛奶")))
+    try await h.turn(Scripted("", act(#"{"type": "記得買牛奶", "in": 2}"#, expect: "記得買牛奶")))
+    try await h.turn(Scripted("", toolSave("新備忘錄", "在備忘錄新增一則", [("內容", "買牛奶", "要寫的")])))
+    let saved = try h.toolResults().last!.text
+    #expect(saved.contains("沒存進去的：第 1 次 act 從第 2 步（type「記得買牛奶」）起沒做成，那幾步沒存（前面 1 步做了，存了）。"))
+    let t = try toolFile(h, "新備忘錄")
+    #expect(t.stepLines == ["open TextEdit", "click AXButton \"新增備忘錄\"", "type「記得{{內容}}」 進 唯一的 AXTextArea", "（預期視窗裡有「記得{{內容}}」）"])
+    #expect(t.parts[2].act?.first?.into == OwnTool.Element(name: nil, role: "AXTextArea", axID: "Note[id=0772C119-5372-4A30-BF06-7E309824E2AF"))
+    // Replayed: the one text area of the window, whatever its id now.
+    h.cua.change { $0.windows[$0.windows.count - 1].elements[2] = FakeCua.Element(role: "AXTextArea", label: nil, id: "Note[id=8A0A1687-B3E4-4975-9614-6DF2419420E2]") }
+    try await h.turn(Scripted("", toolRun("新備忘錄", ["內容": "買雞蛋"])))
+    let r = try h.toolResults().last!.text
+    #expect(r.contains("click AXButton \"新增備忘錄\"") && r.contains("跟你預期的一樣：視窗裡有「記得買雞蛋」。"))
+    // Two text areas: stopped at that step.
+    h.cua.change { $0.windows[$0.windows.count - 1].elements.append(FakeCua.Element(role: "AXTextArea", label: nil)) }
+    try await h.turn(Scripted("", toolRun("新備忘錄", ["內容": "買蛋"])))
+    #expect(try h.toolResults().last!.text.contains("工具「新備忘錄」停了：第 3 步沒做成：沒有做：role 是 AXTextArea的有 2 個：[2] AXTextArea \"記得買雞蛋\"、[3] AXTextArea。"))
 }

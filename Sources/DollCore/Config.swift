@@ -97,7 +97,7 @@ public struct ComputerConfig: Sendable {
     public var ownToolsMax = 30
     /// A tool is offered in the 【相關記憶】 when the cosine of the owner's line (and front app) to
     /// the tool's name, `when` and the owner's line it was saved from is at least this.
-    public var ownToolOfferSimilarity = 0.6
+    public var ownToolOfferSimilarity = 0.45
     /// At most this many tools offered at once.
     public var ownToolOfferMax = 2
     /// A tool that failed this many runs in a row is no longer offered or run (owner decision 3); it stays.

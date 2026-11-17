@@ -32,9 +32,10 @@ public struct OwnTool: Codable, Sendable, Equatable {
         public var example: String
     }
 
-    /// An element as a step finds it again: its name (label, title or AX id) and role.
+    /// An element as a step finds it again: its name (label, title or AX id) and role. No name: the
+    /// one element of its role in the window (its only name changed every time, or it had none).
     public struct Element: Codable, Sendable, Equatable {
-        public var name: String
+        public var name: String?
         public var role: String?
         /// The AX identifier the element had when saved (for the reader; finding goes by name).
         public var axID: String?
@@ -127,7 +128,7 @@ public struct OwnTool: Codable, Sendable, Equatable {
     }
 
     static func line(_ s: Step) -> String {
-        func el(_ e: Element) -> String { (e.role.map { "\($0) " } ?? "") + "\"\(e.name)\"" }
+        func el(_ e: Element) -> String { e.name.map { (e.role.map { "\($0) " } ?? "") + "\"\($0)\"" } ?? "唯一的 \(e.role ?? "?")" }
         if let e = s.click { return "click " + el(e) + (s.button.map { " \($0)" } ?? "") + (s.count == 2 ? " 雙擊" : "") }
         if let p = s.press { return "按 \(p) 的每一個字" + (s.role.map { "（\($0)）" } ?? "") }
         if let t = s.type { return "type「\(t)」" + (s.into.map { " 進 " + el($0) } ?? "") }
@@ -266,19 +267,28 @@ enum OwnTools {
                 parts.append(OwnTool.Part(open: c.app.name, target: c.target, act: nil, app: c.app.name, bundleID: c.app.bundleID, expect: nil))
             case .act:
                 actNo += 1
-                guard c.ok else {
-                    left.append("第 \(actNo) 次 act（" + c.steps.map { Mac.step($0, nil) }.joined(separator: "、") + "）沒做成或跟預期不一樣")
-                    continue
+                // Ran through but not as she expected: the whole act is an attempt she corrected, left
+                // out. Stopped at a step (a refusal, a name not found): the steps before it went
+                // through and changed the screen the next act built on, so they are kept.
+                let failedAt = c.records.firstIndex { !$0.ok } ?? c.records.count
+                let partial = !c.ok && failedAt < c.steps.count
+                let keep = c.ok ? c.steps.count : partial ? failedAt : 0
+                if !c.ok {
+                    let all = c.steps.map { Mac.step($0, nil) }.joined(separator: "、")
+                    left.append(partial
+                        ? "第 \(actNo) 次 act 從第 \(failedAt + 1) 步（\(Mac.step(c.steps[failedAt], nil))）起沒做成，那幾步沒存" + (failedAt > 0 ? "（前面 \(failedAt) 步做了，存了）" : "")
+                        : "第 \(actNo) 次 act（\(all)）做完了可是跟你預期的不一樣，整次沒存")
                 }
-                guard c.records.count == c.steps.count else {
+                guard keep > 0 else { continue }
+                guard c.records.count >= keep else {
                     throw ToolError(description: "沒存：第 \(actNo) 次 act 的動作紀錄少了步驟（\(c.records.count)／\(c.steps.count)），程式不知道每一步按到哪個元素。")
                 }
                 var steps: [OwnTool.Step] = []
-                for (s, r) in zip(c.steps, c.records) {
+                for (s, r) in zip(c.steps.prefix(keep), c.records.prefix(keep)) {
                     n += 1
                     steps.append(try OwnTools.saved(s, r, n: n))
                 }
-                parts.append(OwnTool.Part(open: nil, target: nil, act: steps, app: c.app.name, bundleID: c.app.bundleID, expect: c.expect))
+                parts.append(OwnTool.Part(open: nil, target: nil, act: steps, app: c.app.name, bundleID: c.app.bundleID, expect: c.ok ? c.expect : nil))
             }
         }
         // The parameters: each value must be found in exactly one kind of place.
@@ -304,9 +314,9 @@ enum OwnTools {
                 // Consecutive one-character button clicks whose names spell the value.
                 for from in steps.indices {
                     var spelled = "", to = from
-                    while to < steps.count, let e = steps[to].click, steps[to].count == nil, steps[to].button == nil, e.name.count == 1,
+                    while to < steps.count, let e = steps[to].click, steps[to].count == nil, steps[to].button == nil, let name = e.name, name.count == 1,
                           e.role == steps[from].click?.role, spelled.count < p.value.count {
-                        spelled += e.name
+                        spelled += name
                         to += 1
                     }
                     if spelled == p.value { runs.append((pi, from, to)) }
@@ -354,19 +364,24 @@ enum OwnTools {
         return (tool, left)
     }
 
-    /// One step as the tool keeps it: what it reached, by name and role.
+    /// One step as the tool keeps it: what it reached, by name and role. A name that is different
+    /// every time (an AX id with a UUID, Notes' note body `Note[id=…]`: replayed, it would reach the
+    /// old note) is not kept; an element left without a name is kept by its role alone.
     static func saved(_ s: Mac.Step, _ r: ActionRecord, n: Int) throws -> OwnTool.Step {
+        func stable(_ e: ElementIdentity?, _ given: String?) -> String? {
+            ([given] + [e?.label, e?.title, e?.axID]).compactMap { $0 }.first { !$0.isEmpty && !$0.contains(/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/) }
+        }
         func element(_ t: Mac.Target) throws -> OwnTool.Element {
             switch t {
             case .point(let x, let y):
                 throw ToolError(description: "沒存：第 \(n) 步點的是截圖上的點（\(x),\(y)），換了畫面就找不回來；工具只存用名字找得到的元素。這一步用名字再做一次，再存。")
             case .named(let name, let role):
-                return OwnTool.Element(name: name, role: r.element?.role ?? role, axID: r.element?.axID)
+                return OwnTool.Element(name: stable(r.element, name), role: r.element?.role ?? role, axID: r.element?.axID)
             case .row(let row):
-                guard let e = r.element, let name = [e.label, e.title, e.axID].compactMap({ $0 }).first(where: { !$0.isEmpty }) else {
-                    throw ToolError(description: "沒存：第 \(n) 步按的是第 \(row) 行，那個元素沒有名字，換了畫面就找不回來；工具只存用名字找得到的元素。")
+                guard let e = r.element else {
+                    throw ToolError(description: "沒存：第 \(n) 步按的是第 \(row) 行，動作紀錄裡沒有那個元素是什麼。")
                 }
-                return OwnTool.Element(name: name, role: e.role, axID: e.axID)
+                return OwnTool.Element(name: stable(e, nil), role: e.role, axID: e.axID)
             }
         }
         switch s {
@@ -403,7 +418,7 @@ enum OwnTools {
             for p in t.params { s = s.replacingOccurrences(of: OwnTool.placeholder(p.name), with: args[p.name]!) }
             return s
         }
-        func target(_ e: OwnTool.Element?) -> Mac.Target? { e.map { .named(name: $0.name, role: $0.role) } }
+        func target(_ e: OwnTool.Element?) -> Mac.Target? { e.map { .named(name: $0.name ?? "", role: $0.role) } }
         var out: [BoundPart] = []
         let lastAct = t.parts.lastIndex { $0.act != nil }
         for (pi, p) in t.parts.enumerated() {

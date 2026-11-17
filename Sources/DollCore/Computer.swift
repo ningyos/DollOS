@@ -814,11 +814,19 @@ public actor Mac {
     /// window read again, waiting for the element as long as `open` waits for a window. The driver's
     /// own name search is not used: it also searches the collapsed menus and falls back to a prefix
     /// or part of a name, so 「清除」 pressed the hidden menu item 「清除選單」 (measured 2026-11-17).
+    /// An empty `name` with a role (only a saved tool of hers writes one, 2026-11-17: an element
+    /// whose only name changes every time, Notes' note body `Note[id=<UUID>]`) means the one element
+    /// of that role; two or more are refused the same way.
     func resolve(_ name: String, role: String?, pid: Int, app: AppIdentity, read c: Read?, earlier: Bool) async throws
         -> (element: ElementIdentity, windowID: Int, snapshot: String) {
+        let what = name.isEmpty ? "role 是 \(role ?? "")" : "名字叫「\(name)」\(role.map { "、role 是 \($0)" } ?? "")"
+        func near(_ rows: [Int: ElementIdentity]) -> String { name.isEmpty ? "" : Self.near(name, in: rows) }
         func pick(_ rows: [Int: ElementIdentity], where place: String) throws -> ElementIdentity? {
             let hits = Self.match(name, role: role, in: rows)
             guard hits.count < 2 else {
+                if name.isEmpty {
+                    throw StepRefused(description: "沒有做：\(place)\(what)的有 \(hits.count) 個：" + hits.map(Self.candidate).joined(separator: "、") + "。")
+                }
                 throw StepRefused(description: "沒有做：\(place)名字叫「\(name)」的有 \(hits.count) 個：" + hits.map(Self.candidate).joined(separator: "、")
                                   + "。加 role（例：{\"name\": \"\(name)\", \"role\": \"\(Self.roleKey(hits[0].role))\"}），或用行號。")
             }
@@ -828,8 +836,8 @@ public actor Mac {
             let (snapshot, rows) = between.flatMap { $0.windowID == c.windowID ? ($0.snapshot, $0.rows) : nil } ?? (c.snapshot, c.rows)
             if let e = try pick(rows, where: "") { return (e, c.windowID, snapshot) }
             guard earlier else {
-                throw StepRefused(description: "沒有做：最新讀到的清單（\(c.app.name)「\(c.title)」）裡沒有名字叫「\(name)」\(role.map { "、role 是 \($0)" } ?? "")的元素"
-                                  + Self.near(name, in: rows) + "。名字要跟清單上引號或括號裡的字一字不差；沒有名字的元素用行號。")
+                throw StepRefused(description: "沒有做：最新讀到的清單（\(c.app.name)「\(c.title)」）裡沒有\(what)的元素"
+                                  + near(rows) + "。名字要跟清單上引號或括號裡的字一字不差；沒有名字的元素用行號。")
             }
         }
         var last: (title: String, rows: [Int: ElementIdentity])?
@@ -844,17 +852,18 @@ public actor Mac {
             if let e = try pick(rows, where: "\(app.name)「\(w.title)」裡") { return (e, w.id, snapshot) }
         }
         let waited = String(format: "%g", Double(cfg.windowWaitTries - 1) * cfg.windowWaitS)
-        throw StepRefused(description: "沒有做：\(app.name)" + (last.map { "最前面的視窗「\($0.title)」" } ?? "沒有視窗") + "裡沒有名字叫「\(name)」"
-                          + (role.map { "、role 是 \($0)" } ?? "") + "的元素（等了 \(waited) 秒）" + (last.map { Self.near(name, in: $0.rows) } ?? "")
+        throw StepRefused(description: "沒有做：\(app.name)" + (last.map { "最前面的視窗「\($0.title)」" } ?? "沒有視窗") + "裡沒有\(what)"
+                          + "的元素（等了 \(waited) 秒）" + (last.map { near($0.rows) } ?? "")
                           + "。名字要跟清單上引號或括號裡的字一字不差。")
     }
 
-    /// The elements named exactly `name` (label, title or AX id; case and outer spaces ignored), of `role` when given, by row.
+    /// The elements named exactly `name` (label, title or AX id; case and outer spaces ignored), of
+    /// `role` when given, by row; an empty name with a role: every element of that role.
     static func match(_ name: String, role: String?, in rows: [Int: ElementIdentity]) -> [ElementIdentity] {
         let q = norm(name)
-        guard !q.isEmpty else { return [] }
+        guard !q.isEmpty || role != nil else { return [] }
         return rows.values.filter { e in
-            [e.label, e.title, e.axID].contains { $0.map(norm) == q }
+            (q.isEmpty || [e.label, e.title, e.axID].contains { $0.map(norm) == q })
                 && (role.map { r in roleKey(r) == roleKey(e.role) || e.subrole.map(roleKey) == roleKey(r) } ?? true)
         }.sorted { $0.row < $1.row }
     }
@@ -949,7 +958,7 @@ public actor Mac {
             if let e { return " " + describe(e) }
             switch t {
             case .row(let n): return " 第 \(n) 行"
-            case .named(let name, let role): return " " + (role.map { "\($0) " } ?? "") + "\"\(name)\""
+            case .named(let name, let role): return name.isEmpty ? " 唯一的 \(role ?? "?")" : " " + (role.map { "\($0) " } ?? "") + "\"\(name)\""
             case .point(let x, let y): return " \(x),\(y)"
             case nil: return ""
             }
