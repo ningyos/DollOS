@@ -63,6 +63,10 @@ public struct ComputerConfig: Sendable {
     /// Window reads that keep their screenshot and list before the older ones are put away at once
     /// (`Doll.fullReads`, 2026-11-17): the request stays append-only for this many reads.
     public var readBatch = 4
+    /// At most this many steps in one `act` sequence (2026-11-17, sequences): the driver allows 64
+    /// and one batch at most 60 s; a step is about 0.5 s plus up to 3 s for a named target to
+    /// appear, and a longer run done without looking is more likely to go off track unseen.
+    public var sequenceMaxSteps = 20
     /// After launching an app or choosing a menu item, how many times the app's windows are listed
     /// before saying it has none, and how long between two.
     public var windowWaitTries = 5
@@ -493,6 +497,7 @@ public struct Config: Sendable {
         try v.read("screenshot_tokens", &computer.screenshotTokens)
         try v.read("settle_s", &computer.settleS)
         try v.read("read_batch", &computer.readBatch)
+        try v.read("sequence_max_steps", &computer.sequenceMaxSteps)
         try v.read("window_wait_tries", &computer.windowWaitTries)
         try v.read("window_wait_s", &computer.windowWaitS)
         try v.read("auth_processes", &computer.authProcesses)
@@ -503,10 +508,10 @@ public struct Config: Sendable {
         try v.read("estimate_history", &computer.estimateHistory)
         try v.finish()
         guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
-              computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
+              computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.sequenceMaxSteps >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
               !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1,
               computer.planMinChars >= 1, computer.planMaxFacts >= 1, computer.estimateHistory >= 0 else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more")
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, sequence_max_steps, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

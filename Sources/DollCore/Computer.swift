@@ -155,6 +155,9 @@ public struct ActionRecord: Codable, Sendable, Equatable {
     public var args: [String: String]
     public var ok: Bool
     public var error: String?
+    /// The `act` call this step was part of (one id for all its steps), so a recorded run can be
+    /// replayed as the sequence it was; nil for `open`.
+    public var sequence: String? = nil
 }
 
 /// What a computer tool hands back to the loop: her text, the window screenshot (a file under
@@ -166,8 +169,9 @@ public struct MacResult: Sendable {
     public var failed = false
     /// The app the call worked on, for experiences.
     public var app: AppIdentity?
-    /// A success's piece of the item's action list (`click AXButton "7"`, `menu 檔案 › 新增`).
-    public var step: String?
+    /// What went through, as the item's action list has it (`click AXButton "7"`, `menu 檔案 › 新增`):
+    /// every step of a sequence that was done, also when a later one failed.
+    public var steps: [String] = []
 }
 
 /// Her computer (2026-11-16). One session label per process; the latest read is what rows mean.
@@ -231,6 +235,11 @@ public actor Mac {
     static func said(_ error: Error) -> String {
         let text = "\(error)"
         guard let j = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return text }
+        // run_steps: the step that failed says what went wrong (`phase` find / action / expect).
+        if let bad = (j["steps"] as? [[String: Any]])?.first(where: { $0["ok"] as? Bool == false }) {
+            let parts = [(bad["code"] as? String).map { "[\($0)]" }, bad["message"] as? String].compactMap { $0 }
+            if !parts.isEmpty { return parts.joined(separator: " ") }
+        }
         let refusal = j["refusal"] as? [String: Any]
         let code = (refusal?["code"] ?? j["code"]) as? String
         let message = (refusal?["message"] ?? j["message"] ?? j["reason"] ?? j["error"]) as? String
@@ -356,10 +365,10 @@ public actor Mac {
         }
         guard let front = wins.first else {
             current = nil
-            var r = MacResult(text: "\(identity.name) 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 menu(app: \"\(identity.name)\", path: [\"檔案\", \"新增\"])"
+            var r = MacResult(text: "\(identity.name) 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 act(steps: [{\"menu\": [\"檔案\", \"新增\"], \"app\": \"\(identity.name)\"}])"
                               + "（英文選單是 File › New，選單名字以 app 自己的為準）；要開某個檔案就 open 帶 target。", image: nil, window: nil)
             r.app = identity
-            r.step = "open \(identity.name)" + (target.map { " \($0)" } ?? "")
+            r.steps = ["open \(identity.name)" + (target.map { " \($0)" } ?? "")]
             try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: nil,
                              element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
             return r
@@ -371,7 +380,7 @@ public actor Mac {
         if let file, !isTarget(shown) {
             r.window = "（沒看到標題有「\(file)」的視窗：檔案可能沒有開起來（例如 app 有對話框擋著）。下面是 \(identity.name) 最前面的視窗，不是那個檔）\n" + (r.window ?? "")
         }
-        r.step = "open \(identity.name)" + (target.map { " \($0)" } ?? "")
+        r.steps = ["open \(identity.name)" + (target.map { " \($0)" } ?? "")]
         return r
     }
 
@@ -546,86 +555,225 @@ public actor Mac {
         do { return try await authDialog() } catch { return "（沒查到畫面上有沒有系統驗證視窗：\(Self.said(error))）" }
     }
 
+
     // acting -------------------------------------------------------------------
-    public enum Act: Sendable {
-        case click(row: Int?, x: Int?, y: Int?, button: String, count: Int)
-        case type(text: String, row: Int?)
+    /// What a step acts on: a row of her latest read; an element named by its label (and role) in the
+    /// app's front window, for one that appears only after an earlier step (a menu that opened, a
+    /// dialog); or a point of the latest screenshot.
+    public enum Target: Sendable, Equatable {
+        case row(Int)
+        case named(name: String, role: String?)
+        case point(x: Int, y: Int)
+    }
+
+    public enum Step: Sendable, Equatable {
+        case click(Target, button: String, count: Int)
+        case type(text: String, into: Target?)
         case key(key: String, modifiers: [String])
-        case scroll(direction: String, amount: Int, row: Int?)
+        case scroll(direction: String, amount: Int, at: Target?)
         case menu(app: String?, path: [String])
     }
 
-    /// Does one action on the window of the latest read (a menu: on the app she names), then reads
-    /// that window again (or the app's front window when that one closed) so she never acts on a stale
-    /// read. A row not in the latest read is refused before anything is sent.
-    public func act(_ a: Act) async throws -> MacResult {
-        if case .menu(let app, let path) = a { return try await menu(app, path) }
-        guard let c = current else { throw ComputerError("沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。") }
-        var args: [String: Any] = ["pid": c.pid, "window_id": c.windowID, "session": session]
+    /// `act` (2026-11-17, owner: 可以預測結果的行為可以在一個回合做完): her steps, in order, without a
+    /// read in between; each goes to the driver as a one-step `run_steps` (its own stale-token refind,
+    /// ~0.45 s against ~0.95 s for the plain tool). Between two steps the screen is checked for a
+    /// system authentication dialog or a password sheet in the window (that stops the sequence). The
+    /// first step that fails stops it; the window is read once, after the last step that ran. A row
+    /// means the read she saw when her reply was written (`beginReply`); a row the program cannot
+    /// vouch for is refused before anything is sent.
+    public func act(_ steps: [Step]) async throws -> MacResult {
+        guard steps.count <= cfg.sequenceMaxSteps else {
+            throw ComputerError("沒有做：一次最多 \(cfg.sequenceMaxSteps) 步，你給了 \(steps.count) 步。分成幾次送，每次送到要看結果的地方為止。")
+        }
+        let sequence = UUID().uuidString.lowercased()
+        // The app the steps work on: the latest read's, or the one a menu step names.
+        var here: (pid: Int, app: AppIdentity)? = current.map { ($0.pid, $0.app) }
+        var before = Set<Int>()
+        if let here { before = Set(try await windows(pid: here.pid).map(\.id)) }
+        var done: [String] = []
+        var menuRan = false
+        var stop: String?
+        for (i, step) in steps.enumerated() {
+            let n = i + 1
+            let rest = steps.count - n
+            do {
+                if case .menu(let app, let path) = step {
+                    let (pid, identity) = try await target(app)
+                    if here?.pid != pid {
+                        here = (pid, identity)
+                        before = Set(try await windows(pid: pid).map(\.id))
+                    }
+                    try await invokeMenu(pid: pid, app: identity, path: path, sequence: sequence)
+                    menuRan = true
+                    done.append(Self.step(step, nil))
+                } else {
+                    guard let here else { throw StepRefused(description: "沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。") }
+                    done.append(try await run(step, pid: here.pid, app: here.app, read: current?.pid == here.pid ? current : nil, sequence: sequence))
+                }
+            } catch {
+                let refused = (error as? StepRefused) != nil
+                // The first step refused before anything was sent: nothing happened, the call fails as a whole.
+                if refused, n == 1 { throw ComputerError(Self.said(error)) }
+                stop = "第 \(n) 步（\(Self.step(step, nil))）沒做成：\(Self.said(error))。"
+                    + (n > 1 ? "前面 \(n - 1) 步做了，" : "") + (rest > 0 ? "後面 \(rest) 步沒做，" : "") + "下面是現在的視窗。"
+                break
+            }
+            if rest > 0, let here, let auth = await authBetween(pid: here.pid, app: here.app) {
+                stop = auth + "做到第 \(n) 步就停了，後面 \(rest) 步沒做。"
+                break
+            }
+        }
+        guard let here else { throw ComputerError("沒有做：還沒讀過視窗；先 read_window 或 open。") }
+        let doneLine = done.isEmpty ? "沒有做任何一步" : "做了 \(done.count) 步"
+        var r = await readAfter(doneLine, app: here.app) {
+            try await self.readEnd(pid: here.pid, app: here.app, before: before, waitNew: menuRan)
+        }
+        let said = stop ?? "\(steps.count) 步都做了：" + done.joined(separator: "、") + "。"
+        r.text = [said, r.text].filter { !$0.isEmpty }.joined(separator: "\n")
+        r.failed = stop != nil
+        r.steps = done
+        r.app = r.app ?? here.app
+        return r
+    }
+
+    /// A step refused before it was sent (a row the program cannot vouch for, a point off the screenshot).
+    struct StepRefused: Error, CustomStringConvertible { let description: String }
+
+    /// One step (not a menu) on the app the sequence works on: its line for the action list. A row
+    /// or a point needs that app's latest read (`c`); a named element, typing into the focus, a key
+    /// or a scroll do not (a menu step may have opened the app's first window).
+    func run(_ step: Step, pid: Int, app: AppIdentity, read c: Read?, sequence: String) async throws -> String {
+        var args: [String: Any] = c.map { ["pid": pid, "window_id": $0.windowID] } ?? ["pid": pid]
         var element: ElementIdentity?
         var logArgs: [String: String] = [:]
-        func row(_ n: Int) throws {
-            guard let e = c.rows[n] else {
-                throw ComputerError("沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。重新 read_window，用新清單的行號。")
-            }
-            // An earlier action of this reply read the window again: the row must still be the
-            // element she saw, or it is not hers to press.
-            if let s = seen, s.snapshot != c.snapshot {
-                guard s.windowID == c.windowID, let was = s.rows[n], Self.same(was, e) else {
-                    let was = s.rows[n].map(Self.describe) ?? "沒有這一行"
-                    throw ComputerError("沒有做：這則回覆前面的動作改變了視窗，第 \(n) 行現在是 \(Self.describe(e))，你看到的是 \(was)。看新清單再選。")
+        func aim(_ t: Target) throws {
+            switch t {
+            case .row(let n):
+                guard let c else {
+                    throw StepRefused(description: "沒有做：第 \(n) 行要對讀過的視窗，\(app.name) 還沒讀過視窗。之後才出現的元素用 name 指定，或先 read_window。")
                 }
-            }
-            element = e
-            args["element_token"] = "\(c.snapshot):\(n)"
-        }
-        let tool: String
-        switch a {
-        case .click(let r, let x, let y, let button, let count):
-            if let r { try row(r) } else if let x, let y {
+                guard let e = c.rows[n] else {
+                    throw StepRefused(description: "沒有做：第 \(n) 行不在最新一次讀到的清單裡（\(c.app.name)「\(c.title)」，行號 0–\(c.maxRow)）。重新 read_window，用新清單的行號；之後才出現的元素用 name 指定。")
+                }
+                // An earlier call of this reply read the window again: the row must still be the
+                // element she saw, or it is not hers to press.
+                if let s = seen, s.snapshot != c.snapshot {
+                    guard s.windowID == c.windowID, let was = s.rows[n], Self.same(was, e) else {
+                        let was = s.rows[n].map(Self.describe) ?? "沒有這一行"
+                        throw StepRefused(description: "沒有做：這則回覆前面的呼叫改變了視窗，第 \(n) 行現在是 \(Self.describe(e))，你看到的是 \(was)。看新清單再選。")
+                    }
+                }
+                element = e
+                args["element_token"] = "\(c.snapshot):\(n)"
+            case .named(let name, let role):
+                // The app's front window, found fresh by the driver (waits up to 3 s for it to appear).
+                args = ["app": app.bundleID.isEmpty ? app.name : app.bundleID, "name": name]
+                if let role { args["role"] = role }
+                logArgs["name"] = name
+                if let role { logArgs["role"] = role }
+            case .point(let x, let y):
+                guard let c else { throw StepRefused(description: "沒有點：\(x),\(y) 要對讀過的截圖，\(app.name) 還沒讀過視窗。") }
                 if let s = c.size, !(0..<s.w).contains(x) || !(0..<s.h).contains(y) {
-                    throw ComputerError("沒有點：\(x),\(y) 在截圖外（截圖 \(s.w)×\(s.h)）")
+                    throw StepRefused(description: "沒有點：\(x),\(y) 在截圖外（截圖 \(s.w)×\(s.h)）")
                 }
                 args["x"] = x; args["y"] = y
-                logArgs = ["x": "\(x)", "y": "\(y)"]
-            } else { throw ComputerError("click 要給 row，或 x 和 y") }
+                logArgs["x"] = "\(x)"; logArgs["y"] = "\(y)"
+            }
+        }
+        let tool: String
+        switch step {
+        case .click(let t, let button, let count):
+            try aim(t)
             if button != "left" { args["button"] = button; logArgs["button"] = button }
             tool = count == 2 ? "double_click" : "click"
-        case .type(let text, let r):
-            if let r { try row(r) }
+        case .type(let text, let t):
+            if let t { try aim(t) }
             args["text"] = text
-            logArgs = ["text": text]
+            logArgs["text"] = text
             tool = "type_text"
         case .key(let key, let mods):
             if mods.isEmpty { args["key"] = key; tool = "press_key" } else { args["keys"] = mods + [key]; tool = "hotkey" }
-            logArgs = ["key": key, "modifiers": mods.joined(separator: "+")]
-        case .scroll(let direction, let amount, let r):
-            if let r { try row(r) }
+            logArgs["key"] = key; logArgs["modifiers"] = mods.joined(separator: "+")
+        case .scroll(let direction, let amount, let t):
+            if let t { try aim(t) }
             args["direction"] = direction; args["amount"] = amount
-            logArgs = ["direction": direction, "amount": "\(amount)"]
+            logArgs["direction"] = direction; logArgs["amount"] = "\(amount)"
             tool = "scroll"
-        case .menu: fatalError("handled above")
+        case .menu: fatalError("menu steps go through invokeMenu")
         }
-        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: Self.toolName(a), app: c.app.name, bundleID: c.app.bundleID,
-                                  window: c.title, element: element, args: logArgs, ok: true, error: nil)
-        var said = ""
+        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: Self.toolName(step), app: app.name, bundleID: app.bundleID,
+                                  window: c?.title, element: element, args: logArgs, ok: true, error: nil, sequence: sequence)
         do {
-            let j = try await call(tool, args)
-            said = Self.effect(j)
+            let j = try await call("run_steps", ["session": session, "steps": [["tool": tool, "args": args]]])
+            let first = (j["steps"] as? [[String: Any]])?.first
+            if j["ok"] as? Bool == false || first?["ok"] as? Bool == false { throw ComputerError(Self.text(j)) }
+            // A named target: the element the driver found is the one the log keeps.
+            if element == nil, let found = (first?["target"] as? [String: Any])?["element"] as? String {
+                element = Self.found(found)
+                record.element = element
+            }
         } catch {
             record.ok = false
             record.error = Self.said(error)
             try log(record)
-            var r = try await reread(c)
-            r.text = "失敗：\(Self.said(error))" + (r.text.isEmpty ? "" : "\n" + r.text)
-            r.failed = true
-            return r
+            throw error
         }
         try log(record)
+        return Self.step(step, element)
+    }
+
+    /// The driver's line for an element it found (`[20] AXButton "等於"`) as an identity: row, role, label.
+    static func found(_ s: String) -> ElementIdentity? {
+        guard let m = s.firstMatch(of: /^\[(\d+)\] (\S+)(?: "(.*)")?$/), let row = Int(m.1) else { return nil }
+        return ElementIdentity(row: row, role: String(m.2), subrole: nil, axID: nil, label: m.3.map(String.init), title: nil, path: [])
+    }
+
+    static func text(_ j: [String: Any]) -> String {
+        String(decoding: (try? JSONSerialization.data(withJSONObject: j, options: [.sortedKeys])) ?? Data(), as: UTF8.self)
+    }
+
+    /// Between two steps: a system authentication dialog on screen, or a password sheet in the app's
+    /// window (`authSheet`); nil when there is none. A check that cannot be made stops the sequence too.
+    func authBetween(pid: Int, app: AppIdentity) async -> String? {
+        do {
+            if let line = try await authDialog() { return line }
+            let wins = try await windows(pid: pid)
+            guard let w = wins.first(where: { $0.id == current?.windowID }) ?? wins.first else { return nil }
+            let j = try await call("get_window_state", ["pid": pid, "window_id": w.id, "session": session, "tree_format": "both",
+                                                        "include_screenshot": false, "max_elements": cfg.maxElements])
+            return Self.authSheet(j["elements"] as? [[String: Any]] ?? []) ? Self.authSheetLine(app.name) : nil
+        } catch {
+            return "（沒查到畫面上有沒有系統驗證視窗：\(Self.said(error))，所以先停下來）"
+        }
+    }
+
+    /// The read after a sequence: a window that appeared during it (after a menu, waiting for one as
+    /// `open` does), else the window of the latest read if it is still there, else the app's front
+    /// window, else why there is none.
+    func readEnd(pid: Int, app: AppIdentity, before: Set<Int>, waitNew: Bool) async throws -> MacResult {
         try await Task.sleep(for: .seconds(cfg.settleS))
-        var r = await readAfter("\(Self.toolName(a)) 做了", app: c.app) { try await self.reread(c) }
-        r.text = [said, r.text].filter { !$0.isEmpty }.joined(separator: "\n")
-        r.step = Self.step(a, element)
+        var now = try await windows(pid: pid)
+        if waitNew {
+            for _ in 1..<cfg.windowWaitTries {
+                if now.contains(where: { !before.contains($0.id) }) || (!now.isEmpty && !before.isEmpty) { break }
+                try await Task.sleep(for: .seconds(cfg.windowWaitS))
+                now = try await windows(pid: pid)
+            }
+        }
+        let last = current
+        if let new = now.first(where: { !before.contains($0.id) }) { return try await readFront(pid: pid, app: app, first: new, wins: now) }
+        if let last, last.pid == pid, let same = now.first(where: { $0.id == last.windowID }) {
+            return try await read(pid: pid, app: app, window: same, of: now.count)
+        }
+        if let front = now.first {
+            var r = try await readFront(pid: pid, app: app, first: front, wins: now)
+            if let last, last.pid == pid { r.window = "（剛才那個視窗「\(last.title)」不見了，這是 \(app.name) 現在最前面的視窗）\n" + (r.window ?? "") }
+            return r
+        }
+        current = nil
+        var r = MacResult(text: "\(app.name) 現在沒有視窗" + (last.map { $0.pid == pid ? "了（剛才的「\($0.title)」關了）。" : "。" } ?? "。"), image: nil, window: nil)
+        r.app = app
+        if let auth = await authLine() { r.text += "\n" + auth }
         return r
     }
 
@@ -639,22 +787,30 @@ public actor Mac {
         return e.role + (name.map { " \"\($0)\"" } ?? "")
     }
 
-    /// One piece of the item's action list: what was done to what, no row numbers.
-    static func step(_ a: Act, _ e: ElementIdentity?) -> String {
-        let on = e.map { " " + describe($0) } ?? ""
-        switch a {
-        case .click(_, let x, let y, let button, let count):
-            let how = (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
-            return "click" + (e == nil ? " \(x ?? 0),\(y ?? 0)" : on) + how
-        case .type(let text, _): return "type「\(text)」" + (e == nil ? "" : " 進" + on)
+    /// One piece of the item's action list: what was done to what, no row numbers (before the
+    /// element is known: the row, the name or the point she gave).
+    static func step(_ s: Step, _ e: ElementIdentity?) -> String {
+        func on(_ t: Target?) -> String {
+            if let e { return " " + describe(e) }
+            switch t {
+            case .row(let n): return " 第 \(n) 行"
+            case .named(let name, let role): return " " + (role.map { "\($0) " } ?? "") + "\"\(name)\""
+            case .point(let x, let y): return " \(x),\(y)"
+            case nil: return ""
+            }
+        }
+        switch s {
+        case .click(let t, let button, let count):
+            return "click" + on(t) + (button == "left" ? "" : " \(button)") + (count == 2 ? " 雙擊" : "")
+        case .type(let text, let t): return "type「\(text)」" + (t == nil ? "" : " 進" + on(t))
         case .key(let key, let mods): return "key " + (mods + [key]).joined(separator: "+")
-        case .scroll(let direction, let amount, _): return "scroll \(direction) \(amount)" + on
+        case .scroll(let direction, let amount, let t): return "scroll \(direction) \(amount)" + on(t)
         case .menu(_, let path): return "menu " + path.joined(separator: " › ")
         }
     }
 
-    static func toolName(_ a: Act) -> String {
-        switch a {
+    static func toolName(_ s: Step) -> String {
+        switch s {
         case .click: "click"
         case .type: "type"
         case .key: "key"
@@ -663,14 +819,7 @@ public actor Mac {
         }
     }
 
-    /// What she needs from a success: only that the driver could not confirm it (her next read shows
-    /// what happened), not its bookkeeping.
-    static func effect(_ j: [String: Any]) -> String {
-        guard let e = j["effect"] as? String else { return "" }
-        return e == "unverifiable" ? "（送出了，cua-driver 沒法確認有沒有作用；看下面這次讀到的視窗）" : ""
-    }
-
-    /// After an action: the same window if it is still there, else the app's front window, else why none.
+    /// The window of the latest read again, or the app's front window when that one closed.
     func reread(_ c: Read) async throws -> MacResult {
         let wins = try await windows(pid: c.pid)
         if let same = wins.first(where: { $0.id == c.windowID }) {
@@ -688,17 +837,16 @@ public actor Mac {
         return r
     }
 
-    /// `menu`: an app-menu item by its labels, top level first, through accessibility in the
+    /// A menu step: an app-menu item by its labels, top level first, through accessibility in the
     /// background. Works on an app with no window (TextEdit 檔案 › 新增, 2026-11-16).
-    func menu(_ app: String?, _ path: [String]) async throws -> MacResult {
-        let (pid, identity) = try await target(app)
+    func invokeMenu(pid: Int, app: AppIdentity, path: [String], sequence: String) async throws {
         var args: [String: Any] = ["pid": pid, "path": path, "session": session]
         let wins = try await windows(pid: pid)
         // The driver refuses a window that is not the app's key window; the front one is.
         if let c = current, c.pid == pid, wins.first?.id == c.windowID { args["window_id"] = c.windowID }
-        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "menu", app: identity.name, bundleID: identity.bundleID,
-                                  window: wins.first?.title, element: nil, args: ["path": path.joined(separator: " › ")], ok: true, error: nil)
-        let before = Set(wins.map(\.id))
+        var record = ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "menu", app: app.name, bundleID: app.bundleID,
+                                  window: wins.first?.title, element: nil, args: ["path": path.joined(separator: " › ")], ok: true, error: nil,
+                                  sequence: sequence)
         do { _ = try await call("invoke_menu", args) } catch {
             record.ok = false
             record.error = Self.said(error)
@@ -706,21 +854,6 @@ public actor Mac {
             throw ComputerError("選單「\(path.joined(separator: " › "))」沒有執行：\(Self.said(error))")
         }
         try log(record)
-        // A new window may take a moment.
-        var now: [Win] = []
-        for attempt in 0..<cfg.windowWaitTries {
-            try await Task.sleep(for: .seconds(attempt == 0 ? cfg.settleS : cfg.windowWaitS))
-            now = try await windows(pid: pid)
-            if now.contains(where: { !before.contains($0.id) }) || (!now.isEmpty && !before.isEmpty) { break }
-        }
-        guard let front = now.first(where: { !before.contains($0.id) }) ?? now.first else {
-            current = nil
-            return MacResult(text: "選了「\(path.joined(separator: " › "))」，\(identity.name) 還是沒有視窗。", image: nil, window: nil,
-                             app: identity, step: "menu " + path.joined(separator: " › "))
-        }
-        var r = await readAfter("選單「\(path.joined(separator: " › "))」選了", app: identity) { try await self.read(pid: pid, app: identity, window: front, of: now.count) }
-        r.step = "menu " + path.joined(separator: " › ")
-        return r
     }
 
     /// The read after an action that was sent. Its failure is not the action's: the action already

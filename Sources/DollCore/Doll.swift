@@ -1289,8 +1289,8 @@ public actor Doll {
                 return computerOutcome(try await mac.open(app, target: target), name: name, chain: chain)
             case .readWindow(let app, let window):
                 return computerOutcome(try await mac.readWindow(app, window: window), name: name, chain: chain)
-            case .act(let action):
-                return computerOutcome(try await mac.act(action), name: name, chain: chain)
+            case .act(let steps, let expect):
+                return computerOutcome(try await mac.act(steps), name: name, chain: chain, expect: expect)
             case .askOwner(let what, let place, let why):
                 return try askOwner(what: what, where: place, why: why)
             // The file tools (2026-11-09; this Mac's files since 2026-11-16): text only, no window read.
@@ -1356,15 +1356,33 @@ public actor Doll {
 
     /// A computer read or action as her tool result: its text, and the window's screenshot and
     /// element list unless an action is not the last of her reply (then its line only). Its app keys
-    /// the 【相關記憶】 on a switch and the experience's entities; a success is a step of the item.
-    func computerOutcome(_ r: MacResult, name: String, chain: Chain) -> Outcome {
+    /// the 【相關記憶】 on a switch and the experience's entities; every step that went through is a
+    /// step of the item. `expect` (an `act`'s): matched against the new read the way `todo.done`'s
+    /// evidence is (`quoted`); a miss stops her reply's later actions like a failure and shows the
+    /// read's values.
+    func computerOutcome(_ r: MacResult, name: String, chain: Chain, expect: String? = nil) -> Outcome {
         var out = Outcome(text: r.text, image: r.image, window: r.window, actions: [r.failed ? "error \(name)" : name])
         noteRead(r)
+        for step in r.steps { itemSteps.append((timeline.lastSeq + 1, step)) }
         if r.failed {
             out.failedStep = name
         } else {
-            if let step = r.step { itemSteps.append((timeline.lastSeq + 1, step)) }
-            if Tools.actionNames.contains(name), !chain.last {
+            if let expect {
+                if let window = r.window {
+                    let lines = window.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                    if Self.quoted(expect, in: lines.dropFirst().joined(separator: "\n")) {
+                        out.text += "\n跟你預期的一樣：視窗裡有「\(expect)」。"
+                    } else {
+                        out.text += "\n跟你預期的不一樣：你預期「\(expect)」，讀到的視窗裡沒有。現在是：\n\(Self.valueLines(Array(lines.dropFirst())))\n先看清楚為什麼不一樣，再決定下一步。"
+                        out.actions = ["unexpected \(name)"]
+                        out.failedStep = name
+                        log("INFO", "turn \(turnIndex): act expected「\(expect)」, not in the read")
+                    }
+                } else {
+                    out.text += "\n沒法對你預期的「\(expect)」：做完之後沒有讀到視窗。"
+                }
+            }
+            if Tools.actionNames.contains(name), !chain.last, out.failedStep == nil {
                 out.image = nil
                 out.window = nil
             }
@@ -1381,7 +1399,7 @@ public actor Doll {
     /// A window read: the latest read her evidence is matched against, and the screenshot the owner
     /// gets. An `open` that found no window is a read too: what she saw is that the app has none.
     func noteRead(_ r: MacResult) {
-        guard let window = r.window ?? (r.failed || r.step?.hasPrefix("open ") != true ? nil : "open\n" + r.text) else { return }
+        guard let window = r.window ?? (r.failed || r.steps.first?.hasPrefix("open ") != true ? nil : "open\n" + r.text) else { return }
         latestRead = .window(window)
         ownerShot = r.image
     }
@@ -1849,10 +1867,20 @@ public actor Doll {
         return out
     }
 
-    /// `text` with every argument value of `call` cut out (a JSON array's strings one by one).
+    /// `text` with every argument value of `call` cut out (a JSON value's strings one by one, also
+    /// inside `act`'s steps: a menu path, a typed text, a name, her expect).
     static func withoutArguments(_ text: String, of call: ToolCall) -> String {
-        let values = call.parameters.flatMap { p in
-            (try? JSONDecoder().decode([String].self, from: Data(p.value.utf8))) ?? [p.value]
+        func leaves(_ v: Any) -> [String] {
+            switch v {
+            case let s as String: [s]
+            case let a as [Any]: a.flatMap(leaves)
+            case let o as [String: Any]: o.values.flatMap(leaves)
+            default: []
+            }
+        }
+        let values = call.parameters.flatMap { p -> [String] in
+            guard let j = try? JSONSerialization.jsonObject(with: Data(p.value.utf8), options: [.fragmentsAllowed]), j is [Any] || j is [String: Any] else { return [p.value] }
+            return leaves(j)
         }.filter { $0.count >= 2 }.sorted { $0.count > $1.count }
         return values.reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
     }
@@ -2068,7 +2096,7 @@ public actor Doll {
 
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
-    static let observingTools: Set<String> = ["open", "read_window", "click", "type", "key", "scroll", "menu", "read_file", "edit_file"]
+    static let observingTools: Set<String> = ["open", "read_window", "act", "read_file", "edit_file"]
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her

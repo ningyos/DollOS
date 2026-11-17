@@ -24,8 +24,8 @@ import Foundation
 /// state is refused with the reason. Text outside her calls is her own thought, seen by no one else.
 ///
 /// The `tools` list is the same for the whole process (it opens the prompt; a change would void the
-/// server's prefix cache). The computer's tools (click, type, key, scroll, drag, read_file,
-/// write_file, edit_file, screenshot, watch) are always declared; a call while no todo item is in
+/// server's prefix cache). The computer's tools (apps, open, read_window, act, read_file,
+/// write_file, edit_file) are always declared; a call while no todo item is in
 /// progress is refused with what to do first (`Doll.gateText`).
 public enum Tools {
     /// The modifiers `key` accepts, in the order a chord is written (spec 3.1, 2026-11-09).
@@ -35,6 +35,92 @@ public enum Tools {
     /// (`cmd+shift+alt+s`). One fixed order, so the same chord is always the same step.
     static func chord(key: String, modifiers mods: [String]) -> String {
         (modifiers.filter(mods.contains) + [key.lowercased()]).joined(separator: "+")
+    }
+
+    /// `act`'s steps (2026-11-17) from her JSON array: each step is one object with exactly one of
+    /// click / type / key / scroll / menu; a target is a row number, {"name", "role"?} or {"x", "y"}.
+    /// Anything else throws with the step's number and what was wrong.
+    static func steps(_ raw: String) throws -> [Mac.Step] {
+        guard let list = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [Any], !list.isEmpty else {
+            throw ToolError(description: "act 的 steps 要是步驟的 JSON 陣列，例：[{\"click\": 5}, {\"type\": \"你好\"}]；收到 \(raw.prefix(200))")
+        }
+        let kinds = ["click", "type", "key", "scroll", "menu"]
+        return try list.enumerated().map { i, any in
+            let n = i + 1
+            func bad(_ why: String) -> ToolError { ToolError(description: "act 的第 \(n) 步\(why)") }
+            guard let s = any as? [String: Any] else { throw bad("要是一個物件，例：{\"click\": 5}") }
+            let given = kinds.filter { s[$0] != nil }
+            guard given.count == 1, let kind = given.first else {
+                throw bad("要剛好有 click、type、key、scroll、menu 其中一個，收到 \(s.keys.sorted().joined(separator: "、"))")
+            }
+            let allowed: Set<String> = switch kind {
+            case "click": ["click", "count", "button"]
+            case "type": ["type", "in"]
+            case "key": ["key", "modifiers"]
+            case "scroll": ["scroll", "amount", "in"]
+            default: ["menu", "app"]
+            }
+            if let extra = s.keys.sorted().first(where: { !allowed.contains($0) }) { throw bad("（\(kind)）沒有 \(extra) 這一欄") }
+            func int(_ v: Any?) -> Int? {
+                guard let num = v as? NSNumber, CFGetTypeID(num) != CFBooleanGetTypeID() else { return nil }
+                let d = num.doubleValue
+                return d.isFinite && d == d.rounded() ? Int(d) : nil
+            }
+            func target(_ v: Any?, field: String) throws -> Mac.Target? {
+                guard let v else { return nil }
+                if let row = int(v) { return .row(row) }
+                if let o = v as? [String: Any] {
+                    if let name = (o["name"] as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+                        guard Set(o.keys).isSubset(of: ["name", "role"]) else { throw bad("的 \(field) 用名字指定時只能有 name、role") }
+                        let role = (o["role"] as? String)?.trimmingCharacters(in: .whitespaces)
+                        return .named(name: name, role: role?.isEmpty == false ? role : nil)
+                    }
+                    if let x = int(o["x"]), let y = int(o["y"]), o.count == 2 { return .point(x: x, y: y) }
+                }
+                throw bad("的 \(field) 要是行號（例：5）、{\"name\": \"儲存\", \"role\": \"button\"} 或 {\"x\": 100, \"y\": 50}")
+            }
+            switch kind {
+            case "click":
+                let count = s["count"] == nil ? 1 : int(s["count"])
+                guard count == 1 || count == 2 else { throw bad("的 count 只能是 1 或 2") }
+                let button = s["button"] == nil ? "left" : s["button"] as? String
+                guard let button, ["left", "right"].contains(button) else { throw bad("的 button 只能是 left、right") }
+                return .click(try target(s["click"], field: "click")!, button: button, count: count!)
+            case "type":
+                // Not trimmed: what she writes is inserted exactly.
+                guard let text = s["type"] as? String, !text.isEmpty else { throw bad("的 type 要是不空的字串") }
+                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是行號或名字，不能是 x、y") }
+                return .type(text: text, into: try target(s["in"], field: "in"))
+            case "key":
+                guard let key = (s["key"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(), !key.isEmpty,
+                      !key.contains("+"), !key.contains(where: \.isWhitespace) else {
+                    throw bad("的 key 只放一個鍵（例：\"return\"），修飾鍵放 modifiers：{\"key\": \"s\", \"modifiers\": [\"cmd\"]}；要依序按好幾個鍵就寫好幾步，能打字就用 type")
+                }
+                var mods: [String] = []
+                if let raw = s["modifiers"] {
+                    guard let list = raw as? [String] else { throw bad("的 modifiers 要是陣列，例：[\"cmd\", \"shift\"]") }
+                    for m in list.map({ $0.lowercased() }) {
+                        guard modifiers.contains(m) else { throw bad("的 modifiers 只能是 \(modifiers.joined(separator: "、"))，收到 \(m)") }
+                        if !mods.contains(m) { mods.append(m) }
+                    }
+                }
+                // One fixed order, so the same chord is always the same recorded step.
+                return .key(key: key, modifiers: modifiers.filter(mods.contains))
+            case "scroll":
+                guard let d = s["scroll"] as? String, ["up", "down", "left", "right"].contains(d) else { throw bad("的 scroll 只能是 up、down、left、right") }
+                let amount = s["amount"] == nil ? 3 : int(s["amount"])
+                guard let amount, amount >= 1 else { throw bad("的 amount 要是 1 以上的整數") }
+                if case .point = try target(s["in"], field: "in") { throw bad("的 in 要是行號或名字，不能是 x、y") }
+                return .scroll(direction: d, amount: amount, at: try target(s["in"], field: "in"))
+            default:
+                guard let path = s["menu"] as? [String], !path.isEmpty,
+                      !path.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+                    throw bad("的 menu 要是選單路徑的字串陣列，從最上層寫起，例：[\"檔案\", \"新增\"]")
+                }
+                let app = (s["app"] as? String)?.trimmingCharacters(in: .whitespaces)
+                return .menu(app: app?.isEmpty == false ? app : nil, path: path)
+            }
+        }
     }
 
     /// One tool as the request's `tools` lists it.
@@ -353,6 +439,7 @@ public enum Tools {
         static let todoProgress = "todo.progress"
         static let todoContinue = "todo.continue"
         static let askOwner = "ask_owner"
+        static let act = "act"
     }
 
     /// Her todo tools; they stay (with their results) when an item's span is compacted.
@@ -362,7 +449,7 @@ public enum Tools {
     static let ending: Set<String> = [Name.todoDone, Name.todoFail, Name.todoProgress]
     /// The tools that run only while an item is 進行中 (2026-11-14): the computer's. `ask_owner` is not
     /// one: she may ask the owner any time.
-    static let gated: Set<String> = ["apps", "open", "read_window", "click", "type", "key", "scroll", "menu", "read_file", "write_file", "edit_file"]
+    static let gated: Set<String> = ["apps", "open", "read_window", Name.act, "read_file", "write_file", "edit_file"]
 
     /// The tools she speaks with, and the channel each one goes to.
     static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice]
@@ -384,21 +471,22 @@ public enum Tools {
              parameters: ["type": "object", "properties": [:], "required": []], jsonParameters: []),
     ]
 
-    /// The computer tools that act on a window (2026-11-16): in one reply they run in order and stop at
-    /// the first failure; only the last one done carries the window's new read.
-    static let actionNames: Set<String> = ["click", "type", "key", "scroll", "menu"]
+    /// The computer tool that acts on a window (2026-11-17, one sequence per call): several in one
+    /// reply run in order and stop at the first failure; only the last one done carries the window's new read.
+    static let actionNames: Set<String> = [Name.act]
 
     /// The computer tools (2026-11-16, this Mac through cua-driver): declared in `tools` from the
     /// start, run only while an item is 進行中. Each exists because: `apps` she has to know what is
     /// open; `open` starts or reaches an app (and hands it a file or URL: the way a document app gets
     /// a window in the background); `read_window` is how she sees (element rows and a screenshot);
-    /// `click`/`type`/`key`/`scroll` are the four ways to act on a read; `menu` reaches menu items,
-    /// also of an app with no window (measured: TextEdit had no window and no other way to get one);
+    /// `act` is how she acts: a sequence of clicks, typing, keys, scrolls and menu items, planned up to
+    /// the next point where she needs to see the result, with the text she expects there (2026-11-17,
+    /// owner: 可以預測結果的行為可以在一個回合做完; it replaced one tool per action, after which she sent
+    /// one button per reply: 37×46 took 10–14 rounds); a menu step reaches menu items, also of an app
+    /// with no window (measured: TextEdit had no window and no other way to get one);
     /// the file tools read and write text without a window (her docs, checking a saved file).
     static func computerSpecs(_ c: ComputerConfig, _ f: FilesConfig) -> [Spec] {
-        let after = "做完會重讀這個視窗；同一則回覆裡只有最後一個動作附新的清單和截圖，前面的只回一行。"
-        let row: (String, JSONValue) = ("row", ["type": "integer", "description": "最新一次讀到的清單裡的行號（[5] 就是 5）"])
-        return [
+        [
             Spec(name: "apps",
                  description: "列出現在開著的 app，和每個 app 開著的視窗標題。",
                  parameters: ["type": "object", "properties": [:], "required": []], jsonParameters: []),
@@ -413,7 +501,7 @@ public enum Tools {
                      "required": ["app"],
                  ], jsonParameters: []),
             Spec(name: "read_window",
-                 description: "讀一個視窗：元素清單（能操作的元素前面有 [行號]）和這個視窗的截圖。之後的 click、type、scroll、key 都是對這個視窗做，行號只看最新一次讀到的。",
+                 description: "讀一個視窗：元素清單（能操作的元素前面有 [行號]）和這個視窗的截圖。act 的行號只看最新一次讀到的。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
@@ -422,58 +510,27 @@ public enum Tools {
                      ]),
                      "required": [],
                  ], jsonParameters: []),
-            Spec(name: "click",
-                 description: "點最新一次讀到的視窗裡第 row 行的元素。清單裡找不到的東西才用截圖上的 x、y（截圖像素，左上角 0,0）。\(after)",
+            Spec(name: Name.act,
+                 description: """
+                     在最新讀的視窗上照順序做一串動作，做完讀一次視窗。先想好到下一個「要看到結果才知道怎麼做」的地方為止要做哪些步驟，一次送出，expect 寫你預期最後會在視窗裡看到的字。程式照順序做，有一步失敗或跳出系統驗證就停；做完拿 expect 跟讀到的視窗比，一樣就說一樣，不一樣就告訴你現在畫面上是什麼。結果猜得到的步驟（打數字、填表、走知道的選單）放在同一串；猜不到結果的那一步就是這一串的最後一步。能打字的地方就打整段字，不要一個鍵一個鍵按。
+                     每一步是下面一種：
+                     {"click": 5}：點清單第 5 行。{"click": {"name": "儲存", "role": "button"}}：點名字叫「儲存」的元素，前面的步驟做完才會出現的東西（打開的選單、跳出的對話框）用這個。{"click": {"x": 100, "y": 50}}：點截圖上的點，清單裡沒有才用。可以加 "count": 2 雙擊、"button": "right" 右鍵。
+                     {"type": "要打的字", "in": 3}：打字進第 3 行（in 也可以是 {"name": …}；不給就打進有焦點的地方）。只放字不按鍵。
+                     {"key": "return"}、{"key": "s", "modifiers": ["cmd"]}：按一個鍵。
+                     {"scroll": "down", "amount": 3, "in": 2}：捲動。
+                     {"menu": ["檔案", "新增"], "app": "TextEdit"}：選選單列上的項目（app 沒有視窗也可以；不給 app 是最新讀的那個）。
+                     例：表單填兩欄再送出：steps [{"type": "王小明", "in": 4}, {"type": "0912345678", "in": 6}, {"click": {"name": "送出", "role": "button"}}]，expect "已送出"。
+                     """,
                  parameters: [
                      "type": "object",
                      "properties": .object([
-                         row,
-                         ("x", ["type": "integer", "description": "截圖上的 x（只在清單裡沒有時用）"]),
-                         ("y", ["type": "integer", "description": "截圖上的 y"]),
-                         ("button", ["type": "string", "enum": ["left", "right"], "description": "不填是 left"]),
-                         ("count", ["type": "integer", "description": "1 單擊、2 雙擊；不填是 1"]),
+                         ("steps", ["type": "array", "items": ["type": "object"],
+                                    "description": .string("照順序要做的步驟，最多 \(c.sequenceMaxSteps) 步，每步的寫法見上面")]),
+                         ("expect", ["type": "string",
+                                     "description": "做完最後一步，視窗裡會出現的字，照畫面的寫法（例：1,702）；兩步以上一定要給"]),
                      ]),
-                     "required": [],
-                 ], jsonParameters: []),
-            Spec(name: "type",
-                 description: "打字進最新讀的視窗：給 row 就打進那一行的欄位，不給就打進現在有焦點的地方。只放字，不會按鍵；要按 Return 用 key。\(after)",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object([("text", ["type": "string", "description": "要打的字"]), row]),
-                     "required": ["text"],
-                 ], jsonParameters: []),
-            Spec(name: "key",
-                 description: "對最新讀的視窗的 app 按一個鍵，可以同時按住修飾鍵。例：Return＝key(key: \"return\")；⌘S＝key(key: \"s\", modifiers: [\"cmd\"])。\(after)",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object([
-                         ("key", ["type": "string", "description": "一個鍵：字母、數字，或 return、escape、tab、space、delete、up、down、left、right、f1 這類名字"]),
-                         ("modifiers", ["type": "array", "items": ["type": "string", "enum": .array(Tools.modifiers.map { .string($0) })],
-                                        "description": "同時按住的修飾鍵；不填就是沒有"]),
-                     ]),
-                     "required": ["key"],
-                 ], jsonParameters: ["modifiers"]),
-            Spec(name: "scroll",
-                 description: "捲動最新讀的視窗：給 row 就捲那一行的元素所在的地方，不給就捲有焦點的那塊。\(after)",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object([
-                         ("direction", ["type": "string", "enum": ["up", "down", "left", "right"]]),
-                         ("amount", ["type": "integer", "description": "捲幾格；不填是 3"]),
-                         row,
-                     ]),
-                     "required": ["direction"],
-                 ], jsonParameters: []),
-            Spec(name: "menu",
-                 description: "選 app 選單列上的一個項目，path 從最上層的選單寫到項目，用 app 自己顯示的名字，例：[\"檔案\", \"新增\"]。app 沒有視窗也能用（在背景開的 TextEdit 沒有視窗，新文件就這樣開）。做完讀這個 app 最前面的視窗。",
-                 parameters: [
-                     "type": "object",
-                     "properties": .object([
-                         ("app", ["type": "string", "description": "哪個 app；不填就是最新讀的那個"]),
-                         ("path", ["type": "array", "items": ["type": "string"], "description": "選單路徑，例：[\"檔案\", \"另存新檔⋯\"]"]),
-                     ]),
-                     "required": ["path"],
-                 ], jsonParameters: ["path"]),
+                     "required": ["steps"],
+                 ], jsonParameters: ["steps"]),
             Spec(name: "read_file",
                  description: "讀這台 Mac 上的一個文字檔，回每一行，前面帶行號（像 cat -n）。~ 是主人的家目錄。超過 \(f.maxReadLines) 行只回前 \(f.maxReadLines) 行、說還有幾行，再用 from、to 讀後面（行號從 1 算）。只讀 UTF-8 的文字檔。",
                  parameters: [
@@ -520,8 +577,8 @@ public enum Tools {
         ]
     }
 
-    /// How her computer actions chain in one reply: in the system prompt's computer paragraph.
-    static let chaining = "接下來幾步不用看結果就知道的話（例如計算機連按幾個鍵），就照順序寫在同一則回覆裡，程式照順序做，哪一步失敗就停，後面的不做。每做一步程式都重讀視窗：後面那步的行號如果已經指到不一樣的元素，就不做、要你看新清單。同一則回覆裡只有最後一個做成的動作（或失敗的那一步）附新的清單和截圖。結果猜不到的就先做那一步、看了再說。"
+    /// How several `act` calls chain in one reply: in the system prompt's computer paragraph.
+    static let chaining = "同一則回覆裡寫好幾個 act 也會照順序做；前一個失敗或跟 expect 不一樣，後面的就不做，只有最後做的那個附新的清單和截圖。"
 
     /// The request's `tools`: every spec's tool object, as JSON text.
     static func json(_ specs: [Spec]) -> String {
@@ -568,8 +625,8 @@ public enum Tools {
         case recall(String)
         case voiceJoin
         case voiceLeave
-        /// A computer action on the window of the latest read (or, `menu`, on an app).
-        case act(Mac.Act)
+        /// `act` (2026-11-17): her steps in order and the text she expects in the window after the last.
+        case act([Mac.Step], expect: String?)
         case apps
         case open(app: String, target: String?)
         case readWindow(app: String?, window: String?)
@@ -696,52 +753,13 @@ public enum Tools {
             return .open(app: try nonEmpty("app"), target: given("target").flatMap { $0.isEmpty ? nil : $0 })
         case "read_window":
             return .readWindow(app: given("app").flatMap { $0.isEmpty ? nil : $0 }, window: given("window").flatMap { $0.isEmpty ? nil : $0 })
-        case "click":
-            let button = try oneOf("button", ["left", "right"], default: "left")
-            let count = try int("count") ?? 1
-            guard count == 1 || count == 2 else { throw ToolError(description: "click 的 count 只能是 1 或 2，收到 \(count)") }
-            let row = try int("row"), x = try int("x"), y = try int("y")
-            if row != nil, x != nil || y != nil { throw ToolError(description: "click 的 row 和 x/y 只能給一種；清單裡有就用 row") }
-            guard row != nil || (x != nil && y != nil) else {
-                throw ToolError(description: row == nil && (x != nil || y != nil) ? "click 的 x 和 y 要一起給" : "click 要給 row（清單裡的行號），清單裡沒有才給 x 和 y")
+        case Name.act:
+            let steps = try Self.steps(value("steps"))
+            let expect = given("expect").flatMap { $0.isEmpty ? nil : $0 }
+            if steps.count > 1, expect == nil {
+                throw ToolError(description: "act 有 \(steps.count) 步，要給 expect：做完最後一步，視窗裡會出現的字（例：\"1,702\"）。猜不到結果的話，只送到猜得到的那一步，或只送一步。")
             }
-            return .act(.click(row: row, x: x, y: y, button: button, count: count))
-        case "type":
-            // Not trimmed: what she writes is inserted exactly.
-            let text = value("text")
-            guard !text.isEmpty else { throw ToolError(description: "type 的 text 是空的") }
-            return .act(.type(text: text, row: try int("row")))
-        case "key":
-            let key = try nonEmpty("key").lowercased()
-            guard !key.contains("+"), !key.contains(where: \.isWhitespace) else {
-                throw ToolError(description: "key 只放一個鍵，收到 \(key)；修飾鍵放 modifiers，例：key(key: \"s\", modifiers: [\"cmd\"])；要依序按好幾個鍵就呼叫好幾次 key")
-            }
-            var mods: [String] = []
-            if let raw = given("modifiers"), !raw.isEmpty {
-                guard let list = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else {
-                    throw ToolError(description: "key 的 modifiers 要是 JSON 陣列，例：[\"cmd\", \"shift\"]；收到 \(raw)")
-                }
-                for m in list.map({ $0.lowercased() }) {
-                    guard Tools.modifiers.contains(m) else {
-                        throw ToolError(description: "key 的 modifiers 只能是 \(Tools.modifiers.joined(separator: "、"))，收到 \(m)")
-                    }
-                    if !mods.contains(m) { mods.append(m) }
-                }
-            }
-            // One fixed order, so the same chord is always the same recorded step.
-            return .act(.key(key: key, modifiers: Tools.modifiers.filter(mods.contains)))
-        case "scroll":
-            let direction = try oneOf("direction", ["up", "down", "left", "right"], default: "")
-            let amount = try int("amount") ?? 3
-            guard amount >= 1 else { throw ToolError(description: "scroll 的 amount 至少是 1，收到 \(amount)") }
-            return .act(.scroll(direction: direction, amount: amount, row: try int("row")))
-        case "menu":
-            let raw = value("path")
-            guard let path = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)), !path.isEmpty,
-                  !path.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
-                throw ToolError(description: "menu 的 path 要是字串的 JSON 陣列，從最上層寫起，例：[\"檔案\", \"新增\"]；收到 \(raw)")
-            }
-            return .act(.menu(app: given("app").flatMap { $0.isEmpty ? nil : $0 }, path: path))
+            return .act(steps, expect: expect)
         case Name.askOwner:
             return .askOwner(what: try nonEmpty("what"), where: try nonEmpty("where"), why: try nonEmpty("why"))
         case "read_file":
@@ -990,9 +1008,10 @@ enum Instructions {
         你的電腦就是主人這台 Mac。你在背景操作他的 app，不會搶他的滑鼠、鍵盤和前景視窗，所以他用電腦的時候你也可以做事。只有進行中的項目能用電腦工具。
 
         怎麼看：open 打開（或叫到）一個 app，read_window 讀它的一個視窗。讀到的是兩樣東西：元素清單（能操作的元素前面有 [行號]）和那個視窗的截圖。兩樣都看：清單告訴你有什麼可以按、可以打字，截圖告訴你看起來怎樣。不知道開著什麼就用 apps。
-        怎麼做：click、type、scroll 用最新一次讀到的清單的行號；key 對同一個 app 按鍵；menu 選選單（app 沒有視窗也可以用，例如新文件）。每做一步程式就重讀那個視窗，結果裡是新的清單和截圖，行號會變，只用最新的。只有最新一次讀到的視窗會留著清單和截圖，之前讀的會收成一行。清單裡找不到的東西才用截圖上的 x、y 點。
-        按了不代表成功：結果裡寫「沒法確認」，就從新的清單和截圖確認有沒有變。\(Tools.chaining)
-        在背景開的 app 常常沒有視窗（例如 TextEdit）：要新文件就 menu(path: ["檔案", "新增"])；要在某個資料夾建新檔，也可以先 write_file 建一個空檔，再 open 帶 target 打開它。知道檔案的路徑就用 open 帶 target 直接開它：Finder 清單裡的檔案在背景點不到，而 Finder 開資料夾會把它拉到最前面一下，打斷主人。
+        怎麼做：用 act 送一串步驟（click、type、key、scroll、menu）。行號用最新一次讀到的清單的；前面的步驟做完才會出現的東西（打開的選單、跳出的對話框）用名字指定。整串做完程式讀一次視窗，結果裡是新的清單和截圖，行號會變，只用最新的。只有最新一次讀到的視窗會留著清單和截圖，之前讀的會收成一行。清單裡找不到的東西才用截圖上的 x、y。
+        主人說：想事情的時候就計劃具體要做什麼，結果猜得到的動作在一個回合做完。所以動手前，把到下一個「要看到結果才知道下一步」的地方為止的步驟全部想好，用一個 act 送出，expect 寫你預期會看到的字（例：計算機算完顯示的數字、你打進去的那段字）。按一個鍵、看一次、再按下一個，主人要等很久。能打字的地方就打一整段，不要一個字一個字按。猜不到結果的那一步（不知道會跳出什麼、要看了才知道點哪裡）放在這一串的最後，看了再送下一串。
+        按了不代表成功：程式會拿 expect 跟讀到的視窗比，不一樣就停下來看清楚為什麼。\(Tools.chaining)
+        在背景開的 app 常常沒有視窗（例如 TextEdit）：要新文件就用 act 的選單步驟 {"menu": ["檔案", "新增"], "app": "TextEdit"}；要在某個資料夾建新檔，也可以先 write_file 建一個空檔，再 open 帶 target 打開它。知道檔案的路徑就用 open 帶 target 直接開它：Finder 清單裡的檔案在背景點不到，而 Finder 開資料夾會把它拉到最前面一下，打斷主人。
 
         ## 敏感的事：先問主人
 
@@ -1021,7 +1040,7 @@ enum Instructions {
         - 大事拆成小事，一件一件做、一件一件確認。
         - 看整體：這一步會動到什麼別的（別的視窗、檔案、主人正在用的東西），不要只盯著一個按鈕。
         - 不能全要的時候，選一個平衡，說得出要什麼、放掉什麼、為什麼。
-        - 每一步做完就量：讀結果、跟預期比、不對就改，再做下一步。
+        - 先想好一整段：到下一個要看結果的地方為止要做哪些步驟、做完應該看到什麼；一次做完，再量：讀結果、跟預期比、不對就改，再想下一段。
         - 卡住的時候找最慢、最卡的那一步，先處理它；別的地方再快也沒用。
         - 出錯時從現象往回找真正的原因，找到了要驗證（再讀一次、再試一次），不要把現象當原因。
         - 第一次不必完美：做、試、看結果、改，再做；但每一次都要跟上一次不一樣。

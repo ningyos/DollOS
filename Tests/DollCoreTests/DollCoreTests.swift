@@ -28,12 +28,18 @@ private struct Scripted: ExpressibleByStringLiteral {
     var message: ChatMessage { ChatMessage(role: "assistant", content: content, toolCalls: toolCalls) }
 }
 
-/// `key("cmd+s")` → key(key: "s", modifiers: ["cmd"]); a lone key has no modifiers.
-private func key(_ chord: String) -> (String, [(String, String)]) {
+/// `act(steps…, expect:)`: her steps (each one step's JSON) as the `steps` array text.
+private func act(_ steps: String..., expect: String? = nil) -> (String, [(String, String)]) {
+    ("act", [("steps", "[" + steps.joined(separator: ", ") + "]")] + (expect.map { [("expect", $0)] } ?? []))
+}
+/// `keyStep("cmd+s")` → {"key": "s", "modifiers": ["cmd"]}; a lone key has no modifiers.
+private func keyStep(_ chord: String) -> String {
     let parts = chord.split(separator: "+").map(String.init)
     let mods = parts.dropLast().map { "\"\($0)\"" }.joined(separator: ", ")
-    return ("key", [("key", parts.last!)] + (mods.isEmpty ? [] : [("modifiers", "[\(mods)]")]))
+    return #"{"key": "\#(parts.last!)""# + (mods.isEmpty ? "" : #", "modifiers": [\#(mods)]"#) + "}"
 }
+/// A one-step `act` pressing the chord.
+private func key(_ chord: String) -> (String, [(String, String)]) { act(keyStep(chord)) }
 /// `todo.set(items)`; the default item stands for what `use_computer(expect)` said before 2026-11-14.
 private func todoSet(_ items: String...) -> (String, [(String, String)]) {
     let list = items.isEmpty ? ["畫面上看得到結果"] : items
@@ -58,9 +64,9 @@ private func todoWait(_ reason: String) -> (String, [(String, String)]) { ("todo
 private func progress(_ note: String) -> (String, [(String, String)]) { ("todo.progress", [("note", note)]) }
 /// Reads Calculator's front window (the fake driver's one app with a window from the start).
 private let readCall: (String, [(String, String)]) = ("read_window", [("app", "Calculator")])
-/// `click(row:)` on the latest read.
+/// A one-step `act` clicking a row of the latest read.
 private func clickRow(_ row: Int, count: Int? = nil) -> (String, [(String, String)]) {
-    ("click", [("row", "\(row)")] + (count.map { [("count", "\($0)")] } ?? []))
+    act(#"{"click": \#(row)"# + (count.map { #", "count": \#($0)"# } ?? "") + "}")
 }
 private func dm(_ text: String) -> (String, [(String, String)]) { ("discord.dm", [("text", text)]) }
 private func reply(_ text: String) -> (String, [(String, String)]) { ("dollctl.reply", [("text", text)]) }
@@ -262,6 +268,37 @@ private final class FakeCua: ComputerDriver, Sendable {
                 let after = s.after
                 after(tool, args, &s)
                 return #"{"effect":"unverifiable"}"#
+            case "run_steps":
+                // Each step as the inner tool's own call (after this one), a named target resolved
+                // to the app's front window element with that label, the way cua-driver does.
+                var results: [[String: Any]] = []
+                for (i, step) in (args["steps"] as? [[String: Any]] ?? []).enumerated() {
+                    let inner = step["tool"] as? String ?? ""
+                    var a = step["args"] as? [String: Any] ?? [:]
+                    s.calls.append((inner, Self.text(a)))
+                    if let refusal = s.refuse.removeValue(forKey: inner) { throw ComputerError(refusal) }
+                    var element: String?
+                    if let name = a["name"] as? String {
+                        let app = a["app"] as? String
+                        let role = (a["role"] as? String).map { $0.lowercased().replacingOccurrences(of: "ax", with: "") }
+                        let pid = s.apps.first { $0.bundleID == app || $0.name == app }?.pid
+                        guard let w = s.windows.first(where: { $0.pid == pid && $0.onScreen }),
+                              let row = w.elements.firstIndex(where: { $0.label == name && (role == nil || $0.role.lowercased() == "ax" + role!) }) else {
+                            throw ComputerError(Self.text(["ok": false, "failed_step": i, "steps": [["index": i, "ok": false, "code": "not_found", "phase": "find",
+                                                                                                   "message": "no \(a["role"] ?? "element") \"\(name)\" in \(app ?? "?")'s front window"]]]))
+                        }
+                        a["pid"] = w.pid
+                        a["window_id"] = w.id
+                        a["element_token"] = "named:\(row)"
+                        element = "[\(row)] \(w.elements[row].role)" + (w.elements[row].label.map { " \"\($0)\"" } ?? "")
+                    }
+                    let after = s.after
+                    after(inner, a, &s)
+                    var r: [String: Any] = ["index": i, "ok": true, "message": "Sent, effect not verified"]
+                    if let element { r["target"] = ["element": element] }
+                    results.append(r)
+                }
+                return Self.text(["executed": results.count, "ok": true, "steps": results])
             default:
                 throw ComputerError("fake cua-driver: unexpected tool \(tool)")
             }
@@ -429,24 +466,23 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 @Test func keyIsOneKeyWithModifiersInAFixedOrder() throws {
     let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
     let specs = Tools.computerSpecs(cfg.computer, cfg.files)
-    func decode(_ params: [(String, String)]) throws -> Tools.Request {
-        try Tools.decode(call("key", params), specs: specs)
+    func decode(_ step: String) throws -> Tools.Request {
+        try Tools.decode(call("act", [("steps", "[\(step)]")]), specs: specs)
     }
-    func chord(_ params: [(String, String)]) throws -> String? {
-        guard case .act(.key(let k, let mods)) = try decode(params) else { return nil }
+    func chord(_ step: String) throws -> String? {
+        guard case .act(let steps, _) = try decode(step), case .key(let k, let mods) = steps.first else { return nil }
         return Tools.chord(key: k, modifiers: mods)
     }
-    #expect(try chord([("key", "Return")]) == "return")
+    #expect(try chord(#"{"key": "Return"}"#) == "return")
     // Any order, case or repeat she writes comes out as the one order, so the same chord is the same step.
-    #expect(try chord([("key", "S"), ("modifiers", "[\"alt\", \"CMD\", \"shift\", \"cmd\"]")]) == "cmd+shift+alt+s")
-    #expect(try chord([("key", "a"), ("modifiers", "[]")]) == "a")
+    #expect(try chord(#"{"key": "S", "modifiers": ["alt", "CMD", "shift", "cmd"]}"#) == "cmd+shift+alt+s")
+    #expect(try chord(#"{"key": "a", "modifiers": []}"#) == "a")
     // A chord or a sequence in `key`, an unknown modifier, or modifiers that are not a JSON array: errors that say how.
-    for bad in [[("key", "cmd a")], [("key", "cmd+a")], [("key", "a"), ("modifiers", "[\"option\"]")],
-                [("key", "a"), ("modifiers", "cmd")]] {
+    for bad in [#"{"key": "cmd a"}"#, #"{"key": "cmd+a"}"#, #"{"key": "a", "modifiers": ["option"]}"#, #"{"key": "a", "modifiers": "cmd"}"#] {
         #expect(throws: ToolError.self) { try decode(bad) }
     }
-    do { _ = try decode([("key", "cmd shift s")]); Issue.record("accepted") } catch let e as ToolError {
-        #expect(e.description.hasPrefix("key 只放一個鍵，收到 cmd shift s；修飾鍵放 modifiers"))
+    do { _ = try decode(#"{"key": "cmd shift s"}"#); Issue.record("accepted") } catch let e as ToolError {
+        #expect(e.description.hasPrefix("act 的第 1 步的 key 只放一個鍵（例：\"return\"），修飾鍵放 modifiers"))
     }
 }
 
@@ -488,7 +524,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
     #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
                       "todo.wait", "todo.progress", "todo.continue", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
-                      "click", "type", "key", "scroll", "menu", "read_file", "write_file", "edit_file", "ask_owner"])
+                      "act", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
     // every request sends the same list
     await h.doll.ownerSaid("在嗎")
@@ -1037,40 +1073,64 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
           case .readWindow("TextEdit"?, "未命名"?) = try decode("read_window", [("app", "TextEdit"), ("window", "未命名")]) else {
         Issue.record("read_window"); return
     }
-    guard case .act(.click(5?, nil, nil, "left", 1)) = try decode("click", [("row", "5")]),
-          case .act(.click(nil, 10?, 20?, "right", 2)) = try decode("click", [("x", "10"), ("y", "20"), ("button", "right"), ("count", "2")]) else {
-        Issue.record("click"); return
+    func steps(_ json: String, expect: String? = nil) throws -> [Mac.Step] {
+        guard case .act(let s, let e) = try decode("act", [("steps", json)] + (expect.map { [("expect", $0)] } ?? [])), e == expect else {
+            Issue.record("not act: \(json)"); return []
+        }
+        return s
     }
-    guard case .act(.type(" a\n", 3?)) = try decode("type", [("text", " a\n"), ("row", "3")]),
-          case .act(.type("x", nil)) = try decode("type", [("text", "x")]) else { Issue.record("type"); return }
-    guard case .act(.key("s", ["cmd", "shift"])) = try decode("key", [("key", "S"), ("modifiers", "[\"shift\", \"cmd\"]")]) else {
-        Issue.record("key"); return
-    }
-    guard case .act(.scroll("down", 3, nil)) = try decode("scroll", [("direction", "down")]),
-          case .act(.scroll("up", 5, 2?)) = try decode("scroll", [("direction", "up"), ("amount", "5"), ("row", "2")]) else {
-        Issue.record("scroll"); return
-    }
-    guard case .act(.menu("TextEdit"?, ["檔案", "新增"])) = try decode("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")]),
-          case .act(.menu(nil, ["檔案"])) = try decode("menu", [("path", "[\"檔案\"]")]) else { Issue.record("menu"); return }
+    // Every kind, every target form, the defaults (count 1, button left, amount 3).
+    #expect(try steps(#"[{"click": 5}]"#) == [.click(.row(5), button: "left", count: 1)])
+    #expect(try steps(#"[{"click": {"name": "儲存", "role": "button"}, "count": 2, "button": "right"}]"#, expect: "x")
+            == [.click(.named(name: "儲存", role: "button"), button: "right", count: 2)])
+    #expect(try steps(#"[{"click": {"name": " 儲存 "}}]"#) == [.click(.named(name: "儲存", role: nil), button: "left", count: 1)])
+    #expect(try steps(#"[{"click": {"x": 10, "y": 20}}]"#) == [.click(.point(x: 10, y: 20), button: "left", count: 1)])
+    #expect(try steps(#"[{"type": " a\n", "in": 3}]"#) == [.type(text: " a\n", into: .row(3))])
+    #expect(try steps(#"[{"type": "x"}]"#) == [.type(text: "x", into: nil)])
+    #expect(try steps(#"[{"type": "x", "in": {"name": "內文"}}]"#) == [.type(text: "x", into: .named(name: "內文", role: nil))])
+    #expect(try steps(#"[{"key": "S", "modifiers": ["ctrl", "alt", "shift", "cmd"]}]"#) == [.key(key: "s", modifiers: ["cmd", "shift", "alt", "ctrl"])])
+    #expect(try steps(#"[{"key": "return"}]"#) == [.key(key: "return", modifiers: [])])
+    #expect(try steps(#"[{"scroll": "down"}]"#) == [.scroll(direction: "down", amount: 3, at: nil)])
+    #expect(try steps(#"[{"scroll": "up", "amount": 5, "in": 2}]"#) == [.scroll(direction: "up", amount: 5, at: .row(2))])
+    #expect(try steps(#"[{"menu": ["檔案", "新增"], "app": "TextEdit"}]"#) == [.menu(app: "TextEdit", path: ["檔案", "新增"])])
+    #expect(try steps(#"[{"menu": ["檔案"]}]"#) == [.menu(app: nil, path: ["檔案"])])
+    // Several steps in order, with what she expects at the end.
+    #expect(try steps(#"[{"click": 2}, {"type": "78"}, {"key": "return"}]"#, expect: "78")
+            == [.click(.row(2), button: "left", count: 1), .type(text: "78", into: nil), .key(key: "return", modifiers: [])])
+    // The steps as a JSON array rather than its text.
+    guard case .act(let given, nil) = try Tools.decode(ToolCall(name: "act", arguments: #"{"steps": [{"click": 1}]}"#), specs: specs),
+          given == [.click(.row(1), button: "left", count: 1)] else { Issue.record("act as an array"); return }
     guard case .askOwner("付款", "Safari", "買書") = try decode("ask_owner", [("what", "付款"), ("where", "Safari"), ("why", "買書")]) else {
         Issue.record("ask_owner"); return
     }
     #expect(error("open", []) == "open 少了參數 app")
     #expect(error("open", [("app", " ")]) == "open 的 app 是空的")
     #expect(error("read_window", [("title", "x")]) == "read_window 沒有 title 這個參數")
-    #expect(error("click", []) == "click 要給 row（清單裡的行號），清單裡沒有才給 x 和 y")
-    #expect(error("click", [("x", "1")]) == "click 的 x 和 y 要一起給")
-    #expect(error("click", [("row", "1"), ("x", "1"), ("y", "2")]) == "click 的 row 和 x/y 只能給一種；清單裡有就用 row")
-    #expect(error("click", [("row", "1"), ("count", "3")]) == "click 的 count 只能是 1 或 2，收到 3")
-    #expect(error("click", [("row", "1"), ("button", "middle")]) == "click 的 button 只能是 left、right，收到 middle")
-    #expect(error("click", [("row", "a")]) == "click 的 row 要是整數，收到 a")
-    #expect(error("type", [("text", "")]) == "type 的 text 是空的")
-    #expect(error("key", [("key", "cmd+s")])?.hasPrefix("key 只放一個鍵，收到 cmd+s") == true)
-    #expect(error("key", [("key", "a"), ("modifiers", "[\"hyper\"]")])?.hasPrefix("key 的 modifiers 只能是 ") == true)
-    #expect(error("scroll", [("direction", "sideways")]) == "scroll 的 direction 只能是 up、down、left、right，收到 sideways")
-    #expect(error("scroll", [("direction", "up"), ("amount", "0")]) == "scroll 的 amount 至少是 1，收到 0")
-    #expect(error("menu", [("path", "檔案")])?.hasPrefix("menu 的 path 要是字串的 JSON 陣列") == true)
-    #expect(error("menu", [("path", "[]")])?.hasPrefix("menu 的 path 要是字串的 JSON 陣列") == true)
+    func actError(_ json: String, expect: String? = nil) -> String? {
+        error("act", [("steps", json)] + (expect.map { [("expect", $0)] } ?? []))
+    }
+    #expect(actError(#"{"click": 1}"#) == #"act 的 steps 要是步驟的 JSON 陣列，例：[{"click": 5}, {"type": "你好"}]；收到 {"click": 1}"#)
+    #expect(actError("[]")?.hasPrefix("act 的 steps 要是步驟的 JSON 陣列") == true)
+    #expect(actError(#"[5]"#) == #"act 的第 1 步要是一個物件，例：{"click": 5}"#)
+    #expect(actError(#"[{"press": 1}]"#) == "act 的第 1 步要剛好有 click、type、key、scroll、menu 其中一個，收到 press")
+    #expect(actError(#"[{"click": 1}, {"click": 2, "type": "x"}]"#, expect: "x") == "act 的第 2 步要剛好有 click、type、key、scroll、menu 其中一個，收到 click、type")
+    #expect(actError(#"[{"click": 1, "row": 1}]"#) == "act 的第 1 步（click）沒有 row 這一欄")
+    #expect(actError(#"[{"click": 1, "count": 3}]"#) == "act 的第 1 步的 count 只能是 1 或 2")
+    #expect(actError(#"[{"click": 1, "button": "middle"}]"#) == "act 的第 1 步的 button 只能是 left、right")
+    #expect(actError(#"[{"click": "a"}]"#)?.hasPrefix("act 的第 1 步的 click 要是行號（例：5）") == true)
+    #expect(actError(#"[{"click": {"x": 1}}]"#)?.hasPrefix("act 的第 1 步的 click 要是行號（例：5）") == true)
+    #expect(actError(#"[{"type": "x", "in": {"x": 1, "y": 2}}]"#) == "act 的第 1 步的 in 要是行號或名字，不能是 x、y")
+    #expect(actError(#"[{"scroll": "sideways"}]"#) == "act 的第 1 步的 scroll 只能是 up、down、left、right")
+    #expect(actError(#"[{"scroll": "up", "amount": 0}]"#) == "act 的第 1 步的 amount 要是 1 以上的整數")
+    #expect(actError(#"[{"key": "cmd+s"}]"#)?.hasPrefix("act 的第 1 步的 key 只放一個鍵（例：\"return\"），修飾鍵放 modifiers") == true)
+    #expect(actError(#"[{"key": "a", "modifiers": ["hyper"]}]"#) == "act 的第 1 步的 modifiers 只能是 cmd、shift、alt、ctrl，收到 hyper")
+    #expect(actError(#"[{"type": ""}]"#) == "act 的第 1 步的 type 要是不空的字串")
+    #expect(actError(#"[{"click": 1}, {"menu": "檔案"}]"#, expect: "x")?.hasPrefix("act 的第 2 步的 menu 要是選單路徑的字串陣列") == true)
+    #expect(actError(#"[{"menu": []}]"#)?.hasPrefix("act 的第 1 步的 menu 要是選單路徑的字串陣列") == true)
+    // Two steps or more need what she expects at the end; one step does not.
+    #expect(actError(#"[{"click": 1}, {"click": 2}]"#)?.hasPrefix("act 有 2 步，要給 expect：") == true)
+    #expect(actError(#"[{"click": 1}, {"click": 2}]"#, expect: " ")?.hasPrefix("act 有 2 步，要給 expect：") == true)
+    #expect(actError(#"[{"click": 1}]"#) == nil)
     #expect(error("ask_owner", [("what", "付款"), ("where", "Safari")]) == "ask_owner 少了參數 why")
     #expect(error("ask_owner", [("what", "付款"), ("where", " "), ("why", "x")]) == "ask_owner 的 where 是空的")
     // The removed VM tools are unknown.
@@ -1105,21 +1165,21 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     await h.doll.ownerSaid("開一份新文件")
     try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
     let none = try h.toolResults().last!
-    #expect(none.text == "TextEdit 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 menu(app: \"TextEdit\", path: [\"檔案\", \"新增\"])"
+    #expect(none.text == #"TextEdit 開著，但沒有視窗（在背景開的 app 常常沒有開新視窗）。要有視窗：新文件用 act(steps: [{"menu": ["檔案", "新增"], "app": "TextEdit"}])"#
             + "（英文選單是 File › New，選單名字以 app 自己的為準）；要開某個檔案就 open 帶 target。")
     #expect(none.image == nil && none.window == nil && h.last.actions == ["todo set", "open"])
     // The tools fit to that window need one: read_window says so.
     try await h.turn(Scripted("", ("read_window", [("app", "TextEdit")])))
     #expect(try h.toolResults().last!.text == "失敗：TextEdit 現在沒有視窗。新文件用 menu 選「檔案 › 新增」；開檔用 open 帶 target。")
-    try await h.turn(Scripted("", ("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")])))
+    try await h.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#)))
     let menu = try #require(h.cua.args("invoke_menu").first)
     #expect(menu["pid"] as? Int == 200 && menu["path"] as? [String] == ["檔案", "新增"] && menu["window_id"] == nil)
     let r = try h.toolResults().last!
     #expect(r.window?.hasPrefix("TextEdit 的視窗「未命名」；截圖 460×816\n- [0] AXWindow \"未命名\"") == true && r.image != nil)
-    #expect(h.last.actions == ["menu"])
+    #expect(r.text == "1 步都做了：menu 檔案 › 新增。" && h.last.actions == ["act"])
     #expect(await h.doll.itemSteps.map(\.line) == ["open TextEdit", "menu 檔案 › 新增"])
     // The next action works on the new window.
-    try await h.turn(Scripted("", ("type", [("text", "娃娃"), ("row", "1")])))
+    try await h.turn(Scripted("", act(#"{"type": "娃娃", "in": 1}"#)))
     let typed = try #require(h.cua.args("type_text").first)
     #expect(typed["pid"] as? Int == 200 && typed["window_id"] as? Int == 63000 && typed["text"] as? String == "娃娃"
             && (typed["element_token"] as? String)?.hasSuffix(":1") == true)
@@ -1132,18 +1192,19 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     await h.doll.ownerSaid("開一份新文件")
     try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
     h.cua.refuse("get_window_state", #"{"refusal":{"code":"window_id_not_found","message":"No window matches that target now."}}"#)
-    try await h.turn(Scripted("", ("menu", [("app", "TextEdit"), ("path", "[\"檔案\", \"新增\"]")])))
+    try await h.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#)))
     let r = try h.toolResults().last!
-    #expect(r.text.hasPrefix("選單「檔案 › 新增」選了，可是之後讀視窗失敗：") && r.text.contains("不要因為這個再做一次")
+    #expect(r.text.hasPrefix("1 步都做了：menu 檔案 › 新增。\n做了 1 步，可是之後讀視窗失敗：") && r.text.contains("不要因為這個再做一次")
             && r.text.contains("read_window(app: \"TextEdit\")") && r.window == nil)
-    #expect(h.last.actions == ["menu"] && h.cua.actions == ["invoke_menu"])
+    #expect(h.last.actions == ["act"] && h.cua.actions == ["invoke_menu"])
     // Read again by the app's name: the window is there.
     try await h.turn(Scripted("", ("read_window", [("app", "TextEdit")])))
     #expect(try h.toolResults().last!.window?.hasPrefix("TextEdit 的視窗「未命名」") == true)
     // The same for a click: sent once, reported done.
     h.cua.refuse("get_window_state", #"{"refusal":{"code":"window_id_not_found","message":"No window matches that target now."}}"#)
-    try await h.turn(Scripted("", ("click", [("row", "1")])))
-    #expect(try h.toolResults().last!.text.contains("click 做了，可是之後讀視窗失敗：") && h.last.actions == ["click"])
+    try await h.turn(Scripted("", clickRow(1)))
+    let clicked = try h.toolResults().last!.text
+    #expect(clicked.hasPrefix("1 步都做了：click AXTextArea") && clicked.contains("做了 1 步，可是之後讀視窗失敗：") && h.last.actions == ["act"])
     #expect(h.cua.actions == ["invoke_menu", "click"])
 }
 
@@ -1174,13 +1235,14 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(click["element_token"] as? String == "s00000001:2" && click["pid"] as? Int == 100 && click["window_id"] as? Int == 62541)
     let r = try h.toolResults().last!
     // The window read again after it: Calculator's display shows the 7.
-    #expect(r.text == sent && r.window?.contains("- [1] AXStaticText \"7\"") == true && r.image != nil)
-    // Sent, then the same window read again, then the check for a system authentication window.
-    #expect(h.cua.tools.suffix(4) == ["click", "list_windows", "get_window_state", "list_windows"])
+    #expect(r.text == "1 步都做了：click AXButton \"7\"。" && r.window?.contains("- [1] AXStaticText \"7\"") == true && r.image != nil)
+    // The window's list before, the step as a one-step run_steps, then the same window read again and
+    // the check for a system authentication window.
+    #expect(h.cua.tools.suffix(6) == ["list_windows", "run_steps", "click", "list_windows", "get_window_state", "list_windows"])
     #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\""])
     // A double click, a right click and coordinates on the screenshot.
     try await h.turn(Scripted("", clickRow(3, count: 2)))
-    try await h.turn(Scripted("", ("click", [("x", "10"), ("y", "20"), ("button", "right")])))
+    try await h.turn(Scripted("", act(#"{"click": {"x": 10, "y": 20}, "button": "right"}"#)))
     #expect(h.cua.actions == ["click", "double_click", "click"])
     let xy = try #require(h.cua.args("click").last)
     #expect(xy["x"] as? Int == 10 && xy["y"] as? Int == 20 && xy["button"] as? String == "right" && xy["element_token"] == nil)
@@ -1195,12 +1257,12 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(try h.toolResults().last!.text == "失敗：沒有做：還沒讀過視窗（或上一次讀失敗了）；先 read_window 或 open。")
     try await h.turn(Scripted("", readCall))
     try await h.turn(Scripted("", clickRow(9)))
-    #expect(try h.toolResults().last!.text
-            == "失敗：沒有做：第 9 行不在最新一次讀到的清單裡（Calculator「計算機」，行號 0–5）。重新 read_window，用新清單的行號。")
+    let notThere = try h.toolResults().last!.text
+    #expect(notThere == "失敗：沒有做：第 9 行不在最新一次讀到的清單裡（Calculator「計算機」，行號 0–5）。重新 read_window，用新清單的行號；之後才出現的元素用 name 指定。")
     // Off the screenshot: not clicked either.
-    try await h.turn(Scripted("", ("click", [("x", "460"), ("y", "5")])))
+    try await h.turn(Scripted("", act(#"{"click": {"x": 460, "y": 5}}"#)))
     #expect(try h.toolResults().last!.text == "失敗：沒有點：460,5 在截圖外（截圖 460×816）")
-    #expect(h.cua.actions.isEmpty && h.last.actions == ["error click"])
+    #expect(h.cua.actions.isEmpty && h.last.actions == ["error act"])
 }
 
 @Test func aRowAnEarlierActionOfTheReplyChangedIsRefusedAndAnUnchangedOnePasses() async throws {
@@ -1216,17 +1278,17 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     }
     try await h.turn(Scripted("", clickRow(2), clickRow(3), clickRow(5)))
     let results = Array(try h.toolResults().suffix(3))
-    #expect(results[0].text == sent && results[0].image == nil)
-    #expect(results[1].text == "失敗：沒有做：這則回覆前面的動作改變了視窗，第 3 行現在是 AXButton \"C\"，你看到的是 AXButton \"8\"。看新清單再選。")
+    #expect(results[0].text == "1 步都做了：click AXButton \"7\"。" && results[0].image == nil)
+    #expect(results[1].text == "失敗：沒有做：這則回覆前面的呼叫改變了視窗，第 3 行現在是 AXButton \"C\"，你看到的是 AXButton \"8\"。看新清單再選。")
     // The first action answered with its line only, so the refusal shows the window as it is now.
     #expect(results[1].image != nil && results[1].window?.contains("- [3] AXButton \"C\"") == true)
-    #expect(results[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做")
-    #expect(h.cua.actions == ["click"] && h.last.actions == ["click", "error click", "skipped click"])
+    #expect(results[2].text == "失敗：前面第 2 步（act）失敗了，這一步沒做")
+    #expect(h.cua.actions == ["click"] && h.last.actions == ["act", "error act", "skipped act"])
     // The next reply means the new read: 7, 8 (now row 4), +, =: rows unchanged by the presses pass.
     try await h.turn(Scripted("", clickRow(2), clickRow(4), clickRow(5), clickRow(6)))
     #expect(h.cua.actions == ["click", "click", "click", "click", "click"])
     #expect(h.cua.args("click").suffix(4).map { ($0["element_token"] as? String)?.split(separator: ":").last.map(String.init) } == ["2", "4", "5", "6"])
-    #expect(try h.toolResults().suffix(4).map(\.text) == [sent, sent, sent, sent])
+    #expect(try h.toolResults().suffix(4).map(\.text) == ["click AXButton \"7\"", "click AXButton \"8\"", "click AXButton \"+\"", "click AXButton \"=\""].map { "1 步都做了：\($0)。" })
     #expect(try h.toolResults().last!.window?.contains("- [1] AXStaticText \"778\"") == true)
 }
 
@@ -1234,28 +1296,28 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     let h = try await menuHarness()
     let refusal = #"{"refusal":{"code":"stale_element_token","message":"element token s00000002:2 is from an old snapshot"},"hint":"call get_window_state again"}"#
     h.cua.refuse("click", refusal)
-    try await h.turn(Scripted("", key("cmd+a"), clickRow(2), ("type", [("text", "copy")]), readCall))
+    try await h.turn(Scripted("", key("cmd+a"), clickRow(2), act(#"{"type": "copy"}"#), readCall))
     let results = Array(try h.toolResults().suffix(4))
-    #expect(results.map(\.text) == [sent,
-                                    "失敗：[stale_element_token] element token s00000002:2 is from an old snapshot call get_window_state again",
-                                    "失敗：前面第 2 步（click）失敗了，這一步沒做",
+    #expect(results.map(\.text) == ["1 步都做了：key cmd+a。",
+                                    "第 1 步（click 第 2 行）沒做成：[stale_element_token] element token s00000002:2 is from an old snapshot call get_window_state again。下面是現在的視窗。",
+                                    "失敗：前面第 2 步（act）失敗了，這一步沒做",
                                     ""])
     #expect(results.map { $0.image != nil } == [false, true, false, true])
-    #expect(h.cua.actions == ["hotkey", "click"] && h.last.actions == ["key", "error click", "skipped type", "read_window"])
+    #expect(h.cua.actions == ["hotkey", "click"] && h.last.actions == ["act", "error act", "skipped act", "read_window"])
     // Only the done actions are steps.
     #expect(await h.doll.itemSteps.map(\.line) == ["key cmd+a"])
     // Bad arguments after a line-only step: the failure shows the window, since nothing of this reply did yet.
-    try await h.turn(Scripted("", key("Return"), ("click", [("x", "99999"), ("y", "1")]), key("Escape")))
+    try await h.turn(Scripted("", key("Return"), act(#"{"click": {"x": 99999, "y": 1}}"#), key("Escape")))
     let bad = Array(try h.toolResults().suffix(3))
-    #expect(bad[0].text == sent && bad[0].image == nil)
+    #expect(bad[0].text == "1 步都做了：key return。" && bad[0].image == nil)
     #expect(bad[1].text == "失敗：沒有點：99999,1 在截圖外（截圖 460×816）" && bad[1].image != nil && bad[1].window != nil)
-    #expect(bad[2].text == "失敗：前面第 2 步（click）失敗了，這一步沒做" && bad[2].image == nil)
+    #expect(bad[2].text == "失敗：前面第 2 步（act）失敗了，這一步沒做" && bad[2].image == nil)
     #expect(h.cua.actions == ["hotkey", "click", "press_key"])
     // todo.done after actions in the same reply still ends the item; the action before it is the last.
     // Her line to him comes first: the list is his.
     try await h.turn(Scripted("", key("cmd+s"), dm("存好了"), done("存好了"), key("cmd+q")))
     let end = Array(try h.toolResults().suffix(4))
-    #expect(end[0].image != nil && end[0].text == sent && end[1].text == Doll.shotSent(end[0].image!))
+    #expect(end[0].image != nil && end[0].text == "1 步都做了：key cmd+s。" && end[1].text == Doll.shotSent(end[0].image!))
     #expect(end[2].text.hasPrefix("完成，記下了。")
             && end[3].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
     #expect(h.last.itemEnd == "完成" && h.last.experience?.hasSuffix("步驟：\n1. key cmd+a\n2. key return\n3. key cmd+s") == true)
@@ -1265,31 +1327,30 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
 @Test func onlyTheLastActionOfAReplyCarriesTheRead() async throws {
     let h = try await menuHarness()
     // Three actions in one reply: two line-only results, the read at the end, three steps.
-    try await h.turn(Scripted("", clickRow(2), ("type", [("text", "sw_vers\n")]), key("cmd+s")))
+    try await h.turn(Scripted("", clickRow(2), act(#"{"type": "sw_vers\n"}"#), key("cmd+s")))
     var results = Array(try h.toolResults().suffix(3))
-    #expect(results.map(\.text) == [sent, sent, sent])
+    #expect(results.map(\.text) == ["1 步都做了：click AXButton \"7\"。", "1 步都做了：type「sw_vers\n」。", "1 步都做了：key cmd+s。"])
     #expect(results.map { $0.image != nil } == [false, false, true] && results.map { $0.window != nil } == [false, false, true])
-    #expect(h.cua.actions == ["click", "type_text", "hotkey"] && h.last.actions == ["click", "type", "key"])
+    #expect(h.cua.actions == ["click", "type_text", "hotkey"] && h.last.actions == ["act", "act", "act"])
     #expect(h.cua.args("hotkey").first?["keys"] as? [String] == ["cmd", "s"])
     #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\"", "type「sw_vers\n」", "key cmd+s"])
     // Every other tool between them keeps its result; the last action is the last one written, wherever it is.
-    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("amount", "5")]), readCall, ("click", [("x", "100"), ("y", "200")]), think("medium")))
+    try await h.turn(Scripted("", act(#"{"scroll": "down", "amount": 5}"#), readCall, act(#"{"click": {"x": 100, "y": 200}}"#), think("medium")))
     results = Array(try h.toolResults().suffix(4))
-    #expect(results.map(\.text) == [sent, "", sent, "下一回合 effort：medium"])
+    #expect(results.map(\.text) == ["1 步都做了：scroll down 5。", "", "1 步都做了：click 100,200。", "下一回合 effort：medium"])
     #expect(results.map { $0.image != nil } == [false, true, true, false])
-    #expect(h.last.actions == ["scroll", "read_window", "click", "think medium"])
+    #expect(h.last.actions == ["act", "read_window", "act", "think medium"])
     // A single action: its line and the read.
     try await h.turn(Scripted("", key("Return")))
     let one = try h.toolResults().last!
-    #expect(one.text == sent && one.image != nil && one.window != nil && h.cua.args("press_key").last?["key"] as? String == "return")
+    #expect(one.text == "1 步都做了：key return。" && one.image != nil && one.window != nil && h.cua.args("press_key").last?["key"] as? String == "return")
     // Bad arguments alone: a text result, no read.
-    try await h.turn(Scripted("", ("click", [("x", "1")]), ("click", [("x", "1"), ("y", "2"), ("row", "1")]),
-                              ("scroll", [("direction", "sideways")])))
-    #expect(try h.toolResults().suffix(3).map(\.text) == ["失敗：click 的 x 和 y 要一起給",
-                                                          "失敗：前面第 1 步（click）失敗了，這一步沒做",
-                                                          "失敗：前面第 1 步（click）失敗了，這一步沒做"])
+    try await h.turn(Scripted("", act(#"{"click": {"x": 1}}"#), act(#"{"click": 1, "x": 1}"#), act(#"{"scroll": "sideways"}"#)))
+    let badTexts = try h.toolResults().suffix(3).map(\.text)
+    #expect(badTexts[0].hasPrefix("失敗：act 的第 1 步的 click 要是行號（例：5）")
+            && badTexts.dropFirst() == ["失敗：前面第 1 步（act）失敗了，這一步沒做", "失敗：前面第 1 步（act）失敗了，這一步沒做"])
     #expect(try h.toolResults().suffix(3).allSatisfy { $0.image == nil })
-    #expect(h.last.actions == ["error click", "skipped click", "skipped scroll"] && h.cua.actions.count == 6)
+    #expect(h.last.actions == ["error act", "skipped act", "skipped act"] && h.cua.actions.count == 6)
 }
 
 @Test func olderReadsArePutAwayInBatchesAndTheNewestAlwaysStays() {
@@ -1340,7 +1401,8 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(try h.toolResults().last!.text == "")
     h.cua.change { $0.windows.append(FakeCua.Window(id: 7, pid: 999, app: "SecurityAgent", title: "驗證", elements: [])) }
     try await h.turn(Scripted("", clickRow(2)))
-    #expect(try h.toolResults().last!.text == sent + "\n【系統驗證】畫面上有系統的驗證視窗（SecurityAgent「驗證」：Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。")
+    let authText = try h.toolResults().last!.text
+    #expect(authText == "1 步都做了：click AXButton \"7\"。\n【系統驗證】畫面上有系統的驗證視窗（SecurityAgent「驗證」：Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。")
     // Off screen it is not there.
     h.cua.change { $0.windows[1].onScreen = false; $0.windows[0].elements.append(FakeCua.Element(role: "AXSecureTextField", label: "密碼")) }
     try await h.turn(Scripted("", readCall))
@@ -1355,14 +1417,14 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     }
     try await h.turn(Scripted("", clickRow(2)))
     let line = try h.toolResults().last!.text
-    #expect(line.hasPrefix(sent + "\n【系統驗證】") && line.hasSuffix("的視窗跳出要密碼的驗證（Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。"))
+    #expect(line.hasPrefix("1 步都做了：click AXButton \"7\"。\n【系統驗證】") && line.hasSuffix("的視窗跳出要密碼的驗證（Touch ID 或密碼）。停下來，不要試著通過它；用 ask_owner 跟主人說是哪一步叫出它的。"))
 }
 
 @Test func everyActionIsOneLineOfTheActionLogWithTheElementsIdentity() async throws {
     let h = try await menuHarness()
     try await h.turn(Scripted("", clickRow(2), key("cmd+s")))
     h.cua.refuse("scroll", #"{"refusal":{"code":"not_scrollable","message":"nothing to scroll"}}"#)
-    try await h.turn(Scripted("", ("scroll", [("direction", "down"), ("row", "1")])))
+    try await h.turn(Scripted("", act(#"{"scroll": "down", "in": 1}"#)))
     let lines = try String(contentsOf: h.dir.appending(path: "computer-actions.jsonl"), encoding: .utf8).split(separator: "\n")
     let records = try lines.map { try JSONDecoder().decode(ActionRecord.self, from: Data($0.utf8)) }
     #expect(records.map(\.tool) == ["click", "key", "scroll"])
@@ -1374,17 +1436,202 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(!records[2].ok && records[2].error == "[not_scrollable] nothing to scroll")
 }
 
+// act: a sequence of steps in one call (2026-11-17) ---------------------------------
+
+/// The window reads with a screenshot (her reads, not the between-step checks).
+private func screenshotReads(_ h: Harness) -> Int { h.cua.args("get_window_state").filter { $0["screenshot_out_file"] != nil }.count }
+/// The action log's records.
+private func actionRecords(_ h: Harness) throws -> [ActionRecord] {
+    try String(contentsOf: h.dir.appending(path: "computer-actions.jsonl"), encoding: .utf8).split(separator: "\n")
+        .map { try JSONDecoder().decode(ActionRecord.self, from: Data($0.utf8)) }
+}
+/// Clicks on the rows, in order, as one `act`.
+private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, String)]) {
+    ("act", [("steps", "[" + rows.map { #"{"click": \#($0)}"# }.joined(separator: ", ") + "]"), ("expect", expect)])
+}
+
+@Test func aSequenceRunsInOrderReadsOnceAtTheEndAndIsOneRound() async throws {
+    let h = try await menuHarness()
+    let reads = screenshotReads(h)
+    let calls = h.cua.tools.count
+    let rounds = await h.doll.todo.totalRounds
+    // 7, 8, +, 8, =, 7: the digits show on the display.
+    try await h.turn(Scripted("", clickRows(2, 3, 4, 3, 5, 2, expect: "7887")))
+    let tools = Array(h.cua.tools.dropFirst(calls))
+    #expect(tools.first == "list_windows" && tools.filter { $0 == "run_steps" }.count == 6)
+    #expect(h.cua.args("click").map { ($0["element_token"] as? String)?.split(separator: ":").last.map(String.init) } == ["2", "3", "4", "3", "5", "2"])
+    // Each step its own one-step run_steps.
+    #expect(h.cua.args("run_steps").allSatisfy { ($0["steps"] as? [[String: Any]])?.count == 1 && $0["session"] != nil })
+    #expect(screenshotReads(h) == reads + 1)
+    let r = try h.toolResults().last!
+    #expect(r.text == "6 步都做了：click AXButton \"7\"、click AXButton \"8\"、click AXButton \"+\"、click AXButton \"8\"、click AXButton \"=\"、click AXButton \"7\"。"
+            + "\n跟你預期的一樣：視窗裡有「7887」。")
+    #expect(r.window?.contains("- [1] AXStaticText \"7887\"") == true && r.image != nil)
+    #expect(h.last.actions == ["act"])
+    #expect(await h.doll.itemSteps.count == 6)
+    // One reply, one round toward the decision point.
+    #expect(await h.doll.todo.totalRounds == rounds + 1)
+    // todo.done's evidence is matched against the read after the sequence.
+    try await h.turn(Scripted("", dm("是 7887"), done("是 7887", evidence: "7887")))
+    #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
+}
+
+@Test func aSequenceWhoseEndIsNotWhatSheExpectedSaysWhatIsThereAndStopsTheReply() async throws {
+    let h = try await menuHarness()
+    try await h.turn(Scripted("", clickRows(2, 3, expect: "87"), clickRow(4)))
+    let results = Array(try h.toolResults().suffix(2))
+    #expect(results[0].text.hasPrefix("2 步都做了：click AXButton \"7\"、click AXButton \"8\"。\n跟你預期的不一樣：你預期「87」，讀到的視窗裡沒有。現在是：\n"))
+    #expect(results[0].text.contains("78") && results[0].image != nil)
+    #expect(results[1].text == "失敗：前面第 1 步（act）失敗了，這一步沒做")
+    #expect(h.last.actions == ["unexpected act", "skipped act"] && h.cua.actions == ["click", "click"])
+}
+
+@Test func aFailedStepStopsTheSequenceAndTheDoneStepsStay() async throws {
+    let h = try await menuHarness()
+    let reads = screenshotReads(h)
+    h.cua.refuse("press_key", #"{"refusal":{"code":"no_focus","message":"nothing has focus"}}"#)
+    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": 3}"#, keyStep("Return"), #"{"click": 2}"#, expect: "78")))
+    let r = try h.toolResults().last!
+    #expect(r.text == "第 3 步（key return）沒做成：[no_focus] nothing has focus。前面 2 步做了，後面 1 步沒做，下面是現在的視窗。")
+    #expect(r.window?.contains("- [1] AXStaticText \"78\"") == true && screenshotReads(h) == reads + 1)
+    #expect(h.cua.actions == ["click", "click", "press_key"] && h.last.actions == ["error act"])
+    #expect(await h.doll.itemSteps.map(\.line) == ["click AXButton \"7\"", "click AXButton \"8\""])
+    // The action log: one record per step sent, one sequence, the failed one not ok.
+    let records = try actionRecords(h)
+    #expect(records.map(\.tool) == ["click", "click", "key"] && records.map(\.ok) == [true, true, false])
+    #expect(Set(records.map(\.sequence)).count == 1 && records[0].sequence != nil)
+    #expect(records.map { $0.element?.label } == ["7", "8", nil] && records[2].error == "[no_focus] nothing has focus")
+    // The done steps are the experience's.
+    try await h.turn(Scripted("", dm("按了 78"), done("按了 78")))
+    #expect(h.last.experience?.hasSuffix("步驟：\n1. click AXButton \"7\"\n2. click AXButton \"8\"") == true)
+}
+
+@Test func aRowAReadOfTheSameReplyChangedIsRefusedAndAnUnchangedOnePasses() async throws {
+    let h = try await menuHarness()
+    // The window changed after the read her reply was written against: a C before the 8.
+    h.cua.change { $0.windows[0].elements.insert(FakeCua.Element(role: "AXButton", label: "C", id: "Clear"), at: 3) }
+    try await h.turn(Scripted("", readCall, clickRows(3, 2, expect: "87")))
+    #expect(try h.toolResults().last!.text == "失敗：沒有做：這則回覆前面的呼叫改變了視窗，第 3 行現在是 AXButton \"C\"，你看到的是 AXButton \"8\"。看新清單再選。")
+    #expect(h.cua.actions.isEmpty && h.last.actions == ["read_window", "error act"])
+    // The row she saw is still the element: it passes.
+    try await h.turn(Scripted("", readCall, clickRows(2, 4, expect: "78")))
+    #expect(h.cua.actions == ["click", "click"] && h.last.actions == ["read_window", "act"])
+}
+
+@Test func aNamedStepFindsAnElementAnEarlierStepOpenedAndTheEndReadIsTheNewWindow() async throws {
+    let h = try await menuHarness()
+    // Pressing 7 opens a dialog in front with a 好 button that was in no read.
+    h.cua.change {
+        $0.after = { tool, args, s in
+            FakeCua.press(tool, args, &s)
+            if tool == "click", args["element_token"] as? String == "s00000001:2" {
+                s.windows.insert(FakeCua.Window(id: 70000, pid: 100, app: "計算機", title: "關於", elements: [
+                    FakeCua.Element(role: "AXWindow", label: "關於", parent: nil), FakeCua.Element(role: "AXButton", label: "好")]), at: 0)
+            }
+        }
+    }
+    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": {"name": "好", "role": "button"}}"#, expect: "好")))
+    let named = try #require((h.cua.args("run_steps").last?["steps"] as? [[String: Any]])?.first?["args"] as? [String: Any])
+    #expect(named["app"] as? String == "com.apple.calculator" && named["name"] as? String == "好" && named["role"] as? String == "button"
+            && named["element_token"] == nil && named["pid"] == nil)
+    let r = try h.toolResults().last!
+    #expect(r.text == "2 步都做了：click AXButton \"7\"、click AXButton \"好\"。\n跟你預期的一樣：視窗裡有「好」。")
+    #expect(r.window?.contains("的視窗「關於」") == true && r.window?.contains("- [1] AXButton \"好\"") == true)
+    // The log keeps the element the driver found for the named step.
+    let records = try actionRecords(h)
+    #expect(records.count == 2 && records[0].sequence == records[1].sequence)
+    #expect(records[1].element == ElementIdentity(row: 1, role: "AXButton", subrole: nil, axID: nil, label: "好", title: nil, path: [])
+            && records[1].args == ["name": "好", "role": "button"])
+    // A name the window does not have: the driver's not_found stops it like any failed step.
+    try await h.turn(Scripted("", act(#"{"click": {"name": "取消"}}"#)))
+    #expect(try h.toolResults().last!.text.hasPrefix("第 1 步（click \"取消\"）沒做成：") && h.last.actions == ["error act"])
+}
+
+@Test func anAuthenticationWindowOrAPasswordSheetBetweenStepsStopsTheSequence() async throws {
+    let h = try await menuHarness()
+    h.cua.change {
+        $0.after = { tool, args, s in
+            FakeCua.press(tool, args, &s)
+            if tool == "click" { s.windows.append(FakeCua.Window(id: 7, pid: 999, app: "SecurityAgent", title: "驗證", elements: [])) }
+        }
+    }
+    try await h.turn(Scripted("", clickRows(2, 3, expect: "78")))
+    let r = try h.toolResults().last!
+    #expect(r.text.hasPrefix("【系統驗證】畫面上有系統的驗證視窗（SecurityAgent「驗證」") && r.text.contains("做到第 1 步就停了，後面 1 步沒做。"))
+    #expect(h.cua.actions == ["click"] && h.last.actions == ["error act"])
+    // A password sheet in the app's own window.
+    h.cua.change { s in
+        s.windows.removeAll { $0.pid == 999 }
+        s.after = { tool, args, s in
+            FakeCua.press(tool, args, &s)
+            guard tool == "click", !s.windows[0].elements.contains(where: { $0.role == "AXSheet" }) else { return }
+            let sheet = s.windows[0].elements.count
+            s.windows[0].elements += [FakeCua.Element(role: "AXSheet", label: nil),
+                                      FakeCua.Element(role: "AXTextField", label: "密碼", parent: sheet, subrole: "AXSecureTextField")]
+        }
+    }
+    try await h.turn(Scripted("", readCall, clickRows(2, 3, expect: "778")))
+    let sheet = try h.toolResults().last!.text
+    #expect(sheet.hasPrefix("【系統驗證】") && sheet.contains("的視窗跳出要密碼的驗證") && sheet.contains("做到第 1 步就停了，後面 1 步沒做。"))
+    #expect(h.cua.actions == ["click", "click"])
+}
+
+@Test func moreStepsThanTheConfigAllowsOrSeveralWithoutExpectAreRefusedBeforeAnythingIsSent() async throws {
+    let h = try await menuHarness { $0.computer.sequenceMaxSteps = 2 }
+    let calls = h.cua.tools.count
+    try await h.turn(Scripted("", clickRows(2, 3, 4, expect: "78")))
+    #expect(try h.toolResults().last!.text == "失敗：沒有做：一次最多 2 步，你給了 3 步。分成幾次送，每次送到要看結果的地方為止。")
+    #expect(h.cua.tools.count == calls && h.last.actions == ["error act"])
+    try await h.turn(Scripted("", act(#"{"click": 2}"#, #"{"click": 3}"#)))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：act 有 2 步，要給 expect："))
+    #expect(h.cua.tools.count == calls && h.last.actions == ["error act"])
+}
+
+@Test func sequenceMaxStepsIsReadFromTheConfigAndZeroIsRefused() throws {
+    let example = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
+    #expect(example.contains("\nsequence_max_steps = 20"))
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.sequenceMaxSteps == 20)
+    let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-seq-\(UUID().uuidString).toml")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try example.replacingOccurrences(of: "\nsequence_max_steps = 20", with: "\nsequence_max_steps = 7").write(to: file, atomically: true, encoding: .utf8)
+    #expect(try Config.load(file).computer.sequenceMaxSteps == 7)
+    try example.replacingOccurrences(of: "\nsequence_max_steps = 20", with: "\nsequence_max_steps = 0").write(to: file, atomically: true, encoding: .utf8)
+    #expect(throws: TOMLError.self) { try Config.load(file) }
+}
+
+@Test func aMenuThatOpensTheFirstWindowAndTypingIntoItRunInOneActButARowNeedsARead() async throws {
+    // TextEdit with no window: the menu opens 未命名, typing goes to its focus without a read of it.
+    let h = try await Harness()
+    await h.doll.ownerSaid("開一份新文件寫娃娃")
+    try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
+    try await h.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#, #"{"type": "娃娃"}"#, expect: "未命名")))
+    let typed = try #require(h.cua.args("type_text").first)
+    #expect(typed["pid"] as? Int == 200 && typed["window_id"] == nil && typed["text"] as? String == "娃娃")
+    #expect(h.cua.actions == ["invoke_menu", "type_text"] && h.last.actions == ["act"])
+    let r = try h.toolResults().last!
+    #expect(r.text == "2 步都做了：menu 檔案 › 新增、type「娃娃」。\n跟你預期的一樣：視窗裡有「未命名」。")
+    #expect(r.window?.hasPrefix("TextEdit 的視窗「未命名」") == true && r.image != nil)
+    // A row of an app whose window was never read: refused, the steps before it stay done.
+    let b = try await menuHarness()
+    try await b.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#, #"{"click": 1}"#, expect: "未命名")))
+    let row = try b.toolResults().last!
+    #expect(row.text.hasPrefix("第 2 步（click 第 1 行）沒做成：沒有做：第 1 行要對讀過的視窗，TextEdit 還沒讀過視窗。")
+            && row.text.contains("前面 1 步做了，下面是現在的視窗。"))
+    #expect(b.cua.actions == ["invoke_menu"] && b.last.actions == ["error act"] && row.window?.hasPrefix("TextEdit 的視窗「未命名」") == true)
+}
+
 @Test func theSameFailingComputerCallTheSecondTimeInARowSaysSo() async throws {
     let h = try await menuHarness()
     let refusal = #"{"refusal":{"code":"element_disabled","message":"button is disabled"}}"#
     h.cua.refuse("click", refusal)
     try await h.turn(Scripted("", clickRow(5)))
-    #expect(try h.toolResults().last!.text == "失敗：[element_disabled] button is disabled")
+    let first = try h.toolResults().last!.text
+    #expect(first == "第 1 步（click 第 5 行）沒做成：[element_disabled] button is disabled。下面是現在的視窗。")
     h.cua.refuse("click", refusal)
     try await h.turn(Scripted("", clickRow(5)))
     let again = try h.toolResults().last!.text
-    #expect(again.hasPrefix("失敗：[element_disabled] button is disabled\n【同一步又失敗】一模一樣的 click 已經失敗 2 次了，再做一次也會一樣。"))
-    #expect(h.logs.contains { $0.contains("click failed 2 times in a row with the same arguments") })
+    #expect(again.hasPrefix(first + "\n【同一步又失敗】一模一樣的 act 已經失敗 2 次了，再做一次也會一樣。"))
+    #expect(h.logs.contains { $0.contains("act failed 2 times in a row with the same arguments") })
     // A success starts the count over.
     try await h.turn(Scripted("", clickRow(2)))
     h.cua.refuse("click", refusal)
@@ -1402,7 +1649,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(await !h.doll.followUp)
     await h.doll.ownerSaid("買吧")
     try await h.turn(Scripted("", clickRow(2)))
-    #expect(await h.doll.todo.phase == .doing && h.last.actions == ["click"])
+    #expect(await h.doll.todo.phase == .doing && h.last.actions == ["act"])
     // Discord down: not asked, the item goes on.
     h.rec.undelivered.withLock { $0 = "Discord 斷線" }
     try await h.turn(Scripted("", ("ask_owner", [("what", "刪檔"), ("where", "Finder"), ("why", "清空間")])))
@@ -1528,7 +1775,7 @@ private let allowed = #"{"accessibility": true, "screen_recording": true}"#
     // The second failure in a row: 壓力 up, with the call and its result as the cause.
     try await h.turn(Scripted("", clickRow(9)))
     let up = await stress()
-    #expect(up.count == 1 && up[0].cause.hasPrefix("工具連續失敗：click：失敗：沒有做：第 9 行不在最新一次讀到的清單裡")
+    #expect(up.count == 1 && up[0].cause.hasPrefix("工具連續失敗：act：失敗：沒有做：第 9 行不在最新一次讀到的清單裡")
             && approx(up[0].after - up[0].before, DrivesConfig().toolErrorsStress))
     // A success starts over: the next single failure moves nothing.
     try await h.turn(Scripted("", clickRow(2)))
@@ -1728,8 +1975,8 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     h.cua.refuse("click", "boom\nsecond line")
     try await h.turn(Scripted("", readCall, clickRow(3)))
     try await h.turn(Scripted("", clickRow(2), readCall))
-    try await h.turn(Scripted("", ("click", [("x", "100"), ("y", "50"), ("count", "2")]),
-                              ("type", [("text", "娃娃來過")]), key("cmd+s")))
+    try await h.turn(Scripted("", act(#"{"click": {"x": 100, "y": 50}, "count": 2}"#),
+                              act(#"{"type": "娃娃來過"}"#), key("cmd+s")))
     // She looks, tells him, then answers in the same reply.
     try await h.turn(Scripted("", readCall, dm("存好了，標題列沒有「已編輯」"), done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
     #expect(h.last.footer.contains("- todo：進行中「標題沒有「已編輯」」"))
@@ -1743,7 +1990,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(conf >= 0.3 && conf < 0.7)
     // The list is done: idle, the computer refused again.
     try await h.turn(Scripted("", key("Return")))
-    #expect(h.last.actions == ["refused key"] && h.last.footer.contains("- todo：待命中"))
+    #expect(h.last.actions == ["refused act"] && h.last.footer.contains("- todo：待命中"))
     // Its stats are in the front-matter, not in the text (what is embedded): this item's 5 turns.
     let files = try experienceFiles(h)
     let stats = try #require(files.first?.stats)
@@ -1808,7 +2055,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     let refused = "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。"
     let results = try h.toolResults().suffix(3).map(\.text)
     #expect(results.first!.hasPrefix("完成，記下了。") && Array(results.dropFirst()) == [refused, refused])
-    #expect(h.last.actions == ["key", "said discord_dm", "todo done", "error key", "error read_window"])
+    #expect(h.last.actions == ["act", "said discord_dm", "todo done", "error act", "error read_window"])
     #expect(h.cua.actions == ["hotkey"])
     #expect(await !h.doll.followUp)
     #expect(await h.doll.todo.phase == .idle)
@@ -1846,7 +2093,7 @@ private func notTold(_ who: String, _ tool: String) -> String {
     try await h.turn(Scripted("", todoSet("算出 7+8"), readCall, dm("我算算")))
     try await h.turn(Scripted("", clickRow(2), done("15")))
     #expect(try h.toolResults().last!.text == notTold("主人", "discord.dm"))
-    #expect(h.last.actions == ["click", "error todo.done"] && h.last.itemEnd == nil)
+    #expect(h.last.actions == ["act", "error todo.done"] && h.last.itemEnd == nil)
     #expect(await h.doll.todo.phase == .doing)
     // A line to him in a later reply: the done goes through.
     try await h.turn(Scripted("", dm("是 15")))
@@ -2389,7 +2636,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(t[1].calls?.allSatisfy { $0.result != nil } == true && t[1].calls?[0].image == nil && t[1].calls?[1].image != nil
             && t[1].calls?[2].image == nil)
     #expect(t[1].calls?[2].result?.contains("own/") == true)
-    #expect(t[0].calls?.map(\.name) == ["click"] && t[0].calls?[0].parameters.map(\.name) == ["row"])
+    #expect(t[0].calls?.map(\.name) == ["act"] && t[0].calls?[0].parameters.map(\.name) == ["steps"])
     for turn in t.prefix(2) {
         #expect(turn.prompt != nil && turn.prompt! > 0 && turn.seconds != nil && turn.effort == "medium" && turn.footer?.hasPrefix("【狀況】") == true)
     }
@@ -2720,7 +2967,7 @@ extension Doll {
     let end = Array(try h.toolResults().suffix(3))
     #expect(end[0].text.hasPrefix("完成，記下了。") && end[1].text.hasPrefix("（附上了你最後讀的視窗截圖給主人：")
             && end[2].text == "失敗：這則回覆前面已經用 todo.done 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。")
-    #expect(h.last.actions == ["todo done", "said discord_dm", "error key"])
+    #expect(h.last.actions == ["todo done", "said discord_dm", "error act"])
     #expect(!(await h.doll.followUp))
     // After the item is compacted, the say stays in her context with her done.
     await h.doll.ownerSaid("謝謝")
@@ -2783,7 +3030,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         stamped(.memory, "【快捷鍵】TextEdit 1.21\nFile › Save As… = ⇧⌥⌘S", 4),
         stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
         stamped(.tool, "", 6),
-        stamped(.tool, sent, 7, image: "b.jpg", window: "TextEdit 的視窗「另存」；截圖 460×816\n- [0] AXWindow \"Save\""),
+        stamped(.tool, "1 步都做了：key cmd+shift+alt+s。", 7, image: "b.jpg", window: "TextEdit 的視窗「另存」；截圖 460×816\n- [0] AXWindow \"Save\""),
         stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
         stamped(Scripted("", recall("另存")), 9),
         stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
@@ -2801,8 +3048,8 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         [\(t(2)) 她呼叫] todo.set(items: ["畫面上看得到結果"])
         [\(t(3)) todo.set 的結果] todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。
         [\(t(5)) 她說｜Discord 私訊] 好
-        [\(t(5)) 她呼叫] key(key: s; modifiers: ["cmd", "shift", "alt"])
-        [\(t(7)) key 的結果] \(sent)
+        [\(t(5)) 她呼叫] act(steps: [{"key": "s", "modifiers": ["cmd", "shift", "alt"]}])
+        [\(t(7)) act 的結果] 1 步都做了：key cmd+shift+alt+s。
         [\(t(9)) 她呼叫] recall(query: 另存)
         [\(t(11)) 她呼叫] todo.done(result: 按 ⇧⌥⌘S 另存好了)
         [\(t(12)) todo.done 的結果] 完成，記下了。
@@ -4217,9 +4464,9 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("按一下 Return")
     try await h.turn(Scripted("", key("Return"), readCall))
-    #expect(try h.toolResults().map(\.text) == ["失敗：現在沒有進行中的 todo，key 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。",
+    #expect(try h.toolResults().map(\.text) == ["失敗：現在沒有進行中的 todo，act 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。",
                                                 "失敗：現在沒有進行中的 todo，read_window 不能用。先用 todo.set 列 todo（小事就一項，每項寫做完的樣子），再做。"])
-    #expect(h.last.actions == ["refused key", "refused read_window"] && h.cua.tools.isEmpty && h.last.todo == "待命中")
+    #expect(h.last.actions == ["refused act", "refused read_window"] && h.cua.tools.isEmpty && h.last.todo == "待命中")
     #expect(h.last.footer.contains("- todo：待命中（沒有 todo；要做事先用 todo.set 列）"))
     // Her refused calls are results she has not seen: she gets the next turn to list the todo.
     #expect(await h.doll.followUp)
@@ -4305,7 +4552,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     // She gets the turn in which she decides; the computer stays locked meanwhile.
     #expect(await h.doll.followUp)
     try await h.turn(Scripted("", key("Return")))
-    #expect(try h.toolResults().last!.text.hasPrefix("失敗：「票買好了」失敗了，key 先鎖著。") && h.cua.actions == ["hotkey"])
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：「票買好了」失敗了，act 先鎖著。") && h.cua.actions == ["hotkey"])
     #expect(h.last.footer.contains("- todo：失敗「票買好了」：電腦工具鎖著"))
     // The failed item's reason and what she tried stay (her call); the action list is its result.
     let msgs = await h.model.seen(2)
@@ -4339,7 +4586,7 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(await !h.doll.followUp)
     #expect(try h.timeline().todo.phase == .waiting)
     await h.doll.ownerSaid("123456")
-    try await h.turn(Scripted("", ("type", [("text", "123456")])))
+    try await h.turn(Scripted("", act(#"{"type": "123456"}"#)))
     #expect(h.reports[2].footer.contains("- todo：進行中「登入好了」") && h.cua.args("type_text").last?["text"] as? String == "123456")
 }
 
@@ -6539,8 +6786,8 @@ private func goOn(_ missing: String, _ stuck: String, _ change: String) -> (Stri
     // Until she chooses, every computer or file call is refused before it is sent.
     let sentBefore = h.cua.tools.count
     try await h.turn(Scripted("", clickRow(2), readFile("/tmp/none.txt")))
-    #expect(h.cua.tools.count == sentBefore && h.last.actions == ["refused click", "refused read_file"])
-    #expect(try h.toolResults().suffix(2).first!.text.hasPrefix("失敗：click 沒有執行。「畫面上看得到結果」已經做了 4 回合"))
+    #expect(h.cua.tools.count == sentBefore && h.last.actions == ["refused act", "refused read_file"])
+    #expect(try h.toolResults().suffix(2).first!.text.hasPrefix("失敗：act 沒有執行。「畫面上看得到結果」已經做了 4 回合"))
     // Go on, because…: recorded with the list and on the dashboard; the tools run again.
     try await h.turn(Scripted("", goOn("等於還沒按", "按等於那一步，點了沒反應", "改用鍵盤 Return"), readCall))
     #expect(h.last.actions == ["todo continue", "read_window"])
@@ -6816,7 +7063,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     #expect(Doll.undecorated("read_file /a.txt：共 9 行，這裡是第 2–3 行") == "")
     #expect(Doll.quoted("     7\t共 6 行", in: "開頭\n共 6 行\n") && !Doll.quoted("     7\t共 7 行", in: "開頭\n共 6 行\n"))
     // A computer result that repeats what she asked for is not a source for it (facts, 2026-11-17).
-    let menu = ToolCall(name: "menu", arguments: #"{"app": "Calculator", "path": ["檔案", "匯出為 PDF"]}"#)
+    let menu = ToolCall(name: "act", arguments: #"{"steps": [{"menu": ["檔案", "匯出為 PDF"], "app": "Calculator"}]}"#)
     #expect(Doll.withoutArguments("失敗：Calculator 沒有「檔案」選單，找不到「匯出為 PDF」", of: menu) == "失敗： 沒有「」選單，找不到「」")
 }
 
