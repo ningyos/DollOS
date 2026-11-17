@@ -513,7 +513,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
     #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "todo.set", "todo.done", "todo.fail",
                       "todo.wait", "todo.progress", "todo.continue", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
-                      "act", "read_file", "write_file", "edit_file", "ask_owner"])
+                      "act", "tool.save", "tool.run", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
     // every request sends the same list
     await h.doll.ownerSaid("在嗎")
@@ -2764,10 +2764,10 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(await d.respond(method: "POST", target: "/api/say").status == 404)
 }
 
-@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheCalendarAndHerDirection() {
+@Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheCalendarHerDirectionAndHerTools() {
     #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
             == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/calendar/",
-                "/api/ideal/", "/api/goals/", "/api/record/"])
+                "/api/ideal/", "/api/goals/", "/api/record/", "/api/tools/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
 
@@ -7322,4 +7322,261 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     // A name is not a row: it holds on the read open made in this reply, and goes as that read's token.
     #expect(h.cua.args("click").last?["element_token"] as? String == "s00000001:2")
     #expect(await h.doll.itemSteps.map(\.line).first == "open Calculator")
+}
+
+// Her own tools (2026-11-17, OwnTools.swift) ------------------------------------------------------
+
+private func toolSave(_ name: String, _ when: String, _ params: [(String, String, String)] = []) -> (String, [(String, String)]) {
+    let ps = params.map { ["name": $0.0, "value": $0.1, "about": $0.2] }
+    return ("tool.save", [("name", name), ("when", when)]
+            + (params.isEmpty ? [] : [("params", String(decoding: try! JSONSerialization.data(withJSONObject: ps, options: [.sortedKeys]), as: UTF8.self))]))
+}
+private func toolRun(_ name: String, _ args: [String: String] = [:], expect: String? = nil) -> (String, [(String, String)]) {
+    ("tool.run", [("name", name)] + (args.isEmpty ? [] : [("args", String(decoding: try! JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]), as: UTF8.self))])
+        + (expect.map { [("expect", $0)] } ?? []))
+}
+private let openCalc: (String, [(String, String)]) = ("open", [("app", "Calculator")])
+
+/// A Calculator that computes: row 1 the display, row 2 the previous expression (set after 等於;
+/// a digit after it starts a new number, as the real one does).
+private let calcWindow = FakeCua.Window(id: 62541, pid: 100, app: "計算機", title: "計算機", elements: [
+    FakeCua.Element(role: "AXWindow", label: "計算機", parent: nil, id: "main"),
+    FakeCua.Element(role: "AXStaticText", label: "0"),
+    FakeCua.Element(role: "AXStaticText", label: nil),
+] + "0123456789".map { FakeCua.Element(role: "AXButton", label: String($0)) } + [
+    FakeCua.Element(role: "AXButton", label: "乘", id: "Multiply"),
+    FakeCua.Element(role: "AXButton", label: "等於", id: "Equals"),
+    FakeCua.Element(role: "AXButton", label: "全部清除", id: "AllClear"),
+])
+
+@Sendable private func calcPress(_ tool: String, _ args: [String: Any], _ s: inout FakeCua.State) {
+    // Typing goes into the text area of the window named, or of the app's front window.
+    if tool == "type_text", let w = s.windows.lastIndex(where: { $0.id == args["window_id"] as? Int })
+        ?? s.windows.lastIndex(where: { $0.pid == args["pid"] as? Int }),
+       let row = s.windows[w].elements.firstIndex(where: { $0.role == "AXTextArea" }) {
+        s.windows[w].elements[row].label = (s.windows[w].elements[row].label ?? "") + (args["text"] as? String ?? "")
+        return
+    }
+    guard tool == "click", let token = args["element_token"] as? String, let row = Int(token.split(separator: ":").last ?? ""),
+          let w = s.windows.firstIndex(where: { $0.id == args["window_id"] as? Int }), s.windows[w].pid == 100,
+          let label = s.windows[w].elements[row].label else { FakeCua.press(tool, args, &s); return }
+    var shown = s.windows[w].elements[1].label ?? "0"
+    if Int(label) != nil {
+        if shown == "0" || s.windows[w].elements[2].label != nil { shown = label; s.windows[w].elements[2].label = nil } else { shown += label }
+    } else if label == "乘" {
+        shown += "×"
+    } else if label == "等於" {
+        let product = shown.split(separator: "×").compactMap { Int($0) }.reduce(1, *)
+        s.windows[w].elements[2].label = shown
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        shown = f.string(from: NSNumber(value: product))!
+    } else if label == "全部清除" {
+        shown = "0"
+    }
+    s.windows[w].elements[1].label = shown
+}
+
+private func calcHarness(_ dir: URL? = nil, tune: @escaping (inout Config) -> Void = { _ in }) async throws -> Harness {
+    let h = try await Harness(dir: dir, tune: tune)
+    h.cua.change { $0.windows = [calcWindow]; $0.after = calcPress }
+    return h
+}
+
+/// The owner asks 37×46; she opens Calculator, presses it through in one act, reports; then saves it.
+private func savedMultiply(_ h: Harness, save: Bool = true) async throws {
+    await h.doll.ownerSaid("幫我用計算機算 37×46")
+    try await h.turn(Scripted("", todoSet("計算機顯示 37×46 的答案"), openCalc))
+    try await h.turn(Scripted("", act(#"{"click": "3"}"#, #"{"click": "7"}"#, #"{"click": "乘"}"#, #"{"click": "4"}"#, #"{"click": "6"}"#, #"{"click": "等於"}"#, expect: "1,702")))
+    try await h.turn(Scripted("", dm("37×46 = 1,702"), done("1,702", evidence: "1,702")))
+    guard save else { return }
+    await h.doll.ownerSaid("把你剛剛做的存成工具，兩個數字會變")
+    try await h.turn(Scripted("", toolSave("乘法", "用計算機算兩個數相乘", [("a", "37", "第一個數"), ("b", "46", "第二個數")])))
+}
+
+private func toolFile(_ h: Harness, _ name: String) throws -> OwnTool {
+    try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: h.dir.appending(path: "tools/\(name).json")))
+}
+
+@Test func aSavedChainIsBuiltFromWhatSheDidWithButtonNamesAsAParameter() async throws {
+    let h = try await calcHarness()
+    try await savedMultiply(h)
+    let result = try h.toolResults().last!.text
+    #expect(result.hasPrefix("存好了：工具「乘法」（tools/乘法.json），從「計算機顯示 37×46 的答案」存的。"))
+    let t = try toolFile(h, "乘法")
+    #expect(t.params == [OwnTool.Param(name: "a", kind: .buttons, about: "第一個數", example: "37"),
+                         OwnTool.Param(name: "b", kind: .buttons, about: "第二個數", example: "46")])
+    #expect(t.stepLines == ["open Calculator", "按 {{a}} 的每一個字（AXButton）", "click AXButton \"乘\"", "按 {{b}} 的每一個字（AXButton）", "click AXButton \"等於\""])
+    // 1,702 does not follow the values: she states the expectation at each run.
+    #expect(t.expectWas == "1,702" && t.parts.last?.expect == nil && result.contains("每次用的時候要給 expect"))
+    #expect(t.parts.first?.bundleID == "com.apple.calculator" && t.origin.task == "幫我用計算機算 37×46" && t.origin.sequences.count == 1)
+    #expect(t.uses == 0 && t.successes == 0)
+    // The file is plain sorted JSON, one field a line.
+    let text = try String(contentsOf: h.dir.appending(path: "tools/乘法.json"), encoding: .utf8)
+    #expect(text.contains("\"press\" : \"{{a}}\"") && text.contains("\"bundle_id\" : \"com.apple.calculator\""))
+}
+
+@Test func aRunInTheSameReplyAsTodoSetReplaysWithNewValuesAndCountsTheSuccess() async throws {
+    let h = try await calcHarness()
+    try await savedMultiply(h)
+    await h.doll.ownerSaid("再算 58×13")
+    let before = h.cua.actions.count
+    try await h.turn(Scripted("", todoSet("計算機顯示 58×13 的答案"), toolRun("乘法", ["a": "58", "b": "13"], expect: "754")))
+    let r = try h.toolResults().last!.text
+    #expect(r.contains("工具「乘法」7 步都做了：open Calculator、click AXButton \"5\"、click AXButton \"8\"、click AXButton \"乘\"、click AXButton \"1\"、click AXButton \"3\"、click AXButton \"等於\"。"))
+    #expect(r.contains("跟你預期的一樣：視窗裡有「754」。") && r.contains("工具「乘法」用了 1 次，成功 1 次。"))
+    #expect(h.cua.actions.count - before == 6)
+    let t = try toolFile(h, "乘法")
+    #expect(t.uses == 1 && t.successes == 1 && t.failuresInRow == 0 && t.lastRun != nil)
+    // Its steps are in the action log like any others, marked with the tool.
+    let log = try String(contentsOf: h.dir.appending(path: "computer-actions.jsonl"), encoding: .utf8).split(separator: "\n")
+    #expect(log.suffix(7).allSatisfy { $0.contains("\"via\":\"乘法\"") } && log.suffix(6).allSatisfy { $0.contains("\"sequence\"") })
+    // Without the expectation, nothing is done.
+    try await h.turn(Scripted("", toolRun("乘法", ["a": "2", "b": "3"])))
+    #expect(try h.toolResults().last!.text.contains("要給 expect：這次做完視窗裡會出現的字，照畫面的寫法（存的那次是「1,702」）"))
+    #expect(try toolFile(h, "乘法").uses == 1)
+}
+
+@Test func savingIsRefusedWhenTheChainDidNotRunThroughOrDidNotMatch() async throws {
+    // The last act did not match her expectation.
+    let h = try await calcHarness()
+    await h.doll.ownerSaid("幫我用計算機算 37×46")
+    try await h.turn(Scripted("", todoSet("計算機顯示 37×46 的答案"), openCalc))
+    try await h.turn(Scripted("", act(#"{"click": "3"}"#, #"{"click": "7"}"#, expect: "38")))
+    try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
+    #expect(try h.toolResults().last!.text == "失敗：沒存：「計算機顯示 37×46 的答案」最後一次 act（click \"3\"、click \"7\"）沒做完或跟你預期的不一樣，這串動作沒有完整做成。做到跟預期一樣以後再存。")
+    // A step that failed.
+    h.cua.change { $0.refuse["click"] = #"{"error":"press failed"}"# }
+    try await h.turn(Scripted("", act(#"{"click": "全部清除"}"#)))
+    try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
+    #expect(try h.toolResults().last!.text.contains("最後一次 act（click \"全部清除\"）沒做完或跟你預期的不一樣"))
+    // A last act without an expectation.
+    try await h.turn(Scripted("", act(#"{"click": "全部清除"}"#)))
+    try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
+    #expect(try h.toolResults().last!.text == "失敗：沒存：「計算機顯示 37×46 的答案」最後一次 act 沒寫 expect，程式沒辦法確認那次結果是對的。用寫了 expect 的 act 做到一樣，再存。")
+    // The corrected attempt is left out, the one that matched is kept.
+    try await h.turn(Scripted("", act(#"{"click": "3"}"#, #"{"click": "7"}"#, #"{"click": "乘"}"#, #"{"click": "4"}"#, #"{"click": "6"}"#, #"{"click": "等於"}"#, expect: "1,702")))
+    try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
+    let ok = try h.toolResults().last!.text
+    #expect(ok.contains("沒存進去的：第 1 次 act（click \"3\"、click \"7\"）沒做成或跟預期不一樣；第 2 次 act（click \"全部清除\"）沒做成或跟預期不一樣。"))
+    #expect(try toolFile(h, "乘法").stepLines == ["open Calculator", "click AXButton \"全部清除\"", "click AXButton \"3\"", "click AXButton \"7\"", "click AXButton \"乘\"",
+                                                 "click AXButton \"4\"", "click AXButton \"6\"", "click AXButton \"等於\"", "（預期視窗裡有「1,702」）"])
+    // A value that is nowhere in the steps, and a failed item.
+    try await h.turn(Scripted("", toolSave("乘法2", "算乘法", [("a", "99", "數")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒存：參數「a」的值「99」不在要存的步驟裡"))
+    try await h.turn(Scripted("", fail("算不出來", evidence: "1,702")))
+    try await h.turn(Scripted("", toolSave("乘法3", "算乘法")))
+    #expect(try h.toolResults().last!.text == "失敗：沒存：上一項「計算機顯示 37×46 的答案」是用 todo.fail 收的；沒做成的事不能存成工具。")
+}
+
+@Test func aTextAndAFileParameterAreReplacedAndTheirExpectationFollows() async throws {
+    let h = try await calcHarness()
+    h.cua.change { s in s.after = calcPress }
+    // Text: a new TextEdit document, typed into.
+    await h.doll.ownerSaid("在 TextEdit 開新文件寫買牛奶")
+    try await h.turn(Scripted("", todoSet("TextEdit 新文件寫著買牛奶"), act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#)))
+    try await h.turn(Scripted("", act(#"{"type": "記得買牛奶"}"#, expect: "記得買牛奶")))
+    try await h.turn(Scripted("", toolSave("寫一句", "在 TextEdit 新文件寫一句話", [("內容", "買牛奶", "要寫的東西")])))
+    let t = try toolFile(h, "寫一句")
+    #expect(t.params.map(\.kind) == [.text] && t.stepLines == ["menu 檔案 › 新增", "type「記得{{內容}}」", "（預期視窗裡有「記得{{內容}}」）"])
+    #expect(t.expectWas == nil)
+    h.cua.change { $0.windows.removeAll { $0.pid == 200 } }
+    try await h.turn(Scripted("", toolRun("寫一句", ["內容": "買雞蛋"])))
+    let r = try h.toolResults().last!.text
+    #expect(r.contains("type「記得買雞蛋」") && r.contains("跟你預期的一樣：視窗裡有「記得買雞蛋」。"))
+    // File: open hands TextEdit a file; the expectation is hers at each run.
+    let dir = FileManager.default.temporaryDirectory.appending(path: "owntools-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let a = dir.appending(path: "a.txt").path, b = dir.appending(path: "b.txt").path
+    for p in [a, b] { FileManager.default.createFile(atPath: p, contents: Data()) }
+    try await h.turn(Scripted("", dm("寫好了"), done("寫好了", evidence: "記得買雞蛋")))
+    await h.doll.ownerSaid("打開 a.txt 寫 hi")
+    try await h.turn(Scripted("", todoSet("a.txt 寫著 hi"), ("open", [("app", "TextEdit"), ("target", a)])))
+    try await h.turn(Scripted("", act(#"{"type": "hi"}"#, expect: "hi")))
+    try await h.turn(Scripted("", toolSave("檔案寫hi", "打開一個檔案寫 hi", [("檔", a, "要開的檔案")])))
+    let f = try toolFile(h, "檔案寫hi")
+    #expect(f.params.map(\.kind) == [.target])
+    #expect(f.parts.first?.target == "{{檔}}")
+    #expect(f.expectWas == "hi")
+    try await h.turn(Scripted("", toolRun("檔案寫hi", ["檔": b], expect: "hi")))
+    let r2 = try h.toolResults().last!.text
+    #expect(r2.contains("open TextEdit \(b)") && r2.contains("跟你預期的一樣"))
+    #expect(h.cua.state.withLock { $0.windows.contains { $0.title == "b.txt" && $0.elements[1].label == "hi" } })
+}
+
+@Test func aMissingOrDoubledButtonStopsTheReplayWithoutPressingAnything() async throws {
+    let h = try await calcHarness()
+    try await savedMultiply(h)
+    await h.doll.ownerSaid("算 1.5×4")
+    let before = h.cua.actions.count
+    try await h.turn(Scripted("", todoSet("計算機顯示 1.5×4 的答案"), toolRun("乘法", ["a": "1.5", "b": "4"], expect: "6")))
+    let r = try h.toolResults().last!.text
+    #expect(r.hasPrefix("失敗：") == false)
+    #expect(r.contains("工具「乘法」停了：第 3 步要按「.」（參數 a 的值「1.5」裡的字），可是Calculator「計算機」裡沒有名字叫「.」的 AXButton。這一段（第 2–7 步）一步都沒按。"))
+    #expect(r.contains("做過的：open Calculator。"))
+    #expect(h.cua.actions.count == before && h.cua.actions.filter { $0 == "click" }.count == 6)
+    #expect(try toolFile(h, "乘法").uses == 1 && toolFile(h, "乘法").successes == 0 && toolFile(h, "乘法").failuresInRow == 1)
+    // Two buttons named 乘: stopped at that step, the steps before it done (as act does).
+    h.cua.change { $0.windows[0].elements.append(FakeCua.Element(role: "AXButton", label: "乘")) }
+    try await h.turn(Scripted("", toolRun("乘法", ["a": "2", "b": "4"], expect: "8")))
+    let r2 = try h.toolResults().last!.text
+    #expect(r2.contains("第 3 步（click AXButton \"乘\"）沒做成：沒有做：名字叫「乘」的有 2 個："))
+    #expect(try toolFile(h, "乘法").failuresInRow == 2)
+}
+
+@Test func aToolThatKeepsFailingIsNoLongerOfferedOrRunButStaysForTheOwner() async throws {
+    let h = try await calcHarness { $0.computer.ownToolOfferSimilarity = 0.3 }
+    try await savedMultiply(h)
+    await h.doll.ownerSaid("再算 58×13")
+    try await h.turn(Scripted("", todoSet("計算機顯示 58×13 的答案"), toolRun("乘法", ["a": "58", "b": "13"], expect: "999")))
+    #expect(try h.toolResults().last!.text.contains("跟你預期的不一樣"))
+    try await h.turn(Scripted("", toolRun("乘法", ["a": "58", "b": "13"], expect: "998")))
+    try await h.turn(Scripted("", toolRun("乘法", ["a": "58", "b": "13"], expect: "997")))
+    #expect(try h.toolResults().last!.text.contains("工具「乘法」用了 3 次，成功 0 次；連續失敗 3 次，停用了，之後不會再提它（主人在 dashboard 看得到）。"))
+    try await h.turn(Scripted("", toolRun("乘法", ["a": "58", "b": "13"], expect: "754")))
+    #expect(try h.toolResults().last!.text == "失敗：沒有做：工具「乘法」連續失敗 3 次，停用了（沒刪，主人在 dashboard 看得到）。這次用 act 自己做。")
+    let listed = try await h.doll.dashboardTools()
+    #expect(listed.map(\.name) == ["乘法"] && listed[0].retired && listed[0].uses == 3 && listed[0].successes == 0)
+    try await h.turn(Scripted("", dm("改用手算"), done("沒做", evidence: "997")))
+    await h.doll.ownerSaid("幫我用計算機算 58×13")
+    try await h.turn(Scripted("", dm("好")))
+    #expect(try h.events().filter { $0.kind == .memory }.allSatisfy { !$0.text.contains("〔工具〕") })
+}
+
+@Test func theOfferAttachTheCapDeletionAndARestartKeepTheToolsAndTheirCounts() async throws {
+    let h = try await calcHarness { $0.computer.ownToolOfferSimilarity = 0.3; $0.computer.ownToolsMax = 1 }
+    try await savedMultiply(h)
+    // The owner's next line fits the tool: the 【相關記憶】 says she has it, before her first reply.
+    await h.doll.ownerSaid("幫我用計算機算 58×13")
+    try await h.turn(Scripted("", todoSet("計算機顯示 58×13 的答案"), toolRun("乘法", ["a": "58", "b": "13"], expect: "754")))
+    let offer = try h.events().last { $0.kind == .memory && $0.text.contains("〔工具〕") }
+    #expect(offer?.text.contains("〔工具〕「乘法」：用計算機算兩個數相乘（參數 a（第一個數；存的時候是「37」）、b（第二個數；存的時候是「46」）；用了 0 次，成功 0 次）。用法：tool.run(name: \"乘法\", args: {\"a\": …, \"b\": …}，要給 expect)") == true)
+    let req = await h.model.seen(await h.model.requests.count - 1)
+    #expect(req.contains { $0.content.contains("〔工具〕「乘法」") })
+    // A line that does not fit offers nothing.
+    let qv = FakeEmbedder.vector("晚安，明天見"), dv = FakeEmbedder.vector("乘法：用計算機算兩個數相乘\n幫我用計算機算 37×46")
+    #expect(zip(qv, dv).reduce(Float(0)) { $0 + $1.0 * $1.1 } < 0.3)
+    // The cap.
+    try await h.turn(Scripted("", dm("754"), done("754", evidence: "754")))
+    try await h.turn(Scripted("", toolSave("乘法2", "再存一次")))
+    #expect(try h.toolResults().last!.text == "失敗：沒存：工具已經有 1 個，到上限 1 個了。請主人在 dashboard 刪掉用不到的。")
+    // A restart: the tool and its counts are read from the file; what she did before it cannot be saved.
+    let h2 = try await calcHarness(h.dir) { $0.computer.ownToolOfferSimilarity = 0.3 }
+    let listed = try await h2.doll.dashboardTools()
+    #expect(listed.map(\.name) == ["乘法"] && listed[0].uses == 1 && listed[0].successes == 1)
+    #expect(listed[0].steps.first == "open Calculator" && listed[0].expect == "每次她說預期什麼（存的那次是「1,702」）")
+    try await h2.turn(Scripted("", toolSave("乘法3", "x")))
+    #expect(try h2.toolResults().last!.text.hasPrefix("失敗：沒存：沒有可以存的動作"))
+    // The owner deletes it from the dashboard.
+    let d = Dashboard(doll: h2.doll, config: DashboardConfig())
+    #expect(await d.respond(method: "POST", target: "/api/tools/delete?name=%E4%B9%98%E6%B3%95").status == 200)
+    #expect(try await h2.doll.dashboardTools().isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: h.dir.appending(path: "tools/乘法.json").path))
+    #expect(await d.respond(method: "POST", target: "/api/tools/delete?name=nothing").status == 404)
+}
+
+@Test func herToolsAreTwoFixedSpecs() {
+    let specs = Tools.specs(memory: MemoryConfig(), voice: false, computer: ComputerConfig(), files: FilesConfig())
+    #expect(specs.filter { $0.name.hasPrefix("tool.") }.map(\.name) == ["tool.save", "tool.run"])
+    #expect(Tools.gated.contains("tool.run") && !Tools.gated.contains("tool.save") && Tools.actionNames.contains("tool.run"))
 }

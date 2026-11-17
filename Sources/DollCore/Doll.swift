@@ -144,6 +144,16 @@ public actor Doll {
     /// The front apps her computer results showed during the current item, first seen first: an
     /// experience's entities (2026-11-11).
     var itemApps: [AppIdentity] = []
+    /// The current item's `open` and `act` calls as they went (2026-11-17): what `tool.save` builds
+    /// her tool from. In memory, like `itemSteps`.
+    var itemChain: [ChainPart] = []
+    /// The item that ended last, with its chain: what `tool.save` saves when no item is in progress
+    /// (the owner asks to save it after her report). In memory: a new process has none.
+    var lastEnded: (item: String, task: String, done: Bool, chain: [ChainPart])?
+    /// Her own tools on disk (`<data_dir>/tools/`).
+    let toolStore: ToolStore
+    /// The tools offered since the owner's last line; never offered twice in that span.
+    var offeredTools: Set<String> = []
     /// The current item called a computer tool that ran.
     var itemUsedComputer = false
     /// The current item saw a call of hers other than the todo tools and `think` (a computer tool,
@@ -332,6 +342,7 @@ public actor Doll {
         concernsURL = data.appending(path: "concerns.json")
         signalsURL = data.appending(path: "signals.json")
         estimatesURL = data.appending(path: "estimates.json")
+        toolStore = ToolStore(dir: data.appending(path: "tools"))
         estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates") ?? EstimateFile()
         concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns") ?? ConcernFile()
         let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals")
@@ -956,6 +967,7 @@ public actor Doll {
         if ownerArrived {
             ownerArrived = false
             attachedIDs = []
+            offeredTools = []
             associatedIDs = []
             await attachMemories(trigger: "\(Self.lastSpeaker(timeline.events).label)的新訊息")
             recallHeld()
@@ -1295,11 +1307,25 @@ public actor Doll {
             case .apps:
                 return Outcome(text: try await mac.apps(), actions: [name])
             case .open(let app, let target):
-                return computerOutcome(try await mac.open(app, target: target), name: name, chain: chain)
+                let r = try await mac.open(app, target: target)
+                if let a = r.app {
+                    itemChain.append(ChainPart(kind: .open, app: a, target: target, steps: [], records: r.records, expect: nil, ok: true, sequence: nil))
+                }
+                return computerOutcome(r, name: name, chain: chain)
             case .readWindow(let app, let window):
                 return computerOutcome(try await mac.readWindow(app, window: window), name: name, chain: chain)
             case .act(let steps, let expect):
-                return computerOutcome(try await mac.act(steps), name: name, chain: chain, expect: expect)
+                let r = try await mac.act(steps)
+                let out = computerOutcome(r, name: name, chain: chain, expect: expect)
+                if let a = r.app {
+                    itemChain.append(ChainPart(kind: .act, app: a, target: nil, steps: steps, records: r.records, expect: expect,
+                                               ok: out.failedStep == nil, sequence: r.records.first?.sequence))
+                }
+                return out
+            case .toolSave(let toolName, let when, let params):
+                return try toolSave(toolName, when: when, params: params, reply: reply)
+            case .toolRun(let toolName, let args, let expect):
+                return try await toolRun(toolName, args: args, expect: expect, chain: chain)
             case .askOwner(let what, let place, let why):
                 return try askOwner(what: what, where: place, why: why)
             // The file tools (2026-11-09; this Mac's files since 2026-11-16): text only, no window read.
@@ -1582,6 +1608,7 @@ public actor Doll {
     /// it; 2026-11-09, chained E→F: F got no TextEdit sheet because TextEdit was already in front).
     func beginItem() {
         itemSteps = []
+        itemChain = []
         itemApps = []
         itemUsedComputer = false
         itemActed = false
@@ -1681,6 +1708,7 @@ public actor Doll {
                             + "先用 \(tool) 跟\(f.to.label)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以。")
         }
         let steps = itemSteps.map(\.line)
+        lastEnded = (item, ownerTask(before: reply, or: item), true, itemChain)
         compacting = Compaction(kind: .done, item: item, fromSeq: todo.startSeq, toSeq: 0)
         scoreAttached(steps: steps, outcome: "success")
         itemEndNow = TodoPhase.done.label
@@ -1736,6 +1764,7 @@ public actor Doll {
                             + "從那裡照抄支持原因的字（標點、寫法照抄）；找不到支持的字，就是還不知道真正的原因：再查一下，或用 ask_owner 問主人。")
         }
         let steps = itemSteps.map(\.line)
+        lastEnded = (item, ownerTask(before: reply, or: item), false, itemChain)
         compacting = Compaction(kind: .failed, item: item, fromSeq: todo.startSeq, toSeq: 0)
         scoreAttached(steps: steps, outcome: "failure")
         itemEndNow = TodoPhase.failed.label
@@ -2124,7 +2153,7 @@ public actor Doll {
 
     // memory -----------------------------------------------------------------
     /// Tools whose results are what the computer showed: a memory taken from one is tool-tier.
-    static let observingTools: Set<String> = ["open", "read_window", "act", "read_file", "edit_file"]
+    static let observingTools: Set<String> = ["open", "read_window", "act", "tool.run", "read_file", "edit_file"]
 
     /// The program fills seq, ts, confidence; the kind and folder are hers (spec 6, 2026-11-08). The
     /// tier comes from the event she is answering, not from anything she can claim; results of her
@@ -2271,12 +2300,18 @@ public actor Doll {
                 + "already attached \(already.count) \(already.sorted())")
             logSelection(report)
             let fresh = report.selected.compactMap { picks[$0.id] }
-            guard !fresh.isEmpty else { return }
+            // Her own tools that fit the same query (2026-11-17, owner decision 6): told here, not listed always.
+            let offered = offerTools(query: query, label: label)
+            guard !fresh.isEmpty || !offered.isEmpty else { return }
             attachedIDs.formUnion(fresh.map(\.id))
+            offeredTools.formUnion(offered.map(\.name))
             let from = frontApp.map { "主人的話和前景 app「\($0.name)」" } ?? "主人的話"
-            var text = "【相關記憶】程式用\(from)查到、最相近的過去經驗："
+            var text = fresh.isEmpty ? "【相關記憶】程式用\(from)查到你存的工具：" : "【相關記憶】程式用\(from)查到、最相近的過去經驗："
             for e in fresh {
                 text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
+            }
+            if !offered.isEmpty {
+                text += (fresh.isEmpty ? "" : "\n你存的工具裡可能用得上的：") + offered.map { "\n〔工具〕" + $0.offerLine }.joined()
             }
             try append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
             attachedNow.append(text)

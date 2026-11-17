@@ -93,6 +93,15 @@ public struct ComputerConfig: Sendable {
     /// How many of her past lists' estimate-vs-actual lines 【狀況】 shows while no item is in
     /// progress, i.e. when her next `todo.set` estimates (2026-11-17, hook 2).
     public var estimateHistory = 3
+    /// Her own tools (2026-11-17, `OwnTools.swift`): at most this many (owner decision 4).
+    public var ownToolsMax = 30
+    /// A tool is offered in the 【相關記憶】 when the cosine of the owner's line (and front app) to
+    /// the tool's name, `when` and the owner's line it was saved from is at least this.
+    public var ownToolOfferSimilarity = 0.6
+    /// At most this many tools offered at once.
+    public var ownToolOfferMax = 2
+    /// A tool that failed this many runs in a row is no longer offered or run (owner decision 3); it stays.
+    public var ownToolRetireFailures = 3
 }
 
 /// Her file tools (2026-11-09; on this Mac since 2026-11-16): read_file, write_file, edit_file on text files.
@@ -511,13 +520,19 @@ public struct Config: Sendable {
         try v.read("plan_min_chars", &computer.planMinChars)
         try v.read("plan_max_facts", &computer.planMaxFacts)
         try v.read("estimate_history", &computer.estimateHistory)
+        try v.read("own_tools_max", &computer.ownToolsMax)
+        try v.read("own_tool_offer_similarity", &computer.ownToolOfferSimilarity)
+        try v.read("own_tool_offer_max", &computer.ownToolOfferMax)
+        try v.read("own_tool_retire_failures", &computer.ownToolRetireFailures)
         try v.finish()
         guard !computer.driver.isEmpty, computer.daemonStartS > 0, computer.maxElements >= 1, computer.screenshotMaxDimension >= 1,
               computer.screenshotTokens >= 0, computer.settleS >= 0, computer.readBatch >= 1, computer.sequenceMaxSteps >= 1, computer.windowWaitTries >= 1, computer.windowWaitS >= 0,
               (0...60000).contains(computer.cursorIdleHideMs),
               !computer.authProcesses.isEmpty, computer.decideAfterRounds >= 1, computer.decideEveryRounds >= 1,
-              computer.planMinChars >= 1, computer.planMaxFacts >= 1, computer.estimateHistory >= 0 else {
-            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, sequence_max_steps, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more; cursor_idle_hide_ms 0 to 60000")
+              computer.planMinChars >= 1, computer.planMaxFacts >= 1, computer.estimateHistory >= 0,
+              computer.ownToolsMax >= 1, (-1.0...1.0).contains(computer.ownToolOfferSimilarity), computer.ownToolOfferMax >= 1,
+              computer.ownToolRetireFailures >= 1 else {
+            throw TOMLError(description: "[computer] driver and auth_processes not empty; daemon_start_s, max_elements, screenshot_max_dimension, read_batch, sequence_max_steps, window_wait_tries, decide_after_rounds, decide_every_rounds, plan_min_chars, plan_max_facts, own_tools_max, own_tool_offer_max, own_tool_retire_failures positive; screenshot_tokens, settle_s, window_wait_s, estimate_history 0 or more; cursor_idle_hide_ms 0 to 60000; own_tool_offer_similarity from -1 to 1")
         }
 
         var f = Section(name: "files", raw: raw["files"] ?? [:])

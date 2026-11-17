@@ -158,6 +158,8 @@ public struct ActionRecord: Codable, Sendable, Equatable {
     /// The `act` call this step was part of (one id for all its steps), so a recorded run can be
     /// replayed as the sequence it was; nil for `open`.
     public var sequence: String? = nil
+    /// The saved tool of hers this step was replayed from (`tool.run`, 2026-11-17); nil when she did it by hand.
+    public var via: String? = nil
 }
 
 /// What a computer tool hands back to the loop: her text, the window screenshot (a file under
@@ -172,6 +174,8 @@ public struct MacResult: Sendable {
     /// What went through, as the item's action list has it (`click AXButton "7"`, `menu 檔案 › 新增`):
     /// every step of a sequence that was done, also when a later one failed.
     public var steps: [String] = []
+    /// The action-log lines this call wrote, in order (her own tools are built from them, `OwnTools`).
+    public var records: [ActionRecord] = []
 }
 
 /// Her computer (2026-11-16). One session label per process; the latest read is what rows mean.
@@ -183,6 +187,10 @@ public actor Mac {
     let logURL: URL
     /// The todo item in progress, for the action log; set by the loop.
     var item: String?
+    /// The saved tool being replayed (`replay`), for the action log; nil when she acts by hand.
+    var running: String?
+    /// The action-log lines written since the current `open` or `act` started.
+    var logged: [ActionRecord] = []
 
     struct Read {
         var pid: Int
@@ -370,6 +378,7 @@ public actor Mac {
     /// says so and how to get one; nothing is guessed.
     public func open(_ app: String, target: String?) async throws -> MacResult {
         let apps = try await listApps()
+        logged = []
         var args: [String: Any] = ["session": session]
         let known = find(app, in: apps)
         if let known { args["bundle_id"] = known.bundleID } else { args["name"] = app }
@@ -410,6 +419,7 @@ public actor Mac {
             r.steps = ["open \(identity.name)" + (target.map { " \($0)" } ?? "")]
             try log(ActionRecord(ts: Date().timeIntervalSince1970, item: item, tool: "open", app: identity.name, bundleID: identity.bundleID, window: nil,
                              element: nil, args: target.map { ["target": $0] } ?? [:], ok: true, error: nil))
+            r.records = logged
             return r
         }
         let shown = wins.first(where: isTarget) ?? front
@@ -420,6 +430,7 @@ public actor Mac {
             r.window = "（沒看到標題有「\(file)」的視窗：檔案可能沒有開起來（例如 app 有對話框擋著）。下面是 \(identity.name) 最前面的視窗，不是那個檔）\n" + (r.window ?? "")
         }
         r.steps = ["open \(identity.name)" + (target.map { " \($0)" } ?? "")]
+        r.records = logged
         return r
     }
 
@@ -621,12 +632,14 @@ public actor Mac {
     /// stops the sequence). The first step that fails stops it; the window is read once, after the
     /// last step that ran. A row means the read she saw when her reply was written (`beginReply`); a
     /// row the program cannot vouch for is refused before anything is sent. A name is resolved by the
-    /// program (`resolve`), never by the driver's own name search.
-    public func act(_ steps: [Step]) async throws -> MacResult {
+    /// program (`resolve`), never by the driver's own name search. `numberFrom`: the number her
+    /// first step has in what she is told (a saved tool's later part counts on from its earlier ones).
+    public func act(_ steps: [Step], numberFrom: Int = 1) async throws -> MacResult {
         guard steps.count <= cfg.sequenceMaxSteps else {
             throw ComputerError("沒有做：一次最多 \(cfg.sequenceMaxSteps) 步，你給了 \(steps.count) 步。分成幾次送，每次送到要看結果的地方為止。")
         }
         let sequence = UUID().uuidString.lowercased()
+        logged = []
         between = nil
         // The app the steps work on: the latest read's, or the one a menu step names.
         var here: (pid: Int, app: AppIdentity)? = current.map { ($0.pid, $0.app) }
@@ -636,8 +649,8 @@ public actor Mac {
         var menuRan = false
         var stop: String?
         for (i, step) in steps.enumerated() {
-            let n = i + 1
-            let rest = steps.count - n
+            let n = i + numberFrom
+            let rest = steps.count - i - 1
             do {
                 if case .menu(let app, let path) = step {
                     let (pid, identity) = try await target(app)
@@ -656,7 +669,7 @@ public actor Mac {
             } catch {
                 let refused = (error as? StepRefused) != nil
                 // The first step refused before anything was sent: nothing happened, the call fails as a whole.
-                if refused, n == 1 { throw ComputerError(Self.said(error)) }
+                if refused, i == 0 { throw ComputerError(Self.said(error)) }
                 // A refusal's own text ends with 。; one 。 either way.
                 let said = Self.said(error)
                 stop = "第 \(n) 步（\(Self.step(step, nil))）沒做成：\(said.hasSuffix("。") ? String(said.dropLast()) : said)。"
@@ -677,6 +690,7 @@ public actor Mac {
         r.text = [said, r.text].filter { !$0.isEmpty }.joined(separator: "\n")
         r.failed = stop != nil
         r.steps = done
+        r.records = logged
         r.app = r.app ?? here.app
         return r
     }
@@ -1012,6 +1026,9 @@ public actor Mac {
     // the action log -------------------------------------------------------------
     /// Appends one line; a write that fails throws (the action already happened: she is told the log missed it).
     func log(_ r: ActionRecord) throws {
+        var r = r
+        r.via = running
+        logged.append(r)
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         var line = try enc.encode(r)

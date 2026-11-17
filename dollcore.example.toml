@@ -46,6 +46,10 @@ decide_after_rounds = 15      # 一份 todo 清單（從 todo.set 起，所有�
 decide_every_rounds = 10      # 選了繼續（或問了主人、或在決定點完成了一項）以後，再過這麼多回合又要選一次。初始值理由：做得成的最長一次 20 回合（a-1），15＋10＝25 之內；做不到的 30 回合裡會被問 2 次
 plan_min_chars = 4            # 2026-11-17：她寫的 todo.set 計畫（facts／assumptions／limits／check）、todo.continue 的 missing／stuck／change、todo.fail 的 cause，每欄至少這麼多個字母或數字（標點、空白不算），不然退回；limits 先拿掉「沒有」「無」「限制」「因為」「none」這類字（Doll.noLimitWords）再數，所以「沒有，因為…」要帶至少這麼多字的理由。理由：「沒有」「無」「同上」「N/A」都在 3 個以下；一句具體的中文事實至少 4 個字
 estimate_history = 3          # 2026-11-17：沒有進行中的項目時，【狀況】列她最近幾份清單「估 N → 實際 M 回合」。理由：3 份看得出偏高或偏低，一份約 12 token，3 份約 40 token；0＝不列
+own_tools_max = 30           # 2026-11-17：她自己的工具（存下來的一串動作，tool.save／tool.run）最多幾個；滿了 tool.save 退回，主人在 dashboard 刪掉用不到的。理由：主人決定的初始值（2026-11-17 決定 4）
+own_tool_offer_similarity = 0.6   # 主人的話（加前景 app）跟一個工具（名字、什麼時候用、存它那次主人的話）的 cosine 至少這麼多，【相關記憶】就告訴她有這個工具。初始值理由：見 DEMO.md「她自己的工具」的量測
+own_tool_offer_max = 2       # 一次最多提幾個工具。理由：一個約 60–90 token；兩個夠她選，不會把【相關記憶】塞滿
+own_tool_retire_failures = 3 # 一個工具連續失敗這麼多次，就不再提、也不能用（不刪，dashboard 看得到）。理由：一次失敗可能是畫面剛好不對；連三次多半是 app 改了、工具不再對（2026-11-17 決定 3）
 
 [files]
 # 檔案工具（2026-11-09；2026-11-16 起讀寫這台 Mac 的檔案）：read_file／write_file／edit_file 直接讀寫文字檔，不經過 GUI；~ 是主人的家目錄

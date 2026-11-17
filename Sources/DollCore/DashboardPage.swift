@@ -80,6 +80,7 @@ enum DashboardPage {
     <div id="calendar-body"></div></section>
   <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
   <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
+  <section id="tools"><h2>她的工具（她存下來的一串動作）</h2><div id="tools-body" class="muted">還沒有</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -392,6 +393,26 @@ function renderGoals(g) {
   box.append(el("div", "muted", `上次碰到新東西：${g.lastNew ? clock(g.lastNew) : "—"}；沒有新東西的話，${g.curiosityDue ? clock(g.curiosityDue) : "—"} 會冒一次好奇`));
 }
 
+function renderTools(ts) {
+  const box = $("tools-body");
+  box.replaceChildren();
+  if (!ts.length) { box.textContent = "還沒有"; return; }
+  for (const t of ts) {
+    const head = el("h3", t.retired ? "muted" : null, `${t.name}${t.retired ? `（停用：連續失敗 ${t.failuresInRow} 次）` : ""}`);
+    head.append(" ", btn("刪掉", async () => {
+      if (!confirm(`刪掉工具「${t.name}」？`)) return;
+      const r = await fetch(`/api/tools/delete?${new URLSearchParams({ name: t.name })}`, { method: "POST" });
+      if (!r.ok) alert(await r.text());
+      refresh();
+    }));
+    box.append(head, el("div", null, `什麼時候用：${t.when}`));
+    box.append(el("div", null, "參數：" + (t.params.length ? t.params.join("；") : "沒有")));
+    box.append(el("div", null, "步驟：" + t.steps.join(" → ")));
+    box.append(el("div", null, `結果怎麼對：${t.expect}`));
+    box.append(el("div", "muted", `用了 ${t.uses} 次，成功 ${t.successes} 次${t.lastRun ? "，上次 " + t.lastRun : ""}；從 ${t.from} 存的，${t.saved}；檔案 ${t.file}`));
+  }
+}
+
 async function calPost(op, params) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
   const r = await fetch(`/api/calendar/${op}?${q}`, { method: "POST" });
@@ -421,8 +442,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c, dr, go] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go);
+    const [s, t, v, m, c, dr, go, tl] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl);
   } catch (e) {
     console.error(e);
   } finally {

@@ -441,6 +441,8 @@ public enum Tools {
         static let todoContinue = "todo.continue"
         static let askOwner = "ask_owner"
         static let act = "act"
+        static let toolSave = "tool.save"
+        static let toolRun = "tool.run"
     }
 
     /// Her todo tools; they stay (with their results) when an item's span is compacted.
@@ -450,7 +452,7 @@ public enum Tools {
     static let ending: Set<String> = [Name.todoDone, Name.todoFail, Name.todoProgress]
     /// The tools that run only while an item is 進行中 (2026-11-14): the computer's. `ask_owner` is not
     /// one: she may ask the owner any time.
-    static let gated: Set<String> = ["apps", "open", "read_window", Name.act, "read_file", "write_file", "edit_file"]
+    static let gated: Set<String> = ["apps", "open", "read_window", Name.act, Name.toolRun, "read_file", "write_file", "edit_file"]
 
     /// The tools she speaks with, and the channel each one goes to.
     static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice]
@@ -474,7 +476,7 @@ public enum Tools {
 
     /// The computer tool that acts on a window (2026-11-17, one sequence per call): several in one
     /// reply run in order and stop at the first failure; only the last one done carries the window's new read.
-    static let actionNames: Set<String> = [Name.act]
+    static let actionNames: Set<String> = [Name.act, Name.toolRun]
 
     /// The computer tools (2026-11-16, this Mac through cua-driver): declared in `tools` from the
     /// start, run only while an item is 進行中. Each exists because: `apps` she has to know what is
@@ -532,6 +534,31 @@ public enum Tools {
                      ]),
                      "required": ["steps"],
                  ], jsonParameters: ["steps"]),
+            // Her own tools (2026-11-17): two fixed specs, whatever she has saved (the list is part
+            // of the cached prefix; one spec per saved tool would void it at every save).
+            Spec(name: Name.toolSave,
+                 description: "把你剛做成的一串動作存成你自己的工具，之後一次 \(Name.toolRun) 就照順序重做。程式從你真的做過的動作存：這一項（沒有進行中的就是剛做完的那一項）裡的 open 和做成的 act；讀視窗不存，沒做成或跟 expect 不一樣的那幾次 act 不存；最後一次 act 要有 expect 而且一樣才能存。元素存名字，不存行號。會變的部分寫進 params，每個給 name（參數名）、value（這次做的時候的值）、about（它是什麼）；value 要是你打的字（或其中一段）、open 的檔案或網址，或連著按的按鈕名字（例：按了 3、7，value 寫 \"37\"，之後給 \"58\" 就按 5、8）。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("name", ["type": "string", "description": "工具的名字（字、數字、- 或 _），之後用它叫"]),
+                         ("when", ["type": "string", "description": "一句話：什麼時候用它"]),
+                         ("params", ["type": "array", "items": ["type": "object"],
+                                     "description": "會變的部分，例：[{\"name\": \"a\", \"value\": \"37\", \"about\": \"第一個數\"}]；都不變就不給"]),
+                     ]),
+                     "required": ["name", "when"],
+                 ], jsonParameters: ["params"]),
+            Spec(name: Name.toolRun,
+                 description: "照順序重做你存的工具，一次呼叫就做完。args 給每個參數這次的值；結果跟著值變的工具要給 expect（這次做完視窗裡會出現的字）。跟 act 一樣：每一步用名字找元素，找不到或同名的有兩個就停，跳出系統驗證就停；停了會說停在第幾步、現在畫面是什麼。有用得上的工具，【相關記憶】會寫。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("name", ["type": "string", "description": "工具的名字"]),
+                         ("args", ["type": "object", "description": "每個參數這次的值，例：{\"a\": \"58\", \"b\": \"13\"}；沒有參數就不給"]),
+                         ("expect", ["type": "string", "description": "做完視窗裡會出現的字，照畫面的寫法（例：754）"]),
+                     ]),
+                     "required": ["name"],
+                 ], jsonParameters: ["args"]),
             Spec(name: "read_file",
                  description: "讀這台 Mac 上的一個文字檔，回每一行，前面帶行號（像 cat -n）。~ 是主人的家目錄。超過 \(f.maxReadLines) 行只回前 \(f.maxReadLines) 行、說還有幾行，再用 from、to 讀後面（行號從 1 算）。只讀 UTF-8 的文字檔。",
                  parameters: [
@@ -628,6 +655,9 @@ public enum Tools {
         case voiceLeave
         /// `act` (2026-11-17): her steps in order and the text she expects in the window after the last.
         case act([Mac.Step], expect: String?)
+        /// Her own tools (2026-11-17, `OwnTools.swift`).
+        case toolSave(name: String, when: String, params: [ParamInput])
+        case toolRun(name: String, args: [String: String], expect: String?)
         case apps
         case open(app: String, target: String?)
         case readWindow(app: String?, window: String?)
@@ -761,6 +791,30 @@ public enum Tools {
                 throw ToolError(description: "act 有 \(steps.count) 步，要給 expect：做完最後一步，視窗裡會出現的字（例：\"1,702\"）。猜不到結果的話，只送到猜得到的那一步，或只送一步。")
             }
             return .act(steps, expect: expect)
+        case Name.toolSave:
+            let params: [ParamInput]
+            if let raw = given("params"), !raw.isEmpty {
+                guard let p = try? JSONDecoder().decode([ParamInput].self, from: Data(raw.utf8)) else {
+                    throw ToolError(description: "tool.save 的 params 要是 JSON 陣列，每個 {\"name\": 參數名, \"value\": 這次的值, \"about\": 它是什麼}；收到 \(raw.prefix(200))")
+                }
+                params = p
+            } else { params = [] }
+            return .toolSave(name: try nonEmpty("name"), when: try nonEmpty("when"), params: params)
+        case Name.toolRun:
+            var args: [String: String] = [:]
+            if let raw = given("args"), !raw.isEmpty {
+                guard let o = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] else {
+                    throw ToolError(description: "tool.run 的 args 要是 JSON 物件，例：{\"a\": \"58\"}；收到 \(raw.prefix(200))")
+                }
+                for (k, v) in o {
+                    if let s = v as? String { args[k] = s } else if let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
+                        args[k] = n.doubleValue == n.doubleValue.rounded() && abs(n.doubleValue) < 1e15 ? String(Int64(n.doubleValue)) : n.stringValue
+                    } else {
+                        throw ToolError(description: "tool.run 的 args 裡「\(k)」要是字串，收到 \(v)")
+                    }
+                }
+            }
+            return .toolRun(name: try nonEmpty("name"), args: args, expect: given("expect").flatMap { $0.isEmpty ? nil : $0 })
         case Name.askOwner:
             return .askOwner(what: try nonEmpty("what"), where: try nonEmpty("where"), why: try nonEmpty("why"))
         case "read_file":
