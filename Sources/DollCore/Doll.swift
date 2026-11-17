@@ -2371,7 +2371,7 @@ public actor Doll {
             attachedIDs.formUnion(fresh.map(\.id))
             offeredTools.formUnion(offered.map(\.name))
             let from = frontApp.map { "主人的話和前景 app「\($0.name)」" } ?? "主人的話"
-            var text = fresh.isEmpty ? "【相關記憶】程式用\(from)查到你存的工具：" : "【相關記憶】程式用\(from)查到、最相近的過去經驗："
+            var text = fresh.isEmpty ? "【相關記憶】程式用\(from)查到你存的工具（字面相近，不一定用得上）：" : "【相關記憶】程式用\(from)查到、最相近的過去經驗："
             for e in fresh {
                 text += "\n〔\(e.label)｜\(e.folder)〕\n\(e.attachedText)"
             }
