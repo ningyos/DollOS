@@ -271,7 +271,7 @@ public enum Tools {
         ("limits", ["type": "string", "description": "邊界：不能碰的、做不到的、有限的（時間、回合、權限）；真的沒有，寫「沒有，因為…」和理由"]),
         ("estimate", ["type": "integer", "description": "估整份清單要幾回合（項目進行中你的一則回覆＝一回合）"]),
         ("check", ["type": "string", "description": "做完是什麼樣子、你要怎麼確認（讀哪個視窗或檔案、看到什麼）"]),
-        ("estimate_reason", ["type": "string", "description": "只在 estimate 被退回以後用：你還是要估那個數，寫這次跟以前那幾份哪裡不一樣"]),
+        ("estimate_reason", ["type": "string", "description": "estimate 被退回以後，你還是要估那個數，就在這裡寫這次跟以前那幾份哪裡不一樣；沒被退回時寫的只記下給主人看"]),
     ]
 
     /// Her todo list (2026-11-14). Never gated.

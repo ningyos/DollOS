@@ -1719,9 +1719,8 @@ public actor Doll {
             listReply = reply.seq!
             listReported = false
             let compared = check.map { c in
-                c.reason != nil ? "（跟以前像這樣的清單實際 \(c.reference) 回合不一樣，你寫的理由記下了，主人看得到）"
-                    : c.refused == nil ? ""
-                    : (c.low...c.high).contains(p.estimate!) ? "（以前像這樣的清單實際 \(c.reference) 回合）"
+                (c.low...c.high).contains(p.estimate!) ? (c.refused == nil ? "" : "（以前像這樣的清單實際 \(c.reference) 回合）")
+                    : c.reason != nil ? "（跟以前像這樣的清單實際 \(c.reference) 回合不一樣，你寫的理由記下了，主人看得到）"
                     : "（跟以前像這樣的清單實際 \(c.reference) 回合差很多，沒寫理由，照收了；主人看得到）"
             } ?? ""
             return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合\(compared)。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
@@ -2069,8 +2068,9 @@ public actor Doll {
     /// one slow list, e.g. one that also saved a tool, does not move it). None alike: nil, accepted.
     /// Her estimate far from the reference (`estimateFar`) is refused once with what they took. The
     /// next `todo.set` with the same text: an estimate not far passes; one still far passes with an
-    /// `estimate_reason` that passes the filler rules (recorded); without one it is refused once more,
-    /// for the reason only; after that it passes, whatever the estimate. An embedding failure is
+    /// `estimate_reason` that passes the filler rules; without one it is refused once more, for the
+    /// reason only; after that it passes, whatever the estimate. A reason that passes the filler rules
+    /// is recorded with any accepted estimate that was compared. An embedding failure is
     /// logged and the estimate accepted (as a tool offer is skipped).
     func estimateCheck(_ p: PlanInput, estimate: Int, text: String, items: [String], reply: Event) throws -> EstimateCheck? {
         let past = estimateFile.records.filter { $0.text != nil }
@@ -2098,21 +2098,24 @@ public actor Doll {
             .filter { !estimateFar($0, reference) }
         var check = EstimateCheck(past: like.map { .init(items: $0.plan.items, estimate: $0.plan.estimate, rounds: $0.rounds) },
                                   reference: reference, low: close.first!, high: close.last!, refused: nil, reason: nil)
+        // A reason she wrote with an accepted estimate is recorded (2026-11-18 run: she wrote one
+        // unasked 5 times in 24 lists); it lets a far estimate pass only after the refusal.
+        let copies = planCopies(items, reply: reply)
+        let reason = p.estimateReason.flatMap { fillerRefusal([("estimate_reason", $0)], copies: copies) == nil ? $0 : nil }
         if let prior = estimateRefusal, prior.text == text {
             check.refused = prior.check.refused
-            guard estimateFar(estimate, reference) else { return check }
-            let copies = planCopies(items, reply: reply)
-            if p.estimateReason != nil, fillerRefusal([("estimate_reason", p.estimateReason)], copies: copies) == nil {
-                check.reason = p.estimateReason
-                return check
-            }
+            check.reason = reason
+            guard estimateFar(estimate, reference), reason == nil else { return check }
             if prior.reasonAsked { return check }
             estimateRefusal!.reasonAsked = true
             let problem = p.estimateReason.flatMap { fillerRefusal([("estimate_reason", $0)], copies: copies) } ?? ""
             throw ToolError(description: "清單沒有列：estimate 還是 \(estimate) 回合，不在 \(check.low) 到 \(check.high) 之間。"
                             + "改成這中間的數；或照你的估法，在 estimate_reason 寫這次跟以前那幾份哪裡不一樣。\(problem)")
         }
-        guard estimateFar(estimate, reference) else { return check }
+        guard estimateFar(estimate, reference) else {
+            check.reason = reason
+            return check
+        }
         check.refused = estimate
         estimateRefusal = (text, check, false)
         let listed = like.map { r in "「\(r.plan.items.joined(separator: "、"))」你估 \(r.plan.estimate)、實際 \(r.rounds) 回合" }.joined(separator: "；")

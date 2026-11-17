@@ -7803,10 +7803,11 @@ private let farRefusal = "失敗：清單沒有列：你估整份 2 回合，可
     let h = try await Harness(tune: checking)
     try await finishedList(h, "幫我用計算機算 37×46，跟我說答案", estimate: 3, rounds: 7)
     await h.doll.ownerSaid("幫我用計算機算 58×13，跟我說答案")
-    try await h.turn(Scripted("", estimated(6), readCall))
+    // A reason she adds unasked is recorded for the owner; the result says nothing more.
+    try await h.turn(Scripted("", estimated(6, reason: "跟上次一樣三個檔分開讀"), readCall))
     #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }?.text == "todo 列好了，你估整份 6 回合。現在進行中：「畫面上看得到結果」；後面：沒有。")
     let check = await h.doll.todo.estimateCheck
-    #expect(check?.refused == nil && check?.reference == 7)
+    #expect(check?.refused == nil && check?.reference == 7 && check?.reason == "跟上次一樣三個檔分開讀")
     // 2 against 3 is not far (the ratio alone would call it so).
     let far = await [h.doll.estimateFar(2, 3), h.doll.estimateFar(2, 7), h.doll.estimateFar(1, 3), h.doll.estimateFar(2, 5)]
     #expect(far == [false, true, false, true])
