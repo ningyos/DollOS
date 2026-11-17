@@ -698,15 +698,17 @@ public actor Doll {
             }
             if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c))) }
         }
-        // Only the latest window read keeps its element list and screenshot (2026-11-16, owner): every
-        // earlier read goes out as one line naming the window, so she never acts on a stale list and a
-        // list costs its tokens once.
-        let latestRead = plan.last { if case .full = $0.1 { $0.0.image != nil || $0.0.window != nil } else { false } }?.0.seq
+        // Older window reads go out as one line naming the window (2026-11-16, owner: she does not act
+        // on a stale list, a list costs its tokens once), but in batches (2026-11-17, `fullReads`): the
+        // server resumes only from the end of an earlier request, so a read put away the round after it
+        // came made every round read everything after the item's first read again.
+        let kept = Self.fullReads(plan.compactMap { if case .full = $0.1, $0.0.image != nil || $0.0.window != nil { $0.0.seq } else { nil } },
+                                  batch: computerConfig.readBatch)
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             switch mode {
             case .full:
-                out += try render(ev, read: ev.seq == latestRead)
+                out += try render(ev, read: kept.contains(ev.seq!))
             case .reply(let calls):
                 out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
             case .block(let c):
@@ -766,7 +768,16 @@ public actor Doll {
 
     /// What an older read says in place of its screenshot and list: the window's first line.
     static func readPutAway(_ window: String?) -> String {
-        "（較早讀到的：" + (window.map { String($0.prefix { $0 != "\n" }) } ?? "視窗") + "；清單和截圖已收起，只有最新一次讀到的留著）"
+        "（較早讀到的：" + (window.map { String($0.prefix { $0 != "\n" }) } ?? "視窗") + "；清單和截圖已收起）"
+    }
+    /// The reads (seqs, oldest first) that keep their screenshot and list (2026-11-17,
+    /// experiments/m7-mac/cacheprobe): the reads since the last put-away, at most `batch`. When one more
+    /// comes, every read before it is put away at once, so the request changes behind its end once per
+    /// `batch` reads and is append-only in between; the newest read always stays.
+    static func fullReads(_ reads: [Int64], batch: Int) -> Set<Int64> {
+        guard !reads.isEmpty else { return [] }
+        let start: Int = (reads.count - 1) / batch * batch
+        return Set(reads[start...])
     }
     /// What a reply of hers without any call is sent as (2026-11-16, see `render`); the wording measured.
     static let thoughtOnlyTag = "[她那回合只想了，沒呼叫工具] "
@@ -801,9 +812,10 @@ public actor Doll {
         let start = todo.startSeq
         let covered = timeline.compactions.filter { $0.kind != .talk && $0.fromSeq == start }.map(\.toSeq).max() ?? start
         var tokens = 0, images = 0
-        let latestRead = timeline.events.last { $0.image != nil || $0.window != nil }?.seq
-        for ev in timeline.events where ev.seq! > covered && ev.speaker == nil {
-            let msgs = try render(ev, read: ev.seq == latestRead)
+        let events = timeline.events.filter { $0.seq! > covered && $0.speaker == nil }
+        let kept = Self.fullReads(events.compactMap { $0.image != nil || $0.window != nil ? $0.seq : nil }, batch: computerConfig.readBatch)
+        for ev in events {
+            let msgs = try render(ev, read: kept.contains(ev.seq!))
             tokens += estimate(msgs)
             images += msgs.reduce(0) { $0 + $1.extra.filter { if case .image = $0 { true } else { false } }.count }
         }

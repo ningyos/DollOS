@@ -1286,26 +1286,47 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(h.last.actions == ["error click", "skipped click", "skipped scroll"] && h.cua.actions.count == 6)
 }
 
-@Test func onlyTheLatestReadKeepsItsScreenshotAndListOlderOnesAreOneLine() async throws {
-    let h = try await menuHarness()
-    try await h.turn(Scripted("", clickRow(2)))
+@Test func olderReadsArePutAwayInBatchesAndTheNewestAlwaysStays() {
+    func kept(_ n: Int, _ batch: Int) -> [Int64] { Doll.fullReads((1...Int64(n)).map { $0 }, batch: batch).sorted() }
+    #expect(Doll.fullReads([], batch: 4).isEmpty)
+    #expect((1...4).map { kept($0, 4) } == [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4]])
+    // The fifth read puts the first four away at once; the next four are appended.
+    #expect((5...9).map { kept($0, 4) } == [[5], [5, 6], [5, 6, 7], [5, 6, 7, 8], [9]])
+    // A batch of 1 is the old rule: only the newest read.
+    #expect((1...3).map { kept($0, 1) } == [[1], [2], [3]])
+}
+
+@Test func requestsStayAppendOnlyBetweenBatchesAndOlderReadsAreOneLine() async throws {
+    // The server resumes only from the end of an earlier request (experiments/m7-mac/cacheprobe): every
+    // request must start with the request before it, byte for byte, except once per `read_batch` reads,
+    // where it may differ only from the first read put away.
+    let h = try await menuHarness { $0.computer.readBatch = 3 }
+    for _ in 0..<4 { try await h.turn(Scripted("", clickRow(2))) }
     try await h.turn("看到了")
     let reqs = await h.model.requests.map(\.messages)
-    let reads = { (msgs: [ChatMessage]) in msgs.filter { $0.role == "tool" && $0.extra.contains { if case .text(let t) = $0 { t.hasPrefix(calculatorHead) || t.hasPrefix("（較早讀到的") } else { false } } } }
-    // Request 2 holds the first read in full; request 3 has a newer one, so the first is one line.
-    #expect(reads(reqs[1]).count == 1 && reads(reqs[1])[0].images.count == 1)
-    let three = reads(reqs[2])
-    #expect(three.count == 2 && three[0].images.isEmpty && three.map { $0.images.count } == [0, 1])
-    #expect(three[0].extra == [.text("（較早讀到的：\(calculatorHead)；清單和截圖已收起，只有最新一次讀到的留著）")])
-    #expect(three[0].extra == [.text(Doll.readPutAway(try h.toolResults()[1].window))])
+    let isRead = { (m: ChatMessage) in m.role == "tool" && m.extra.contains { if case .text(let t) = $0 { t.hasPrefix(calculatorHead) || t.hasPrefix("（較早讀到的") } else { false } } }
+    let reads = { (msgs: [ChatMessage]) in msgs.filter(isRead) }
+    // Request k holds reads 1…k: in full up to 3, then the first three are one line each.
+    #expect(reqs.count == 6 && reqs.map { reads($0).count } == [0, 1, 2, 3, 4, 5])
+    #expect(reqs.map { reads($0).map(\.images.count) } == [[], [1], [1, 1], [1, 1, 1], [0, 0, 0, 1], [0, 0, 0, 1, 1]])
+    let bytes = { (msgs: [ChatMessage]) in try msgs.map { try ChatMessage.encoder.encode($0) } }
+    for k in 0..<5 {
+        let (a, b) = (try bytes(reqs[k]), try bytes(reqs[k + 1]))
+        if k == 3 {
+            // The put-away: everything before the first read of the batch is the same bytes, that read is one line.
+            let first = try #require(reqs[k].firstIndex(where: isRead))
+            #expect(Array(b.prefix(first)) == Array(a.prefix(first)) && b[first] != a[first])
+            #expect(reads(reqs[4])[0].extra == [.text("（較早讀到的：\(calculatorHead)；清單和截圖已收起）")])
+            #expect(reads(reqs[4])[0].extra == [.text(Doll.readPutAway(try h.toolResults()[1].window))])
+        } else {
+            #expect(Array(b.prefix(a.count)) == a, "request \(k + 2) does not start with request \(k + 1)")
+        }
+    }
     let results = try h.toolResults()
     let uri = "data:image/jpeg;base64," + (try Data(contentsOf: h.dir.appending(path: "shots/\(results.last!.image!)"))).base64EncodedString()
-    #expect(three[1].extra == [.image(uri), .text(results.last!.window!)])
-    // Everything before the older read is byte-identical between the two requests.
-    let a = try #require(reqs[1].firstIndex { $0 == reads(reqs[1])[0] })
-    #expect(Array(reqs[2].prefix(a)) == Array(reqs[1].prefix(a)))
+    #expect(reads(reqs[5]).last!.extra == [.image(uri), .text(results.last!.window!)])
     // The files stay.
-    #expect(try h.events().filter { $0.image != nil }.count == 2)
+    #expect(try h.events().filter { $0.image != nil }.count == 5)
 }
 
 @Test func aSystemAuthenticationWindowOrAPasswordFieldIsCalledOut() async throws {
@@ -1997,15 +2018,14 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
     #expect(h.logs.contains { $0.contains("experience 1-seed: 2/4 steps done in order (ratio 0.50)") })
     #expect(try statsOf(h, "1-seed") == ExperienceStats(turns: 9, seconds: 150, attachedFollowed: 1, attachedSuccess: 1))
     // The attached event in the timeline is not re-rendered with the new stats: every request while
-    // the item runs starts with the one before it (up to the older read, put away to one line once a
-    // newer one exists), and the first after it with the one that listed it, up to that reply's
-    // footer (the item's turns are compacted).
+    // the item runs starts with the one before it (two reads, within one `read_batch`: nothing put
+    // away), and the first after it with the one that listed it, up to that reply's footer (the
+    // item's turns are compacted).
     try await h.turn("好了")
     #expect(try memoryEvents(h).first?.text == attached)
     let reqs = await h.model.requests.map(\.messages)
     #expect(Array(reqs[1].prefix(reqs[0].count)) == reqs[0])
-    let firstRead = try #require(reqs[1].firstIndex { !$0.images.isEmpty })
-    #expect(Array(reqs[2].prefix(firstRead)) == Array(reqs[1].prefix(firstRead)) && reqs[2][firstRead].images.isEmpty)
+    #expect(Array(reqs[2].prefix(reqs[1].count)) == reqs[1] && reqs[2].filter { !$0.images.isEmpty }.count == 2)
     #expect(reqs.count == 4 && Array(reqs[3].prefix(reqs[0].count - 1)) == Array(reqs[0].dropLast()))
     // Her new experience (3 turns: todo.set, the actions, todo.done) now leads the group.
     let fresh = try #require(experienceFiles(h).first { $0.task == task && $0.stats?.turns == 3 })
