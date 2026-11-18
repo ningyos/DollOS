@@ -3076,6 +3076,13 @@ extension Doll {
     // Her next reply answers.
     try await h.turn(Scripted("", dm("754")))
     #expect(h.said == ["754"])
+    // A call that is not a line to him does not answer him (m10 b-3: a recall, then nothing).
+    await h.doll.ownerSaid("我回來了")
+    try await h.turn(Scripted("", ("recall", [("query", "主人 咖啡")])))
+    try await h.turn("")
+    #expect(h.last.actions == ["reminded unanswered"])
+    try await h.turn(Scripted("", dm("你回來了")))
+    #expect(h.said.last == "你回來了")
     // A new line is told again.
     await h.doll.developerSaid("還在嗎")
     try await h.turn("")
@@ -8673,6 +8680,9 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     try await h.turn(Scripted("", historyUndo(hers.short)))
     #expect(try h.toolResults().last!.text == "退回了：〔\(hers.short)〕11-19 10:00 你的「goal.add」。目標樹 回到那之前的樣子。目標樹用 goal.list 看。主人在儀表板看得到。")
     #expect(await d.goalFile.nodes.map(\.text) == ["學做菜"])
+    // A change without a reason shows what she wrote, so one goal.add can be told from another.
+    try await h.turn(Scripted("", historyList("目標樹")))
+    #expect(try h.toolResults().last!.text.contains("〔\(hers.short)〕11-19 10:00 你 goal.add（\(hers.args!.prefix(60))）｜動到：目標樹"))
     let undo = try historyOf(h).log(limit: 1)[0]
     #expect(undo.who == .her && undo.why == "那不是主人要的" && undo.undoes == hers.id && undo.what == "history.undo〔\(hers.short)〕「goal.add」")
     // Two revisions of the ideal self: the older one cannot go back alone.

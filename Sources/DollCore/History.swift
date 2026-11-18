@@ -946,7 +946,9 @@ extension Doll {
                 l += "改了你現在看不到的記憶（主人的回合才看得到）"
             } else {
                 l += " \(e.what)" + (e.task.map { "（\($0)）" } ?? "")
-                if !e.why.isEmpty { l += "：\(e.why.prefix(60))" }
+                // No reason given (goal.add, remember… have none): what she wrote, so that seven
+                // 「goal.add｜動到：目標樹」 in a row can be told apart (m10 a, 2026-11-19).
+                if !e.why.isEmpty { l += "：\(e.why.prefix(60))" } else if let a = e.args, !a.isEmpty { l += "（\(a.prefix(60))）" }
                 l += "｜動到：\(history.things(e.paths, hidden: hidden))"
             }
             lines.append(l)

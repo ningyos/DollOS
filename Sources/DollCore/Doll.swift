@@ -1253,7 +1253,12 @@ public actor Doll {
     func unansweredLine(before reply: Event) -> Event? {
         let events = timeline.events
         guard let line = events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! }) else { return nil }
-        let answered = events.contains { $0.kind == .doll && $0.seq! > line.seq! && $0.seq! < reply.seq! && !$0.calls.isEmpty }
+        // Answered = she spoke to that person since (or asked the owner). A call that is not a line to
+        // them does not count (2026-11-19, m10 b-3: 「我回來了」 got a recall and then nothing).
+        let toThem: Set<String> = line.speaker == .owner ? [Tools.Name.dm, Tools.Name.voiceSay, Tools.Name.askOwner] : [Tools.Name.reply]
+        let answered = events.contains {
+            $0.kind == .doll && $0.seq! > line.seq! && $0.seq! < reply.seq! && $0.calls.contains { toThem.contains($0.name) }
+        }
         return answered ? nil : line
     }
     /// A voice tool's result when `[voice] enabled` but no voice link is wired (fixed bytes).
