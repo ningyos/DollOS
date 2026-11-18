@@ -25,7 +25,7 @@ import Foundation
 /// At most `[audit] max_source_chars`: when the day is longer, `select` keeps, for every memory, the
 /// lines just before it was written and the lines that share the most words with it, then the
 /// newest; what is left out is marked in place, counted in the log, and guarded (`refusal`: a change
-/// may not take out words that a line the audit did not see holds).
+/// may not drop words the source says, nor replace words a line the audit did not see holds).
 ///
 /// One request (the consolidation's model and effort), no persona. Each memory gets `ok`, `unsure`
 /// or `wrong`; a `wrong` carries a quote of the source that contradicts it and the corrected text
@@ -380,12 +380,16 @@ enum Audit {
             return "quote says what the memory says"
         }
         if !v.fixed.isEmpty, Doll.sameText(v.fixed, memory) { return "fixed text is the memory unchanged" }
-        // What the audit did not see may be where the words came from (m8 day C: 「心臟科」 was in the
-        // morning's file, cut, and the audit took it out as unsupported): a change may not take out a run
-        // of `guardChars`+ letters or digits that a line not shown holds.
-        let hidden = Doll.plainKey(unseen)
-        if !hidden.isEmpty, let run = removedRuns(v.fixed, from: memory).first(where: { $0.count >= guardChars && hidden.contains($0) }) {
-            return "takes out 「\(run)」, which a source line not shown holds"
+        // A change may not take out of the memory a run of `guardChars`+ letters or digits that its source
+        // holds: dropped (nothing put in its place), anywhere in the source — m8 day C, M2: 「心臟科」,
+        // 「新陳代謝科」 came from a morning read, and the audit took them out as an addition (day C with
+        // the read cut, M2 with it shown); replaced, only if a line not shown holds it (it may be where the
+        // words came from; a shown one the audit weighed). Measured on m8's 114 acted verdicts before
+        // this rule: it refuses all 6 changes of correct memories and 2 of 108 right fixes.
+        let hidden = Doll.plainKey(unseen), shown = Doll.plainKey(source)
+        for run in removedRuns(v.fixed, from: memory) where run.text.count >= guardChars {
+            if hidden.contains(run.text) { return "takes out 「\(run.text)」, which a source line not shown holds" }
+            if !run.replaced, shown.contains(run.text) { return "drops 「\(run.text)」, which the source says" }
         }
         return nil
     }
@@ -399,10 +403,11 @@ enum Audit {
         return i == f.count
     }
 
-    /// The runs of `memory`'s letters and digits that `fixed` does not keep: what is left of the memory
-    /// outside a longest common subsequence of the two (letters and digits only, lowercased). An empty
-    /// `fixed` (retire) takes out the whole memory.
-    static func removedRuns(_ fixed: String, from memory: String) -> [String] {
+    /// The runs of `memory`'s letters and digits that `fixed` does not keep (outside a longest common
+    /// subsequence of the two, letters and digits only, lowercased), each with whether `fixed` puts
+    /// something in its place (letters between the same two kept ones). An empty `fixed` (retire) takes
+    /// out the whole memory, replaced by nothing.
+    static func removedRuns(_ fixed: String, from memory: String) -> [(text: String, replaced: Bool)] {
         let m = Array(Doll.plainKey(memory)), f = Array(Doll.plainKey(fixed))
         var l = [[Int]](repeating: [Int](repeating: 0, count: f.count + 1), count: m.count + 1)
         for i in stride(from: m.count - 1, through: 0, by: -1) {
@@ -410,16 +415,18 @@ enum Audit {
                 l[i][j] = m[i] == f[j] ? l[i + 1][j + 1] + 1 : max(l[i + 1][j], l[i][j + 1])
             }
         }
-        var kept = [Bool](repeating: false, count: m.count)
+        var runs: [(text: String, replaced: Bool)] = [], out = "", added = false
+        func close() {
+            if !out.isEmpty { runs.append((out, added)) }
+            out = ""; added = false
+        }
         var i = 0, j = 0
-        while i < m.count, j < f.count {
-            if m[i] == f[j] { kept[i] = true; i += 1; j += 1 } else if l[i + 1][j] >= l[i][j + 1] { i += 1 } else { j += 1 }
+        while i < m.count || j < f.count {
+            if i < m.count, j < f.count, m[i] == f[j] { close(); i += 1; j += 1 }
+            else if i < m.count, j >= f.count || l[i + 1][j] >= l[i][j + 1] { out.append(m[i]); i += 1 }
+            else { added = true; j += 1 }
         }
-        var runs: [String] = [], cur = ""
-        for (k, c) in m.enumerated() {
-            if kept[k] { if !cur.isEmpty { runs.append(cur) }; cur = "" } else { cur.append(c) }
-        }
-        if !cur.isEmpty { runs.append(cur) }
+        close()
         return runs
     }
 

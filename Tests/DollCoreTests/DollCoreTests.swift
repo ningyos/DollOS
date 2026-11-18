@@ -8172,21 +8172,33 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     #expect(Audit.sourceLines(day).count == 1)
 }
 
-/// m8 (d), 2026-11-18: a change may not take out words that a source line the audit did not see holds
-/// (day C: 「心臟科」 was only in the morning's file, cut, and the audit took it out).
-@Test func theAuditMayNotTakeOutWordsThatAnUnseenLineHolds() {
-    #expect(Audit.removedRuns("主人上次回診是11/4上午十點", from: "主人上次心臟科回診是 11/4 早上十點") == ["心臟科", "早"])
-    #expect(Audit.removedRuns("", from: "麻糬五歲") == ["麻糬五歲"])
-    #expect(Audit.removedRuns("麻糬 5.4 公斤", from: "麻糬 4.5 公斤").allSatisfy { $0.count == 1 })
-    let source = "[21:30 主人說] 上次回診是 11/4 上午十點，那次醫生說還好"
+/// m8 (d), 2026-11-18: a change may not take out of a memory words its source holds — dropped ones
+/// anywhere in the source (day C, M2: 「心臟科」, 「新陳代謝科」 from a morning read, taken out as an
+/// addition), replaced ones only when a line the audit did not see holds them.
+@Test func theAuditMayNotDropWordsTheSourceHolds() {
+    func runs(_ fixed: String, _ memory: String) -> [String] { Audit.removedRuns(fixed, from: memory).map { "\($0.text)\($0.replaced ? "→" : "")" } }
+    #expect(runs("主人上次回診是11/4上午十點", "主人上次心臟科回診是 11/4 早上十點") == ["心臟科", "早"])
+    #expect(runs("", "麻糬五歲") == ["麻糬五歲"])
+    #expect(runs("主人的房租每月 20000", "主人的房租每月 18000") == ["18→"])
+    #expect(Audit.removedRuns("麻糬 5.4 公斤", from: "麻糬 4.5 公斤").allSatisfy { $0.text.count == 1 })
+    let late = "[21:30 主人說] 上次回診是 11/4 上午十點，那次醫生說還好"
+    let morning = "[07:40 read_file 的結果] 回診：12/2（三）上午 9:00 心臟科 王醫師"
     let v = Audit.Verdict(ref: "m1", verdict: "wrong", quote: "上次回診是 11/4 上午十點，那次醫生說還好", fixed: "主人上次回診是 11/4 上午十點")
     let memory = "主人上次心臟科回診是 11/4 早上十點"
-    #expect(Audit.refusal(v, memory: memory, source: source, unseen: "", minChars: 4, guardChars: 2) == nil)
-    #expect(Audit.refusal(v, memory: memory, source: source, unseen: "[07:40 read_file 的結果] 回診：12/2（三）上午 9:00 心臟科 王醫師",
-                          minChars: 4, guardChars: 2) == "takes out 「心臟科」, which a source line not shown holds")
-    // A wrong value differs in one character: an unseen line holding that character does not stop it.
-    let w = Audit.Verdict(ref: "m1", verdict: "wrong", quote: "上次回診是 11/4 上午十點，那次醫生說還好", fixed: "主人上次回診是 11/4 上午十點")
-    #expect(Audit.refusal(w, memory: "主人上次回診是 11/5 上午十點", source: source, unseen: "[07:00 主人說] 5 號再說", minChars: 4, guardChars: 2) == nil)
+    func refusal(_ v: Audit.Verdict, _ memory: String, source: String, unseen: String = "") -> String? {
+        Audit.refusal(v, memory: memory, source: source, unseen: unseen, minChars: 4, guardChars: 2)
+    }
+    #expect(refusal(v, memory, source: late) == nil)
+    #expect(refusal(v, memory, source: late, unseen: morning) == "takes out 「心臟科」, which a source line not shown holds")
+    #expect(refusal(v, memory, source: morning + "\n" + late) == "drops 「心臟科」, which the source says")
+    // A wrong value differs in one character: a line holding that character does not stop it.
+    #expect(refusal(v, "主人上次回診是 11/5 上午十點", source: late, unseen: "[07:00 主人說] 5 號再說") == nil)
+    // A replaced value that an earlier shown line says (the file changed since) is not stopped; an unseen one is.
+    let rent = Audit.Verdict(ref: "m1", verdict: "wrong", quote: "房租：每月 20000", fixed: "主人的房租每月 20000")
+    let reads = "[09:00 read_file 的結果] 房租：每月 18000\n[16:00 read_file 的結果] 房租：每月 20000"
+    #expect(refusal(rent, "主人的房租每月 18000", source: reads) == nil)
+    #expect(refusal(rent, "主人的房租每月 18000", source: "[16:00 read_file 的結果] 房租：每月 20000", unseen: "[09:00 read_file 的結果] 房租：每月 18000")
+            == "takes out 「18」, which a source line not shown holds")
 }
 
 /// m8 (d), 2026-11-18: a window read is given as its title and the texts of its rows that are not

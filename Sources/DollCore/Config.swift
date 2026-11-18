@@ -396,9 +396,10 @@ public struct AuditConfig: Sendable {
     /// with it). 0.5: the moment and the related lines weigh the same; m8 day C's false change came
     /// from a related line hours away (「心臟科」 in the morning's file), so neither may crowd out the other.
     public var originShare = 0.5
-    /// A change (or flag) may not take out a run of this many letters or digits of the memory that a
-    /// source line the request did not show holds. 2: one character (a digit, 的, 一) is everywhere and
-    /// a wrong value usually differs in one; a word such as 心臟科 is at least two.
+    /// A change (or flag) may not take out of the memory a run of this many letters or digits that its
+    /// source holds: dropped (nothing in its place) anywhere in the source, replaced only where a line
+    /// the request did not show holds it (`Audit.refusal`). 2: one character (a digit, 的, 一) is
+    /// everywhere and a wrong value usually differs in one; a word such as 心臟科 is at least two.
     public var guardChars = 2
 }
 
