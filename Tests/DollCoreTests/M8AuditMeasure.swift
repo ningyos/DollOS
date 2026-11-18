@@ -209,7 +209,9 @@ import Testing
                 let label = labels[item.file.body] ?? "?"
                 let wrong = label.hasPrefix("W")
                 let source = item.segments.compactMap { answer.request.sources[$0] }.joined(separator: "\n")
-                let refusal = v.verdict == "wrong" ? Audit.refusal(v, memory: item.file.body, source: source, minChars: cfg.computer.planMinChars) : nil
+                let unseen = item.segments.compactMap { answer.request.unseen[$0] }.joined(separator: "\n")
+                let refusal = v.verdict == "wrong" ? Audit.refusal(v, memory: item.file.body, source: source, unseen: unseen,
+                                                                   minChars: cfg.computer.planMinChars, guardChars: cfg.audit.guardChars) : nil
                 let acted = v.verdict == "wrong" && refusal == nil
                 let fix = fixes.first { $0.memory == item.id }
                 if wrong { totals.wrong += 1; if acted { totals.caught += 1 } } else { totals.correct += 1; if acted { totals.fp += 1 } }
@@ -252,7 +254,7 @@ import Testing
         try? out.write(to: outURL, atomically: true, encoding: .utf8)
     }
     try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-    struct Mem: Decodable { var text: String; var label: String; var tier: String; var anchor: String; var at: String }
+    struct Mem: Decodable { var text: String; var label: String; var tier: String; var anchor: String; var at: String; var `where`: String?; var support: [String]? }
     struct DayFile: Decodable { var segment: String; var memories: [Mem] }
 
     for name in wanted {
@@ -268,6 +270,8 @@ import Testing
             cfg.core.dataDir = data.path
             cfg.memory.dir = dir.appending(path: "memory").path
             cfg.audit.mode = "change"
+            // M8_MAXSRC: a smaller source cap, so that `Audit.select` (only used over the cap) is exercised.
+            if let m = env["M8_MAXSRC"].flatMap(Int.init) { cfg.audit.maxSourceChars = m }
             for f in ["public", "secret", "own"] { try FileManager.default.createDirectory(at: dir.appending(path: "memory/\(f)"), withIntermediateDirectories: true) }
             let tl = try Timeline(dir: data.appending(path: "timeline"))
             let day = Day(ts: tl.events.first!.ts)
@@ -294,7 +298,7 @@ import Testing
                 let fixes = await doll.fixFile.items
                 let srcChars = answer.request.sources.values.reduce(0) { $0 + $1.count }
                 say("=== day \(name) run \(r) audit \(pass): \(answer.request.items.count) memories, \(answer.request.left) left for next time, "
-                    + "source \(srcChars) chars kept, \(answer.request.cut) lines cut, \(String(format: "%.1f", wall)) s, "
+                    + "source \(srcChars) chars shown, \(answer.request.cut) lines (\(answer.request.cutChars) chars) not shown, \(String(format: "%.1f", wall)) s, "
                     + "prompt \(answer.reply.usage.promptTokens) completion \(answer.reply.usage.completionTokens), \(answer.reply.usage.stopLine)")
                 for item in answer.request.items {
                     let v = answer.verdicts.first { $0.ref == item.ref }!
@@ -302,11 +306,16 @@ import Testing
                     let lab = m?.label ?? "?"
                     let wrong = lab.hasPrefix("W")
                     let source = item.segments.compactMap { answer.request.sources[$0] }.joined(separator: "\n")
-                    let inSource = m.map { source.contains($0.anchor) } ?? false
-                    let refusal = v.verdict == "wrong" ? Audit.refusal(v, memory: item.file.body, source: source, minChars: cfg.computer.planMinChars) : nil
+                    let unseen = item.segments.compactMap { answer.request.unseen[$0] }.joined(separator: "\n")
+                    // Whether its passages reached the request: every one (""), some (SOURCE-PART) or none (SOURCE-CUT).
+                    let passages = m.map { $0.support ?? [$0.anchor] } ?? []
+                    let reached = passages.filter { Doll.plainKey(source).contains(Doll.plainKey($0)) }.count
+                    let reach = reached == passages.count ? "" : reached == 0 ? " SOURCE-CUT" : " SOURCE-PART"
+                    let refusal = v.verdict == "wrong" ? Audit.refusal(v, memory: item.file.body, source: source, unseen: unseen,
+                                                                       minChars: cfg.computer.planMinChars, guardChars: cfg.audit.guardChars) : nil
                     let acted = v.verdict == "wrong" && refusal == nil
                     let fix = fixes.first { $0.memory == item.id }
-                    var row = "  \(item.ref) [\(lab)]\(inSource ? "" : " SOURCE-CUT") \(v.verdict)\(refusal.map { " REJECTED(\($0))" } ?? "")"
+                    var row = "  \(item.ref) [\(lab)\(m?.`where`.map { "/\($0)" } ?? "")]\(reach) \(v.verdict)\(refusal.map { " REJECTED(\($0))" } ?? "")"
                         + "\(acted && !wrong ? " FALSE-POSITIVE" : "")\(wrong && !acted ? " MISSED" : "")「\(item.file.body)」"
                     if v.verdict == "wrong" { row += "\n      quote「\(v.quote)」 fixed「\(v.fixed)」" }
                     if let fix { row += "\n      now: \(fix.after.map { "「\($0)」" } ?? "retired")" }

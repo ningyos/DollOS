@@ -8155,29 +8155,117 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     }
     let source = "[09:00 主人說] 下週四下午三點要去中山牙醫看牙\n[09:05 主人說] 晚上可能會跟阿凱去吃拉麵"
     func v(_ q: String, _ f: String = "x") -> Audit.Verdict { Audit.Verdict(ref: "m1", verdict: "wrong", quote: q, fixed: f) }
-    #expect(Audit.refusal(v("下週四下午三點"), memory: "主人週三看牙", source: source, minChars: 4) == nil)
-    #expect(Audit.refusal(v("下週四下午兩點"), memory: "主人週三看牙", source: source, minChars: 4) == "quote not in the source")
-    #expect(Audit.refusal(v("週四"), memory: "主人週三看牙", source: source, minChars: 4) == "quote shorter than 4 letters")
-    #expect(Audit.refusal(v("中山牙醫看牙", "主人在台大醫院看牙"), memory: "主人在中山牙醫看牙", source: source, minChars: 4) == "quote says what the memory says")
+    func refusal(_ v: Audit.Verdict, memory: String, unseen: String = "") -> String? {
+        Audit.refusal(v, memory: memory, source: source, unseen: unseen, minChars: 4, guardChars: 2)
+    }
+    #expect(refusal(v("下週四下午三點"), memory: "主人週三看牙") == nil)
+    #expect(refusal(v("下週四下午兩點"), memory: "主人週三看牙") == "quote not in the source")
+    #expect(refusal(v("週四"), memory: "主人週三看牙") == "quote shorter than 4 letters")
+    #expect(refusal(v("中山牙醫看牙", "主人在台大醫院看牙"), memory: "主人在中山牙醫看牙") == "quote says what the memory says")
     // A passage the memory repeats may show an addition: the fix only takes words out.
-    #expect(Audit.refusal(v("下週四下午三點要去中山牙醫看牙", "主人下週四下午三點要去中山牙醫看牙"),
-                          memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒", source: source, minChars: 4) == nil)
-    #expect(Audit.refusal(v("下週四下午三點要去中山牙醫看牙", ""), memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒", source: source, minChars: 4)
+    #expect(refusal(v("下週四下午三點要去中山牙醫看牙", "主人下週四下午三點要去中山牙醫看牙"), memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒") == nil)
+    #expect(refusal(v("下週四下午三點要去中山牙醫看牙", ""), memory: "主人下週四下午三點要去中山牙醫看牙，是去拔智齒")
             == "quote says what the memory says")
-    #expect(Audit.refusal(v("可能會跟阿凱", "主人今晚跟阿凱吃拉麵。"), memory: "主人今晚跟阿凱吃拉麵", source: source, minChars: 4) == "fixed text is the memory unchanged")
+    #expect(refusal(v("可能會跟阿凱", "主人今晚跟阿凱吃拉麵。"), memory: "主人今晚跟阿凱吃拉麵") == "fixed text is the memory unchanged")
     // Her own words are not in the source.
     let day = [Event(.owner, .owner, "牙醫週四"), Event(.doll, .internal, "我記得是週三")]
     #expect(Audit.sourceLines(day).count == 1)
 }
 
+/// m8 (d), 2026-11-18: a change may not take out words that a source line the audit did not see holds
+/// (day C: 「心臟科」 was only in the morning's file, cut, and the audit took it out).
+@Test func theAuditMayNotTakeOutWordsThatAnUnseenLineHolds() {
+    #expect(Audit.removedRuns("主人上次回診是11/4上午十點", from: "主人上次心臟科回診是 11/4 早上十點") == ["心臟科", "早"])
+    #expect(Audit.removedRuns("", from: "麻糬五歲") == ["麻糬五歲"])
+    #expect(Audit.removedRuns("麻糬 5.4 公斤", from: "麻糬 4.5 公斤").allSatisfy { $0.count == 1 })
+    let source = "[21:30 主人說] 上次回診是 11/4 上午十點，那次醫生說還好"
+    let v = Audit.Verdict(ref: "m1", verdict: "wrong", quote: "上次回診是 11/4 上午十點，那次醫生說還好", fixed: "主人上次回診是 11/4 上午十點")
+    let memory = "主人上次心臟科回診是 11/4 早上十點"
+    #expect(Audit.refusal(v, memory: memory, source: source, unseen: "", minChars: 4, guardChars: 2) == nil)
+    #expect(Audit.refusal(v, memory: memory, source: source, unseen: "[07:40 read_file 的結果] 回診：12/2（三）上午 9:00 心臟科 王醫師",
+                          minChars: 4, guardChars: 2) == "takes out 「心臟科」, which a source line not shown holds")
+    // A wrong value differs in one character: an unseen line holding that character does not stop it.
+    let w = Audit.Verdict(ref: "m1", verdict: "wrong", quote: "上次回診是 11/4 上午十點，那次醫生說還好", fixed: "主人上次回診是 11/4 上午十點")
+    #expect(Audit.refusal(w, memory: "主人上次回診是 11/5 上午十點", source: source, unseen: "[07:00 主人說] 5 號再說", minChars: 4, guardChars: 2) == nil)
+}
+
+/// m8 (d), 2026-11-18: a window read is given as its title and the texts of its rows that are not
+/// controls; a read the same as the last read of that window, one line.
+@Test func aWindowReadIsGivenCompactlyToTheAudit() {
+    let w = """
+        Notes 的視窗「備忘錄」；截圖 1024×676
+        - [0] AXWindow "備忘錄 – 2則備忘錄" [id=_NS:8 actions=[raise]]
+            - [1] AXButton (刪除) [id=Delete help="刪除輸入的最後一個數字" actions=[press]]
+            - AXCell (快速備忘錄, 1則備忘錄)
+              - AXUnknown (快速備忘錄, 1則備忘錄)
+            - [9] AXRow [actions=[name:移除大頭針
+        target:0x0
+        selector:(null)]]
+            - [19] AXTextArea = "搬家清單
+        報價：8,800" [id=Note[id=F8C8] actions=[icmactextviewaccessibilityactionmaketodo]]
+            - AXStaticText = "0" (編輯欄位)
+            - [7] AXTextField = "工作討論記錄" [id=_NS:11 actions=[confirm]]
+        - [27] AXMenuBar [actions=[cancel]] (menus collapsed: run an item with invoke_menu path)
+          - [28] AXMenuBarItem "Apple" [actions=[cancel,press,pick]]
+        """
+    let (head, rows) = Audit.compactWindow(w)
+    #expect(head == "Notes 的視窗「備忘錄」")
+    #expect(rows == ["備忘錄 – 2則備忘錄", "（快速備忘錄, 1則備忘錄）", "搬家清單\n報價：8,800", "0（編輯欄位）", "工作討論記錄"])
+    func read(_ seq: Int64, _ window: String) -> [Event] {
+        var call = stamped(.doll, "", seq)
+        call.calls = [ToolCall(name: "read_window", arguments: "{\"app\": \"Notes\"}")]
+        return [call, stamped(.tool, "", seq + 1, image: "a.jpg", window: window)]
+    }
+    let lines = Audit.sourceLines(read(1, w) + read(3, w) + read(5, w.replacingOccurrences(of: "8,800", with: "9,000")))
+    #expect(lines.count == 3 && lines.map(\.seq) == [2, 4, 6])
+    #expect(lines[0].text.hasSuffix("] Notes 的視窗「備忘錄」\n備忘錄 – 2則備忘錄\n（快速備忘錄, 1則備忘錄）\n搬家清單\n報價：8,800\n0（編輯欄位）\n工作討論記錄"))
+    #expect(lines[1].text.hasSuffix("] Notes 的視窗「備忘錄」：跟 \(lines[0].text.dropFirst().prefix(5)) 讀到的一樣"))
+    #expect(lines[2].text.contains("報價：9,000") && !lines[2].text.contains("截圖") && !lines[2].text.contains("刪除"))
+    // A quote of the window's text still passes the program's check against the compact source.
+    #expect(Doll.quoted("報價：8,800", in: lines.map(\.text).joined(separator: "\n")))
+}
+
+/// m8 (d), 2026-11-18: over `max_source_chars` the request keeps each memory's own moment (the lines
+/// before its `source_event_seq`) and its most related lines, within the cap; what it leaves out is
+/// marked in place, counted, and kept for the guard.
+@Test func anAuditOverTheCapKeepsEachMemorysOriginAndRelatedLines() throws {
+    var lines: [Audit.SourceLine] = [Audit.SourceLine(seq: 1, text: "[07:40 read_file 的結果] read_file meds.txt：共 1 行\n回診：12/2（三）上午 9:00 心臟科 王醫師")]
+    for i in 2...200 { lines.append(Audit.SourceLine(seq: Int64(i), text: "[\(String(format: "%02d", 8 + i / 20)):00 讀到的視窗] Calculator 的視窗「計算機」\n\(i * 37)（編輯欄位）")) }
+    lines.insert(Audit.SourceLine(seq: 100, text: "[12:00 主人說] 中午吃了牛肉麵"), at: 99)
+    lines.append(Audit.SourceLine(seq: 201, text: "[21:30 主人說] 上次回診是 11/4 上午十點，那次醫生說還好"))
+    func item(_ ref: String, _ body: String, _ seq: Int64) throws -> Audit.Item {
+        let f = try Memory.parseFile("+++\nkind = \"\"\nconfidence = 0.7\ncreated_ts = 1\nsource_event_seq = \(seq)\nsource_tier = \"owner\"\naudit_pending = \"s\"\n+++\n\(body)")
+        return Audit.Item(ref: ref, id: ref, folder: .public, file: f, priority: false, segments: ["s"])
+    }
+    let items = [try item("m1", "主人上次心臟科回診是 11/4 早上十點", 201), try item("m2", "主人中午吃牛肉麵", 100)]
+    let total = lines.reduce(0) { $0 + $1.text.count + 1 }
+    // Under the cap: the whole day, nothing marked.
+    let all = Audit.gather(items: items, segments: [("s", lines)], maxChars: total + 10, originShare: 0.5, left: 0, noSource: [])
+    #expect(all.cut == 0 && all.unseen["s"] == "" && all.sources["s"] == lines.map(\.text).joined(separator: "\n"))
+    let r = Audit.gather(items: items, segments: [("s", lines)], maxChars: 1000, originShare: 0.5, left: 0, noSource: [])
+    let shown = r.sources["s"]!
+    // The budget: the shown lines (without the gap marks) stay within the cap.
+    #expect(shown.split(separator: "\n").filter { !$0.hasPrefix("……（略過") }.reduce(0) { $0 + $1.count + 1 } <= 1000)
+    // Each memory's origin (m2: the line at its seq; m1: the last line) and m1's related morning line (心臟科).
+    #expect(shown.contains("中午吃了牛肉麵") && shown.contains("上次回診是 11/4") && shown.contains("心臟科 王醫師"))
+    #expect(shown.contains("[07:40 read_file 的結果]"))
+    // Nothing lost silently: every line left out is in `unseen`, counted, and marked where it was.
+    let marked = shown.matches(of: /……（略過 (\d+) 行）/).reduce(0) { $0 + Int($1.1)! }
+    #expect(r.cut > 0 && marked == r.cut && r.unseen["s"]!.split(separator: "\n").count == r.cut)
+    #expect(r.cutChars == r.unseen["s"]!.count + 1)
+    #expect(r.messages[1].content.contains("（太長，只放了跟要查的記憶有關的行，略過 \(r.cut) 行）"))
+}
+
 @Test func theAuditSectionIsValidated() throws {
     let file = FileManager.default.temporaryDirectory.appending(path: "audit-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n" + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
-    for bad in ["[audit]\nmode = \"fix\"\n", "[audit]\nmax_memories = 0\n", "[audit]\nmax_source_chars = 10\n", "[audit]\ncap = 3\n"] {
+    for bad in ["[audit]\nmode = \"fix\"\n", "[audit]\nmax_memories = 0\n", "[audit]\nmax_source_chars = 10\n", "[audit]\ncap = 3\n",
+                "[audit]\norigin_share = 1.5\n", "[audit]\nguard_chars = 0\n"] {
         try (head + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
     let example = try Config.load(root.appending(path: "dollcore.example.toml")).audit
-    #expect(example.enabled && example.mode == "flag" && example.maxMemories == 20 && example.maxSourceChars == 30000)
+    #expect(example.enabled && example.mode == "flag" && example.maxMemories == 20 && example.maxSourceChars == 30000
+            && example.originShare == 0.5 && example.guardChars == 2)
     #expect(AuditConfig().mode == "flag")
 }

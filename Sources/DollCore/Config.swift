@@ -386,10 +386,20 @@ public struct AuditConfig: Sendable {
     /// is checked less carefully; the rest stay unchecked for the next maintenance (oldest first).
     /// 20: a busy day in the m6 runs wrote 5 to 15.
     public var maxMemories = 20
-    /// Most characters of source text (the day's lines from others and tool results) one audit
-    /// reads, newest kept: about 15k prompt tokens, inside what the consolidation request already
-    /// handles on the same server.
+    /// Most characters of source text (the day's lines from others and tool results, windows given
+    /// compactly) one audit reads: about 15k prompt tokens, inside what the consolidation request
+    /// already handles on the same server. A longer day is cut by `Audit.select`, not oldest first.
+    /// With windows compact, no measured day passes it (m8 (d): computer-heavy days 11–22k, A–D 4–22k).
     public var maxSourceChars = 30000
+    /// Over `maxSourceChars`, the share of each memory's part of the source given first to the lines
+    /// just before it was written (its own moment; the rest goes to the lines sharing the most words
+    /// with it). 0.5: the moment and the related lines weigh the same; m8 day C's false change came
+    /// from a related line hours away (「心臟科」 in the morning's file), so neither may crowd out the other.
+    public var originShare = 0.5
+    /// A change (or flag) may not take out a run of this many letters or digits of the memory that a
+    /// source line the request did not show holds. 2: one character (a digit, 的, 一) is everywhere and
+    /// a wrong value usually differs in one; a word such as 心臟科 is at least two.
+    public var guardChars = 2
 }
 
 /// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device model at all): the
@@ -749,9 +759,13 @@ public struct Config: Sendable {
         try au.read("mode", &cfg.audit.mode)
         try au.read("max_memories", &cfg.audit.maxMemories)
         try au.read("max_source_chars", &cfg.audit.maxSourceChars)
+        try au.read("origin_share", &cfg.audit.originShare)
+        try au.read("guard_chars", &cfg.audit.guardChars)
         try au.finish()
-        guard ["change", "flag"].contains(cfg.audit.mode), cfg.audit.maxMemories >= 1, cfg.audit.maxSourceChars >= 1000 else {
-            throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000")
+        guard ["change", "flag"].contains(cfg.audit.mode), cfg.audit.maxMemories >= 1, cfg.audit.maxSourceChars >= 1000,
+              (0...1).contains(cfg.audit.originShare), cfg.audit.guardChars >= 1 else {
+            throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000; "
+                            + "origin_share 0 to 1; guard_chars at least 1")
         }
         return cfg
     }
