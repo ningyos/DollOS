@@ -8281,3 +8281,222 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
             && example.originShare == 0.5 && example.guardChars == 2)
     #expect(AuditConfig().mode == "flag")
 }
+
+// boot report (2026-11-18) ---------------------------------------------------------------------------
+
+/// A log folder written the way a process writes it (`LogFile`), lines in order.
+private func seedLog(_ dir: URL, _ entries: [LogEntry], maxBytes: Int = 10_000_000) throws {
+    let f = try LogFile(dir: dir, maxBytes: maxBytes)
+    for e in entries { f.write(e) }
+}
+private func start(_ ts: Double, pid: Int32 = 100) -> LogEntry {
+    LogEntry(ts: ts, level: "RUN", msg: "started: pid \(pid), build test", run: RunMark(event: .start, pid: pid, build: "test"))
+}
+private func endLine(_ ts: Double, _ how: RunEnding.How, _ detail: String) -> LogEntry {
+    LogEntry(ts: ts, level: "RUN", msg: "ended (\(how.rawValue)): \(detail)", run: RunMark(event: .end, how: how, detail: detail))
+}
+private func line(_ ts: Double, _ level: String, _ msg: String) -> LogEntry { LogEntry(ts: ts, level: level, msg: msg) }
+private func logDir() -> URL { FileManager.default.temporaryDirectory.appending(path: "dollcore-log-\(UUID().uuidString)") }
+/// 40 model timeouts and 3 bridge reconnects, the run ending cleanly (case b).
+private func timeoutsRun(_ t0: Double) -> [LogEntry] {
+    var out = [start(t0)]
+    for i in 0..<40 {
+        out.append(line(t0 + 60 + Double(i) * 300, "ERROR", "maintenance: audit failed: request \(4000 + i) to http://192.0.2.10:8080 timed out after 300 s"))
+    }
+    for i in 0..<3 {
+        out.append(line(t0 + 100 + Double(i) * 900, "ERROR", "bridge: ERROR dollbridge.voice: voice socket closed (code 1006); reconnecting in \(1 << i) s"))
+    }
+    out.append(line(t0 + 13_000, "INFO", "turn 4 effort=medium"))
+    out.append(endLine(t0 + 14_000, .clean, "signal 15 (SIGTERM)"))
+    return out
+}
+
+@Test func theLogFileHoldsOneJSONLinePerEntryAndRunsAreDelimited() throws {
+    let dir = logDir()
+    let t0 = at("2026-11-18", "09:00")
+    try seedLog(dir, [start(t0, pid: 1), line(t0 + 1, "INFO", "first run\nsecond line of it"), endLine(t0 + 2, .clean, "signal 2 (SIGINT, Ctrl-C)"),
+                      start(t0 + 10, pid: 2), line(t0 + 11, "WARN", "second run")])
+    let text = try String(contentsOf: dir.appending(path: LogFile.current), encoding: .utf8)
+    let rows = text.split(separator: "\n")
+    #expect(rows.count == 5)
+    let first = try JSONDecoder().decode(LogEntry.self, from: Data(rows[1].utf8))
+    #expect(first.msg == "first run\nsecond line of it" && first.level == "INFO" && first.time == "2026-11-18 09:00:01")
+    let last = try #require(try RunLog.lastRun(dir: dir))
+    #expect(last.pid == 2 && last.complete && last.lines == 2 && last.ending.how == .noEnd && last.kinds.map(\.example) == ["second run"])
+}
+
+@Test func theLogRotatesAtItsCapAndSaysWhatWasDeleted() throws {
+    let dir = logDir()
+    let f = try LogFile(dir: dir, maxBytes: 2_000)
+    for i in 0..<100 { f.write(line(Double(i), "INFO", "line \(i) " + String(repeating: "x", count: 40))) }
+    let cur = try String(contentsOf: dir.appending(path: LogFile.current), encoding: .utf8)
+    let old = try Data(contentsOf: dir.appending(path: LogFile.previous))
+    #expect(cur.utf8.count <= 2_000 && old.count <= 2_000)
+    #expect(cur.contains("log: rotated ([log] max_mb reached): the file before this one is dollcore.1.log; the older dollcore.1.log ("))
+    #expect(cur.contains("bytes) was deleted"))
+    #expect(cur.contains("line 99 "))
+    // The run's start went with the deleted file: the report says it is incomplete.
+    let last = try #require(try RunLog.lastRun(dir: dir))
+    #expect(!last.complete && last.started == nil && last.firstLine != nil)
+}
+
+@Test func eachEndingIsToldApart() throws {
+    let t0 = at("2026-11-18", "09:00")
+    func ending(_ tail: [LogEntry]) throws -> RunEnding {
+        let dir = logDir()
+        try seedLog(dir, [start(t0)] + tail)
+        return try #require(try RunLog.lastRun(dir: dir)).ending
+    }
+    #expect(try ending([line(t0 + 5, "INFO", "x"), endLine(t0 + 9, .clean, "signal 15 (SIGTERM)")]) == RunEnding(how: .clean, ts: t0 + 9, detail: "signal 15 (SIGTERM)"))
+    #expect(try ending([endLine(t0 + 9, .fatal, "strata: 500")]).how == .fatal)
+    #expect(try ending([endLine(t0 + 9, .bootFailed, "Strata unreachable")]).how == .bootFailed)
+    // The crash handler's line has no time: the ending's time is the last timed line.
+    let crash = LogEntry(ts: nil, level: "RUN", msg: "crashed: SIGTRAP", run: RunMark(event: .crash, how: .crashed, detail: "SIGTRAP"))
+    #expect(try ending([line(t0 + 5, "INFO", "x"), crash]) == RunEnding(how: .crashed, ts: t0 + 5, detail: "SIGTRAP"))
+    #expect(try ending([line(t0 + 5, "INFO", "x")]) == RunEnding(how: .noEnd, ts: t0 + 5, detail: nil))
+    // A line cut short by the crash is counted, not read.
+    let dir = logDir()
+    try seedLog(dir, [start(t0), line(t0 + 5, "INFO", "x")])
+    let h = try FileHandle(forWritingTo: dir.appending(path: LogFile.current))
+    h.seekToEndOfFile()
+    h.write(Data(#"{"level":"INFO","ms"#.utf8))
+    try h.close()
+    let last = try #require(try RunLog.lastRun(dir: dir))
+    #expect(last.unreadable == 1 && last.ending.how == .noEnd)
+}
+
+@Test func linesAreGroupedByKindWithNumbersAndIdsMasked() throws {
+    let dir = logDir()
+    let t0 = at("2026-11-18", "09:00")
+    try seedLog(dir, Array(timeoutsRun(t0).dropLast(1)) + [line(t0 + 13_500, "WARN", "turn 7: a call the server returned as text (unreadable): x"),
+                                                     line(t0 + 13_600, "ERROR", "cua-driver session not ended: daemon gone"),
+                                                     endLine(t0 + 14_000, .clean, "signal 15 (SIGTERM)")])
+    let last = try #require(try RunLog.lastRun(dir: dir))
+    #expect(last.kinds.map(\.count) == [40, 3, 1, 1])
+    let timeouts = last.kinds[0]
+    #expect(timeouts.key == "maintenance: audit failed: request # to http://#.#:# timed out after # s")
+    #expect(timeouts.first == t0 + 60 && timeouts.last == t0 + 60 + 39 * 300)
+    #expect(timeouts.example == "maintenance: audit failed: request 4000 to http://192.0.2.10:8080 timed out after 300 s")
+    // Two different errors stay two kinds; ERROR before WARN.
+    #expect(last.kinds[2].example == "cua-driver session not ended: daemon gone" && last.kinds[3].level == "WARN")
+    #expect(RunLog.kindKey("session dollcore-4242-1763459039 id 9f8e7d6c5b4a") == "session dollcore-#-# id #")
+}
+
+@Test func aCleanRunGivesNoTurnAndNoReport() async throws {
+    let clock = ManualClock(at("2026-11-18", "10:00"))
+    let h = try await Harness(clock: clock)
+    let dir = logDir()
+    try seedLog(dir, [start(at("2026-11-18", "08:00")), line(at("2026-11-18", "08:30"), "INFO", "turn 1"),
+                      endLine(at("2026-11-18", "09:00"), .clean, "signal 15 (SIGTERM)")])
+    let r = try await h.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
+    #expect(!r.turn && r.notice == nil)
+    #expect(try h.events().last!.text == "【開機】你剛被開機了。今天的行事曆：沒有。")
+    let run = Task { [doll = h.doll] in try await doll.run() }
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(await h.model.requests.isEmpty)
+    await h.doll.stop()
+    try await run.value
+}
+
+@Test func aRunWithErrorsGivesATurnWithTheReport() async throws {
+    let clock = ManualClock(at("2026-11-18", "14:00"))
+    let h = try await Harness([Scripted("", dm("昨天的 log 有 40 次逾時"))], clock: clock)
+    let dir = logDir()
+    try seedLog(dir, timeoutsRun(at("2026-11-18", "09:00")))
+    let r = try await h.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
+    #expect(r.turn && r.why == ["error"])
+    let notice = try h.events().last!.text
+    #expect(notice.contains("\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-18 09:00:00 開機，共 46 行。"))
+    #expect(notice.contains("- 結束：正常關掉的（signal 15 (SIGTERM)），11-18 12:53:20。"))
+    #expect(notice.contains("- 錯誤 2 種、警告 0 種（同一種＝數字和編號以外都一樣）："))
+    #expect(notice.contains("  錯誤 40 次（11-18 09:01:00 到 11-18 12:16:00），例：maintenance: audit failed: request 4000 to http://192.0.2.10:8080 timed out after 300 s"))
+    #expect(notice.contains("  錯誤 3 次（11-18 09:01:40 到 11-18 09:31:40），例：bridge: ERROR dollbridge.voice: voice socket closed (code 1006); reconnecting in 1 s"))
+    #expect(notice.contains("完整的紀錄在 \(h.doll.bootReports.path)/20261118-140000-"))
+    let run = Task { [doll = h.doll] in try await doll.run() }
+    try await waitUntil { await h.model.requests.count == 1 }
+    await h.doll.stop()
+    try await run.value
+    // A single WARN, clean: the report rides on the notice, no turn.
+    let h2 = try await Harness(clock: clock)
+    let d2 = logDir()
+    try seedLog(d2, [start(at("2026-11-18", "08:00")), line(at("2026-11-18", "08:10"), "WARN", "api: refused a connection from 10.0.0.5:5000"),
+                     endLine(at("2026-11-18", "09:00"), .clean, "signal 15 (SIGTERM)")])
+    let r2 = try await h2.doll.announceBoot(previous: try RunLog.lastRun(dir: d2), build: "test")
+    let n2 = try h2.events().last!.text
+    #expect(!r2.turn && r2.notice != nil && n2.contains("  警告 1 次（11-18 08:10:00），例：api: refused a connection from 10.0.0.5:5000"))
+    // Five WARNs reach `[log] turn_warns`.
+    let d3 = logDir()
+    try seedLog(d3, [start(0)] + (0..<5).map { line(Double($0 + 1), "WARN", "w \($0)") } + [endLine(9, .clean, "signal 15 (SIGTERM)")])
+    let h3 = try await Harness(clock: clock)
+    #expect(try await h3.doll.announceBoot(previous: try RunLog.lastRun(dir: d3)).why == ["warnings"])
+}
+
+@Test func theReportIsCappedAndSaysHowManyKindsWereLeftOut() async throws {
+    let clock = ManualClock(at("2026-11-18", "14:00"))
+    let h = try await Harness(clock: clock) { $0.log.reportKinds = 2 }
+    let dir = logDir()
+    try seedLog(dir, [start(0)] + ["a", "b", "c", "d"].enumerated().flatMap { i, w in (0...i).map { line(Double(10 * i + $0 + 1), "ERROR", "err \(w)") } })
+    let r = try await h.doll.announceBoot(previous: try RunLog.lastRun(dir: dir))
+    #expect(r.kindsListed == 2 && r.kindsLeftOut == 2)
+    let notice = try h.events().last!.text
+    #expect(notice.contains("例：err d") && notice.contains("例：err c") && !notice.contains("例：err b"))
+    #expect(notice.contains("  還有 2 種沒列（共 3 行）。"))
+    // The JSON keeps every kind.
+    let file = try FileManager.default.contentsOfDirectory(atPath: h.doll.bootReports.path)
+    #expect(file.count == 1)
+    let json = try JSONSerialization.jsonObject(with: Data(contentsOf: h.doll.bootReports.appending(path: file[0]))) as! [String: Any]
+    #expect((json["previous"] as! [String: Any])["kinds"].map { ($0 as! [Any]).count } == 4)
+    #expect(json["kinds_left_out"] as? Int == 2)
+    #expect(json["why"] as? [String] == ["error", "ending"])
+    #expect(json["notice"] as? String == r.notice)
+    #expect(((json["previous"] as! [String: Any])["ending"] as! [String: Any])["how"] as? String == "no_end")
+    // The dashboard reads it back.
+    #expect(try await h.doll.dashboardBoots(limit: 10) == [r])
+}
+
+@Test func anUncleanEndInATodoIsReportedOnceWithTheMissedCalendarApart() async throws {
+    let clock = ManualClock(at("2026-11-18", "09:00"))
+    let a = try await Harness(clock: clock)
+    try await a.turn(Scripted("", cal("calendar.add", [("title", "看牙醫"), ("date", "2026-11-18"), ("start", "10:00")])))
+    await a.doll.ownerSaid("幫我整理桌面")
+    try await a.turn(Scripted("", todoSet("桌面整理好")))
+    try await a.doll.announceBoot()
+    // Killed at 09:30 (no end line); booted at 10:30: 10:00 was missed.
+    let dir = logDir()
+    try seedLog(dir, [start(at("2026-11-18", "08:59")), line(at("2026-11-18", "09:30"), "INFO", "turn 2")])
+    clock.set(at("2026-11-18", "10:30"))
+    let b = try await Harness([], dir: a.dir, clock: clock)
+    let r = try await b.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
+    #expect(r.why == ["ending"] && r.unfinished == ["你手上的「桌面整理好」那時是進行中，還在你的 todo 裡；最後一步做到哪裡，程式不確定"])
+    let notice = try b.events().last!.text
+    #expect(notice.contains("- 結束：沒有結束的紀錄，最後一行 log 在 11-18 09:30:00，之後就沒有了。"))
+    #expect(notice.contains("- 沒有錯誤和警告。"))
+    #expect(notice.components(separatedBy: "看牙醫").count == 3)   // today's calendar and the missed list, once each
+    #expect(notice.components(separatedBy: "沒開機的時候過了這些").count == 2)
+    #expect(notice.components(separatedBy: "桌面整理好").count == 2)
+}
+
+@Test func aSecondRestartReportsTheShortRunBeforeItNotTheOlderOne() throws {
+    let dir = logDir()
+    let t0 = at("2026-11-18", "09:00")
+    try seedLog(dir, timeoutsRun(t0))
+    // The second process: boots and is stopped a minute later.
+    try seedLog(dir, [start(t0 + 20_000, pid: 7), line(t0 + 20_010, "INFO", "boot report: a turn for her (error)"),
+                      endLine(t0 + 20_060, .clean, "signal 2 (SIGINT, Ctrl-C)")])
+    let last = try #require(try RunLog.lastRun(dir: dir))
+    #expect(last.pid == 7 && last.kinds.isEmpty && last.lines == 3 && last.ending.how == .clean)
+}
+
+@Test func anOldDataDirWithoutALogBootsAndSaysNothing() async throws {
+    let h = try await Harness()
+    let missing = logDir()
+    #expect(try RunLog.lastRun(dir: missing) == nil)
+    let r = try await h.doll.announceBoot(previous: try RunLog.lastRun(dir: missing))
+    #expect(!r.turn && r.notice == nil && r.previous == nil)
+    #expect(try h.events().last!.text.hasPrefix("【開機】你剛被開機了。今天的行事曆："))
+    #expect(!(try h.events().last!.text.contains("\n")))
+    // An empty [log] section and none at all both load.
+    #expect(LogConfig().maxMB == 10 && LogConfig().turnWarns == 5)
+    let example = try Config.load(root.appending(path: "dollcore.example.toml")).log
+    #expect(example.maxMB == 10 && example.reportKinds == 8 && example.exampleChars == 200 && example.turnWarns == 5)
+}

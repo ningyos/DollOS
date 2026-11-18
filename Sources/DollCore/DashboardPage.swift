@@ -81,6 +81,7 @@ enum DashboardPage {
   <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
   <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
   <section id="tools"><h2>她的工具（她存下來的一串動作）</h2><div id="tools-body" class="muted">還沒有</div></section>
+  <section id="boots"><h2>開機紀錄（上一次執行的 log 整理）</h2><div id="boots-body" class="muted">還沒有</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -446,6 +447,25 @@ function renderTools(ts) {
   }
 }
 
+const endWords = { clean: "正常關掉", fatal: "程式出錯停下", boot_failed: "開機失敗", crashed: "當掉", no_end: "沒有結束的紀錄（強制結束、當掉或斷電）" };
+function renderBoots(bs) {
+  const box = $("boots-body");
+  box.replaceChildren();
+  if (!bs.length) { box.textContent = "還沒有"; return; }
+  for (const b of bs) {
+    const p = b.previous;
+    const head = `${b.bootTime} 開機（pid ${b.pid}）` + (b.why.length ? `：給她一個回合（${b.why.join("、")}）` : "：沒給回合");
+    box.append(el("h3", b.why.length ? null : "muted", head));
+    if (!p) { box.append(el("div", "muted", "沒有上一次執行的 log")); continue; }
+    box.append(el("div", null, `上一次：${p.started ? clock(p.started) + " 開機，" : "開頭已輪替掉，"}${endWords[p.ending.how] || p.ending.how}${p.ending.detail ? "（" + p.ending.detail + "）" : ""}，最後一行 ${p.lastLine ? clock(p.lastLine) : "—"}；${p.lines} 行${p.unreadable ? `，${p.unreadable} 行讀不懂` : ""}；build ${p.build || "—"}`));
+    for (const k of p.kinds) {
+      box.append(el("div", null, `${k.level} ×${k.count}（${k.first ? clock(k.first) : "—"} 到 ${k.last ? clock(k.last) : "—"}）：${k.example}`));
+    }
+    for (const u of b.unfinished) box.append(el("div", null, "沒做完：" + u));
+    if (b.notice) box.append(el("pre", "muted", b.notice));
+  }
+}
+
 async function calPost(op, params) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
   const r = await fetch(`/api/calendar/${op}?${q}`, { method: "POST" });
@@ -475,8 +495,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c, dr, go, tl] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl);
+    const [s, t, v, m, c, dr, go, tl, bo] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools", "/api/boots"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl); renderBoots(bo);
   } catch (e) {
     console.error(e);
   } finally {

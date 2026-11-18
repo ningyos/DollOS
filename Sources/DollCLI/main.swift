@@ -18,9 +18,33 @@ func out(_ text: String) {
     FileHandle.standardOutput.write(Data((text + "\n").utf8))
 }
 
-func fail(_ msg: String) -> Never {
+/// Ends the process on an error; after the log file is attached, its end line says how (`RunLog.swift`).
+func fail(_ msg: String, _ how: RunEnding.How = .bootFailed) -> Never {
     FileHandle.standardError.write(Data("dollcore: \(msg)\n".utf8))
+    Log.end(how, msg)
     exit(1)
+}
+
+/// What the log's start line names as the build: the repo's commit at the current directory (with
+/// `-dirty` when tracked files differ) and the executable's modification time. The commit is the
+/// checkout's now, which is the build's only if it was built from it; the time tells a rebuild.
+func buildText(root: URL) -> String {
+    func git(_ args: [String]) -> String? {
+        let p = Process(), out = Pipe()
+        p.executableURL = URL(filePath: "/usr/bin/git")
+        p.arguments = ["-C", root.path] + args
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return p.terminationStatus == 0 ? String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) : nil
+    }
+    let commit = git(["rev-parse", "--short", "HEAD"]).map { $0 + ((git(["status", "--porcelain", "--untracked-files=no"]) ?? "").isEmpty ? "" : "-dirty") }
+        ?? "no git commit at \(root.path)"
+    let exe = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let built = (try? FileManager.default.attributesOfItem(atPath: exe.path)[.modificationDate] as? Date).map { LogFile.timeText($0.timeIntervalSince1970) }
+    return "\(commit), \(exe.path) built \(built ?? "unknown")"
 }
 
 let argv = CommandLine.arguments
@@ -62,6 +86,13 @@ let dashboard: Dashboard?
 nonisolated(unsafe) var daemon: CuaDaemon?
 do {
     let cfg = try Config.load(URL(filePath: argv[2]))
+    // The persistent log (2026-11-18): the last run is read before this one writes its start line; a
+    // log that cannot be opened stops the boot (no run without its log).
+    let logDir = cfg.dataDirectory(root: root).appending(path: "logs")
+    let previous = try RunLog.lastRun(dir: logDir)
+    let build = buildText(root: root)
+    Log.attach(try LogFile(dir: logDir, maxBytes: Int(cfg.log.maxMB * 1_048_576)), pid: ProcessInfo.processInfo.processIdentifier, build: build)
+    out("log: \(logDir.appending(path: LogFile.current).path)")
     // Her computer (this Mac through cua-driver): missing driver, permission or daemon stops the boot.
     let dm = try await CuaDaemon.ensure(driver: cfg.computer.driver, startWait: cfg.computer.daemonStartS)
     daemon = dm
@@ -121,7 +152,7 @@ do {
         out("bridge: disabled ([bridge] enabled = false)")
     }
     out("docs: \(cfg.core.docs) (she reads them in place)")
-    try await doll.announceBoot()
+    try await doll.announceBoot(previous: previous, build: build)
 } catch {
     await daemon?.stop()
     fail("\(error)")
@@ -133,12 +164,14 @@ let runner = Task {
         try await doll.run()
     } catch is CancellationError {
     } catch {
-        fail("\(error)")
+        fail("\(error)", .fatal)
     }
 }
 
+var stopSignal: Int32 = 0
 for await sig in signals {
     out("signal \(sig): stopping")
+    stopSignal = sig
     break
 }
 // Stop the front ends, then the consumer, interrupting a model call in flight.
@@ -152,4 +185,5 @@ await runner.value
 // Her cursor goes with her: the session ends before the daemon stops (a daemon left running keeps no cursor of hers).
 await doll.endComputer()
 await daemon?.stop()
+Log.end(.clean, "signal \(stopSignal) (\(stopSignal == SIGINT ? "SIGINT, Ctrl-C" : "SIGTERM"))")
 _ = signalSources

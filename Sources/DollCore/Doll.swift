@@ -42,11 +42,12 @@ public struct TurnReport: Sendable {
     public var selections: [String] = []
 }
 
-enum Log {
-    static func write(_ level: String, _ msg: String) {
-        let c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: Date())
-        let ts = String(format: "%04d-%02d-%02d %02d:%02d:%02d", c.year!, c.month!, c.day!, c.hour!, c.minute!, c.second!)
-        FileHandle.standardError.write(Data("\(ts) \(level) \(msg)\n".utf8))
+/// Her process's log: stderr as `2026-11-14 14:05:03 INFO …`, and the log file once attached (`RunLog.swift`).
+public enum Log {
+    public static func write(_ level: String, _ msg: String) {
+        let now = Date().timeIntervalSince1970
+        FileHandle.standardError.write(Data("\(LogFile.timeText(now)) \(level) \(msg)\n".utf8))
+        sink.withLock { $0 }?.write(LogEntry(ts: now, level: level, msg: msg))
     }
 }
 
@@ -80,6 +81,8 @@ public actor Doll {
     let selectConfig: SelectConfig
     /// Screenshot files; events name them, and each is re-sent byte-identical every turn.
     public nonisolated let shots: URL
+    /// One JSON boot report per boot (2026-11-18, `BootReport.swift`): `<data_dir>/boot-reports/`.
+    public nonisolated let bootReports: URL
     /// Today's timeline segment, `<data_dir>/timeline/<segment>.jsonl`; replaced when the daily
     /// maintenance consolidates the day (`Maintenance.swift`).
     var timeline: Timeline
@@ -341,8 +344,9 @@ public actor Doll {
         selectConfig = config.select
         calendarConfig = config.calendar
         ownerSleepConfig = config.ownerSleep
-        let data = core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
+        let data = config.dataDirectory(root: root)
         shots = data.appending(path: "shots")
+        bootReports = data.appending(path: "boot-reports")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timelineDir = data.appending(path: "timeline")
         timeline = try Timeline(dir: timelineDir)
@@ -481,13 +485,6 @@ public actor Doll {
         try memory.syncOnBoot()
         try await model.check()
     }
-
-    /// Tells her this process just started (owner, 2026-11-14): a program line in the timeline, no
-    /// turn of its own; she reads it with the next event.
-    public func announceBoot() throws {
-        try append(Event(.memory, .internal, Self.bootNotice + (try calendarBootText())))
-    }
-    static let bootNotice = "【開機】你剛被開機了。"
 
     // inputs -----------------------------------------------------------------
     func put(_ ev: Event) {

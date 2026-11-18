@@ -83,7 +83,8 @@ public final class Bridge: @unchecked Sendable {
         while process.isRunning, Date() < deadline { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
-    /// Copies one of its pipes to stderr line by line.
+    /// Copies one of its pipes to stderr line by line, and to the log file with the level its
+    /// Python logging prefix names (`ERROR`/`CRITICAL` → ERROR, `WARNING` → WARN, else INFO).
     private static func forward(_ pipe: Pipe) {
         let pending = Mutex(Data())
         pipe.fileHandleForReading.readabilityHandler = { h in
@@ -103,7 +104,12 @@ public final class Bridge: @unchecked Sendable {
                 }
                 return out
             }
-            for l in lines { FileHandle.standardError.write(Data("bridge: ".utf8) + l + Data("\n".utf8)) }
+            for l in lines {
+                FileHandle.standardError.write(Data("bridge: ".utf8) + l + Data("\n".utf8))
+                let text = String(decoding: l, as: UTF8.self)
+                let level = text.hasPrefix("ERROR ") || text.hasPrefix("CRITICAL ") ? "ERROR" : text.hasPrefix("WARNING ") ? "WARN" : "INFO"
+                Log.fileOnly(level, "bridge: " + text)
+            }
         }
     }
 }

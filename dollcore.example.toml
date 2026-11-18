@@ -18,6 +18,14 @@ priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch", 
 mlx_cache_limit_mb = 256      # MLX 的 buffer cache 上限（整個 process 一個：記憶的 embedding 和她的聲音共用同一個 MLX）。初始值理由：voice-mlx 量測用 256 MB，串流 TTS 峰值 3.0 GB；0＝不留 cache
 docs = "dolldocs"             # 她的 DollOS 文件（2026-11-14；2026-11-16 起在這台 Mac 上原地讀）：這個資料夾的 .md，她用 read_file 讀它的絕對路徑（系統提示裡寫著）；相對路徑從目前目錄算。資料夾裡沒有 README.md＝開機失敗
 
+[log]
+# dollcore 的 log（2026-11-18）：每一行除了 stderr，也寫進 <data_dir>/logs/dollcore.log（一行一個 JSON：time、ts、level、msg；開機、正常結束、出錯結束、當掉各有一行 run 標記）。開機時打不開這個檔＝開機失敗（決定：不跑沒有 log 的她）；跑到一半寫失敗，stderr 說一聲，之後第一行寫成功前先記一行「漏了幾行」
+# 開機時程式讀上一次執行的 log，整理成開機報告（<data_dir>/boot-reports/<開機時間>-<pid>.json，每次開機一份），有事就接在【開機】那則後面。見 dolldocs/boot-and-logs.md
+max_mb = 10.0                 # dollcore.log 超過這麼大就改名成 dollcore.1.log（更舊的那份刪掉，新檔第一行寫刪了多少 bytes），所以最多兩份、約 20 MB。初始值理由：2026-11-16 m6-drives 的真實 log 一行中位數 75 bytes，一個 30 回合的實驗約 25–50 KB；寫成 JSON 每行多約 50 bytes，忙的一天估不到 1 MB，10 MB 留十天以上，開機讀兩份不到一秒
+report_kinds = 8              # 開機通知最多列這麼多種錯誤／警告（同一種＝數字和編號遮掉之後一樣），多的寫「還有 N 種沒列（共 M 行）」；JSON 檔裡每一種都有。初始值理由：一種一行約 80–250 字，8 種約 1k token，夠看出上次哪裡出事，又不會一開機就塞滿 context
+example_chars = 200           # 每一種附的原文例子（和出錯結束的原因）最多這麼多字，多的截成「…」。初始值理由：log 一行中位數 75 bytes、最長約 440；200 字放得下多數錯誤訊息的原因那段
+turn_warns = 5                # 上一次的警告（WARN，全部種類加起來）有這麼多行才給她一個回合；少於這個只接在開機通知後面，她下一個事件時看到。有任何錯誤（ERROR）或沒有正常結束一定給。初始值理由：一兩個警告常是偶發（一次讀不懂的呼叫、一個被擋的連線），不值得叫她；同一件事一直警告才是出事
+
 [context]
 # 她的 context 多滿、快滿時怎麼辦（2026-11-14，主人）。【狀況】每回合寫「context：用了／上限（%）；其中做事的過程 N（截圖 M）」
 limit = 60000                 # 【狀況】拿來比的上限（token）。初始值理由（主人）：60k；Strata 單一 slot 約 295 tok/s prefill，整段重讀約 3.4 分鐘，再大重讀就太久
@@ -101,6 +109,7 @@ enabled = true
 port = 8790                   # 初始值理由：跟 Strata 的 8080、舊 MCP server 的埠都不撞；只要沒被占用都可以
 bind = "127.0.0.1"            # 只給本機看：頁面上有主人的秘密（secret）和她的密碼（own）；要從別台看就自己改，風險自負
 timeline_items = 200          # 時間線一次只回最新這麼多項（一個回合、主人一句、一次 watch、一則程式事件各算一項）。初始值理由：一個任務 10–30 回合、每回合 1–5 項，200 項蓋得住最近幾個任務；時間線檔留著全部，不限的話每次更新都要傳越來越大的 JSON
+boot_reports = 10             # 「開機紀錄」那一欄列最新這麼多份開機報告（<data_dir>/boot-reports/ 每份都留）。初始值理由：主人平常一天開關一兩次，10 份看得到最近一週
 
 [api]
 # 本機 API（2026-11-12）：dollctl（開發者）和 Discord bridge（主人）連這裡。只聽 127.0.0.1、不是本機連進來的直接斷掉，不能改；主人的路由要 dollcore 每次開機隨機產生、只交給 bridge 的金鑰

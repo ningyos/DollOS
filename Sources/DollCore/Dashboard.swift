@@ -273,7 +273,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete, boots }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -307,6 +307,8 @@ public final class Dashboard: @unchecked Sendable {
         // Her own tools (2026-11-17): what each does, its counts; the owner deletes one with `tools/delete?name=`.
         ("GET", "/api/tools", .tools),
         ("POST", "/api/tools/", .toolDelete),
+        // The boot reports (2026-11-18): the newest `[dashboard] boot_reports`, read only.
+        ("GET", "/api/boots", .boots),
     ]
 
     public struct Response: Sendable {
@@ -411,6 +413,7 @@ public final class Dashboard: @unchecked Sendable {
             case .drives: return .json(await doll.dashboardDrives())
             case .goals: return .json(await doll.dashboardGoals())
             case .tools: return .json(try await doll.dashboardTools())
+            case .boots: return .json(try await doll.dashboardBoots(limit: config.bootReports))
             case .toolDelete:
                 guard rest == "delete", let name = Self.query(target)["name"], !name.isEmpty else { return .text(400, "tools/delete?name= needed") }
                 guard try await doll.dashboardDeleteTool(name) else { return .text(404, "no tool named \(name)") }

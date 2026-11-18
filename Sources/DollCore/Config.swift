@@ -28,6 +28,18 @@ public struct CoreConfig: Sendable {
     public var docs = "dolldocs"
 }
 
+/// The persistent log and the boot report (2026-11-18, `RunLog.swift`, `BootReport.swift`).
+public struct LogConfig: Sendable {
+    /// `dollcore.log` is rotated to `dollcore.1.log` past this size; at most two files.
+    public var maxMB = 10.0
+    /// The boot notice lists at most this many kinds of WARN/ERROR lines, then how many it left out.
+    public var reportKinds = 8
+    /// A kind's verbatim example line is cut after this many characters in the boot notice.
+    public var exampleChars = 200
+    /// WARN lines (all kinds together) from this count up give her a turn; fewer only ride on the notice.
+    public var turnWarns = 5
+}
+
 /// How full her context may get and what happens near the limit (2026-11-14, owner).
 public struct ContextConfig: Sendable {
     /// The context figure 【狀況】 measures against, in tokens.
@@ -129,6 +141,8 @@ public struct DashboardConfig: Sendable {
     /// The timeline endpoint returns this many of the newest items (a turn, an owner line, a watch
     /// wake, a program event); the timeline file keeps every one.
     public var timelineItems = 200
+    /// The boot reports panel shows this many of the newest (`<data_dir>/boot-reports/` keeps every one).
+    public var bootReports = 10
 }
 
 /// Her calendar (2026-11-15, `Calendar.swift`).
@@ -494,11 +508,17 @@ public struct Config: Sendable {
     public var ownerSleep = OwnerSleepConfig()
     public var goals = GoalsConfig()
     public var audit = AuditConfig()
+    public var log = LogConfig()
+
+    /// `[core] data_dir`, a relative one under `root`.
+    public func dataDirectory(root: URL) -> URL {
+        core.dataDir.hasPrefix("/") ? URL(filePath: core.dataDir) : root.appending(path: core.dataDir)
+    }
 
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "log"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -645,9 +665,10 @@ public struct Config: Sendable {
         try d.read("port", &dashboard.port)
         try d.read("bind", &dashboard.bind)
         try d.read("timeline_items", &dashboard.timelineItems)
+        try d.read("boot_reports", &dashboard.bootReports)
         try d.finish()
-        guard (1...65535).contains(dashboard.port), !dashboard.bind.isEmpty, dashboard.timelineItems >= 1 else {
-            throw TOMLError(description: "[dashboard] port 1…65535, bind not empty, timeline_items at least 1")
+        guard (1...65535).contains(dashboard.port), !dashboard.bind.isEmpty, dashboard.timelineItems >= 1, dashboard.bootReports >= 1 else {
+            throw TOMLError(description: "[dashboard] port 1…65535, bind not empty, timeline_items and boot_reports at least 1")
         }
         var a = Section(name: "api", raw: raw["api"] ?? [:])
         var api = ApiConfig()
@@ -767,6 +788,15 @@ public struct Config: Sendable {
               (0...1).contains(cfg.audit.originShare), cfg.audit.guardChars >= 1 else {
             throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000; "
                             + "origin_share 0 to 1; guard_chars at least 1")
+        }
+        var lg = Section(name: "log", raw: raw["log"] ?? [:])
+        try lg.read("max_mb", &cfg.log.maxMB)
+        try lg.read("report_kinds", &cfg.log.reportKinds)
+        try lg.read("example_chars", &cfg.log.exampleChars)
+        try lg.read("turn_warns", &cfg.log.turnWarns)
+        try lg.finish()
+        guard cfg.log.maxMB > 0, cfg.log.reportKinds >= 1, cfg.log.exampleChars >= 20, cfg.log.turnWarns >= 1 else {
+            throw TOMLError(description: "[log] max_mb above 0; report_kinds at least 1; example_chars at least 20; turn_warns at least 1")
         }
         return cfg
     }
