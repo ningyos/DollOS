@@ -384,8 +384,8 @@ enum Audit {
         // holds: dropped (nothing put in its place), anywhere in the source — m8 day C, M2: 「心臟科」,
         // 「新陳代謝科」 came from a morning read, and the audit took them out as an addition (day C with
         // the read cut, M2 with it shown); replaced, only if a line not shown holds it (it may be where the
-        // words came from; a shown one the audit weighed). Measured on m8's 114 acted verdicts before
-        // this rule: it refuses all 6 changes of correct memories and 2 of 108 right fixes.
+        // words came from; a shown one the audit weighed). Measured on m8's 124 acted verdicts before
+        // this rule: it refuses all 6 changes of correct memories and 2 of 118 right fixes.
         let hidden = Doll.plainKey(unseen), shown = Doll.plainKey(source)
         for run in removedRuns(v.fixed, from: memory) where run.text.count >= guardChars {
             if hidden.contains(run.text) { return "takes out 「\(run.text)」, which a source line not shown holds" }
