@@ -227,3 +227,93 @@ import Testing
     say(String(format: "=== total: wrong %d, caught and acted on %d; correct %d, changed (false positives) %d; quotes rejected by the program %d; unsure %d; prompt %d, completion %d tokens, %.1f s",
                totals.wrong, totals.caught, totals.correct, totals.fp, totals.rejected, totals.unsure, totals.prompt, totals.completion, totals.seconds))
 }
+
+/// m8-memory-fix (a2), 2026-11-18: the audit on realistic days. Runs only with M8_REAL=1
+/// (M8_DAYS=A,…; M8_REP=n; M8_OUT). Each day is built by `experiments/m8-memory-fix/build_real_days.py`
+/// from real timelines of earlier real-model runs plus a thread of facts (real-days/<X>/: the
+/// segment and day.json with the memories, their truth labels and the source passage each rests
+/// on). The memories are written pending against that segment at the clock time they were noted;
+/// the audit runs in `change` mode through `prepareAudit`/`commitAudit` and runs again while
+/// memories are left over the `max_memories` cap (the next maintenance), so the leftovers' fate shows.
+@Test func m8AuditRealDays() async throws {
+    let env = ProcessInfo.processInfo.environment
+    guard env["M8_REAL"] == "1" else { return }
+    let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let daysDir = repo.appending(path: "experiments/m8-memory-fix/real-days")
+    let base = try Config.load(repo.appending(path: "experiments/m8-memory-fix/config-m8.toml"))
+    let outURL = URL(filePath: env["M8_OUT"] ?? "/tmp/m8real/results.txt")
+    let wanted = (env["M8_DAYS"] ?? "A,B,C,D").split(separator: ",").map(String.init)
+    let rep = Int(env["M8_REP"] ?? "1") ?? 1
+    let firstRun = Int(env["M8_RUN0"] ?? "1") ?? 1
+    var out = ""
+    func say(_ s: String) {
+        out += s + "\n"
+        FileHandle.standardError.write(Data((s + "\n").utf8))
+        try? out.write(to: outURL, atomically: true, encoding: .utf8)
+    }
+    try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    struct Mem: Decodable { var text: String; var label: String; var tier: String; var anchor: String; var at: String }
+    struct DayFile: Decodable { var segment: String; var memories: [Mem] }
+
+    for name in wanted {
+        let spec = try JSONDecoder().decode(DayFile.self, from: Data(contentsOf: daysDir.appending(path: "\(name)/day.json")))
+        for r in firstRun..<(firstRun + rep) {
+            let dir = URL(filePath: "/tmp/m8real/\(name)-\(r)")
+            try? FileManager.default.removeItem(at: dir)
+            let data = dir.appending(path: "data")
+            try FileManager.default.createDirectory(at: data.appending(path: "timeline"), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: daysDir.appending(path: "\(name)/timeline/\(spec.segment).jsonl"),
+                                             to: data.appending(path: "timeline/\(spec.segment).jsonl"))
+            var cfg = base
+            cfg.core.dataDir = data.path
+            cfg.memory.dir = dir.appending(path: "memory").path
+            cfg.audit.mode = "change"
+            for f in ["public", "secret", "own"] { try FileManager.default.createDirectory(at: dir.appending(path: "memory/\(f)"), withIntermediateDirectories: true) }
+            let tl = try Timeline(dir: data.appending(path: "timeline"))
+            let day = Day(ts: tl.events.first!.ts)
+            var label: [String: Mem] = [:]
+            for (i, m) in spec.memories.enumerated() {
+                let conf = cfg.memory.confidence[SourceTier(rawValue: m.tier)!]!
+                let ts = day.at(TimeOfDay(m.at)!) + Double(i)
+                let seq = tl.events.last { $0.ts <= ts }?.seq ?? tl.lastSeq
+                let file = "+++\nkind = \"\"\nconfidence = \(conf)\ncreated_ts = \(ts)\nsource_event_seq = \(seq)\nsource_tier = \"\(m.tier)\"\naudit_pending = \"\(spec.segment)\"\n+++\n\(m.text)"
+                try file.write(to: dir.appending(path: "memory/public/\(10 + i)-\(String(format: "%06x", 0xa00000 + i)).md"), atomically: true, encoding: .utf8)
+                label[m.text] = m
+            }
+            let doll = try Doll(config: cfg, root: repo, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(),
+                                maintenanceModel: Consolidation.model(cfg), deliver: { _, _, _ in nil })
+            try await doll.rebuildMemory()
+            var pass = 0
+            while pass < 3 {
+                pass += 1
+                let started = Date()
+                let answer = try await doll.prepareAudit()
+                guard !answer.request.items.isEmpty else { break }
+                let wall = Date().timeIntervalSince(started)
+                let done = try await doll.commitAudit(answer)
+                let fixes = await doll.fixFile.items
+                let srcChars = answer.request.sources.values.reduce(0) { $0 + $1.count }
+                say("=== day \(name) run \(r) audit \(pass): \(answer.request.items.count) memories, \(answer.request.left) left for next time, "
+                    + "source \(srcChars) chars kept, \(answer.request.cut) lines cut, \(String(format: "%.1f", wall)) s, "
+                    + "prompt \(answer.reply.usage.promptTokens) completion \(answer.reply.usage.completionTokens), \(answer.reply.usage.stopLine)")
+                for item in answer.request.items {
+                    let v = answer.verdicts.first { $0.ref == item.ref }!
+                    let m = label[item.file.body]
+                    let lab = m?.label ?? "?"
+                    let wrong = lab.hasPrefix("W")
+                    let source = item.segments.compactMap { answer.request.sources[$0] }.joined(separator: "\n")
+                    let inSource = m.map { source.contains($0.anchor) } ?? false
+                    let refusal = v.verdict == "wrong" ? Audit.refusal(v, memory: item.file.body, source: source, minChars: cfg.computer.planMinChars) : nil
+                    let acted = v.verdict == "wrong" && refusal == nil
+                    let fix = fixes.first { $0.memory == item.id }
+                    var row = "  \(item.ref) [\(lab)]\(inSource ? "" : " SOURCE-CUT") \(v.verdict)\(refusal.map { " REJECTED(\($0))" } ?? "")"
+                        + "\(acted && !wrong ? " FALSE-POSITIVE" : "")\(wrong && !acted ? " MISSED" : "")「\(item.file.body)」"
+                    if v.verdict == "wrong" { row += "\n      quote「\(v.quote)」 fixed「\(v.fixed)」" }
+                    if let fix { row += "\n      now: \(fix.after.map { "「\($0)」" } ?? "retired")" }
+                    say(row)
+                }
+                say("  log: " + done.log.prefix { $0 != "「" })
+            }
+        }
+    }
+}
