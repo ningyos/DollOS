@@ -375,11 +375,13 @@ public struct AuditConfig: Sendable {
     /// Off: no `audit` maintenance task (runners and tests not about it).
     public var enabled = true
     /// `change`: a memory with a verified contradicting quote is replaced (or retired) at once;
-    /// `flag`: it is only listed for the owner (dashboard, end notice). `change` by default
-    /// (experiments/m8-memory-fix, 2026-11-18: on 4 seeded days ×4 and 2 correction days ×4, 0 of 72
-    /// correct memories changed, 77 of 80 planted errors fixed, every fixed text right); a correct
-    /// memory changed into a wrong one is worse than a miss, so flip to `flag` if real days show one.
-    public var mode = "change"
+    /// `flag`: it is only listed for the owner (dashboard, end notice). `flag` by default
+    /// (experiments/m8-memory-fix, 2026-11-18): on short seeded days `change` changed 0 of 72 correct
+    /// memories, but on realistic days (17–25k tokens, the 30,000-character cap cutting the morning)
+    /// it changed a correct one in 3 of 3 runs of day C: 「主人上次心臟科回診是 11/4 早上十點」 lost
+    /// 「心臟科」, which only the cut part supported, on a quote that does not contradict it. The
+    /// owner's rule: one wrong automatic change on a real day, and the audit only proposes.
+    public var mode = "flag"
     /// Most memories one audit checks: one request reads the day plus every memory, and a long list
     /// is checked less carefully; the rest stay unchecked for the next maintenance (oldest first).
     /// 20: a busy day in the m6 runs wrote 5 to 15.
