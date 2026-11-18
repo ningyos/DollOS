@@ -14,5 +14,6 @@
 - `calendar.md`：行事曆：全天和定時的事、重複、只改一天、時間到了給你回合、主人在後台網頁改。
 - `drives.md`：掛念、【走神】、【聯想】、【狀況】裡的感覺、`owner.feedback`、你跟主人的交換。
 - `goals.md`：你想成為的樣子（`ideal.revise`）、目標樹（`goal.*`、`todo.set` 的 subgoal）、做完的事的紀錄和主人的評價、好奇。
+- `history.md`：改動紀錄：你的東西（想成為的樣子、目標樹、工具、記憶、紀錄）每次改了什麼、誰改的、為什麼（`history.list`），怎麼退回你自己的改動（`history.undo`），你不能退回的，主人退回的時候。
 
 待辦清單（todo）怎麼用寫在你的 system prompt 裡，這裡不重複。

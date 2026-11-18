@@ -542,6 +542,8 @@ extension Doll {
                     }
                     changed.append(try recordFix(by: "audit", memory: item.id, before: item.file.body, replacement: replacement, after: fixed,
                                                  basis: v.quote, from: from, why: why, now: now))
+                    // One commit per correction: the owner's button undoes this one alone.
+                    commitHistory(.maintenance, task: "audit", what: "查對後更正記憶 \(item.id)", why: why)
                 } else {
                     flagged.append(try recordFix(by: "flag", memory: item.id, before: item.file.body, replacement: nil, after: fixed,
                                                  basis: v.quote, from: from, why: why, now: now))

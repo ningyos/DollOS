@@ -17,8 +17,8 @@ import Foundation
 /// evidence, deep mark and settled time (it is about the same thing: how often it came up stays),
 /// and takes its basis's tier and confidence (a consolidated one stays consolidated, so it is still
 /// attached). Every change is a record in
-/// `<data_dir>/memory-fixes.json`; the owner sees them on the dashboard and can revert one, and she
-/// is told (as for his edits of her ideal self).
+/// `<data_dir>/memory-fixes.json` and a commit in her history (`History.swift`); the owner sees them on
+/// the dashboard and can undo one there (the history's undo), and she is told.
 public struct MemoryFixRecord: Codable, Sendable, Equatable {
     public var id: Int
     public var ts: Double
@@ -36,8 +36,6 @@ public struct MemoryFixRecord: Codable, Sendable, Equatable {
     public var basis: String
     public var basisFrom: String
     public var why: String
-    /// When the owner reverted it on the dashboard.
-    public var reverted: Double?
 }
 
 struct MemoryFixFile: Codable, Equatable {
@@ -63,6 +61,7 @@ extension Doll {
         fixFile.nextId += 1
         fixFile.items.append(r)
         try saveFixes()
+        historyRefs.append("fix#\(r.id)")
         return r
     }
 
@@ -128,28 +127,12 @@ extension Doll {
         return Outcome(text: "收起來了：記憶 \(id)「\(file.body)」不再算數。\(owner)", secret: secret, actions: ["memory fix"])
     }
 
-    /// The owner's revert on the dashboard: the old memory counts again; the one that replaced it is
-    /// retired. She is told in her next turn. A flag changed nothing and has nothing to revert.
+    /// The record's button on the dashboard: a shortcut to undoing, in the history, the change that made
+    /// it (the old memory counts again, the replacement goes; she is told by the undo). A flag changed
+    /// nothing and has nothing to undo.
     public func dashboardMemoryRevert(_ fixID: Int) throws {
-        guard let i = fixFile.items.firstIndex(where: { $0.id == fixID }) else { throw MemoryError(description: "no memory fix #\(fixID)") }
-        let r = fixFile.items[i]
+        guard let r = fixFile.items.first(where: { $0.id == fixID }) else { throw MemoryError(description: "no memory fix #\(fixID)") }
         guard r.by != "flag" else { throw MemoryError(description: "#\(fixID) is a flag: nothing was changed") }
-        guard r.reverted == nil else { throw MemoryError(description: "#\(fixID) was already reverted") }
-        guard let old = try memory.file(r.memory), old.file.retired != nil else {
-            throw MemoryError(description: "memory \(r.memory) is gone or not retired")
-        }
-        let now = wallClock.now()
-        if let n = r.replacement {
-            guard let new = try memory.file(n), new.file.retired == nil else {
-                throw MemoryError(description: "memory \(n) was changed again since; revert that first")
-            }
-            try memory.retire(n, Retirement(ts: now, supersededBy: r.memory, reason: "主人在儀表板還原了第 \(fixID) 次更正"))
-        }
-        try memory.unretire(r.memory)
-        fixFile.items[i].reverted = now
-        try saveFixes()
-        log("INFO", "dashboard: memory fix #\(fixID) reverted: \(r.memory) counts again" + (r.replacement.map { ", \($0) retired" } ?? ""))
-        let who = r.by == "her" ? "你改掉的" : "系統維護改掉的"
-        toldOwnerEdit("【主人還原了一條記憶】\(who)「\(r.before)」他還原了，又算數了" + (r.after.map { "；改成的「\($0)」收起來了" } ?? "") + "。")
+        do { try undoRef("fix#\(fixID)") } catch let e as HistoryError { throw MemoryError(description: e.description) }
     }
 }

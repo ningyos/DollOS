@@ -323,6 +323,13 @@ public actor Doll {
     var packNames: [String] = []
     /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
     func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
+    /// The history of what is hers (2026-11-19, `History.swift`).
+    let history: History
+    let historyConfig: HistoryConfig
+    /// What opening the history found at this boot (for the boot report).
+    public nonisolated let historyBoot: History.Boot
+    /// Feature records made since the last commit (`ideal#3`, `fix#2`): the next commit carries them.
+    var historyRefs: [String] = []
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
@@ -381,6 +388,8 @@ public actor Doll {
         let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
                             embedder: embedder)
+        historyConfig = config.history
+        history = try History(config: config.history, data: data, memory: memoryConfig, memoryDir: memRoot)
         pipeline = Selector(memory: memory, config: config.select)
         // Before anything is appended: every event of the segment so far.
         today = try TodayIndex(timeline, embedder: embedder)
@@ -442,6 +451,9 @@ public actor Doll {
                 try Concerns.write(idealLog, idealLogURL)
             }
         }
+        // Last, after every file the boot itself writes: the first commit of a new history is the
+        // dirs as found; an existing one gets what changed with no commit since.
+        historyBoot = try history.open(ts: Date().timeIntervalSince1970)
     }
 
     /// The line before a pack's example dialogues in the system prompt (fixed bytes).
@@ -1058,6 +1070,8 @@ public actor Doll {
         // it answer with their line only, and the ones after a failure are not run. Actions written
         // after an ending call never run, so the one before it is the last. Every row she gives means
         // the read she saw before this reply (`Mac.beginReply`).
+        // What the program wrote before her calls run (attaching, selection) is not hers.
+        commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
         await mac.beginReply(item: todo.current)
         let live = calls.prefix { !Tools.ending.contains($0.name) }
         let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
@@ -1088,6 +1102,10 @@ public actor Doll {
                 if !call.name.hasPrefix("todo."), call.name != "think" { itemActed = true }
                 chain.last = !actionAt.contains(i) || actionAt.last == i
                 out = await execute(call, seen: events, reply: stored, chain: chain)
+                // What the call changed of hers is one change in her history, made now.
+                if let failed = commitCall(call) {
+                    out.text += "\n（這個改動生效了，但沒記進改動紀錄：\(failed)。主人會在開機報告看到。）"
+                }
                 if Tools.gated.contains(call.name) { out = noteRepeats(call, out) }
                 if out.ends { ended = name }
                 if call.name == Tools.Name.todoSet, out.actions.contains("error \(name)") { setRefused = true }
@@ -1153,6 +1171,9 @@ public actor Doll {
                 log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
             }
         }
+        // Anything kept the program wrote this turn outside her calls (attaching memories may add
+        // registry entries): the program's change.
+        commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
         // The phase decides the next turn (2026-11-14): 進行中 gets one after every reply; 等待中
         // none until an event; the reply that ended the list (done with nothing next, or an empty
         // `todo.set`) none, nothing wakes her for it; 失敗 the one in which she decides.
@@ -1323,6 +1344,10 @@ public actor Doll {
                 return try await recall(query, seen: events)
             case .memoryFix(let id, let text, let basis, let why):
                 return try memoryFix(id: id, text: text, basis: basis, why: why, seen: events, reply: reply)
+            case .historyList(let about):
+                return try historyListTool(about: about, seen: events)
+            case .historyUndo(let id, let why):
+                return try historyUndoTool(id: id, why: why, seen: events)
             case .todoSet(let items, let subgoal, let plan):
                 return try todoSet(items, subgoal: subgoal, plan: plan, reply: reply)
             case .todoDone(let result, let evidence):

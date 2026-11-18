@@ -682,6 +682,13 @@ public final class Store {
                  [.text(id), .blob(vector)])
     }
 
+    /// Removes one registry entry from every registry index table (its file is gone).
+    public func deleteRegistryIndex(id: String) throws {
+        for table in ["registry_index", "registry_keys", "registry_fts", "registry_vectors"] {
+            try exec("DELETE FROM \(table) WHERE id = ?", [.text(id)])
+        }
+    }
+
     public func countRegistryIndex() throws -> Int {
         try query("SELECT count(*) FROM registry_index", []) { Int($0.int(0)!) }.first ?? 0
     }

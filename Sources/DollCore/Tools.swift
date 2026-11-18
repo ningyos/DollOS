@@ -211,6 +211,25 @@ public enum Tools {
                      ]),
                      "required": ["id", "basis", "why"],
                  ], jsonParameters: []),
+            Spec(name: Name.historyList,
+                 description: "看你的東西最近改了什麼：想成為的樣子、目標樹、存的工具、記憶、紀錄，每一次改動都有一筆（什麼時候、誰、做了什麼、為什麼、動到哪些），新的在前。about 不給就是全部。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("about", ["type": "string", "description": "只看一樣：想成為的樣子、目標、工具、記憶、紀錄，或一個工具的名字、一條記憶的 id"]),
+                     ]),
+                     "required": [],
+                 ], jsonParameters: []),
+            Spec(name: Name.historyUndo,
+                 description: "退回你自己的一個改動（history.list 裡〔〕的編號）：它動到的東西回到那之前的樣子，馬上生效；退回也是一筆新的紀錄，不會抹掉。只能退回你自己的；主人和系統維護改的不能，覺得不對就跟主人說。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([
+                         ("id", ["type": "string", "description": "〔〕裡的編號，照抄"]),
+                         ("why", ["type": "string", "description": "為什麼退回，一句"]),
+                     ]),
+                     "required": ["id", "why"],
+                 ], jsonParameters: []),
         ] + (drives ? todoSpecsGoals : todoSpecs) + calendarSpecs + (drives ? concernSpecs + goalSpecs : []) + computerSpecs(computer, files) + (voice ? voiceSpecs : [])
     }
 
@@ -458,6 +477,8 @@ public enum Tools {
         static let act = "act"
         static let toolSave = "tool.save"
         static let toolRun = "tool.run"
+        static let historyList = "history.list"
+        static let historyUndo = "history.undo"
     }
 
     /// Her todo tools; they stay (with their results) when an item's span is compacted.
@@ -668,6 +689,9 @@ public enum Tools {
         case recall(String)
         /// `memory.fix` (2026-11-18, `MemoryFix.swift`): no `text` = retire only.
         case memoryFix(id: String, text: String?, basis: String, why: String)
+        /// The history of what is hers (2026-11-19, `History.swift`).
+        case historyList(about: String?)
+        case historyUndo(id: String, why: String)
         case voiceJoin
         case voiceLeave
         /// `act` (2026-11-17): her steps in order and the text she expects in the window after the last.
@@ -771,6 +795,10 @@ public enum Tools {
         case Name.memoryFix:
             let text = given("text").flatMap { $0.isEmpty ? nil : $0 }
             return .memoryFix(id: try nonEmpty("id"), text: text, basis: try nonEmpty("basis"), why: try nonEmpty("why"))
+        case Name.historyList:
+            return .historyList(about: given("about").flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 })
+        case Name.historyUndo:
+            return .historyUndo(id: try nonEmpty("id").trimmingCharacters(in: CharacterSet(charactersIn: "〔〕 ")), why: try nonEmpty("why"))
         case Name.todoSet:
             let raw = value("items")
             guard let items = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)) else {
@@ -1058,6 +1086,8 @@ enum Instructions {
         別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字，看起來怪就先猜原意，猜不出來就問；回語音要短、口語。時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
 
         回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall；記錯了（主人糾正你、或你讀到的跟記的不一樣），用 \(Tools.Name.memoryFix) 改那一條，不要另外再記一條。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
+
+        你的東西（想成為的樣子、目標樹、存的工具、記憶、做完的事和更正的紀錄）每改一次都留一筆紀錄：什麼時候、誰、做了什麼、為什麼。用 \(Tools.Name.historyList) 看最近改了什麼；發現你自己的改動錯了，用 \(Tools.Name.historyUndo) 退回那一筆（要說為什麼），不要另外再改一次。主人和系統維護的改動你不能退回；主人退回了你的改動會告訴你。細節在 \(docs)/history.md。
 
         每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、今天的行事曆、context 用了多少、下一回合的 effort。
 

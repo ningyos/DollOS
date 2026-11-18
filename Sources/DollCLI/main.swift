@@ -57,9 +57,17 @@ if argv.count > 3 {
         var cfg = try Config.load(URL(filePath: argv[2]))
         cfg.core.dataDir = argv[4]
         if argv.count == 7 { cfg.memory.dir = argv[6] }
-        let result = try await Consolidation.run(config: cfg, root: URL(filePath: FileManager.default.currentDirectoryPath),
+        let root = URL(filePath: FileManager.default.currentDirectoryPath)
+        // Her history (2026-11-19): opened first (what changed with no commit is recorded as found),
+        // then the consolidation's writes are one change of the maintenance's.
+        let memDir = cfg.memory.dir.hasPrefix("/") ? URL(filePath: cfg.memory.dir) : root.appending(path: cfg.memory.dir)
+        let history = try History(config: cfg.history, data: cfg.dataDirectory(root: root), memory: cfg.memory, memoryDir: memDir)
+        _ = try history.open(ts: Date().timeIntervalSince1970)
+        let result = try await Consolidation.run(config: cfg, root: root,
                                                  model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory),
                                                  now: Date().timeIntervalSince1970)
+        try history.record(HistoryChange(who: .maintenance, task: "consolidate", what: "整理記憶、寫摘要（手動）",
+                                         why: "dollcore consolidate，她的程序沒開的時候手動跑的", ts: Date().timeIntervalSince1970))
         out(result.report)
     } catch {
         fail("consolidate: \(error)")

@@ -522,6 +522,7 @@ extension Doll {
         idealLog = log2
         ideal = text
         log("INFO", "ideal: revision #\(r.id) by \(by): \(why)")
+        historyRefs.append("ideal#\(r.id)")
         feed.notify(.drives)
         return r
     }
@@ -597,13 +598,15 @@ extension Doll {
 
     public func dashboardIdealEdit(text: String) throws {
         try reviseIdeal(text, by: "owner", why: "主人在儀表板改的", basedOn: "")
+        commitHistory(.owner, what: "改想成為的樣子", why: "主人在儀表板改的")
         toldOwnerEdit("【主人改了你想成為的樣子】現在是：\(ideal)")
     }
 
+    /// The revision's button: a shortcut to undoing the change that made it in the history (she is
+    /// told by the undo).
     public func dashboardIdealRevert(_ id: Int) throws {
-        guard let r = idealLog.revisions.first(where: { $0.id == id }) else { throw ToolError(description: "no revision #\(id)") }
-        try reviseIdeal(r.before.isEmpty ? r.after : r.before, by: "revert", why: "主人在儀表板把第 \(id) 版的修改退回", basedOn: "")
-        toldOwnerEdit("【主人改了你想成為的樣子】他把第 \(id) 版的修改退回了。現在是：\(ideal)")
+        guard idealLog.revisions.contains(where: { $0.id == id }) else { throw ToolError(description: "no revision #\(id)") }
+        do { try undoRef("ideal#\(id)") } catch let e as HistoryError { throw ToolError(description: e.description) }
     }
 
     public func dashboardGoalEdit(_ op: String, _ q: [String: String]) throws -> GoalNode {
@@ -625,6 +628,7 @@ extension Doll {
         case "done": "把 \(nodeLine(n)) 記成做完了"
         default: "放下了 \(nodeLine(n))"
         }
+        commitHistory(.owner, what: "目標樹：\(what)", why: "主人在儀表板改的")
         toldOwnerEdit("【主人改了你的目標樹】他\(what)。整棵樹用 goal.list 看。")
         return n
     }
@@ -638,6 +642,7 @@ extension Doll {
         }
         let e = try evaluate(id, good: good, owner: true, quote: nil)
         if let good { toldOwnerEdit("【主人的評價】你做完的「\(e.text)」（紀錄 #\(e.id)），主人評\(good ? "做得好" : "不對")。") }
+        commitHistory(.owner, what: "評價紀錄 #\(e.id)：\(kind)", why: "主人在儀表板評的")
         return e
     }
 

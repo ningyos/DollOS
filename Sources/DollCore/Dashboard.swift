@@ -14,7 +14,7 @@ import Synchronization
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
 /// change only, and refetches everything anyway.
 public final class ChangeFeed: Sendable {
-    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, maintenance, drives }
+    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, maintenance, drives, history }
 
     private let subscribers = Mutex<[UUID: AsyncStream<Change>.Continuation]>([:])
 
@@ -265,6 +265,7 @@ extension Doll {
     public func dashboardSetDeep(_ id: String, _ deep: Bool) throws {
         try memory.setDeep(id, deep)
         log("INFO", "dashboard: memory \(id) \(deep ? "marked deep" : "no longer deep")")
+        commitHistory(.owner, what: "記憶 \(id) \(deep ? "標成很深的記憶" : "不再是很深的記憶")", why: "主人在儀表板標的")
     }
 }
 
@@ -273,7 +274,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete, boots }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete, boots, history, historyDiff, historyEdit }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -309,6 +310,12 @@ public final class Dashboard: @unchecked Sendable {
         ("POST", "/api/tools/", .toolDelete),
         // The boot reports (2026-11-18): the newest `[dashboard] boot_reports`, read only.
         ("GET", "/api/boots", .boots),
+        // Her history (2026-11-19, `History.swift`): the changes, newest first; one change's diff
+        // (secret memories included: this page is where his secrets show); the owner's undo of one
+        // change and return to the point right after one: `history/undo/<id>`, `history/restore/<id>`.
+        ("GET", "/api/history", .history),
+        ("GET", "/api/history/diff/", .historyDiff),
+        ("POST", "/api/history/", .historyEdit),
     ]
 
     public struct Response: Sendable {
@@ -414,6 +421,16 @@ public final class Dashboard: @unchecked Sendable {
             case .goals: return .json(await doll.dashboardGoals())
             case .tools: return .json(try await doll.dashboardTools())
             case .boots: return .json(try await doll.dashboardBoots(limit: config.bootReports))
+            case .history: return .json(try await doll.dashboardHistory())
+            case .historyDiff:
+                do { return .text(200, try await doll.dashboardHistoryDiff(rest)) } catch let e as HistoryError { return .text(404, e.description) }
+            case .historyEdit:
+                let parts = rest.split(separator: "/").map(String.init)
+                guard parts.count == 2, ["undo", "restore"].contains(parts[0]) else { return .text(404, "not found") }
+                do {
+                    let e = parts[0] == "undo" ? try await doll.dashboardHistoryUndo(parts[1]) : try await doll.dashboardHistoryRestore(parts[1])
+                    return .json(e)
+                } catch let e as HistoryError { return .text(409, e.description) }
             case .toolDelete:
                 guard rest == "delete", let name = Self.query(target)["name"], !name.isEmpty else { return .text(400, "tools/delete?name= needed") }
                 guard try await doll.dashboardDeleteTool(name) else { return .text(404, "no tool named \(name)") }

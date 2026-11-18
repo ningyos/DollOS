@@ -82,6 +82,7 @@ enum DashboardPage {
   <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
   <section id="tools"><h2>她的工具（她存下來的一串動作）</h2><div id="tools-body" class="muted">還沒有</div></section>
   <section id="boots"><h2>開機紀錄（上一次執行的 log 整理）</h2><div id="boots-body" class="muted">還沒有</div></section>
+  <section id="history"><h2>改動紀錄（她的想成為的樣子、目標樹、工具、記憶、紀錄：誰、什麼時候、做了什麼、為什麼；可以看改了什麼、退回一個、或全部回到某一筆之後）</h2><div id="history-body" class="muted">還沒有</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -265,11 +266,11 @@ function fixEntry(f) {
     : f.after == null ? "收起來了" : `改成「${f.after}」`;
   const sum = el("summary");
   sum.append(document.createTextNode(`#${f.id} ${who}：「${f.before}」${what} `));
-  sum.append(el("span", "meta", clock(f.ts) + (f.reverted ? ` · ${clock(f.reverted)} 還原了` : "")));
+  sum.append(el("span", "meta", clock(f.ts)));
   const body = el("div");
   body.append(el("div", "meta", `依據（${f.basisFrom}）：「${f.basis}」`));
   body.append(el("div", "meta", `為什麼：${f.why} · 記憶 ${f.memory}` + (f.replacement ? ` → ${f.replacement}` : "")));
-  if (f.by !== "flag" && !f.reverted) {
+  if (f.by !== "flag") {
     const b = el("button", null, "還原");
     b.onclick = () => post("/api/memory/revert/" + f.id);
     body.append(b);
@@ -466,6 +467,38 @@ function renderBoots(bs) {
   }
 }
 
+const whoWords = { her: "她", owner: "主人", maintenance: "系統維護", program: "程式" };
+function renderHistory(hs) {
+  const box = $("history-body");
+  const open = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.key));
+  box.replaceChildren();
+  if (!hs.length) { box.textContent = "還沒有"; return; }
+  for (const h of hs) {
+    const e = h.entry;
+    const sum = el("summary");
+    sum.append(document.createTextNode(`${e.id.slice(0, 7)} ${whoWords[e.who] || e.who}${e.task ? "（" + e.task + "）" : ""}：${e.what} `));
+    sum.append(el("span", "meta", clock(e.ts) + (h.secret ? " · 有秘密記憶" : "")));
+    const body = el("div");
+    if (e.why) body.append(el("div", null, "為什麼：" + e.why));
+    if (e.args) body.append(el("div", "meta", "參數：" + e.args));
+    body.append(el("div", "meta", "動到：" + h.things));
+    for (const u of e.unrecordedBefore) body.append(el("div", "meta", "之前沒記上的改動也在這筆裡：" + u));
+    const diff = el("pre", "muted");
+    body.append(btn("看改了什麼", async () => {
+      const r = await fetch("/api/history/diff/" + e.id, { cache: "no-store" });
+      diff.textContent = await r.text();
+    }), " ", btn("退回這個改動", () => {
+      if (confirm(`退回「${e.what}」？（會記成一筆新的改動，她下一回合會知道）`)) post("/api/history/undo/" + e.id);
+    }), " ", btn("全部回到這筆之後的樣子", () => {
+      if (confirm(`把她的東西全部回到 ${clock(e.ts)} 這筆之後的樣子？之後的改動都退回（會記成一筆新的改動）`)) post("/api/history/restore/" + e.id);
+    }), diff);
+    const d = details(sum, body, open.has(e.id));
+    d.className = "mem";
+    d.dataset.key = e.id;
+    box.append(d);
+  }
+}
+
 async function calPost(op, params) {
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && v !== null));
   const r = await fetch(`/api/calendar/${op}?${q}`, { method: "POST" });
@@ -495,8 +528,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c, dr, go, tl, bo] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools", "/api/boots"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl); renderBoots(bo);
+    const [s, t, v, m, c, dr, go, tl, bo, hi] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools", "/api/boots", "/api/history"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl); renderBoots(bo); renderHistory(hi);
   } catch (e) {
     console.error(e);
   } finally {
@@ -509,7 +542,7 @@ $("show-program").onchange = () => { if (memory) renderMemory(memory); };
 async function post(path) {
   const r = await fetch(path, { method: "POST" });
   if (!r.ok && r.status !== 409) alert(path + ": " + r.status);
-  if (r.status === 409 && path.startsWith("/api/memory/")) alert(await r.text());
+  if (r.status === 409 && (path.startsWith("/api/memory/") || path.startsWith("/api/history/"))) alert(await r.text());
   refresh();
 }
 $("btn-interrupt").onclick = () => post("/api/interrupt");

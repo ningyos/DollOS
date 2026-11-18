@@ -516,7 +516,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
-    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "todo.set", "todo.done", "todo.fail",
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "history.list", "history.undo", "todo.set", "todo.done", "todo.fail",
                       "todo.wait", "todo.progress", "todo.continue", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
                       "act", "tool.save", "tool.run", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
@@ -2773,7 +2773,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
 @Test func theOnlyPostRoutesAreInterruptPauseResumeTheDeepMarkTheRevertTheCalendarHerDirectionAndHerTools() {
     #expect(Set(Dashboard.routes.filter { $0.method != "GET" }.map(\.path))
             == ["/api/interrupt", "/api/pause", "/api/resume", "/api/memory/deep/", "/api/memory/undeep/", "/api/memory/revert/", "/api/calendar/",
-                "/api/ideal/", "/api/goals/", "/api/record/", "/api/tools/"])
+                "/api/ideal/", "/api/goals/", "/api/record/", "/api/tools/", "/api/history/"])
     #expect(Dashboard.routes.allSatisfy { ["GET", "POST"].contains($0.method) })
 }
 
@@ -6640,14 +6640,17 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(await d.dashboardGoals().revisions.count == 2)
     // The aliases are her names too.
     #expect(Goals.nameProblem("我叫娃娃，想懂海", names: ["娃娃", "娃娃"]) == nil)
-    // The owner edits and reverts; she is told; a restart reads the file.
+    // The owner edits and undoes his edit (the revision's button is the history's undo); she is told;
+    // a restart reads the file.
     try await d.dashboardIdealEdit(text: "我想陪主人把日子過好。")
     #expect(try h.events().last!.text == "【主人改了你想成為的樣子】現在是：我想陪主人把日子過好。")
     try await d.dashboardIdealRevert(3)
     #expect(await d.ideal.contains("查資料要查到底"))
+    let nowIdeal = await d.ideal
+    #expect(try h.events().last!.text.hasPrefix("【主人退回了一個改動】") && h.events().last!.text.contains("現在你想成為的樣子是：\(nowIdeal)"))
     let b = try await goalsHarness(clock, dir: h.dir)
     let (bi, di, byWho) = (await b.doll.ideal, await d.ideal, await b.doll.dashboardGoals().revisions.map(\.by))
-    #expect(bi == di && byWho == ["revert", "owner", "her", "pack"])
+    #expect(bi == di && byWho == ["her", "pack"])
 }
 
 @Test func somethingNewRaisesDriveAndNothingNewForLongIsAWandering() async throws {
@@ -7437,8 +7440,9 @@ private func savedMultiply(_ h: Harness, save: Bool = true) async throws {
     try await h.turn(Scripted("", toolSave("乘法", "用計算機算兩個數相乘", [("a", "37", "第一個數"), ("b", "46", "第二個數")])))
 }
 
+/// A tool as the program reads it: its file and its run counters (`tool-runs.json`, 2026-11-19).
 private func toolFile(_ h: Harness, _ name: String) throws -> OwnTool {
-    try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: h.dir.appending(path: "tools/\(name).json")))
+    try #require(try ToolStore(dir: h.dir.appending(path: "tools")).get(name))
 }
 
 @Test func aSavedChainIsBuiltFromWhatSheDidWithButtonNamesAsAParameter() async throws {
@@ -7995,11 +7999,13 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
     #expect(try await h.doll.dashboardMemory().fixes.map(\.id) == [1])
     let d = Dashboard(doll: h.doll, config: DashboardConfig())
     #expect(await d.respond(method: "POST", target: "/api/memory/revert/1").status == 200)
+    // The button is the history's undo (2026-11-19): the old file is back as it was, the replacement
+    // and the record are gone from the files (the history keeps both).
     let files = try memoryFilesByID(h)
-    #expect(files[old]!.file.retired == nil && files[new]!.file.retired?.supersededBy == old)
-    #expect(try fixesFile(h).items[0].reverted != nil)
-    #expect(try h.events().last { $0.kind == .memory }!.text
-            == "【主人還原了一條記憶】你改掉的「主人的牙醫約在週三下午兩點」他還原了，又算數了；改成的「主人的牙醫約在週四下午三點」收起來了。")
+    #expect(files[old]!.file.retired == nil && files[new] == nil)
+    #expect(try fixesFile(h).items.isEmpty)
+    let told = try h.events().last { $0.kind == .memory }!.text
+    #expect(told.hasPrefix("【主人退回了一個改動】") && told.contains("你的「memory.fix」") && told.contains("記憶 \(old)、記憶 \(new)") && told.contains("回到那之前的樣子"))
     try await h.turn(Scripted("", recall("牙醫")))
     let out = try h.toolResults().last!.text
     #expect(out.contains("記憶 \(old)〕") && !out.contains("記憶 \(new)〕"))
@@ -8055,6 +8061,12 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     #expect(h.logs.contains { $0.contains("maintenance: audit done") && $0.contains("3 checked (0 priority), 1 ok, 0 unsure, 1 changed, 0 flagged, 1 quotes rejected") })
     let rec = try fixesFile(h).items
     #expect(rec.count == 1 && rec[0].by == "audit" && rec[0].basis == "下週四下午三點" && rec[0].replacement == new)
+    // In her history (2026-11-19): the correction alone (what the record's button undoes), the rest of
+    // the audit, and the consolidation, each the maintenance's with its task.
+    let maint = try historyOf(h).log(limit: 20).filter { $0.who == .maintenance }.reversed().map { "\($0.task ?? "")｜\($0.what)｜\($0.refs)" }
+    #expect(maint == ["audit｜查對後更正記憶 \(ids[0])｜[\"fix#1\"]", "audit｜查對新記的記憶｜[]", "consolidate｜整理記憶、寫摘要｜[]"])
+    let fixCommit = try historyOf(h).entry(ref: "fix#1")!
+    #expect(fixCommit.why == "原文「下週四下午三點」跟它不合" && fixCommit.paths.contains("data/memory-fixes.json"))
     #expect(try segmentTexts(h)[1][0].hasPrefix("【系統維護】結束，現在 03:00。查對了新記的 3 條記憶。改了 1 條：「主人的牙醫約在週三下午兩點」改成「主人的牙醫約在下週四下午三點」（原文：「下週四下午三點」）。舊的留著，主人在儀表板看得到、可以還原。\(didOne)"))
     // What tonight's consolidation wrote waits for the next audit.
     #expect(try memoryFilesByID(h).values.filter { $0.file.auditSegment != nil }.map(\.file.body) == ["主人今天跟我說晚安"])
@@ -8499,4 +8511,315 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     #expect(LogConfig().maxMB == 10 && LogConfig().turnWarns == 5)
     let example = try Config.load(root.appending(path: "dollcore.example.toml")).log
     #expect(example.maxMB == 10 && example.reportKinds == 8 && example.exampleChars == 200 && example.turnWarns == 5)
+}
+
+// her history (2026-11-19, `History.swift`) --------------------------------------------------------------
+
+private func historyUndo(_ id: String, why: String = "那不是主人要的") -> (String, [(String, String)]) {
+    ("history.undo", [("id", id), ("why", why)])
+}
+private func historyList(_ about: String? = nil) -> (String, [(String, String)]) {
+    ("history.list", about.map { [("about", $0)] } ?? [])
+}
+
+/// The doll's history, read through a second handle on the same repository.
+private func historyOf(_ h: Harness) throws -> History {
+    var cfg = HistoryConfig()
+    cfg.dir = h.dir.appending(path: "history").path
+    return try History(config: cfg, data: h.dir, memory: MemoryConfig(), memoryDir: h.dir.appending(path: "memory"))
+}
+
+/// Runs the system git in `dir` (for the tests' own checks of a parent repository).
+@discardableResult
+private func sysGit(_ dir: URL, _ args: String...) throws -> (out: String, code: Int32) {
+    let p = Process()
+    p.executableURL = URL(filePath: "/usr/bin/env")
+    p.arguments = ["git", "-C", dir.path] + args
+    p.environment = Git.environment([:])
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = Pipe()
+    try p.run()
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), p.terminationStatus)
+}
+
+private let seededTool = #"{"name":"開計算機","when":"要算數的時候","params":[],"parts":[{"open":"Calculator","app":"Calculator","bundle_id":"com.apple.calculator"}],"origin":{"item":"打開計算機","task":"幫我開計算機","sequences":[],"saved":"2026-11-19 10:00"},"uses":0,"successes":0,"failures_in_row":0}"#
+
+@Test func theHistoryAdoptsTheDirsAsFoundKeepsOnlyHersAndNeverTouchesAParentRepository() async throws {
+    // The data dir sits inside another git repository (as the worktree's own `data` would), and the
+    // shell's GIT_DIR points at that repository: neither is used.
+    let parent = FileManager.default.temporaryDirectory.appending(path: "dollcore-parent-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    #expect(try sysGit(parent, "init", "-q").code == 0)
+    let dir = parent.appending(path: "data")
+    try FileManager.default.createDirectory(at: dir.appending(path: "tools"), withIntermediateDirectories: true)
+    try seededTool.write(to: dir.appending(path: "tools/開計算機.json"), atomically: true, encoding: .utf8)
+    try FileManager.default.createDirectory(at: dir.appending(path: "memory/own"), withIntermediateDirectories: true)
+    try "+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 1\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n主人喜歡貓".write(
+        to: dir.appending(path: "memory/own/1-aaaaaa.md"), atomically: true, encoding: .utf8)
+    setenv("GIT_DIR", parent.appending(path: ".git").path, 1)
+    setenv("GIT_WORK_TREE", parent.path, 1)
+    defer { unsetenv("GIT_DIR"); unsetenv("GIT_WORK_TREE") }
+    let h = try await Harness(dir: dir)
+    let boot = h.doll.historyBoot
+    guard case .adopted(let n) = boot else { Issue.record("not adopted: \(boot)"); return }
+    let log = try historyOf(h).log(limit: 10)
+    #expect(log.count == 1 && log[0].who == .program && log[0].what == "開始記錄")
+    #expect(log[0].paths.sorted() == ["data/tools/開計算機.json", "memory/own/1-aaaaaa.md"] && n == 2)
+    // Only hers: no index, timeline, shots or logs.
+    try await h.turn(Scripted("", dm("好")))
+    #expect(try historyOf(h).log(limit: 10).count == 1)
+    // A bare repository of its own, only the owner's user reads it.
+    let repo = dir.appending(path: "history")
+    #expect(try sysGit(repo, "rev-parse", "--is-bare-repository").out == "true")
+    #expect((try FileManager.default.attributesOfItem(atPath: repo.path)[.posixPermissions] as? Int) == 0o700)
+    // The parent repository: no commit, nothing staged, its config untouched.
+    unsetenv("GIT_DIR"); unsetenv("GIT_WORK_TREE")
+    #expect(try sysGit(parent, "rev-parse", "-q", "--verify", "HEAD").code != 0)
+    #expect(try sysGit(parent, "diff", "--cached", "--name-only").out.isEmpty)
+    #expect(try sysGit(parent, "config", "--local", "--get", "user.name").code != 0)
+    // A restart with nothing changed records nothing.
+    let again = try await Harness(dir: dir)
+    #expect(again.doll.historyBoot == .clean)
+}
+
+@Test func eachChangeOfHersIsOneCommitWithWhoWhatAndWhy() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    await d.ownerSaid("你最近很會查資料耶，牙醫約在週四")
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式也想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+                                                   ("based_on", "主人說「你最近很會查資料耶」")]),
+                              ("goal.add", [("text", "懂海洋生物")]), remember([("主人的牙醫約在週三", false)]), dm("好")))
+    let old = try memoryID(h, "主人的牙醫約在週三")
+    await d.ownerSaid("不對，牙醫是週四")
+    try await h.turn(Scripted("", fix(old, "主人的牙醫約在週四", basis: "牙醫是週四", why: "日子記錯了")))
+    let new = try memoryID(h, "主人的牙醫約在週四")
+    let log = try historyOf(h).log(limit: 20).reversed().filter { $0.who != .program }
+    #expect(log.map(\.what) == ["ideal.revise", "goal.add", "remember", "memory.fix"])
+    #expect(log.allSatisfy { $0.who == .her })
+    #expect(log[0].why == "主人說我很會查" && log[0].refs == ["ideal#2"] && log[0].paths == ["data/ideal-self-log.json", "data/ideal-self.md"])
+    #expect(log[1].paths == ["data/goals.json"] && log[1].args == "text=懂海洋生物")
+    // One correction, one commit: the new file, the retired one and the record.
+    #expect(log[3].why == "日子記錯了" && log[3].args!.contains("basis=牙醫是週四") && log[3].refs == ["fix#1"]
+            && log[3].paths == ["data/memory-fixes.json", "memory/public/\(old).md", "memory/public/\(new).md"])
+    // The owner's edits on the dashboard are his.
+    _ = try await d.dashboardGoalEdit("add", ["text": "學做菜"])
+    let last = try historyOf(h).log(limit: 1)[0]
+    #expect(last.who == .owner && last.what == "目標樹：加了 #2〔目標〕學做菜" && last.why == "主人在儀表板改的")
+}
+
+@Test func theOwnerUndoesAChangeOfHersOnTheDashboardAndSheIsToldInPlainWords() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    await d.ownerSaid("加個目標吧")
+    try await h.turn(Scripted("", ("goal.add", [("text", "懂海洋生物")]), dm("好")))
+    #expect(await d.goalFile.nodes.map(\.text) == ["懂海洋生物"])
+    let hist = try historyOf(h)
+    let added = try hist.log(limit: 5).first { $0.what == "goal.add" }!
+    let dash = Dashboard(doll: d, config: DashboardConfig())
+    // The list, and the diff of one change.
+    let list = await dash.respond(method: "GET", target: "/api/history")
+    #expect(list.status == 200 && String(decoding: list.body, as: UTF8.self).contains("goal.add"))
+    let diff = String(decoding: await dash.respond(method: "GET", target: "/api/history/diff/\(added.id)").body, as: UTF8.self)
+    #expect(diff.contains("+++ b/data/goals.json") && diff.contains("懂海洋生物"))
+    #expect(await dash.respond(method: "POST", target: "/api/history/undo/\(added.id)").status == 200)
+    // The tree in memory follows the file; the undo is a new commit naming the one it undid.
+    #expect(await d.goalFile.nodes.isEmpty)
+    let undo = try hist.log(limit: 1)[0]
+    #expect(undo.who == .owner && undo.undoes == added.id && undo.paths == ["data/goals.json"])
+    #expect(try h.events().last!.text == "【主人退回了一個改動】11-19 10:00 你的「goal.add」，主人在儀表板把它退回了：目標樹 回到那之前的樣子。目標樹用 goal.list 看。")
+    // Nothing left to undo twice.
+    #expect(await dash.respond(method: "POST", target: "/api/history/undo/\(added.id)").status == 409)
+    #expect(await dash.respond(method: "POST", target: "/api/history/undo/zzz").status == 409)
+}
+
+@Test func theOwnerReturnsEverythingToAPointAndTheNextPromptHasThatIdealSelf() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    let start = await d.ideal
+    await d.ownerSaid("改一下")
+    try await h.turn(Scripted("", ("ideal.revise", [("text", "我想把查資料練到最好。"), ("why", "想"), ("based_on", "主人說改一下")]),
+                              ("goal.add", [("text", "懂海洋生物")])))
+    try await h.turn(Scripted("", ("ideal.revise", [("text", "我想把查資料和做菜都練好。"), ("why", "想"), ("based_on", "主人說改一下")])))
+    let first = try historyOf(h).log(limit: 50).last!
+    try await d.dashboardHistoryRestore(first.id)
+    let (ideal1, nodes1, revs1) = (await d.ideal, await d.goalFile.nodes, await d.dashboardGoals().revisions.map(\.by))
+    #expect(ideal1 == start && nodes1.isEmpty && revs1 == ["pack"])
+    #expect(await d.systemPrompt().contains(Doll.idealHeader + "\n" + start))
+    // The first commit was made at boot, on the real clock.
+    #expect(try h.events().last!.text.hasPrefix("【主人把你的東西回到 \(Doll.historyTime(first.ts)) 的樣子】那之後的改動都退回了，動到：目標樹、想成為的樣子。現在你想成為的樣子是：\(start)"))
+    // Going back is a change too: the history still has every revision.
+    #expect(try historyOf(h).log(limit: 1)[0].restores == first.id && historyOf(h).count() == 5)
+}
+
+@Test func sheUndoesHerOwnChangeWithAReasonButNotTheOwnersAndAConflictNamesTheLaterChange() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    await d.ownerSaid("加目標")
+    try await h.turn(Scripted("", ("goal.add", [("text", "懂海洋生物")])))
+    _ = try await d.dashboardGoalEdit("add", ["text": "學做菜"])
+    let log = try historyOf(h).log(limit: 5)
+    let hers = log.first { $0.what == "goal.add" }!, his = log.first { $0.who == .owner }!
+    try await h.turn(Scripted("", historyUndo(his.short)))
+    #expect(try h.toolResults().last!.text == "失敗：沒有退回：〔\(his.short)〕是主人改的，你不能退回。覺得不對，跟主人說。")
+    try await h.turn(Scripted("", historyUndo(hers.short)))
+    #expect(try h.toolResults().last!.text == "退回了：〔\(hers.short)〕11-19 10:00 你的「goal.add」。目標樹 回到那之前的樣子。目標樹用 goal.list 看。主人在儀表板看得到。")
+    #expect(await d.goalFile.nodes.map(\.text) == ["學做菜"])
+    let undo = try historyOf(h).log(limit: 1)[0]
+    #expect(undo.who == .her && undo.why == "那不是主人要的" && undo.undoes == hers.id && undo.what == "history.undo〔\(hers.short)〕「goal.add」")
+    // Two revisions of the ideal self: the older one cannot go back alone.
+    try await h.turn(Scripted("", ("ideal.revise", [("text", "我想把查資料練到最好。"), ("why", "想"), ("based_on", "主人說加目標")])))
+    try await h.turn(Scripted("", ("ideal.revise", [("text", "我想把查資料和做菜都練好。"), ("why", "想"), ("based_on", "主人說加目標")])))
+    let revs = try historyOf(h).log(limit: 2)
+    try await h.turn(Scripted("", historyUndo(revs[1].short)))
+    #expect(try h.toolResults().last!.text.contains("沒有退回：退不回去：想成為的樣子 後來又改過（〔\(revs[0].short)〕她 ideal.revise）"))
+    // Her list: short, newest first, with the reason.
+    try await h.turn(Scripted("", historyList("想成為的樣子")))
+    let out = try h.toolResults().last!.text
+    #expect(out.hasPrefix("改動紀錄（新的在前，這裡 3 件，全部 3 件；要退回你自己的改動，用 history.undo 給〔〕裡的編號）：\n〔\(revs[0].short)〕11-19 10:00 你 ideal.revise：想｜動到：想成為的樣子"))
+}
+
+@Test func afterAnUndoTheMemoryIndexAndHerToolsMatchTheFiles() async throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir.appending(path: "tools"), withIntermediateDirectories: true)
+    try seededTool.write(to: dir.appending(path: "tools/開計算機.json"), atomically: true, encoding: .utf8)
+    let h = try await Harness(dir: dir)
+    let d = h.doll
+    // A memory corrected, then her undo of the correction: the old one is found again, the new one not.
+    await d.ownerSaid("牙醫約在週三")
+    try await h.turn(Scripted("", remember([("主人的牙醫約在週三", false)])))
+    let old = try memoryID(h, "主人的牙醫約在週三")
+    await d.ownerSaid("不對，牙醫是週四")
+    try await h.turn(Scripted("", fix(old, "主人的牙醫約在週四", basis: "牙醫是週四")))
+    let new = try memoryID(h, "主人的牙醫約在週四")
+    let fixCommit = try historyOf(h).log(limit: 5).first { $0.what == "memory.fix" }!
+    try await h.turn(Scripted("", historyUndo(fixCommit.short, why: "主人後來說週三才對")))
+    try await h.turn(Scripted("", recall("牙醫")))
+    let out = try h.toolResults().last!.text
+    #expect(out.contains("記憶 \(old)〕") && !out.contains("記憶 \(new)〕"))
+    #expect(try memoryFilesByID(h)[new] == nil && fixesFile(h).items.isEmpty)
+    // The owner deletes her tool: gone; his undo brings it back, runnable again.
+    #expect(try await d.dashboardDeleteTool("開計算機"))
+    #expect(try await d.dashboardTools().isEmpty)
+    let del = try historyOf(h).log(limit: 1)[0]
+    #expect(del.who == .owner && del.what == "刪掉工具「開計算機」")
+    try await d.dashboardHistoryUndo(del.id)
+    #expect(try await d.dashboardTools().map(\.name) == ["開計算機"])
+}
+
+@Test func aSecretChangeIsNotShownOutsideTheOwnersTurnsButTheDashboardDiffShowsIt() async throws {
+    let h = try await Harness()
+    let d = h.doll
+    await d.ownerSaid("我的密碼提示是狗", secret: true)
+    try await h.turn(Scripted("", remember([("主人的密碼提示是狗", true)])))
+    let c = try historyOf(h).log(limit: 1)[0]
+    #expect(c.paths.count == 1 && c.paths[0].hasPrefix("memory/secret/"))
+    await d.developerSaid("你最近改了什麼？")
+    try await h.turn(Scripted("", historyList()))
+    let dev = try h.toolResults().last!.text
+    #expect(dev.contains("〔\(c.short)〕") && dev.contains("改了你現在看不到的記憶") && !dev.contains("狗") && !dev.contains("密碼"))
+    try await h.turn(Scripted("", historyUndo(c.short)))
+    #expect(try h.toolResults().last!.text.contains("沒有編號是 \(c.short) 的改動"))
+    await d.ownerSaid("你最近改了什麼？")
+    try await h.turn(Scripted("", historyList("記憶")))
+    #expect(try h.toolResults().last!.text.contains("動到：秘密的記憶"))
+    let diff = try await d.dashboardHistoryDiff(c.id)
+    #expect(diff.contains("主人的密碼提示是狗"))
+}
+
+@Test func aFailedCommitKeepsTheChangeSaysSoAndTheNextCommitNamesIt() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    // The branch cannot move (its directory is read-only): the commit fails after the change was written.
+    let refs = h.dir.appending(path: "history/refs/heads")
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: refs.path)
+    await h.doll.ownerSaid("加目標")
+    try await h.turn(Scripted("", ("goal.add", [("text", "懂海洋生物")])))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: refs.path)
+    // The change stands; her result and the log say it was not recorded.
+    #expect(await h.doll.goalFile.nodes.map(\.text) == ["懂海洋生物"])
+    #expect(try h.toolResults().last!.text.contains("（這個改動生效了，但沒記進改動紀錄："))
+    #expect(h.logs.contains { $0.contains("ERROR") && $0.contains("history: commit failed (her goal.add)") })
+    try await h.turn(Scripted("", ("goal.add", [("text", "學做菜")])))
+    // Her call's commit failed, and so did the program's at the end of that turn: the next commit that
+    // works (the program's, before her next calls run) carries those files and names both.
+    let log = try historyOf(h).log(limit: 2)
+    #expect(log[1].who == .program && log[1].paths == ["data/goals.json"] && log[1].unrecordedBefore == ["her goal.add", "program 回合中程式記下的"])
+    #expect(log[0].what == "goal.add" && log[0].unrecordedBefore.isEmpty)
+}
+
+@Test func aChangeWithNoCommitIsFoundAtBootCommittedAndInTheBootReport() async throws {
+    let clock = ManualClock(at("2026-11-19", "10:00"))
+    let h = try await goalsHarness(clock)
+    // A crash between the write and the commit: the file changed, no commit.
+    try "我想把海洋生物弄懂。\n".write(to: h.dir.appending(path: "ideal-self.md"), atomically: true, encoding: .utf8)
+    let b = try await goalsHarness(clock, dir: h.dir)
+    #expect(b.doll.historyBoot == .found(["data/ideal-self.md"]))
+    #expect(await b.doll.ideal == "我想把海洋生物弄懂。")
+    let c = try historyOf(b).log(limit: 1)[0]
+    #expect(c.who == .program && c.what == "開機時發現沒記錄的改動" && c.paths == ["data/ideal-self.md"])
+    let r = try await b.doll.announceBoot()
+    #expect(r.history == "上次結束前有 1 個檔改了卻沒記進改動紀錄（程式當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：想成為的樣子")
+    #expect(try b.events().last!.text.contains(r.history!))
+}
+
+@Test func changesFromTwoProcessesAreSerializedIntoOneLine() async throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir.appending(path: "tools"), withIntermediateDirectories: true)
+    var cfg = HistoryConfig()
+    cfg.dir = dir.appending(path: "history").path
+    let a = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    _ = try a.open(ts: 1)
+    let b = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    let errors = Mutex<[String]>([])
+    DispatchQueue.concurrentPerform(iterations: 20) { i in
+        let h = i % 2 == 0 ? a : b
+        do {
+            try seededTool.replacingOccurrences(of: "開計算機", with: "t\(i)").write(to: dir.appending(path: "tools/t\(i).json"), atomically: true, encoding: .utf8)
+            try h.record(HistoryChange(who: .her, what: "tool.save", why: "\(i)", ts: Double(i)))
+        } catch { errors.withLock { $0.append("\(error)") } }
+    }
+    #expect(errors.withLock { $0 }.isEmpty)
+    let tree = try a.tree(History.branch)
+    #expect((0..<20).allSatisfy { tree["data/tools/t\($0).json"] != nil })
+    // One line of commits: every one has at most one parent and the count adds up.
+    #expect(try sysGit(dir.appending(path: "history"), "rev-list", "--min-parents=2", "--count", "main").out == "0")
+}
+
+@Test func aMissingGitIsABootErrorWithTheFix() async throws {
+    await #expect { try await Harness { $0.history.git = "/nonexistent/git" } } throws: { "\($0)".contains("xcode-select --install") }
+}
+
+@Test func aToolRunChangesOnlyItsCountersAndMakesNoCommit() async throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    let store = ToolStore(dir: dir.appending(path: "tools"))
+    var cfg = HistoryConfig()
+    cfg.dir = dir.appending(path: "history").path
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let h = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    _ = try h.open(ts: 1_800_000_000)
+    var t = try JSONDecoder().decode(OwnTool.self, from: Data(seededTool.utf8))
+    try store.write(t)
+    #expect(try h.record(HistoryChange(who: .her, what: "tool.save", why: "", ts: 1_800_000_001))?.paths == ["data/tools/開計算機.json"])
+    t.uses = 3; t.successes = 2; t.lastRun = "2026-11-19 10:00"
+    try store.write(t)
+    #expect(try h.record(HistoryChange(who: .her, what: "tool.run", why: "", ts: 1_800_000_002)) == nil)
+    #expect(try store.get("開計算機")!.uses == 3)
+    // What a commit costs on the actor's path: one goal-sized change, median of 20.
+    var ms: [Double] = []
+    for i in 0..<20 {
+        try "{\"n\": \(i)}".write(to: dir.appending(path: "goals.json"), atomically: true, encoding: .utf8)
+        let s = Date()
+        _ = try h.record(HistoryChange(who: .her, what: "goal.add", why: "", ts: 1_800_000_010 + Double(i)))
+        ms.append(Date().timeIntervalSince(s) * 1000)
+    }
+    let none = Date()
+    for _ in 0..<20 { _ = try h.record(HistoryChange(who: .her, what: "dm", why: "", ts: 1_800_000_100)) }
+    print("history: commit median \(ms.sorted()[10]) ms, max \(ms.max()!) ms; nothing changed \(Date().timeIntervalSince(none) * 1000 / 20) ms")
 }

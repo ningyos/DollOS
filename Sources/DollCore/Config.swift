@@ -417,6 +417,23 @@ public struct AuditConfig: Sendable {
     public var guardChars = 2
 }
 
+/// The history of what is hers (2026-11-19, layer 4, `History.swift`): every change to her ideal
+/// self, goal tree, saved tools, memories, the entity registry and the records of what she did and
+/// of corrections is a commit in one git repository of the program's own.
+public struct HistoryConfig: Sendable {
+    /// The `git` executable (a name looked up on `PATH`, or a path). Missing = boot error.
+    public var git = "git"
+    /// The repository, under `[core] data_dir` unless absolute. A bare repository: it has no work
+    /// tree of its own, so it never adopts or touches anything around it.
+    public var dir = "history"
+    /// Changes her `history.list` shows at most: the result is read every turn it stays in view, so
+    /// short. 8: a busy measured day (m10 (a)) made 5–10 changes of hers.
+    public var listItems = 8
+    /// Changes the dashboard lists at most (newest first). 200: weeks of days like m10 (a), and one
+    /// `git log` call stays well under a second.
+    public var dashboardItems = 200
+}
+
 /// Which memories she gets (2026-11-11 registry; 2026-11-15 no on-device model at all): the
 /// 【相關記憶】 the program attaches and her `recall` results both come from one pipeline
 /// (`Selector`): everything related (FTS and two-character words, embedding, the front app's
@@ -509,6 +526,7 @@ public struct Config: Sendable {
     public var goals = GoalsConfig()
     public var audit = AuditConfig()
     public var log = LogConfig()
+    public var history = HistoryConfig()
 
     /// `[core] data_dir`, a relative one under `root`.
     public func dataDirectory(root: URL) -> URL {
@@ -518,7 +536,7 @@ public struct Config: Sendable {
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "log"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "log", "history"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -788,6 +806,15 @@ public struct Config: Sendable {
               (0...1).contains(cfg.audit.originShare), cfg.audit.guardChars >= 1 else {
             throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000; "
                             + "origin_share 0 to 1; guard_chars at least 1")
+        }
+        var hi = Section(name: "history", raw: raw["history"] ?? [:])
+        try hi.read("git", &cfg.history.git)
+        try hi.read("dir", &cfg.history.dir)
+        try hi.read("list_items", &cfg.history.listItems)
+        try hi.read("dashboard_items", &cfg.history.dashboardItems)
+        try hi.finish()
+        guard !cfg.history.git.isEmpty, !cfg.history.dir.isEmpty, cfg.history.listItems >= 1, cfg.history.dashboardItems >= 1 else {
+            throw TOMLError(description: "[history] git and dir non-empty; list_items and dashboard_items at least 1")
         }
         var lg = Section(name: "log", raw: raw["log"] ?? [:])
         try lg.read("max_mb", &cfg.log.maxMB)

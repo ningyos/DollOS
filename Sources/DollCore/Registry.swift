@@ -128,6 +128,12 @@ public final class Registry {
                                    vector: Memory.blob(try vector ?? embedder.embed(e.line, as: .document)))
     }
 
+    /// One entry's index rows again from its file, or removed when the file is gone (the history put
+    /// it back or took it away).
+    func reindex(_ id: String) throws {
+        if let e = try entry(id) { try index(e) } else { try store.deleteRegistryIndex(id: id) }
+    }
+
     private func save(_ e: RegistryEntry) throws {
         try e.text.write(to: url(e.id), atomically: true, encoding: .utf8)
         try index(e)

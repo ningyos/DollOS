@@ -294,6 +294,7 @@ extension Doll {
                     return
                 }
                 let d = try maintenanceCommit(work)
+                commitHistory(.maintenance, task: t.rawValue, what: t.label, why: String(d.log.prefix(300)))
                 done = d
                 maintenanceState.done.append(t.rawValue)
                 maintenanceState.words = (maintenanceState.words ?? []) + [d.words]
@@ -305,6 +306,8 @@ extension Doll {
                     return
                 }
                 log("ERROR", "maintenance: \(t.rawValue) failed: \(error)")
+                // Whatever it wrote before failing stands, and is recorded as its.
+                commitHistory(.maintenance, task: t.rawValue, what: t.label + "（出錯，做到一半）", why: "\(error)")
                 maintenanceState.failed[t.rawValue] = "\(error)"
                 saveMaintenanceLogged()
             }

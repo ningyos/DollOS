@@ -31,6 +31,9 @@ public struct BootReport: Codable, Sendable, Equatable {
     /// Kinds the notice listed and left out (the JSON's `previous.kinds` has every one).
     public var kindsListed: Int
     public var kindsLeftOut: Int
+    /// Her history at this boot (`History.swift`): started now, or files found changed with no commit
+    /// (committed now as found at boot); nil when it was in order.
+    public var history: String? = nil
 }
 
 extension Doll {
@@ -62,12 +65,25 @@ extension Doll {
                 r.notice = Self.reportText(p, unfinished: r.unfinished, file: file.path, log: config.log)
             }
         }
+        // Her history at this boot (2026-11-19, `History.swift`): started (in the report and the log
+        // only: nothing happened to her), or changes found with no commit (her notice says so).
+        var found: String?
+        switch historyBoot {
+        case .adopted(let n):
+            r.history = "開始記錄改動：照開機時的樣子記成第一筆，共 \(n) 個檔"
+            log("INFO", "history: started, the dirs as found (\(n) files) are the first commit")
+        case .found(let paths):
+            r.history = "上次結束前有 \(paths.count) 個檔改了卻沒記進改動紀錄（程式當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：\(history.things(paths))"
+            found = r.history
+            log("WARN", "history: found at boot, not recorded: \(paths)")
+        case .clean: break
+        }
         try FileManager.default.createDirectory(at: bootReports, withIntermediateDirectories: true)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         enc.keyEncodingStrategy = .convertToSnakeCase
         try enc.encode(r).write(to: file, options: .atomic)
-        try append(Event(.memory, .internal, Self.bootNotice + calendar + (r.notice.map { "\n" + $0 } ?? "")))
+        try append(Event(.memory, .internal, Self.bootNotice + calendar + (r.notice.map { "\n" + $0 } ?? "") + (found.map { "\n" + $0 + "。" } ?? "")))
         if r.turn {
             followUp = true
             taskTurn = true

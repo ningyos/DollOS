@@ -149,17 +149,48 @@ public struct OwnTool: Codable, Sendable, Equatable {
 
 /// Her tools on disk: `<data>/tools/<name>.json`. Read from disk at every use, so a restart (or the
 /// owner deleting one from the dashboard) is seen at once.
+///
+/// The run counters (`uses`, `successes`, `failures_in_row`, `last_run`) live apart, in
+/// `<data>/tool-runs.json` (2026-11-19): the tool's file is what it does, and is in her history
+/// (`History.swift`); a run changes only the counters, which is no change of hers and makes no
+/// commit. The tool's file keeps the counters' keys at zero. A file written before that still holds
+/// its counters: they count until the tool is written again.
 public struct ToolStore: Sendable {
     public let dir: URL
     public init(dir: URL) { self.dir = dir }
 
     func url(_ name: String) -> URL { dir.appending(path: name + ".json") }
+    var countsURL: URL { dir.deletingLastPathComponent().appending(path: "tool-runs.json") }
+
+    struct Counts: Codable, Equatable {
+        var uses: Int
+        var successes: Int
+        var failuresInRow: Int
+        var lastRun: String?
+        enum CodingKeys: String, CodingKey { case uses, successes, failuresInRow = "failures_in_row", lastRun = "last_run" }
+    }
+
+    /// Plain coders: the keys are tool names, kept exactly.
+    func counts() throws -> [String: Counts] {
+        guard FileManager.default.fileExists(atPath: countsURL.path) else { return [:] }
+        do { return try JSONDecoder().decode([String: Counts].self, from: Data(contentsOf: countsURL)) } catch {
+            throw ToolError(description: "\(countsURL.path) 讀不懂：\(error)")
+        }
+    }
+
+    func withCounts(_ t: OwnTool, _ all: [String: Counts]) -> OwnTool {
+        guard let c = all[t.name] else { return t }
+        var t = t
+        (t.uses, t.successes, t.failuresInRow, t.lastRun) = (c.uses, c.successes, c.failuresInRow, c.lastRun)
+        return t
+    }
 
     public func all() throws -> [OwnTool] {
         guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
         let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".json") }.sorted()
+        let c = try counts()
         return try files.map { f in
-            do { return try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: dir.appending(path: f))) } catch {
+            do { return withCounts(try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: dir.appending(path: f))), c) } catch {
                 throw ToolError(description: "工具檔 \(f) 讀不懂：\(error)")
             }
         }
@@ -168,21 +199,32 @@ public struct ToolStore: Sendable {
     public func get(_ name: String) throws -> OwnTool? {
         let u = url(name)
         guard FileManager.default.fileExists(atPath: u.path) else { return nil }
-        do { return try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: u)) } catch {
+        let t: OwnTool
+        do { t = try JSONDecoder().decode(OwnTool.self, from: Data(contentsOf: u)) } catch {
             throw ToolError(description: "工具檔 \(u.lastPathComponent) 讀不懂：\(error)")
         }
+        return withCounts(t, try counts())
     }
 
+    /// The tool's file (counters at zero; rewritten only when what it does changed) and its counters.
     public func write(_ t: OwnTool) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var all = try counts()
+        all[t.name] = Counts(uses: t.uses, successes: t.successes, failuresInRow: t.failuresInRow, lastRun: t.lastRun)
+        let ce = JSONEncoder()
+        ce.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try ce.encode(all).write(to: countsURL, options: .atomic)
+        var def = t
+        (def.uses, def.successes, def.failuresInRow, def.lastRun) = (0, 0, 0, nil)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        var data = try enc.encode(t)
+        var data = try enc.encode(def)
         data.append(0x0A)
-        try data.write(to: url(t.name), options: .atomic)
+        if (try? Data(contentsOf: url(t.name))) != data { try data.write(to: url(t.name), options: .atomic) }
     }
 
-    /// True when there was such a tool.
+    /// True when there was such a tool. Its counters stay: undoing the delete in her history brings
+    /// the tool back with them.
     public func delete(_ name: String) throws -> Bool {
         guard OwnTools.validName(name) == nil else { return false }
         let u = url(name)
@@ -697,10 +739,14 @@ extension Doll {
         }
     }
 
-    /// The owner deletes a tool (owner decision 1); false when there was none by that name.
+    /// The owner deletes a tool (owner decision 1); false when there was none by that name. A change
+    /// in her history: undoing it there brings the tool back.
     public func dashboardDeleteTool(_ name: String) throws -> Bool {
         let gone = try toolStore.delete(name)
-        if gone { log("INFO", "dashboard: tool「\(name)」deleted by the owner") }
+        if gone {
+            log("INFO", "dashboard: tool「\(name)」deleted by the owner")
+            commitHistory(.owner, what: "刪掉工具「\(name)」", why: "主人在儀表板刪的")
+        }
         return gone
     }
 }

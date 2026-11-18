@@ -980,6 +980,31 @@ public final class Memory {
         for (f, v) in zip(files, vectors) { try index(f.id, url: f.url, folder: f.folder, f.file, vector: v) }
     }
 
+    /// After the history put files back (`History.swift`): each of `paths` (relative to the memory
+    /// dir, `<folder>/<id>.md`) is indexed again from its file, or leaves the index when the file is
+    /// gone, retired or empty. Registry files the same in the registry index. Other paths are ignored.
+    func reindex(_ paths: [String]) throws {
+        for rel in paths {
+            let parts = rel.split(separator: "/").map(String.init)
+            guard parts.count == 2, parts[1].hasSuffix(".md") else { continue }
+            let id = String(parts[1].dropLast(3))
+            if parts[0] == config.registryDir {
+                try registry.reindex(id)
+                continue
+            }
+            guard MemoryFolder.allCases.contains(where: { dirName($0) == parts[0] }) else { continue }
+            let url = root.appending(path: rel)
+            if FileManager.default.fileExists(atPath: url.path) {
+                let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+                if parsed.retired == nil, !parsed.body.isEmpty {
+                    try index(id, url: url, folder: parts[0], parsed)
+                    continue
+                }
+            }
+            try store.deleteMemoryIndex(id: id)
+        }
+    }
+
     // retrieval ---------------------------------------------------------------
     /// Phrases for the FTS5 trigram index: contiguous CJK runs become every 3-character
     /// window (trigrams), Latin/digit runs of 3+ stay whole. Anything shorter cannot match
