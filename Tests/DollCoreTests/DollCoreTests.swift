@@ -4680,7 +4680,9 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
 }
 
 @Test func failBlocksTheComputerUntilSheDecidesWhatIsLeft() async throws {
-    let h = try await Harness()
+    // The injected clock: the estimate line reports seconds since the list was set, and on the real
+    // clock that read 「1 秒」 instead of 「0 秒」 whenever the suite ran under load (2026-11-19).
+    let h = try await Harness(clock: ManualClock(at("2026-11-16", "10:00")))
     await h.doll.ownerSaid("買票、再訂餐廳")
     try await h.turn(Scripted("", todoSet("票買好了", "餐廳訂好了"), readCall, key("cmd+n")))
     try await h.turn(Scripted("", fail("要主人的信用卡驗證碼", tried: "填了卡號，跳出簡訊驗證"), key("Return")))
