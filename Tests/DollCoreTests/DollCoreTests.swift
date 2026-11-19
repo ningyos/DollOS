@@ -6111,6 +6111,9 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     clock.set(first)
     try await waitUntil { await h.model.requests.count == 3 }
     try await waitUntil { await doll.settled }
+    // Her own thing asks for a step: a task turn (effort medium), not none.
+    let requests = await h.model.requests
+    #expect(requests[2].effort == "medium")
     let w1 = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
     #expect(w1 == ["【走神】你想起掛著的一件事（#1，你 2026-11-16（星期一） 10:00 記的）：把鯊魚圖鑑讀完\n" + Concerns.ownAsk])
     try await waitUntil { h.logs.contains { $0.contains("drives: own-thing episode over (動力 0.80 → 0.40): 沒有呼叫工具，沒有對任何人說話；想法「先不做，今天想先把圖鑑放著」") } }

@@ -94,15 +94,15 @@ enum Concerns {
     }
 
     /// The concern a signal surfaces: of its kind, the one surfaced least recently (never first),
-    /// then the nearest due, then the oldest. `except`: just ended (chaining).
-    static func pick(_ items: [Concern], for s: Signal, except: Int? = nil) -> Concern? {
+    /// then the nearest due, then the oldest.
+    static func pick(_ items: [Concern], for s: Signal) -> Concern? {
         let about: Concern.About
         switch s {
         case .closeness: about = .owner
         case .stress: about = .duty
         case .drive: about = .own
         }
-        return items.filter { $0.ended == nil && $0.about == about && $0.id != except }.min { a, b in
+        return items.filter { $0.ended == nil && $0.about == about }.min { a, b in
             let la = a.surfaced.last ?? 0, lb = b.surfaced.last ?? 0
             if la != lb { return la < lb }
             let da = a.due ?? .infinity, db = b.due ?? .infinity
@@ -133,6 +133,10 @@ enum Concerns {
     static let ownAsk = "這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；這次不做，就在想法裡寫一句為什麼。"
     /// 動力 high with no concern of her own (no goal, or every one ended): the episode still happens.
     static let wanderOwnNone = "\(wanderTag)你想做點自己的事，可是目標樹上沒有掛著的下一步。可以想想你想成為的樣子，用 goal.add 定一個目標、子目標或下一步。\(ownAsk)"
+    /// 動力's wandering (it carries `ownAsk`): her turn for it is a task turn (`Doll.taskTurn`).
+    static func isOwnWander(_ e: Event) -> Bool {
+        e.kind == .memory && e.text.hasPrefix(wanderTag) && e.text.contains(ownAsk)
+    }
 
     /// Real runs (2026-11-16): at 05:44 she thought 「等他醒了再說」, and at his 「早～」 nothing put it
     /// back in front of her (1 of 5 asked).

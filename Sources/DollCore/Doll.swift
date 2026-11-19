@@ -127,9 +127,11 @@ public actor Doll {
     /// Set by `think`; consumed by the next model call.
     var effortNext: String?
     /// The next call is part of a task: the events drained since her last answered call include an
-    /// owner line or a watch wake, or her tool results await her. It uses `task_turn_effort` unless
-    /// she set one with `think`. Tool-result and wake turns count too (spec 3.1, 2026-11-08): at
-    /// effort none, 2 of 5 M2 medium C runs stopped mid-task on a tool-result turn with one sentence.
+    /// owner line, a watch wake or 動力's wandering (her own thing, which asks for a step), or her
+    /// tool results await her. It uses `task_turn_effort` unless she set one with `think`. Tool-result
+    /// and wake turns count too (spec 3.1, 2026-11-08): at effort none, 2 of 5 M2 medium C runs
+    /// stopped mid-task on a tool-result turn with one sentence; idle-drive's real check (2026-11-20),
+    /// her first own-thing turn at none: 28 tokens, "先看一下全貌", no call.
     var taskTurn = false
     /// The effort the next model call uses.
     var nextEffort: String { effortNext ?? (taskTurn ? llm.taskTurnEffort : llm.defaultEffort) }
@@ -661,7 +663,7 @@ public actor Doll {
         for ev in batch {
             last = try append(ev, keepTime: true)
         }
-        if batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) { taskTurn = true }
+        if batch.contains(where: { $0.speaker != nil || $0.kind == .watch || Concerns.isOwnWander($0) }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }
         // Something happened: a waiting item is in progress again (its turn is this one).
         if todo.phase == .waiting, let last {
