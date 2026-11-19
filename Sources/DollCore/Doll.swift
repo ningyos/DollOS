@@ -416,7 +416,8 @@ public actor Doll {
             throw TOMLError(description: "[core] docs: \(docsDir.path)/README.md does not exist")
         }
 
-        let packPath = root.appending(path: core.pack)
+        // An absolute path is taken as it is, like `docs` and `data_dir` (2026-11-19: it was appended to the config's folder).
+        let packPath = core.pack.hasPrefix("/") ? URL(filePath: core.pack) : root.appending(path: core.pack)
         let pack = try TOML.parse(String(contentsOf: packPath, encoding: .utf8))
         guard case .string(let name)? = pack["meta"]?["name"] else {
             throw TOMLError(description: "\(packPath.path): [meta].name must be a string")
