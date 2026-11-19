@@ -343,7 +343,7 @@ function renderCalendar(c) {
   for (const it of c.items) {
     const time = it.start ? (it.end ? `${it.start}–${it.end}` : it.start) : "全天";
     box.append(el("div", null, `#${it.id} ${it.date} ${time} ${it.title}` + (it.repeat ? ` · 重複 ${it.repeat}` : "")
-      + (it.until ? ` 到 ${it.until}` : "") + (it.exceptions ? ` · ${it.exceptions} 天另外改過` : "") + ` · ${it.by === "owner" ? "主人加的" : "她加的"}`));
+      + (it.until ? ` 到 ${it.until}` : "") + (it.exceptions ? ` · ${it.exceptions} 天另外改過` : "") + ` · ${it.by === "owner" ? "主人加的" : it.by === "program" ? "程式建的" : "她加的"}`));
   }
 }
 
@@ -425,7 +425,7 @@ function renderGoals(g) {
     if (e.owner) row.append(" ", btn("取消我的評價", () => goalPost("/api/record/eval", { id: e.id, kind: "none" })));
     box.append(row);
   }
-  box.append(el("div", "muted", `上次碰到新東西：${g.lastNew ? clock(g.lastNew) : "—"}；沒有新東西的話，${g.curiosityDue ? clock(g.curiosityDue) : "—"} 會冒一次好奇`));
+  box.append(el("div", "muted", `上次碰到新東西：${g.lastNew ? clock(g.lastNew) : "—"}${g.curiosityDue ? `；沒有新東西的話，${clock(g.curiosityDue)} 會冒一次好奇` : "；好奇現在是關的（沒有電腦就沒有新東西的來源）"}`));
 }
 
 function renderTools(ts) {
@@ -476,7 +476,7 @@ function renderHistory(hs) {
   for (const h of hs) {
     const e = h.entry;
     const sum = el("summary");
-    sum.append(document.createTextNode(`${e.id.slice(0, 7)} ${whoWords[e.who] || e.who}${e.task ? "（" + e.task + "）" : ""}：${e.what} `));
+    sum.append(document.createTextNode(`${e.id.slice(0, 7)} ${whoWords[e.who] || e.who}${e.task ? "（" + e.task + "）" : ""}：${e.what}${!e.why && e.args && !h.secret ? "（" + e.args.slice(0, 60) + "）" : ""} `));
     sum.append(el("span", "meta", clock(e.ts) + (h.secret ? " · 有秘密記憶" : "")));
     const body = el("div");
     if (e.why) body.append(el("div", null, "為什麼：" + e.why));
