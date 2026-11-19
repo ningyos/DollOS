@@ -9206,3 +9206,14 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了"))
     #expect(await h.doll.todo.plan?.facts.first?.source == "目標樹")
 }
+
+@Test func whatSheWritesIntoHerOwnThingsIsKeptInTraditionalCharacters() async throws {
+    // 2026-11-20, the soak run: a step 「问主人那套工具脚本在哪里」 and a memory with 「独角鯨」.
+    let h = try await goalsHarness(ManualClock(at("2026-11-16", "10:00")))
+    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
+    try await h.turn(Scripted("", ("goal.add", [("text", "弄懂独角鲸的分类"), ("parent", "\(g.id)")]),
+                              ("remember", [("items", #"[{"text":"独角鯨和白鯨是同一科，各种海豚是另一科","folder":"public"}]"#)])))
+    #expect(await h.doll.goalFile.nodes.last?.text == "弄懂獨角鯨的分類")
+    #expect(try h.store.memoryFTS(match: "\"獨角鯨\"", folders: ["public"], limit: 5).count == 1)
+    #expect(try h.store.memoryFTS(match: "\"独角鯨\"", folders: ["public"], limit: 5).isEmpty)
+}

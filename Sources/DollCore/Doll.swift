@@ -1304,7 +1304,8 @@ public actor Doll {
     func execute(_ call: ToolCall, seen events: [Event], reply: Event, chain: Chain = Chain()) async -> Outcome {
         let name = call.name.isEmpty ? "tool_call" : call.name
         do {
-            let request = try Tools.decode(call, specs: tools)
+            let (request, written) = try Tools.decode(call, specs: tools).inTraditional()
+            if !written.isEmpty { log("INFO", "traditional: \(name) was written with simplified characters, kept as traditional: \(written.joined(separator: "、"))") }
             switch request {
             case .speak(let raw, .discordVoice):
                 let (text, fixed) = Traditional.fix(raw)

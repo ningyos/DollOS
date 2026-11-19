@@ -41,3 +41,30 @@ enum Traditional {
         "你寫了簡體字，送出去的時候程式改成繁體了：\(changes.joined(separator: "、"))。下次直接寫繁體。"
     }
 }
+
+extension Tools.Request {
+    /// What she writes into what is hers is kept in traditional characters too (2026-11-20, the
+    /// soak run: 「脚本」「读」 in a step of her goal tree, 「独角鯨」「各种」 in a memory). Only the texts
+    /// that are kept: a memory, a goal-tree node, a concern, her ideal self. Quotes that must match
+    /// something existing (`old`, `basis`, evidence) stay as she wrote them.
+    func inTraditional() -> (Tools.Request, [String]) {
+        var changes: [String] = []
+        func fix(_ t: String) -> String {
+            let r = Traditional.fix(t)
+            for c in r.changes where !changes.contains(c) { changes.append(c) }
+            return r.text
+        }
+        let out: Tools.Request
+        switch self {
+        case .remember(let items): out = .remember(items.map { var i = $0; i.text = fix(i.text); return i })
+        case .memoryFix(let id, let text, let basis, let why): out = .memoryFix(id: id, text: text.map(fix), basis: basis, why: why)
+        case .goalAdd(let text, let parent): out = .goalAdd(text: fix(text), parent: parent)
+        case .goalChange(let id, let text): out = .goalChange(id: id, text: fix(text))
+        case .concernNote(let text, let about, let due): out = .concernNote(text: fix(text), about: about, due: due)
+        case .idealRevise(let text, let old, let new, let why, let basedOn):
+            out = .idealRevise(text: text.map(fix), old: old, new: new.map(fix), why: why, basedOn: basedOn)
+        default: out = self
+        }
+        return (out, changes)
+    }
+}

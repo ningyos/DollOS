@@ -665,7 +665,7 @@ public enum Tools {
     /// One decoded call. Bad arguments are an error the caller turns into the call's tool result.
     enum Request {
         struct Item: Decodable {
-            let text: String
+            var text: String
             let folder: MemoryFolder
             let kind: MemoryKind?
             /// What she wrote for `kind` when it is not one of the three; only this item fails.
