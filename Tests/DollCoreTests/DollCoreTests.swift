@@ -419,13 +419,15 @@ private struct Harness {
     /// Her tool results, oldest first.
     func toolResults() throws -> [Event] { try events().filter { $0.kind == .tool } }
 
-    /// Waits until the queue has drained into the timeline `count` events of `kind`, or gives up.
-    func waitFor(_ kind: Event.Kind, count: Int = 1, seconds: Double = 5) async throws {
+    /// Waits until the queue has drained into the timeline `count` events of `kind` (the guard: `waitUntil`).
+    func waitFor(_ kind: Event.Kind, count: Int = 1, seconds: Double = waitGuard,
+                 sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let deadline = ContinuousClock.now + .seconds(seconds)
         while ContinuousClock.now < deadline {
             if await doll.queue.filter({ $0.kind == kind }).count >= count { return }
             try await Task.sleep(for: .milliseconds(20))
         }
+        throw WaitTimeout(seconds: seconds, at: sourceLocation)
     }
 }
 
@@ -1032,12 +1034,29 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
 
 // computer (M2) ----------------------------------------------------------------
 
-private func waitUntil(seconds: Double = 3, _ cond: () async -> Bool) async throws {
+/// Polls until `cond` holds. `seconds` guards against a hang; it is not a claim about speed. A test's
+/// wall time in the full suite is set by the other tests running beside it (2026-11-20: the audit
+/// test takes 0.41 s alone and 3.8–6 s in the suite, whose whole run takes 12–19 s): the old 3 s
+/// was reached under load, the wait returned as if `cond` held, and an assertion after it failed
+/// with an unrelated-looking error. The guard is above a whole suite run, and running out of it
+/// fails here, naming this wait.
+private func waitUntil(seconds: Double = waitGuard, sourceLocation: SourceLocation = #_sourceLocation,
+                       _ cond: () async -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(seconds)
     while ContinuousClock.now < deadline {
         if await cond() { return }
         try await Task.sleep(for: .milliseconds(10))
     }
+    throw WaitTimeout(seconds: seconds, at: sourceLocation)
+}
+
+/// How long a wait for an event may take before the test is taken to hang (see `waitUntil`).
+private let waitGuard: Double = 60
+
+private struct WaitTimeout: Error, CustomStringConvertible {
+    let seconds: Double
+    let at: SourceLocation
+    var description: String { "waited \(seconds) s at \(at.fileName):\(at.line) and it never happened" }
 }
 
 /// A harness whose first turn listed one todo item (in progress) and read Calculator's window.
@@ -2812,7 +2831,9 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(s.state == "idle" && s.turn == 0 && s.lastInterrupt != nil)
     #expect(h.logs.contains { $0.contains("turn 1 interrupted from the dashboard") })
     await doll.ownerSaid("好了嗎")                                                  // the next event gets a turn
-    while h.said.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    // Her line is out before her turn's report (2026-11-20: asserting the report on her line alone
+    // failed when the turn's end came a moment later): wait for both.
+    try await waitUntil { !h.said.isEmpty && !h.reports.isEmpty }
     #expect(await h.model.requests.count == 2 && h.said == ["好"] && h.reports.map(\.index) == [1])
     await doll.stop()
     try await runner.value
@@ -3906,7 +3927,7 @@ private func otherIPv4() -> String? {
     try await bridge.start()
     #expect(api.bridge.hasPrefix("up (pid "))
     #expect(api.deliver("在嗎", to: .owner) == nil)
-    try await waitUntil(seconds: 5) { api.bridge.hasPrefix("down") }
+    try await waitUntil { api.bridge.hasPrefix("down") }
     #expect(api.bridge.contains("exit status 28") && api.bridge.contains("not restarted"))
     #expect(api.listening(.owner) == 0)
     #expect(api.deliver("在嗎", to: .owner)!.contains("bridge down: exit status 28"))
