@@ -8620,6 +8620,22 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     #expect(last.who == .owner && last.what == "目標樹：加了 #2〔目標〕學做菜" && last.why == "主人在儀表板改的")
 }
 
+/// 2026-11-20: the branch's commit is read from the repository's files, not by a `git rev-parse`.
+@Test func theHistoryReadsItsHeadAsGitDoesLooseOrPacked() async throws {
+    let h = try await goalsHarness(ManualClock(at("2026-11-19", "10:00")))
+    let repo = h.dir.appending(path: "history")
+    #expect(try historyOf(h).head() == sysGit(repo, "rev-parse", "refs/heads/main").out)
+    // Packed by hand (`git gc`, `git pack-refs`): still found, and the next change goes on from it.
+    #expect(try sysGit(repo, "pack-refs", "--all").code == 0)
+    #expect(!FileManager.default.fileExists(atPath: repo.appending(path: "refs/heads/main").path))
+    let packed = try #require(try historyOf(h).head())
+    #expect(packed == (try sysGit(repo, "rev-parse", "refs/heads/main").out))
+    _ = try await h.doll.dashboardGoalEdit("add", ["text": "學做菜"])
+    #expect(try sysGit(repo, "rev-parse", "refs/heads/main^").out == packed)
+    #expect(try historyOf(h).head() == sysGit(repo, "rev-parse", "refs/heads/main").out)
+    #expect(try historyOf(h).log(limit: 1)[0].what.hasSuffix("〔目標〕學做菜"))
+}
+
 @Test func theOwnerUndoesAChangeOfHersOnTheDashboardAndSheIsToldInPlainWords() async throws {
     let clock = ManualClock(at("2026-11-19", "10:00"))
     let h = try await goalsHarness(clock)

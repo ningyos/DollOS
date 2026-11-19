@@ -118,7 +118,9 @@ struct Git: Sendable {
     private static let located = NSLock()
     nonisolated(unsafe) private static var locatedExe: [String: String] = [:]
 
-    /// The executable, checked once per process.
+    /// The executable, checked once per process. What is returned is the git that `name` runs
+    /// (`<exec-path>/git`): on macOS `/usr/bin/git` is a stub that looks up the developer tools on
+    /// every call and costs as much again as git itself (2026-11-20: 12 ms against 6 ms a call).
     private static func find(_ name: String) throws -> String {
         let fm = FileManager.default
         var found: String?
@@ -137,7 +139,9 @@ struct Git: Sendable {
         guard r.code == 0, String(decoding: r.out, as: UTF8.self).hasPrefix("git version") else {
             throw HistoryError(description: "[history] git: \(exe) --version failed (\(String(decoding: r.err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))); \(fix)")
         }
-        return exe
+        let e = try probe.raw(["--exec-path"], cwd: URL(filePath: NSTemporaryDirectory()))
+        let own = String(decoding: e.out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) + "/git"
+        return e.code == 0 && own.hasPrefix("/") && fm.isExecutableFile(atPath: own) ? own : exe
     }
 
     /// The environment every call runs with: no inherited `GIT_*` (a `GIT_DIR` or `GIT_WORK_TREE`
@@ -364,10 +368,31 @@ public final class History: @unchecked Sendable {
     }
     private var statCache: [String: (key: [Int], id: String)] = [:]
 
+    /// The branch's commit, read from the repository's files: two `rev-parse` processes around every
+    /// commit were 62% of the history's processes (2026-11-20, measured over the test suite). The
+    /// loose ref (git replaces it by a rename, so a read sees the old or the new id), else
+    /// `packed-refs`; a repository in the reftable format is asked through git.
     func head() throws -> String? {
-        let r = try git.run(["rev-parse", "-q", "--verify", Self.branch + "^{commit}"], ok: [0, 1])
-        let s = String(decoding: r.out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return r.code == 0 && !s.isEmpty ? s : nil
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: git.gitDir.appending(path: "reftable").path) else {
+            let r = try git.run(["rev-parse", "-q", "--verify", Self.branch + "^{commit}"], ok: [0, 1])
+            let s = String(decoding: r.out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return r.code == 0 && !s.isEmpty ? s : nil
+        }
+        func id(_ s: Substring) throws -> String {
+            guard s.count == 40, s.allSatisfy(\.isHexDigit) else {
+                throw HistoryError(description: "\(Self.branch) in \(git.gitDir.path) is not a commit id: \(s.prefix(60))")
+            }
+            return String(s)
+        }
+        if let d = fm.contents(atPath: git.gitDir.appending(path: Self.branch).path) {
+            return try id(Substring(String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        }
+        guard let packed = fm.contents(atPath: git.gitDir.appending(path: "packed-refs").path) else { return nil }
+        for line in String(decoding: packed, as: UTF8.self).split(separator: "\n") where line.hasSuffix(" " + Self.branch) {
+            return try id(line.prefix(40))
+        }
+        return nil
     }
 
     /// Path → blob id of a commit's tree.
