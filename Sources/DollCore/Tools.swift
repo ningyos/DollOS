@@ -754,7 +754,8 @@ public enum Tools {
               let req = schema.first(where: { $0.0 == "required" }).map(\.1),
               case .array(let required) = req else { fatalError("tool spec \(spec.name) has no properties/required") }
         for p in call.parameters where !known.contains(where: { $0.0 == p.name }) {
-            throw ToolError(description: "\(call.name) 沒有 \(p.name) 這個參數")
+            // The parameters it does have are named (2026-11-20, soak run: `remember` with `folder` beside `items`, twice).
+            throw ToolError(description: "\(call.name) 沒有 \(p.name) 這個參數（它的參數：\(known.map(\.0).joined(separator: "、"))）")
         }
         for case .string(let r) in required where !call.parameters.contains(where: { $0.name == r }) {
             throw ToolError(description: "\(call.name) 少了參數 \(r)")

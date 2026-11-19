@@ -578,7 +578,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let results = try h.toolResults()
     #expect(results.count == 8)
     #expect(results[0].text == "失敗：沒有 bogus 這個工具")
-    #expect(results[1].text == "失敗：recall 沒有 q 這個參數")
+    #expect(results[1].text == "失敗：recall 沒有 q 這個參數（它的參數：query）")
     #expect(results[2].text == "失敗：think 的 level 只能是 medium，收到 low")
     #expect(results[3].text.hasPrefix("第 1 條沒存：kind 只能是 happened、intended、uncertain，或不填；收到 done\n第 2 條已存入 public/"))
     #expect(results[4].text == "失敗：recall 少了參數 query")
@@ -1122,7 +1122,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     }
     #expect(error("open", []) == "open 少了參數 app")
     #expect(error("open", [("app", " ")]) == "open 的 app 是空的")
-    #expect(error("read_window", [("title", "x")]) == "read_window 沒有 title 這個參數")
+    #expect(error("read_window", [("title", "x")]) == "read_window 沒有 title 這個參數（它的參數：app、window）")
     func actError(_ json: String, expect: String? = nil) -> String? {
         error("act", [("steps", json)] + (expect.map { [("expect", $0)] } ?? []))
     }
@@ -7412,7 +7412,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     for _ in 0..<3 { try await h.turn(Scripted("", readCall)) }
     #expect(await h.doll.todo.deciding)
     try await h.turn(Scripted("", ("todo.continue", [("missing", "還缺等於"), ("why", "再試試")])))
-    #expect(try h.toolResults().last!.text == "失敗：todo.continue 沒有 why 這個參數")
+    #expect(try h.toolResults().last!.text == "失敗：todo.continue 沒有 why 這個參數（它的參數：missing、stuck、change）")
     try await h.turn(Scripted("", goOn("還缺按等於", "按等於", "改用鍵盤 Return")))
     #expect(try h.toolResults().last!.text == "失敗：還不能繼續：stuck「按等於」太短：至少 4 個字，寫具體的。")
     try await h.turn(Scripted("", goOn("還缺按等於", "按等於那一步", "按等於那一步")))
