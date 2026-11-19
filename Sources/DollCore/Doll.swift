@@ -297,8 +297,8 @@ public actor Doll {
     /// The one task sleeping until the next signal crossing or concern change.
     var drivesTask: Task<Void, Never>?
     var drivesSerial = 0
-    /// She finished one of her own concerns: with 動力 high, the next one surfaces at once.
-    var chainAfter: Int?
+    /// When 動力's wandering began the episode still open (`endOwnEpisode`); nil after a restart.
+    var ownEpisodeStart: Double?
     /// Concerns surfaced or associated since the owner's last line; never associated twice in that span.
     var associatedIDs: Set<Int> = []
     /// Concern id → its text's embedding, computed on first use.

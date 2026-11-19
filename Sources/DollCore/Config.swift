@@ -204,7 +204,10 @@ public struct DrivesConfig: Sendable, Equatable {
     public var enabled = true
     /// Which out-of-range signal surfaces first when several are pending.
     public var order: [Signal] = [.stress, .closeness, .drive]
-    public var driveRest = 0.4, driveHalfLifeH = 6.0, driveHigh = 0.8
+    /// 動力 (idle-drive, 2026-11-20): its rest is above `driveHigh`, so left alone it climbs; an
+    /// episode of her own things sets it back to `driveReset`. Reset → high takes
+    /// `driveHalfLifeH · log2((rest − reset) / (rest − high))` = 0.63 h · log2(3) ≈ 1.0 h.
+    public var driveRest = 1.0, driveHalfLifeH = 0.63, driveHigh = 0.8, driveReset = 0.4
     public var stressRest = 0.1, stressHalfLifeH = 4.0, stressHigh = 0.5
     public var closenessRest = 0.0, closenessHalfLifeH = 4.0, closenessLow = 0.2, closenessStart = 0.6
     public var itemDoneDrive = 0.1
@@ -864,7 +867,7 @@ public struct Config: Sendable {
         try s.read("enabled", &d.enabled)
         try s.read("order", &order)
         let nums: [(String, WritableKeyPath<DrivesConfig, Double>)] = [
-            ("drive_rest", \.driveRest), ("drive_half_life_h", \.driveHalfLifeH), ("drive_high", \.driveHigh),
+            ("drive_rest", \.driveRest), ("drive_half_life_h", \.driveHalfLifeH), ("drive_high", \.driveHigh), ("drive_reset", \.driveReset),
             ("stress_rest", \.stressRest), ("stress_half_life_h", \.stressHalfLifeH), ("stress_high", \.stressHigh),
             ("closeness_rest", \.closenessRest), ("closeness_half_life_h", \.closenessHalfLifeH),
             ("closeness_low", \.closenessLow), ("closeness_start", \.closenessStart),
@@ -886,13 +889,13 @@ public struct Config: Sendable {
             throw TOMLError(description: "[drives] order must list each of \(Signal.allCases.map(\.rawValue)) exactly once")
         }
         d.order = signals
-        let unit = [d.driveRest, d.driveHigh, d.stressRest, d.stressHigh, d.closenessRest, d.closenessLow, d.closenessStart]
-        guard unit.allSatisfy({ (0...1).contains($0) }), d.driveRest < d.driveHigh, d.stressRest < d.stressHigh,
+        let unit = [d.driveRest, d.driveHigh, d.driveReset, d.stressRest, d.stressHigh, d.closenessRest, d.closenessLow, d.closenessStart]
+        guard unit.allSatisfy({ (0...1).contains($0) }), d.driveReset < d.driveHigh, d.driveHigh < d.driveRest, d.stressRest < d.stressHigh,
               d.closenessRest < d.closenessLow, d.closenessStart > d.closenessLow,
               d.driveHalfLifeH > 0, d.stressHalfLifeH > 0, d.closenessHalfLifeH > 0,
               d.nearHours > 0, d.calendarConcernHours > 0, d.logDays > 0, d.maxOpen >= 1,
               d.maintenanceConcernsMax >= 0, (0...1).contains(d.associationSimilarity) else {
-            throw TOMLError(description: "[drives] values 0…1 with rest below the high edge (closeness: rest below low, start above it); half-lives, near_hours, calendar_concern_hours, log_days above 0; max_open at least 1; maintenance_concerns_max 0 or more; association_similarity 0…1")
+            throw TOMLError(description: "[drives] values 0…1; drive_reset below drive_high below drive_rest (動力 climbs while idle; idle-drive, 2026-11-20); stress: rest below high; closeness: rest below low, start above it; half-lives, near_hours, calendar_concern_hours, log_days above 0; max_open at least 1; maintenance_concerns_max 0 or more; association_similarity 0…1")
         }
         return d
     }

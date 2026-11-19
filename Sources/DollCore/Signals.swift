@@ -6,7 +6,10 @@ import Foundation
 /// number: a signal outside its usual range gives 【狀況】 one plain sentence (`felt`) and may make a
 /// concern surface (`Doll+Drives`). (睡意 is gone since 2026-11-16: sleep became system maintenance.)
 ///
-///     動力 drive       progress, being affirmed ↑; high → her own things surface, one after another
+///     動力 drive       climbs on its own (its rest is above its high edge: left idle she wants to do her
+///                      own things; idle-drive, 2026-11-20); progress, being affirmed ↑ (sooner); high →
+///                      one of her own things surfaces, and when that episode is over it is set back to
+///                      `drive_reset` and climbs again (`endEpisode`)
 ///     壓力 stress      mistakes, corrections, deadlines ↑; praise ↓; high → duties surface
 ///     親近 closeness   talk with the owner, thanks ↑; recedes within hours; low → the owner surfaces
 public enum Signal: String, CaseIterable, Sendable, Codable {
@@ -132,11 +135,13 @@ public struct Drives: Sendable {
         self.state = state
     }
 
-    /// A fresh start at `now`: every signal at its rest value, 親近 at `closeness_start`.
+    /// A fresh start at `now`: 動力 at `drive_reset` (as after an episode), 親近 at `closeness_start`,
+    /// the others at their rest values.
     public init(config: DrivesConfig, now: Double) {
         self.config = config
-        state = SignalState(points: Dictionary(uniqueKeysWithValues: Signal.allCases.map {
-            ($0, SignalState.Point(value: $0 == .closeness ? config.closenessStart : config.spec($0).rest, ts: now))
+        state = SignalState(points: Dictionary(uniqueKeysWithValues: Signal.allCases.map { s in
+            let v = switch s { case .drive: config.driveReset; case .closeness: config.closenessStart; case .stress: config.stressRest }
+            return (s, SignalState.Point(value: v, ts: now))
         }))
     }
 
@@ -206,6 +211,20 @@ public struct Drives: Sendable {
         return config.order.filter { isOut($0, at: t) && !state.surfaced.contains($0) }
     }
 
+    /// 動力's episode (idle-drive, 2026-11-20): its surfacing gave her a turn of her own; at the first
+    /// idle moment after it (she is not in a turn, a list, the maintenance, or owing anyone) the
+    /// episode is over, whatever she did in it: 動力 goes back to `drive_reset` and the climb starts
+    /// over. Whatever raised it during the episode (her own items, steps, a concern done) is wiped
+    /// by this, so finishing her own things never chains into the next one. Returns false when no
+    /// episode was open.
+    public mutating func endEpisode(at t: Double, cause: String) -> Bool {
+        guard state.surfaced.contains(.drive) else { return false }
+        state.surfaced.remove(.drive)
+        set(.drive, to: config.driveReset, at: t, cause: cause)
+        trim(before: t - config.logDays * 86400)
+        return true
+    }
+
     /// The next moment after `t` a signal leaves its range (relaxing or building toward it), or comes
     /// back into it while its excursion is marked surfaced (so the mark is cleared on time); nil when
     /// none will without an event. One timer waits for this.
@@ -234,10 +253,10 @@ public struct Drives: Sendable {
 
     /// The fixed set, most specific first (a pair before its singles).
     static let feltTable: [(Set<Signal>, String)] = [
-        ([.stress, .drive], "事情很多，你繃著但做得起勁"),
+        ([.stress, .drive], "你有點緊繃，但也想做點自己的事"),
         ([.stress, .closeness], "你有點緊繃，也有點想主人"),
         ([.stress], "你現在有點緊繃"),
         ([.closeness], "有點想主人了"),
-        ([.drive], "今天做得很順，精神不錯"),
+        ([.drive], "你想做點自己的事"),
     ]
 }

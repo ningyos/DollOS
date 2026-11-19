@@ -128,6 +128,11 @@ enum Concerns {
     // Not 「手上沒事」 (step 0, 2026-11-15): then her sleep section said "with nothing in hand, sleep",
     // and 3 of 20 idle runs about an unhurried step answered a mid-afternoon surfacing by calling sleep.
     static let wanderOwner = "\(wanderTag)你想到好一陣子沒跟主人說上話了。"
+    /// 動力's wandering asks for something handed in (idle-drive, 2026-11-20): what is only shown to
+    /// her she often lets pass; a step goes through todo (the record), a decision not to through her thought.
+    static let ownAsk = "這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；這次不做，就在想法裡寫一句為什麼。"
+    /// 動力 high with no concern of her own (no goal, or every one ended): the episode still happens.
+    static let wanderOwnNone = "\(wanderTag)你想做點自己的事，可是目標樹上沒有掛著的下一步。可以想想你想成為的樣子，用 goal.add 定一個目標、子目標或下一步。\(ownAsk)"
 
     /// Real runs (2026-11-16): at 05:44 she thought 「等他醒了再說」, and at his 「早～」 nothing put it
     /// back in front of her (1 of 5 asked).
@@ -237,10 +242,7 @@ extension Doll {
     func concernEnd(id: Int, how: String) throws -> Outcome {
         guard how == "done" || how == "let_go" else { throw ToolError(description: "how 只能是 done 或 let_go") }
         let c = try endConcern(id, how: how)
-        if how == "done" {
-            signal(.concernDone, "#\(c.id) \(c.text)")
-            if c.about == .own { chainAfter = c.id }
-        }
+        if how == "done" { signal(.concernDone, "#\(c.id) \(c.text)") }
         return Outcome(text: "#\(c.id) 結束了（\(how == "done" ? "做完" : "放下")）。", actions: ["concern end"])
     }
 
@@ -321,30 +323,27 @@ extension Doll {
         let now = wallClock.now()
         do { try refreshProgramConcerns(now: now) } catch { log("ERROR", "drives: program concerns: \(error)") }
         defer { scheduleDrives() }
+        // Idle again after 動力's wandering: that episode is over (idle-drive, 2026-11-20).
+        if idleForWander { endOwnEpisode(now: now) }
         // A signal back in range forgets its surfacing (here, even when she is busy).
         let pending = drives.pending(at: now)
         guard idleForWander else { return }
-        // 動力 high: finishing one of her own things leads straight to the next.
-        if let done = chainAfter {
-            chainAfter = nil
-            if drives.isOut(.drive, at: now), let next = Concerns.pick(concernFile.items, for: .drive, except: done) {
-                return wander(next, signal: .drive, now: now, chained: true)
-            }
-        }
         for s in pending {
             drives.state.surfaced.insert(s)
             do { try saveSignals() } catch { log("ERROR", "drives: saving \(signalsURL.path) failed: \(error)") }
-            if let c = Concerns.pick(concernFile.items, for: s) { return wander(c, signal: s, now: now, chained: false) }
+            if s == .drive { ownEpisodeStart = now }
+            if let c = Concerns.pick(concernFile.items, for: s) { return wander(c, signal: s, now: now) }
             switch s {
             case .closeness: return wanderLine(Concerns.wanderOwner, signal: s)
-            default: log("INFO", "drives: \(s.label) out of range, no concern of that kind; nothing surfaces")
+            case .drive: return wanderLine(Concerns.wanderOwnNone, signal: s)
+            case .stress: log("INFO", "drives: \(s.label) out of range, no concern of that kind; nothing surfaces")
             }
         }
         // Nothing new for long (phase 2): a wandering toward something not on the tree.
         if let due = curiosityDue(), now >= due { curiosityWander(now: now) }
     }
 
-    func wander(_ c: Concern, signal s: Signal, now: Double, chained: Bool) {
+    func wander(_ c: Concern, signal s: Signal, now: Double) {
         if let i = concernFile.items.firstIndex(where: { $0.id == c.id }) { concernFile.items[i].surfaced.append(now) }
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         associatedIDs.insert(c.id)
@@ -356,8 +355,33 @@ extension Doll {
             heldPending = c.id
         }
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
-        log("INFO", "drives: wander (\(s.label)\(chained ? ", chained" : "")) #\(c.id)「\(c.text)」")
-        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c))))
+        log("INFO", "drives: wander (\(s.label)) #\(c.id)「\(c.text)」")
+        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c) + (s == .drive ? "\n" + Concerns.ownAsk : ""))))
+    }
+
+    /// 動力's episode is over (`Drives.endEpisode`): 動力 back to `drive_reset`, and what she did in it
+    /// (her calls, whether anything reached anyone, her thought) goes to the log and the signal's cause,
+    /// so an episode that did nothing and said nothing is visible as such.
+    func endOwnEpisode(now: Double) {
+        guard drives.state.surfaced.contains(.drive) else { return }
+        let summary = ownEpisodeStart.map { since in Self.episodeSummary(timeline.events.filter { $0.ts >= since }) }
+            ?? "開始於重啟之前，做了什麼這裡看不到"
+        let before = drives.value(.drive, at: now)
+        guard drives.endEpisode(at: now, cause: "自己的事告一段落：" + summary) else { return }
+        ownEpisodeStart = nil
+        log("INFO", String(format: "drives: own-thing episode over (動力 %.2f → %.2f): ", before, drivesConfig.driveReset) + summary)
+        do { try saveSignals() } catch { log("ERROR", "drives: saving \(signalsURL.path) failed: \(error)") }
+        feed.notify(.drives)
+    }
+
+    /// Her calls in the episode, what went out to someone, her first thought.
+    static func episodeSummary(_ events: [Event]) -> String {
+        let calls = events.filter { $0.kind == .doll }.flatMap(\.calls).map(\.name)
+        let out = events.filter { $0.kind == .tool && $0.channel != nil }.count
+        let thought = events.first { $0.kind == .doll && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { "；想法「\(String($0.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)))」" } ?? "；沒有想法"
+        let did = calls.isEmpty ? "沒有呼叫工具" : "呼叫 " + calls.joined(separator: "、")
+        return did + (out == 0 ? "，沒有對任何人說話" : "，說了 \(out) 次話") + thought
     }
 
     func wanderLine(_ text: String, signal s: Signal) {

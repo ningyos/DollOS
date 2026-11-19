@@ -305,6 +305,11 @@ extension Doll {
         guard drivesConfig.enabled else { return }
         var want: [String: (String, Int)] = [:]
         for g in openGoals {
+            // A goal with nothing under it is something of hers to pick up too (idle-drive, 2026-11-20:
+            // until then such a goal had no concern, so 動力 had nothing of it to bring up).
+            if openChildren(g.id).isEmpty {
+                want["goalnone:\(g.id)"] = ("目標 #\(g.id)「\(g.text)」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）", g.id)
+            }
             for s in openChildren(g.id) {
                 if let st = openChildren(s.id).first {
                     want["goal:\(st.id)"] = ("目標樹的下一步：#\(st.id)「\(st.text)」（子目標 #\(s.id)「\(s.text)」；做的時候用 todo.set 列，給 subgoal \(s.id)，那一項開頭寫 #\(st.id)）", st.id)
@@ -407,7 +412,6 @@ extension Doll {
             do {
                 try saveGoals()
                 let e = try achieve(kind: "step", text: n.text, node: n.id, amount: goalsConfig.stepDrive)
-                if let c = concernFile.items.first(where: { $0.key == "goal:\(n.id)" && $0.ended == nil }) { chainAfter = c.id }
                 note = "目標樹上的步驟 #\(n.id) 記成做完了（紀錄 #\(e.id)）。"
                 if openChildren(sub).isEmpty, let s = node(sub) {
                     note += "子目標 #\(sub)「\(s.text)」的步驟都做完了：結果有了就用 goal.end(\(sub), done)，還沒就再加步驟。"

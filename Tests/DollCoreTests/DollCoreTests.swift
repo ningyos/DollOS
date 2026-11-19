@@ -5470,7 +5470,7 @@ private let didOne = "整理了之前的事：新記了 1 條記憶，改了 0 �
 private func maintenanceHarness(_ clock: ManualClock, dir: URL? = nil, drives: Bool = false, notice: Int = 0,
                                 _ replies: [Scripted] = []) async throws -> Harness {
     try await Harness(replies, dir: dir, clock: clock) {
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = notice; $0.drives.enabled = drives
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = notice; $0.drives.enabled = drives; $0.drives.driveHalfLifeH = noClimb
     }
 }
 
@@ -5822,11 +5822,11 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
                                          cause: "主人糾正她：「不是這樣」")])
     var p = Drives(config: c, now: 0)
     p.apply(.praise, at: 0, detail: "「謝啦」")
-    #expect(approx(p.value(.drive, at: 0), c.driveRest + c.praiseDrive))
+    #expect(approx(p.value(.drive, at: 0), c.driveReset + c.praiseDrive))
     #expect(approx(p.value(.closeness, at: 0), c.closenessStart + c.praiseCloseness))
     #expect(approx(p.value(.stress, at: 0), max(0, c.stressRest + c.praiseStress)))
     p.apply(.itemDone, at: 0, detail: "寄出季報")
-    #expect(approx(p.value(.drive, at: 0), c.driveRest + c.praiseDrive + c.itemDoneDrive))
+    #expect(approx(p.value(.drive, at: 0), c.driveReset + c.praiseDrive + c.itemDoneDrive))
     p.apply(.itemFailed, at: 0, detail: "寄出季報")
     p.apply(.ownerTalk, at: 0, detail: "「嗨」")
     p.apply(.deadline, at: 0, detail: "#1")
@@ -5837,7 +5837,8 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
 }
 
 @Test func drivesNextCrossingIsExactAndAnExcursionSurfacesOncePerCrossing() {
-    let c = DrivesConfig()
+    var c = DrivesConfig()
+    c.driveHalfLifeH = noClimb   // 親近 and 壓力 here; 動力's climb has its own test
     var d = Drives(config: c, now: 0)
     let t = d.nextCrossing(after: 0)!
     #expect(abs(t - (log2(c.closenessStart / c.closenessLow) * c.closenessHalfLifeH * 3600 + 1)) < 1e-6)
@@ -5859,8 +5860,52 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     #expect(abs(e.nextCrossing(after: 0)! - min(back, t)) < 1e-6)
 }
 
-@Test func theFeltLineIsOneFixedSentenceByTheCombinationAndNoneInRange() {
+/// 動力 (idle-drive, 2026-11-20): left alone it climbs from `drive_reset` past `drive_high` one period
+/// later; the episode's end puts it back and the next comes one period after that; praise brings it
+/// sooner; whatever she gains inside an episode (her own items, a concern done) is wiped by its end.
+@Test func driveClimbsWhileLeftAloneAndEachEpisodeSetsItBack() {
     let c = DrivesConfig()
+    let period = c.driveHalfLifeH * log2((c.driveRest - c.driveReset) / (c.driveRest - c.driveHigh)) * 3600
+    #expect(abs(period - 3600) < 30)   // the example's numbers: one hour
+    var d = Drives(config: c, now: 0)
+    #expect(approx(d.value(.drive, at: 0), c.driveReset))
+    let t1 = d.nextCrossing(after: 0)!
+    #expect(abs(t1 - (period + 1)) < 1e-6)
+    #expect(d.pending(at: t1 - 2) == [] && d.pending(at: t1) == [.drive])
+    #expect(d.felt(at: t1) == "你想做點自己的事")
+    d.state.surfaced.insert(.drive)   // its wandering
+    // Inside the episode she finishes three items of her own and a concern: 動力 rises, nothing surfaces again.
+    for _ in 0..<3 { d.apply(.itemDone, at: t1 + 600, detail: "自己的一步") }
+    d.apply(.concernDone, at: t1 + 600, detail: "#1")
+    #expect(d.value(.drive, at: t1 + 600) > c.driveHigh && d.pending(at: t1 + 600) == [])
+    // Idle again: back to drive_reset, the next one period on, not at once.
+    let end = t1 + 1200
+    let ended = d.endEpisode(at: end, cause: "自己的事告一段落：x")
+    let again = d.endEpisode(at: end, cause: "x")
+    #expect(ended && !again && approx(d.value(.drive, at: end), c.driveReset))
+    #expect(d.state.log.last!.cause == "自己的事告一段落：x" && !d.state.surfaced.contains(.drive))
+    #expect(abs(d.nextCrossing(after: end)! - (end + period + 1)) < 1e-6)
+    #expect(d.pending(at: end + period - 60) == [])
+    // Praise right after: sooner, by the formula.
+    var p = d
+    p.apply(.praise, at: end, detail: "「謝啦」")
+    let sooner = c.driveHalfLifeH * log2((c.driveRest - c.driveReset - c.praiseDrive) / (c.driveRest - c.driveHigh)) * 3600
+    #expect(abs(p.nextCrossing(after: end)! - (end + sooner + 1)) < 1e-6 && sooner < period - 20 * 60)
+    // A day alone, each episode 5 minutes: about one an hour.
+    var a = Drives(config: c, now: 0)
+    var episodes = 0, busyUntil = 0.0
+    for m in 0..<(24 * 60) {
+        let t = Double(m) * 60
+        guard t >= busyUntil else { continue }
+        _ = a.endEpisode(at: t, cause: "x")
+        if a.pending(at: t).contains(.drive) { a.state.surfaced.insert(.drive); episodes += 1; busyUntil = t + 300 }
+    }
+    #expect((20...24).contains(episodes))
+}
+
+@Test func theFeltLineIsOneFixedSentenceByTheCombinationAndNoneInRange() {
+    var c = DrivesConfig()
+    c.driveHalfLifeH = noClimb
     var d = Drives(config: c, now: 0)
     #expect(d.felt(at: 0) == nil)
     d.apply(.correction, at: 0, detail: "x")
@@ -5873,6 +5918,11 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     both.apply(.correction, at: 15.5 * 3600, detail: "x")
     both.apply(.correction, at: 15.5 * 3600, detail: "x")
     #expect(both.felt(at: 16.5 * 3600) == "你有點緊繃，也有點想主人")
+    var drive = Drives(config: c, now: 0)
+    drive.apply(.correction, at: 0, detail: "x")
+    drive.apply(.correction, at: 0, detail: "x")
+    drive.set(.drive, to: 0.9, at: 0, cause: "x")
+    #expect(drive.felt(at: 0) == "你有點緊繃，但也想做點自己的事")
 }
 
 @Test func signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot() async throws {
@@ -5908,6 +5958,10 @@ private func approx(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-9 }
     await #expect(throws: (any Error).self) { try await Harness(dir: h.dir, clock: clock) { $0.drives.enabled = true } }
 }
 
+/// 動力's climb held (idle-drive, 2026-11-20): for tests not about her own things, whose clocks run
+/// for hours and whose scripts have no turn for a 動力 wandering.
+private let noClimb = 1e9
+
 private func noteCall(_ text: String, _ about: String) -> (String, [(String, String)]) {
     ("concern.note", [("text", text), ("about", about)])
 }
@@ -5915,7 +5969,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdle() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("主人昨晚加班到兩點，很累", "owner")), Scripted("", dm("辛苦了"))], clock: clock) {
-        $0.drives.enabled = true
+        $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
         $0.maintenance.enabled = true
     }
     let doll = h.doll
@@ -5953,7 +6007,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func duringMaintenanceNothingSurfaces() async throws {
     let clock = ManualClock(at("2026-11-16", "23:00"))
     let b = try await Harness([Scripted("", noteCall("主人最近很累", "owner")), Scripted("", dm("早點睡"))],
-                              clock: clock) { $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true }
+                              clock: clock) { $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb }
     await b.model.stall(request: 3)
     let doll = b.doll
     let runner = Task { try await doll.run() }
@@ -5975,7 +6029,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func anAssociationAttachesOnlyAboveTheThresholdAndAddsNoTurn() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("鯊魚分類還剩兩步沒弄完", "duty")), Scripted("", dm("記著了"))], clock: clock) {
-        $0.drives.enabled = true
+        $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
         $0.drives.closenessHalfLifeH = 1000
     }
     let doll = h.doll
@@ -6002,7 +6056,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let add = ("calendar.add", [("title", "主人看牙醫"), ("date", "2026-11-17"), ("start", "09:00")])
     let h = try await Harness([Scripted("", add), Scripted("", dm("記好了")), Scripted("", todoSet("報告寄出了"), readCall, fail("沒有檔案")),
                                Scripted("", ("todo.set", [("items", "[]")]))], clock: clock) {
-        $0.drives.enabled = true
+        $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
         $0.drives.closenessHalfLifeH = 1000
     }
     let doll = h.doll
@@ -6029,29 +6083,106 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await runner.value
 }
 
-@Test func highDriveChainsHerOwnThingsAndTheChainEnds() async throws {
+/// 動力 climbs while she is left alone (idle-drive, 2026-11-20): one of her own things surfaces when it
+/// crosses, the episode ends when she is idle again (logged even when she did nothing and said
+/// nothing), and the next comes one period later, not at once, however much she did in it (the old
+/// chain is gone). The dashboard's next crossing is the moment it happens. A list in progress holds it.
+@Test func leftAloneHerOwnThingsComeOnePeriodApartAndNeverChain() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own"), noteCall("學會畫鯊魚", "own")), Scripted("", dm("想讀圖鑑"))],
                               clock: clock) {
         $0.drives.enabled = true
         $0.drives.closenessHalfLifeH = 1000
-        $0.drives.driveHigh = 0.45        // one concern done (0.4 + 0.1) is high
     }
+    let c = DrivesConfig()
+    let period = c.driveHalfLifeH * log2((c.driveRest - c.driveReset) / (c.driveRest - c.driveHigh)) * 3600
     let doll = h.doll
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("你有什麼想做的？")
     try await waitUntil { await doll.settled && h.reports.count == 2 }
-    await h.model.add([Scripted("", ("concern.end", [("id", "1"), ("how", "done")])), Scripted("", dm("讀完了")),
-                       Scripted("", ("concern.end", [("id", "2"), ("how", "done")])), Scripted("", dm("也畫好了"))])
-    await doll.ownerSaid("圖鑑讀完了嗎")
-    try await waitUntil { await h.model.requests.count == 6 }
+    let first = at("2026-11-16", "10:00") + period + 1
+    #expect(abs(await doll.dashboardDrives().nextCrossing! - first) < 1e-3)
+    clock.set(first - 5)
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 2)
+    // It crosses: one of hers surfaces with what to hand in. She decides not to, says why, calls nothing.
+    await h.model.add([Scripted("先不做，今天想先把圖鑑放著")])
+    clock.set(first)
+    try await waitUntil { await h.model.requests.count == 3 }
+    try await waitUntil { await doll.settled }
+    let w1 = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
+    #expect(w1 == ["【走神】你想起掛著的一件事（#1，你 2026-11-16（星期一） 10:00 記的）：把鯊魚圖鑑讀完\n" + Concerns.ownAsk])
+    try await waitUntil { h.logs.contains { $0.contains("drives: own-thing episode over (動力 0.80 → 0.40): 沒有呼叫工具，沒有對任何人說話；想法「先不做，今天想先把圖鑑放著」") } }
+    #expect(abs(await doll.dashboardDrives().nextCrossing! - (first + period + 1)) < 1e-3)
+    #expect(await doll.dashboardDrives().changes.last!.cause.hasPrefix("自己的事告一段落：沒有呼叫工具"))
+    // The second, one period on: she finishes it (concern.end done raises 動力, which used to chain
+    // straight into the next of hers). The episode's end wins: nothing more surfaces.
+    await h.model.add([Scripted("", ("concern.end", [("id", "2"), ("how", "done")])), Scripted("畫好了")])
+    clock.set(first + period + 1)
+    try await waitUntil { await h.model.requests.count == 5 }
     try await waitUntil { await doll.settled }
     try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 5)
+    #expect(h.logs.filter { $0.contains("own-thing episode over") }.count == 2)
+    #expect(h.logs.contains { $0.contains("own-thing episode over") && $0.contains("呼叫 concern.end，沒有對任何人說話；想法「畫好了」") })
+    #expect(approx(await doll.testDrive(), c.driveReset))
+    // A list in progress holds the next one.
+    await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案"))])
+    await doll.ownerSaid("幫我寄報告，檔案等等給你")
+    try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
+    clock.set(first + 4 * period)
+    try await Task.sleep(for: .milliseconds(150))
     #expect(await h.model.requests.count == 6)
-    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text).count == 1)
-    #expect(h.logs.contains { $0.contains("drives: wander (動力, chained) #2「學會畫鯊魚」") })
-    #expect(h.logs.contains { $0.contains("動力 out of range, no concern of that kind; nothing surfaces") })
+    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.count == 2)
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func duringMaintenanceHerOwnThingsDoNotSurface() async throws {
+    let clock = ManualClock(at("2026-11-17", "02:30"))
+    let b = try await Harness([Scripted("", noteCall("把鯊魚圖鑑讀完", "own")), Scripted("", dm("晚安"))], clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.closenessHalfLifeH = 1000
+    }
+    await b.model.stall(request: 3)
+    let doll = b.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("還沒睡？")
+    try await waitUntil { await doll.settled && b.reports.count == 2 }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await b.model.requests.count == 3 }
+    // 動力 crosses about 03:30; the maintenance still runs: nothing surfaces.
+    clock.set(at("2026-11-17", "03:45"))
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(await b.model.requests.count == 3)
+    #expect(await doll.inMaintenance)
+    #expect(try b.events().allSatisfy { !$0.text.hasPrefix("【走神】") })
+    await doll.stop()
+    try await runner.value
+}
+
+/// While the owner sleeps her own things still come (a goal with nothing under it is one); the
+/// wandering carries the fact, and a turn that messages nobody reaches nobody. (The program does not
+/// block a DM then: an urgent one may still go, calendar.md 「主人睡覺」.)
+@Test func whileTheOwnerSleepsHerOwnThingsStillComeAndCarryTheFact() async throws {
+    let clock = ManualClock(at("2026-11-16", "23:30"))
+    let h = try await Harness([Scripted("他在睡，不吵他；我先想想這個目標底下要放什麼")], clock: clock) {
+        $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"
+        $0.drives.enabled = true; $0.drives.closenessHalfLifeH = 1000
+    }
+    let doll = h.doll
+    _ = try await doll.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    clock.set(at("2026-11-17", "00:31"))
+    try await waitUntil { await h.model.requests.count == 1 }
+    try await waitUntil { await doll.settled }
+    let fact = "（主人現在應該在睡（23:00–07:00）；不急的事等他醒了再說）"
+    let w = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
+    #expect(w.count == 1 && w[0].contains("目標 #1「懂海洋生物」底下還沒有子目標") && w[0].hasSuffix(Concerns.ownAsk + "\n" + fact))
+    try await waitUntil { h.logs.contains { $0.contains("own-thing episode over") && $0.contains("沒有對任何人說話") } }
+    #expect(h.said.isEmpty)
     await doll.stop()
     try await runner.value
 }
@@ -6064,7 +6195,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
                                         ("owner.feedback", [("kind", "praise"), ("quote", "你好棒")]),
                                         ("owner.feedback", [("kind", "praise"), ("quote", "謝啦")])),
                                Scripted("", dm("嘿嘿"))], clock: clock) {
-        $0.drives.enabled = true
+        $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
     }
     let doll0 = h.doll
     let runner = Task { try await doll0.run() }
@@ -6089,7 +6220,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func aTurnThatOnlyRecordsFeedbackOrAConcernStillGetsToAnswer() async throws {
     for call in [("owner.feedback", [("kind", "correction"), ("quote", "太正式了")]), noteCall("主人今天很煩", "owner"),
                  ("concern.end", [("id", "1"), ("how", "let_go")])] {
-        let h = try await Harness { $0.drives.enabled = true }
+        let h = try await Harness { $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb }
         await h.doll.ownerSaid("不對啦，太正式了")
         if call.0 == "concern.end" { try await h.turn(Scripted("", noteCall("阿凱的訊息", "duty"))) }
         try await h.turn(Scripted("", call))
@@ -6181,7 +6312,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")), Scripted(""), Scripted("none"), planReply, summaryReply,
                                Scripted("", dm("醫生到底說什麼啦？"))], clock: clock) {
         $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 10; $0.drives.enabled = true
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 10; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
     }
     let doll = h.doll
     let runner = Task { try await doll.run() }
@@ -6225,7 +6356,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
         let h = try await Harness([Scripted("", noteCall("明天問主人牙醫說什麼", "owner")), Scripted("", dm("晚安")),
                                    told ? Scripted("", dm("醫生說什麼？")) : Scripted("他還在睡，等他醒了再說"),
                                    Scripted("", dm("早，牙醫說什麼？")), Scripted("", dm("好"))], clock: clock) {
-            $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"; $0.drives.enabled = true
+            $0.ownerSleep.enabled = true; $0.ownerSleep.start = "23:00"; $0.ownerSleep.end = "07:00"; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
         }
         let doll = h.doll
         let runner = Task { try await doll.run() }
@@ -6358,7 +6489,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 @Test func anAssociationFiresAtTheConfiguredThresholdNotSelects() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", noteCall("主人的牙齒", "owner")), Scripted("", dm("嗯")), Scripted("", dm("好"))], clock: clock) {
-        $0.drives.enabled = true; $0.drives.associationSimilarity = -1; $0.select.similarity = 0.99
+        $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb; $0.drives.associationSimilarity = -1; $0.select.similarity = 0.99
     }
     let doll = h.doll
     let runner = Task { try await doll.run() }
@@ -6590,11 +6721,12 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     await #expect { try await d.linkTodo(["#99 不存在"], subgoal: s.id) } throws: { "\($0)".contains("#99 不是子目標 #2 還沒做的步驟") }
     let last = try h.toolResults().last { $0.text.hasPrefix("完成，記下了。") }!.text
     #expect(last.contains("子目標 #2「弄懂鯊魚的分類」的步驟都做完了"))
-    // The sub-goal done by her: a bigger record; its concern is gone.
+    // The sub-goal done by her: a bigger record; its concern is gone, and the goal with nothing
+    // under it is one now (idle-drive, 2026-11-20).
     _ = try await d.goalEnd(s.id, how: "done", by: "her")
     #expect(await d.dashboardGoals().record.first!.kind == "subgoal")
     #expect(approx(await d.testDrive(), before + (2 * c.stepDrive + c.subgoalDrive) * c.nowShare))
-    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.isEmpty)
+    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.map(\.key) == ["goalnone:\(g.id)"])
     // A list not tied to the tree (what the owner asked): one item moves 動力 as a todo item, the finished list is one record.
     let mid = await d.testDrive()
     await d.ownerSaid("幫我存檔")
@@ -6687,7 +6819,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(Goals.frontTitle("開著的視窗：Finder、Safari「Shark - Wikipedia」（前景）；焦點：textfield") == "Shark - Wikipedia")
     #expect(Goals.frontTitle("開著的視窗：Finder（前景）") == nil)
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await goalsHarness(clock, [Scripted("", dm("嗯"))]) { $0.drives.closenessHalfLifeH = 1000 }
+    let h = try await goalsHarness(clock, [Scripted("", dm("嗯"))]) { $0.drives.closenessHalfLifeH = 1000; $0.drives.driveHalfLifeH = noClimb }
     let d = h.doll
     await d.testStartSignals()
     let c = GoalsConfig()
@@ -6729,7 +6861,7 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     let clock = ManualClock(at("2026-11-16", "21:00"))
     let h = try await Harness([Scripted("", dm("嘿")), Scripted("none"), reviewReply("我想當查資料最快的幫手。"), planReply, summaryReply],
                               clock: clock) {
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb; $0.goals.review = true
         $0.drives.closenessHalfLifeH = 1000   // no 親近 wandering in the way
     }
     let doll = h.doll
@@ -6762,7 +6894,7 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
 @Test func anInterruptedReviewWritesNothingAndARefusedRevisionSaysWhy() async throws {
     let clock = ManualClock(at("2026-11-16", "21:00"))
     let h = try await Harness([Scripted("", dm("嘿")), Scripted("none"), Scripted("", dm("在"))], clock: clock) {
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb; $0.goals.review = true
         $0.drives.closenessHalfLifeH = 1000   // no 親近 wandering in the way
     }
     let doll = h.doll
@@ -6826,7 +6958,7 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
 @Test func aRestartDuringMaintenanceGoesOnWithTheReviewAndItsWordsReachTheNotice() async throws {
     let clock = ManualClock(at("2026-11-16", "21:00"))
     let tune: (inout Config) -> Void = {
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.goals.review = true
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb; $0.goals.review = true
         $0.drives.closenessHalfLifeH = 1000
     }
     let h = try await Harness([Scripted("", dm("嘿"))], clock: clock, tune: tune)
@@ -8128,7 +8260,7 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     let h = try await Harness([Scripted("", recall("牙醫")), Scripted("", remember([("主人喜歡貓", false)])), Scripted("", dm("週三下午兩點")),
                                Scripted("", ("owner.feedback", [("kind", "correction"), ("quote", "不對，是週四下午三點")])), Scripted("", dm("好，週四下午三點")),
                                Scripted("none"), reply, planReply, summaryReply], clock: clock) {
-        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
         $0.audit.enabled = true; $0.audit.mode = "change"; $0.audit.maxMemories = 1
     }
     try await seedMemory(h, "public", "主人的牙醫約在週三下午兩點", tier: "consolidated", id: "1-aaaaaa")
@@ -9040,7 +9172,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 }
 
 @Test func withTheComputerOffAFarEstimateIsStillRefusedAndCuriosityNeverComes() async throws {
-    let h = try await Harness(tune: { computerOff(&$0); checking(&$0); $0.drives.enabled = true })
+    let h = try await Harness(tune: { computerOff(&$0); checking(&$0); $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb })
     let items = ["行事曆上有看牙醫"]
     await h.doll.ownerSaid("幫我在行事曆記 11/20 看牙醫")
     try await h.turn(Scripted("", estimated(3, items: items), ("recall", [("query", "牙醫")])))
