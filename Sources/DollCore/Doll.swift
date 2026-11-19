@@ -1954,7 +1954,7 @@ public actor Doll {
             throw refuse(problem)
         }
         let sources = citable(before: reply)
-        let places = computerOn ? "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行" : "主人說的話、工具的結果、【狀況】"
+        let places = computerOn ? "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行" : "主人說的話、行事曆、你的目標樹、【狀況】"
         var facts: [PlanFact] = []
         for (i, f) in given.enumerated() {
             let name = "facts 第 \(i + 1) 條"
@@ -1999,6 +1999,10 @@ public actor Doll {
     func citable(before reply: Event) -> [(source: String, text: String)] {
         var out: [(source: String, text: String)] = []
         if let footer = timeline.events.last(where: { $0.seq == reply.seq })?.footer { out.append(("【狀況】", footer)) }
+        // Her goal tree as the program holds it now, like the calendar (2026-11-20, m12-idle-drive: 11
+        // plans for a step of her own were refused for quoting the step they were about): a list that
+        // does a step may say what the step is. The words are hers; that the node exists is the program's.
+        for n in goalFile.nodes where n.ended == nil { out.append(("目標樹", "#\(n.id)〔\(n.level.label)〕\(n.text)")) }
         switch latestRead {
         case .window(let text): out.append(("最新讀到的視窗", text))
         case .file(let path): if let t = try? FileText.decode(try LocalFiles.read(path), path: path) { out.append(("檔案 \(path)", t)) }
@@ -2032,6 +2036,8 @@ public actor Doll {
                 if kept.contains(ev.seq!), let w = ev.window { out.append(("讀到的視窗", w)) }
             case .calendar: out.append(("行事曆", ev.text))
             case .memory:
+                // What the owner did in the dashboard is his word, as a line of his is.
+                if ev.text.hasPrefix("【主人改了你") { out.append(("主人改的", ev.text)) }
                 for line in ev.text.split(separator: "\n") where line.hasPrefix("〔工具〕") {
                     out.append(("【相關記憶】提的工具", cut(String(line))))
                 }

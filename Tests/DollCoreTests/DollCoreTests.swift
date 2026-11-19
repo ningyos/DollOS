@@ -7253,7 +7253,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
 @Test func aFactNeedsAQuoteFromWhatSheCanSeeAndABeliefWithoutOneGoesToAssumptions() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid(xLine)
-    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行"
+    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行"
     // 2026-11-17 x-2: her wrong belief written as a fact. Without a quote: refused, told where it belongs.
     try await h.turn(xSet(facts: #"[{"fact":"\#(pdfBelief)"}]"#))
     #expect(try h.toolResults().last!.text == "失敗：清單沒有列：facts 第 1 條「\(pdfBelief)」沒有 quote。fact 要有出處：quote 照抄撐住它的字（\(places)）。找不到出處，就是你以為的：搬到 assumptions。")
@@ -7689,7 +7689,7 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     await h.doll.ownerSaid("幫我用計算機算 58×13")
     let item = "計算機顯示 58×13 的答案"
     func refusal(_ quote: String, own: String?) -> String {
-        "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行）。"
+        "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行）。"
             + (own.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? "")
             + "fact 要有出處：quote 一字不差照抄那裡的字。找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。"
     }
@@ -9186,4 +9186,23 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     #expect(try h.toolResults().last!.text.hasPrefix("失敗：清單沒有列：你估整份 2 回合，可是以前做過像這次的清單：「行事曆上有看牙醫」你估 3、實際 7 回合。"))
     // No source of "new" without a computer: no curiosity wandering is ever due.
     #expect(await h.doll.curiosityDue() == nil)
+}
+
+@Test func aListForAStepOfHerOwnMayQuoteTheStepAndWhatTheOwnerDidToHerTree() async throws {
+    // 2026-11-20, m12-idle-drive: 11 plans for her own steps were refused for quoting the step they
+    // were about, or the owner's edit of her tree. The tree as the program holds it is a source, as
+    // the calendar is; a node that is not in it is not.
+    let h = try await goalsHarness(ManualClock(at("2026-11-16", "10:00")))
+    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let s = try await h.doll.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    let st = try await h.doll.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
+    func set(_ quote: String) -> Scripted {
+        Scripted("", ("todo.set", [("items", "[\"#\(st.id) 讀完鯊魚條目\"]"), ("subgoal", "\(s.id)")]
+            + planArgs.map { $0.0 == "facts" ? ("facts", "[{\"fact\":\"這一步是讀鯊魚條目\",\"quote\":\"\(quote)\"}]") : $0 }))
+    }
+    try await h.turn(set("#\(st.id + 1)〔步驟〕讀維基的鯨魚條目"))
+    #expect(try h.toolResults().last!.text.contains("不在你看得到的地方"))
+    try await h.turn(set("#\(st.id)〔步驟〕讀維基的鯊魚條目"))
+    #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了"))
+    #expect(await h.doll.todo.plan?.facts.first?.source == "目標樹")
 }
