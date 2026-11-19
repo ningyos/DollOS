@@ -2,9 +2,10 @@ import Foundation
 import Testing
 @testable import DollCore
 
-// m6-drives (2026-11-15; no sleep since 2026-11-16): the simulated week the [drives] numbers were
-// tuned on. No model: a scripted schedule of the owner's events on an injected clock, the signals'
-// math (`Drives`) and the wandering rule (idle + out of range + not yet surfaced for this crossing),
+// m6-drives (2026-11-15; no sleep since 2026-11-16; idle-drive since 2026-11-20): the simulated week
+// the [drives] numbers were tuned on. No model: a scripted schedule of the owner's events on an
+// injected clock, the signals' math (`Drives`) and the wandering rule (idle + out of range + not yet
+// surfaced for this crossing; 動力's episode ends at the first idle minute after it, `endEpisode`),
 // printing clock times, curves and wander counts. Runs only with M6_WEEK=<out file>:
 //
 //     M6_WEEK=experiments/m6-drives/week.txt swift test --scratch-path /tmp/m6build --filter m6DrivesWeek
@@ -12,9 +13,10 @@ import Testing
 // Assumptions (the model is not in the loop): she always has a concern of each kind, so every
 // surfacing is a turn; a 親近 surfacing makes her message the owner and he does not answer it (his
 // next line comes only when the schedule says). A task keeps her busy for 30 minutes and ends done
-// (or failed); a conversation keeps her busy from its first line to 10 minutes after its last. The
-// system maintenance at 03:00 takes her away for 10 minutes (no surfacing then); nothing marks a
-// night any more, so every hour of the 24 is awake for the signals.
+// (or failed); a conversation keeps her busy from its first line to 10 minutes after its last. Every
+// surfacing (her own thing included) keeps her 5 minutes. The system maintenance at 03:00 takes her
+// away for 10 minutes (no surfacing then); nothing marks a night any more, so every hour of the 24 is
+// awake for the signals.
 
 private let weekOut = ProcessInfo.processInfo.environment["M6_WEEK"]
 
@@ -63,12 +65,13 @@ func m6DrivesWeek() throws {
     out.append("m6-drives simulated week, no sleep (DrivesConfig defaults; assumptions in Tests/DollCoreTests/M6DrivesWeek.swift)")
     var curves: [String] = []
     out.append("Each day runs 08:00 → 08:00 next day; maintenance at 03:00 (10 min, no surfacing). * = a wander between 02:00 and 07:00.")
+    out.append("動力 = her own things (episodes); the other wanderings are listed.")
     out.append("")
-    out.append("day             last owner line  親近 <0.2 after  wanderings (time signal)                          壓力 back in range")
+    out.append("day             last owner line  親近 <0.2 after  動力  other wanderings (time signal)                壓力 back in range")
     for (i, name) in days.enumerated() {
         let day0 = Day("2026-11-16")!.adding(i).at(TimeOfDay("00:00")!)
         let events = schedule(name)
-        var wanders: [String] = []
+        var wanders: [String] = [], own = 0
         var stressBack = "-"
         var correctionAt: Double?
         var closenessLow = "-"
@@ -94,11 +97,13 @@ func m6DrivesWeek() throws {
             // After the day's last owner line (the night's crossing).
             if closenessLow == "-", m > (lastTalk ?? 0), d.isOut(.closeness, at: t) { closenessLow = Doll.hhmm(t) }
             if m == 27 * 60 { busyUntil = max(busyUntil, t + 600) }   // maintenance 03:00–03:10
+            // Idle again after an episode of her own: 動力 back to drive_reset.
+            if t >= busyUntil { _ = d.endEpisode(at: t, cause: "episode") }
             let pending = d.pending(at: t)
             if t >= busyUntil, let s = pending.first {
                 d.state.surfaced.insert(s)
                 let night = (26 * 60..<31 * 60).contains(m)
-                wanders.append("\(Doll.hhmm(t)) \(s.label)\(night ? "*" : "")")
+                if s == .drive { own += 1 } else { wanders.append("\(Doll.hhmm(t)) \(s.label)\(night ? "*" : "")") }
                 busyUntil = t + 300
             }
             if m % 60 == 0 {
@@ -111,7 +116,8 @@ func m6DrivesWeek() throws {
         out.append(name.padding(toLength: 16, withPad: " ", startingAt: 0)
                    + (lastTalk.map { String(format: "%02d:%02d", $0 / 60, $0 % 60) } ?? "-").padding(toLength: 17, withPad: " ", startingAt: 0)
                    + closenessLow.padding(toLength: 16, withPad: " ", startingAt: 0)
-                   + w.padding(toLength: 50, withPad: " ", startingAt: 0) + " " + stressBack)
+                   + "\(own)".padding(toLength: 6, withPad: " ", startingAt: 0)
+                   + w.padding(toLength: 46, withPad: " ", startingAt: 0) + " " + stressBack)
     }
     out.append("")
     out.append("Hourly values (one line per hour, 08:00 → 07:00 next day):")

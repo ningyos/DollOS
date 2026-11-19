@@ -12,7 +12,8 @@ import Testing
 // Assumptions (the model is not in the loop):
 // - Her tree always has a next step (a sub-goal's steps run out → she adds the next ones), so a
 //   動力 wandering of her own always finds tree work; she picks it up at once (one step, 30 min,
-//   done), and the existing chain (動力 still high after finishing → the next one) repeats it.
+//   done). Since idle-drive (2026-11-20) 動力 climbs while she is left alone and the episode ends at
+//   the first idle minute after it (動力 back to drive_reset; what the step added is wiped): no chain.
 // - Every third tree step meets something new on the way (a page she had not seen): novelty.
 // - The owner's tasks are todo lists (one item, done): item_done + list_drive's share; on the praise
 //   days he evaluates each good (the rest of list_drive), on the corrected day the 14:06 correction
@@ -62,7 +63,7 @@ private func simulateWeek(_ c: DrivesConfig, _ g: GoalsConfig, curves: inout [St
         let day0 = Day("2026-11-16")!.adding(i).at(TimeOfDay("00:00")!)
         let events = daySchedule(name)
         var causes: [String: Int] = [:]
-        var steps = 0, chained = 0
+        var steps = 0
         var lo = 1.0, hi = 0.0
         var stepEnds: [Double] = []
         var taskEnds: [(Double, Bool, Double)] = []   // end, ok, the share given (for the correction)
@@ -90,14 +91,12 @@ private func simulateWeek(_ c: DrivesConfig, _ g: GoalsConfig, curves: inout [St
                     lastTask = k
                 } else { d.apply(.itemFailed, at: t, detail: "task") }
             }
-            var finishedStep = false
             for e in stepEnds where e == t {
                 d.move(.drive, by: g.stepDrive * g.nowShare, at: t, cause: "step")
                 stepsTotal += 1
                 if stepsTotal % 3 == 0 { d.move(.drive, by: g.noveltyDrive, at: t, cause: "new"); lastNew = t }
                 // Every third step finishes a sub-goal.
                 if stepsTotal % 3 == 0 { d.move(.drive, by: g.subgoalDrive * g.nowShare, at: t, cause: "sub-goal") }
-                finishedStep = true
             }
             if m == 27 * 60 { busyUntil = max(busyUntil, t + 600) }   // maintenance 03:00–03:10
             let v = d.value(.drive, at: t)
@@ -106,14 +105,10 @@ private func simulateWeek(_ c: DrivesConfig, _ g: GoalsConfig, curves: inout [St
                 let vs = d.values(at: t)
                 curves.append(String(format: "  day %d %@  %.2f  %.2f  %.2f", i + 1, Doll.hhmm(t), vs[.drive]!, vs[.stress]!, vs[.closeness]!))
             }
+            // Idle again after an episode of her own: 動力 back to drive_reset (Drives.endEpisode).
+            if t >= busyUntil { _ = d.endEpisode(at: t, cause: "episode") }
             let pending = d.pending(at: t)
             guard t >= busyUntil else { continue }
-            // Chain: a step just finished and 動力 still high → the next step at once.
-            if finishedStep, d.isOut(.drive, at: t) {
-                causes["動力→樹（接著做）", default: 0] += 1; chained += 1; steps += 1
-                stepEnds.append(t + 1800); busyUntil = t + 1800
-                continue
-            }
             if let s = pending.first {
                 d.state.surfaced.insert(s)
                 if s == .drive {
@@ -133,7 +128,7 @@ private func simulateWeek(_ c: DrivesConfig, _ g: GoalsConfig, curves: inout [St
                 lastNew = t + 1800
             }
         }
-        let order = ["親近", "壓力", "動力→樹", "動力→樹（接著做）", "好奇"]
+        let order = ["親近", "壓力", "動力→樹", "好奇"]
         let w = order.compactMap { k in causes[k].map { "\(k) \($0)" } }.joined(separator: "，")
         rows.append("\(i + 1) " + name.padding(toLength: 14, withPad: " ", startingAt: 0) + " | "
                     + (w.isEmpty ? "none" : w).padding(toLength: 44, withPad: " ", startingAt: 0) + " | "
@@ -153,18 +148,12 @@ func m6GoalsWeek() throws {
     var curves: [String] = []
     out += ["example.toml:", header] + simulateWeek(cfg.drives, cfg.goals, curves: &curves)
     var variants: [(String, DrivesConfig, GoalsConfig)] = []
-    var lower = cfg.drives; lower.driveHigh = 0.7
-    variants.append(("drive_high 0.7", lower, cfg.goals))
-    var bigger = cfg.goals; bigger.stepDrive = 0.1; bigger.nowShare = 0.7
-    variants.append(("step_drive 0.1, now_share 0.7", cfg.drives, bigger))
-    var rest = cfg.drives; rest.driveRest = 0.5
-    variants.append(("drive_rest 0.5", rest, cfg.goals))
-    var both = cfg.drives; both.driveRest = 0.5; both.driveHigh = 0.7
-    variants.append(("drive_rest 0.5, drive_high 0.7", both, cfg.goals))
-    var both2 = cfg.drives; both2.driveRest = 0.45; both2.driveHigh = 0.65
-    variants.append(("drive_rest 0.45, drive_high 0.65", both2, cfg.goals))
-    var small = cfg.goals; small.stepDrive = 0.02; small.subgoalDrive = 0.06; small.noveltyDrive = 0.03
-    variants.append(("drive_rest 0.45, drive_high 0.65, step 0.02, subgoal 0.06, novelty 0.03", both2, small))
+    for h in [0.4, 0.9] {
+        var v = cfg.drives; v.driveHalfLifeH = h
+        variants.append(("drive_half_life_h \(h)", v, cfg.goals))
+    }
+    var reset = cfg.drives; reset.driveReset = 0.6
+    variants.append(("drive_reset 0.6", reset, cfg.goals))
     for (label, dc, gc) in variants {
         var ignore: [String] = []
         out += ["", label + ":", header] + simulateWeek(dc, gc, curves: &ignore)
