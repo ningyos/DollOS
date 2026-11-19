@@ -105,6 +105,14 @@ public final class CuaDaemon: @unchecked Sendable {
         throw ComputerError("cua-driver serve \(Int(startWait)) 秒內沒有回應。修法：在終端機跑 `\(driver) serve` 看它說什麼。")
     }
 
+    /// Her computer at boot: `[computer] enabled = false` (2026-11-19) never looks at the driver and
+    /// starts no daemon (nil); otherwise `ensure`. `line` is the boot's one output line about it.
+    public static func boot(_ c: ComputerConfig) async throws -> (daemon: CuaDaemon?, line: String) {
+        guard c.enabled else { return (nil, "computer: disabled ([computer] enabled = false): no cua-driver, no computer or file tools") }
+        let d = try await ensure(driver: c.driver, startWait: c.daemonStartS)
+        return (d, "computer: cua-driver daemon " + (d.started ? "started by this process (stopped at exit)" : "already running (left running at exit)"))
+    }
+
     static func running(_ driver: String) async throws -> Bool {
         try await runProcess(driver, ["status"]).status == 0
     }

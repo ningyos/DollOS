@@ -38,6 +38,7 @@ talk_effort = "medium"        # 寫那段摘要的請求的 reasoning_effort。�
 [computer]
 # 她的電腦就是這台 Mac（2026-11-16，主人）：在背景操作主人的 app，經過開源的 cua-driver（https://github.com/trycua/cua），不搶主人的滑鼠、鍵盤和前景 app。
 # 開機時：cua-driver 不在、它沒有輔助使用／螢幕錄製權限＝開機失敗，訊息寫怎麼修；daemon 沒在跑就由 dollcore 啟動（cua-driver serve），結束時停掉它啟動的那個；已經在跑的照用、不停
+enabled = true                # false（2026-11-19，主人：無人看管的長跑試用）＝沒有電腦：開機不找 cua-driver、不啟動 daemon；她沒有電腦、檔案和自己存的工具（apps、open、read_window、act、read_file、write_file、edit_file、tool.save、tool.run），系統提示和程式的話也不提；ask_owner 留著（決定點的選項）；好奇（沒碰到新東西）不會冒出來，因為新東西只從電腦來
 driver = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"   # cua-driver 0.52.4 的 CLI（~/.local/bin/cua-driver 是指向它的連結；用絕對路徑，不靠 PATH）
 daemon_start_s = 10.0         # dollcore 啟動的 daemon 最多等這麼久回應。初始值理由：2026-11-16 手動 cua-driver serve 不到 1 秒就在聽 socket；10 倍餘裕
 max_elements = 250            # 讀一個視窗最多走這麼多個元素（cua-driver 自己的預設）。初始值理由：計算機 34 個、備忘錄、TextEdit 都在 250 內；超過時結果會說清單被截斷、要看截圖

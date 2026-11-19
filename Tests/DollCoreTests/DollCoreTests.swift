@@ -2667,7 +2667,7 @@ private final class FakeStrata: Sendable {
         sent.withLock { $0 = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any] }
         return (Data(reply.utf8), 200)
     })
-    let tools = Tools.json(Tools.todoSpecs)
+    let tools = Tools.json(Tools.todoSpecs(computer: true))
     let history = [ChatMessage(role: "system", content: "s"),
                    ChatMessage(role: "assistant", content: "想", toolCalls: [ToolCall(name: "recall", arguments: "{\"query\": \"貓\"}"),
                                                                            ToolCall(failed: "", ToolCall.unreadable)]),
@@ -7142,7 +7142,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
 
 @Test func theAssumptionsFieldSaysEveryPlanHasSomeWithExamples() throws {
     // 2026-11-17: 6 of 14 first todo.set left assumptions out, all on simple tasks.
-    let d = try #require(Tools.planProperties.first { $0.0 == "assumptions" }?.1)
+    let d = try #require(Tools.planProperties(computer: true).first { $0.0 == "assumptions" }?.1)
     #expect("\(d)".contains("每份計畫都有") && "\(d)".contains("檔案在那裡"))
 }
 
@@ -8834,4 +8834,184 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     let none = Date()
     for _ in 0..<20 { _ = try h.record(HistoryChange(who: .her, what: "dm", why: "", ts: 1_800_000_100)) }
     print("history: commit median \(ms.sorted()[10]) ms, max \(ms.max()!) ms; nothing changed \(Date().timeIntervalSince(none) * 1000 / 20) ms")
+}
+
+// [computer] enabled = false (2026-11-19, owner: an unattended trial runs without the computer and files) ----
+
+/// What the computer switch must leave alone when on: every tools list and every prompt text, as
+/// SHA-256 over all the combinations (pinned against the build before the switch, ef43eeb).
+private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
+    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var tools: [String] = [], prompt: [String] = []
+    for voice in [false, true] {
+        for drives in [false, true] {
+            tools.append(Tools.json(Tools.specs(memory: cfg.memory, voice: voice, computer: cfg.computer, files: cfg.files, drives: drives)))
+            for maintenance in [false, true] {
+                for sleep in [false, true] {
+                    prompt.append(Instructions.text(voice: voice, context: cfg.context, docs: "/d", maintenance: maintenance, drives: drives, ownerSleep: sleep))
+                }
+            }
+        }
+    }
+    prompt.append(Instructions.voice(docs: "/d"))
+    func digest(_ parts: [String]) -> String { SHA256.hash(data: Data(parts.joined(separator: "\u{0}").utf8)).map { String(format: "%02x", $0) }.joined() }
+    return (digest(tools), digest(prompt))
+}
+
+@Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
+    let d = try enabledRequestDigests()
+    #expect(d.tools == "354d2e0a183a1922552136283dfc86c650cc0436180a835ce692e4cd876c11c4")
+    #expect(d.prompt == "047210a8eae923abd5093ccf5b59c76ccd784e9ee707579ef168fa886cb26dfd")
+}
+
+private func computerOff(_ c: inout Config) { c.computer.enabled = false }
+
+/// The tools that exist only with the computer.
+private let computerOnly = ["apps", "open", "read_window", "act", "read_file", "write_file", "edit_file", "tool.save", "tool.run"]
+
+/// Words that would tell her of a computer, files, windows, screenshots or saved tools.
+private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "螢幕", "Mac", " app", "app ", "Touch ID", "cua", "read_window", "read_file", "write_file",
+                             "edit_file", "\"open\"", "open 帶", "（例如 open）", "\"apps\"", "\"act\"", " act ", "tool.save", "tool.run", "存的工具", "〔工具〕",
+                             "computer.md", "tools.md", "tool-failures.md", "click", "動作清單（像"]
+
+@Test func theComputerSwitchIsReadStrictlyAndOnByDefault() throws {
+    let text = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
+    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.enabled)
+    let dir = FileManager.default.temporaryDirectory.appending(path: "computer-switch-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let line = text.split(separator: "\n").first { $0.hasPrefix("enabled = true                # false（2026-11-19") }!
+    for (value, ok) in [("false", true), ("\"no\"", false)] {
+        let file = dir.appending(path: "\(UUID().uuidString).toml")
+        try text.replacingOccurrences(of: line, with: "enabled = \(value)").write(to: file, atomically: true, encoding: .utf8)
+        if ok { #expect(try !Config.load(file).computer.enabled) } else { #expect(throws: (any Error).self) { try Config.load(file) } }
+    }
+}
+
+@Test func withTheComputerOffBootNeverLooksAtTheDriver() async throws {
+    // A driver that would answer and start: off, it is not asked anything.
+    let cli = try FakeDriverCLI(permissions: allowed)
+    var c = ComputerConfig()
+    c.enabled = false
+    c.driver = cli.path
+    let (daemon, line) = try await CuaDaemon.boot(c)
+    #expect(daemon == nil && line == "computer: disabled ([computer] enabled = false): no cua-driver, no computer or file tools")
+    #expect(cli.calls.isEmpty && !cli.up)
+    // A driver that is not there at all is no boot failure either.
+    c.driver = "/nonexistent/cua-driver"
+    #expect(try await CuaDaemon.boot(c).daemon == nil)
+    // On: the same driver is checked and started as before.
+    c.enabled = true
+    c.driver = cli.path
+    c.daemonStartS = 5
+    let (on, onLine) = try await CuaDaemon.boot(c)
+    #expect(on?.started == true && onLine == "computer: cua-driver daemon started by this process (stopped at exit)" && cli.calls.contains("serve"))
+    await on?.stop()
+}
+
+@Test func withTheComputerOffHerToolsAreTheOthersAndAskOwnerStays() async throws {
+    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var off = cfg.computer
+    off.enabled = false
+    for voice in [false, true] {
+        for drives in [false, true] {
+            let onNames = Tools.specs(memory: cfg.memory, voice: voice, computer: cfg.computer, files: cfg.files, drives: drives).map(\.name)
+            let offNames = Tools.specs(memory: cfg.memory, voice: voice, computer: off, files: cfg.files, drives: drives).map(\.name)
+            #expect(offNames == onNames.filter { !computerOnly.contains($0) })
+            #expect(offNames.contains("ask_owner") && offNames.last(where: { !$0.hasPrefix("voice.") }) == "ask_owner")
+        }
+    }
+    let h = try await Harness(tune: computerOff)
+    let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
+    let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "history.list", "history.undo",
+                      "todo.set", "todo.done", "todo.fail", "todo.wait", "todo.progress", "todo.continue",
+                      "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "ask_owner"])
+}
+
+@Test func withTheComputerOffNoPromptTextOrToolSaysComputerFilesWindowsShotsOrSavedTools() throws {
+    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var off = cfg.computer
+    off.enabled = false
+    var texts: [String] = []
+    for drives in [false, true] {
+        for voice in [false, true] { texts.append(Tools.json(Tools.specs(memory: cfg.memory, voice: voice, computer: off, files: cfg.files, drives: drives))) }
+        for maintenance in [false, true] {
+            for sleep in [false, true] {
+                texts.append(Instructions.text(voice: false, context: cfg.context, docs: "/d", maintenance: maintenance, drives: drives, ownerSleep: sleep, computer: false))
+            }
+        }
+    }
+    for t in texts {
+        let found = computerWords.filter { t.contains($0) }
+        #expect(found.isEmpty, "found \(found)")
+        // Her docs are read with read_file: not pointed to.
+        #expect(!t.contains("/d/"))
+    }
+    // The words do show up with the computer on (the list is not checking for nothing).
+    let on = Instructions.text(voice: false, context: cfg.context, docs: "/d", maintenance: true, drives: true, ownerSleep: true)
+    #expect(computerWords.filter { on.contains($0) }.count >= 15)
+    // The voice section without the docs pointer.
+    #expect(!Instructions.voice(docs: "/d", computer: false).contains("/d/"))
+}
+
+@Test func withTheComputerOffACallToAComputerToolIsAnUnknownToolAndTheListRulesStillHold() async throws {
+    let h = try await Harness(tune: computerOff)
+    await h.doll.ownerSaid("跟我說早安")
+    try await h.turn(Scripted("", todoSet("跟主人說早安"), ("act", [("steps", #"[{"click": "7"}]"#)]),
+                              ("write_file", [("path", "/tmp/dollcore-computer-off-\(UUID().uuidString).txt"), ("text", "x")]),
+                              ("tool.run", [("name", "乘法")])))
+    let results = try h.toolResults().suffix(4).map(\.text)
+    #expect(results[0].hasPrefix("todo 列好了"))
+    #expect(Array(results[1...]) == ["失敗：沒有 act 這個工具", "失敗：沒有 write_file 這個工具", "失敗：沒有 tool.run 這個工具"])
+    #expect(h.cua.tools.isEmpty && h.last.actions == ["todo set", "error act", "error write_file", "error tool.run"])
+    // Told before done holds; no evidence is asked for (no window or file was read).
+    try await h.turn(Scripted("", done("說了早安", evidence: nil)))
+    #expect(try h.toolResults().last!.text == notTold("主人", "discord.dm"))
+    try await h.turn(Scripted("", dm("早安"), done("說了早安", evidence: nil)))
+    let doneText = try h.toolResults().last!.text
+    #expect(doneText.hasPrefix("完成，記下了。") && doneText.contains("這一項的過程（每一步的結果、那幾回合你的念頭）收起來了"))
+    // 【狀況】 has no screenshots.
+    let footer = try #require(try h.events().last { $0.footer != nil }?.footer)
+    #expect(footer.contains("其中做事的過程 ") && !footer.contains("截圖"))
+    // Done without having done anything: the hint names tools she has.
+    await h.doll.ownerSaid("提醒我喝水")
+    try await h.turn(Scripted("", todoSet("提醒主人喝水")))
+    try await h.turn(Scripted("", done("提醒了", evidence: nil)))
+    #expect(try h.toolResults().last!.text == "失敗：「提醒主人喝水」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用工具查過（例如 recall、calendar.list）再說完成。")
+    // A failure's evidence is checked against what the item saw, with no windows or files in the words.
+    try await h.turn(Scripted("", ("recall", [("query", "喝水")])))
+    try await h.turn(Scripted("", ("todo.fail", [("cause", "主人不在"), ("evidence", "主人說他出門了"), ("tried", "查了記憶")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒記成失敗：evidence「主人說他出門了」不在這一項你看過的東西裡（工具的結果、別人說的話）。"))
+}
+
+@Test func withTheComputerOffTheDecisionPointOffersItsThreeChoicesAndAskingTheOwnerWorks() async throws {
+    let h = try await Harness(tune: { computerOff(&$0); $0.computer.decideAfterRounds = 3; $0.computer.decideEveryRounds = 2 })
+    await h.doll.ownerSaid("幫我想週末去哪裡")
+    try await h.turn(Scripted("", todoSet("跟主人說三個週末去處")))
+    for _ in 0..<3 { try await h.turn(Scripted("", ("recall", [("query", "週末")]))) }
+    let point = try #require(try h.events().last { $0.text.hasPrefix("【該決定了】") })
+    #expect(point.text == "【該決定了】「跟主人說三個週末去處」已經做了 3 回合（做得成的事通常 7–14 回合）。選一個："
+            + "① todo.continue(missing, stuck, change)：還缺什麼、最卡的是哪一步、下一次跟試過的哪裡不一樣（主人看得到）；② ask_owner 問主人；③ todo.fail 寫根本原因、照抄支持它的字。選了繼續，再過 2 回合會再問一次。")
+    try await h.turn(Scripted("", ("todo.continue", [("missing", "還缺主人喜歡的類型"), ("stuck", "不知道主人喜歡山還是海"), ("change", "下一次先查記憶裡主人去過的地方")])))
+    #expect(try h.toolResults().last!.text == "記下了，主人在後台看得到。第 6 回合會再問一次。")
+    try await h.turn(Scripted("", ("recall", [("query", "主人去過")])))
+    try await h.turn(Scripted("", ("recall", [("query", "山")])))
+    #expect(await h.doll.todo.deciding)
+    try await h.turn(Scripted("", ("ask_owner", [("what", "決定週末去山上還是海邊"), ("where", "週末去處這件事"), ("why", "我查不到你比較喜歡哪一種")])))
+    #expect(h.rec.said.withLock { $0.last } == "【娃娃想先問你】\n要做：決定週末去山上還是海邊\n在哪裡：週末去處這件事\n為什麼：我查不到你比較喜歡哪一種")
+    #expect(await h.doll.todo.phase == .waiting)
+}
+
+@Test func withTheComputerOffAFarEstimateIsStillRefusedAndCuriosityNeverComes() async throws {
+    let h = try await Harness(tune: { computerOff(&$0); checking(&$0); $0.drives.enabled = true })
+    let items = ["行事曆上有看牙醫"]
+    await h.doll.ownerSaid("幫我在行事曆記 11/20 看牙醫")
+    try await h.turn(Scripted("", estimated(3, items: items), ("recall", [("query", "牙醫")])))
+    for _ in 1..<7 { try await h.turn(Scripted("", ("recall", [("query", "牙醫")]))) }
+    try await h.turn(Scripted("", done("記好了", evidence: nil), dm("好了")))
+    await h.doll.ownerSaid("幫我在行事曆記 11/27 看牙醫")
+    try await h.turn(Scripted("", estimated(2, items: items)))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：清單沒有列：你估整份 2 回合，可是以前做過像這次的清單：「行事曆上有看牙醫」你估 3、實際 7 回合。"))
+    // No source of "new" without a computer: no curiosity wandering is ever due.
+    #expect(await h.doll.curiosityDue() == nil)
 }

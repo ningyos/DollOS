@@ -568,8 +568,10 @@ extension Doll {
     }
 
     /// When nothing new for `curiosity_hours` (since the last new thing or the last such wandering) is due.
+    /// Never with the computer off (2026-11-19): new apps and pages are the only source of "new", and
+    /// the wandering would send her to look at something she cannot reach.
     func curiosityDue() -> Double? {
-        guard drivesConfig.enabled else { return nil }
+        guard drivesConfig.enabled, computerOn else { return nil }
         let from = max(curiosity.lastNew ?? 0, curiosity.surfaced ?? 0)
         return from + goalsConfig.curiosityHours * 3600
     }

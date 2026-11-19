@@ -101,10 +101,11 @@ do {
     let build = buildText(root: root)
     Log.attach(try LogFile(dir: logDir, maxBytes: Int(cfg.log.maxMB * 1_048_576)), pid: ProcessInfo.processInfo.processIdentifier, build: build)
     out("log: \(logDir.appending(path: LogFile.current).path)")
-    // Her computer (this Mac through cua-driver): missing driver, permission or daemon stops the boot.
-    let dm = try await CuaDaemon.ensure(driver: cfg.computer.driver, startWait: cfg.computer.daemonStartS)
+    // Her computer (this Mac through cua-driver): missing driver, permission or daemon stops the boot;
+    // `[computer] enabled = false` skips it (no driver looked for, no daemon started).
+    let (dm, computerLine) = try await CuaDaemon.boot(cfg.computer)
     daemon = dm
-    out("computer: cua-driver daemon " + (dm.started ? "started by this process (stopped at exit)" : "already running (left running at exit)"))
+    out(computerLine)
     // One MLX runtime for the embedding model and her voice: one cache limit, set before either loads.
     MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
     // Boot: the embedding model loads first (the today index embeds at start); no fallback.
@@ -159,7 +160,7 @@ do {
         bridge = nil
         out("bridge: disabled ([bridge] enabled = false)")
     }
-    out("docs: \(cfg.core.docs) (she reads them in place)")
+    out("docs: \(cfg.core.docs) " + (cfg.computer.enabled ? "(she reads them in place)" : "(not pointed to: she has no read_file with [computer] enabled = false)"))
     try await doll.announceBoot(previous: previous, build: build)
 } catch {
     await daemon?.stop()

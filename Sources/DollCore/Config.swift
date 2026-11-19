@@ -60,6 +60,9 @@ public struct ContextConfig: Sendable {
 /// Her computer is this Mac (2026-11-16): the owner's apps, driven in the background through
 /// `cua-driver` (`Computer.swift`).
 public struct ComputerConfig: Sendable {
+    /// `false` (2026-11-19, owner: an unattended trial runs without them): no cua-driver at boot, no
+    /// computer or file tools, no saved tools, and nothing in her prompt about them.
+    public var enabled = true
     /// The cua-driver CLI (`/Applications/CuaDriver.app/Contents/MacOS/cua-driver`).
     public var driver = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
     /// At boot, how long a daemon this process started may take to answer.
@@ -584,6 +587,7 @@ public struct Config: Sendable {
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])
         var computer = ComputerConfig()
+        try v.read("enabled", &computer.enabled)
         try v.read("driver", &computer.driver)
         try v.read("daemon_start_s", &computer.daemonStartS)
         try v.read("max_elements", &computer.maxElements)

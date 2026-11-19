@@ -75,6 +75,12 @@ public actor Doll {
     let contextConfig: ContextConfig
     let llm: LlmConfig
     let computerConfig: ComputerConfig
+    /// `[computer] enabled` (2026-11-19): off, she has no computer, file or saved tools; a call to one
+    /// is an unknown tool, and no rule or line of the program mentions them.
+    var computerOn: Bool { computerConfig.enabled }
+    /// The tools that run only while an item is 進行中, and the window actions: none with the computer off.
+    var gatedTools: Set<String> { computerOn ? Tools.gated : [] }
+    var actionTools: Set<String> { computerOn ? Tools.actionNames : [] }
     let filesConfig: FilesConfig
     let idle: IdleConfig
     let memoryConfig: MemoryConfig
@@ -693,8 +699,8 @@ public actor Doll {
     func systemPrompt() -> String {
         "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n")
             + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
-                                drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled)
-            + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath) : "")
+                                drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn)
+            + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn) : "")
     }
 
     /// The line before her ideal self (fixed bytes).
@@ -912,7 +918,7 @@ public actor Doll {
         if maintenanceConfig.enabled { out += maintenanceStatusLines(now: now) }
         let limit = contextConfig.limit
         out.append("- context：\(Self.grouped(used))／\(Self.grouped(limit))（\(Int((Double(used) * 100 / Double(limit)).rounded()))%）；"
-                   + "其中做事的過程 \(Self.grouped(process.tokens))（截圖 \(Self.grouped(process.images))）")
+                   + "其中做事的過程 \(Self.grouped(process.tokens))" + (computerOn ? "（截圖 \(Self.grouped(process.images))）" : ""))
         out.append("- 下一回合 effort：\(nextEffort)")
         switch advice {
         case .none: break
@@ -937,7 +943,7 @@ public actor Doll {
         case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
         case .doing: "進行中\(item)\(rest)"
         case .waiting: "等待中\(item)（有人說話才會再有回合）\(rest)"
-        case .failed: "失敗\(item)：電腦工具鎖著，用 todo.set 決定剩下的（重寫、照原樣列，或給空的陣列結束清單）\(rest)"
+        case .failed: "失敗\(item)：" + (computerOn ? "電腦工具鎖著，" : "") + "用 todo.set 決定剩下的（重寫、照原樣列，或給空的陣列結束清單）\(rest)"
         }
     }
 
@@ -1074,31 +1080,31 @@ public actor Doll {
         commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
         await mac.beginReply(item: todo.current)
         let live = calls.prefix { !Tools.ending.contains($0.name) }
-        let actionAt = live.indices.filter { Tools.actionNames.contains(live[$0].name) }
+        let actionAt = live.indices.filter { actionTools.contains(live[$0].name) }
         var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?, setRefused = false
         for (i, call) in calls.enumerated() {
             speaksLater = Set(calls[(i + 1)...].compactMap { c in
                 c.arguments == nil ? nil : c.name == Tools.Name.reply ? .developer : Tools.speaking[c.name] != nil ? .owner : nil
             })
             let name = call.name.isEmpty ? "tool_call" : call.name
-            let isAction = Tools.actionNames.contains(call.name)
+            let isAction = actionTools.contains(call.name)
             var out: Outcome
             if let ended, Tools.speaking[call.name] == nil {
                 out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
-            } else if Tools.gated.contains(call.name), todo.phase != .doing {
+            } else if gatedTools.contains(call.name), todo.phase != .doing {
                 // A refused todo.set ahead of it in this reply (2026-11-17: the list and its first action
                 // go in one reply): nothing it would have started runs.
                 out = Outcome(text: setRefused ? "失敗：這則回覆前面的 todo.set 沒收（看它的結果），\(name) 沒有執行；改好 todo.set 再做。" : gateText(name),
                               actions: ["refused \(name)"])
-            } else if Tools.gated.contains(call.name), todo.deciding {
+            } else if gatedTools.contains(call.name), todo.deciding {
                 out = Outcome(text: "失敗：\(name) 沒有執行。" + decideText, actions: ["refused \(name)"])
             } else if isAction, let failed {
                 out = Outcome(text: "失敗：前面第 \(failed.step) 步（\(failed.line)）失敗了，這一步沒做",
                               actions: ["skipped \(name)"], background: true)
             } else {
                 if isAction { step += 1 }
-                if Tools.gated.contains(call.name) { itemUsedComputer = true }
+                if gatedTools.contains(call.name) { itemUsedComputer = true }
                 if !call.name.hasPrefix("todo."), call.name != "think" { itemActed = true }
                 chain.last = !actionAt.contains(i) || actionAt.last == i
                 out = await execute(call, seen: events, reply: stored, chain: chain)
@@ -1106,7 +1112,7 @@ public actor Doll {
                 if let failed = commitCall(call) {
                     out.text += "\n（這個改動生效了，但沒記進改動紀錄：\(failed)。主人會在開機報告看到。）"
                 }
-                if Tools.gated.contains(call.name) { out = noteRepeats(call, out) }
+                if gatedTools.contains(call.name) { out = noteRepeats(call, out) }
                 if out.ends { ended = name }
                 if call.name == Tools.Name.todoSet, out.actions.contains("error \(name)") { setRefused = true }
                 if isAction {
@@ -1440,7 +1446,7 @@ public actor Doll {
             // A computer action refused before it was sent (a row not in the latest read, bad
             // arguments) ends the reply's chain like one that failed; the window is read again when an
             // earlier action of this reply answered with its line only, so she sees where things stand.
-            guard Tools.actionNames.contains(call.name) else { return Outcome(text: "失敗：\(error)", actions: ["error \(name)"]) }
+            guard actionTools.contains(call.name) else { return Outcome(text: "失敗：\(error)", actions: ["error \(name)"]) }
             var out = Outcome(text: "失敗：\(error)", actions: ["error \(name)"])
             if chain.owed {
                 do {
@@ -1516,7 +1522,7 @@ public actor Doll {
         let item = "「\(todo.current ?? "")」"
         let rounds = todo.listRounds == 0 ? "\(item)已經做了 \(todo.rounds) 回合"
             : "這份清單已經做了 \(todo.totalRounds) 回合（現在這項\(item) \(todo.rounds) 回合）"
-        return rounds + "（做得成的事通常 7–14 回合）。電腦和檔案工具先停，選一個："
+        return rounds + "（做得成的事通常 7–14 回合）。" + (computerOn ? "電腦和檔案工具先停，" : "") + "選一個："
             + "① \(Tools.Name.todoContinue)(missing, stuck, change)：還缺什麼、最卡的是哪一步、下一次跟試過的哪裡不一樣（主人看得到）；② \(Tools.Name.askOwner) 問主人；③ \(Tools.Name.todoFail) 寫根本原因、照抄支持它的字。"
             + "選了繼續，再過 \(computerConfig.decideEveryRounds) 回合會再問一次。"
             + (todo.goOn.isEmpty ? "" : "你之前選繼續時寫的：" + todo.goOn.joined(separator: "／"))
@@ -1541,7 +1547,7 @@ public actor Doll {
         todo.goOn.append("第 \(todo.totalRounds) 回合：還缺「\(missing)」；最卡的是「\(stuck)」；跟之前不同的是「\(change)」")
         decided()
         log("INFO", "turn \(turnIndex): todo.continue「\(item)」list round \(todo.totalRounds): missing「\(missing)」stuck「\(stuck)」change「\(change)」")
-        return Outcome(text: "記下了，主人在後台看得到。電腦和檔案工具開放了；第 \(todo.decideAt) 回合會再問一次。", actions: ["todo continue"])
+        return Outcome(text: "記下了，主人在後台看得到。" + (computerOn ? "電腦和檔案工具開放了；" : "") + "第 \(todo.decideAt) 回合會再問一次。", actions: ["todo continue"])
     }
 
     /// The `change` part of a stored `goOn` line (what follows 「跟之前不同的是「」).
@@ -1772,7 +1778,8 @@ public actor Doll {
         // Done needs something done or looked at (owner, 2026-11-14): in a real run she ended an
         // untouched item right after the previous one was compacted, with a made-up result.
         guard itemActed else {
-            throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，至少用 read_window 或 read_file 親眼看過再說完成。")
+            throw ToolError(description: "「\(item)」這一項你還沒做任何動作，也沒看過結果，不能說完成。先動手做；如果覺得已經是做完的樣子，"
+                            + (computerOn ? "至少用 read_window 或 read_file 親眼看過再說完成。" : "至少用工具查過（例如 recall、calendar.list）再說完成。"))
         }
         // Evidence from the latest read (design A, 2026-11-16: she told the owner 「畫面顯示 1702」 while
         // the display read "3"). Checked before the told-before-done rule: what she reports should be
@@ -1821,7 +1828,7 @@ public actor Doll {
         let list = next == nil ? listFinished() : ""
         log("INFO", "turn \(turnIndex): todo 完成「\(item)」result「\(result)」, \(steps.count) actions")
         note += step + list
-        return Outcome(text: "完成，記下了。\(note)\(estimate)這一項的過程（截圖、每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
+        return Outcome(text: "完成，記下了。\(note)\(estimate)這一項的過程（" + (computerOn ? "截圖、" : "") + "每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
                        + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),
                        actions: ["todo done"], ends: true)
@@ -1839,11 +1846,11 @@ public actor Doll {
         }
         let texts = itemTexts()
         guard !texts.isEmpty else {
-            throw ToolError(description: "還沒記成失敗：這一項還沒有任何東西可以支持原因（沒讀過視窗或檔案、工具還沒有結果、也沒有人說過話）。先動手做一次、看清楚卡在哪，或用 ask_owner 問主人。")
+            throw ToolError(description: "還沒記成失敗：這一項還沒有任何東西可以支持原因（" + (computerOn ? "沒讀過視窗或檔案、" : "") + "工具還沒有結果、也沒有人說過話）。先動手做一次、看清楚卡在哪，或用 ask_owner 問主人。")
         }
         guard Self.quoted(evidence, in: texts.joined(separator: "\n")) else {
             log("INFO", "turn \(turnIndex): todo.fail「\(item)」refused: evidence「\(evidence)」not in what the item saw")
-            throw ToolError(description: "還沒記成失敗：evidence「\(evidence)」不在這一項你看過的東西裡（最新讀到的視窗或檔案、工具的結果、別人說的話）。"
+            throw ToolError(description: "還沒記成失敗：evidence「\(evidence)」不在這一項你看過的東西裡（" + (computerOn ? "最新讀到的視窗或檔案、" : "") + "工具的結果、別人說的話）。"
                             + "從那裡照抄支持原因的字（標點、寫法照抄）；找不到支持的字，就是還不知道真正的原因：再查一下，或用 ask_owner 問主人。")
         }
         let steps = itemSteps.map(\.line)
@@ -1863,7 +1870,7 @@ public actor Doll {
         let estimate = record.map { estimateLine($0.plan, rounds: $0.rounds, seconds: $0.seconds) + "（記下了）。" } ?? ""
         let rest = todo.pending.isEmpty ? "（後面沒有別的項目了）" : "（剩下：" + todo.pending.map { "「\($0)」" }.joined() + "）"
         return Outcome(text: "記下了：「\(item)」沒做成。\(estimate)這一項的過程收起來了，之後只留你寫的原因、試過的和這份動作清單：\(Self.actionList(steps))。"
-                       + "電腦工具先鎖著。現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。" + concernNote,
+                       + (computerOn ? "電腦工具先鎖著。" : "") + "現在決定剩下的\(rest)：用 todo.set 重寫剩下的項目；或照原樣列剩下的，接著做下一項；或跟主人說了以後用 todo.set 給空的陣列結束清單。" + concernNote,
                        actions: ["todo fail"], ends: true)
     }
 
@@ -1944,7 +1951,7 @@ public actor Doll {
             throw refuse(problem)
         }
         let sources = citable(before: reply)
-        let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行"
+        let places = computerOn ? "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、【相關記憶】裡〔工具〕那一行" : "主人說的話、工具的結果、【狀況】"
         var facts: [PlanFact] = []
         for (i, f) in given.enumerated() {
             let name = "facts 第 \(i + 1) 條"
@@ -2267,7 +2274,7 @@ public actor Doll {
             return
         }
         let steps = itemSteps.filter { $0.seq <= cut }.map(\.line)
-        let text = "【收起】context 快滿了，你沒有用 todo.progress 收，程式把「\(item)」到這裡為止的過程收起來了：截圖、每一步的結果和那幾回合你的念頭都不在了，"
+        let text = "【收起】context 快滿了，你沒有用 todo.progress 收，程式把「\(item)」到這裡為止的過程收起來了：" + (computerOn ? "截圖、" : "") + "每一步的結果和那幾回合你的念頭都不在了，"
             + "最近 \(keep) 回合還在下面。到這裡做過的動作：\(Self.actionList(steps))。"
         try timeline.compact(Compaction(kind: .forced, item: item, fromSeq: start, toSeq: cut, text: text))
         compactedNow.append(Compaction.Kind.forced.rawValue)

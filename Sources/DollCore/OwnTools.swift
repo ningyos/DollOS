@@ -687,8 +687,10 @@ extension Doll {
     /// The tools to tell her of for this query: not retired, not offered since the owner's line,
     /// cosine of the query to the tool (name, `when`, the owner's line it was saved from) at least
     /// `[computer] own_tool_offer_similarity`, best first, at most `own_tool_offer_max`. A failure is
-    /// logged and offers none.
+    /// logged and offers none. With the computer off (`[computer] enabled = false`) there are no
+    /// saved tools to run: none.
     func offerTools(query: String, label: String) -> [OwnTool] {
+        guard computerOn else { return [] }
         do {
             let limit = computerConfig.ownToolRetireFailures
             let tools = try toolStore.all().filter { !$0.retired(limit) && !offeredTools.contains($0.name) }
