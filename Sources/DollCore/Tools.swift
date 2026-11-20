@@ -240,7 +240,7 @@ public enum Tools {
     /// `todo.set` with `subgoal` (phase 2): the list works on a sub-goal of her tree.
     static func todoSpecsGoals(computer on: Bool) -> [Spec] { todoSpecs(computer: on).map { s in
         guard s.name == Name.todoSet else { return s }
-        return Spec(name: s.name, description: s.description + "做的是目標樹上一個子目標的步驟，就給 subgoal（子目標的編號）：每一項就是它的一個步驟，項目開頭寫步驟的編號（#3 …）；沒有編號、也不在樹上的會加成新的步驟。做完就記上了。",
+        return Spec(name: s.name, description: s.description + "做的是目標樹上一個子目標的步驟，就給 subgoal（子目標的編號）：每一項就是它的一個步驟，項目開頭寫步驟的編號（#3 …）；沒有編號、也不在樹上的會加成新的步驟。做完就記上了。有一份在等待中的時候給 subgoal，那份會先放在旁邊，不會動到它。",
                     parameters: [
                         "type": "object",
                         "properties": .object([
@@ -1141,7 +1141,7 @@ enum Instructions {
         要做事之前先用 todo.set 列 todo。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；\(computer ? "打開、修改、存檔、確認" : "查、改、確認")是同一項裡的步驟，不要拆開。每一項寫成做完的樣子\(computer ? "：做完的時候畫面上、檔案裡應該看到什麼" : "")。一次只做一項，照順序。你的 todo 有五種狀態：
         - 待命中：沒有 todo。只有事情發生才有回合\(computer ? "；電腦工具不能用，呼叫會回「失敗：…先用 todo.set 列 todo」" : "")。
         - 進行中：正在做一項。\(computer ? "電腦工具可以用；" : "")你每回覆一次就會再有下一回合，直到這一項結束。
-        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有事發生之前不會有回合；有事發生就回到進行中。
+        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有人說話\(computer ? "或 watch 叫你" : "")你才有回合；你接著做它（todo 的呼叫\(computer ? "、電腦工具" : "")）它就回到進行中，沒碰它就一直等著，不用再呼叫 todo.wait。\(drives ? "等的時候你可以做自己的事：用 todo.set 給 subgoal 列，等著的這份先放在旁邊，你那份做完或結束它就回來；有人說話，程式會先把它拿回你手上。" : "")
         - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
         - 失敗：你確定做不到，用 todo.fail(cause, evidence, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後\(computer ? "電腦工具鎖著，" : "")下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 

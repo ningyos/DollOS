@@ -147,6 +147,13 @@ public actor Doll {
     var docsPath: String { docsDir.standardizedFileURL.path }
     /// Her todo list (`Todo.swift`), as the timeline last recorded it.
     var todo: TodoState
+    /// The list set aside beside it (`TodoAside.swift`, 2026-11-20): at most one, as the timeline
+    /// last recorded it; what was in memory for it (its action list, whom it answers) in `asideMemory`.
+    var aside: ListAside?
+    var asideMemory = ListMemory()
+    /// A person's line or a watch wake brought the waiting list back in hand for this turn
+    /// (`Doll.drain`); her own list goes back in hand after it unless she took the waiting one up.
+    var swappedForLine = false
     /// Her finished lists, estimate against actual (2026-11-17, hook 2): `<data_dir>/estimates.json`.
     let estimatesURL: URL
     var estimateFile: EstimateFile
@@ -412,6 +419,7 @@ public actor Doll {
         voiceEnabled = config.voice.enabled
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
+        aside = timeline.todoAside
         docsDir = core.docs.hasPrefix("/") ? URL(filePath: core.docs) : root.appending(path: core.docs)
         // She reads them in place: a docs folder without its index is a boot error.
         guard FileManager.default.fileExists(atPath: docsDir.appending(path: "README.md").path) else {
@@ -665,11 +673,16 @@ public actor Doll {
         }
         if batch.contains(where: { $0.speaker != nil || $0.kind == .watch || Concerns.isOwnWander($0) }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }
-        // Something happened: a waiting item is in progress again (its turn is this one).
-        if todo.phase == .waiting, let last {
-            todo.phase = .doing
-            try timeline.recordTodo(todo, seq: last.seq!)
-            log("INFO", "todo: 等待中 → 進行中「\(todo.current ?? "")」(event \(last.seq!))")
+        // A waiting item stays 等待中 through an event (2026-11-20, soak run: every owner line made it
+        // 進行中 again and she called todo.wait after each one): her turn is this one, and what she
+        // does about the item takes it up (`resumeWaiting`). The owner comes first: a person's line or
+        // a watch wake while her own list runs beside a waiting one puts the waiting one in hand.
+        if aside?.todo.phase == .waiting, todo.phase != .waiting, let last,
+           batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) {
+            swapAside()
+            swappedForLine = true
+            try timeline.recordTodo(todo, aside: aside, seq: last.seq!)
+            log("INFO", "todo: 「\(todo.current ?? "")」等待中 back in hand for event \(last.seq!); 「\(aside?.todo.current ?? "")」set aside")
         }
     }
 
@@ -942,12 +955,13 @@ public actor Doll {
         let rest = (todo.pending.isEmpty ? "" : "；後面還有：" + todo.pending.map { "「\($0)」" }.joined(separator: ""))
             + (sub.map { "（子目標 #\($0) 的步驟）" } ?? "")
         let item = "「\(todo.current ?? "")」"
-        return switch todo.phase {
+        let line = switch todo.phase {
         case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
         case .doing: "進行中\(item)\(rest)"
-        case .waiting: "等待中\(item)（有人說話才會再有回合）\(rest)"
+        case .waiting: "等待中\(item)（有人說話才會再有回合；接著做它就回到進行中，沒碰它就繼續等）\(rest)"
         case .failed: "失敗\(item)：" + (computerOn ? "電腦工具鎖著，" : "") + "用 todo.set 決定剩下的（重寫、照原樣列，或給空的陣列結束清單）\(rest)"
         }
+        return line + asideNote()
     }
 
     /// `status` in the CLI: the footer as the next turn would see it.
@@ -1021,6 +1035,7 @@ public actor Doll {
         messages.append(ChatMessage(role: "user", content: footerText))
         let effort = nextEffort
         let before = todo
+        let asideBefore = aside
         let reply: ModelReply
         do {
             let task = Task { try await model.chat(messages, tools: toolsJSON, effort: effort) }
@@ -1092,6 +1107,8 @@ public actor Doll {
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = actionTools.contains(call.name)
             var out: Outcome
+            // A computer call on the waiting item takes it up again (2026-11-20).
+            if gatedTools.contains(call.name), todo.phase == .waiting, ended == nil, !setRefused { resumeWaiting(name) }
             if let ended, Tools.speaking[call.name] == nil {
                 out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
@@ -1165,6 +1182,15 @@ public actor Doll {
         }
         if startAfterTurn { todo.startSeq = timeline.lastSeq }
         if waitNow, todo.phase == .doing { todo.phase = .waiting }
+        // The list in hand ended and one is set aside: it is back in hand (2026-11-20). The waiting
+        // list was brought back for a person's line and she did not take it up: her own list goes on.
+        if todo.phase == .idle, aside != nil {
+            takeBackAside()
+        } else if swappedForLine, todo.phase == .waiting, aside?.todo.phase == .doing {
+            swapAside()
+            log("INFO", "turn \(turnIndex): 「\(aside?.todo.current ?? "")」still 等待中; 「\(todo.current ?? "")」back in hand")
+        }
+        swappedForLine = false
         // The decision point (design C): the list has run `decideAt` rounds and an item is still in
         // progress. Rounds of the whole list since its `todo.set` (2026-11-17, m7-mac x-3: a list split
         // into two items restarted a per-item count and the point came at round 26 of 30).
@@ -1174,8 +1200,8 @@ public actor Doll {
             actions.append("decision point")
             log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at list round \(todo.totalRounds) (item round \(todo.rounds))")
         }
-        if todo != before {
-            try timeline.recordTodo(todo, seq: stored.seq!)
+        if todo != before || aside != asideBefore {
+            try timeline.recordTodo(todo, aside: aside, seq: stored.seq!)
             if todo.phase != before.phase || todo.current != before.current || todo.pending != before.pending {
                 log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
             }
@@ -1184,15 +1210,18 @@ public actor Doll {
         // registry entries): the program's change.
         commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
         // The phase decides the next turn (2026-11-14): 進行中 gets one after every reply; 等待中
-        // none until an event; the reply that ended the list (done with nothing next, or an empty
+        // (2026-11-20) like 待命中, only events and her own tool results, none after the reply that
+        // made it wait; the reply that ended the list (done with nothing next, or an empty
         // `todo.set`) none, nothing wakes her for it; 失敗 the one in which she decides.
         switch todo.phase {
         case .doing:
             followUp = true
             taskTurn = true
         case .waiting:
-            followUp = false
-            taskTurn = false
+            if waitNow || itemEndNow != nil || listEndedNow {
+                followUp = false
+                taskTurn = false
+            }
         case .idle, .done:
             if itemEndNow != nil || listEndedNow {
                 followUp = false
@@ -1370,6 +1399,12 @@ public actor Doll {
             case .todoFail(let cause, let evidence, let tried):
                 return try todoFail(cause: cause, evidence: evidence, tried: tried, reply: reply)
             case .todoWait:
+                // Already waiting (2026-11-20): an event does not take it up, so there is nothing to put back.
+                if todo.phase == .waiting, let item = todo.current {
+                    waitNow = true
+                    return Outcome(text: "「\(item)」本來就是等待中，沒有變：有人說話你會有回合，沒接著做它，它就一直等著，不用再 todo.wait。",
+                                   actions: ["todo wait"], background: true)
+                }
                 let item = try currentItem("todo.wait")
                 waitNow = true
                 return Outcome(text: "好，這則回覆的呼叫做完以後，「\(item)」就是等待中：有人說話才會再有回合。",
@@ -1663,6 +1698,8 @@ public actor Doll {
     // todo -------------------------------------------------------------------
     /// The item in progress; a call that needs one throws with the phase when there is none.
     func currentItem(_ tool: String) throws -> String {
+        // A todo call on the waiting item takes it up again (2026-11-20).
+        if todo.phase == .waiting { resumeWaiting(tool) }
         guard todo.phase == .doing, let item = todo.current else {
             throw ToolError(description: "\(tool) 要有進行中的項目；現在是\(todo.phase.label)" + (todo.phase == .idle ? "，先用 todo.set 列 todo" : ""))
         }
@@ -1717,7 +1754,14 @@ public actor Doll {
         var plan: TodoPlan?
         var check: EstimateCheck?
         var listTextNow: String?
-        if todo.phase != .doing, todo.phase != .waiting, !items.isEmpty {
+        // Her own step while a list waits (2026-11-20, owner: waiting is not busy): a `todo.set` with a
+        // sub-goal starts its own list and sets the waiting one aside (`setAside`); one aside at most.
+        let ownBeside = todo.phase == .waiting && subgoal != nil && !items.isEmpty
+        if ownBeside, let a = aside {
+            throw ToolError(description: "沒有列：「\(todo.current ?? "")」在等待中，旁邊已經放著「\(a.todo.current ?? "")」；一次最多一份等著、一份你自己的事。"
+                            + "要做自己的事，先把手上這份做完或結束；要改「\(todo.current ?? "")」後面的項目，不要給 subgoal。")
+        }
+        if ownBeside || (todo.phase != .doing && todo.phase != .waiting && !items.isEmpty) {
             do {
                 plan = try checkedPlan(p, items: items, reply: reply)
                 let text = listText(items, reply: reply)
@@ -1729,6 +1773,8 @@ public actor Doll {
             }
         }
         let linkNote = try subgoal.map { try linkTodo(items, subgoal: $0) } ?? ""
+        let waiting = todo.current ?? ""
+        if ownBeside { setAside() }
         switch todo.phase {
         case .doing, .waiting:
             todo.pending = items
@@ -1741,7 +1787,7 @@ public actor Doll {
                 todo = TodoState()
                 listEndedNow = true
                 listDropped()
-                return Outcome(text: ended ? "清單結束了，現在待命中。" : "沒有項目，還是待命中。", actions: ["todo end"], background: true)
+                return Outcome(text: (ended ? "清單結束了，現在待命中。" : "沒有項目，還是待命中。") + backNote(), actions: ["todo end"], background: true)
             }
             startLink(subgoal: subgoal, fresh: todo.phase != .failed)
             todo.phase = .doing
@@ -1769,7 +1815,9 @@ public actor Doll {
                     : c.reason != nil ? "（跟以前像這樣的清單實際 \(c.reference) 回合不一樣，你寫的理由記下了，主人看得到）"
                     : "（跟以前像這樣的清單實際 \(c.reference) 回合差很多，沒寫理由，照收了；主人看得到）"
             } ?? ""
-            return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合\(compared)。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote, actions: ["todo set"])
+            return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合\(compared)。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote
+                           + (ownBeside ? "「\(waiting)」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。" : ""),
+                           actions: ["todo set"])
         }
     }
 
@@ -1834,7 +1882,7 @@ public actor Doll {
         note += step + list
         return Outcome(text: "完成，記下了。\(note)\(estimate)這一項的過程（" + (computerOn ? "截圖、" : "") + "每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
-                       + (next.map { "下一項「\($0)」現在進行中。" } ?? "清單做完了，現在待命中；程式不會再為這件事叫你。"),
+                       + (next.map { "下一項「\($0)」現在進行中。" } ?? (aside == nil ? "清單做完了，現在待命中；程式不會再為這件事叫你。" : "清單做完了。" + backNote())),
                        actions: ["todo done"], ends: true)
     }
 

@@ -147,7 +147,8 @@ extension Doll {
     /// began (the boot and maintenance notices alone are not a day).
     var dayToConsolidate: Bool { let c = dayCounts(); return c.lines + c.replies > 0 }
 
-    var todoBusy: Bool { todo.phase == .doing || todo.phase == .waiting }
+    /// A list set aside counts too (2026-11-20): a new day's timeline starts with none.
+    var todoBusy: Bool { todo.phase == .doing || todo.phase == .waiting || aside != nil }
 
     /// 【狀況】's lines: the day's size, and when maintenance comes (time left) or that it waits.
     func maintenanceStatusLines(now: Double) -> [String] {
@@ -341,7 +342,7 @@ extension Doll {
             if var k = done?.kept {
                 k.startSeq = ev.seq!
                 todo = k
-                try timeline.recordTodo(k, seq: ev.seq!)
+                try timeline.recordTodo(k, aside: nil, seq: ev.seq!)
             }
         } catch { log("ERROR", "maintenance: end notice not written: \(error)") }
         log("INFO", "maintenance: ended; done \(ended.done), failed \(Array(ended.failed.keys))")

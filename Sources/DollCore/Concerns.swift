@@ -314,10 +314,17 @@ extension Doll {
 
     // wandering ------------------------------------------------------------------------------------
 
-    /// Idle: no todo in hand, nothing queued or owed, not in maintenance, no turn running.
+    /// Idle: no todo in hand, or one 等待中 with none set aside (2026-11-20, owner: waiting is not
+    /// busy, `TodoAside.swift`); nothing queued or owed, not in maintenance, no turn running.
     var idleForWander: Bool {
         !inTurn && !paused && maintenanceState.running == nil && queue.isEmpty && !followUp
-            && (todo.phase == .idle || todo.phase == .done)
+            && (todo.phase == .idle || todo.phase == .done || (todo.phase == .waiting && aside == nil))
+    }
+
+    /// 動力's wandering while a list waits: how her own step starts without touching it.
+    func waitingNote() -> String {
+        guard todo.phase == .waiting else { return "" }
+        return "\n（「\(todo.current ?? "")」在等待中：todo.set 給 subgoal，它會先放在旁邊，不會動到它；不給 subgoal 是改它後面的項目。）"
     }
 
     /// After every turn, on the timer, and on waking: program concerns, then at most one wandering.
@@ -360,7 +367,7 @@ extension Doll {
         }
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         log("INFO", "drives: wander (\(s.label)) #\(c.id)「\(c.text)」")
-        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c) + (s == .drive ? "\n" + Concerns.ownAsk : ""))))
+        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c) + (s == .drive ? "\n" + Concerns.ownAsk + waitingNote() : ""))))
     }
 
     /// 動力's episode is over (`Drives.endEpisode`): 動力 back to `drive_reset`, and what she did in it
@@ -390,7 +397,7 @@ extension Doll {
 
     func wanderLine(_ text: String, signal s: Signal) {
         log("INFO", "drives: wander (\(s.label)) \(text)")
-        put(Event(.memory, .internal, withOwnerSleep(text)))
+        put(Event(.memory, .internal, withOwnerSleep(text + (s == .drive ? waitingNote() : ""))))
     }
 
     /// A wandering or the maintenance notice inside the owner-sleep span carries the 【狀況】 line,

@@ -4754,9 +4754,13 @@ func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     #expect(h.last.todo == "等待中")
     #expect(await !h.doll.followUp)
     #expect(try h.timeline().todo.phase == .waiting)
+    // His answer gives her the turn; the item stays 等待中 until she works on it (2026-11-20): her
+    // computer call takes it up again and runs.
     await h.doll.ownerSaid("123456")
     try await h.turn(Scripted("", act(#"{"type": "123456"}"#)))
-    #expect(h.reports[2].footer.contains("- todo：進行中「登入好了」") && h.cua.args("type_text").last?["text"] as? String == "123456")
+    #expect(h.reports[2].footer.contains("- todo：等待中「登入好了」") && h.cua.args("type_text").last?["text"] as? String == "123456")
+    #expect(try await h.last.todo == "進行中")
+    #expect(try await h.doll.followUp)
 }
 
 /// A harness whose context is near full after a read and one long thought of hers (`longThought`):
@@ -5992,13 +5996,16 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     clock.set(at("2026-11-16", "21:00"))
     try await Task.sleep(for: .milliseconds(100))
     #expect(await h.model.requests.count == 3)
-    // The owner talks (back in range), she takes an item and waits: the next crossing does not surface.
-    await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案"))])
+    // The owner talks (back in range), she takes an item and waits. Waiting is not busy (2026-11-20):
+    // the next crossing surfaces while it waits, and the list stays 等待中.
+    await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案")), Scripted("", dm("檔案好了再叫我"))])
     await doll.ownerSaid("幫我寄報告，檔案等等給你")
     try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
     clock.set(at("2026-11-16", "23:30"))
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(await h.model.requests.count == 4)
+    try await waitUntil { await h.model.requests.count == 5 }
+    try await waitUntil { await doll.settled }
+    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.count == 2)
+    #expect(try await doll.dashboardStatus().todo == "等待中")
     #expect(h.logs.contains { $0.contains("drives: 親近") })
     await doll.stop()
     try await runner.value
@@ -6130,14 +6137,17 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     #expect(h.logs.filter { $0.contains("own-thing episode over") }.count == 2)
     #expect(h.logs.contains { $0.contains("own-thing episode over") && $0.contains("呼叫 concern.end，沒有對任何人說話；想法「畫好了」") })
     #expect(approx(await doll.testDrive(), c.driveReset))
-    // A list in progress holds the next one.
-    await h.model.add([Scripted("", todoSet("報告寄出了"), todoWait("等檔案"))])
+    // A list that waits does not hold the next one (2026-11-20, owner: waiting is not busy); the
+    // wandering tells her how to start hers without touching it, and the list still waits.
+    await h.model.add([Scripted("", todoSet("報告寄出了"), dm("好，檔案給我就寄"), todoWait("等檔案")), Scripted("先不做")])
     await doll.ownerSaid("幫我寄報告，檔案等等給你")
     try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
     clock.set(first + 4 * period)
-    try await Task.sleep(for: .milliseconds(150))
-    #expect(await h.model.requests.count == 6)
-    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.count == 2)
+    try await waitUntil { await h.model.requests.count == 7 }
+    try await waitUntil { await doll.settled }
+    let w3 = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
+    #expect(w3.count == 3 && w3[2].hasSuffix("（「報告寄出了」在等待中：todo.set 給 subgoal，它會先放在旁邊，不會動到它；不給 subgoal 是改它後面的項目。）"))
+    #expect(try await doll.dashboardStatus().todo == "等待中")
     await doll.stop()
     try await runner.value
 }
@@ -9032,8 +9042,8 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "354d2e0a183a1922552136283dfc86c650cc0436180a835ce692e4cd876c11c4")
-    #expect(d.prompt == "047210a8eae923abd5093ccf5b59c76ccd784e9ee707579ef168fa886cb26dfd")
+    #expect(d.tools == "b443fc7b28f4ee0daf28fb1016eea2fb1c99cdff66f0c0f298a422440d48e0e7")
+    #expect(d.prompt == "0c02bc5cdc815e60edae780a690633e5b7acfab841326a7233207b6e250413fe")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -9216,4 +9226,113 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     #expect(await h.doll.goalFile.nodes.last?.text == "弄懂獨角鯨的分類")
     #expect(try h.store.memoryFTS(match: "\"獨角鯨\"", folders: ["public"], limit: 5).count == 1)
     #expect(try h.store.memoryFTS(match: "\"独角鯨\"", folders: ["public"], limit: 5).isEmpty)
+}
+
+// Waiting is not busy (2026-11-20, owner; the soak run: a list waited nine hours and she never did a
+// thing of her own) -------------------------------------------------------------------------------
+
+/// A list 等待中 on the owner's answer, and a sub-goal of hers to take a step for.
+private func waitingOnTheOwner(_ clock: ManualClock = ManualClock(at("2026-11-16", "10:00"))) async throws -> (Harness, Int) {
+    let h = try await goalsHarness(clock)
+    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
+    let s = try await h.doll.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    await h.doll.ownerSaid("幫我問房東什麼時候來修水管")
+    try await h.turn(Scripted("", todoSet("房東的時間問到了"), dm("房東的電話是幾號？"), todoWait("等主人給電話")))
+    #expect(h.last.todo == "等待中")
+    return (h, s.id)
+}
+
+private let ownStep = "讀完鯊魚條目"
+private let recallCall: (String, [(String, String)]) = ("recall", [("query", "鯊魚")])
+
+@Test func whileAListWaitsHerOwnStepRunsBesideItAndTheWaitingOneComesBackIntact() async throws {
+    let (h, sub) = try await waitingOnTheOwner()
+    #expect(await h.doll.idleForWander)
+    // Her own step: the waiting list goes aside, untouched.
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    #expect(try h.toolResults().last!.text.hasSuffix("「房東的時間問到了」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。"))
+    #expect(try await h.last.todo == "進行中")
+    #expect(try await h.doll.todo.current == ownStep)
+    #expect(try await h.doll.aside?.todo == (h.timeline().todoAside?.todo))
+    #expect(try await h.doll.aside?.todo.phase == .waiting)
+    #expect(await !h.doll.idleForWander)
+    try await h.turn(Scripted("", recallCall))
+    #expect(h.last.footer.contains("- todo：進行中「\(ownStep)」（子目標 #\(sub) 的步驟）；旁邊放著等待中的「房東的時間問到了」：手上這份做完或結束，它就回到你手上；有人說話，程式會先把它拿回你手上"))
+    try await h.turn(Scripted("", done("讀完了", evidence: nil)))
+    #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「房東的時間問到了」回到你手上（等待中）。"))
+    // Back in hand as it was: still waiting, no turn for it, its own rounds and plan.
+    let back = await h.doll.todo
+    #expect(back.phase == .waiting && back.current == "房東的時間問到了" && back.rounds == 0 && back.plan?.items == ["房東的時間問到了"])
+    #expect(try await h.doll.aside == nil)
+    #expect(try await (h.timeline().todoAside) == nil)
+    #expect(try await (h.timeline().todo) == back)
+    #expect(await !h.doll.followUp)
+    #expect(await h.doll.goalFile.link?.subgoal == nil)
+    // His answer: her todo.done goes to the waiting item.
+    await h.doll.ownerSaid("電話是 0912-345-678")
+    try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
+    #expect(try h.toolResults().last!.text.contains("清單做完了，現在待命中"))
+    #expect(try h.timeline().todo == TodoState())
+    // Each list wrote its own estimate record.
+    #expect(await h.doll.estimateFile.records.map(\.plan.items) == [[ownStep], ["房東的時間問到了"]])
+}
+
+@Test func hisAnswerMidStepGoesToTheWaitingItemAndHerOwnStepGoesOnAfterIt() async throws {
+    let (h, sub) = try await waitingOnTheOwner()
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    // He answers while her own step runs: the waiting list is in hand for that turn.
+    await h.doll.ownerSaid("電話是 0912-345-678")
+    try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
+    #expect(h.last.footer.contains("- todo：等待中「房東的時間問到了」（有人說話才會再有回合；接著做它就回到進行中，沒碰它就繼續等）；你自己的事「\(ownStep)」先放在旁邊"))
+    #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「\(ownStep)」回到你手上（進行中）。"))
+    #expect(try await h.doll.todo.current == ownStep)
+    #expect(try await h.doll.todo.phase == .doing)
+    #expect(try await h.doll.aside == nil)
+    #expect(await h.doll.followUp)
+    #expect(await h.doll.goalFile.link?.subgoal == sub)
+}
+
+@Test func aLineThatIsNotTheAnswerLeavesTheItemWaitingWithoutATodoWait() async throws {
+    let (h, sub) = try await waitingOnTheOwner()
+    // Plain waiting: she answers him, the item stays 等待中 and no turn follows.
+    await h.doll.ownerSaid("晚餐吃什麼？")
+    try await h.turn(Scripted("", dm("吃麵吧")))
+    #expect(try await h.last.todo == "等待中")
+    #expect(try await !h.doll.followUp)
+    #expect(try h.timeline().todo.phase == .waiting)
+    // A todo.wait anyway changes nothing and is not an error.
+    await h.doll.ownerSaid("好")
+    try await h.turn(Scripted("", todoWait("還在等電話")))
+    #expect(try h.toolResults().last!.text.hasPrefix("「房東的時間問到了」本來就是等待中，沒有變"))
+    // With her own step beside it: his line brings the waiting list for one turn; she does not take it
+    // up, so her own step is back in hand and goes on.
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    await h.doll.ownerSaid("你在幹嘛")
+    try await h.turn(Scripted("", dm("在讀鯊魚")))
+    #expect(try await h.last.todo == "進行中")
+    #expect(try await h.doll.todo.current == ownStep)
+    #expect(try await h.doll.aside?.todo.phase == .waiting)
+    #expect(await h.doll.followUp)
+}
+
+@Test func aRestartKeepsBothListsAndAThirdNeverStarts() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let (h, sub) = try await waitingOnTheOwner(clock)
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    try await h.turn(Scripted("", recallCall))
+    // A new process: both lists as they were.
+    let r = try await goalsHarness(clock, dir: h.dir)
+    #expect(try await r.doll.todo.current == ownStep)
+    #expect(try await r.doll.todo.phase == .doing)
+    #expect(try await r.doll.todo.rounds == 1)
+    #expect(try await r.doll.aside?.todo.current == "房東的時間問到了")
+    #expect(try await r.doll.aside?.todo.phase == .waiting)
+    #expect(await r.doll.goalFile.link?.subgoal == sub)
+    // Her own step waits too: nothing more may start, and she is not idle.
+    try await r.turn(Scripted("", todoWait("等主人說鯊魚書放哪")))
+    #expect(await !r.doll.idleForWander)
+    try await r.turn(Scripted("", todoSetSub(sub, "畫一隻鯊魚")))
+    #expect(try r.toolResults().last!.text.hasPrefix("失敗：沒有列：「\(ownStep)」在等待中，旁邊已經放著「房東的時間問到了」；一次最多一份等著、一份你自己的事。"))
+    #expect(try await r.doll.todo.current == ownStep)
+    #expect(try await r.doll.aside?.todo.current == "房東的時間問到了")
 }

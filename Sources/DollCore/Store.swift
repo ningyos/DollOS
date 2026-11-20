@@ -191,6 +191,8 @@ public final class Timeline {
     public private(set) var events: [Event] = []
     /// The todo list as last recorded; idle for a new segment.
     public private(set) var todo = TodoState()
+    /// The list set aside beside it (`ListAside`, 2026-11-20); nil when there is none.
+    public private(set) var todoAside: ListAside?
     /// Every compaction, oldest first.
     public private(set) var compactions: [Compaction] = []
     /// Every recorded turn by her reply's seq.
@@ -256,6 +258,8 @@ public final class Timeline {
         var listStart: Double?
         var listText: String?
         var estimateCheck: EstimateCheck?
+        /// Absent in lines written before 2026-11-20 and when no list is set aside.
+        var aside: ListAside?
     }
     private struct CompactLine: Codable {
         var type = "compact"
@@ -378,6 +382,7 @@ public final class Timeline {
                 case "todo":
                     let t = try Self.decoder.decode(TodoLine.self, from: raw)
                     todo = Self.state(t)
+                    todoAside = t.aside
                 case "compact":
                     let c = try Self.decoder.decode(CompactLine.self, from: raw)
                     compactions.append(Compaction(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: c.text))
@@ -456,13 +461,15 @@ public final class Timeline {
         events[i].footer = text
     }
 
-    /// Records the todo list after her reply `seq` (or the program's change at the event `seq`).
-    public func recordTodo(_ s: TodoState, seq: Int64) throws {
+    /// Records the todo list after her reply `seq` (or the program's change at the event `seq`),
+    /// with the list set aside beside it (nil: none).
+    public func recordTodo(_ s: TodoState, aside: ListAside?, seq: Int64) throws {
         try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
                            rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
                            plan: s.plan, listRounds: s.listRounds, listStart: s.listStart,
-                           listText: s.listText, estimateCheck: s.estimateCheck))
+                           listText: s.listText, estimateCheck: s.estimateCheck, aside: aside))
         todo = s
+        todoAside = aside
     }
 
     /// Records a compaction; requests render its span from then on.

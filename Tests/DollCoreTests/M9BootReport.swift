@@ -44,7 +44,7 @@ extension Doll {
         todo.current = item
         todo.pending = []
         todo.startSeq = seq
-        try timeline.recordTodo(todo, seq: seq)
+        try timeline.recordTodo(todo, aside: nil, seq: seq)
     }
 }
 
