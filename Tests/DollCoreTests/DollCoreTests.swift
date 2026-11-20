@@ -4911,6 +4911,68 @@ private let longThought = String(repeating: "想", count: 9_000)
     #expect(await h.model.requests.last!.messages.contains { $0.content.contains("幫我存檔") })
 }
 
+@Test func atTheLimitAListWaitingIsCutIntoItsOwnPartStaysAndHisAnswerResolvesIt() async throws {
+    // 2026-11-21, owner (soak run: a list waiting 20 h held the whole day's conversation in the request).
+    let h = try await Harness(tune: { $0.context.limit = 1_000 })       // the system prompt alone is over it
+    await h.doll.ownerSaid("幫我把報告寄給王經理")
+    try await h.turn(Scripted("", todoSet("報告寄給王經理了", "跟主人說寄好了"), readCall))
+    try await h.turn(Scripted("", key("cmd+n")))
+    try await h.turn(Scripted("", dm("王經理的信箱是哪個？"), todoWait("等主人給王經理的信箱")))
+    #expect(h.last.todo == "等待中" && h.last.compacted.isEmpty)
+    // A line while it waits: the conversation inside the list's span is collapsed.
+    await h.doll.ownerSaid("今天好熱")
+    try await h.turn(Scripted("主人要你把報告寄給王經理；你問了他王經理的信箱。"), Scripted("", dm("對啊，好熱")))
+    #expect(h.last.compacted == ["talk"])
+    let t = try h.timeline()
+    let talk = try #require(t.compactions.last)
+    #expect(talk.kind == .talk && talk.toSeq > t.todo.startSeq)
+    // What she sees: the line the list answers, her todo calls with what she said beside them and their
+    // results, the summary, the item's actions; not her other calls, the window read, or their results.
+    let seen = await h.model.requests.last!.messages
+    let calls = seen.flatMap(\.toolCalls).map(\.name)
+    #expect(calls == ["todo.set", "discord.dm", "todo.wait"])
+    #expect(seen.last!.content.contains("其中做事的過程 0（截圖 0）"))
+    #expect(seen[1].content.hasSuffix("] 幫我把報告寄給王經理"))
+    #expect(seen[2].toolCalls.first?.arguments?.contains("跟主人說寄好了") == true && seen[3].role == "tool" && seen[3].content.contains("todo 列好了"))
+    #expect(seen[4].toolCalls.map(\.name) == ["discord.dm", "todo.wait"] && seen[4].toolCalls[0].arguments?.contains("王經理的信箱是哪個？") == true)
+    #expect(seen[5].role == "tool" && seen[6].role == "tool" && seen[6].content.contains("就是等待中"))
+    #expect(seen[7].content.contains("程式] 【之前的對話】") && seen[7].content.hasSuffix("你問了他王經理的信箱。"))
+    #expect(seen[8].content.hasSuffix("【收起】上面那段收起來的對話裡，「報告寄給王經理了」做過的動作：\(Doll.actionList(["key cmd+n"]))。"))
+    #expect(seen[9].content.hasSuffix("] 今天好熱"))
+    #expect(!seen.contains { $0.role == "tool" && $0.content.contains("AXWindow") })
+    #expect(seen.last!.content.contains("- todo：等待中「報告寄給王經理了」（有人說話才會再有回合；接著做它就回到進行中，沒碰它就繼續等）；後面還有：「跟主人說寄好了」"))
+    // His answer: she takes the item up and finishes it.
+    await h.doll.ownerSaid("wang@example.com")
+    try await h.turn(Scripted("聊了天氣。"), Scripted("", readCall))
+    #expect(h.last.todo == "進行中")
+    try await h.turn(Scripted("", done("寄給 wang@example.com 了")))
+    #expect(try h.toolResults().last!.text.contains("下一項「跟主人說寄好了」現在進行中"))
+    #expect(try h.timeline().todo.current == "跟主人說寄好了")
+}
+
+@Test func atTheLimitAListWaitingAsideKeepsItsPartAndHerOwnStepInProgressIsNotCutInto() async throws {
+    let (h, sub) = try await waitingOnTheOwner(tune: { $0.context.limit = 1_000 })
+    await h.doll.ownerSaid("今天好熱")
+    try await h.turn(Scripted("主人要你問房東什麼時候來修水管；你問了他房東的電話。"), Scripted("", dm("對啊，好熱")))
+    #expect(h.last.compacted == ["talk"])
+    // Her own step beside it: the waiting list's part is still in her request.
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    try await h.turn(Scripted("", recallCall))
+    let seen = await h.model.requests.last!.messages
+    #expect(seen[1].content.hasSuffix("] 幫我問房東什麼時候來修水管"))
+    #expect(seen[2].toolCalls.map(\.name) == ["todo.set", "discord.dm", "todo.wait"] && seen[2].toolCalls[1].arguments?.contains("房東的電話是幾號？") == true)
+    #expect(seen.last!.content.contains("旁邊放著等待中的「房東的時間問到了」"))
+    // His answer brings the waiting list in hand for the turn; her own step is in progress aside, and
+    // nothing after its start is collapsed.
+    let own = try await h.doll.todo.startSeq
+    await h.doll.ownerSaid("電話是 0912-345-678")
+    try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
+    try await h.turn(Scripted("", done("問到房東的電話", evidence: nil)))
+    #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「\(ownStep)」回到你手上（進行中）。"))
+    #expect(try h.timeline().compactions.filter { $0.kind == .talk }.allSatisfy { $0.toSeq < own })
+    #expect(h.logs.contains { $0.contains("no conversation before the item in progress") })
+}
+
 @Test func compactionsAndTheTodoListSurviveARestartByteForByte() async throws {
     let h = try await tightHarness()
     await h.doll.ownerSaid("兩件事")

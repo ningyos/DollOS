@@ -746,27 +746,53 @@ public actor Doll {
                 out += try render(ev, read: kept.contains(ev.seq!))
             case .reply(let calls):
                 out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
-            case .block(let c):
-                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(c.text ?? "")"))
+            case .block(let text):
+                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(text)"))
             }
         }
         return out
     }
 
-    /// How an event goes into the request (`context`): whole, as her reply's surviving calls, or as a compaction's block.
-    enum ContextMode { case full, reply([ToolCall]), block(Compaction) }
+    /// How an event goes into the request (`context`): whole, as her reply's surviving calls, or as a
+    /// program block (a compaction's, or a held list's action list after a talk summary).
+    enum ContextMode { case full, reply([ToolCall]), block(String) }
 
     /// What `context` sends of `events`, in order, and the reads whose list and screenshot are still sent.
     func contextPlan(_ events: [Event]) -> (plan: [(Event, ContextMode)], kept: Set<Int64>) {
         let comps = timeline.compactions
+        let lists = heldLists()
         var plan: [(Event, ContextMode)] = []
         var keep: ArraySlice<Bool> = []   // the compacted reply's calls still owed a result: kept or not
         for ev in events {
             let seq = ev.seq!
             // A collapsed stretch of conversation: nothing of it is sent, its summary stands where it ended.
             // Each one starts at the beginning and carries the one before it, so only the newest shows.
+            // A list she still holds that it cut into (one 等待中, 2026-11-21) keeps its own part: the
+            // line it answers, her replies with a todo call (those calls and what she said in the same
+            // reply) and their results, and after the summary its item's action list up to there.
             if let t = comps.filter({ $0.kind == .talk && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) {
-                if seq == t.toSeq { plan.append((ev, .block(t))) }
+                let cut = lists.filter { $0.from < t.toSeq }
+                if cut.contains(where: { $0.line == seq }) {
+                    plan.append((ev, .full))
+                } else if cut.contains(where: { seq > $0.from }) {
+                    switch ev.kind {
+                    case .doll:
+                        let flags = ev.calls.contains { Tools.todoNames.contains($0.name) } ? ev.calls.map(Self.survivesCompaction) : ev.calls.map { _ in false }
+                        keep = flags[...]
+                        let calls = zip(ev.calls, flags).filter(\.1).map(\.0)
+                        if !calls.isEmpty { plan.append((ev, .reply(calls))) }
+                    case .tool:
+                        if keep.popFirst() == true { plan.append((ev, .full)) }
+                    case .owner, .developer, .watch, .memory, .calendar: break
+                    }
+                }
+                if seq == t.toSeq {
+                    plan.append((ev, .block(t.text ?? "")))
+                    for l in cut {
+                        let steps = l.steps.filter { $0.seq > l.startSeq && $0.seq <= seq }.map(\.line)
+                        if !steps.isEmpty { plan.append((ev, .block(Self.heldStepsNote(item: l.item, steps: steps)))) }
+                    }
+                }
                 continue
             }
             guard let c = comps.filter({ $0.kind != .talk && $0.fromSeq < seq && seq <= $0.toSeq }).max(by: { $0.toSeq < $1.toSeq }) else {
@@ -787,7 +813,7 @@ public actor Doll {
                 if !Self.workNotice(ev.text) { plan.append((ev, .full)) }
             case .calendar: plan.append((ev, .full))
             }
-            if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c))) }
+            if c.kind == .forced, seq == c.toSeq { plan.append((ev, .block(c.text ?? ""))) }
         }
         // Older window reads go out as one line naming the window (2026-11-16, owner: she does not act
         // on a stale list, a list costs its tokens once), but in batches (2026-11-17, `fullReads`): the
@@ -796,6 +822,38 @@ public actor Doll {
         let kept = Self.fullReads(plan.compactMap { if case .full = $0.1, $0.0.image != nil || $0.0.window != nil { $0.0.seq } else { nil } },
                                   batch: computerConfig.readBatch)
         return (plan, kept)
+    }
+
+    /// A list she holds (in hand or set aside, not ended): what a talk compaction keeps of it.
+    struct HeldList {
+        /// Its span starts after this seq: just before the reply with the `todo.set` that started it,
+        /// or its item's start when that reply is not in this segment (it crossed maintenance).
+        var from: Int64
+        /// The person's line it answers (the line that reply left unanswered); nil when none.
+        var line: Int64?
+        var item: String
+        var startSeq: Int64
+        /// Its item's action list (in memory; a new process starts it empty).
+        var steps: [(seq: Int64, line: String)]
+    }
+
+    func heldLists() -> [HeldList] {
+        let all = timeline.events
+        let held: [(TodoState, ListMemory)] = [(todo, listMemory)] + (aside.map { [($0.todo, asideMemory)] } ?? [])
+        return held.compactMap { s, m in
+            guard s.phase != .idle, s.phase != .done, let item = s.current else { return nil }
+            guard let i = all.firstIndex(where: { $0.kind == .doll && $0.ts == s.listStart }) else {
+                return HeldList(from: s.startSeq, line: nil, item: item, startSeq: s.startSeq, steps: m.itemSteps)
+            }
+            let upTo = Array(all[...i])
+            let line = Self.unanswered(upTo) == nil ? nil : upTo.last { $0.speaker != nil }?.seq
+            return HeldList(from: all[i].seq! - 1, line: line, item: item, startSeq: s.startSeq, steps: m.itemSteps)
+        }
+    }
+
+    /// After a talk summary that cut into a list she holds: its item's actions up to there.
+    static func heldStepsNote(item: String, steps: [String]) -> String {
+        "【收起】上面那段收起來的對話裡，「\(item)」做過的動作：\(actionList(steps))。"
     }
 
     /// A call of hers that stays when its reply's span is compacted: what she said to someone, and her todo calls.
@@ -890,7 +948,8 @@ public actor Doll {
     func processTokens() throws -> (tokens: Int, images: Int) {
         guard todo.phase == .doing || todo.phase == .waiting else { return (0, 0) }
         let start = todo.startSeq
-        let covered = timeline.compactions.filter { $0.kind != .talk && $0.fromSeq == start }.map(\.toSeq).max() ?? start
+        // A talk summary may cover part of it too (an item 等待中 is cut into, 2026-11-21).
+        let covered = timeline.compactions.filter { ($0.kind != .talk && $0.fromSeq == start) || $0.kind == .talk }.map(\.toSeq).max().map { max($0, start) } ?? start
         var tokens = 0, images = 0
         let events = timeline.events.filter { $0.seq! > covered && $0.speaker == nil }
         let kept = Self.fullReads(events.compactMap { $0.image != nil || $0.window != nil ? $0.seq : nil }, batch: computerConfig.readBatch)
@@ -2385,7 +2444,10 @@ public actor Doll {
             guard used >= contextConfig.limit else { return }
             let earlier = timeline.compactions.filter { $0.kind == .talk }.max { $0.toSeq < $1.toSeq }
             let last = earlier?.toSeq ?? 0
-            let bound = todo.phase == .idle ? timeline.lastSeq : todo.startSeq
+            // Never into an item in progress, in hand or set aside; an item 等待中 does not bound it
+            // (2026-11-21, owner; soak run: a list waiting 20 h held the whole day's conversation in
+            // the request): what of its list stays is `contextPlan`'s.
+            let bound = [todo, aside?.todo].compactMap { $0 }.filter { $0.phase != .idle && $0.phase != .waiting }.map(\.startSeq).min() ?? timeline.lastSeq
             let live = all.filter { $0.seq! > last }
             let total = live.reduce(0) { $0 + estimateTokens($1.text) }
             var sum = 0, cut: Int64?
