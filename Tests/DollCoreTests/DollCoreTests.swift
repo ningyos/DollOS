@@ -6799,7 +6799,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(await d.dashboardGoals().revisions.map(\.by) == ["pack"])
     // A targeted change through her tool, effective in the very next request.
     await d.ownerSaid("你最近很會查資料耶")
-    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式也想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
                                                     ("based_on", "主人說「你最近很會查資料耶」")])))
     try await h.turn(Scripted("", dm("嘿嘿")))
     #expect(await h.model.seen(1)[0].content.contains("查資料要查到底"))
@@ -8767,7 +8767,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     let h = try await goalsHarness(clock)
     let d = h.doll
     await d.ownerSaid("你最近很會查資料耶，牙醫約在週四")
-    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式也想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "寫程式想練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
                                                    ("based_on", "主人說「你最近很會查資料耶」")]),
                               ("goal.add", [("text", "懂海洋生物")]), remember([("主人的牙醫約在週三", false)]), dm("好")))
     let old = try memoryID(h, "主人的牙醫約在週三")
