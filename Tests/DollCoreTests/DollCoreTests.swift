@@ -9439,3 +9439,19 @@ private func overwrite(_ id: String, _ text: String?, why: String = "我憑印�
     let ok = try Consolidation.parse(plan(#"{"op": "retire", "id": "m1", "superseded_by": "m2", "reason": "併進 m2"}"#), known: ["m1", "m2"], registry: [], tasks: [0])
     #expect(ok.operations.count == 1)
 }
+
+@Test func whenTheWaitingListSheTookUpWaitsAgainHerOwnStepIsBackInHand() async throws {
+    // m13-wait-idle: her own list sat aside 進行中 while the list in hand waited again, and nothing gave her a turn for it.
+    let (h, sub) = try await waitingOnTheOwner()
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    await h.doll.ownerSaid("房東電話我等等找給你")
+    try await h.turn(Scripted("", dm("好"), progress("主人說等等給電話")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒做：這一回合手上的是等著的「房東的時間問到了」"))
+    // She takes it up (the held call again), then it waits again: her own list is back in hand and goes on.
+    let ask: (String, [(String, String)]) = ("ask_owner", [("what", "給我房東的電話"), ("where", "私訊"), ("why", "要問他什麼時候來修水管")])
+    try await h.turn(Scripted("", ask))
+    #expect(try await h.doll.todo.current == ownStep)
+    #expect(try await h.doll.todo.phase == .doing)
+    #expect(try await h.doll.aside?.todo.phase == .waiting)
+    #expect(try await h.doll.followUp)
+}

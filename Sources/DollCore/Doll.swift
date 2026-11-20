@@ -1187,13 +1187,15 @@ public actor Doll {
         }
         if startAfterTurn { todo.startSeq = timeline.lastSeq }
         if waitNow, todo.phase == .doing { todo.phase = .waiting }
-        // The list in hand ended and one is set aside: it is back in hand (2026-11-20). The waiting
-        // list was brought back for a person's line and she did not take it up: her own list goes on.
+        // The list in hand ended and one is set aside: it is back in hand (2026-11-20). The list in
+        // hand waits and her own aside is in progress (she did not take the waiting one up after a
+        // person's line, or it waits again): her own list goes on (m13-wait-idle: it sat aside with
+        // the waiting one in hand, and nothing gave her a turn for it).
         // A turn after the one whose ending call was held (`heldForAnswer`): the hold is over.
         if heldForAnswer, heldAt < turnIndex { heldForAnswer = false }
         if todo.phase == .idle, aside != nil {
             takeBackAside()
-        } else if swappedForLine, !heldForAnswer, todo.phase == .waiting, aside?.todo.phase == .doing {
+        } else if !heldForAnswer, todo.phase == .waiting, aside?.todo.phase == .doing {
             swapAside()
             log("INFO", "turn \(turnIndex): 「\(aside?.todo.current ?? "")」still 等待中; 「\(todo.current ?? "")」back in hand")
         }
