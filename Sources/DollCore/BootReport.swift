@@ -122,7 +122,9 @@ extension Doll {
         case .bootFailed: lines.append("- 結束：開機到一半失敗，沒有起來，\(reportTime(p.ending.ts))：\(detail)")
         case .crashed: lines.append("- 結束：程式當掉了（\(detail)）；當掉前最後一行 log 在 \(reportTime(p.ending.ts))。")
         case .noEnd:
-            lines.append("- 結束：沒有結束的紀錄，最後一行 log 在 \(reportTime(p.ending.ts))，之後就沒有了。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。")
+            // The last line is only when it last wrote something (2026-11-20, soak run: killed at 18:00
+            // with its last line at 17:12, she told the owner it had stopped "around 17:12").
+            lines.append("- 結束：沒有結束的紀錄，最後一行 log 在 \(reportTime(p.ending.ts))，之後就沒有了（那只是它最後一次寫 log 的時間；停掉是在那之後、這次開機之前的某個時候，確切時間不知道）。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。")
         }
         if p.kinds.isEmpty {
             lines.append("- 沒有錯誤和警告。")

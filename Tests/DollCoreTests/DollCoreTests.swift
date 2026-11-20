@@ -8658,7 +8658,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     let r = try await b.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
     #expect(r.why == ["ending"] && r.unfinished == ["你手上的「桌面整理好」那時是進行中，還在你的 todo 裡；最後一步做到哪裡，程式不確定"])
     let notice = try b.events().last!.text
-    #expect(notice.contains("- 結束：沒有結束的紀錄，最後一行 log 在 11-18 09:30:00，之後就沒有了。"))
+    #expect(notice.contains("- 結束：沒有結束的紀錄，最後一行 log 在 11-18 09:30:00，之後就沒有了（那只是它最後一次寫 log 的時間；停掉是在那之後、這次開機之前的某個時候，確切時間不知道）。"))
     #expect(notice.contains("- 沒有錯誤和警告。"))
     #expect(notice.components(separatedBy: "看牙醫").count == 3)   // today's calendar and the missed list, once each
     #expect(notice.components(separatedBy: "沒開機的時候過了這些").count == 2)
