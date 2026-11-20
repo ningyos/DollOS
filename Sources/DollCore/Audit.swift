@@ -29,12 +29,14 @@ import Foundation
 ///
 /// One request (the consolidation's model and effort), no persona. Each memory gets `ok`, `unsure`
 /// or `wrong`; a `wrong` carries a quote of the source that contradicts it and the corrected text
-/// (empty: retire it). The program acts only on a verified quote (`refusal`): in the memory's own
+/// (empty: nothing of it can stay). The program acts only on a verified quote (`refusal`): in the memory's own
 /// source, at least `[computer] plan_min_chars` letters, and a corrected text that differs; a quote
 /// the memory itself repeats only supports taking out what the memory adds (m8 day A: the addition
-/// 「…，是去參加朋友的婚禮」 is shown by the passage without it), not a different text. Then `[audit] mode` `change` replaces or retires it
+/// 「…，是去參加朋友的婚禮」 is shown by the passage without it), not a different text. Then `[audit] mode` `change` replaces it
 /// (as `memory.fix` does, the old one retired with the quote as its reason; tier and strength
-/// stay), `flag` only records it for the owner. Every checked memory loses its mark, whatever the
+/// stay), `flag` only records it for the owner. An empty corrected text is only flagged in either
+/// mode (2026-11-20, owner: 「記憶不可以刪掉但可以覆蓋」; the audit has nothing to put in its place).
+/// Every checked memory loses its mark, whatever the
 /// verdict: an `unsure` one, or one whose quote failed the check, is left as it is and not asked
 /// again. The end notice lists what was changed or flagged and the quote; the dashboard too.
 enum Audit {
@@ -437,7 +439,7 @@ enum Audit {
         if changed.isEmpty && flagged.isEmpty { s += "，沒有找到跟原文不合的。" } else { s += "。" }
         if !changed.isEmpty {
             s += "改了 \(changed.count) 條：" + changed.map { r in
-                (r.after.map { "「\(r.before)」改成「\($0)」" } ?? "「\(r.before)」收起來了") + item(r)
+                "「\(r.before)」改成「\(r.after ?? "")」" + item(r)
             }.joined(separator: "；") + "。舊的留著，主人在儀表板看得到、可以還原。"
         }
         if !flagged.isEmpty {
@@ -532,14 +534,11 @@ extension Doll {
                 let from = "系統維護查對原文（\(item.segments.joined(separator: "、"))）"
                 let why = "原文「\(v.quote)」跟它不合"
                 let fixed = v.fixed.isEmpty ? nil : v.fixed
-                if change {
-                    var replacement: String?
-                    if let fixed {
-                        replacement = try memory.replace(item.id, text: fixed, tier: item.file.tier, sourceSeq: item.file.sourceSeq, kind: nil,
+                // Nothing to put in its place (an empty `fixed`): only flagged, even in `change` mode
+                // (2026-11-20, owner: a memory may be overwritten, never taken away).
+                if change, let fixed {
+                    let replacement = try memory.replace(item.id, text: fixed, tier: item.file.tier, sourceSeq: item.file.sourceSeq, kind: nil,
                                                          reason: "系統維護查對：\(why)", auditSegment: nil, now: now)
-                    } else {
-                        try memory.retire(item.id, Retirement(ts: now, supersededBy: "", reason: "系統維護查對：\(why)"))
-                    }
                     changed.append(try recordFix(by: "audit", memory: item.id, before: item.file.body, replacement: replacement, after: fixed,
                                                  basis: v.quote, from: from, why: why, now: now))
                     // One commit per correction: the owner's button undoes this one alone.

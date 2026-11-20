@@ -11,7 +11,7 @@ import Foundation
 ///     think(level: medium)               the next model call thinks first (2026-11-11: `none` removed; 2026-11-15: `high` removed)
 ///     remember(items: [{text, folder, kind?, deep?}])  one memory per item; folder: secret | own | public; deep: never fades
 ///     recall(query)                      search her memories and today's timeline
-///     memory.fix(id, text?, basis, why)  correct or retire one of her memories, with a copied basis (2026-11-18, `MemoryFix.swift`)
+///     memory.fix(id, text, basis?, why)  replace one of her memories, with a copied basis unless she wrote it herself (2026-11-18, 2026-11-20, `MemoryFix.swift`)
 ///     todo.set(items, facts, assumptions, limits, estimate, check) / todo.done(result, evidence) / todo.fail(cause, evidence, tried) / todo.wait(reason) / todo.progress(note) / todo.continue(missing, stuck, change)
 ///                                        her todo list (2026-11-14, `Todo.swift`): the computer tools run
 ///                                        only while an item is 進行中
@@ -203,16 +203,17 @@ public enum Tools {
                      "required": ["query"],
                  ], jsonParameters: []),
             Spec(name: Name.memoryFix,
-                 description: "改正你記錯的一條記憶：【相關記憶】或 recall 結果裡標〔…｜記憶 <id>〕的那條。要有依據：basis 一字不差照抄主人說的話，或你讀到的\(on ? "視窗、檔案、" : "")工具結果裡寫的字；你自己說的、想的、記的都不算。給 text 就換成改好的這條；不給 text 就只把它收起來（整條都錯、沒有對的可留）。舊的不會刪，會標成被換掉、寫上原因和依據，主人在儀表板看得到、可以還原。只是覺得不對、找不到依據，就先去查或問主人，不要改。",
+                 description: "改正你記錯的一條記憶：【相關記憶】或 recall 結果裡標〔…｜記憶 <id>〕的那條。記憶不會刪掉，只會換成新的：text 寫它應該是的整條（整條都錯、又不知道對的，就寫你知道的，例如「之前記的…是錯的；正確的還不知道」）。要有依據：basis 一字不差照抄主人說的話，或你讀到的\(on ? "視窗、檔案、" : "")工具結果裡寫的字；你自己說的、想的、記的都不算。只有你自己憑印象記的那條（不是從誰說的話、工具結果記的），可以不給 basis 自己覆蓋。舊的會標成被換掉、寫上原因和依據，主人在儀表板看得到、可以還原。只是覺得不對、找不到依據，就先去查或問主人，不要改。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
                          ("id", ["type": "string", "description": "要改的那條記憶的 id，例如 12-ab34cd"]),
-                         ("text", ["type": "string", "description": "改好的整條記憶；不給就只把舊的收起來"]),
-                         ("basis", ["type": "string", "description": .string("依據：照抄主人的話，或讀到的\(on ? "視窗、檔案、" : "")工具結果裡的字")]),
+                         ("text", ["type": "string", "description": "改好的整條記憶（一定要給：記憶不會刪掉，只會換成新的）"]),
+                         ("basis", ["type": "string", "description": .string("依據：照抄主人的話，或讀到的\(on ? "視窗、檔案、" : "")工具結果裡的字；你自己憑印象記的那條可以不給")]),
                          ("why", ["type": "string", "description": "哪裡錯了，一句"]),
                      ]),
-                     "required": ["id", "basis", "why"],
+                     // `text` is required, but checked in `Doll.memoryFix` (2026-11-20): her refusal there says what to write instead.
+                     "required": ["id", "why"],
                  ], jsonParameters: []),
             Spec(name: Name.historyList,
                  description: "看你的東西最近改了什麼：想成為的樣子、目標樹、\(on ? "存的工具、" : "")記憶、紀錄，每一次改動都有一筆（什麼時候、誰、做了什麼、為什麼、動到哪些），新的在前。about 不給就是全部。",
@@ -700,7 +701,8 @@ public enum Tools {
         case think(String)
         case remember([Item])
         case recall(String)
-        /// `memory.fix` (2026-11-18, `MemoryFix.swift`): no `text` = retire only.
+        /// `memory.fix` (2026-11-18, `MemoryFix.swift`): `text` nil is refused there (never only retired,
+        /// 2026-11-20), with her own words; `basis` empty = none (only for a memory she wrote herself).
         case memoryFix(id: String, text: String?, basis: String, why: String)
         /// The history of what is hers (2026-11-19, `History.swift`).
         case historyList(about: String?)
@@ -808,7 +810,7 @@ public enum Tools {
             return .recall(try nonEmpty("query"))
         case Name.memoryFix:
             let text = given("text").flatMap { $0.isEmpty ? nil : $0 }
-            return .memoryFix(id: try nonEmpty("id"), text: text, basis: try nonEmpty("basis"), why: try nonEmpty("why"))
+            return .memoryFix(id: try nonEmpty("id"), text: text, basis: given("basis") ?? "", why: try nonEmpty("why"))
         case Name.historyList:
             return .historyList(about: given("about").flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 })
         case Name.historyUndo:

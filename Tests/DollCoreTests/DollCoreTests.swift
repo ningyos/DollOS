@@ -8089,7 +8089,7 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
     #expect(try h.toolResults().last!.text.hasSuffix("已經收起來了（她改的：主人說時間記錯了；依據（主人說的）「是週四下午三點」），換成了記憶 \(new)；要改就改那一條。"))
 }
 
-@Test func aReadFileIsABasisAndWithoutTextTheMemoryIsOnlyRetired() async throws {
+@Test func aReadFileIsABasisAndWithoutTextNothingIsRetired() async throws {
     let h = try await menuHarness()
     let path = try h.put("dentist.txt", "看牙：週五上午十點，中山牙醫\n")
     try await h.turn(Scripted("", remember([("主人週四去看牙", false), ("中山牙醫在三樓", false)])))
@@ -8099,9 +8099,10 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
     let new = try memoryID(h, "主人週五上午十點去中山牙醫看牙")
     #expect(try memoryFilesByID(h)[new]!.file.tier == .tool)
     #expect(try fixesFile(h).items[0].basisFrom == "檔案 \(path)")
+    // Retiring only is refused, with a basis too (2026-11-20, owner: 「記憶不可以刪掉但可以覆蓋」).
     try await h.turn(Scripted("", fix(b, nil, basis: "週五上午十點，中山牙醫", why: "檔案沒說在三樓，是我自己猜的")))
-    #expect(try h.toolResults().last!.text == "收起來了：記憶 \(b)「中山牙醫在三樓」不再算數。舊的收起來了，主人在儀表板看得到，可以還原。")
-    #expect(try memoryFilesByID(h)[b]!.file.retired?.supersededBy == "")
+    #expect(try h.toolResults().last!.text == "失敗：沒有改：" + noRetireOnly)
+    #expect(try memoryFilesByID(h)[b]!.file.retired == nil)
 }
 
 @Test func aCorrectionWithoutARealBasisIsRefusedAndWritesNothing() async throws {
@@ -8116,9 +8117,10 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
         (fix(id, "主人的牙醫約在週日", basis: "我記得是週日早上九點"), "沒有改：basis「我記得是週日早上九點」\(refused)那是你自己寫的字（你說的、想的或記的），不算依據。依據要一字不差照抄那裡的字；只是覺得不對、找不到依據，就先去查（讀檔案、看視窗）或問主人。"),
         (fix(id, "主人的牙醫約在週日", basis: "主人的牙醫約在週三"), "那是你自己寫的字（你說的、想的或記的），不算依據。"),
         (fix(id, "主人的牙醫約在週日", basis: "不對"), "沒有改：basis「不對」太短：至少 4 個字，照抄一整段。"),
-        (fix(id, "主人的牙醫約在週三下午兩點。", basis: "牙醫約在週三下午兩點"), "沒有改：text 跟原本那條一樣；要改就寫改好的整條，整條都錯就不給 text。"),
+        (fix(id, "主人的牙醫約在週三下午兩點。", basis: "牙醫約在週三下午兩點"), "沒有改：text 跟原本那條一樣；要改就寫改好的整條。"),
         (fix("9-abcdef", "x", basis: "牙醫約在週三下午兩點"), "沒有改：沒有 id 是 9-abcdef 的記憶。id 照抄【相關記憶】或 recall 結果裡〔…｜記憶 <id>〕的那一串。"),
-        (("memory.fix", [("id", id), ("why", "x")]), "memory.fix 少了參數 basis"),
+        (("memory.fix", [("id", id), ("basis", "牙醫約在週三下午兩點"), ("why", "x")]), "沒有改：" + noRetireOnly),
+        (("memory.fix", [("id", id), ("text", "主人的牙醫約在週日"), ("why", "x")]), "沒有改：記憶 \(id) 不是你自己憑印象記的（程式記的來源是主人說的話），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。"),
     ] {
         try await h.turn(Scripted("", call))
         let text = try h.toolResults().last!.text
@@ -9042,7 +9044,7 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "b443fc7b28f4ee0daf28fb1016eea2fb1c99cdff66f0c0f298a422440d48e0e7")
+    #expect(d.tools == "91e4c3f4da1be2b09ba9b483cea9c45f417aeccf3d2cd60df46603f4feeb97d6")
     #expect(d.prompt == "0c02bc5cdc815e60edae780a690633e5b7acfab841326a7233207b6e250413fe")
 }
 
@@ -9335,4 +9337,83 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try r.toolResults().last!.text.hasPrefix("失敗：沒有列：「\(ownStep)」在等待中，旁邊已經放著「房東的時間問到了」；一次最多一份等著、一份你自己的事。"))
     #expect(try await r.doll.todo.current == ownStep)
     #expect(try await r.doll.aside?.todo.current == "房東的時間問到了")
+}
+
+// A memory may be overwritten, never taken away (2026-11-20, owner: 「記憶不可以刪掉但可以覆蓋」); one she
+// wrote herself she may overwrite without a basis (the soak run: a whale taxonomy from her own
+// recollection, wrong, and a second "revised" one beside it) -------------------------------------------
+
+private let noRetireOnly = "記憶不會刪掉，只能換成新的內容：給 text，寫它應該是的整條。整條都錯、又不知道對的是什麼，text 就寫你知道的，例如「之前記的…是錯的（依據…）；正確的還不知道」。"
+private func overwrite(_ id: String, _ text: String?, why: String = "我憑印象記的，記錯了") -> (String, [(String, String)]) {
+    ("memory.fix", [("id", id)] + (text.map { [("text", $0)] } ?? []) + [("why", why)])
+}
+
+@Test func sheOverwritesAMemorySheWroteHerselfWithoutABasisAndTheUndoBringsItBack() async throws {
+    let h = try await Harness()
+    // Nobody spoke: her own recollection is the doll tier.
+    try await h.turn(Scripted("", remember([("獨角鯨和白鯨是同一科，海豚是另一科", false)])))
+    let old = try memoryID(h, "獨角鯨和白鯨是同一科，海豚是另一科")
+    #expect(try memoryFilesByID(h)[old]!.file.tier == .doll)
+    // Retiring only is refused for hers too.
+    try await h.turn(Scripted("", overwrite(old, nil)))
+    #expect(try h.toolResults().last!.text == "失敗：沒有改：" + noRetireOnly)
+    try await h.turn(Scripted("", overwrite(old, "之前記的「獨角鯨和白鯨是同一科，海豚是另一科」是我憑印象寫的，沒查過；正確的分類還不知道")))
+    let new = try memoryID(h, "之前記的「獨角鯨和白鯨是同一科，海豚是另一科」是我憑印象寫的，沒查過；正確的分類還不知道")
+    #expect(try h.toolResults().last!.text == "改好了：記憶 \(old)「獨角鯨和白鯨是同一科，海豚是另一科」換成記憶 \(new)「之前記的「獨角鯨和白鯨是同一科，海豚是另一科」是我憑印象寫的，沒查過；正確的分類還不知道」（那條是你自己憑印象記的，不用依據）。舊的收起來了，主人在儀表板看得到，可以還原。")
+    let files = try memoryFilesByID(h)
+    // The old file stays on disk, superseded by the new one; the new one is still hers.
+    #expect(files[old]!.file.retired?.supersededBy == new && files[old]!.file.retired?.reason == "她覆蓋自己記的：我憑印象記的，記錯了（她自己憑印象記的，沒有依據）")
+    #expect(files[new]!.file.tier == .doll)
+    let rec = try fixesFile(h).items
+    #expect(rec.count == 1 && rec[0].by == "her" && rec[0].basis == "" && rec[0].basisFrom == Doll.hersFrom && rec[0].replacement == new)
+    // The owner's undo: the old one is back, the replacement gone.
+    try await h.doll.dashboardMemoryRevert(1)
+    let back = try memoryFilesByID(h)
+    #expect(back[old]!.file.retired == nil && back[new] == nil)
+}
+
+@Test func withoutABasisOnlyHerOwnMemoryMayBeOverwritten() async throws {
+    let h = try await Harness()
+    try await seedMemory(h, "public", "主人說他最愛藍鯨", tier: "owner", id: "1-aaaaaa")
+    try await seedMemory(h, "public", "主人週末常去海邊", tier: "consolidated", id: "1-bbbbbb")
+    try await seedMemory(h, "public", "計算機在 Dock 第三個", tier: "tool", id: "1-cccccc")
+    for (id, from) in [("1-aaaaaa", "主人說的話"), ("1-bbbbbb", "系統維護整理時寫的"), ("1-cccccc", "工具的結果或讀到的東西")] {
+        try await h.turn(Scripted("", overwrite(id, "改掉")))
+        #expect(try h.toolResults().last!.text == "失敗：沒有改：記憶 \(id) 不是你自己憑印象記的（程式記的來源是\(from)），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。")
+    }
+    #expect(try memoryFilesByID(h).values.allSatisfy { $0.file.retired == nil } && fixesFile(h).items.isEmpty)
+    // A rewrite with a basis that is not one is still refused, hers or not.
+    try await seedMemory(h, "public", "藍鯨是最大的魚", tier: "doll", id: "1-dddddd")
+    try await h.turn(Scripted("", fix("1-dddddd", "藍鯨是最大的動物", basis: "藍鯨是哺乳類動物")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有改：basis「藍鯨是哺乳類動物」不在主人說的話"))
+}
+
+@Test func theAuditOnlyFlagsAMemoryItWouldRetireWithNothingInItsPlace() async throws {
+    let reply = Scripted("""
+        ```json
+        {"results": [{"m": "m1", "verdict": "ok"}, {"m": "m2", "verdict": "ok"},
+                     {"m": "m3", "verdict": "wrong", "quote": "下週四下午三點要去中山牙醫看牙", "fixed": ""}]}
+        ```
+        """)
+    let (h, clock, runner) = try await auditDay(mode: "change", [reply, planReply, summaryReply])
+    let id = try memoryID(h, "主人怕打針")
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(try memoryFilesByID(h)[id]!.file.retired == nil)
+    let rec = try fixesFile(h).items
+    #expect(rec.count == 1 && rec[0].by == "flag" && rec[0].memory == id && rec[0].after == nil && rec[0].replacement == nil)
+    #expect(h.logs.contains { $0.contains("0 changed, 1 flagged") })
+    await h.doll.stop()
+    try await runner.value
+}
+
+@Test func aConsolidationRetirementNeedsWhatReplacesIt() throws {
+    let plan = { (ops: String) in "```json\n{\"entities\": [], \"operations\": [\(ops)]}\n```" }
+    for by in ["", "m1", "zz"] {
+        #expect(throws: ConsolidationError.self, "\(by)") {
+            try Consolidation.parse(plan(#"{"op": "retire", "id": "m1", "superseded_by": "\#(by)", "reason": "舊了"}"#), known: ["m1", "m2"], registry: [], tasks: [0])
+        }
+    }
+    let ok = try Consolidation.parse(plan(#"{"op": "retire", "id": "m1", "superseded_by": "m2", "reason": "併進 m2"}"#), known: ["m1", "m2"], registry: [], tasks: [0])
+    #expect(ok.operations.count == 1)
 }
