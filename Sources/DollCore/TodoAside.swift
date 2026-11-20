@@ -12,6 +12,9 @@ import Foundation
 ///                                                     answer goes to its item); she takes it up → her own list
 ///                                                     waits aside until it ends; she does not → her own list
 ///                                                     is back in hand after the turn and the waiting one waits on
+///     in that turn, her todo.done / fail / progress / continue    → held once (it may be meant for her own list,
+///                                                     m13-wait-idle); the same call in her next turn goes to the
+///                                                     waiting item; todo.wait there gives her own list back
 ///
 /// Each list keeps its own rounds, decision point, plan and estimate record, and its goal-tree link.
 /// The timeline stores the aside list with every todo record, so a restart keeps both.
@@ -100,6 +103,7 @@ extension Doll {
         todo.rounds += 1
         if todo.decideAt == 0 { todo.decideAt = computerConfig.decideAfterRounds }
         swappedForLine = false
+        heldForAnswer = false
         log("INFO", "turn \(turnIndex): todo 等待中 → 進行中「\(todo.current ?? "")」(\(tool))")
     }
 

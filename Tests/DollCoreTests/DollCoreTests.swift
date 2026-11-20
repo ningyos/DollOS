@@ -9282,16 +9282,38 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
 @Test func hisAnswerMidStepGoesToTheWaitingItemAndHerOwnStepGoesOnAfterIt() async throws {
     let (h, sub) = try await waitingOnTheOwner()
     try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
-    // He answers while her own step runs: the waiting list is in hand for that turn.
+    // He answers while her own step runs: the waiting list is in hand for that turn, and an ending
+    // call in it is held once (it may be meant for her own step); the same call next turn goes through.
     await h.doll.ownerSaid("電話是 0912-345-678")
     try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
-    #expect(h.last.footer.contains("- todo：等待中「房東的時間問到了」（有人說話才會再有回合；接著做它就回到進行中，沒碰它就繼續等）；你自己的事「\(ownStep)」先放在旁邊"))
+    #expect(try h.toolResults().last!.text == "失敗：還沒做：這一回合手上的是等著的「房東的時間問到了」（有人說話了，程式先把它拿回你手上），你自己的「\(ownStep)」放在旁邊。他的話就是「房東的時間問到了」要的答案，就再呼叫一次 todo.done，這次就是給它的；你要做的是「\(ownStep)」，就呼叫 todo.wait（「房東的時間問到了」繼續等），「\(ownStep)」就回到你手上。")
+    #expect(try await h.doll.todo.current == "房東的時間問到了")
+    #expect(try await h.doll.followUp)
+    try await h.turn(Scripted("", done("問到房東的電話", evidence: nil)))
+    #expect(h.reports[h.reports.count - 2].footer.contains("- todo：等待中「房東的時間問到了」（有人說話才會再有回合；接著做它就回到進行中，沒碰它就繼續等）；你自己的事「\(ownStep)」先放在旁邊"))
     #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「\(ownStep)」回到你手上（進行中）。"))
     #expect(try await h.doll.todo.current == ownStep)
     #expect(try await h.doll.todo.phase == .doing)
     #expect(try await h.doll.aside == nil)
     #expect(await h.doll.followUp)
     #expect(await h.doll.goalFile.link?.subgoal == sub)
+}
+
+@Test func herOwnStepsEndingCallInTheTurnHisLineBroughtTheWaitingListIsHeldAndTodoWaitGivesHerStepBack() async throws {
+    // m13-wait-idle: an unrelated line came mid-step and her own step's todo.done landed on the waiting item.
+    let (h, sub) = try await waitingOnTheOwner()
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    try await h.turn(Scripted("", recallCall))
+    await h.doll.ownerSaid("今天好冷")
+    try await h.turn(Scripted("", dm("多穿點"), done("讀完了", evidence: nil)))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：還沒做：這一回合手上的是等著的「房東的時間問到了」"))
+    #expect(try h.timeline().todo.phase == .waiting)
+    try await h.turn(Scripted("", todoWait("還在等電話")))
+    #expect(try await h.doll.todo.current == ownStep)
+    #expect(try await h.doll.aside?.todo.current == "房東的時間問到了")
+    #expect(try await h.doll.aside?.todo.phase == .waiting)
+    try await h.turn(Scripted("", done("讀完了", evidence: nil)))
+    #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「房東的時間問到了」回到你手上（等待中）。"))
 }
 
 @Test func aLineThatIsNotTheAnswerLeavesTheItemWaitingWithoutATodoWait() async throws {

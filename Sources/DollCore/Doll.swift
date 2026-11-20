@@ -154,6 +154,11 @@ public actor Doll {
     /// A person's line or a watch wake brought the waiting list back in hand for this turn
     /// (`Doll.drain`); her own list goes back in hand after it unless she took the waiting one up.
     var swappedForLine = false
+    /// Her ending call on the waiting item was held in that turn (`currentItem`): the waiting list
+    /// stays in hand for her next turn, in which the same call goes through (`heldAt`: the turn).
+    var heldForAnswer = false
+    var heldAt = 0
+    static let heldTools: Set<String> = ["todo.done", "todo.fail", "todo.progress", Tools.Name.todoContinue]
     /// Her finished lists, estimate against actual (2026-11-17, hook 2): `<data_dir>/estimates.json`.
     let estimatesURL: URL
     var estimateFile: EstimateFile
@@ -1184,13 +1189,15 @@ public actor Doll {
         if waitNow, todo.phase == .doing { todo.phase = .waiting }
         // The list in hand ended and one is set aside: it is back in hand (2026-11-20). The waiting
         // list was brought back for a person's line and she did not take it up: her own list goes on.
+        // A turn after the one whose ending call was held (`heldForAnswer`): the hold is over.
+        if heldForAnswer, heldAt < turnIndex { heldForAnswer = false }
         if todo.phase == .idle, aside != nil {
             takeBackAside()
-        } else if swappedForLine, todo.phase == .waiting, aside?.todo.phase == .doing {
+        } else if swappedForLine, !heldForAnswer, todo.phase == .waiting, aside?.todo.phase == .doing {
             swapAside()
             log("INFO", "turn \(turnIndex): 「\(aside?.todo.current ?? "")」still 等待中; 「\(todo.current ?? "")」back in hand")
         }
-        swappedForLine = false
+        if !heldForAnswer { swappedForLine = false }
         // The decision point (design C): the list has run `decideAt` rounds and an item is still in
         // progress. Rounds of the whole list since its `todo.set` (2026-11-17, m7-mac x-3: a list split
         // into two items restarted a per-item count and the point came at round 26 of 30).
@@ -1402,6 +1409,7 @@ public actor Doll {
                 // Already waiting (2026-11-20): an event does not take it up, so there is nothing to put back.
                 if todo.phase == .waiting, let item = todo.current {
                     waitNow = true
+                    heldForAnswer = false
                     return Outcome(text: "「\(item)」本來就是等待中，沒有變：有人說話你會有回合，沒接著做它，它就一直等著，不用再 todo.wait。",
                                    actions: ["todo wait"], background: true)
                 }
@@ -1698,8 +1706,19 @@ public actor Doll {
     // todo -------------------------------------------------------------------
     /// The item in progress; a call that needs one throws with the phase when there is none.
     func currentItem(_ tool: String) throws -> String {
-        // A todo call on the waiting item takes it up again (2026-11-20).
-        if todo.phase == .waiting { resumeWaiting(tool) }
+        // A todo call on the waiting item takes it up again (2026-11-20). In the turn a person's line
+        // brought it back while her own list ran, an ending call is held once: it may be meant for her
+        // own (m13-wait-idle: her own step's todo.done landed on the waiting item).
+        if todo.phase == .waiting {
+            if swappedForLine, !heldForAnswer, Self.heldTools.contains(tool), let mine = aside?.todo.current {
+                heldForAnswer = true
+                heldAt = turnIndex
+                log("INFO", "turn \(turnIndex): \(tool) held: 「\(todo.current ?? "")」is in hand for a line, 「\(mine)」aside")
+                throw ToolError(description: "還沒做：這一回合手上的是等著的「\(todo.current ?? "")」（有人說話了，程式先把它拿回你手上），你自己的「\(mine)」放在旁邊。"
+                                + "他的話就是「\(todo.current ?? "")」要的答案，就再呼叫一次 \(tool)，這次就是給它的；你要做的是「\(mine)」，就呼叫 todo.wait（「\(todo.current ?? "")」繼續等），「\(mine)」就回到你手上。")
+            }
+            resumeWaiting(tool)
+        }
         guard todo.phase == .doing, let item = todo.current else {
             throw ToolError(description: "\(tool) 要有進行中的項目；現在是\(todo.phase.label)" + (todo.phase == .idle ? "，先用 todo.set 列 todo" : ""))
         }
