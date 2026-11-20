@@ -83,6 +83,8 @@ struct MaintenanceDone {
     var words: String
     var summary: String?
     var kept: TodoState?
+    /// The list set aside beside `kept`, carried with it.
+    var keptAside: ListAside? = nil
 }
 
 /// One task's prepared work: what `commit` writes.
@@ -147,8 +149,13 @@ extension Doll {
     /// began (the boot and maintenance notices alone are not a day).
     var dayToConsolidate: Bool { let c = dayCounts(); return c.lines + c.replies > 0 }
 
-    /// A list set aside counts too (2026-11-20): a new day's timeline starts with none.
-    var todoBusy: Bool { todo.phase == .doing || todo.phase == .waiting || aside != nil }
+    /// A list 進行中, in hand or set aside: maintenance waits for it (2026-11-21, owner: a list that
+    /// only waits does not hold maintenance back; soak run: due at 03:00 with a list 等待中 since 07:01
+    /// the day before, it started only at the busy limit).
+    var todoBusy: Bool { todo.phase == .doing || aside?.todo.phase == .doing }
+
+    /// A list she holds, in hand (進行中 or 等待中) or set aside: maintenance carries it into the new day.
+    var todoHeld: Bool { todo.phase == .doing || todo.phase == .waiting || aside != nil }
 
     /// 【狀況】's lines: the day's size, and when maintenance comes (time left) or that it waits.
     func maintenanceStatusLines(now: Double) -> [String] {
@@ -209,7 +216,8 @@ extension Doll {
         maintenanceCheck()
     }
 
-    /// Idle for maintenance: no turn running, nothing queued, no tool result waiting, no todo in hand.
+    /// Idle for maintenance: no turn running, nothing queued, no tool result waiting, no list 進行中
+    /// (one 等待中 is carried into the new day).
     var maintenanceIdle: Bool { !inTurn && queue.isEmpty && !followUp && !todoBusy }
 
     /// Quiet long enough after an interruption.
@@ -325,7 +333,7 @@ extension Doll {
         maintenanceTask = nil
         maintenanceState = MaintenanceFile()
         saveMaintenanceLogged()
-        let kept = done?.kept ?? (ended.forced && todoBusy ? todo : nil)
+        let kept = done?.kept ?? (ended.forced && todoHeld ? todo : nil)
         var text = "【系統維護】結束，現在 \(Self.hhmm(now))。"
         text += (ended.words ?? []).joined()
         let failed = MaintenanceTask.allCases.filter { ended.failed[$0.rawValue] != nil }
@@ -335,19 +343,27 @@ extension Doll {
         }
         if let s = done?.summary { text += "\n" + s + "\n" }
         text += "今天的行事曆：" + calendarStatus(now: now, all: true) + "。"
-        if let kept { text += "你手上的「\(kept.current ?? "")」還在，接著做。" }
+        if let kept {
+            text += kept.phase == .waiting ? "你手上的「\(kept.current ?? "")」還在，還是等待中。" : "你手上的「\(kept.current ?? "")」還在，接著做。"
+        }
         do {
             let ev = try append(Event(.memory, .internal, text))
-            // A todo in hand goes on in the new day, its steps starting at the notice.
+            // The lists she holds go on in the new day, their steps starting at the notice.
             if var k = done?.kept {
                 k.startSeq = ev.seq!
                 todo = k
-                try timeline.recordTodo(k, aside: nil, seq: ev.seq!)
+                aside = done?.keptAside.map { a in
+                    var a = a
+                    a.todo.startSeq = ev.seq!
+                    return a
+                }
+                try timeline.recordTodo(k, aside: aside, seq: ev.seq!)
             }
         } catch { log("ERROR", "maintenance: end notice not written: \(error)") }
         log("INFO", "maintenance: ended; done \(ended.done), failed \(Array(ended.failed.keys))")
         feed.notify(.maintenance)
-        if kept != nil { followUp = true }
+        // A turn only for a list 進行中: one 等待中 waits on for its answer.
+        if kept != nil, todoBusy { followUp = true }
         drivesCheck()
         if let w = waiter {
             waiter = nil
@@ -390,7 +406,7 @@ extension Doll {
             return try commitConcernExtraction(answer)
         case .consolidate(let request, let answer):
             let old = timeline
-            let kept = todoBusy ? todo : nil
+            let kept = todoHeld ? todo : nil, keptAside = aside
             let result = try Consolidation.apply(request, answer, memory: memory, config: config.consolidate, now: wallClock.now()) {
                 try Timeline.startSegment(dir: timelineDir)
             }
@@ -404,7 +420,7 @@ extension Doll {
             for ev in old.events where ev.seq! > request.lastSeq { try append(ev, keepTime: true) }
             return MaintenanceDone(
                 log: "segment \(result.segment) → \(result.newSegment), \(result.applied.count) applied, request \(result.promptTokens) prompt tokens",
-                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept)
+                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept, keptAside: keptAside)
         }
     }
 
@@ -416,6 +432,11 @@ extension Doll {
         itemUsedComputer = false
         itemActed = false
         compacting = nil
+        // The list aside keeps its place, not its steps (their seqs were the old day's).
+        asideMemory.itemSteps = []
+        asideMemory.itemApps = []
+        asideMemory.itemUsedComputer = false
+        asideMemory.itemActed = false
         warnedTurns = 0
         attachedIDs = []
         imageURIs = [:]

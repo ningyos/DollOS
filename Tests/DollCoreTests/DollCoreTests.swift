@@ -5599,59 +5599,65 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     try await runner2.value
 }
 
-@Test func maintenanceWaitsForATodoInHandAndStartsOnceSheIsIdle() async throws {
+@Test func aListWaitingDoesNotHoldMaintenanceItCrossesIntoTheNewDayAndHisAnswerResolvesIt() async throws {
+    // 2026-11-21, owner (soak run: a list waited from 07:01 and maintenance came only at the busy limit).
     let clock = ManualClock(at("2026-11-17", "02:50"))
-    let h = try await maintenanceHarness(clock, [Scripted("", todoSet("報告寄給主人了"), todoWait("等主人給檔案"))])
+    let h = try await maintenanceHarness(clock, [Scripted("", todoSet("報告寄給主人了"), dm("檔案在哪？"), todoWait("等主人給檔案")),
+                                                 planReply, summaryReply])
     let doll = h.doll
     let runner = Task { try await doll.run() }
     await doll.ownerSaid("幫我寄報告")
     try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
     clock.set(at("2026-11-17", "03:00"))
-    try await waitUntil { h.logs.contains { $0.contains("maintenance: due") } }
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(await doll.maintenanceLine() == "系統維護 2026-11-17（星期二） 03:00 到了，等她手上沒事")
-    #expect(await h.model.requests.count == 1 && !h.logs.contains { $0.contains("maintenance: started") })
-    #expect(try h.events().allSatisfy { !$0.text.hasPrefix("【系統維護】") && $0.kind != .calendar })
-    let first = await h.model.requests.first!
-    #expect(first.messages.last!.content.contains("- 系統維護：2026-11-17（星期二） 03:00（還有 10 分鐘）"))
-    // The owner answers; she ends the list and tells him; once those turns are over it starts, with
-    // no turn of its own.
-    await h.model.add([Scripted("", fail("主人說檔案不用寄了", evidence: "檔案在桌面")), Scripted("", ("todo.set", [("items", "[]")]), dm("好，那我等你回來再說")),
-                       planReply, summaryReply])
-    clock.set(at("2026-11-17", "03:20"))
-    await doll.ownerSaid("檔案在桌面")
     try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
-    #expect(await h.model.requests.count == 5 && h.said == ["好，那我等你回來再說"])
-    #expect(try segmentTexts(h)[0].last == startNotice.replacingOccurrences(of: "03:00", with: "03:20"))
+    // It started at its time with no turn of hers, and said nothing about her list at the start.
+    #expect(await h.model.requests.count == 3)
+    let segs = try segmentTexts(h)
+    #expect(segs[0].last == startNotice)
+    #expect(segs[1].count == 1 && segs[1][0].hasSuffix("今天的行事曆：03:00 系統維護（#1，每天）。你手上的「報告寄給主人了」還在，還是等待中。"))
+    // The list is intact in the new day, still waiting, and no turn follows for it.
+    let t = try h.timeline()
+    #expect(t.todo.phase == .waiting && t.todo.current == "報告寄給主人了" && t.todo.plan?.items == ["報告寄給主人了"])
+    #expect(t.todo.startSeq == 1 && t.todoAside == nil)
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.model.requests.count == 3)
+    #expect(await !doll.followUp)
+    // His answer in the morning resolves the item.
+    await h.model.add([Scripted("", dm("好，我寄了"), done("報告寄出了", evidence: nil))])
+    clock.set(at("2026-11-17", "08:00"))
+    await doll.ownerSaid("檔案在桌面")
+    try await waitUntil { (try? h.timeline().todo) == TodoState() }
+    let seen = await h.model.requests.last!.messages
+    #expect(seen.last!.content.contains("- todo：等待中「報告寄給主人了」"))
+    #expect(try h.toolResults().last!.text.contains("清單做完了，現在待命中"))
+    #expect(await h.doll.estimateFile.records.map(\.plan.items) == [["報告寄給主人了"]])
     await doll.stop()
     try await runner.value
 }
 
-@Test func busyPastTheLimitItStartsAnywayKeepsTheTodoAndGivesHerATurnToResume() async throws {
+@Test func aListInProgressStillHoldsMaintenanceUntilTheBusyLimitThenItIsKeptAndSheGetsATurn() async throws {
     let clock = ManualClock(at("2026-11-17", "02:50"))
-    let h = try await maintenanceHarness(clock, [Scripted("", todoSet("報告寄給主人了"), todoWait("等主人給檔案"))])
-    let doll = h.doll
-    let runner = Task { try await doll.run() }
-    await doll.ownerSaid("幫我寄報告")
-    try await waitUntil { (try? await doll.dashboardStatus().todo) == "等待中" }
+    let h = try await maintenanceHarness(clock)
+    _ = try await h.doll.calendarCatchUp()
+    await h.doll.ownerSaid("幫我寄報告")
+    try await h.turn(Scripted("", todoSet("報告寄給主人了")))
+    #expect(await h.doll.todo.phase == .doing)
     clock.set(at("2026-11-17", "03:00"))
-    try await waitUntil { h.logs.contains { $0.contains("maintenance: due") } }
+    await h.doll.maintenanceFire()
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await h.doll.maintenanceLine() == "系統維護 2026-11-17（星期二） 03:00 到了，等她手上沒事")
     clock.set(at("2026-11-17", "05:59"))
     try await Task.sleep(for: .milliseconds(100))
     #expect(!h.logs.contains { $0.contains("maintenance: started") })
-    await h.model.add([planReply, summaryReply, Scripted("", dm("報告還在等檔案"))])
+    await h.model.add([planReply, summaryReply])
     clock.set(at("2026-11-17", "06:00"))
-    try await waitUntil { await h.model.requests.count == 4 }
-    try await waitUntil { await doll.settled }
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
     #expect(h.logs.contains { $0.contains("maintenance: busy 3.0 h since due") })
     let segs = try segmentTexts(h)
     #expect(segs[0].last == "【系統維護】開始，現在 06:00。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
     #expect(segs[1][0].hasPrefix("【系統維護】結束，現在 06:00。") && segs[1][0].hasSuffix("你手上的「報告寄給主人了」還在，接著做。"))
-    // The item went on in the new day, and her turn after the end continued it.
-    #expect(try h.timeline().todo.current == "報告寄給主人了")
-    #expect(try await doll.dashboardStatus().todo == "等待中")
-    await doll.stop()
-    try await runner.value
+    #expect(try h.timeline().todo.current == "報告寄給主人了" && h.timeline().todo.phase == .doing)
+    #expect(await h.doll.followUp)
 }
 
 @Test func theOwnersLineInterruptsItNothingIsWrittenSheAnswersAndItRetriesAfterQuiet() async throws {
@@ -9045,7 +9051,7 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
     #expect(d.tools == "91e4c3f4da1be2b09ba9b483cea9c45f417aeccf3d2cd60df46603f4feeb97d6")
-    #expect(d.prompt == "0c02bc5cdc815e60edae780a690633e5b7acfab841326a7233207b6e250413fe")
+    #expect(d.prompt == "551e5009944c00c9ac9565978be03ae070415d5d49b1fb5862211f98c10e3c9d")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -9234,8 +9240,9 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 // thing of her own) -------------------------------------------------------------------------------
 
 /// A list 等待中 on the owner's answer, and a sub-goal of hers to take a step for.
-private func waitingOnTheOwner(_ clock: ManualClock = ManualClock(at("2026-11-16", "10:00"))) async throws -> (Harness, Int) {
-    let h = try await goalsHarness(clock)
+private func waitingOnTheOwner(_ clock: ManualClock = ManualClock(at("2026-11-16", "10:00")),
+                                tune: @escaping (inout Config) -> Void = { _ in }) async throws -> (Harness, Int) {
+    let h = try await goalsHarness(clock, tune: tune)
     let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
     let s = try await h.doll.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
     await h.doll.ownerSaid("幫我問房東什麼時候來修水管")
@@ -9246,6 +9253,42 @@ private func waitingOnTheOwner(_ clock: ManualClock = ManualClock(at("2026-11-16
 
 private let ownStep = "讀完鯊魚條目"
 private let recallCall: (String, [(String, String)]) = ("recall", [("query", "鯊魚")])
+
+@Test func aListWaitingAsideDoesNotHoldMaintenanceHerOwnInProgressDoesAndBothCrossTheNightIntact() async throws {
+    let clock = ManualClock(at("2026-11-17", "02:00"))
+    let (h, sub) = try await waitingOnTheOwner(clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.maintenanceConcernsMax = 0; $0.goals.review = false
+    }
+    _ = try await h.doll.calendarCatchUp()
+    try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
+    // Her own step is in progress beside the waiting list: maintenance waits for it, as before.
+    clock.set(at("2026-11-17", "03:00"))
+    await h.doll.maintenanceFire()
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!h.logs.contains { $0.contains("maintenance: started") })
+    // Her own step waits too: nothing is in progress, so it starts at once.
+    try await h.turn(Scripted("", todoWait("等網路恢復")))
+    await h.model.add([planReply, summaryReply])
+    await h.doll.maintenanceCheck()
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(!h.logs.contains { $0.contains("maintenance: busy") })
+    // Both lists are in the new day's timeline, each still waiting, and no turn follows.
+    let t = try h.timeline()
+    #expect(t.todo.current == ownStep && t.todo.phase == .waiting && t.todo.startSeq == 1)
+    #expect(t.todoAside?.todo.current == "房東的時間問到了" && t.todoAside?.todo.phase == .waiting && t.todoAside?.todo.startSeq == 1)
+    #expect(await h.doll.aside == t.todoAside)
+    #expect(await !h.doll.followUp)
+    #expect(try segmentTexts(h)[1][0].hasSuffix("你手上的「\(ownStep)」還在，還是等待中。"))
+    // Her own step ends; the waiting list comes back in hand, and his answer resolves it.
+    await h.doll.ownerSaid("網路好了")
+    try await h.turn(Scripted("", recallCall))
+    try await h.turn(Scripted("", done("讀完了", evidence: nil)))
+    #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「房東的時間問到了」回到你手上（等待中）。"))
+    await h.doll.ownerSaid("電話是 0912-345-678")
+    try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
+    #expect(try h.toolResults().last!.text.contains("清單做完了，現在待命中"))
+    #expect(try h.timeline().todo == TodoState() && h.timeline().todoAside == nil)
+}
 
 @Test func whileAListWaitsHerOwnStepRunsBesideItAndTheWaitingOneComesBackIntact() async throws {
     let (h, sub) = try await waitingOnTheOwner()

@@ -48,7 +48,7 @@ extension Doll {
                            previous: previous, unfinished: [], why: [], notice: nil, kindsListed: 0, kindsLeftOut: 0)
         let file = bootReports.appending(path: Self.bootReportName(now, pid: r.pid))
         if let p = previous {
-            if p.ending.how != .clean, todoBusy {
+            if p.ending.how != .clean, todoHeld {
                 r.unfinished.append("你手上的「\(todo.current ?? "")」那時是\(todo.phase.label)，還在你的 todo 裡；最後一步做到哪裡，程式不確定")
             }
             if maintenanceConfig.enabled, maintenanceState.running != nil {
