@@ -142,6 +142,97 @@ public protocol MainModel: Sendable {
     /// `effort` is the Strata `reasoning_effort` value for this one call. `tools`: the request's
     /// `tools` as JSON text (an array), or nil for a request without tools.
     func chat(_ messages: [ChatMessage], tools: String?, effort: String) async throws -> ModelReply
+    /// Whether its requests are waiting for the server to be reachable again (`ModelConnection`);
+    /// nil for a model that never waits.
+    var connection: ModelConnection? { get }
+}
+
+extension MainModel {
+    public var connection: ModelConnection? { nil }
+}
+
+/// Whether the model server is reachable, as the requests found it (2026-11-22, owner: on a
+/// connection problem she waits and retries; she does not exit). Shared by every request of one
+/// `HTTPMainModel`: the first failure starts an outage, the next answer from the server ends it.
+public final class ModelConnection: Sendable {
+    private struct State {
+        /// When the outage began, and its failed attempts so far; nil: no outage.
+        var since: Double?
+        var failures = 0
+        /// Requests now waiting for their next attempt.
+        var waiting = 0
+        var onChange: (@Sendable () -> Void)?
+    }
+    private let state = Mutex(State())
+
+    public init() {}
+
+    /// While a request waits for the server: when the outage began; nil otherwise (an outage whose
+    /// waiting requests were all cancelled shows nothing until the next request finds it).
+    public var downSince: Double? { state.withLock { $0.waiting > 0 ? $0.since : nil } }
+
+    /// Called when requests start or stop waiting (the dashboard refreshes).
+    public func onChange(_ f: @escaping @Sendable () -> Void) { state.withLock { $0.onChange = f } }
+
+    /// A request failed at `t`; `first`: its first failure (it starts waiting).
+    func failed(at t: Double, first: Bool) {
+        let changed = state.withLock { s -> (@Sendable () -> Void)? in
+            s.failures += 1
+            if s.since == nil { s.since = t }
+            guard first else { return nil }
+            s.waiting += 1
+            return s.waiting == 1 ? s.onChange : nil
+        }
+        changed?()
+    }
+
+    /// A request that had failed stopped waiting (answered, cancelled or failed for good).
+    func stoppedWaiting() {
+        let changed = state.withLock { s -> (@Sendable () -> Void)? in
+            s.waiting -= 1
+            return s.waiting == 0 ? s.onChange : nil
+        }
+        changed?()
+    }
+
+    /// The server answered: the outage it ended (since when, failed attempts), or nil when there was none.
+    func answered() -> (since: Double, failures: Int)? {
+        state.withLock { s in
+            guard let since = s.since else { return nil }
+            defer { s.since = nil; s.failures = 0 }
+            return (since, s.failures)
+        }
+    }
+}
+
+/// Which failures of a request mean the server cannot be reached for now (sent again after a
+/// wait), as against a request the server refused or answered unreadably (an error, as before).
+public enum Retry {
+    /// The transport error's kind when it is a connection problem; nil otherwise. Connection refused
+    /// is `cannotConnectToHost`; a Mac waking from sleep gives `notConnectedToInternet` or
+    /// `networkConnectionLost` until its network is back.
+    public static func kind(_ error: any Error) -> String? {
+        guard let e = error as? URLError else { return nil }
+        switch e.code {
+        case .networkConnectionLost: return "connection lost"
+        case .timedOut: return "timed out"
+        case .cannotConnectToHost: return "cannot connect"
+        case .notConnectedToInternet: return "no network"
+        case .cannotFindHost, .dnsLookupFailed: return "host not found"
+        default: return nil
+        }
+    }
+
+    /// An HTTP status that says the server (or a proxy in front of it) is temporarily not answering:
+    /// 502, 503, 504. Every other status is the server's answer to this request.
+    public static func kind(status: Int) -> String? {
+        [502, 503, 504].contains(status) ? "HTTP \(status)" : nil
+    }
+
+    /// The wait before attempt `failures + 1`: `first`, doubling, at most `max`.
+    public static func wait(after failures: Int, first: Double, max: Double) -> Double {
+        Swift.min(first * pow(2, Double(Swift.max(0, failures - 1))), max)
+    }
 }
 
 /// DollOS does not know which model sits behind the URL. The only Strata dialect
@@ -168,13 +259,21 @@ public final class HTTPMainModel: MainModel {
     /// One HTTP exchange: the request → (body, status). Tests pass a fake; the default is URLSession.
     public typealias Transport = @Sendable (URLRequest) async throws -> (Data, Int)
     private let transport: Transport
+    /// The waits between attempts (tests: a manual clock).
+    private let clock: any DollClock
+    /// Its WARN and INFO lines (level, message); the process log by default.
+    private let log: @Sendable (String, String) -> Void
+    public let connection: ModelConnection? = ModelConnection()
 
-    public init(_ cfg: LlmConfig, transport: Transport? = nil) {
+    public init(_ cfg: LlmConfig, transport: Transport? = nil, clock: any DollClock = SystemClock(),
+                log: (@Sendable (String, String) -> Void)? = nil) {
         self.cfg = cfg
         self.transport = transport ?? { req in
             let (d, resp) = try await URLSession.shared.data(for: req)
             return (d, (resp as! HTTPURLResponse).statusCode)
         }
+        self.clock = clock
+        self.log = log ?? { Log.write($0, $1) }
     }
 
     /// Whether the server takes `hash:` references (known after `check()`).
@@ -255,6 +354,41 @@ public final class HTTPMainModel: MainModel {
         }
     }
 
+    /// Sends `req` until the server answers (2026-11-22): a connection problem (`Retry`) is followed
+    /// by a wait (`[llm] retry_first_s`, doubling, at most `retry_max_s`) and the same request again,
+    /// for as long as it lasts; cancellation (an interrupt, his voice, maintenance cut short, stop)
+    /// ends the wait like the request. Only this exchange is repeated: the caller gets one reply, so
+    /// nothing it did before the request (her tool calls) runs again. Each failure is one WARN line
+    /// (its kind, attempt, next wait), the answer after an outage one INFO line; never message text.
+    private func send(_ req: URLRequest) async throws -> (Data, Int) {
+        var failures = 0
+        defer { if failures > 0 { connection?.stoppedWaiting() } }
+        while true {
+            let kind: String
+            do {
+                let (data, status) = try await transport(req)
+                if let k = Retry.kind(status: status) { kind = k } else {
+                    if let ended = connection?.answered() {
+                        log("INFO", String(format: "model connection back after %.0f s down (%d failed attempts)",
+                                           clock.now() - ended.since, ended.failures))
+                    }
+                    return (data, status)
+                }
+            } catch {
+                try Task.checkCancellation()
+                guard let k = Retry.kind(error) else {
+                    throw ModelError("main model request failed: \(error.localizedDescription)")
+                }
+                kind = k
+            }
+            failures += 1
+            connection?.failed(at: clock.now(), first: failures == 1)
+            let wait = Retry.wait(after: failures, first: cfg.retryFirstS, max: cfg.retryMaxS)
+            log("WARN", String(format: "model request failed (%@), attempt %d; next try in %.0f s", kind, failures, wait))
+            try await clock.sleep(until: clock.now() + wait)
+        }
+    }
+
     private func post(_ messages: [ChatMessage], tools: String?, effort: String, maxTokens: Int) async throws -> (Reply, Int) {
         struct Body: Encodable {
             let model: String
@@ -278,13 +412,7 @@ public final class HTTPMainModel: MainModel {
             }
             req.httpBody = body
             let bytes = req.httpBody!.count
-            let data: Data, status: Int
-            do {
-                (data, status) = try await transport(req)
-            } catch {
-                try Task.checkCancellation()
-                throw ModelError("main model request failed: \(error.localizedDescription)")
-            }
+            let (data, status) = try await send(req)
             if status == 400, attempt == 0, let e = try? JSONDecoder().decode(NotCached.self, from: data),
                e.error.code == "image_not_cached", let missing = e.error.missing {
                 // The server no longer holds these pictures (evicted, or it restarted): send their bytes again.

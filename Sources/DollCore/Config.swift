@@ -13,6 +13,10 @@ public struct LlmConfig: Sendable {
     public var taskTurnEffort = "medium"
     public var timeoutS = 300.0
     public var maxTokens = 4096
+    /// A request that cannot reach the server (`Retry`, 2026-11-22) is sent again after this wait,
+    /// doubling each time up to `retryMaxS`, for as long as the outage lasts.
+    public var retryFirstS = 5.0
+    public var retryMaxS = 120.0
 }
 
 public struct CoreConfig: Sendable {
@@ -592,7 +596,12 @@ public struct Config: Sendable {
         try l.read("task_turn_effort", &llm.taskTurnEffort)
         try l.read("timeout_s", &llm.timeoutS)
         try l.read("max_tokens", &llm.maxTokens)
+        try l.read("retry_first_s", &llm.retryFirstS)
+        try l.read("retry_max_s", &llm.retryMaxS)
         try l.finish()
+        guard llm.retryFirstS > 0, llm.retryMaxS >= llm.retryFirstS else {
+            throw TOMLError(description: "[llm] retry_first_s above 0; retry_max_s at least retry_first_s")
+        }
         for (key, value) in [("default_effort", llm.defaultEffort), ("task_turn_effort", llm.taskTurnEffort)] {
             guard Effort.levels.contains(value) else {
                 throw TOMLError(description: "[llm] \(key) must be one of \(Effort.levels)")

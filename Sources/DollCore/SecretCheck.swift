@@ -49,9 +49,32 @@ public enum SecretCheck {
         }
     }
 
-    /// The check of one line through `model` (the same call the doll makes).
-    public static func ask(_ text: String, model: any MainModel) async -> Verdict {
+    /// The check of one line through `model` (the same call the doll makes), answered within
+    /// `seconds` on `clock` or failed. The model's requests wait out a lost connection
+    /// (`HTTPMainModel.send`); the check waits with them only this long, the one request's own
+    /// `[llm] timeout_s` as before the retries (2026-11-22): a short outage still gets a real answer,
+    /// a longer one makes the line a secret, and the lines behind it are not held without end.
+    public static func ask(_ text: String, model: any MainModel, within seconds: Double, clock: any DollClock) async -> Verdict {
         if isLocked(text) { return .locked }
+        let deadline = clock.now() + seconds
+        return await withTaskGroup(of: Verdict?.self) { group in
+            group.addTask { await answer(text, model: model) }
+            group.addTask {
+                do { try await clock.sleep(until: deadline) } catch { return nil }
+                return .failed(String(format: "no answer within %.0f s", seconds))
+            }
+            var verdict = Verdict.failed("cancelled")
+            while let v = await group.next() {
+                guard let v else { continue }
+                verdict = v
+                break
+            }
+            group.cancelAll()
+            return verdict
+        }
+    }
+
+    static func answer(_ text: String, model: any MainModel) async -> Verdict {
         do {
             let reply = try await model.chat(messages(text), tools: nil, effort: "none")
             guard let secret = read(reply.content) else {
@@ -91,7 +114,7 @@ extension Doll {
 
     func checkAndQueue(_ text: String, voice: Bool, channel: Channel) async {
         let t0 = ContinuousClock.now
-        let verdict = await SecretCheck.ask(text, model: model)
+        let verdict = await SecretCheck.ask(text, model: model, within: llm.timeoutS, clock: wallClock)
         let ms = (ContinuousClock.now - t0).components
         let took = Int(ms.seconds * 1000 + ms.attoseconds / 1_000_000_000_000_000)
         switch verdict {

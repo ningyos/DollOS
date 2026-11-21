@@ -382,8 +382,10 @@ private struct Harness {
     let store: Store      // a second connection to the memory index, for checks
 
     /// `dir`: reuse a data dir (a restart); a fresh one by default.
+    /// `relay`: her model is `HTTPMainModel` over that fake server (its waits on `clock`), which hands
+    /// requests on to `model` (the outage tests, 2026-11-22); without it she talks to `model` directly.
     init(_ replies: [Scripted] = [], dir reuse: URL? = nil, embedder: (any Embedder)? = nil, clock: (any DollClock)? = nil,
-         tune: (inout Config) -> Void = { _ in }) async throws {
+         relay: Relay? = nil, tune: (inout Config) -> Void = { _ in }) async throws {
         dir = reuse ?? FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
         var cfg = try exampleConfig()
         cfg.core.dataDir = dir.path
@@ -397,12 +399,17 @@ private struct Harness {
         cfg.audit.enabled = false         // the memory audit tests switch it on
         cfg.computer.estimateSimilarity = 2   // the estimate check tests switch it on (no cosine reaches 2)
         tune(&cfg)
-        model = FakeModel(replies)
+        let fake = FakeModel(replies)
+        model = fake
         let rec = Recorder()
         self.rec = rec
         let cua = FakeCua()
         self.cua = cua
-        doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: cua,
+        let wire: any MainModel = relay.map { r in
+            HTTPMainModel(cfg.llm, transport: r.transport(fake), clock: clock ?? SystemClock(),
+                          log: { l, m in rec.logs.withLock { $0.append("\(l) \(m)") } })
+        } ?? fake
+        doll = try Doll(config: cfg, root: root, model: wire, embedder: embedder ?? FakeEmbedder(), computer: cua,
                         keys: testKeys, deliver: { text, to, image in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
@@ -10203,4 +10210,243 @@ private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done
     await h.doll.developerSaid("測試")
     try await h.turn(Scripted("", reply("我剛查了行事曆")))
     #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，開發者什麼都沒收到。你寫了「查了行事曆」，可是從開發者上一句話到現在"))
+}
+
+// staying alive through a lost model connection (owner, 2026-11-22) ------------------------------------
+
+/// The model server of the outage tests: `HTTPMainModel` sends to it. While it is up, each request goes
+/// to the `FakeModel` (its messages read back from the body) and the reply returns as chat-completions
+/// JSON; while it is down, every request fails the way it is set to (a transport error or a status).
+private final class Relay: Sendable {
+    enum Failure: Sendable { case error(URLError.Code), status(Int) }
+    struct State {
+        var failure: Failure?
+        /// Goes down (`downAs`) once this many requests got through.
+        var downAfter: Int?
+        var downAs: Failure = .error(.networkConnectionLost)
+        var passed = 0
+        var attempts = 0
+        var bodies: [Data] = []
+    }
+    let s: Mutex<State>
+    init(downAfter: Int? = nil) { s = Mutex(State(downAfter: downAfter)) }
+    func up() { s.withLock { $0.failure = nil } }
+    var attempts: Int { s.withLock { $0.attempts } }
+
+    func transport(_ fake: FakeModel) -> HTTPMainModel.Transport {
+        { [self] req in
+            let failure = self.s.withLock { s -> Failure? in
+                s.attempts += 1
+                s.bodies.append(req.httpBody!)
+                if let n = s.downAfter, s.passed >= n { s.failure = s.downAs; s.downAfter = nil }
+                return s.failure
+            }
+            switch failure {
+            case .error(let code)?: throw URLError(code)
+            case .status(let status)?: return (Data("busy".utf8), status)
+            case nil: break
+            }
+            let o = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let messages = (o["messages"] as! [[String: Any]]).map { m in
+                ChatMessage(role: m["role"] as! String,
+                            content: m["content"] as? String ?? ((m["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""),
+                            toolCalls: (m["tool_calls"] as? [[String: Any]] ?? []).map {
+                                let f = $0["function"] as! [String: Any]
+                                return ToolCall(name: f["name"] as! String, arguments: f["arguments"] as? String ?? "")
+                            })
+            }
+            let tools = try o["tools"].map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }
+            let r = try await fake.chat(messages, tools: tools, effort: o["reasoning_effort"] as! String)
+            self.s.withLock { $0.passed += 1 }
+            let reply: [String: Any] = [
+                "choices": [["message": ["content": r.content, "tool_calls": r.calls.map { ["function": ["name": $0.name, "arguments": $0.arguments ?? ""]] }],
+                             "finish_reason": r.usage.finish ?? "stop"]],
+                "usage": ["prompt_tokens": r.usage.promptTokens, "completion_tokens": r.usage.completionTokens]]
+            return (try JSONSerialization.data(withJSONObject: reply), 200)
+        }
+    }
+}
+
+/// Waits until something sleeps until `t` on `clock`, then moves the clock there.
+private func wake(_ clock: ManualClock, at t: Double, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    try await waitUntil(sourceLocation: sourceLocation) { clock.state.withLock { $0.sleepers.contains { $0.t == t } } }
+    clock.set(t)
+}
+
+private func modelLines(_ logs: [String]) -> [String] {
+    logs.filter { $0.hasPrefix("WARN model request failed") || $0.hasPrefix("INFO model connection back") }
+}
+
+@Test func connectionProblemsAreSentAgainAfterAGrowingWaitAndAnAnswerTheServerGaveIsNot() async throws {
+    #expect((1...8).map { Retry.wait(after: $0, first: 5, max: 120) } == [5, 10, 20, 40, 80, 120, 120, 120])
+    #expect([URLError.Code.networkConnectionLost, .timedOut, .cannotConnectToHost, .notConnectedToInternet, .cannotFindHost, .dnsLookupFailed]
+        .map { Retry.kind(URLError($0)) } == ["connection lost", "timed out", "cannot connect", "no network", "host not found", "host not found"])
+    #expect([URLError.Code.badURL, .badServerResponse, .cannotParseResponse, .userAuthenticationRequired, .cancelled]
+        .allSatisfy { Retry.kind(URLError($0)) == nil })
+    #expect(Retry.kind(ModelError("x")) == nil)
+    #expect([502, 503, 504].map { Retry.kind(status: $0) } == ["HTTP 502", "HTTP 503", "HTTP 504"])
+    #expect([200, 400, 401, 404, 413, 429, 500].allSatisfy { Retry.kind(status: $0) == nil })
+
+    let ok = #"{"choices":[{"message":{"content":"好"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1}}"#
+    final class Seen: Sendable {
+        let left: Mutex<[Result<Int, URLError>]>
+        let bodies = Mutex<[Data]>([])
+        let logs = Mutex<[String]>([])
+        init(_ o: [Result<Int, URLError>]) { left = Mutex(o) }
+    }
+    func server(_ outcomes: [Result<Int, URLError>]) -> (HTTPMainModel, ManualClock, Seen) {
+        let clock = ManualClock(1000)
+        let seen = Seen(outcomes)
+        let model = HTTPMainModel(LlmConfig(baseURL: "http://strata", model: "m"), transport: { req in
+            seen.bodies.withLock { $0.append(req.httpBody!) }
+            switch seen.left.withLock({ $0.removeFirst() }) {
+            case .failure(let e): throw e
+            case .success(let status): return (Data((status == 200 ? ok : "bad request").utf8), status)
+            }
+        }, clock: clock, log: { l, m in seen.logs.withLock { $0.append("\(l) \(m)") } })
+        return (model, clock, seen)
+    }
+    let words = [ChatMessage(role: "user", content: "主人說的那一句話")]
+
+    // Lost, timed out, 503, refused, then an answer: the same request five times, waits 5, 10, 20, 40 s.
+    let (model, clock, seen) = server([.failure(URLError(.networkConnectionLost)), .failure(URLError(.timedOut)), .success(503),
+                                               .failure(URLError(.cannotConnectToHost)), .success(200)])
+    let call = Task { try await model.chat(words, tools: nil, effort: "none") }
+    try await waitUntil { model.connection?.downSince == 1000 }
+    for t in [1005.0, 1015, 1035, 1075] { try await wake(clock, at: t) }
+    #expect(try await call.value.content == "好")
+    #expect(seen.bodies.withLock { $0.count == 5 && Set($0).count == 1 })
+    #expect(seen.logs.withLock { $0 } == [
+        "WARN model request failed (connection lost), attempt 1; next try in 5 s",
+        "WARN model request failed (timed out), attempt 2; next try in 10 s",
+        "WARN model request failed (HTTP 503), attempt 3; next try in 20 s",
+        "WARN model request failed (cannot connect), attempt 4; next try in 40 s",
+        "INFO model connection back after 75 s down (4 failed attempts)"])
+    #expect(model.connection?.downSince == nil)
+
+    // A 400 (not image_not_cached), a 500, an unreadable reply, a transport error that is not a
+    // connection problem: the server's answer or a bug, an error at once as before, no wait.
+    for (outcome, error) in [(Result<Int, URLError>.success(400), "main model HTTP 400: bad request"),
+                             (.success(500), "main model HTTP 500: bad request"),
+                             (.failure(URLError(.badServerResponse)), "main model request failed:")] {
+        let (m, c, x) = server([outcome])
+        await #expect { _ = try await m.chat(words, tools: nil, effort: "none") } throws: { "\($0)".hasPrefix(error) }
+        #expect(x.bodies.withLock { $0.count } == 1 && c.sleepers == 0 && x.logs.withLock { $0 }.isEmpty)
+    }
+    // Cancelled while it waits (an interrupt, his voice, stop): the wait ends with the request.
+    let (m, c, _) = server([.failure(URLError(.networkConnectionLost))])
+    let waiting = Task { try await m.chat(words, tools: nil, effort: "none") }
+    try await waitUntil { c.sleepers == 1 && m.connection?.downSince != nil }
+    waiting.cancel()
+    await #expect(throws: CancellationError.self) { _ = try await waiting.value }
+    #expect(c.sleepers == 0 && m.connection?.downSince == nil)
+}
+
+@Test func aTurnWaitsOutALostConnectionItsToolsRunOnceAndALineDuringItIsAnsweredAfter() async throws {
+    let t = at("2026-11-16", "10:00")
+    let clock = ManualClock(t)
+    // Up for A's check and her first reply (a DM and a recall); down from the follow-up request on.
+    let relay = Relay(downAfter: 2)
+    let h = try await Harness(["否", Scripted("", dm("先回一句"), recall("下雨")), "否", Scripted("", dm("查完了")), Scripted("", dm("第二句收到"))],
+                              clock: clock, relay: relay)
+    let d = h.doll
+    let runner = Task { try await d.run() }
+    await d.ownerLine("第一句：明天會下雨嗎").value
+    try await waitUntil { await d.connectionLine() != nil }
+    #expect(h.said == ["先回一句"])
+    #expect(try await d.dashboardStatus().connection == "等模型連線（10:00 起斷了 0 秒）")
+    #expect(try await d.dashboardStatus().state == "thinking")
+    // A line during the outage: accepted, its check waits too.
+    clock.set(t + 1)
+    await d.ownerLine("第二句：那後天呢")
+    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 6 } } }
+    try await wake(clock, at: t + 5)          // the follow-up again: still down
+    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 15 } } }
+    relay.up()
+    try await wake(clock, at: t + 6)          // the check gets through
+    try await waitUntil { await d.queue.count == 1 }
+    try await wake(clock, at: t + 15)         // the follow-up gets through
+    try await waitUntil { h.said.count == 3 }
+    await d.stop()
+    try await runner.value
+    // Each reply once, in order; the recall ran once; five requests reached the model, eight were sent.
+    #expect(h.said == ["先回一句", "查完了", "第二句收到"])
+    #expect(try h.toolResults().count == 4)   // DM, recall, DM, DM
+    #expect(await h.model.requests.count == 5 && relay.attempts == 8)
+    #expect(try h.events().filter { $0.kind == .owner }.map(\.text) == ["第一句：明天會下雨嗎", "第二句：那後天呢"])
+    #expect(await h.model.seen(4).last { $0.role == "user" && $0.content.contains("第二句") } != nil)
+    #expect(await d.connectionLine() == nil)
+    // The log: kinds, attempts, waits; nothing anyone said.
+    #expect(modelLines(h.logs) == [
+        "WARN model request failed (connection lost), attempt 1; next try in 5 s",
+        "WARN model request failed (connection lost), attempt 1; next try in 5 s",
+        "WARN model request failed (connection lost), attempt 2; next try in 10 s",
+        "INFO model connection back after 6 s down (3 failed attempts)"])
+    #expect(!modelLines(h.logs).contains { l in ["下雨", "後天", "先回一句", "查完了"].contains { l.contains($0) } })
+}
+
+@Test func interruptingACallThatWaitsForTheConnectionCancelsItLikeAnyCall() async throws {
+    let t = at("2026-11-16", "10:00")
+    let clock = ManualClock(t)
+    let relay = Relay(downAfter: 0)
+    let h = try await Harness([Scripted("", dm("回來了"))], clock: clock, relay: relay)
+    let d = h.doll
+    let runner = Task { try await d.run() }
+    await d.ownerSaid("在嗎")
+    try await waitUntil { await d.connectionLine() != nil }
+    #expect(await d.interrupt())
+    try await waitUntil { h.logs.contains { $0.contains("interrupted from the dashboard") } }
+    #expect(!clock.state.withLock { $0.sleepers.contains { $0.t == t + 5 } })
+    #expect(await d.connectionLine() == nil)
+    relay.up()
+    await d.ownerSaid("在嗎？")
+    try await waitUntil { h.said == ["回來了"] }
+    await d.stop()
+    try await runner.value
+    #expect(modelLines(h.logs) == ["WARN model request failed (connection lost), attempt 1; next try in 5 s",
+                                   "INFO model connection back after 0 s down (1 failed attempts)"])
+}
+
+@Test func aMaintenanceTaskWaitingForTheConnectionIsNotFailedAndFinishesAfter() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let relay = Relay(downAfter: 1)
+    let h = try await Harness([Scripted("", dm("晚安")), planReply, summaryReply], clock: clock, relay: relay) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = false
+    }
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("晚安")
+    try await waitUntil { h.said == ["晚安"] }
+    let three = at("2026-11-17", "03:00")
+    clock.set(three)
+    try await wake(clock, at: three + 5)
+    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == three + 15 } } }
+    #expect(await doll.maintenanceLine()?.hasPrefix("系統維護中") == true)
+    #expect(try await doll.dashboardStatus().connection != nil)
+    relay.up()
+    try await wake(clock, at: three + 15)
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    await doll.stop()
+    try await runner.value
+    #expect(!h.logs.contains { $0.hasPrefix("ERROR") || $0.contains("failed:") })
+    #expect(try consolidatedBodies(h) == ["主人今天跟我說晚安"])
+    #expect(try maintenanceFile(h) == MaintenanceFile())
+    #expect(modelLines(h.logs).count == 3)
+}
+
+@Test func theSecretCheckWaitsForTheConnectionOnlyForItsTimeThenTheLineIsASecret() async throws {
+    let t = at("2026-11-16", "10:00")
+    let clock = ManualClock(t)
+    let relay = Relay(downAfter: 0)
+    let h = try await Harness([], clock: clock, relay: relay)
+    let d = h.doll
+    let check = await d.ownerLine("我的提款卡密碼是 7391")
+    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 5 } } }
+    // `[llm] timeout_s` (300 s) passes with the server still down.
+    clock.set(t + 300)
+    await check.value
+    #expect(await d.queue.map(\.secret) == [true])
+    #expect(h.logs.contains { $0.contains("the secret check failed after") && $0.contains("(no answer within 300 s); the line is treated as secret") })
+    #expect(!h.logs.contains { $0.contains("7391") })
+    #expect(await h.model.requests.isEmpty)
 }

@@ -583,6 +583,8 @@ public actor Doll {
         let sealed = try memory.syncOnBoot()
         log("INFO", String(format: "memory: index ready in %.2f s (%d memories of the encrypted folders decrypted and indexed in memory)",
                            Date().timeIntervalSince(t0), sealed))
+        // The dashboard shows a lost model connection while her requests wait (`connectionLine`).
+        for m in [model, maintenanceModel] { m.connection?.onChange { [feed] in feed.notify(.connection) } }
         try await model.check()
     }
 

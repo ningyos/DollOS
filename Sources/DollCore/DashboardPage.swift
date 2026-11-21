@@ -118,7 +118,7 @@ function renderStatus(s) {
   status = s;
   $("name").textContent = s.name;
   const names = { thinking: "思考中（模型呼叫中）", acting: "動作中（跑工具）", idle: "等下一件事", maintenance: "系統維護中" };
-  $("state").textContent = (names[s.state] || s.state) + (s.maintenance ? "：" + s.maintenance : "");
+  $("state").textContent = (names[s.state] || s.state) + (s.maintenance ? "：" + s.maintenance : "") + (s.connection ? " · " + s.connection : "");
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
   // No computer ([computer] enabled = false): nothing to show in 視覺 and 她的工具.

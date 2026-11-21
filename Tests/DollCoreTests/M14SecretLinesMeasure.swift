@@ -32,7 +32,7 @@ import Testing
     for run in 1...reps {
         for l in lines {
             let t0 = ContinuousClock.now
-            let v = await SecretCheck.ask(l.text, model: model)
+            let v = await SecretCheck.ask(l.text, model: model, within: llm.timeoutS, clock: SystemClock())
             let d = (ContinuousClock.now - t0).components
             let ms = Int(d.seconds * 1000 + d.attoseconds / 1_000_000_000_000_000)
             let verdict = switch v {

@@ -14,7 +14,7 @@ import Synchronization
 /// queue growing, pause or resume, an interrupt. Bursts coalesce: a slow subscriber gets the newest
 /// change only, and refetches everything anyway.
 public final class ChangeFeed: Sendable {
-    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, maintenance, drives, history }
+    public enum Change: String, Sendable { case event, turn, queue, pause, interrupt, calendar, maintenance, drives, history, connection }
 
     private let subscribers = Mutex<[UUID: AsyncStream<Change>.Continuation]>([:])
 
@@ -68,6 +68,8 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var state: String
     /// While maintenance runs (since when) or is due and waits (`Doll.maintenanceLine`).
     public var maintenance: String?
+    /// While her model requests wait for the server to be reachable again (`Doll.connectionLine`).
+    public var connection: String?
     public var paused: Bool
     /// The effort of the call in flight, else the one the next call will use.
     public var effort: String
@@ -167,8 +169,15 @@ extension Doll {
             plan: todo.plan, listRounds: todo.totalRounds, estimateCheck: todo.estimateCheck, estimates: estimateFile.records,
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
-            paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,
+            connection: connectionLine(), paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,
             lastInterrupt: lastInterrupt, computer: computerOn)
+    }
+
+    /// While her model requests wait for the server (`ModelConnection`): since when and how long; nil
+    /// while they get through.
+    public func connectionLine() -> String? {
+        guard let since = [model, maintenanceModel].compactMap({ $0.connection?.downSince }).min() else { return nil }
+        return "等模型連線（\(Self.hhmm(since)) 起斷了 \(Int(max(0, wallClock.now() - since))) 秒）"
     }
 
     /// The newest `limit` items, newest first. Her reply's stored calls are
