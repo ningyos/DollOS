@@ -18,6 +18,14 @@ import Foundation
 /// - Ending: only a concern she or the maintenance noted (not the calendar's or a failed todo's,
 ///   which the program ends itself), and only with the owner's own words, found verbatim in one of
 ///   his lines of the day; otherwise it stays open (logged).
+/// - Basis (2026-11-22): a note carries 「｜根據：」 and words copied from the day, matched as
+///   `todo.done`'s evidence (`Doll.quoted`). Her own words (thoughts, what she said, her call
+///   arguments: `sources`) are never a source of facts, as in the audit and `memory.fix`: a note whose
+///   basis is only in them is written 「她說過…（沒查證）」 (`unverified`), except a duty, whose source
+///   is her promise. A note without a basis, or with one found nowhere, is dropped (logged). The
+///   3-day trial: she told the owner 「下午 17:12 左右我這裡斷了一次」 after a boot report that only said
+///   the last log line was at 17:12, and this task wrote 「今天17:12那台電腦沒有錯誤紀錄地斷掉」 as his
+///   concern, which she repeated the next day.
 /// - A reply that is not in this form fails the task (nothing written; the notice says so).
 enum ConcernExtraction {
     struct Note: Sendable, Equatable {
@@ -56,12 +64,13 @@ enum ConcernExtraction {
         - 已經掛著的（下面列出）。換句話說的同一件事也算同一件。
         - 只是到時間要提醒的事：行事曆上有了，時間到行事曆會叫她。除了時間以外還有要關心的（例：看完牙醫之後問感覺），只記要關心的那部分。
         - 已經做完、說完的事。
-        最多 \(cap) 件，重要的先寫；沒有就不要硬湊。
         結束一件掛著的：只有主人在今天的對話裡明明白白說它已經解決了，才寫，而且照抄他那句話；不確定就不要結束。行事曆的和程式記的不用你結束。
+        \(Consolidation.ownWords)
+        每件都要寫根據：照抄今天的對話裡支持它的那一句（或其中一段）。
 
         每行一件，只用這三種格式，不要寫別的：
-        note owner|duty|own: 用她的口吻寫這件事，一句
-        note owner|duty|own due YYYY-MM-DD HH:MM: 同上，有確定的時間才寫 due
+        note owner|duty|own: 用她的口吻寫這件事，一句 ｜根據：照抄的話
+        note owner|duty|own due YYYY-MM-DD HH:MM: 同上，有確定的時間才寫 due ｜根據：照抄的話
         end #編號: 主人的原話
         一件都沒有就只寫一行：none
         """
@@ -76,14 +85,38 @@ enum ConcernExtraction {
                        lastSeq: events.last?.seq ?? 0)
     }
 
+    /// The day's texts a basis is looked up in, as `Consolidation.tasks` shows them: `others` are
+    /// people's lines, tool results (not recall's and the others `TodayIndex` leaves out), watch wakes,
+    /// the calendar and the boot notice; `own` are her thoughts and every argument of her calls.
+    static func sources(_ events: [Event]) -> (others: [String], own: [String]) {
+        let names = Doll.callNames(events)
+        var others: [String] = [], own: [String] = []
+        for ev in events {
+            switch ev.kind {
+            case .owner, .developer, .watch, .calendar: others.append(ev.text)
+            case .tool: if !TodayIndex.unindexedResults.contains(names[ev.seq!] ?? "") { others.append(ev.text) }
+            case .memory: if ev.text.hasPrefix(Doll.bootNotice) { others.append(ev.text) }
+            case .doll: own += [ev.text] + ev.calls.flatMap { $0.parameters.map(\.value) }
+            }
+        }
+        return (others, own)
+    }
+
+    /// A concern only her own words support, as the maintenance writes it.
+    static func unverified(_ text: String) -> String {
+        text.hasPrefix("她說過") && text.contains("沒查證") ? text : "她說過" + text + "（沒查證）"
+    }
+
     /// Text without spaces and punctuation, for the duplicate rule.
     static func key(_ s: String) -> String {
         String(s.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) && !CharacterSet.punctuationCharacters.contains($0)
             && !CharacterSet.symbols.contains($0) }.map(Character.init))
     }
 
-    /// Parses the reply and applies the rules; throws on a line not in the form.
-    static func parse(_ reply: String, open: [Concern], ownerLines: [String], cap: Int, room: Int) throws -> Plan {
+    /// Parses the reply and applies the rules; throws on a line not in the form. `others` and `own`:
+    /// `sources`.
+    static func parse(_ reply: String, open: [Concern], ownerLines: [String], others: [String], own: [String],
+                      cap: Int, room: Int) throws -> Plan {
         var plan = Plan()
         var seen = Set(open.map { key($0.text) })
         let endable = Set(open.filter { $0.source == "her" || $0.source == "maintenance" }.map(\.id))
@@ -99,7 +132,7 @@ enum ConcernExtraction {
             guard let at else { throw ModelError("concern extraction: unreadable line「\(line)」") }
             let colon = line.index(line.startIndex, offsetBy: at)
             let head = line[..<colon].split(separator: " ").map(String.init)
-            let body = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            var body = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             guard !body.isEmpty else { throw ModelError("concern extraction: empty text in「\(line)」") }
             switch head.first {
             case "note":
@@ -111,6 +144,21 @@ enum ConcernExtraction {
                     guard let d = Day(head[3]), let t = TimeOfDay(head[4]) else { throw ModelError("concern extraction: unreadable due in「\(line)」") }
                     due = d.at(t)
                 }
+                guard let b = body.range(of: "根據[：:]", options: [.regularExpression, .backwards]) else {
+                    plan.dropped.append("no basis「\(body)」")
+                    continue
+                }
+                let basis = body[b.upperBound...].trimmingCharacters(in: CharacterSet(charactersIn: "「」\"“” "))
+                body = body[..<b.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: "｜| ").union(.whitespaces))
+                guard !body.isEmpty else { throw ModelError("concern extraction: empty text in「\(line)」") }
+                if body.hasSuffix("。") { body = String(body.dropLast()) }
+                if !others.contains(where: { Doll.quoted(basis, in: $0) }) {
+                    guard own.contains(where: { Doll.quoted(basis, in: $0) }) else {
+                        plan.dropped.append("basis「\(basis)」 is not in the day「\(body)」")
+                        continue
+                    }
+                    if about != .duty { body = unverified(body) }
+                }
                 let k = key(body)
                 if seen.contains(k) { plan.dropped.append("duplicate「\(body)」"); continue }
                 if plan.notes.count >= min(cap, room) {
@@ -119,7 +167,7 @@ enum ConcernExtraction {
                 }
                 seen.insert(k)
                 // Without a closing 。: the notice puts its own after the list (real run: 「…再問一聲。。」).
-                plan.notes.append(Note(about: about, due: due, text: body.hasSuffix("。") ? String(body.dropLast()) : body))
+                plan.notes.append(Note(about: about, due: due, text: body))
             case "end":
                 guard head.count == 2, head[1].hasPrefix("#"), let id = Int(head[1].dropFirst()) else {
                     throw ModelError("concern extraction: unreadable line「\(line)」")
@@ -162,8 +210,9 @@ extension Doll {
         let r = ConcernExtraction.gather(events: events, open: open, cap: cap, now: wallClock.now())
         let started = Date()
         let reply = try await maintenanceModel.chat(r.messages, tools: nil, effort: config.consolidate.effort)
+        let (others, own) = ConcernExtraction.sources(events)
         let plan = try ConcernExtraction.parse(reply.content, open: open, ownerLines: events.filter { $0.kind == .owner }.map(\.text),
-                                               cap: cap, room: max(0, drivesConfig.maxOpen - open.count))
+                                               others: others, own: own, cap: cap, room: max(0, drivesConfig.maxOpen - open.count))
         return ConcernExtraction.Answer(plan: plan, reply: reply, seconds: Date().timeIntervalSince(started))
     }
 

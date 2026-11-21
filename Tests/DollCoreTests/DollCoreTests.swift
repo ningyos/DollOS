@@ -3240,10 +3240,10 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(tasks.count == 2 && tasks.allSatisfy(\.owner))
     #expect(tasks[0].text == """
         [\(t(1)) 主人] 用 TextEdit 另存一份
-        [\(t(2)) 她想] 我先列 todo。
+        [\(t(2)) 她想｜自己的話] 我先列 todo。
         [\(t(2)) 她呼叫] todo.set(items: ["畫面上看得到結果"])
         [\(t(3)) todo.set 的結果] todo 列好了。現在進行中：「畫面上看得到結果」；後面：（沒有）。
-        [\(t(5)) 她說｜Discord 私訊] 好
+        [\(t(5)) 她說｜Discord 私訊｜自己的話] 好
         [\(t(5)) 她呼叫] act(steps: [{"key": "s", "modifiers": ["cmd", "shift", "alt"]}])
         [\(t(7)) act 的結果] 1 步都做了：key cmd+shift+alt+s。
         [\(t(9)) 她呼叫] recall(query: 另存)
@@ -3260,6 +3260,12 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     // Events before the first owner line are a task of their own.
     let early = Consolidation.tasks([stamped(.watch, "醒了", 1), stamped(.owner, "嗨", 2)])
     #expect(early.map(\.owner) == [false, true] && early[0].queries.isEmpty)
+    // Her own words are marked as hers (2026-11-22), and the boot notice, what the program found, is shown.
+    let seeded = [stamped(.memory, Doll.bootNotice + "最後一行 log 在 11-20 17:12:51", 1),
+                  stamped(Scripted("斷了一次", dm("下午 17:12 左右我這裡斷了一次")), 2)]
+    let (b1, b2) = (hhmm(seeded[0].ts), hhmm(seeded[1].ts))
+    #expect(Consolidation.tasks(seeded).map(\.text) == ["[\(b1) 程式的開機通知] 【開機】你剛被開機了。最後一行 log 在 11-20 17:12:51\n"
+            + "[\(b2) 她想｜自己的話] 斷了一次\n[\(b2) 她說｜Discord 私訊｜自己的話] 下午 17:12 左右我這裡斷了一次"])
 }
 
 @Test func consolidationAppliesAddUpdateRetireAndTheNextStartIsANewDay() async throws {
@@ -3306,7 +3312,8 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     #expect(!sent.messages[0].content.contains("你是") && sent.messages[1].content.contains("[id: \(cat)｜public｜kind: ｜entities: []]\n主人養貓"))
     #expect(sent.messages[1].content.contains(#"[id: \#(saveAs)｜public｜kind: ｜entities: [{"id":"\#(app.id)","name":"TextEdit"}]]"#))
     #expect(sent.messages[1].content.contains("[id: \(app.id)｜app｜TextEdit｜別名：（沒有）] macOS 內建的文字編輯 app"))
-    #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說｜Discord 私訊] 好"))
+    #expect(sent.messages[1].content.contains("] 用 TextEdit 另存一份") && sent.messages[1].content.contains("她說｜Discord 私訊｜自己的話] 好"))
+    #expect(sent.messages[0].content.contains("- " + Consolidation.ownWords))
     #expect(!sent.messages[1].content.contains(shortcut) && !sent.messages[1].content.contains(experience))
     #expect(Set(r.related) == [saveAs, cat] && r.registry == [app.id] && r.plan.operations.count == 4)
     #expect(r.segment == before && r.newSegment > before)
@@ -3346,9 +3353,9 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let retiredFile = try String(contentsOf: h.dir.appending(path: "memory/public/\(saveAs).md"), encoding: .utf8)
     #expect(try Memory.parseFile(retiredFile).text == retiredFile)
 
-    // The summary request: clean (the instructions and the day's text), asked before anything was applied.
+    // The summary request: clean (the instructions, her own words' rule and the day's text), asked before anything was applied.
     let asked = await model.seen(1)
-    #expect(asked.count == 2 && asked[0].content == Doll.talkInstructions && asked[1].content.contains("主人"))
+    #expect(asked.count == 2 && asked[0].content == Doll.talkInstructions + Consolidation.summaryOwnWords && asked[1].content.contains("主人"))
     // The next start is a new segment whose one event is the day's summary (2026-11-15: sleep does not
     // empty her context, the day before is there as a summary); long-term memory stays.
     let next = try await restarted(h)
@@ -3769,7 +3776,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     #expect(TodayIndex.entries(both, tool: nil).map(\.text) == ["主人，畫面變了", "畫面變了"])
     // Consolidation reads who heard it.
     let day = Consolidation.tasks(try h.events()).map(\.text).joined(separator: "\n")
-    #expect(day.contains("她說｜Discord 私訊] 在") && day.contains("她說｜終端機] 收到"))
+    #expect(day.contains("她說｜Discord 私訊｜自己的話] 在") && day.contains("她說｜終端機｜自己的話] 收到"))
 }
 
 @Test func theSpeakingToolsAreRefusedWithAReasonWhenTheirChannelIsNotThere() async throws {
@@ -6618,17 +6625,17 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await runner.value
 }
 
-/// The maintenance's concern extraction: a day with one owner line, then the extraction reply.
-private func extractionDay(_ extraction: Scripted, noted: Bool = false, notice: Int = 0) async throws -> (Harness, ManualClock, Task<Void, any Error>) {
+/// The maintenance's concern extraction: a day with one owner line and her answer, then the extraction reply.
+private func extractionDay(_ extraction: Scripted, noted: Bool = false, notice: Int = 0, said: String = "辛苦了") async throws -> (Harness, ManualClock, Task<Void, any Error>) {
     let clock = ManualClock(at("2026-11-16", "21:00"))
     var replies: [Scripted] = noted ? [Scripted("", noteCall("主人明天九點開會，有點壓力", "owner"))] : []
-    replies += [Scripted("", dm("辛苦了")), extraction, planReply, summaryReply]
+    replies += [Scripted("", dm(said)), extraction, planReply, summaryReply]
     let h = try await maintenanceHarness(clock, drives: true, notice: notice, replies)
     let doll = h.doll
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     await doll.ownerSaid("我回來了，今天去看了牙醫，醫生說下週三下午兩點還要再去一次。明天九點開會")
-    try await waitUntil { h.said == ["辛苦了"] }
+    try await waitUntil { h.said == [said] }
     return (h, clock, runner)
 }
 
@@ -6639,8 +6646,8 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
 
 @Test func maintenanceNotesConcernsFromTheDayAndSaysSoInTheEndNotice() async throws {
     let (h, clock, runner) = try await extractionDay(Scripted("""
-        note owner: 主人看完牙醫，問他牙齒還痛不痛
-        note duty due 2026-11-25 12:30: 提醒主人下週三兩點複診
+        note owner: 主人看完牙醫，問他牙齒還痛不痛 ｜根據：今天去看了牙醫
+        note duty due 2026-11-25 12:30: 提醒主人下週三兩點複診 ｜根據：「下週三下午兩點還要再去一次」
         """))
     clock.set(at("2026-11-17", "03:00"))
     try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
@@ -6648,6 +6655,11 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
     // The extraction is one request before the consolidation, with the consolidation's effort and no tools.
     #expect(reqs.count == 4 && reqs[1].effort == reqs[2].effort && reqs[1].messages[0].content == ConcernExtraction.system(cap: 3))
     #expect(reqs[1].messages[1].content.contains("今天去看了牙醫") && reqs[1].messages[1].content.contains("已經掛著的：\n（沒有）"))
+    #expect(reqs[1].messages[1].content.contains("她說｜Discord 私訊｜自己的話] 辛苦了") && reqs[1].messages[0].content.contains(Consolidation.ownWords))
+    // The consolidation and the day's summary read her lines as hers too, with the rule (2026-11-22).
+    #expect(reqs[2].messages[1].content.contains("她說｜Discord 私訊｜自己的話] 辛苦了") && reqs[2].messages[0].content.contains(Consolidation.ownWords))
+    #expect(reqs[3].messages[0].content == Doll.talkInstructions + Consolidation.summaryOwnWords
+            && reqs[3].messages[1].content.contains("她說｜Discord 私訊｜自己的話] 辛苦了"))
     let items = try concernsFile(h)
     #expect(items.map { $0["text"] as? String } == ["主人看完牙醫，問他牙齒還痛不痛", "提醒主人下週三兩點複診"])
     #expect(items.allSatisfy { $0["source"] as? String == "maintenance" } && items.map { $0["about"] as? String } == ["owner", "duty"])
@@ -6662,12 +6674,12 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
 
 @Test func maintenanceDoesNotRepeatAHeldConcernAndKeepsToTheCap() async throws {
     let (h, clock, runner) = try await extractionDay(Scripted("""
-        note owner: 主人明天九點開會，有點壓力。
-        note owner: 問主人牙齒還痛不痛
-        note owner: 問主人牙齒還痛不痛
-        note own: 想學畫鯊魚
-        note duty: 提醒主人複診
-        note owner: 主人晚餐吃太辣
+        note owner: 主人明天九點開會，有點壓力。 ｜根據：明天九點開會
+        note owner: 問主人牙齒還痛不痛 ｜根據：今天去看了牙醫
+        note owner: 問主人牙齒還痛不痛 ｜根據：今天去看了牙醫
+        note own: 想學畫鯊魚 ｜根據：我回來了
+        note duty: 提醒主人複診 ｜根據：還要再去一次
+        note owner: 主人晚餐吃太辣 ｜根據：我回來了
         """), noted: true)
     clock.set(at("2026-11-17", "03:00"))
     try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
@@ -6675,7 +6687,7 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
     #expect(reqs[2].messages[1].content.contains("已經掛著的：\n#1〔owner〕主人明天九點開會，有點壓力"))
     // The held one (same text but for punctuation) and the repeat are dropped; three fit under the cap.
     #expect(try concernsFile(h).map { $0["text"] as? String } == ["主人明天九點開會，有點壓力", "問主人牙齒還痛不痛", "想學畫鯊魚", "提醒主人複診"])
-    #expect(h.logs.contains { $0.contains("maintenance concern left out: duplicate「主人明天九點開會，有點壓力。」") })
+    #expect(h.logs.contains { $0.contains("maintenance concern left out: duplicate「主人明天九點開會，有點壓力」") })
     #expect(h.logs.contains { $0.contains("maintenance concern left out: duplicate「問主人牙齒還痛不痛」") })
     #expect(h.logs.contains { $0.contains("maintenance concern left out: over the cap (3)「主人晚餐吃太辣」") })
     #expect(h.logs.contains { $0.contains("maintenance: concerns done") && $0.contains("3 noted, 0 ended, 3 left out") })
@@ -6691,20 +6703,57 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
         """, open: [Concern(id: 1, text: "開會", about: .owner, source: "her", created: 0),
                     Concern(id: 2, text: "牙齒", about: .owner, source: "maintenance", created: 0),
                     Concern(id: 3, text: "開會（行事曆）", about: .duty, source: "calendar", created: 0)],
-        ownerLines: ["明天九點開會"], cap: 3, room: 20)
+        ownerLines: ["明天九點開會"], others: [], own: [], cap: 3, room: 20)
     #expect(plan.ends == [.init(id: 1, quote: "明天九點開會")] && plan.dropped.count == 2)
-    #expect(try ConcernExtraction.parse("none", open: [], ownerLines: [], cap: 3, room: 20) == .init())
-    #expect(try ConcernExtraction.parse("note owner: 再問一聲。", open: [], ownerLines: [], cap: 3, room: 20).notes.map(\.text) == ["再問一聲"])
-    #expect(throws: ModelError.self) { try ConcernExtraction.parse("我覺得主人很累", open: [], ownerLines: [], cap: 3, room: 20) }
-    #expect(throws: ModelError.self) { try ConcernExtraction.parse("note friend: x", open: [], ownerLines: [], cap: 3, room: 20) }
+    #expect(try ConcernExtraction.parse("none", open: [], ownerLines: [], others: [], own: [], cap: 3, room: 20) == .init())
+    #expect(try ConcernExtraction.parse("note owner: 再問一聲。｜根據：再問", open: [], ownerLines: [], others: ["再問一聲吧"], own: [], cap: 3, room: 20)
+        .notes.map(\.text) == ["再問一聲"])
+    #expect(throws: ModelError.self) { try ConcernExtraction.parse("我覺得主人很累", open: [], ownerLines: [], others: [], own: [], cap: 3, room: 20) }
+    #expect(throws: ModelError.self) { try ConcernExtraction.parse("note friend: x", open: [], ownerLines: [], others: [], own: [], cap: 3, room: 20) }
     #expect(ConcernExtraction.doneText(added: [], ended: []) == "從今天的對話沒有另外記掛著的事。")
     #expect(ConcernExtraction.doneText(added: [], ended: [(Concern(id: 1, text: "開會", about: .owner, source: "her", created: 0), "開完了")])
             == "結束了 1 件：#1 開會（主人說「開完了」）。")
 }
 
+/// Her own words are no source of facts (2026-11-22): a concern whose basis is only in her lines is
+/// written 「她說過…（沒查證）」 (a duty's source is her promise, so it stays); one with no basis, or a
+/// basis found nowhere in the day, is left out.
+@Test func aConcernOnlyHerOwnWordsSupportIsWrittenAsSomethingSheSaid() throws {
+    let others = ["【開機】你剛被開機了。\n- 結束：沒有結束的紀錄，最後一行 log 在 11-20 17:12:51，之後就沒有了。", "下班了"]
+    let own = ["下午 17:12 左右我這裡斷了一次", "我明天幫你查天氣"]
+    let plan = try ConcernExtraction.parse("""
+        note owner: 今天17:12那台電腦沒有錯誤紀錄地斷掉，之後問一下 ｜根據：17:12 左右我這裡斷了一次
+        note own: 最後一行 log 停在 17:12，之後再看是不是斷電 ｜根據：最後一行 log 在 11-20 17:12:51
+        note duty: 明天幫主人查天氣 ｜根據：「我明天幫你查天氣」
+        note owner: 她說過主人下班了（沒查證） ｜根據：我這裡斷了一次
+        note owner: 主人下班了，問他累不累
+        note owner: 主人的電腦常常斷電 ｜根據：電腦常常斷電
+        """, open: [], ownerLines: ["下班了"], others: others, own: own, cap: 9, room: 20)
+    #expect(plan.notes.map(\.text) == ["她說過今天17:12那台電腦沒有錯誤紀錄地斷掉，之後問一下（沒查證）", "最後一行 log 停在 17:12，之後再看是不是斷電",
+                                       "明天幫主人查天氣", "她說過主人下班了（沒查證）"])
+    #expect(plan.dropped == ["no basis「主人下班了，問他累不累」", "basis「電腦常常斷電」 is not in the day「主人的電腦常常斷電」"])
+    #expect(ConcernExtraction.sources([stamped(.memory, Doll.bootNotice + "x", 1), stamped(Scripted("想", dm("說")), 2),
+                                       stamped(.tool, "送出了", 3), stamped(.owner, "嗨", 4)])
+            == (others: [Doll.bootNotice + "x", "送出了", "嗨"], own: ["想", "說"]))
+}
+
+/// The trial's case end to end: she told the owner a cut she only inferred; the extraction's note
+/// sourced from her line is written as hers, unverified.
+@Test func maintenanceWritesAConcernFromHerOwnLineAsSomethingSheSaid() async throws {
+    let (h, clock, runner) = try await extractionDay(Scripted("note owner: 今天17:12那台電腦沒有錯誤紀錄地斷掉 ｜根據：17:12 左右我這裡斷了一次"),
+                                                     said: "下午 17:12 左右我這裡斷了一次")
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    let reqs = await h.model.requests
+    #expect(reqs[1].messages[1].content.contains("她說｜Discord 私訊｜自己的話] 下午 17:12 左右我這裡斷了一次"))
+    #expect(try concernsFile(h).map { $0["text"] as? String } == ["她說過今天17:12那台電腦沒有錯誤紀錄地斷掉（沒查證）"])
+    await h.doll.stop()
+    try await runner.value
+}
+
 @Test func anInterruptedExtractionWritesNothingAndARestartGoesOnWithItsWordsKept() async throws {
     let clock = ManualClock(at("2026-11-16", "21:00"))
-    let h = try await maintenanceHarness(clock, drives: true, [Scripted("", dm("辛苦了")), Scripted("note owner: 問主人牙齒還痛不痛"),
+    let h = try await maintenanceHarness(clock, drives: true, [Scripted("", dm("辛苦了")), Scripted("note owner: 問主人牙齒還痛不痛 ｜根據：今天去看了牙醫"),
                                                                Scripted("", dm("還沒睡？"))])
     let doll = h.doll
     let runner = Task { try await doll.run() }
@@ -6992,6 +7041,8 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     #expect(end.contains("回顧今天，你想成為的樣子改了（理由：今天主人說我查資料很快；根據：主人說「你查得好快」）。現在是：我想當查資料最快的幫手。"))
     let reviewReq = await h.model.seen(2)
     #expect(reviewReq[0].content.contains("大部分的日子是不改的") && reviewReq[1].content.contains("你查得好快"))
+    // Her own lines are marked as hers and are no basis (2026-11-22).
+    #expect(reviewReq[1].content.contains("她說｜Discord 私訊｜自己的話] 嘿") && reviewReq[0].content.contains("只有你自己說過、別的地方都沒有的事，不能當根據"))
     // The next day: within revise_min_days, no review request (concerns, plan, summary only).
     await h.model.add([Scripted("", dm("嗯")), Scripted("none"), planReply, summaryReply])
     await doll.ownerSaid("早")

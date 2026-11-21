@@ -41,8 +41,63 @@ import Testing
     for k in 0..<(Int(ProcessInfo.processInfo.environment["EXTRACT_N"] ?? "1") ?? 1) {
         let t0 = Date()
         let reply = try await model.chat(r.messages, tools: nil, effort: cfg.consolidate.effort)
+        let (others, own) = ConcernExtraction.sources(timeline.events)
         let plan = try? ConcernExtraction.parse(reply.content, open: open, ownerLines: timeline.events.filter { $0.kind == .owner }.map(\.text),
-                                                cap: cfg.drives.maintenanceConcernsMax, room: 19)
+                                                others: others, own: own, cap: cfg.drives.maintenanceConcernsMax, room: 19)
         print("EXTRACT \(k) \(String(format: "%.1f", Date().timeIntervalSince(t0)))s prompt=\(reply.usage.promptTokens) \(reply.usage.stopLine) reply=「\(reply.content.replacingOccurrences(of: "\n", with: "⏎"))」 notes=\(plan.map { $0.notes.map { "\($0.about.rawValue)|\($0.due.map { Doll.nowText($0) } ?? "-")|\($0.text)" } } ?? ["PARSE FAILED"]) dropped=\(plan?.dropped ?? [])")
     }
+}
+
+/// The own-words real check (m15-grounding fix 3, 2026-11-22): the 3-day trial's day of 11-20 18:00
+/// seeded as events (the boot notice with the report's words, her DM 「下午 17:12 左右我這裡斷了一次」,
+/// the owner's next line), then the maintenance's concern extraction, consolidation and day summary
+/// requests against the real model, as `Doll` builds them. Prints each request's day and each reply.
+/// Runs only with OWNWORDS_CONFIG set.
+@Test func replayOwnWordsCheck() async throws {
+    guard let path = ProcessInfo.processInfo.environment["OWNWORDS_CONFIG"] else { return }
+    let cfg = try Config.load(URL(filePath: path))
+    let model = HTTPMainModel(cfg.llm)
+    let day = Day("2026-11-20")!
+    var seq: Int64 = 0
+    func ev(_ kind: Event.Kind, _ text: String, _ hm: String, calls: [ToolCall] = []) -> Event {
+        seq += 1
+        var e = Event(kind, kind == .owner ? .owner : .internal, text)
+        e.seq = seq
+        e.ts = day.at(TimeOfDay(hm)!)
+        e.calls = calls
+        return e
+    }
+    let said = "欸，說一件小事：下午 17:12 左右我這裡斷了一次，而且結束時沒有任何錯誤紀錄——那種通常是機器被強制關掉或斷電，不是我自己出問題。\n\n"
+        + "如果你當時自己按了關機或搬動電腦，那就沒事，當我看見鬼。如果不是，你留意一下那台電腦供電有沒有怪怪的。我現在好好的，行程也都還在。"
+    let events = [
+        ev(.memory, Doll.bootNotice + "現在 11-20 18:00。\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-20 13:00:13 開機，共 57 行。\n"
+            + "- 結束：沒有結束的紀錄，最後一行 log 在 11-20 17:12:51，之後就沒有了。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。\n"
+            + "- 沒有錯誤和警告。", "18:00"),
+        ev(.doll, "開機通知說上次的 log 停在 17:12，跟主人說一聲。", "18:01",
+           calls: [ToolCall(name: "discord.dm", arguments: JSONValue.object([("text", .string(said))]).text)]),
+        ev(.tool, "送出了。", "18:01"),
+        ev(.owner, "我回來了", "19:30"),
+        ev(.doll, "", "19:30", calls: [ToolCall(name: "discord.dm", arguments: JSONValue.object([("text", .string("回來了～今天辛苦了，早點睡。"))]).text)]),
+        ev(.tool, "送出了。", "19:30"),
+    ]
+    let now = day.at(TimeOfDay("23:30")!)
+    let tasks = Consolidation.tasks(events)
+    print("DAY_RENDERED\n" + tasks.map(\.text).joined(separator: "\n\n"))
+    func ask(_ label: String, _ messages: [ChatMessage], effort: String) async throws -> String {
+        let t0 = Date()
+        let r = try await model.chat(messages, tools: nil, effort: effort)
+        print("\(label) \(String(format: "%.1f", Date().timeIntervalSince(t0)))s prompt=\(r.usage.promptTokens) \(r.usage.stopLine)\n\(r.content)\nEND_\(label)")
+        return r.content
+    }
+    let c = ConcernExtraction.gather(events: events, open: [], cap: cfg.drives.maintenanceConcernsMax, now: now)
+    let reply = try await ask("CONCERNS", c.messages, effort: cfg.consolidate.effort)
+    let (others, own) = ConcernExtraction.sources(events)
+    let plan = try? ConcernExtraction.parse(reply, open: [], ownerLines: ["我回來了"], others: others, own: own,
+                                            cap: cfg.drives.maintenanceConcernsMax, room: 20)
+    print("CONCERNS_KEPT \(plan.map { $0.notes.map { "\($0.about.rawValue)|\($0.text)" } } ?? ["PARSE FAILED"]) dropped=\(plan?.dropped ?? [])")
+    _ = try await ask("CONSOLIDATION", [ChatMessage(role: "system", content: Consolidation.instructions),
+                                        ChatMessage(role: "user", content: Consolidation.input(segment: "2026-11-20", tasks: tasks, related: [], registry: []))],
+                      effort: cfg.consolidate.effort)
+    _ = try await ask("SUMMARY", [ChatMessage(role: "system", content: Doll.talkInstructions + Consolidation.summaryOwnWords),
+                                  ChatMessage(role: "user", content: tasks.map(\.text).joined(separator: "\n\n"))], effort: cfg.context.talkEffort)
 }
