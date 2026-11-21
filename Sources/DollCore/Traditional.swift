@@ -60,6 +60,7 @@ extension Tools.Request {
         case .memoryFix(let id, let text, let basis, let why): out = .memoryFix(id: id, text: text.map(fix), basis: basis, why: why)
         case .goalAdd(let text, let parent): out = .goalAdd(text: fix(text), parent: parent)
         case .goalChange(let id, let text): out = .goalChange(id: id, text: fix(text))
+        case .goalBlocked(let id, let missing): out = .goalBlocked(id: id, missing: fix(missing))
         case .concernNote(let text, let about, let due): out = .concernNote(text: fix(text), about: about, due: due)
         case .idealRevise(let text, let old, let new, let why, let basedOn):
             out = .idealRevise(text: text.map(fix), old: old, new: new.map(fix), why: why, basedOn: basedOn)

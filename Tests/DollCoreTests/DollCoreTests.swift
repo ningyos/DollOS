@@ -6859,6 +6859,92 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(await d.goalStatusLine() == "- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）")
 }
 
+/// 「現在做不了，缺 X」 (grounding fix 2, 2026-11-22; m11 soak: asked for a sub-goal with the computer
+/// off, she made up a script she had never seen). 動力 brings up a goal with nothing under it; she
+/// says what is missing with goal.blocked and nothing else: the episode ends like any other (動力 back
+/// to drive_reset), nothing counts as a failure (no 壓力, no todo, no tool error), and the next time the
+/// node comes up its wandering and goal.list carry what she said.
+@Test func cantNowEndsTheEpisodeCleanlyAndComesBackWithTheNode() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness([Scripted("", dm("好"))], clock: clock) {
+        $0.drives.enabled = true
+        $0.drives.closenessHalfLifeH = 1000
+    }
+    let c = DrivesConfig()
+    let period = c.driveHalfLifeH * log2((c.driveRest - c.driveReset) / (c.driveRest - c.driveHigh)) * 3600
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    try await waitUntil { clock.sleepers >= 1 }
+    await doll.ownerSaid("你有什麼想做的？")
+    try await waitUntil { await h.model.requests.count == 1 }
+    try await waitUntil { await doll.settled }
+    let g = try await doll.goalAdd("寫程式練得更紮實", parent: nil, by: "owner")
+    let missing = "手上沒有自己寫的程式可以看"
+    await h.model.add([Scripted("", ("goal.blocked", [("id", "\(g.id)"), ("missing", missing)])), Scripted("現在做不了，先記下缺什麼")])
+    let first = at("2026-11-16", "10:00") + period + 1
+    clock.set(first)
+    try await waitUntil { await h.model.requests.count == 3 }
+    try await waitUntil { await doll.settled }
+    let ask = "目標 #\(g.id)「寫程式練得更紮實」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）"
+    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.last!.text.hasSuffix("：" + ask + "\n" + Concerns.ownAsk))
+    #expect(try h.toolResults().last!.text == "記下了：#\(g.id)〔目標〕寫程式練得更紮實 現在做不了，缺：\(missing)。它下次冒出來會帶著這句；缺的有了再做。")
+    try await waitUntil { h.logs.contains { $0.contains("own-thing episode over") && $0.contains("呼叫 goal.blocked，沒有對任何人說話；想法「現在做不了，先記下缺什麼」") } }
+    #expect(approx(await doll.testDrive(), c.driveReset))
+    // Not a failure: 壓力 never moved, no todo, no failed item, no tool error.
+    #expect(await !doll.dashboardDrives().changes.contains { $0.signal == .stress })
+    #expect(!h.logs.contains { $0.contains("todo 失敗") || $0.contains("工具連續失敗") || $0.contains("ERROR") })
+    #expect(try await doll.dashboardStatus().todo == "待命中")
+    // What she said is on the node (saved), in goal.list and in its concern.
+    let note = "（你 \(Doll.nowText(first)) 記下現在做不了，缺：\(missing)）"
+    #expect(await doll.dashboardGoals().nodes.first { $0.id == g.id }!.blocked?.missing == missing)
+    #expect(await doll.goalTreeText() == "#\(g.id)〔目標〕寫程式練得更紮實" + note)
+    #expect(await doll.dashboardDrives().open.filter { $0.source == "goal" }.map(\.text) == [ask + note])
+    // The next episode: the node comes up with it.
+    await h.model.add([Scripted("還是缺，這次不做")])
+    clock.set(first + period + 1)
+    try await waitUntil { await h.model.requests.count == 4 }
+    try await waitUntil { await doll.settled }
+    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.last!.text.contains(ask + note + "\n" + Concerns.ownAsk))
+    try await waitUntil { h.logs.filter { $0.contains("own-thing episode over") }.count == 2 }
+    #expect(approx(await doll.testDrive(), c.driveReset))
+    await doll.stop()
+    try await runner.value
+}
+
+/// When her 「現在做不了」 stops being shown: the node's text changes (her or the owner), a node is added
+/// under it, it ends, or `[goals] blocked_hours` pass. It is read back after a restart.
+@Test func cantNowLastsUntilTheNodeChangesGetsAChildEndsOrItsHoursPass() async throws {
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await goalsHarness(clock) { $0.goals.blockedHours = 10 }
+    let d = h.doll
+    let g = try await d.goalAdd("寫程式練得更紮實", parent: nil, by: "her")
+    await #expect { try await d.goalBlockedTool(id: 99, missing: "資料") } throws: { "\($0)".contains("沒有還開著的 #99") }
+    await #expect { try await d.goalBlockedTool(id: g.id, missing: " ") } throws: { "\($0)".contains("missing 是空的") }
+    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
+    #expect(await d.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目"))
+    let b = try await goalsHarness(clock, dir: h.dir)
+    #expect(await b.doll.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目"))
+    // The owner changes it: gone.
+    _ = try await d.goalChange(g.id, "寫程式練得更紮實一點", by: "owner")
+    #expect(await !d.goalTreeText().contains("現在做不了"))
+    // A sub-goal under it: gone from the goal; the sub-goal's own one goes when it ends.
+    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
+    let s = try await d.goalAdd("把主人給的第一題寫完", parent: g.id, by: "her")
+    #expect(await d.dashboardGoals().nodes.first { $0.id == g.id }!.blocked == nil)
+    _ = try await d.goalBlockedTool(id: s.id, missing: "題目還沒拿到")
+    #expect(await d.goalTreeText().contains("  #\(s.id)〔子目標〕把主人給的第一題寫完（你"))
+    _ = try await d.goalEnd(s.id, how: "drop", by: "her")
+    #expect(await d.dashboardGoals().nodes.first { $0.id == s.id }!.blocked == nil)
+    // blocked_hours later it is not shown (the node comes up asking plainly again).
+    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
+    clock.set(at("2026-11-16", "10:00") + 10 * 3600 - 1)
+    #expect(await d.goalTreeText().contains("現在做不了"))
+    clock.set(at("2026-11-16", "10:00") + 10 * 3600)
+    #expect(await !d.goalTreeText().contains("現在做不了"))
+    try await d.refreshGoalConcerns(now: clock.now())
+    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.map(\.text) == ["目標 #\(g.id)「寫程式練得更紮實一點」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）"])
+}
+
 @Test func aTodoListTiedToASubgoalMarksItsStepsAndRecordsThem() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await goalsHarness(clock)
@@ -9195,10 +9281,12 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
     return (digest(tools), digest(prompt))
 }
 
+/// Re-pinned 2026-11-22 (grounding fix 2): the goal.blocked tool, and the tree paragraph's
+/// 「用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；…」.
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "91e4c3f4da1be2b09ba9b483cea9c45f417aeccf3d2cd60df46603f4feeb97d6")
-    #expect(d.prompt == "551e5009944c00c9ac9565978be03ae070415d5d49b1fb5862211f98c10e3c9d")
+    #expect(d.tools == "2656e6ff93652901d1c58e4d9e5c79b49fb690ea440423decd7ffffecfe4c0a1")
+    #expect(d.prompt == "5cf246545cc7f8f7c2e1094c6813f56a4aebed0f1b421c6fa378e5fd5bef6505")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }

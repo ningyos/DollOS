@@ -1633,6 +1633,8 @@ public actor Doll {
                 return try goalChangeTool(id: id, text: text)
             case .goalEnd(let id, let how):
                 return try goalEndTool(id: id, how: how)
+            case .goalBlocked(let id, let missing):
+                return try goalBlockedTool(id: id, missing: missing)
             case .goalList:
                 return Outcome(text: goalTreeText(), actions: ["goal list"])
             case .idealRevise(let text, let old, let new, let why, let basedOn):

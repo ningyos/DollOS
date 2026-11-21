@@ -278,6 +278,16 @@ public enum Tools {
                  "properties": .object([("id", ["type": "integer"]), ("how", ["type": "string", "enum": ["done", "drop"]])]),
                  "required": ["id", "how"],
              ], jsonParameters: []),
+        Spec(name: "goal.blocked",
+             description: "目標樹上的一個節點現在做不了（要往下想子目標、步驟，或動手做，可是缺東西）：記下缺什麼，不要編一個出來。會記在那個節點上，它下次冒出來、goal.list 都看得到；這不算失敗。節點改了、底下加了東西，這句就拿掉。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("id", ["type": "integer"]),
+                     ("missing", ["type": "string", "description": "缺的是什麼，你真的知道缺的（例：主人還沒給的資料、一樣你還沒看過的東西）"]),
+                 ]),
+                 "required": ["id", "missing"],
+             ], jsonParameters: []),
         Spec(name: "goal.list",
              description: "看整棵目標樹（還開著的，和最近做完的）。",
              parameters: ["type": "object", "properties": .object([]), "required": []], jsonParameters: []),
@@ -740,6 +750,7 @@ public enum Tools {
         case goalAdd(text: String, parent: Int?)
         case goalChange(id: Int, text: String)
         case goalEnd(id: Int, how: String)
+        case goalBlocked(id: Int, missing: String)
         case goalList
         case idealRevise(text: String?, old: String?, new: String?, why: String, basedOn: String)
     }
@@ -912,6 +923,8 @@ public enum Tools {
             return .goalChange(id: try int("id")!, text: try nonEmpty("text"))
         case "goal.end":
             return .goalEnd(id: try int("id")!, how: try oneOf("how", ["done", "drop"], default: ""))
+        case "goal.blocked":
+            return .goalBlocked(id: try int("id")!, missing: try nonEmpty("missing"))
         case "goal.list":
             return .goalList
         case "ideal.revise":
@@ -1093,7 +1106,7 @@ enum Instructions {
             ## 你想成為的樣子、目標樹
 
             上面「你想成為的樣子」是你自己的，會跟著你經歷的事慢慢改：真的有事讓你想法變了，用 ideal.revise 改（寫為什麼、根據哪件事），馬上生效；系統維護也會幫你回顧一天，有理由才改。名字、身分、禁忌不會變。主人看得到每一次修改，也可以改回去，他改了會告訴你。
-            從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.list。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
+            從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；現在做不了（缺東西、缺資料），用 goal.blocked 在那個節點記下缺什麼，不要編一個出來。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
             做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。" : "")\(detail("goals.md"))
             """ : ""
         let computerPart = computer ? """

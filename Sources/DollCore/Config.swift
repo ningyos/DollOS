@@ -286,6 +286,8 @@ public struct GoalsConfig: Sendable, Equatable {
     public var noveltyGapMin = 30.0
     /// What she saw is remembered this long for "new".
     public var seenDays = 90.0
+    /// Her 「現在做不了，缺 X」 on a node (`goal.blocked`) is shown with it this long.
+    public var blockedHours = 24.0
 
     public init() {}
 }
@@ -851,15 +853,15 @@ public struct Config: Sendable {
             ("step_drive", \.stepDrive), ("subgoal_drive", \.subgoalDrive), ("goal_drive", \.goalDrive), ("list_drive", \.listDrive),
             ("now_share", \.nowShare), ("feedback_hours", \.feedbackHours), ("revise_min_days", \.reviseMinDays),
             ("curiosity_hours", \.curiosityHours), ("novelty_drive", \.noveltyDrive), ("novelty_gap_min", \.noveltyGapMin),
-            ("seen_days", \.seenDays),
+            ("seen_days", \.seenDays), ("blocked_hours", \.blockedHours),
         ]
         for (k, p) in ints { try s.read(k, &g[keyPath: p]) }
         for (k, p) in nums { try s.read(k, &g[keyPath: p]) }
         try s.finish()
         guard ints.allSatisfy({ g[keyPath: $0.1] >= 1 }),
               [g.stepDrive, g.subgoalDrive, g.goalDrive, g.listDrive, g.noveltyDrive, g.nowShare].allSatisfy({ (0...1).contains($0) }),
-              g.feedbackHours > 0, g.reviseMinDays >= 0, g.curiosityHours > 0, g.noveltyGapMin >= 0, g.seenDays > 0 else {
-            throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days above 0; revise_min_days and novelty_gap_min 0 or more")
+              g.feedbackHours > 0, g.reviseMinDays >= 0, g.curiosityHours > 0, g.noveltyGapMin >= 0, g.seenDays > 0, g.blockedHours > 0 else {
+            throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days, blocked_hours above 0; revise_min_days and novelty_gap_min 0 or more")
         }
         return g
     }

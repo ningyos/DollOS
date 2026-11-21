@@ -154,7 +154,10 @@ enum Concerns {
     static let wanderOwner = "\(wanderTag)你想到好一陣子沒跟主人說上話了。"
     /// 動力's wandering asks for something handed in (idle-drive, 2026-11-20): what is only shown to
     /// her she often lets pass; a step goes through todo (the record), a decision not to through her thought.
-    static let ownAsk = "這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；這次不做，就在想法裡寫一句為什麼。"
+    /// 「現在做不了」 has its own way (grounding fix 2, 2026-11-22: in the m11 soak, asked for a
+    /// sub-goal with the computer off, she made up a script she had never seen and asked the owner
+    /// about it five times): `goal.blocked` on the node, what is missing.
+    static let ownAsk = "這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；現在做不了（缺東西、缺資料），用 goal.blocked 記下缺什麼，不要編一個出來；這次不做，就在想法裡寫一句為什麼。"
     /// 動力 high with no concern of her own (no goal, or every one ended): the episode still happens.
     static let wanderOwnNone = "\(wanderTag)你想做點自己的事，可是目標樹上沒有掛著的下一步。可以想想你想成為的樣子，用 goal.add 定一個目標、子目標或下一步。\(ownAsk)"
     /// 動力's wandering (it carries `ownAsk`): her turn for it is a task turn (`Doll.taskTurn`).
