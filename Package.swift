@@ -13,8 +13,8 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMinor(from: "3.32.3")),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
-        // Her voice (M6): Qwen3-TTS 0.6B on MLX, a sibling checkout (~/Desktop/DollOS/voice-mlx).
-        .package(name: "voice-mlx", path: "../../../voice-mlx"),
+        // Her voice (M6): Qwen3-TTS 0.6B on MLX.
+        .package(url: "https://github.com/ningyos/voice-mlx", .upToNextMinor(from: "0.1.0")),
     ],
     targets: [
         .target(name: "DollCore",

@@ -1,5 +1,5 @@
 {
-  "originHash" : "a0f6b2934419fa9ea3c88ef3364c1ca82730077caa6006eb30f6d8601fc6f795",
+  "originHash" : "287e5b8fe78f865e4ebd0dfd6b0554c0984f601dbccee6703e83fa7f27c62ddf",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -98,6 +98,15 @@
       "state" : {
         "revision" : "402a8a1105f52038b0949d9596981fc9e32bed17",
         "version" : "1.4.0"
+      }
+    },
+    {
+      "identity" : "voice-mlx",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ningyos/voice-mlx",
+      "state" : {
+        "revision" : "46df4de1c0e7d1f8be848ea021c162f639befbe9",
+        "version" : "0.1.0"
       }
     },
     {
