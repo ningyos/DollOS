@@ -1452,6 +1452,37 @@ public actor Doll {
         }
         return answered ? nil : line
     }
+    /// Her calls that went through since the latest owner or developer line before `reply` (the line
+    /// she answers), oldest first: her replies since that line, and this reply's calls written before
+    /// the one running now (their results are in). What her claims about her own actions are checked
+    /// against (`Claims`, 2026-11-22). Since that line, not a fixed time: 「剛查過」 at 09:15 in the
+    /// m11 soak leaned on an 08:40 `calendar.list` made for the owner's earlier question, and what
+    /// she did before the line she answers is hers to date (「之前查過」).
+    func doneSinceLine(before reply: Event) -> [String] {
+        let events = timeline.events
+        let from = events.last(where: { $0.speaker != nil && $0.seq! < reply.seq! })?.seq ?? Int64.min
+        var done: [String] = [], calls: [ToolCall] = [], k = 0
+        for e in events where e.seq! > from {
+            switch e.kind {
+            case .doll:
+                calls = e.calls
+                k = 0
+            case .tool:
+                // Each result follows her reply in call order; a failed one starts with 失敗.
+                if k < calls.count, calls[k].malformed == nil, !e.text.hasPrefix("失敗") { done.append(calls[k].name) }
+                k += 1
+            default: break
+            }
+        }
+        return done
+    }
+    /// Throws her refusal when `text` to `to` claims an action of hers that `doneSinceLine` does not hold.
+    func checkClaims(_ text: String, to: Addressee, reply: Event) throws {
+        if let why = Claims.refusal(text, done: doneSinceLine(before: reply), to: to, config.claims) {
+            log("INFO", "turn \(turnIndex): claims: not sent to \(to.label)「\(text)」")
+            throw ToolError(description: why)
+        }
+    }
     /// A voice tool's result when `[voice] enabled` but no voice link is wired (fixed bytes).
     static let voiceUnwired = "語音還沒接上，語音頻道現在用不了；要跟主人說話用 \(Tools.Name.dm)。"
 
@@ -1493,6 +1524,7 @@ public actor Doll {
             switch request {
             case .speak(let raw, .discordVoice):
                 let (text, fixed) = Traditional.fix(raw)
+                try checkClaims(text, to: .owner, reply: reply)
                 // The owner hears it in the voice channel (M6): sentence by sentence through the TTS.
                 // Refused when she is not in one (`VoicePort.speak` says so).
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
@@ -1512,6 +1544,7 @@ public actor Doll {
                 // read, and nothing to wake her for. Not delivered (the bridge is down, no dollctl
                 // chat is open): her result says why and what she can do.
                 let to: Addressee = channel == .dollctl ? .developer : .owner
+                try checkClaims(text, to: to, reply: reply)
                 let shot = to == .owner ? ownerShot : nil
                 // Her words go to the log here (a box while `sealing`), not to the console as text.
                 log("INFO", "turn \(turnIndex): \(name) → \(to.label)「\(text)」")
@@ -1598,7 +1631,7 @@ public actor Doll {
             case .toolRun(let toolName, let args, let expect):
                 return try await toolRun(toolName, args: args, expect: expect, chain: chain)
             case .askOwner(let what, let place, let why):
-                return try askOwner(what: what, where: place, why: why)
+                return try askOwner(what: what, where: place, why: why, reply: reply)
             // The file tools (2026-11-09; this Mac's files since 2026-11-16): text only, no window read.
             // Only a success is a step, and the step never holds the content.
             case .readFile(let path, let from, let to):
@@ -1836,8 +1869,9 @@ public actor Doll {
 
     /// `ask_owner` (2026-11-16, owner decision 4): her question goes to the owner's DM; with an item in
     /// progress it becomes 等待中 after this reply's calls, and his answer (an owner line) resumes it.
-    func askOwner(what: String, where place: String, why: String) throws -> Outcome {
+    func askOwner(what: String, where place: String, why: String, reply: Event) throws -> Outcome {
         let text = "【\(name)想先問你】\n要做：\(what)\n在哪裡：\(place)\n為什麼：\(why)"
+        try checkClaims(text, to: .owner, reply: reply)
         let shot = ownerShot
         log("INFO", "turn \(turnIndex): ask_owner → 主人「\(text)」")
         if let failure = deliver(text, .owner, shot.map { shots.appending(path: $0) }) {

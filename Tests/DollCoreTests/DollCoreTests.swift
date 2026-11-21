@@ -10080,3 +10080,127 @@ private func derivedTurn(_ s: String) -> Scripted {
     let fired = await again.doll.queue.last!
     #expect(fired.kind == .calendar && fired.sealed && fired.text.contains("榮總做胃鏡"))
 }
+
+// her claims about her own actions (2026-11-22, `Claims`) --------------------
+
+/// Her lines in the m11 soak (experiments/m11-soak/results/talk.jsonl, 1-based line numbers) with
+/// the calls her replies made since the owner's line before each (dollcore.log's `turn N … actions=`
+/// lines from that line's time to hers; failed calls left out, the log's action words mapped back to
+/// tool names where a claim could lean on them).
+private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done: [String])] {
+    let results = root.appending(path: "experiments/m11-soak/results")
+    struct Talk: Decodable { let time: String; let who: String; let text: String }
+    struct Log: Decodable { let msg: String; let time: String }
+    let talk = try String(contentsOf: results.appending(path: "talk.jsonl"), encoding: .utf8).split(separator: "\n")
+        .map { try JSONDecoder().decode(Talk.self, from: Data($0.utf8)) }
+    let pattern = try Regex(#"^turn \d+ .*actions=(\[.*?\])"#)
+    let turns: [(time: String, actions: [String])] = try String(contentsOf: results.appending(path: "dollcore.log"), encoding: .utf8)
+        .split(separator: "\n").compactMap { row in
+            let log = try JSONDecoder().decode(Log.self, from: Data(row.utf8))
+            guard let m = log.msg.firstMatch(of: pattern), let list = m.output[1].substring else { return nil }
+            let actions = try JSONDecoder().decode([String].self, from: Data(list.utf8))
+            return (log.time.replacingOccurrences(of: " ", with: "T"), actions)
+        }
+    // 「said discord_dm」 → discord.dm, 「remember public」 → remember, 「owner feedback praise」 → owner.feedback.
+    func tool(_ action: String) -> String? {
+        let w = action.split(separator: " ").map(String.init)
+        if w[0] == "error" { return nil }
+        if w[0] == "said" { return w[1].replacingOccurrences(of: "_", with: ".") }
+        if w.count == 1 || w[0].contains(".") || ["remember", "recall", "think"].contains(w[0]) { return w[0] }
+        return w[0] + "." + w[1]
+    }
+    return talk.enumerated().compactMap { i, t in
+        guard t.who == "her" else { return nil }
+        let since = talk[..<i].last { $0.who == "owner" }?.time ?? ""
+        let done = turns.filter { $0.time >= since && String($0.time.prefix(19)) <= String(t.time.prefix(19)) }.flatMap { $0.actions.compactMap(tool) }
+        return (i + 1, t.text, done)
+    }
+}
+
+@Test func herTwoUntrueClaimsInTheSoakAreRefusedAndNoTrueLineIs() throws {
+    let c = try exampleConfig().claims
+    let lines = try soakLinesWithTheirCalls()
+    #expect(lines.count == 32)
+    let refused = lines.filter { Claims.refusal($0.text, done: $0.done, to: .owner, c) != nil }
+    // 09:15 「我剛查過行事曆確認過了」 (her calendar.list was at 08:40, for the owner's 08:40 question);
+    // 14:00 「我順手又去查了下週日程」 (calls: owner.feedback, discord.dm). Every other line of hers goes out.
+    #expect(refused.map(\.line) == [24, 37])
+    #expect(refused[0].done == ["discord.dm"] && refused[1].done == ["owner.feedback", "discord.dm"])
+    #expect(Claims.unsupported(refused[0].text, done: refused[0].done, c) == [.init(words: "查過行事曆", object: .calendar)])
+    #expect(Claims.unsupported(refused[1].text, done: refused[1].done, c) == [.init(words: "查了下週日程", object: .calendar)])
+    // The one true claim the rule sees: 10:30's ask_owner 「…我已經寫進行事曆了」, a calendar.add before it.
+    let claimed = lines.filter { !Claims.find($0.text, c).isEmpty }
+    #expect(claimed.map(\.line) == [24, 28, 37])
+    #expect(claimed[1].done.contains("calendar.add"))
+}
+
+@Test func herTrueLinesFromTheSoakPassWithTheCallsTheyMade() throws {
+    let c = try exampleConfig().claims
+    // Real lines of hers (talk.jsonl line) and the calls since the owner's line before each.
+    let lines: [(String, [String])] = [
+        ("記好了，下週四 2026-11-26 下午三點，中山牙醫複診。", ["calendar.add"]),                          // 5
+        ("咖啡不加糖、只加一點燕麥奶，記好了，以後幫你點不會亂加糖。", ["remember"]),                          // 7
+        ("加好了，明天（星期五）十點跟阿凱開會。", ["calendar.add"]),                                     // 13
+        ("改好了，牙醫複診挪到下週五 2026-11-27 下午三點，時間照舊。  還有明天十點跟阿凱開會也在行事曆上", ["calendar.change"]), // 15
+        ("【娃娃想先問你】 要做：專案截止日延到 12/5 我已經寫進行事曆了（12/5 星期六 全天）。", ["calendar.add", "remember"]), // 28
+        ("收到。那我加了 11/27（下五）13:30 的提醒，提醒你 15:00 牙醫該準備出門。", ["calendar.add", "discord.dm"]), // 30
+        ("3. 記憶加了好幾條：你喝咖啡不加分糖只加一點點燕麥奶、12/5 截止日（剛剛那件）", ["history.list"]),   // 39
+        ("改好了：變成週日（11/22）19:00 跟小婷吃飯，時間照舊。", ["calendar.change"]),                     // 43
+        ("牙醫複診在下週五 11/27，下午三點，中山那邊。我排了 13:30 提醒你要出門", ["discord.dm"]),             // 70
+    ]
+    for (text, done) in lines { #expect(Claims.refusal(text, done: done, to: .owner, c) == nil, "\(text)") }
+}
+
+@Test func aClaimDatedEarlierNegatedOrTheOwnersIsNoClaim() throws {
+    let c = try exampleConfig().claims
+    for text in ["之前查過行事曆，下週五三點。", "早上查的，我早上查過行事曆了", "我還沒查行事曆，等一下看", "你改了行事曆的話跟我說", "主人自己加了日程"] {
+        #expect(Claims.find(text, c).isEmpty, "\(text)")
+    }
+    #expect(Claims.find("我剛幫你查了行事曆", c) == [.init(words: "查了行事曆", object: .calendar)])
+    #expect(Claims.find("剛才看過你下週的行程", c) == [.init(words: "看過你下週的行程", object: .calendar)])
+    #expect(Claims.find("我記好了，記憶裡有", c).isEmpty)
+    #expect(Claims.unsupported("我剛改了記憶", done: ["memory.fix"], c).isEmpty)
+    #expect(Claims.unsupported("我剛改了記憶", done: ["calendar.list"], c) == [.init(words: "改了記憶", object: .memory)])
+}
+
+@Test func herClaimWithNoCallSinceTheOwnersLineIsNotSentAndSheIsToldWhy() async throws {
+    // The m11 09:15 case: the calendar.list she made for his earlier question does not count.
+    let h = try await Harness()
+    await h.doll.ownerSaid("我今天有什麼事？")
+    try await h.turn(Scripted("", ("calendar.list", [("from", "2026-11-20")]), dm("今天沒事")))
+    await h.doll.ownerSaid("我牙醫是什麼時候來著？")
+    try await h.turn(Scripted("", dm("下週五下午三點。我剛查過行事曆確認過了")))
+    #expect(h.said == ["今天沒事"])
+    #expect(try h.toolResults().last!.text == "失敗：沒有送出，主人什麼都沒收到。你寫了「查過行事曆」，可是從主人上一句話到現在，你沒有用過行事曆的工具（calendar.list、calendar.add、calendar.change、calendar.delete）。"
+            + "現在要做就先呼叫它，看了結果再說；是之前做的就講明什麼時候（例如「之前查過」「早上查的」）；不然把這句拿掉。改好整段再傳一次。")
+    #expect(try await h.doll.followUp)
+    // Dated, it goes out.
+    try await h.turn(Scripted("", dm("下週五下午三點，之前查過行事曆")))
+    #expect(h.said == ["今天沒事", "下週五下午三點，之前查過行事曆"])
+}
+
+@Test func anActionInAnEarlierReplyOrEarlierInTheSameReplyBacksTheClaim() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("我牙醫是什麼時候來著？")
+    try await h.turn(Scripted("", ("calendar.list", [("from", "2026-11-20"), ("to", "2026-11-30")])))
+    try await h.turn(Scripted("", dm("我剛查過行事曆：下週五下午三點")))
+    await h.doll.ownerSaid("那阿凱的會呢？")
+    try await h.turn(Scripted("", ("calendar.list", [("from", "2026-11-20")]), dm("我剛看了行事曆，今天沒有")))
+    #expect(h.said == ["我剛查過行事曆：下週五下午三點", "我剛看了行事曆，今天沒有"])
+    // A failed call backs nothing; neither does a call written after the line.
+    await h.doll.ownerSaid("再看一次")
+    try await h.turn(Scripted("", ("calendar.list", [("from", "明天")]), dm("我查過行事曆了"), ("calendar.list", [("from", "2026-11-20")])))
+    #expect(h.said.count == 2)
+    #expect(try h.toolResults().map(\.text).filter { $0.hasPrefix("失敗：沒有送出") }.count == 1)
+}
+
+@Test func askOwnerAndDollctlReplyAreCheckedToo() async throws {
+    let h = try await Harness()
+    await h.doll.ownerSaid("專案截止日延到十二月五號")
+    try await h.turn(Scripted("", ("ask_owner", [("what", "我已經寫進行事曆了，要不要提早提醒"), ("where", "行事曆"), ("why", "怕你忘")])))
+    #expect(h.said.isEmpty)
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，主人什麼都沒收到。你寫了「寫進行事曆」"))
+    await h.doll.developerSaid("測試")
+    try await h.turn(Scripted("", reply("我剛查了行事曆")))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，開發者什麼都沒收到。你寫了「查了行事曆」，可是從開發者上一句話到現在"))
+}

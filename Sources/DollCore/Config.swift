@@ -428,6 +428,39 @@ public struct AuditConfig: Sendable {
     public var guardChars = 2
 }
 
+/// The check of her claims about her own recent actions before a line of hers goes to a person
+/// (2026-11-22, `Claims.swift`). The m11 soak's two untrue lines: 11-20 09:15 「我剛查過行事曆確認過了」
+/// (her last `calendar.list` was 08:40, before the owner's 09:15 question) and 14:00
+/// 「我順手又去查了下週日程」 (that reply's calls: `owner.feedback`, `discord.dm`). A claim is a verb of
+/// `verbs` followed within `reach` characters, in the same clause, by a word of `calendarWords` or
+/// `memoryWords`; a sentence that dates it before the verb (`earlier`), a verb negated right before
+/// it (`negations`), or one whose subject is the owner (`owner` before it, after any 我, and not
+/// right after a character of `forOwner`) is not one. Rather miss a claim than refuse a true line:
+/// over the soak's 32 lines of hers, with the calls of her replies since the owner's line before
+/// each, exactly those two are refused.
+public struct ClaimsConfig: Sendable {
+    /// Off: her lines go out unchecked.
+    public var enabled = true
+    /// The verbs that say she did something (with 了／過／好／進／下 they are done, not planned).
+    public var verbs = ["查過", "查了", "查好", "看過", "看了", "確認過", "確認了", "記好", "記了", "記下", "記進", "寫進",
+                        "加好", "加了", "加進", "改好", "改了", "刪了", "刪掉"]
+    /// The words that make a claim one about the calendar: a successful `calendar.*` call backs it.
+    public var calendarWords = ["行事曆", "日程", "行程", "提醒"]
+    /// The words that make a claim one about her memories: a successful `remember`, `recall` or `memory.fix` backs it.
+    public var memoryWords = ["記憶"]
+    /// Most characters between the verb and the object word: 「查了下週日程」 is 2; 6 leaves room for
+    /// 「你下週的」 and not for a word further on in the clause.
+    public var reach = 6
+    /// Words before the verb in its sentence that date the action before the line she answers.
+    public var earlier = ["之前", "早上", "上午", "下午", "昨天", "昨晚", "前天", "上次", "上週", "稍早", "那時", "當時", "早就"]
+    /// Words right before the verb that negate it: 「我還沒查行事曆」 claims nothing.
+    public var negations = ["沒", "不", "別", "沒有"]
+    /// Words for the owner as the one who did it: 「你改了行事曆」 is his action, not hers.
+    public var owner = ["你", "主人"]
+    /// Characters right before an owner word that make him the one it was done for: 「幫你查了行事曆」 is hers.
+    public var forOwner = ["幫", "替", "給", "跟", "讓", "叫", "陪"]
+}
+
 /// The history of what is hers (2026-11-19, layer 4, `History.swift`): every change to her ideal
 /// self, goal tree, saved tools, memories, the entity registry and the records of what she did and
 /// of corrections is a commit in one git repository of the program's own.
@@ -536,6 +569,7 @@ public struct Config: Sendable {
     public var ownerSleep = OwnerSleepConfig()
     public var goals = GoalsConfig()
     public var audit = AuditConfig()
+    public var claims = ClaimsConfig()
     public var log = LogConfig()
     public var history = HistoryConfig()
 
@@ -547,7 +581,8 @@ public struct Config: Sendable {
     public static func load(_ url: URL) throws -> Config {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
-                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "log", "history"])
+                                                 "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "claims",
+                                                 "log", "history"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -819,6 +854,21 @@ public struct Config: Sendable {
               (0...1).contains(cfg.audit.originShare), cfg.audit.guardChars >= 1 else {
             throw TOMLError(description: "[audit] mode change or flag; max_memories at least 1; max_source_chars at least 1000; "
                             + "origin_share 0 to 1; guard_chars at least 1")
+        }
+        var cl = Section(name: "claims", raw: raw["claims"] ?? [:])
+        try cl.read("enabled", &cfg.claims.enabled)
+        try cl.read("verbs", &cfg.claims.verbs)
+        try cl.read("calendar_words", &cfg.claims.calendarWords)
+        try cl.read("memory_words", &cfg.claims.memoryWords)
+        try cl.read("reach", &cfg.claims.reach)
+        try cl.read("earlier", &cfg.claims.earlier)
+        try cl.read("negations", &cfg.claims.negations)
+        try cl.read("owner", &cfg.claims.owner)
+        try cl.read("for_owner", &cfg.claims.forOwner)
+        try cl.finish()
+        guard cfg.claims.reach >= 0, ([cfg.claims.verbs, cfg.claims.calendarWords, cfg.claims.memoryWords, cfg.claims.earlier,
+                                       cfg.claims.negations, cfg.claims.owner, cfg.claims.forOwner].allSatisfy { !$0.contains("") }) else {
+            throw TOMLError(description: "[claims] reach at least 0; no empty word in a list")
         }
         var hi = Section(name: "history", raw: raw["history"] ?? [:])
         try hi.read("git", &cfg.history.git)
