@@ -82,15 +82,39 @@ enum Concerns {
         return d
     }()
 
-    static func read<T: Decodable>(_ type: T.Type, _ url: URL, what: String) throws -> T? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        do { return try decoder.decode(T.self, from: Data(contentsOf: url)) } catch {
+    /// A document of hers; one stored as a box (`SecretBox`, written by a sealed turn) is opened with
+    /// `box` (nil: the file must be plain).
+    static func read<T: Decodable>(_ type: T.Type, _ url: URL, what: String, box: SecretBox? = nil) throws -> T? {
+        guard let data = try readDocument(url, box: box) else { return nil }
+        do { return try decoder.decode(T.self, from: data) } catch {
             throw StoreError(description: "\(url.path): not a \(what) file: \(error)")
         }
     }
 
-    static func write<T: Encodable>(_ value: T, _ url: URL) throws {
-        try encoder.encode(value).write(to: url, options: .atomic)
+    /// The bytes of a document, opened when it is a box; nil when there is no file.
+    static func readDocument(_ url: URL, box: SecretBox?) throws -> Data? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        guard data.starts(with: Data(SecretBox.prefix.utf8)) else { return data }
+        guard let box else { throw StoreError(description: "\(url.path) is encrypted and no memory key was given") }
+        return Data(try box.open(String(decoding: data, as: UTF8.self), place: url.path).utf8)
+    }
+
+    /// Writes a document whole: as one box when `box` is given (a sealed write), else plain.
+    static func write<T: Encodable>(_ value: T, _ url: URL, box: SecretBox? = nil) throws {
+        try writeDocument(try encoder.encode(value), url, box: box)
+    }
+
+    static func writeDocument(_ data: Data, _ url: URL, box: SecretBox?) throws {
+        guard let box else { return try data.write(to: url, options: .atomic) }
+        try Data((try box.seal(String(decoding: data, as: UTF8.self)) + "\n").utf8).write(to: url, options: .atomic)
+    }
+
+    /// Whether the file at `url` is stored as a box.
+    static func boxed(_ url: URL) -> Bool {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? h.close() }
+        return (try? h.read(upToCount: SecretBox.prefix.utf8.count)) == Data(SecretBox.prefix.utf8)
     }
 
     /// The concern a signal surfaces: of its kind, the one surfaced least recently (never first),
@@ -168,8 +192,23 @@ public struct DashboardDrives: Sendable, Codable {
 extension Doll {
     // storage ---------------------------------------------------------------------------------------
 
-    func saveConcerns() throws { try Concerns.write(concernFile, concernsURL) }
-    func saveSignals() throws { try Concerns.write(drives.state, signalsURL) }
+    func saveConcerns() throws { try saveDocument(concernFile, concernsURL) }
+    func saveSignals() throws { try saveDocument(drives.state, signalsURL) }
+
+    /// The key a write of `url` seals with: while `sealing`, when what is written comes from something
+    /// stored sealed (`sealed`), or when the file already is a box (once sealed it stays sealed: what
+    /// it holds may still derive from the secret); nil: plain.
+    func sealKey(_ url: URL, sealed: Bool = false) -> SecretBox? { sealing || sealed || Concerns.boxed(url) ? memory.box : nil }
+
+    /// One of her single-document files, written whole (`sealKey`).
+    func saveDocument<T: Encodable>(_ value: T, _ url: URL, sealed: Bool = false) throws {
+        try Concerns.write(value, url, box: sealKey(url, sealed: sealed))
+    }
+
+    /// One of her documents read back, a box opened.
+    func readDocument<T: Decodable>(_ type: T.Type, _ url: URL, what: String) throws -> T? {
+        try Concerns.read(type, url, what: what, box: memory.box)
+    }
 
     var openConcerns: [Concern] { concernFile.items.filter { $0.ended == nil } }
 
@@ -195,7 +234,7 @@ extension Doll {
         concernsNew.insert(c.id)
         concernFile.items.append(c)
         try saveConcerns()
-        log("INFO", "drives: concern #\(c.id) (\(about.rawValue), \(source)) 「\(text)」")
+        log("INFO", "drives: concern #\(c.id) (\(about.rawValue), \(source)) 「\(text)」", sealed: Concerns.boxed(concernsURL))
         feed.notify(.drives)
         return c
     }

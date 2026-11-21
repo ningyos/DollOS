@@ -76,7 +76,7 @@ extension Doll {
         let (was, memory) = putInHand(ListAside(todo: TodoState(), link: nil), ListMemory())
         aside = was
         asideMemory = memory
-        log("INFO", "todo: 「\(was.todo.current ?? "")」等待中 set aside for a list of her own")
+        log("INFO", "todo: 「\(was.todo.current ?? "")」等待中 set aside for a list of her own", sealed: todoSealed)
     }
 
     /// The list in hand and the one aside change places.
@@ -93,7 +93,7 @@ extension Doll {
         _ = putInHand(other, asideMemory)
         aside = nil
         asideMemory = ListMemory()
-        log("INFO", "turn \(turnIndex): 「\(todo.current ?? "")」back in hand (\(todo.phase.label))")
+        log("INFO", "turn \(turnIndex): 「\(todo.current ?? "")」back in hand (\(todo.phase.label))", sealed: todoSealed)
     }
 
     /// Her call works on the waiting item: it is 進行中 again, and this reply is one of its rounds.
@@ -104,7 +104,7 @@ extension Doll {
         if todo.decideAt == 0 { todo.decideAt = computerConfig.decideAfterRounds }
         swappedForLine = false
         heldForAnswer = false
-        log("INFO", "turn \(turnIndex): todo 等待中 → 進行中「\(todo.current ?? "")」(\(tool))")
+        log("INFO", "turn \(turnIndex): todo 等待中 → 進行中「\(todo.current ?? "")」(\(tool))", sealed: todoSealed)
     }
 
     /// 【狀況】's words for the list aside; empty when there is none.

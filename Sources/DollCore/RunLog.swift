@@ -326,10 +326,13 @@ public enum RunLog {
     }
 
     /// A message with what changes from line to line masked: hex ids (8+ hex digits with a digit
-    /// among them) and numbers become `#`; runs of spaces become one.
+    /// among them) and numbers become `#`; runs of spaces become one. Encrypted lines (written by a
+    /// sealed turn, `SecretBox`) are one kind.
     public static func kindKey(_ msg: String) -> String {
-        msg.replacing(/(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]{8,}/, with: "#")
+        if SecretBox.isSealed(msg) { return sealedKind }
+        return msg.replacing(/(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]{8,}/, with: "#")
             .replacing(/[0-9]+(\.[0-9]+)?/, with: "#")
             .replacing(/\s+/, with: " ")
     }
+    public static let sealedKind = "（加密的一行）"
 }

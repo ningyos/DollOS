@@ -586,24 +586,33 @@ public final class History: @unchecked Sendable {
         return id.isEmpty ? nil : try entry(id)
     }
 
-    /// The patch of one change (its first commit: against nothing). The encrypted folders' files are
-    /// decrypted in memory and shown whole, each line marked (` `, `-`, `+`), after git's patch of the rest.
+    /// The patch of one change (its first commit: against nothing). The encrypted folders' files, and
+    /// any file stored as a box on either side (her documents written by a sealed turn), are decrypted
+    /// in memory and shown whole, each line marked (` `, `-`, `+`), after git's patch of the rest.
     public func diff(_ rev: String) throws -> String {
         let id = try resolve(rev)
-        let sealed = [secretDir, ownDir].map { "memory/\($0)" }
         let base = ["diff-tree", "--root", "--no-commit-id", "--no-color", "--no-ext-diff", "--no-renames"]
-        var out = String(decoding: try git.run(base + ["-p", id, "--", "."] + sealed.map { ":(exclude)\($0)" }).out, as: UTF8.self)
-        for line in try git.text(base + ["-r", id, "--"] + sealed).split(separator: "\n") {
+        var boxed: [(path: String, old: Substring, new: Substring)] = []
+        for line in try git.text(base + ["-r", id, "--"]).split(separator: "\n") {
             // :100644 100644 <old> <new> M\t<path>
             let parts = line.split(separator: "\t", maxSplits: 1)
             let fields = parts[0].split(separator: " ")
             guard parts.count == 2, fields.count >= 4 else { continue }
             let path = String(parts[1])
+            func sealedBlob(_ blobID: Substring) throws -> Bool {
+                try blobID.contains(where: { $0 != "0" }) && blob(String(blobID)).starts(with: Data(SecretBox.prefix.utf8))
+            }
+            if try isSealed(path) || sealedBlob(fields[2]) || sealedBlob(fields[3]) { boxed.append((path, fields[2], fields[3])) }
+        }
+        var out = String(decoding: try git.run(base + ["-p", id, "--", "."] + boxed.map { ":(exclude,literal)\($0.path)" }).out, as: UTF8.self)
+        for (path, old, new) in boxed {
             func text(_ blobID: Substring) throws -> [String]? {
                 guard blobID.contains(where: { $0 != "0" }) else { return nil }
-                return try box.open(String(decoding: try blob(String(blobID)), as: UTF8.self), place: "\(path) in the history").components(separatedBy: "\n")
+                let raw = String(decoding: try blob(String(blobID)), as: UTF8.self)
+                let plain = SecretBox.isSealed(raw) ? try box.open(raw, place: "\(path) in the history") : raw
+                return plain.components(separatedBy: "\n")
             }
-            out += Self.wholeDiff(path: path, old: try text(fields[2]), new: try text(fields[3]))
+            out += Self.wholeDiff(path: path, old: try text(old), new: try text(new))
         }
         return out
     }
@@ -633,10 +642,16 @@ public final class History: @unchecked Sendable {
     /// A path of an encrypted memory folder (`memory/<secret|own>/…`).
     func isSealed(_ path: String) -> Bool { [secretDir, ownDir].contains { path.hasPrefix("memory/\($0)/") } }
 
-    /// `merge`, with an encrypted folder's file decrypted for it and the result encrypted again.
+    /// `merge`, with an encrypted file (an encrypted folder's, or a document stored as a box on any
+    /// side) decrypted for it and the result encrypted again.
     func mergeFile(path: String, cur: Data, base: Data, other: Data) throws -> Data? {
-        guard isSealed(path) else { return Self.merge(path: path, cur: cur, base: base, other: other) }
-        func open(_ d: Data) throws -> Data { Data(try box.open(String(decoding: d, as: UTF8.self), place: path).utf8) }
+        let prefix = Data(SecretBox.prefix.utf8)
+        guard isSealed(path) || [cur, base, other].contains(where: { $0.starts(with: prefix) }) else {
+            return Self.merge(path: path, cur: cur, base: base, other: other)
+        }
+        func open(_ d: Data) throws -> Data {
+            d.starts(with: prefix) ? Data(try box.open(String(decoding: d, as: UTF8.self), place: path).utf8) : d
+        }
         guard let merged = Self.merge(path: path, cur: try open(cur), base: try open(base), other: try open(other)) else { return nil }
         return Data((try box.seal(String(decoding: merged, as: UTF8.self)) + "\n").utf8)
     }
@@ -862,8 +877,9 @@ extension Doll {
     @discardableResult
     func commitHistory(_ who: HistoryWho, task: String? = nil, what: String, why: String, args: String? = nil,
                        undoes: String? = nil, restores: String? = nil) -> String? {
-        let c = HistoryChange(who: who, task: task, what: what, why: why, args: args, refs: historyRefs, undoes: undoes,
-                              restores: restores, ts: wallClock.now())
+        // A change made while sealing (a turn that saw a secret) keeps its what, never why and args.
+        let c = HistoryChange(who: who, task: task, what: what, why: sealing ? "" : why, args: sealing ? nil : args, refs: historyRefs,
+                              undoes: undoes, restores: restores, ts: wallClock.now())
         do {
             if let e = try history.record(c) {
                 historyRefs = []
@@ -892,14 +908,14 @@ extension Doll {
         for p in paths {
             switch p {
             case "data/ideal-self.md":
-                if drivesConfig.enabled, FileManager.default.fileExists(atPath: idealURL.path) {
-                    ideal = try String(contentsOf: idealURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+                if drivesConfig.enabled, let text = try Concerns.readDocument(idealURL, box: memory.box) {
+                    ideal = String(decoding: text, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 }
-            case "data/ideal-self-log.json": idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
+            case "data/ideal-self-log.json": idealLog = try readDocument(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
             case "data/goals.json":
-                goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
+                goalFile = try readDocument(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
                 goalsChanged()
-            case "data/record.json": recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record") ?? RecordFile()
+            case "data/record.json": recordFile = try readDocument(RecordFile.self, recordURL, what: "record") ?? RecordFile()
             case "data/memory-fixes.json": fixFile = try MemoryFixFile.read(fixesURL, box: memory.box) ?? MemoryFixFile()
             default:
                 // Tools are read from disk at every use; memory and registry files need their index rows.

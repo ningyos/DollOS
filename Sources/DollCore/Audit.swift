@@ -550,10 +550,9 @@ extension Doll {
             }
         }
         for id in a.request.items.map(\.id) + a.request.noSource where !left.contains(id) { try memory.clearAudit(id) }
-        // Memories of an encrypted folder, or source lines of secret events: their texts stay out of
-        // the log, the end notice's words are kept encrypted (2026-11-21).
-        let sealed = a.request.items.contains { sealedFolders.contains(memory.dirName($0.folder)) }
-            || a.request.sources.values.contains { $0.contains("｜秘密]") }
+        // Memories of an encrypted folder, or source lines of secret events (`maintenanceSeals`): their
+        // texts stay out of the log, the end notice's words are kept encrypted (2026-11-21).
+        let sealed = sealing
         if sealed {
             log("INFO", "audit: \(changed.count) changed, \(flagged.count) flagged, \(rejected.count) quotes rejected (secret or encrypted content: texts not logged)")
         } else {

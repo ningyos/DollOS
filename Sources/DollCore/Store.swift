@@ -206,7 +206,9 @@ public struct Event: Sendable, Equatable {
 /// seq, ts, kind, source and flags plain and put text, window and calls into `"box":"dollbox1:…"`
 /// (`SecretBox`, owner 2026-11-21); the footer of such a reply and a compaction summary over such
 /// an event are boxes too. A secret event without a box is plain text that is no longer allowed:
-/// opening the segment fails with its line.
+/// opening the segment fails with its line. Every event a sealed turn appends is sealed (`Doll.sealing`),
+/// and a todo line written for a sealed list is `{"type":"todo","seq":5,"box":"dollbox1:…"}`, the whole
+/// line inside the box.
 ///
 /// Her replies are stored raw (tool call text included) and re-sent byte-identical. Each line is
 /// written and synced before `append` returns, so a crash loses at most the line being written; a
@@ -222,6 +224,8 @@ public final class Timeline {
     public private(set) var todo = TodoState()
     /// The list set aside beside it (`ListAside`, 2026-11-20); nil when there is none.
     public private(set) var todoAside: ListAside?
+    /// The last todo line was stored encrypted (`recordTodo`'s `sealed`).
+    public private(set) var todoSealed = false
     /// Every compaction, oldest first.
     public private(set) var compactions: [Compaction] = []
     /// Every recorded turn by her reply's seq.
@@ -301,6 +305,13 @@ public final class Timeline {
         /// Absent in lines written before 2026-11-20 and when no list is set aside.
         var aside: ListAside?
     }
+    /// A todo line written by a sealed turn (2026-11-21): the whole `TodoLine` as one `SecretBox`.
+    private struct SealedTodoLine: Codable {
+        var type = "todo"
+        var seq: Int64
+        var box: String
+    }
+    private struct BoxProbe: Codable { var box: String? }
     private struct CompactLine: Codable {
         var type = "compact"
         var kind: Compaction.Kind
@@ -448,9 +459,12 @@ public final class Timeline {
                     guard let i = position[f.seq] else { throw StoreError(description: "footer for unknown seq \(f.seq)") }
                     events[i].footer = try opened(f.text, place: place)
                 case "todo":
-                    let t = try Self.decoder.decode(TodoLine.self, from: raw)
+                    let probe = try Self.decoder.decode(BoxProbe.self, from: raw)
+                    let t = try probe.box.map { try Self.decoder.decode(TodoLine.self, from: Data(try key().open($0, place: place).utf8)) }
+                        ?? Self.decoder.decode(TodoLine.self, from: raw)
                     todo = Self.state(t)
                     todoAside = t.aside
+                    todoSealed = probe.box != nil
                 case "compact":
                     let c = try Self.decoder.decode(CompactLine.self, from: raw)
                     compactions.append(Compaction(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq,
@@ -559,14 +573,21 @@ public final class Timeline {
     }
 
     /// Records the todo list after her reply `seq` (or the program's change at the event `seq`),
-    /// with the list set aside beside it (nil: none).
-    public func recordTodo(_ s: TodoState, aside: ListAside?, seq: Int64) throws {
-        try write(TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
-                           rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
-                           plan: s.plan, listRounds: s.listRounds, listStart: s.listStart,
-                           listText: s.listText, estimateCheck: s.estimateCheck, aside: aside))
+    /// with the list set aside beside it (nil: none). `sealed`: the line is one box (its items may
+    /// quote a secret); only `type` and `seq` stay plain.
+    public func recordTodo(_ s: TodoState, aside: ListAside?, seq: Int64, sealed: Bool = false) throws {
+        let line = TodoLine(seq: seq, phase: s.phase, current: s.current, pending: s.pending, startSeq: s.startSeq,
+                            rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
+                            plan: s.plan, listRounds: s.listRounds, listStart: s.listStart,
+                            listText: s.listText, estimateCheck: s.estimateCheck, aside: aside)
+        if sealed {
+            try write(SealedTodoLine(seq: seq, box: try key().seal(String(decoding: try Self.encoder.encode(line), as: UTF8.self))))
+        } else {
+            try write(line)
+        }
         todo = s
         todoAside = aside
+        todoSealed = sealed
     }
 
     /// Records a compaction; requests render its span from then on. Its summary is encrypted when

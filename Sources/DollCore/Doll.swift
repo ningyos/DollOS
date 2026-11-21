@@ -153,6 +153,9 @@ public actor Doll {
     /// The list set aside beside it (`TodoAside.swift`, 2026-11-20): at most one, as the timeline
     /// last recorded it; what was in memory for it (its action list, whom it answers) in `asideMemory`.
     var aside: ListAside?
+    /// The todo lines are stored encrypted: a list written while `sealing` stays sealed while it holds
+    /// anything (its items may quote the secret), across days too.
+    var todoSealed = false
     var asideMemory = ListMemory()
     /// A person's line or a watch wake brought the waiting list back in hand for this turn
     /// (`Doll.drain`); her own list goes back in hand after it unless she took the waiting one up.
@@ -265,6 +268,11 @@ public actor Doll {
     var lastInterrupt: Double?
     /// A turn is running (model call or her tool calls).
     var inTurn = false
+    /// What is being written now derives from secret content (owner, 2026-11-21: anything written by a
+    /// turn that saw secret content is sealed): her documents (`saveDocument`), todo lines, log lines
+    /// and history messages are then stored encrypted or left out. Set by `turn` for a turn whose
+    /// events hold a secret or sealed one, and by a maintenance task over such content while it writes.
+    var sealing = false
     /// The effort of the model call in flight.
     var inflightEffort: String?
     /// `[calendar]` (2026-11-15).
@@ -357,8 +365,10 @@ public actor Doll {
     /// The memory key (`SecretBox`, owner 2026-11-21), after looking at the disk without it: a plain
     /// file in the `secret` or `own` folder, or a secret timeline event stored in plain text, is
     /// plaintext that is no longer allowed and fails the boot with its place. The key is the one in
-    /// `keys` for the data dir (made on first boot); encrypted secrets with no key fail the boot.
-    public static func unlockSecrets(keys: any KeyStore, data: URL, memRoot: URL, memory: MemoryConfig, timeline: URL) throws -> SecretBox {
+    /// `keys` for the data dir (made on first boot); encrypted secrets with no key fail the boot, and
+    /// so do encrypted `documents` (her files written by a sealed turn, `Doll.documents`).
+    public static func unlockSecrets(keys: any KeyStore, data: URL, memRoot: URL, memory: MemoryConfig, timeline: URL,
+                                     documents: [URL] = []) throws -> SecretBox {
         var sealed: String?
         let fm = FileManager.default
         for dir in [memory.secretDir, memory.ownDir] {
@@ -376,8 +386,13 @@ public actor Doll {
             throw SecretBoxError("\(plain) is a secret event stored in plain text; plain secrets are no longer allowed (no conversion: remove it)")
         }
         let account = SecretBox.account(data: data)
-        return try SecretBox.unlock(store: keys, account: account, sealedPlace: sealed ?? scan.sealed)
+        return try SecretBox.unlock(store: keys, account: account,
+                                    sealedPlace: sealed ?? scan.sealed ?? documents.first(where: Concerns.boxed)?.path)
     }
+
+    /// Her single-document files under the data dir, each written whole and sealed whole (`saveDocument`).
+    static let documents = ["concerns.json", "signals.json", "estimates.json", "goals.json", "record.json",
+                            "ideal-self.md", "ideal-self-log.json", "curiosity.json"]
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
@@ -405,7 +420,8 @@ public actor Doll {
         bootReports = data.appending(path: "boot-reports")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timelineDir = data.appending(path: "timeline")
-        let box = try Self.unlockSecrets(keys: keys, data: data, memRoot: memRoot, memory: config.memory, timeline: timelineDir)
+        let box = try Self.unlockSecrets(keys: keys, data: data, memRoot: memRoot, memory: config.memory, timeline: timelineDir,
+                                         documents: Self.documents.map { data.appending(path: $0) })
         timeline = try Timeline(dir: timelineDir, box: box)
         maintenanceURL = data.appending(path: "maintenance.json")
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
@@ -419,9 +435,9 @@ public actor Doll {
         fixFile = try MemoryFixFile.read(fixesURL, box: box) ?? MemoryFixFile()
         auditConfig = config.audit
         toolStore = ToolStore(dir: data.appending(path: "tools"))
-        estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates") ?? EstimateFile()
-        concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns") ?? ConcernFile()
-        let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals")
+        estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates", box: box) ?? EstimateFile()
+        concernFile = try Concerns.read(ConcernFile.self, concernsURL, what: "concerns", box: box) ?? ConcernFile()
+        let signals = try Concerns.read(SignalState.self, signalsURL, what: "signals", box: box)
         drives = signals.map { Drives(config: config.drives, state: $0) } ?? Drives(config: config.drives, now: 0)
         signalsFresh = signals == nil
         goalsConfig = config.goals
@@ -430,10 +446,10 @@ public actor Doll {
         idealURL = data.appending(path: "ideal-self.md")
         idealLogURL = data.appending(path: "ideal-self-log.json")
         curiosityURL = data.appending(path: "curiosity.json")
-        goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
-        recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record") ?? RecordFile()
-        idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
-        curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity") ?? CuriosityFile()
+        goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree", box: box) ?? GoalFile()
+        recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record", box: box) ?? RecordFile()
+        idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log", box: box) ?? IdealLog()
+        curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity", box: box) ?? CuriosityFile()
         agenda = try Agenda(url: data.appending(path: "calendar.json"))
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
                             embedder: embedder, box: box)
@@ -454,6 +470,7 @@ public actor Doll {
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
         aside = timeline.todoAside
+        todoSealed = timeline.todoSealed
         docsDir = core.docs.hasPrefix("/") ? URL(filePath: core.docs) : root.appending(path: core.docs)
         // She reads them in place: a docs folder without its index is a boot error.
         guard FileManager.default.fileExists(atPath: docsDir.appending(path: "README.md").path) else {
@@ -487,8 +504,8 @@ public actor Doll {
         packNames = names
         // The ideal self (phase 2): from its file, else the pack's [identity].ideal (written once).
         if config.drives.enabled {
-            if FileManager.default.fileExists(atPath: idealURL.path) {
-                ideal = try String(contentsOf: idealURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let text = try Concerns.readDocument(idealURL, box: box) {
+                ideal = String(decoding: text, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !ideal.isEmpty else { throw StoreError(description: "\(idealURL.path) is empty") }
             } else {
                 guard case .string(let s)? = pack["identity"]?["ideal"] else {
@@ -530,15 +547,31 @@ public actor Doll {
     func append(_ ev: Event, keepTime: Bool = false) throws -> Event {
         var ev = ev
         if !keepTime { ev.ts = wallClock.now() }
+        // What a sealed turn appends (her tool results quoting the secret, program notices) is stored encrypted.
+        if inTurn, sealing { ev.sealed = true }
         let stored = try timeline.append(ev)
+        // A secret result (her recall of a secret memory) seals the rest of the turn.
+        if inTurn, ev.secret || ev.sealed { sealing = true }
         try today.add(timeline)
         feed.notify(.event)
         return stored
     }
 
-    func log(_ level: String, _ msg: String) {
+    /// A log line; while `sealing`, or when the line carries text of something stored sealed
+    /// (`sealed`: a sealed todo list or document), the whole message is one box (`SecretBox`) in
+    /// stderr, the log file and the test sink: the dashboard's boot reports open it for the owner.
+    func log(_ level: String, _ msg: String, sealed: Bool = false) {
+        let msg = sealing || sealed ? (try? memory.box.seal(msg)) ?? "（加密失敗，這一行沒記）" : msg
         Log.write(level, msg)
         logSink?("\(level) \(msg)")
+    }
+
+    /// Records the todo lists after event `seq`: sealed while `sealing`, and a sealed list stays sealed
+    /// while it holds anything.
+    func recordTodo(seq: Int64) throws {
+        let holds = todo.current != nil || !todo.pending.isEmpty || todo.listText != nil || aside != nil
+        todoSealed = sealing || (todoSealed && holds)
+        try timeline.recordTodo(todo, aside: aside, seq: seq, sealed: todoSealed)
     }
 
     // boot -------------------------------------------------------------------
@@ -719,8 +752,8 @@ public actor Doll {
            batch.contains(where: { $0.speaker != nil || $0.kind == .watch }) {
             swapAside()
             swappedForLine = true
-            try timeline.recordTodo(todo, aside: aside, seq: last.seq!)
-            log("INFO", "todo: 「\(todo.current ?? "")」等待中 back in hand for event \(last.seq!); 「\(aside?.todo.current ?? "")」set aside")
+            try recordTodo(seq: last.seq!)
+            log("INFO", "todo: 「\(todo.current ?? "")」等待中 back in hand for event \(last.seq!); 「\(aside?.todo.current ?? "")」set aside", sealed: todoSealed)
         }
     }
 
@@ -729,7 +762,7 @@ public actor Doll {
     /// are scored as unknown (only logged).
     func shutdown() {
         if todo.phase == .doing || todo.phase == .waiting {
-            log("INFO", "todo: stopping with「\(todo.current ?? "")」\(todo.phase.label)")
+            log("INFO", "todo: stopping with「\(todo.current ?? "")」\(todo.phase.label)", sealed: todoSealed)
             scoreAttached(steps: itemSteps.map(\.line), outcome: "unknown")
         }
         calendarTask?.cancel()
@@ -1099,9 +1132,12 @@ public actor Doll {
     func turn() async throws {
         turnIndex += 1
         inTurn = true
+        // She sees every event of the segment: a secret or sealed one among them seals what this turn writes.
+        sealing = timeline.events.contains { $0.secret || $0.sealed }
         feed.notify(.turn)
         defer {
             inTurn = false
+            sealing = false
             feed.notify(.turn)
         }
         let started = Date().timeIntervalSince1970
@@ -1305,7 +1341,7 @@ public actor Doll {
             takeBackAside()
         } else if !heldForAnswer, todo.phase == .waiting, aside?.todo.phase == .doing {
             swapAside()
-            log("INFO", "turn \(turnIndex): 「\(aside?.todo.current ?? "")」still 等待中; 「\(todo.current ?? "")」back in hand")
+            log("INFO", "turn \(turnIndex): 「\(aside?.todo.current ?? "")」still 等待中; 「\(todo.current ?? "")」back in hand", sealed: todoSealed)
         }
         if !heldForAnswer { swappedForLine = false }
         // The decision point (design C): the list has run `decideAt` rounds and an item is still in
@@ -1315,12 +1351,12 @@ public actor Doll {
             todo.deciding = true
             try append(Event(.memory, .internal, "【該決定了】" + decideText))
             actions.append("decision point")
-            log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at list round \(todo.totalRounds) (item round \(todo.rounds))")
+            log("INFO", "turn \(turnIndex): decision point for「\(todo.current ?? "")」at list round \(todo.totalRounds) (item round \(todo.rounds))", sealed: todoSealed)
         }
         if todo != before || aside != asideBefore {
-            try timeline.recordTodo(todo, aside: aside, seq: stored.seq!)
+            try recordTodo(seq: stored.seq!)
             if todo.phase != before.phase || todo.current != before.current || todo.pending != before.pending {
-                log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)")
+                log("INFO", "turn \(turnIndex): todo \(before.phase.label) → \(todo.phase.label)「\(todo.current ?? "")」 pending \(todo.pending.count)", sealed: todoSealed)
             }
         }
         // Anything kept the program wrote this turn outside her calls (attaching memories may add
@@ -1825,7 +1861,7 @@ public actor Doll {
             if swappedForLine, !heldForAnswer, Self.heldTools.contains(tool), let mine = aside?.todo.current {
                 heldForAnswer = true
                 heldAt = turnIndex
-                log("INFO", "turn \(turnIndex): \(tool) held: 「\(todo.current ?? "")」is in hand for a line, 「\(mine)」aside")
+                log("INFO", "turn \(turnIndex): \(tool) held: 「\(todo.current ?? "")」is in hand for a line, 「\(mine)」aside", sealed: todoSealed)
                 throw ToolError(description: "還沒做：這一回合手上的是等著的「\(todo.current ?? "")」（有人說話了，程式先把它拿回你手上），你自己的「\(mine)」放在旁邊。"
                                 + "他的話就是「\(todo.current ?? "")」要的答案，就再呼叫一次 \(tool)，這次就是給它的；你要做的是「\(mine)」，就呼叫 todo.wait（「\(todo.current ?? "")」繼續等），「\(mine)」就回到你手上。")
             }
@@ -2370,7 +2406,8 @@ public actor Doll {
                                seconds: Int((ts - todo.listStart).rounded()), outcome: outcome.label, cause: cause, evidence: evidence,
                                text: todo.listText, check: todo.estimateCheck)
         estimateFile.records.append(r)
-        try Concerns.write(estimateFile, estimatesURL)
+        // Its list text is the todo's: sealed with it.
+        try saveDocument(estimateFile, estimatesURL, sealed: todoSealed)
         log("INFO", "turn \(turnIndex): estimate recorded: \(plan.estimate) rounds estimated, \(r.rounds) rounds \(r.seconds) s, \(r.outcome)")
         return r
     }

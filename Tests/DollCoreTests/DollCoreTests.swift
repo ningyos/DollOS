@@ -9598,8 +9598,9 @@ private func overwrite(_ id: String, _ text: String?, why: String = "我憑印�
 // secrets at rest (owner, 2026-11-21: `SecretBox.swift`) ----------------------------------------------
 
 /// Where any of `needles` appears in plain bytes under the harness's data dir (memory files, the
-/// timeline, `doll.db` with its WAL, memory-fixes.json, maintenance.json, the history repository's
-/// files) or in any object of the history repository, decompressed by git (`cat-file --batch-all-objects`).
+/// timeline, `doll.db` with its WAL, her documents, boot reports, memory-fixes.json, maintenance.json,
+/// the history repository's files), in any object of the history repository, decompressed by git
+/// (`cat-file --batch-all-objects`), or in her log lines (the sink gets them as written).
 private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     var hits: [String] = []
     let e = FileManager.default.enumerator(at: h.dir, includingPropertiesForKeys: [.isRegularFileKey])!
@@ -9620,6 +9621,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     p.waitUntilExit()
     #expect(p.terminationStatus == 0 && objects.count > 1000)
     for n in needles where objects.range(of: Data(n.utf8)) != nil { hits.append("history object: \(n)") }
+    for n in needles where h.logs.contains(where: { $0.contains(n) }) { hits.append("log: \(n)") }
     return hits
 }
 
@@ -9831,4 +9833,74 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(SecretCheck.read("是") == true && SecretCheck.read(" 否。\n") == false && SecretCheck.read("是！") == true)
     for bad in ["", "是的", "否，沒有", "可能", "yes", "是 否"] { #expect(SecretCheck.read(bad) == nil, "\(bad)") }
     #expect(SecretCheck.isLocked("🔒 x") && SecretCheck.isLocked("🔒️x") && !SecretCheck.isLocked("x 🔒") && !SecretCheck.isLocked(" 🔒"))
+}
+
+// derived texts of a secret turn (owner, 2026-11-21: anything written by a turn that saw secret content is sealed) ---
+
+/// One turn of hers writing every derived text: a concern, a goal and its record entry, a revision of
+/// her ideal self, a todo list, each quoting `s`; then a DM.
+private func derivedTurn(_ s: String) -> Scripted {
+    Scripted("", noteCall("記得主人說的\(s)", "owner"), ("goal.add", [("text", "守住\(s)")]), ("goal.end", [("id", "1"), ("how", "done")]),
+             ("ideal.revise", [("text", "我想好好守住\(s)這種事。"), ("why", "主人說了\(s)"), ("based_on", "主人說\(s)")]),
+             todoSet("把\(s)抄進筆記"), dm("好"))
+}
+
+@Test func aSecretTurnsDerivedWritesAreSealedAndReadBackWhole() async throws {
+    let clock = ManualClock(at("2026-11-21", "10:00"))
+    let h = try await goalsHarness(clock)
+    let d = h.doll
+    let needles = ["Zq7", "河馬"]
+    await d.ownerSaid("我的保險箱密碼是 Zq7-河馬-913", secret: true)
+    try await h.turn(derivedTurn("Zq7-河馬"))
+    #expect(try h.toolResults().suffix(6).allSatisfy { !$0.text.hasPrefix("失敗") })
+    // Nowhere in plain text: concerns, goals, record, ideal self and its log, the todo line, the
+    // commits' why and args, the log.
+    let hits = try plainHits(h, needles)
+    #expect(hits == [])
+    let data = h.dir
+    for name in ["concerns.json", "goals.json", "record.json", "ideal-self.md", "ideal-self-log.json"] {
+        #expect(SecretBox.isSealed(try String(contentsOf: data.appending(path: name), encoding: .utf8)), "\(name)")
+    }
+    let hist = try historyOf(h)
+    let goalCommit = try hist.log(limit: 20).first { $0.what == "goal.add" }!
+    #expect(goalCommit.why.isEmpty && goalCommit.args == nil)
+    // The owner sees them decrypted: the drives and goals pages, the history diff.
+    #expect(await d.dashboardDrives().open.contains { $0.text == "記得主人說的Zq7-河馬" })
+    let goals = await d.dashboardGoals()
+    #expect(goals.nodes.first?.text == "守住Zq7-河馬" && goals.record.first?.text == "守住Zq7-河馬" && goals.ideal == "我想好好守住Zq7-河馬這種事。")
+    #expect(try await d.dashboardHistoryDiff(goalCommit.id).contains("守住Zq7-河馬"))
+    // Her todo list reads back from the timeline.
+    #expect(try h.timeline().todo.current == "把Zq7-河馬抄進筆記")
+    // A later run's boot report built from such a log (a line that quotes the secret): the line stays
+    // a box on disk, the owner reads it.
+    let box = try testBox(h.dir)
+    let sealedLine = try h.logs.first { try $0.hasPrefix("INFO " + SecretBox.prefix) && box.open(String($0.dropFirst(5)), place: "log").contains("Zq7-河馬") }!
+    let logs = logDir()
+    let t0 = at("2026-11-21", "09:00")
+    try seedLog(logs, [start(t0), line(t0 + 1, "WARN", String(sealedLine.dropFirst("INFO ".count)))])
+    // A new process on the same dir boots, reads the sealed files and the sealed todo line.
+    let again = try await Harness(dir: h.dir, clock: clock) { $0.drives.enabled = true }
+    try await again.doll.boot()
+    #expect(await again.doll.todo.current == "把Zq7-河馬抄進筆記")
+    #expect(await again.doll.dashboardDrives().open.contains { $0.text == "記得主人說的Zq7-河馬" })
+    #expect(await again.doll.dashboardGoals().ideal == "我想好好守住Zq7-河馬這種事。")
+    let report = try await again.doll.announceBoot(previous: try RunLog.lastRun(dir: logs))
+    #expect(report.previous?.kinds.map(\.key) == [RunLog.sealedKind])
+    let shown = try await again.doll.dashboardBoots(limit: 1)
+    #expect(shown.first?.previous?.kinds.first?.example.contains("Zq7-河馬") == true)
+    let hitsAgain = try plainHits(again, needles)
+    #expect(hitsAgain == [])
+}
+
+@Test func anOrdinaryTurnsDerivedWritesStayPlain() async throws {
+    let clock = ManualClock(at("2026-11-21", "10:00"))
+    let h = try await goalsHarness(clock)
+    await h.doll.ownerSaid("幫我記一下企鵝的事")
+    try await h.turn(derivedTurn("Kx9-企鵝"))
+    let hits = try plainHits(h, ["Kx9-企鵝"])
+    for place in ["concerns.json", "goals.json", "record.json", "ideal-self.md", "ideal-self-log.json", "timeline/", "history object", "log:"] {
+        #expect(hits.contains { $0.contains(place) }, "\(place)")
+    }
+    let goalCommit = try historyOf(h).log(limit: 20).first { $0.what == "goal.add" }!
+    #expect(goalCommit.args?.contains("Kx9-企鵝") == true)
 }

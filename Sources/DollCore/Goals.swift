@@ -151,9 +151,9 @@ enum Goals {
 extension Doll {
     // storage ----------------------------------------------------------------------------------------
 
-    func saveGoals() throws { try Concerns.write(goalFile, goalsURL) }
-    func saveRecord() throws { try Concerns.write(recordFile, recordURL) }
-    func saveCuriosity() throws { try Concerns.write(curiosity, curiosityURL) }
+    func saveGoals() throws { try saveDocument(goalFile, goalsURL) }
+    func saveRecord() throws { try saveDocument(recordFile, recordURL) }
+    func saveCuriosity() throws { try saveDocument(curiosity, curiosityURL) }
 
     func node(_ id: Int) -> GoalNode? { goalFile.nodes.first { $0.id == id } }
     func openChildren(_ id: Int) -> [GoalNode] { goalFile.nodes.filter { $0.parent == id && $0.ended == nil } }
@@ -240,7 +240,7 @@ extension Doll {
         goalFile.nextId += 1
         goalFile.nodes.append(n)
         try saveGoals()
-        log("INFO", "goals: \(by) added \(nodeLine(n))\(parent.map { " under #\($0)" } ?? "")")
+        log("INFO", "goals: \(by) added \(nodeLine(n))\(parent.map { " under #\($0)" } ?? "")", sealed: Concerns.boxed(goalsURL))
         goalsChanged()
         return n
     }
@@ -253,7 +253,7 @@ extension Doll {
         let old = goalFile.nodes[i].text
         goalFile.nodes[i].text = text
         try saveGoals()
-        log("INFO", "goals: \(by) changed #\(id)「\(old)」→「\(text)」")
+        log("INFO", "goals: \(by) changed #\(id)「\(old)」→「\(text)」", sealed: Concerns.boxed(goalsURL))
         goalsChanged()
         return goalFile.nodes[i]
     }
@@ -283,7 +283,7 @@ extension Doll {
         }
         if how == "drop", let s = goalFile.link?.subgoal, ids.contains(s) { goalFile.link?.subgoal = nil }
         try saveGoals()
-        log("INFO", "goals: \(by) \(how) \(nodeLine(n))\(ids.count > 1 ? " and \(ids.count - 1) under it" : "")")
+        log("INFO", "goals: \(by) \(how) \(nodeLine(n))\(ids.count > 1 ? " and \(ids.count - 1) under it" : "")", sealed: Concerns.boxed(goalsURL))
         if how == "done" {
             let amount = n.level == .goal ? goalsConfig.goalDrive : n.level == .subgoal ? goalsConfig.subgoalDrive : goalsConfig.stepDrive
             try achieve(kind: n.level == .goal ? "goal" : n.level == .subgoal ? "subgoal" : "step", text: n.text, node: n.id, amount: amount)
@@ -471,7 +471,7 @@ extension Doll {
         recordFile.nextId += 1
         recordFile.entries.append(e)
         try saveRecord()
-        log("INFO", "record: #\(e.id) \(kind)「\(text)」")
+        log("INFO", "record: #\(e.id) \(kind)「\(text)」", sealed: Concerns.boxed(recordURL))
         moveDrive(e.given, cause: "做完\(recordLabel(kind))：\(text)")
         return e
     }
@@ -521,8 +521,8 @@ extension Doll {
         var log2 = idealLog
         log2.nextId += 1
         log2.revisions.append(r)
-        try Data((text + "\n").utf8).write(to: idealURL, options: .atomic)
-        try Concerns.write(log2, idealLogURL)
+        try Concerns.writeDocument(Data((text + "\n").utf8), idealURL, box: sealKey(idealURL))
+        try saveDocument(log2, idealLogURL)
         idealLog = log2
         ideal = text
         log("INFO", "ideal: revision #\(r.id) by \(by): \(why)")
@@ -597,15 +597,25 @@ extension Doll {
 
     // the owner's edits (dashboard) ----------------------------------------------------------------------
 
-    /// A no-turn notice: she is told of the owner's edit in her next turn.
+    /// A no-turn notice: she is told of the owner's edit in her next turn (stored encrypted while `sealing`).
     func toldOwnerEdit(_ text: String) {
-        do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "goals: owner-edit notice not written: \(error)") }
+        do { try notice(Event(.memory, .internal, text, sealed: sealing)) } catch { log("ERROR", "goals: owner-edit notice not written: \(error)") }
+    }
+
+    /// The owner's edit of a document stored sealed derives from it: its writes are sealed too.
+    func sealedEdit<T>(_ url: URL, _ edit: () throws -> T) rethrows -> T {
+        let was = sealing
+        sealing = was || Concerns.boxed(url)
+        defer { sealing = was }
+        return try edit()
     }
 
     public func dashboardIdealEdit(text: String) throws {
-        try reviseIdeal(text, by: "owner", why: "主人在儀表板改的", basedOn: "")
-        commitHistory(.owner, what: "改想成為的樣子", why: "主人在儀表板改的")
-        toldOwnerEdit("【主人改了你想成為的樣子】現在是：\(ideal)")
+        try sealedEdit(idealURL) {
+            try reviseIdeal(text, by: "owner", why: "主人在儀表板改的", basedOn: "")
+            commitHistory(.owner, what: "改想成為的樣子", why: "主人在儀表板改的")
+            toldOwnerEdit("【主人改了你想成為的樣子】現在是：\(ideal)")
+        }
     }
 
     /// The revision's button: a shortcut to undoing the change that made it in the history (she is
@@ -616,27 +626,30 @@ extension Doll {
     }
 
     public func dashboardGoalEdit(_ op: String, _ q: [String: String]) throws -> GoalNode {
-        let id = q["id"].flatMap { Int($0) }, parent = q["parent"].flatMap { Int($0) }
-        let n: GoalNode
-        switch op {
-        case "add": n = try goalAdd(q["text"] ?? "", parent: parent, by: "owner")
-        case "change":
-            guard let id else { throw ToolError(description: "id needed") }
-            n = try goalChange(id, q["text"] ?? "", by: "owner")
-        case "done", "drop":
-            guard let id else { throw ToolError(description: "id needed") }
-            n = try goalEnd(id, how: op, by: "owner")
-        default: throw ToolError(description: "unknown op \(op)")
+        try sealedEdit(goalsURL) {
+            let id = q["id"].flatMap { Int($0) }, parent = q["parent"].flatMap { Int($0) }
+            let n: GoalNode
+            switch op {
+            case "add": n = try goalAdd(q["text"] ?? "", parent: parent, by: "owner")
+            case "change":
+                guard let id else { throw ToolError(description: "id needed") }
+                n = try goalChange(id, q["text"] ?? "", by: "owner")
+            case "done", "drop":
+                guard let id else { throw ToolError(description: "id needed") }
+                n = try goalEnd(id, how: op, by: "owner")
+            default: throw ToolError(description: "unknown op \(op)")
+            }
+            let what = switch op {
+            case "add": "加了 \(nodeLine(n))"
+            case "change": "把 #\(n.id) 改成「\(n.text)」"
+            case "done": "把 \(nodeLine(n)) 記成做完了"
+            default: "放下了 \(nodeLine(n))"
+            }
+            // A sealed tree's texts stay out of the commit message: the op and the id only.
+            commitHistory(.owner, what: "目標樹：" + (sealing ? "\(op) #\(n.id)" : what), why: "主人在儀表板改的")
+            toldOwnerEdit("【主人改了你的目標樹】他\(what)。整棵樹用 goal.list 看。")
+            return n
         }
-        let what = switch op {
-        case "add": "加了 \(nodeLine(n))"
-        case "change": "把 #\(n.id) 改成「\(n.text)」"
-        case "done": "把 \(nodeLine(n)) 記成做完了"
-        default: "放下了 \(nodeLine(n))"
-        }
-        commitHistory(.owner, what: "目標樹：\(what)", why: "主人在儀表板改的")
-        toldOwnerEdit("【主人改了你的目標樹】他\(what)。整棵樹用 goal.list 看。")
-        return n
     }
 
     public func dashboardEvaluate(_ id: Int, _ kind: String) throws -> RecordEntry {
@@ -646,9 +659,11 @@ extension Doll {
         case "none": nil
         default: throw ToolError(description: "kind is good, bad or none")
         }
-        let e = try evaluate(id, good: good, owner: true, quote: nil)
-        if let good { toldOwnerEdit("【主人的評價】你做完的「\(e.text)」（紀錄 #\(e.id)），主人評\(good ? "做得好" : "不對")。") }
-        commitHistory(.owner, what: "評價紀錄 #\(e.id)：\(kind)", why: "主人在儀表板評的")
+        let e = try sealedEdit(recordURL) { try evaluate(id, good: good, owner: true, quote: nil) }
+        sealedEdit(recordURL) {
+            if let good { toldOwnerEdit("【主人的評價】你做完的「\(e.text)」（紀錄 #\(e.id)），主人評\(good ? "做得好" : "不對")。") }
+            commitHistory(.owner, what: "評價紀錄 #\(e.id)：\(kind)", why: "主人在儀表板評的")
+        }
         return e
     }
 

@@ -244,7 +244,7 @@ extension Doll {
         if maintenanceIdle { return startMaintenance(forced: false) }
         let limit = busyLimitAt()!
         if now >= limit, !inTurn, queue.isEmpty {
-            log("INFO", "maintenance: busy \(maintenanceConfig.busyLimitHours) h since due (「\(todo.current ?? "")」\(todo.phase.label)); starts now, the todo kept")
+            log("INFO", "maintenance: busy \(maintenanceConfig.busyLimitHours) h since due (「\(todo.current ?? "")」\(todo.phase.label)); starts now, the todo kept", sealed: todoSealed)
             return startMaintenance(forced: true)
         }
         if now < limit { armMaintenanceTimer(limit) }
@@ -305,7 +305,12 @@ extension Doll {
                     log("INFO", "maintenance: \(t.rawValue) prepared after it was interrupted; discarded, nothing written")
                     return
                 }
-                let d = try maintenanceCommit(work)
+                // A task over secret or sealed content writes its results sealed (documents, log, history).
+                let was = sealing
+                sealing = was || maintenanceSeals(work)
+                defer { sealing = was }
+                var d = try maintenanceCommit(work)
+                d.sealed = d.sealed || sealing
                 commitHistory(.maintenance, task: t.rawValue, what: t.label, why: String(d.log.prefix(300)))
                 done = d
                 maintenanceState.done.append(t.rawValue)
@@ -365,7 +370,7 @@ extension Doll {
                     a.todo.startSeq = ev.seq!
                     return a
                 }
-                try timeline.recordTodo(k, aside: aside, seq: ev.seq!)
+                try recordTodo(seq: ev.seq!)
             }
         } catch { log("ERROR", "maintenance: end notice not written: \(error)") }
         log("INFO", "maintenance: ended; done \(ended.done), failed \(Array(ended.failed.keys))")
@@ -426,12 +431,24 @@ extension Doll {
             // Program notices that came after the request was gathered (the owner's calendar
             // edits meanwhile) move to the new day.
             for ev in old.events where ev.seq! > request.lastSeq { try append(ev, keepTime: true) }
-            // The summary may tell of the day's secrets or of the encrypted memories it saw: stored encrypted then.
-            let sealed = old.events.contains { $0.secret || $0.sealed } || request.related.contains { sealedFolders.contains($0.folder) }
+            // The summary may tell of the day's secrets or of the encrypted memories it saw: stored
+            // encrypted then (`maintenanceSeals`, the cycle marks it sealed).
             return MaintenanceDone(
                 log: "segment \(result.segment) → \(result.newSegment), \(result.applied.count) applied, request \(result.promptTokens) prompt tokens",
-                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept, keptAside: keptAside,
-                sealed: sealed)
+                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept, keptAside: keptAside)
+        }
+    }
+
+    /// Whether a task's work read secret or sealed content (the day's events, an encrypted memory, a
+    /// document stored sealed), so that everything its commit writes is sealed (`sealing`).
+    func maintenanceSeals(_ w: MaintenanceWork) -> Bool {
+        let day = timeline.events.contains { $0.secret || $0.sealed }
+        switch w {
+        case .concerns: return day || Concerns.boxed(concernsURL)
+        case .review: return day || [goalsURL, recordURL, idealURL].contains(where: Concerns.boxed)
+        case .audit(let a): return a.request.items.contains { sealedFolders.contains(memory.dirName($0.folder)) }
+            || a.request.sources.values.contains { $0.contains("｜秘密]") }
+        case .consolidate(let request, _): return day || request.related.contains { sealedFolders.contains($0.folder) }
         }
     }
 

@@ -82,8 +82,16 @@ extension Doll {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         enc.keyEncodingStrategy = .convertToSnakeCase
-        try enc.encode(r).write(to: file, options: .atomic)
-        try append(Event(.memory, .internal, Self.bootNotice + calendar + (r.notice.map { "\n" + $0 } ?? "") + (found.map { "\n" + $0 + "。" } ?? "")))
+        // A sealed todo list (`todoSealed`) named in the report: its text and the notice stay boxes on disk.
+        let sealedTodo = todoSealed && r.unfinished.first?.hasPrefix("你手上的") == true
+        var stored = r
+        if sealedTodo {
+            stored.unfinished[0] = try memory.box.seal(r.unfinished[0])
+            stored.notice = try r.notice.map { try memory.box.seal($0) }
+        }
+        try enc.encode(stored).write(to: file, options: .atomic)
+        try append(Event(.memory, .internal, Self.bootNotice + calendar + (r.notice.map { "\n" + $0 } ?? "") + (found.map { "\n" + $0 + "。" } ?? ""),
+                         sealed: sealedTodo))
         if r.turn {
             followUp = true
             taskTurn = true
@@ -133,7 +141,9 @@ extension Doll {
             lines.append("- 錯誤 \(e) 種、警告 \(w) 種（同一種＝數字和編號以外都一樣）：")
             for k in p.kinds.prefix(log.reportKinds) {
                 let span = k.count == 1 ? reportTime(k.first) : "\(reportTime(k.first)) 到 \(reportTime(k.last))"
-                lines.append("  \(k.level == "ERROR" ? "錯誤" : "警告") \(k.count) 次（\(span)），例：\(cut(k.example, log.exampleChars))")
+                // A line written by a sealed turn stays a box in the report; she is told only that it is one.
+                let example = SecretBox.isSealed(k.example) ? "（加密的一行，內容只有主人在儀表板看得到）" : cut(k.example, log.exampleChars)
+                lines.append("  \(k.level == "ERROR" ? "錯誤" : "警告") \(k.count) 次（\(span)），例：\(example)")
             }
             if p.kinds.count > log.reportKinds {
                 let left = p.kinds.dropFirst(log.reportKinds)
@@ -145,16 +155,22 @@ extension Doll {
         return lines.joined(separator: "\n")
     }
 
-    /// The latest boot reports, newest first (dashboard).
+    /// The latest boot reports, newest first (dashboard), lines written by a sealed turn opened for the owner.
     public func dashboardBoots(limit: Int) throws -> [BootReport] {
         guard FileManager.default.fileExists(atPath: bootReports.path) else { return [] }
         let names = try FileManager.default.contentsOfDirectory(atPath: bootReports.path).filter { $0.hasSuffix(".json") }.sorted(by: >)
         let dec = JSONDecoder()
         dec.keyDecodingStrategy = .convertFromSnakeCase
         return try names.prefix(limit).map { name in
-            do { return try dec.decode(BootReport.self, from: Data(contentsOf: bootReports.appending(path: name))) } catch {
+            var r: BootReport
+            do { r = try dec.decode(BootReport.self, from: Data(contentsOf: bootReports.appending(path: name))) } catch {
                 throw StoreError(description: "boot report \(name) unreadable: \(error)")
             }
+            func open(_ s: String) throws -> String { SecretBox.isSealed(s) ? try memory.box.open(s, place: "boot report \(name)") : s }
+            for i in r.previous?.kinds.indices ?? 0..<0 { r.previous!.kinds[i].example = try open(r.previous!.kinds[i].example) }
+            r.unfinished = try r.unfinished.map(open)
+            r.notice = try r.notice.map(open)
+            return r
         }
     }
 }
