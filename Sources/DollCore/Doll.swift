@@ -392,7 +392,7 @@ public actor Doll {
 
     /// Her single-document files under the data dir, each written whole and sealed whole (`saveDocument`).
     static let documents = ["concerns.json", "signals.json", "estimates.json", "goals.json", "record.json",
-                            "ideal-self.md", "ideal-self-log.json", "curiosity.json"]
+                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json"]
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
@@ -450,7 +450,7 @@ public actor Doll {
         recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record", box: box) ?? RecordFile()
         idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log", box: box) ?? IdealLog()
         curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity", box: box) ?? CuriosityFile()
-        agenda = try Agenda(url: data.appending(path: "calendar.json"))
+        agenda = try Agenda(url: data.appending(path: "calendar.json"), box: box)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
                             embedder: embedder, box: box)
         historyConfig = config.history
@@ -1513,6 +1513,8 @@ public actor Doll {
                 // chat is open): her result says why and what she can do.
                 let to: Addressee = channel == .dollctl ? .developer : .owner
                 let shot = to == .owner ? ownerShot : nil
+                // Her words go to the log here (a box while `sealing`), not to the console as text.
+                log("INFO", "turn \(turnIndex): \(name) → \(to.label)「\(text)」")
                 if let why = deliver(text, to, shot.map { shots.appending(path: $0) }) {
                     log("ERROR", "turn \(turnIndex): \(name) not delivered: \(why)")
                     let next = switch to {
@@ -1835,6 +1837,7 @@ public actor Doll {
     func askOwner(what: String, where place: String, why: String) throws -> Outcome {
         let text = "【\(name)想先問你】\n要做：\(what)\n在哪裡：\(place)\n為什麼：\(why)"
         let shot = ownerShot
+        log("INFO", "turn \(turnIndex): ask_owner → 主人「\(text)」")
         if let failure = deliver(text, .owner, shot.map { shots.appending(path: $0) }) {
             log("ERROR", "turn \(turnIndex): ask_owner not delivered: \(failure)")
             throw ToolError(description: "主人沒收到：\(failure)。Discord 連上之前問不了；先不要做那件事。")

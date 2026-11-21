@@ -283,15 +283,16 @@ final class Agenda {
         return f
     }
 
-    /// A missing file is an empty calendar; one that does not read is an error naming the problem.
-    init(url: URL) throws {
+    /// A missing file is an empty calendar; one that does not read is an error naming the problem. A
+    /// boxed file (written in a turn that saw a secret, `Doll.sealKey`) is opened with `box`.
+    init(url: URL, box: SecretBox? = nil) throws {
         self.url = url
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        guard let data = try Concerns.readDocument(url, box: box) else {
             file = CalendarFile(firedThrough: nil, nextID: 1, items: [])
             return
         }
         do {
-            file = try JSONDecoder().decode(CalendarFile.self, from: Data(contentsOf: url))
+            file = try JSONDecoder().decode(CalendarFile.self, from: data)
         } catch {
             throw CalendarError(description: "\(url.path): not a calendar file: \(error)")
         }
@@ -332,11 +333,12 @@ final class Agenda {
         }
     }
 
-    func save() throws {
+    /// Written whole: one box when `box` is given (`Doll.sealKey`), else plain.
+    func save(box: SecretBox?) throws {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try enc.encode(file).write(to: url, options: .atomic)
+        try Concerns.writeDocument(try enc.encode(file), url, box: box)
     }
 
     var firedThrough: Double? { file.firedThrough.flatMap { Self.stamp.date(from: $0)?.timeIntervalSince1970 } }
@@ -633,7 +635,7 @@ extension Doll {
         // The owner-sleep span never calls her, so a start of it passing is nothing to list.
         let missed = (agenda.firedThrough.map { agenda.starts(after: $0, through: now) } ?? []).filter { $0.role != Agenda.ownerSleepRole }
         agenda.setFiredThrough(max(now, agenda.firedThrough ?? now))
-        try agenda.save()
+        try agenda.save(box: sealKey(agenda.url))
         calendarCaughtUp = true
         if !missed.isEmpty { log("INFO", "calendar: \(missed.count) start(s) passed while not running, listed in the boot notice") }
         // Its time passed while not running: maintenance is due.
@@ -712,14 +714,17 @@ extension Doll {
         let through = agenda.firedThrough ?? now
         let due = agenda.starts(after: through, through: now)
         agenda.setFiredThrough(max(now, through))
-        try agenda.save()
+        try agenda.save(box: sealKey(agenda.url))
         for o in due {
             if o.role == Agenda.ownerSleepRole {
                 log("INFO", "calendar: #\(o.id) \(o.day) \(o.start!) \(o.title) began (no turn)")
                 continue
             }
             log("INFO", "calendar: #\(o.id) \(o.day) \(o.start!) fired")
-            if o.role == Agenda.maintenanceRole { maintenanceFire() } else { put(Event(.calendar, .internal, Self.fireText(o))) }
+            // A boxed calendar (an item made in a turn that saw a secret): its 【行事曆】 event is stored sealed.
+            if o.role == Agenda.maintenanceRole { maintenanceFire() } else {
+                put(Event(.calendar, .internal, Self.fireText(o), sealed: Concerns.boxed(agenda.url)))
+            }
         }
     }
 
@@ -729,7 +734,7 @@ extension Doll {
         guard ownerSleepConfig.enabled, agenda.item(role: Agenda.ownerSleepRole) == nil else { return }
         agenda.addRole(Agenda.ownerSleepRole, title: Agenda.ownerSleepTitle, day: Day(ts: wallClock.now()),
                        time: TimeOfDay(ownerSleepConfig.start)!, end: TimeOfDay(ownerSleepConfig.end)!)
-        try agenda.save()
+        try agenda.save(box: sealKey(agenda.url))
         log("INFO", "calendar: had no \(Agenda.ownerSleepTitle); added \(ownerSleepConfig.start)–\(ownerSleepConfig.end) (daily)")
     }
 
@@ -756,7 +761,7 @@ extension Doll {
     func calendarEdit(_ r: CalendarRequest, by who: String) throws -> String {
         if calendarCaughtUp { try fireDue() }
         let line = try agenda.apply(r, by: who)
-        try agenda.save()
+        try agenda.save(box: sealKey(agenda.url))
         if let id = r.id, agenda.item(id)?.role == Agenda.maintenanceRole { maintenanceItemChanged() }
         scheduleCalendar()
         feed.notify(.calendar)

@@ -133,7 +133,7 @@ extension Doll {
             added = "\(Agenda.maintenanceTitle) \(maintenanceConfig.time)"
         }
         guard !removed.isEmpty || added != nil else { return }
-        try agenda.save()
+        try agenda.save(box: sealKey(agenda.url))
         if let added { log("INFO", "maintenance: calendar had no \(added)\(removed.isEmpty ? "" : " (it replaces them)"); added (daily)") }
     }
 

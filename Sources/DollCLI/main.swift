@@ -120,7 +120,8 @@ do {
         keys: KeychainKeyStore(service: cfg.memory.keychainService),
         deliver: { text, to, image in
             let failed = a.deliver(text, to: to, image: image)
-            out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
+            // Her words are in the log line before this (a box in a turn that saw a secret), not here.
+            out("[→ \(to.label)] \(text.count) 字" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
             return failed
         })
     doll = d

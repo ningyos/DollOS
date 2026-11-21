@@ -9904,3 +9904,24 @@ private func derivedTurn(_ s: String) -> Scripted {
     let goalCommit = try historyOf(h).log(limit: 20).first { $0.what == "goal.add" }!
     #expect(goalCommit.args?.contains("Kx9-企鵝") == true)
 }
+
+@Test func aCalendarItemMadeInASecretTurnIsStoredBoxedAndFiresSealed() async throws {
+    let clock = ManualClock(at("2026-11-16", "08:00"))
+    let h = try await Harness(clock: clock)
+    await h.doll.ownerSaid("🔒 我下週三要去榮總做胃鏡", secret: true)
+    // (Two long public memories too: the disk scan wants a history with objects in it.)
+    try await h.turn(Scripted("", ("calendar.add", [("title", "榮總做胃鏡"), ("date", "2026-11-16"), ("start", "09:00")]), dm("記好了"),
+                              remember([("主人週末常常去家附近那家咖哩店，點豬排咖哩加一顆半熟蛋，配一杯冰紅茶；吃完會去河濱公園散步一圈，看看有沒有人在放風箏，再慢慢走回家洗澡看書", false),
+                                        ("主人的貓叫麻糬，早上六點會跳上床踩他的臉討飯吃，吃完罐頭會在窗台曬太陽，下午兩點左右喜歡把桌上的筆一枝一枝推下去，晚上則躲在紙箱裡睡覺", false)])))
+    let url = h.dir.appending(path: "calendar.json")
+    #expect(Concerns.boxed(url))
+    #expect(try plainHits(h, ["榮總", "胃鏡"]) == [])
+    // A new process reads it back; its start fires a sealed 【行事曆】 event.
+    let again = try await Harness(dir: h.dir, clock: clock)
+    #expect(try Agenda(url: url, box: testBox(h.dir)).item(1)?.title == "榮總做胃鏡")
+    _ = try await again.doll.calendarCatchUp()
+    clock.set(at("2026-11-16", "09:01"))
+    try await again.doll.fireDue()
+    let fired = await again.doll.queue.last!
+    #expect(fired.kind == .calendar && fired.sealed && fired.text.contains("榮總做胃鏡"))
+}
