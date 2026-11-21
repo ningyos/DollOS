@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  swift:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The newest Xcode installed on the image (the image's Xcodes are /Applications/Xcode_<version>.app;
+      # see actions/runner-images images/macos/macos-26-arm64-Readme.md). Betas and release candidates
+      # are skipped. The package needs Swift 6.2 or later: fail here, clearly, if that Xcode has less.
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          xcode=$(ls -d /Applications/Xcode_*.app | grep -v -i -E 'beta|rc' | python3 -c '
+          import re, sys
+          apps = [l.strip() for l in sys.stdin if re.fullmatch(r"/Applications/Xcode_[0-9.]+\.app", l.strip())]
+          if not apps: sys.exit("no /Applications/Xcode_<version>.app on this image")
+          print(max(apps, key=lambda a: [int(p) for p in re.findall(r"[0-9]+", a)]))')
+          echo "Selecting $xcode"
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          swift --version
+          swift --version 2>&1 | python3 -c '
+          import re, sys
+          m = re.search(r"Swift version ([0-9]+)\.([0-9]+)", sys.stdin.read())
+          if not m or (int(m[1]), int(m[2])) < (6, 2): sys.exit("Swift 6.2 or later is required (Package.swift tools version)")'
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-
+
+      # The tests about meaning load the real memory embedding model (Qwen3-Embedding-0.6B, ~1.2 GB).
+      - name: Cache Hugging Face models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: huggingface-${{ runner.os }}-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  bridge:
+    runs-on: macos-26
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # For the real Opus round trip (the test is skipped without it); no Discord connection is made.
+      - name: Install libopus
+        run: brew install opus
+      - name: Test
+        run: uv run --frozen pytest -q
