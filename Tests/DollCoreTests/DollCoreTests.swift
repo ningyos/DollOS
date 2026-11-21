@@ -6920,8 +6920,9 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let g = try await d.goalAdd("寫程式練得更紮實", parent: nil, by: "her")
     await #expect { try await d.goalBlockedTool(id: 99, missing: "資料") } throws: { "\($0)".contains("沒有還開著的 #99") }
     await #expect { try await d.goalBlockedTool(id: g.id, missing: " ") } throws: { "\($0)".contains("missing 是空的") }
-    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
-    #expect(await d.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目"))
+    // Her own 「。」 at the end is not doubled (real check, 2026-11-22).
+    #expect(try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目。").text.hasPrefix("記下了：#\(g.id)〔目標〕寫程式練得更紮實 現在做不了，缺：主人還沒給題目。它下次"))
+    #expect(await d.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目）"))
     let b = try await goalsHarness(clock, dir: h.dir)
     #expect(await b.doll.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目"))
     // The owner changes it: gone.

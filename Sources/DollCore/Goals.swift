@@ -383,7 +383,9 @@ extension Doll {
     /// program asks her for a sub-goal, a step or a step done. Not a failure: no todo, no 壓力; her
     /// own-thing episode ends at the next idle moment as any other (`endOwnEpisode`).
     func goalBlockedTool(id: Int, missing: String) throws -> Outcome {
-        let m = missing.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Her sentence's own 「。」 goes: the result and the note put theirs after it (real check,
+        // 2026-11-22: 「…先問主人。。它下次冒出來…」).
+        let m = missing.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "。")))
         guard !m.isEmpty else { throw ToolError(description: "missing 是空的：寫缺的是什麼") }
         guard m.count <= goalsConfig.textMaxChars else {
             throw ToolError(description: "太長了（\(m.count) 字，最多 \(goalsConfig.textMaxChars)）：寫缺的那樣東西就好")
