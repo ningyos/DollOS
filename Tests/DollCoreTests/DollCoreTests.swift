@@ -9780,6 +9780,10 @@ private func overwrite(_ id: String, _ text: String?, why: String = "我憑印�
 /// the history repository's files), in any object of the history repository, decompressed by git
 /// (`cat-file --batch-all-objects`), or in her log lines (the sink gets them as written).
 private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
+    // A needle made only of base64 characters can turn up inside ciphertext by chance (2026-11-22:
+    // 「Zq7」 matched about one run in four): each needle needs a character base64 never writes.
+    let base64 = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+    precondition(needles.allSatisfy { $0.contains { !base64.contains($0) } }, "plainHits: \(needles) could match ciphertext")
     var hits: [String] = []
     let e = FileManager.default.enumerator(at: h.dir, includingPropertiesForKeys: [.isRegularFileKey])!
     for case let url as URL in e {
@@ -9806,7 +9810,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
 @Test func secretAndOwnMemoriesReachTheDiskOnlyEncryptedAndStillWorkEverywhere() async throws {
     let h = try await Harness()
     let d = h.doll
-    let needles = ["Zq7", "河馬", "Kx9", "企鵝", "保險箱"]
+    let needles = ["Zq7-", "河馬", "Kx9-", "企鵝", "保險箱"]
     // The owner's secret, remembered into secret; her own password into own.
     await d.ownerSaid("我的保險箱密碼是 Zq7-河馬-913", secret: true)
     try await h.turn(Scripted("", remember(folders: [("主人的保險箱密碼是 Zq7-河馬-913", "secret", nil), ("我的信箱密碼是 Kx9-企鵝-42", "own", nil)])))
@@ -9831,12 +9835,12 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(diff.contains("+主人的保險箱密碼是 Zq7-河馬-914") && diff.contains("memory/secret/\(new).md"))
     #expect(fixCommit.why.isEmpty && fixCommit.args == nil)
     // Nowhere in plain text: files, sqlite with its WAL, timeline, history objects.
-    #expect(try plainHits(h, needles) == [])
+    do { let hits = try plainHits(h, needles); #expect(hits == [], "\(hits)") }
     // His undo of the correction: the old one is back, still encrypted.
     try await d.dashboardHistoryUndo(fixCommit.id)
     let files = try memoryFilesByID(h)
     #expect(files[old]!.file.retired == nil && files[old]!.folder == "secret" && files[new] == nil)
-    #expect(try plainHits(h, needles) == [])
+    do { let hits = try plainHits(h, needles); #expect(hits == [], "\(hits)") }
     // A new process: the index of the encrypted folders is rebuilt in memory, by text and by meaning.
     let again = try await Harness(dir: h.dir)
     try await again.doll.boot()
@@ -9854,7 +9858,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(try channels("河馬-913").contains(.fts))
     let byMeaning = try channels("密碼保險")
     #expect(byMeaning == [.embedding])
-    #expect(try plainHits(again, needles) == [])
+    do { let hits = try plainHits(again, needles); #expect(hits == [], "\(hits)") }
 }
 
 @Test func theAuditAndTheConsolidationOfASecretMemoryLeaveNoPlainText() async throws {
@@ -9882,7 +9886,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(notice.sealed && notice.text.contains("改成「主人的保險箱密碼是 Zq7-河馬-915」") && notice.text.contains("今天主人說保險箱密碼是 Zq7-河馬-915"))
     #expect(try fixesFile(h).items.map(\.sealed) == [true])
     // Not on disk, not in the history, not in the log.
-    #expect(try plainHits(h, ["Zq7", "河馬", "保險箱"]) == [])
+    do { let hits = try plainHits(h, ["Zq7-", "河馬", "保險箱"]); #expect(hits == [], "\(hits)") }
     #expect(h.logs.filter { $0.contains("河馬") } == [])
 }
 
@@ -9984,9 +9988,9 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(try h.events().filter { $0.kind == .owner }.map(\.text)
             == ["我的銀行密碼是 Pw8-犀牛-552", "🔒 保險箱在衣櫃第二層", "今天晚餐吃咖哩飯", "我下個月要去看身心科", "我的提款卡密碼是 7391"])
     // On disk (files, sqlite, timeline, history objects) and in the log: only the ordinary line.
-    let secrets = ["Pw8", "犀牛", "保險箱", "衣櫃", "身心科", "7391"]
-    #expect(try plainHits(h, secrets) == [])
-    #expect(h.logs.filter { l in secrets.contains { l.contains($0) } } == [])
+    let secrets = ["Pw8-", "犀牛", "保險箱", "衣櫃", "身心科", " 7391"]
+    do { let hits = try plainHits(h, secrets); #expect(hits == [], "\(hits)") }
+    do { let leaked = h.logs.filter { l in secrets.contains { l.contains($0) } }; #expect(leaked == [], "\(leaked)") }
     let ordinary = try plainHits(h, ["咖哩飯"])
     #expect(ordinary.contains { $0.contains("/timeline/") } && ordinary.contains { $0.contains("/memory/public/") })
 }
@@ -10027,7 +10031,7 @@ private func derivedTurn(_ s: String) -> Scripted {
     let clock = ManualClock(at("2026-11-21", "10:00"))
     let h = try await goalsHarness(clock)
     let d = h.doll
-    let needles = ["Zq7", "河馬"]
+    let needles = ["Zq7-", "河馬"]
     await d.ownerSaid("我的保險箱密碼是 Zq7-河馬-913", secret: true)
     try await h.turn(derivedTurn("Zq7-河馬"))
     #expect(try h.toolResults().suffix(6).allSatisfy { !$0.text.hasPrefix("失敗") })
@@ -10093,7 +10097,7 @@ private func derivedTurn(_ s: String) -> Scripted {
                                         ("主人的貓叫麻糬，早上六點會跳上床踩他的臉討飯吃，吃完罐頭會在窗台曬太陽，下午兩點左右喜歡把桌上的筆一枝一枝推下去，晚上則躲在紙箱裡睡覺", false)])))
     let url = h.dir.appending(path: "calendar.json")
     #expect(Concerns.boxed(url))
-    #expect(try plainHits(h, ["榮總", "胃鏡"]) == [])
+    do { let hits = try plainHits(h, ["榮總", "胃鏡"]); #expect(hits == [], "\(hits)") }
     // A new process reads it back; its start fires a sealed 【行事曆】 event.
     let again = try await Harness(dir: h.dir, clock: clock)
     #expect(try Agenda(url: url, box: testBox(h.dir)).item(1)?.title == "榮總做胃鏡")
