@@ -1,7 +1,7 @@
 import Foundation
 
 /// Her claims about her own recent actions, checked before a line of hers goes to a person
-/// (2026-11-22, `[claims]`, dolldocs/claims.md). The m11 soak: at 11-20 09:15 she wrote
+/// (2026-11-22, `[claims]`, dolldocs/tool-failures.md). The m11 soak: at 11-20 09:15 she wrote
 /// 「我剛查過行事曆確認過了」 with no calendar call since the owner's question (her last
 /// `calendar.list` was at 08:40), and at 14:00 「我順手又去查了下週日程」 in a reply whose calls were
 /// `owner.feedback` and `discord.dm`. A claim with no matching action of hers since the line she
