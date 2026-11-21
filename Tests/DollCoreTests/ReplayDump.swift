@@ -89,12 +89,17 @@ import Testing
         print("\(label) \(String(format: "%.1f", Date().timeIntervalSince(t0)))s prompt=\(r.usage.promptTokens) \(r.usage.stopLine)\n\(r.content)\nEND_\(label)")
         return r.content
     }
+    // OWNWORDS_CONCERNS_N: only the concern extraction, that many times (a single run may note nothing).
+    let only = Int(ProcessInfo.processInfo.environment["OWNWORDS_CONCERNS_N"] ?? "")
     let c = ConcernExtraction.gather(events: events, open: [], cap: cfg.drives.maintenanceConcernsMax, now: now)
-    let reply = try await ask("CONCERNS", c.messages, effort: cfg.consolidate.effort)
     let (others, own) = ConcernExtraction.sources(events)
-    let plan = try? ConcernExtraction.parse(reply, open: [], ownerLines: ["我回來了"], others: others, own: own,
-                                            cap: cfg.drives.maintenanceConcernsMax, room: 20)
-    print("CONCERNS_KEPT \(plan.map { $0.notes.map { "\($0.about.rawValue)|\($0.text)" } } ?? ["PARSE FAILED"]) dropped=\(plan?.dropped ?? [])")
+    for k in 0..<(only ?? 1) {
+        let reply = try await ask("CONCERNS\(k)", c.messages, effort: cfg.consolidate.effort)
+        let plan = try? ConcernExtraction.parse(reply, open: [], ownerLines: ["我回來了"], others: others, own: own,
+                                                cap: cfg.drives.maintenanceConcernsMax, room: 20)
+        print("CONCERNS_KEPT\(k) \(plan.map { $0.notes.map { "\($0.about.rawValue)|\($0.text)" } } ?? ["PARSE FAILED"]) dropped=\(plan?.dropped ?? [])")
+    }
+    if only != nil { return }
     _ = try await ask("CONSOLIDATION", [ChatMessage(role: "system", content: Consolidation.instructions),
                                         ChatMessage(role: "user", content: Consolidation.input(segment: "2026-11-20", tasks: tasks, related: [], registry: []))],
                       effort: cfg.consolidate.effort)
