@@ -166,7 +166,12 @@ public final class LocalAPI: @unchecked Sendable {
             }
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return .error(400, "empty text") }
-            if owner { await doll.ownerLine(text) } else { await doll.developerSaid(text) }
+            // His line is on disk (sealed) before this answers (2026-11-22); not written: a 500, and the bridge says so.
+            if owner {
+                do { try await doll.ownerLine(text) } catch { return .error(500, "owner line not recorded: \(error)") }
+            } else {
+                await doll.developerSaid(text)
+            }
             return .json(["queued": true])
         case ("GET", "/api/listen"):
             return .error(400, "/api/listen is a stream")

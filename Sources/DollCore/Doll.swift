@@ -119,6 +119,9 @@ public actor Doll {
     /// Owner lines being checked for a secret (`ownerLine`), not queued yet; the last check in the chain.
     var heldLines = 0
     var lineChecks: Task<Void, Never>?
+    /// His lines on disk until they are in the timeline (`Inbox.swift`), and the last file number given.
+    let inbox: Inbox
+    var inboxSerial = 0
     var waiter: CheckedContinuation<Bool, Never>?
     var stopped = false
     var inflight: Task<ModelReply, any Error>?
@@ -423,6 +426,7 @@ public actor Doll {
         let box = try Self.unlockSecrets(keys: keys, data: data, memRoot: memRoot, memory: config.memory, timeline: timelineDir,
                                          documents: Self.documents.map { data.appending(path: $0) })
         timeline = try Timeline(dir: timelineDir, box: box)
+        inbox = try Inbox(dir: data.appending(path: "inbox"), box: box)
         maintenanceURL = data.appending(path: "maintenance.json")
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
@@ -586,6 +590,12 @@ public actor Doll {
         // The dashboard shows a lost model connection while her requests wait (`connectionLine`).
         for m in [model, maintenanceModel] { m.connection?.onChange { [feed] in feed.notify(.connection) } }
         try await model.check()
+        // His lines received by the last process and not yet in her timeline: checked again, queued in order.
+        let pending = try inbox.pending()
+        if !pending.isEmpty {
+            log("INFO", "owner lines: \(pending.count) received before the last exit and not in the timeline; checked again and queued")
+            for p in pending { hold(p.line.text, voice: p.line.voice, channel: p.line.channel, inbox: p.name) }
+        }
     }
 
     // inputs -----------------------------------------------------------------
@@ -602,13 +612,15 @@ public actor Doll {
 
     /// Owner voice is the only input that cancels a model call in flight (3.1); the event is
     /// queued first so the rerun sees it. During maintenance the line interrupts it first (`Maintenance.swift`).
-    public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM) {
+    /// `inbox`: the line's file in `Inbox`, removed once its event is in the timeline.
+    public func ownerSaid(_ text: String, secret: Bool = false, voice: Bool = false, channel: Channel = .discordDM, inbox: String? = nil) {
         interruptMaintenance(by: "主人")
         lastSpoke = wallClock.now()
         ownerLastLine = lastSpoke
         signal(.ownerTalk, secret ? "（一句秘密，不記）" : "「\(text.prefix(30))」")
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
+        ev.inbox = inbox
         put(ev)
         if voice { inflight?.cancel() }
     }
@@ -743,6 +755,7 @@ public actor Doll {
         var last: Event?
         for ev in batch {
             last = try append(ev, keepTime: true)
+            if let name = ev.inbox { try inbox.remove(name) }
         }
         if batch.contains(where: { $0.speaker != nil || $0.kind == .watch || Concerns.isOwnWander($0) }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }

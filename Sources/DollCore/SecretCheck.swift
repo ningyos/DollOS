@@ -92,27 +92,37 @@ public enum SecretCheck {
 }
 
 extension Doll {
-    /// The owner's line from the bridge (Discord text) or his voice (a transcript): checked first
-    /// (`SecretCheck`), then queued (`ownerSaid`). Returns at once with the check's task (the bridge's
-    /// request is answered without waiting); the line is held until the check returns: nothing of it
-    /// is written before, and lines are checked and queued in the order they came. She is not
-    /// stopped meanwhile (a turn in flight goes on; the check waits behind it on a one-slot server),
-    /// except by his voice: it cancels her call at once, and the rerun waits for the held lines.
+    /// The owner's line from the bridge (Discord text) or his voice (a transcript): written to the
+    /// inbox first (`Inbox.swift`, sealed; an error when it cannot be, and the caller says so), then
+    /// checked (`SecretCheck`), then queued (`ownerSaid`). Returns once it is on disk, with the check's
+    /// task (the bridge's request is answered then, without waiting for the check); the line is held
+    /// until the check returns: nothing of it is written in plain text before, and lines are checked
+    /// and queued in the order they came. She is not stopped meanwhile (a turn in flight goes on; the
+    /// check waits behind it on a one-slot server), except by his voice: it cancels her call at once,
+    /// and the rerun waits for the held lines.
     @discardableResult
-    public func ownerLine(_ text: String, voice: Bool = false, channel: Channel = .discordDM) -> Task<Void, Never> {
+    public func ownerLine(_ text: String, voice: Bool = false, channel: Channel = .discordDM) throws -> Task<Void, Never> {
+        inboxSerial += 1
+        let name = try inbox.put(Inbox.Line(text: text, voice: voice, channel: channel, received: wallClock.now()), serial: inboxSerial)
+        return hold(text, voice: voice, channel: channel, inbox: name)
+    }
+
+    /// Holds a line (on disk in the inbox) until its check returns, behind the lines before it.
+    @discardableResult
+    func hold(_ text: String, voice: Bool, channel: Channel, inbox name: String) -> Task<Void, Never> {
         interruptMaintenance(by: "主人")
         if voice { inflight?.cancel() }
         heldLines += 1
         let previous = lineChecks
         let task = Task {
             await previous?.value
-            await self.checkAndQueue(text, voice: voice, channel: channel)
+            await self.checkAndQueue(text, voice: voice, channel: channel, inbox: name)
         }
         lineChecks = task
         return task
     }
 
-    func checkAndQueue(_ text: String, voice: Bool, channel: Channel) async {
+    func checkAndQueue(_ text: String, voice: Bool, channel: Channel, inbox name: String) async {
         let t0 = ContinuousClock.now
         let verdict = await SecretCheck.ask(text, model: model, within: llm.timeoutS, clock: wallClock)
         let ms = (ContinuousClock.now - t0).components
@@ -124,7 +134,7 @@ extension Doll {
         case .failed(let why): log("WARN", "owner line: the secret check failed after \(took) ms (\(why)); the line is treated as secret")
         }
         heldLines -= 1
-        ownerSaid(text, secret: verdict.isSecret, voice: voice, channel: channel)
+        ownerSaid(text, secret: verdict.isSecret, voice: voice, channel: channel, inbox: name)
     }
 
     /// Before a rerun cancelled by his voice: the lines still being checked are queued first.

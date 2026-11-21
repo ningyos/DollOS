@@ -144,6 +144,8 @@ public struct Event: Sendable, Equatable {
     /// For her replies: her calls in the order she wrote them (2026-11-14: the response's
     /// `tool_calls`, arguments text as returned, then the calls the server returned as text).
     public var calls: [ToolCall] = []
+    /// An owner line's file in the inbox (`Inbox.swift`) while it waits in the queue; not stored.
+    public var inbox: String?
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, sealed: Bool = false, voice: Bool = false,
                 image: String? = nil, window: String? = nil) {
