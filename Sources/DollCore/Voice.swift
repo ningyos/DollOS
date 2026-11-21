@@ -673,8 +673,9 @@ public actor VoiceLink: VoicePort {
             do {
                 if end.pad > 0 { try await rec.feed([Int16](repeating: 0, count: end.pad)) }
                 let text = try await rec.finalize(through: end.through).trimmingCharacters(in: .whitespacesAndNewlines)
+                // Not the text: the secret check has not seen it yet (owner, 2026-11-21).
                 self?.log("INFO", "owner utterance through \(String(format: "%.2f", end.through)) s: final after "
-                          + "\(Int((Self.now() - started) * 1000)) ms「\(text)」")
+                          + "\(Int((Self.now() - started) * 1000)) ms, \(text.count) characters")
                 if !text.isEmpty { await events?.ownerSaid(text) }
             } catch {
                 self?.log("ERROR", "speech recognition failed: \(error)")

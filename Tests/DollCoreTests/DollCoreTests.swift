@@ -3876,7 +3876,7 @@ private func otherIPv4() -> String? {
     #expect(LocalAPI.isLoopback(.hostPort(host: "::1", port: 1)))
     #expect(!LocalAPI.isLoopback(.hostPort(host: "192.168.1.20", port: 1)))
     #expect(!LocalAPI.isLoopback(.hostPort(host: "192.0.2.11", port: 1)))
-    let h = try await Harness()
+    let h = try await Harness(["否"])   // the owner line's secret check
     let api = try await localAPI(h)
     defer { api.stop() }
     // Bound to 127.0.0.1 only: the machine's other address does not answer.
@@ -3892,8 +3892,12 @@ private func otherIPv4() -> String? {
     // "0" + dropFirst() was then the real key, and this test failed that often).
     #expect(try await post(api, "/api/owner", "我是主人", key: (api.ownerKey.hasPrefix("0") ? "1" : "0") + api.ownerKey.dropFirst()) == 401)
     #expect(try await post(api, "/api/owner", "主人真的來了", key: api.ownerKey) == 200)
+    // The owner's line was held for the secret check (one request, no tools), then queued as an ordinary line.
+    await h.doll.lineChecks?.value
+    #expect(await h.model.requests.map { $0.messages.map(\.content) } == [[SecretCheck.instruction, "主人真的來了"]])
     #expect(await h.doll.queue.map(\.kind) == [.developer, .owner])
     #expect(await h.doll.queue.map(\.text) == ["嗨", "主人真的來了"])
+    #expect(await h.doll.queue.map(\.secret) == [false, false])
     // The owner stream needs the key too.
     let (_, refused) = try await URLSession.shared.data(from: URL(string: api.baseURL + "/api/listen?to=owner")!)
     #expect((refused as! HTTPURLResponse).statusCode == 401)
@@ -9754,4 +9758,77 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(try again.open(try box.seal("秘密"), place: "test") == "秘密")
     try store.delete(account: "/tmp/dollcore-keychain-test")
     #expect(try store.load(account: "/tmp/dollcore-keychain-test") == nil)
+}
+
+// the owner-line secret check (owner, 2026-11-21: `SecretCheck.swift`) ----------------------------------
+
+@Test func theModelDecidesWhetherAnOwnerLineIsASecretALockForcesItAndAFailureMakesItOne() async throws {
+    let h = try await Harness()
+    let d = h.doll
+    // The check says 是: held until then, a secret event. One request: the question and his line, no tools, no thinking.
+    await h.model.add(["是"])
+    await d.ownerLine("我的銀行密碼是 Pw8-犀牛-552").value
+    #expect(await h.model.requests.map { $0.messages.map(\.content) } == [[SecretCheck.instruction, "我的銀行密碼是 Pw8-犀牛-552"]])
+    #expect(await h.model.requests.map(\.effort) == ["none"])
+    #expect(await h.model.tools == [nil])
+    #expect(await d.queue.map(\.secret) == [true])
+    // She sees it in the owner's turn.
+    try await h.turn(Scripted("", dm("好，我記住了")))
+    #expect(await h.model.seen(1).contains { $0.content.contains("Pw8-犀牛-552") })
+    // A developer's turn: the secret line and her secret reply keep their place, not their content.
+    await d.developerSaid("剛剛主人說了什麼")
+    try await h.turn(Scripted("", reply("那是主人的事")))
+    let dev = await h.model.seen(2)
+    #expect(!dev.contains { $0.content.contains("Pw8") || $0.content.contains("記住了") || $0.toolCalls.contains { ($0.arguments ?? "").contains("記住了") } })
+    #expect(dev.filter { $0.content == Doll.hiddenSecret }.count >= 2)
+    // 🔒 first: no request, a secret; the line keeps the lock (she sees he locked it).
+    await d.ownerLine("🔒 保險箱在衣櫃第二層").value
+    #expect(await h.model.requests.count == 3)
+    #expect(await d.queue.last?.secret == true)
+    #expect(await d.queue.last?.text == "🔒 保險箱在衣櫃第二層")
+    // 否: an ordinary line, plain.
+    await h.model.add(["否"])
+    await d.ownerLine("今天晚餐吃咖哩飯").value
+    #expect(await d.queue.last?.secret == false)
+    // No clean answer, then no answer at all (the script ran out: an error): secret both times,
+    // and the log says the check failed, without the line.
+    await h.model.add(["可能吧，看情況"])
+    await d.ownerLine("我下個月要去看身心科").value
+    await d.ownerLine("我的提款卡密碼是 7391").value
+    #expect(await d.queue.suffix(2).map(\.secret) == [true, true])
+    let failed = h.logs.filter { $0.contains("the secret check failed") }
+    #expect(failed.count == 2 && failed[0].contains("unreadable answer") && failed[1].contains("script ran out"))
+    try await h.turn(Scripted("", dm("好"), remember([("主人今天晚餐吃咖哩飯", false),
+                                                       ("主人週末常常去家附近那家咖哩店，點豬排咖哩加一顆半熟蛋，配一杯冰紅茶；吃完會去河濱公園散步一圈，看看有沒有人在放風箏，再慢慢走回家洗澡看書", false)])))
+    // Queued in the order they came.
+    #expect(try h.events().filter { $0.kind == .owner }.map(\.text)
+            == ["我的銀行密碼是 Pw8-犀牛-552", "🔒 保險箱在衣櫃第二層", "今天晚餐吃咖哩飯", "我下個月要去看身心科", "我的提款卡密碼是 7391"])
+    // On disk (files, sqlite, timeline, history objects) and in the log: only the ordinary line.
+    let secrets = ["Pw8", "犀牛", "保險箱", "衣櫃", "身心科", "7391"]
+    #expect(try plainHits(h, secrets) == [])
+    #expect(h.logs.filter { l in secrets.contains { l.contains($0) } } == [])
+    let ordinary = try plainHits(h, ["咖哩飯"])
+    #expect(ordinary.contains { $0.contains("/timeline/") } && ordinary.contains { $0.contains("/memory/public/") })
+}
+
+@Test func hisVoiceCutsHerCallAtOnceAndTheRerunWaitsForItsCheck() async throws {
+    let h = try await Harness(["否", Scripted("", dm("好，我停下來"))])
+    await h.model.stall(request: 1)
+    let runner = Task { [doll = h.doll] in try await doll.run() }
+    await h.doll.developerSaid("幫我算 7+8")
+    try await waitUntil { await h.model.requests.count == 1 }
+    await h.doll.ownerLine("等一下先停", voice: true, channel: .discordVoice)
+    try await waitUntil { h.said == ["好，我停下來"] }
+    await h.doll.stop()
+    try await runner.value
+    // Her call was cancelled, the check ran (request 2), and the rerun (request 3) has his line.
+    #expect(await h.model.cancelled == 1)
+    #expect(await h.model.seen(1).map(\.content) == [SecretCheck.instruction, "等一下先停"])
+    #expect(await h.model.seen(2).contains { $0.content.hasSuffix("主人｜Discord 語音｜語音] 等一下先停") })
+}
+
+@Test func theCheckReadsOnlyACleanYesOrNo() {
+    #expect(SecretCheck.read("是") == true && SecretCheck.read(" 否。\n") == false && SecretCheck.read("是！") == true)
+    for bad in ["", "是的", "否，沒有", "可能", "yes", "是 否"] { #expect(SecretCheck.read(bad) == nil, "\(bad)") }
+    #expect(SecretCheck.isLocked("🔒 x") && SecretCheck.isLocked("🔒️x") && !SecretCheck.isLocked("x 🔒") && !SecretCheck.isLocked(" 🔒"))
 }

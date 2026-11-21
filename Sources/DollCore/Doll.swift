@@ -116,6 +116,9 @@ public actor Doll {
     var voiceCut = false
 
     var queue: [Event] = []
+    /// Owner lines being checked for a secret (`ownerLine`), not queued yet; the last check in the chain.
+    var heldLines = 0
+    var lineChecks: Task<Void, Never>?
     var waiter: CheckedContinuation<Bool, Never>?
     var stopped = false
     var inflight: Task<ModelReply, any Error>?
@@ -568,7 +571,7 @@ public actor Doll {
         interruptMaintenance(by: "主人")
         lastSpoke = wallClock.now()
         ownerLastLine = lastSpoke
-        signal(.ownerTalk, "「\(text.prefix(30))」")
+        signal(.ownerTalk, secret ? "（一句秘密，不記）" : "「\(text.prefix(30))」")
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
         put(ev)
@@ -769,19 +772,33 @@ public actor Doll {
     /// compaction of an item starts at the item's start, so the one reaching furthest decides.
     func context(_ events: [Event]) throws -> [ChatMessage] {
         let (plan, kept) = contextPlan(events)
+        // A secret is seen only in turns with the owner (owner, 2026-11-21): in the developer's turn each
+        // secret event keeps its place and shape (her calls keep their names, so every call still has
+        // its result) and loses its content.
+        let hide = Self.audience(events) == .developer
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
+            var msgs: [ChatMessage]
             switch mode {
             case .full:
-                out += try render(ev, read: kept.contains(ev.seq!))
+                msgs = try render(ev, read: kept.contains(ev.seq!))
             case .reply(let calls):
-                out.append(ChatMessage(role: "assistant", content: "", toolCalls: calls))
+                msgs = [ChatMessage(role: "assistant", content: "", toolCalls: calls)]
             case .block(let text):
-                out.append(ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(text)"))
+                msgs = [ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(text)")]
             }
+            if hide, ev.secret {
+                msgs = msgs.map { m in
+                    ChatMessage(role: m.role, content: Self.hiddenSecret, toolCalls: m.toolCalls.map { ToolCall(name: $0.name, arguments: "{}") })
+                }
+            }
+            out += msgs
         }
         return out
     }
+
+    /// What the developer's turn gets in place of a secret event's content.
+    static let hiddenSecret = "（秘密：開發者在的回合看不到）"
 
     /// How an event goes into the request (`context`): whole, as her reply's surviving calls, or as a
     /// program block (a compaction's, or a held list's action list after a talk summary).
@@ -1152,6 +1169,7 @@ public actor Doll {
                 return
             }
             log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
+            await awaitHeldLines()
             try drain()
             return try await turn()
         }
