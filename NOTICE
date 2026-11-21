@@ -1,0 +1,86 @@
+DollOS
+Copyright 2026 the DollOS authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party software compiled into dollcore and dollctl
+-------------------------------------------------------------------------------
+
+The Swift packages below are fetched by Swift Package Manager at build time
+(versions pinned in Package.resolved) and linked into the program. Each license
+was read from the package's own checkout. Their license texts ship with their
+sources; the MIT, BSD and Apache-2.0 licenses require keeping those notices with
+any redistribution of the program.
+
+- mlx-swift 0.32.3 (https://github.com/ml-explore/mlx-swift)
+  MIT License, Copyright (c) 2023 ml-explore. It contains:
+  - MLX (C++), MIT License, Copyright (c) 2023 Apple Inc.
+  - mlx-c, MIT License, Copyright (c) 2023 ml-explore
+  - {fmt} 12.1.0, MIT License, Copyright (c) 2012 - present, Victor Zverovich
+    and {fmt} contributors
+  - JSON for Modern C++ (nlohmann/json) 3.11.3, MIT License,
+    Copyright (c) 2013-2022 Niels Lohmann
+  - metal-cpp (Apple), Apache License 2.0
+  - pocketfft, BSD 3-Clause License, Copyright (C) 2010-2022 Max-Planck-Society,
+    Copyright (C) 2019-2020 Peter Bell
+- mlx-swift-lm 3.32.3 (https://github.com/ml-explore/mlx-swift-lm)
+  MIT License, Copyright (c) 2024 ml-explore
+- swift-transformers 1.4.0 (https://github.com/huggingface/swift-transformers)
+  Apache License 2.0
+- swift-huggingface 0.13.0 (https://github.com/huggingface/swift-huggingface)
+  Apache License 2.0, Copyright 2025 Hugging Face SAS
+- swift-jinja 3.1.0 (https://github.com/huggingface/swift-jinja)
+  Apache License 2.0
+- swift-crypto 4.5.2 (https://github.com/apple/swift-crypto)
+  Apache License 2.0, Copyright 2019 The SwiftCrypto Project (see its
+  NOTICE.txt). On macOS its Crypto module uses the system CryptoKit; the
+  vendored BoringSSL is not linked into dollcore.
+- swift-collections 1.7.6 (https://github.com/apple/swift-collections)
+  Apache License 2.0 with Runtime Library Exception
+- swift-numerics 1.1.1 (https://github.com/apple/swift-numerics)
+  Apache License 2.0 with Runtime Library Exception
+- EventSource 1.6.0 (https://github.com/mattt/EventSource)
+  MIT License, Copyright 2025 Mattt
+- yyjson 0.13.0 (https://github.com/ibireme/yyjson)
+  MIT License, Copyright (c) 2020 YaoYuan
+- voice-mlx (the DollOS voice package; Package.swift names where it comes from)
+  Apache License 2.0, Copyright 2026 the voice-mlx authors. It includes software
+  derived from speech-swift (https://github.com/soniqo/speech-swift),
+  Copyright soniqo, Apache License 2.0; see voice-mlx's own NOTICE for the
+  details (Qwen3-TTS model code, a torchaudio-compatible resampler, a
+  pydub-style silence removal).
+
+Resolved but not linked into the program: swift-syntax 603.0.2 (Apache License
+2.0 with Runtime Library Exception; used only to build mlx-swift-lm's macros) and
+swift-asn1 1.7.4 (Apache License 2.0; used by swift-crypto's CryptoExtras module,
+which dollcore does not use).
+
+-------------------------------------------------------------------------------
+The Discord bridge (bridge/)
+-------------------------------------------------------------------------------
+
+The bridge is a separate Python program that dollcore starts as a child process
+when [bridge] is enabled; none of it is compiled into dollcore. Its dependencies
+are installed by uv from bridge/uv.lock into bridge/.venv. Licenses as declared
+in the installed packages' metadata:
+
+- py-cord (pinned to a git commit), MIT
+- davey 0.1.7, MIT
+- numpy, BSD-3-Clause (with bundled parts under 0BSD, MIT, Zlib, CC0-1.0)
+- aiohttp, Apache-2.0 AND MIT; aiohappyeyeballs, PSF-2.0; aiosignal, frozenlist,
+  multidict, propcache, yarl, Apache-2.0; attrs, MIT; idna, BSD-3-Clause;
+  pynacl, Apache-2.0; cffi, MIT-0; pycparser, BSD-3-Clause;
+  typing-extensions, PSF-2.0
+- test only: pytest, iniconfig, pluggy, MIT; pytest-asyncio, Apache-2.0;
+  packaging, Apache-2.0 OR BSD-2-Clause; pygments, BSD-2-Clause
+- colorama is in the lock file for Windows only and is not installed on macOS.
+
+-------------------------------------------------------------------------------
+Models
+-------------------------------------------------------------------------------
+
+No model weights are part of this repository. dollcore downloads the memory
+embedding model (Qwen/Qwen3-Embedding-0.6B) and, with [voice] enabled, the
+Qwen3-TTS bundles named in the config from Hugging Face at first use; they
+remain under their own licenses. The language model is the person's own server.
