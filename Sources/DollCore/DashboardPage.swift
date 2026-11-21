@@ -60,7 +60,6 @@ enum DashboardPage {
   <section id="actions"><h2>動作</h2><div id="timeline"></div></section>
   <section id="mind"><h2>她怎麼想（清單的計畫、估的和實際、卡住和失敗的原因）</h2><div id="mind-body" class="muted">還沒有清單</div></section>
   <section id="memory"><h2>記憶</h2>
-    <label class="muted"><input type="checkbox" id="show-program"> 顯示程式讀的快捷鍵（tier program）</label>
     <div id="memory-body"></div></section>
   <section id="calendar"><h2>行事曆</h2>
     <form id="cal-form">
@@ -122,6 +121,9 @@ function renderStatus(s) {
   $("state").textContent = (names[s.state] || s.state) + (s.maintenance ? "：" + s.maintenance : "");
   $("state").className = "badge " + s.state;
   $("paused").hidden = !s.paused;
+  // No computer ([computer] enabled = false): nothing to show in 視覺 and 她的工具.
+  $("vision").hidden = !s.computer;
+  $("tools").hidden = !s.computer;
   $("menu").textContent = "todo：" + s.todo + (s.item ? `「${s.item}」第 ${s.rounds} 回合` : "") + (s.deciding ? "（等她決定：繼續／問你／失敗）" : "")
     + (s.pending.length ? `；後面 ${s.pending.length} 項` : "") + s.goOn.map(g => "；她選了繼續：" + g).join("");
   renderMind(s);
@@ -298,28 +300,18 @@ function renderMemory(m) {
   const box = $("memory-body");
   const open = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.key));
   box.replaceChildren();
-  const showProgram = $("show-program").checked;
   box.append(el("h3", null, `這次附上的經驗（${m.attached.length}）`));
   for (const e of m.attached) box.append(memEntry(e));
   box.append(el("h3", null, `deep 記憶（${m.deep.length}）：永遠不淡`));
   for (const e of m.deep) box.append(memEntry(e, true));
   if (!deepHolder.firstChild) deepHolder.append(deepForm());
   box.append(deepHolder);
-  box.append(el("h3", null, `這次送出的快捷鍵（${m.cheatsheets.length}）`));
-  for (const s of m.cheatsheets) {
-    const d = details(s.title, el("pre", null, s.text));
-    d.dataset.key = "s:" + s.seq;
-    box.append(d);
-  }
   box.append(el("h3", null, `改過的記憶（${m.fixes.length}）：她改的、系統維護改的、系統維護標出來沒改的`));
   for (const f of m.fixes) box.append(fixEntry(f));
   const titles = { own: "own（她自己的秘密）", public: "public", secret: "secret（主人的秘密）" };
   for (const f of m.folders) {
-    const shown = f.entries.filter(e => showProgram || e.tier !== "program");
-    const hidden = f.entries.length - shown.length;
-    box.append(el("h3", f.folder === "public" ? null : "secret",
-                  `${titles[f.folder] || f.folder}（${f.entries.length}${hidden ? `，藏了 ${hidden} 條快捷鍵` : ""}）`));
-    for (const e of shown) box.append(memEntry(e));
+    box.append(el("h3", f.folder === "public" ? null : "secret", `${titles[f.folder] || f.folder}（${f.entries.length}）`));
+    for (const e of f.entries) box.append(memEntry(e));
   }
   box.querySelectorAll("details").forEach(d => { if (open.has(d.dataset.key)) d.open = true; });
 }
@@ -537,7 +529,6 @@ async function refresh() {
     if (dirty) { dirty = false; refresh(); }
   }
 }
-$("show-program").onchange = () => { if (memory) renderMemory(memory); };
 
 async function post(path) {
   const r = await fetch(path, { method: "POST" });

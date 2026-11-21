@@ -75,6 +75,8 @@ public struct DashboardStatus: Codable, Sendable, Equatable {
     public var queued: Int
     public var turn: Int
     public var lastInterrupt: Double?
+    /// `[computer] enabled`: without it the page hides 視覺 and 她的工具 (2026-11-21).
+    public var computer: Bool
 }
 
 public struct DashboardCall: Codable, Sendable, Equatable {
@@ -148,18 +150,11 @@ public struct DashboardMemory: Codable, Sendable, Equatable {
         public var dir: String           // its directory name
         public var entries: [DashboardMemoryEntry]
     }
-    public struct Sheet: Codable, Sendable, Equatable {
-        public var seq: Int64
-        public var title: String
-        public var text: String
-    }
     public var folders: [Folder]
     /// Experiences the program attached since the owner's last line.
     public var attached: [DashboardMemoryEntry]
     /// Every deep memory, in all folders, newest first.
     public var deep: [DashboardMemoryEntry]
-    /// 【快捷鍵】 events since the owner's last line.
-    public var cheatsheets: [Sheet]
     /// Her corrections, the audit's changes and its flags (2026-11-18, `MemoryFix.swift`), newest first.
     public var fixes: [MemoryFixRecord]
 }
@@ -173,7 +168,7 @@ extension Doll {
             contextTokens: Int(Double(try estimateContext()) * tokenRatio),
             state: inflight != nil ? "thinking" : inTurn ? "acting" : inMaintenance ? "maintenance" : "idle", maintenance: maintenanceLine(),
             paused: paused, effort: inflightEffort ?? nextEffort, queued: queue.count, turn: turnIndex,
-            lastInterrupt: lastInterrupt)
+            lastInterrupt: lastInterrupt, computer: computerOn)
     }
 
     /// The newest `limit` items, newest first. Her reply's stored calls are
@@ -251,13 +246,8 @@ extension Doll {
         let attached = try attachedIDs.sorted().compactMap { id in
             try memory.experience(id).map { entry($0.id, $0.folder, $0.file) }
         }
-        let events = timeline.events
-        let since = events.last { $0.speaker != nil }?.seq ?? 0
-        let sheets = events.filter { $0.kind == .memory && $0.seq! > since && $0.text.hasPrefix("【快捷鍵】") }.map {
-            DashboardMemory.Sheet(seq: $0.seq!, title: String($0.text.split(separator: "\n").first ?? ""), text: $0.text)
-        }
         let deep = folders.flatMap { f in f.entries.filter(\.deep) }.sorted { ($0.ts, $1.id) > ($1.ts, $0.id) }
-        return DashboardMemory(folders: folders, attached: attached, deep: deep, cheatsheets: sheets, fixes: fixFile.items.reversed())
+        return DashboardMemory(folders: folders, attached: attached, deep: deep, fixes: fixFile.items.reversed())
     }
 
     /// The dashboard's mark (2026-11-15): memory `id` deep or not, through `Memory` (its file; the

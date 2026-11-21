@@ -2782,7 +2782,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
     #expect(byFolder["own"]?.map(\.title) == ["我的信箱密碼是 hunter2"])
     #expect(byFolder["secret"]?.map(\.kind) == ["happened"] && byFolder["secret"]?.first?.tier == "owner")
     #expect(byFolder["public"]?.map(\.text) == ["天空是藍的"] && byFolder["public"]?.first?.level == "確定")
-    #expect(m.attached.isEmpty && m.cheatsheets.isEmpty)
+    #expect(m.attached.isEmpty)
 
     // Every route, the page and the stream excepted, changes neither the timeline nor a memory file.
     let before = (try h.events(), try memoryFiles(h))
