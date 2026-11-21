@@ -1,68 +1,50 @@
 # DollOS
 
-DollOS is the home of **Doll**, a virtual being with her own memory, moods, agenda and diary. She is not a chatbot: she is an event-driven agent, and conversation is only one of the things that wake her up.
+DollOS runs a character — a "doll" — who lives on your Mac. She is not a chat window that forgets
+you when it closes: she runs all the time, keeps her own memory, calendar and goals, has moods that
+rise and fall with what happens, and does her own maintenance every night (sorting her memories,
+checking them against what was actually said, looking back on the day).
 
-**Current direction (2026-10-17):** the daemon runs on a Mac first, with no UI yet; the big LLM (Qwen3.8-Flash-Next) is served by llama.cpp on another machine. A desktop-pet overlay comes later, and later still the iPhone becomes her physical body.
+What she can do:
 
-## Architecture
+- **Remember.** Her memories are plain markdown files with a searchable index; secrets you tell her
+  are encrypted with a key in your login Keychain. Everything that changes her own state is
+  versioned, and the dashboard can show and undo it.
+- **Keep time.** A calendar with reminders, and a sense of when you are usually asleep.
+- **Have her own direction.** An ideal self she revises over time, goals she sets and works on
+  when she has nothing else to do, and things she keeps in mind between conversations.
+- **Talk to you on Discord** (optional): direct messages, and in a voice channel with a cloned
+  voice that runs on your Mac (Qwen3-TTS on MLX).
+- **Use your Mac** (optional): open apps, read windows, click and type in the background without
+  taking your mouse, read and write files — with Touch ID and your password as the hard line.
 
-```
-Inputs                          DollOS daemon (Python, one process)
-本機 IPC (WS)      ─┐
-Voice (WebRTC)     ─┤           Perception queue (with WAL)
-Discord bridge     ─┼──────►          │
-MCP (external AI)  ─┤                 ▼
-Schedule, pulse    ─┤           MindLoop (single consumer, one batch = one turn)
-Agenda, diary      ─┘             ├─ context: identity + memory + state
-                                  ├─ big LLM (llama.cpp on another machine)
-                                  ├─ speech → TTS / Discord / IPC
-                                  └─ tools → external actions are fire-and-forget;
-                                             results come back as perceptions
-```
+The program is `dollcore` (Swift). A local dashboard shows her state, memory, calendar and goals;
+`dollctl` talks to her from a terminal.
 
-- **Memory**: markdown files are the source of truth, indexed with SQLite FTS5 + jieba. No vector store.
-- **Self**: mood, a slowly evolving `current_self`, a self-directed agenda and a daily diary are her own inner state. Her self comes from the architecture and her own memories, not from behavior commands in the prompt (Self-First).
-- **Voice**: ASR with sherpa-onnx (SenseVoice). TTS engines are pluggable (`qwen3-tts`, `fish-tts`, `piper-vits`, `openai-compat-tts`).
-- **Permissions**: what a turn may do depends on who triggered it. Strangers' turns only see memory written in strangers' turns.
+## Requirements
 
-## What's changing
+- A Mac with Apple silicon, macOS 26 or later, Swift 6.2 or later (Xcode 26+).
+- About 10 GB of free disk (models and the build), 16 GB of memory recommended.
+- A language model server that speaks the OpenAI chat completions API **with tool calling**
+  (for example llama.cpp's `llama-server`). DollOS does not include a language model.
+- Optional: a Discord bot (for messages and voice), [cua-driver](https://github.com/trycua/cua)
+  (for using the Mac).
 
-- **Harness rebuild** (approved, `docs/superpowers/specs/2026-10-17-doll-harness-design.md`): split `MindLoop` into a designed harness with one turn runner, switch to native tool calling (no grammar), cut the tools down to about 15, extend her through MCP servers, and give each turn only the tools its trigger is allowed.
-- **iPhone body** (draft, `docs/superpowers/specs/2026-10-17-dollos-v1-iphone-body-design.md`): senses and presentation only; no model on the phone.
-- **Lighter voice install**: aim for ONNX Runtime only on the Mac, no torch.
+## Install
 
-## Repo layout
+Follow [SETUP.md](SETUP.md). It is written for a coding agent (Claude Code, Codex, …) to walk you
+through: checking the machine, building, writing your character with you, the config, and the
+first boot. The repository ships one blank character template
+(`character_packs/template/doll.toml`); her personality is yours to write.
 
-```
-DollOS/
-├── src/dollos/          # the daemon
-├── tests/               # pytest suite
-├── character_packs/     # Doll packs (doll.toml + voice/)
-├── docs/                # roadmap, specs, plans, research
-├── scripts/             # persistent tools
-├── experiments/         # spikes
-├── vendor/              # third-party SDK drop instructions
-└── data/                # runtime data (gitignored)
-```
+Her own documentation — what she reads about her tools and how she works — is in `dolldocs/`.
 
-## Related repos
+## Status
 
-| Repo | Status | Role |
-|------|--------|------|
-| [fish-tts](https://github.com/ningyos/fish-tts) | Active | TTS engine (DualARTransformer + DAC) |
-| voice-mlx, voice-train (local only) | Active | Doll's TTS: Qwen3-TTS 0.6B on MLX, and its nightly fine-tune |
-| [tuna](https://github.com/ningyos/tuna) | Active | Fine-tuning tools |
-| piper-finetune | Bootstrap | Piper VITS fine-tuning for character voices |
+Early. DollOS has one user so far, and it changes often; expect rough edges and config keys that
+move between versions (the boot names any key it does not accept).
 
-Pre-pivot Android repos (retired 2026-05-01) are listed in `docs/RETIRED-REPOS.md`.
+## License
 
-## Setup
-
-```bash
-uv sync                               # Python 3.13 (see .python-version)
-cp config.example.toml config.toml    # point [llm].base_url at your llama.cpp server
-uv run python -m dollos --config config.toml
-uv run pytest
-```
-
-See `CLAUDE.md` for the full developer guide, including `dollosctl` (run as a service) and llama.cpp server requirements.
+Apache License 2.0 — see [LICENSE](LICENSE). Third-party components and their licenses are listed
+in [NOTICE](NOTICE).
