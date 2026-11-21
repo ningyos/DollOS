@@ -9590,3 +9590,168 @@ private func overwrite(_ id: String, _ text: String?, why: String = "我憑印�
     #expect(try await h.doll.aside?.todo.phase == .waiting)
     #expect(try await h.doll.followUp)
 }
+
+// secrets at rest (owner, 2026-11-21: `SecretBox.swift`) ----------------------------------------------
+
+/// Where any of `needles` appears in plain bytes under the harness's data dir (memory files, the
+/// timeline, `doll.db` with its WAL, memory-fixes.json, maintenance.json, the history repository's
+/// files) or in any object of the history repository, decompressed by git (`cat-file --batch-all-objects`).
+private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
+    var hits: [String] = []
+    let e = FileManager.default.enumerator(at: h.dir, includingPropertiesForKeys: [.isRegularFileKey])!
+    for case let url as URL in e {
+        guard (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { continue }
+        let d = try Data(contentsOf: url)
+        for n in needles where d.range(of: Data(n.utf8)) != nil { hits.append("\(url.path): \(n)") }
+    }
+    let p = Process()
+    p.executableURL = URL(filePath: "/usr/bin/env")
+    p.arguments = ["git", "--git-dir", h.dir.appending(path: "history").path, "cat-file", "--batch-all-objects", "--batch"]
+    p.environment = Git.environment([:])
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = Pipe()
+    try p.run()
+    let objects = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    #expect(p.terminationStatus == 0 && objects.count > 1000)
+    for n in needles where objects.range(of: Data(n.utf8)) != nil { hits.append("history object: \(n)") }
+    return hits
+}
+
+@Test func secretAndOwnMemoriesReachTheDiskOnlyEncryptedAndStillWorkEverywhere() async throws {
+    let h = try await Harness()
+    let d = h.doll
+    let needles = ["Zq7", "河馬", "Kx9", "企鵝", "保險箱"]
+    // The owner's secret, remembered into secret; her own password into own.
+    await d.ownerSaid("我的保險箱密碼是 Zq7-河馬-913", secret: true)
+    try await h.turn(Scripted("", remember(folders: [("主人的保險箱密碼是 Zq7-河馬-913", "secret", nil), ("我的信箱密碼是 Kx9-企鵝-42", "own", nil)])))
+    let old = try memoryID(h, "主人的保險箱密碼是 Zq7-河馬-913")
+    #expect(try memoryFilesByID(h)[old]!.folder == "secret")
+    // The owner's turn finds it (and the result is a secret event); the developer's turn finds her own one.
+    try await h.turn(Scripted("", recall("保險箱密碼")))
+    let found = try h.toolResults().last!
+    #expect(found.text.contains("Zq7-河馬-913") && found.secret)
+    await d.developerSaid("我的信箱密碼是什麼")
+    try await h.turn(Scripted("", recall("信箱密碼")))
+    #expect(try h.toolResults().last!.text.contains("Kx9-企鵝-42"))
+    // A correction of the secret one.
+    await d.ownerSaid("不對，保險箱密碼是 Zq7-河馬-914", secret: true)
+    try await h.turn(Scripted("", fix(old, "主人的保險箱密碼是 Zq7-河馬-914", basis: "保險箱密碼是 Zq7-河馬-914")))
+    #expect(try h.toolResults().last!.text.hasPrefix("改好了"))
+    let new = try memoryID(h, "主人的保險箱密碼是 Zq7-河馬-914")
+    #expect(try fixesFile(h).items.first?.sealed == true)
+    // The owner's diff of it on the dashboard: decrypted.
+    let fixCommit = try historyOf(h).log(limit: 5).first { $0.what == "memory.fix" }!
+    let diff = try await d.dashboardHistoryDiff(fixCommit.id)
+    #expect(diff.contains("+主人的保險箱密碼是 Zq7-河馬-914") && diff.contains("memory/secret/\(new).md"))
+    #expect(fixCommit.why.isEmpty && fixCommit.args == nil)
+    // Nowhere in plain text: files, sqlite with its WAL, timeline, history objects.
+    #expect(try plainHits(h, needles) == [])
+    // His undo of the correction: the old one is back, still encrypted.
+    try await d.dashboardHistoryUndo(fixCommit.id)
+    let files = try memoryFilesByID(h)
+    #expect(files[old]!.file.retired == nil && files[old]!.folder == "secret" && files[new] == nil)
+    #expect(try plainHits(h, needles) == [])
+    // A new process: the index of the encrypted folders is rebuilt in memory, by text and by meaning.
+    let again = try await Harness(dir: h.dir)
+    try await again.doll.boot()
+    await again.doll.ownerSaid("保險箱", secret: true)
+    try await again.turn(Scripted("", recall("Zq7")))
+    #expect(try again.toolResults().last!.text.contains("Zq7-河馬-913"))
+    let cfg = try consolidationConfig(again)
+    let memory = try Memory(config: cfg.memory, root: again.dir.appending(path: "memory"), store: again.store, embedder: FakeEmbedder(),
+                            box: try testBox(again.dir))
+    #expect(try memory.syncOnBoot() == 2)
+    func channels(_ q: String) throws -> Set<Candidate.Channel> {
+        try memory.related(q, entities: [], visible: [.public, .own, .secret], tiers: nil, today: nil, embedding: .best(1))
+            .first { $0.key == "m:" + old }?.channels ?? []
+    }
+    #expect(try channels("河馬-913").contains(.fts))
+    let byMeaning = try channels("密碼保險")
+    #expect(byMeaning == [.embedding])
+    #expect(try plainHits(again, needles) == [])
+}
+
+@Test func theAuditAndTheConsolidationOfASecretMemoryLeaveNoPlainText() async throws {
+    let clock = ManualClock(at("2026-11-16", "21:00"))
+    let audit = Scripted("""
+        ```json
+        {"results": [{"m": "m1", "verdict": "wrong", "quote": "保險箱密碼是 Zq7-河馬-915", "fixed": "主人的保險箱密碼是 Zq7-河馬-915"}]}
+        ```
+        """)
+    let h = try await Harness([Scripted("", remember([("主人的保險箱密碼是 Zq7-河馬-913", true)])), Scripted("", dm("記下了")),
+                               audit, planReply, Scripted("今天主人說保險箱密碼是 Zq7-河馬-915。")], clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.audit.enabled = true; $0.audit.mode = "change"
+    }
+    let runner = Task { [doll = h.doll] in try await doll.run() }
+    await h.doll.ownerSaid("我的保險箱密碼是 Zq7-河馬-915", secret: true)
+    try await waitUntil { h.said == ["記下了"] }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    await h.doll.stop()
+    try await runner.value
+    // The audit corrected it, in secret; the end notice (its words and the day's summary) reads back whole.
+    let new = try memoryID(h, "主人的保險箱密碼是 Zq7-河馬-915")
+    #expect(try memoryFilesByID(h)[new]!.folder == "secret")
+    let notice = try h.timeline().events.first!
+    #expect(notice.sealed && notice.text.contains("改成「主人的保險箱密碼是 Zq7-河馬-915」") && notice.text.contains("今天主人說保險箱密碼是 Zq7-河馬-915"))
+    #expect(try fixesFile(h).items.map(\.sealed) == [true])
+    // Not on disk, not in the history, not in the log.
+    #expect(try plainHits(h, ["Zq7", "河馬", "保險箱"]) == [])
+    #expect(h.logs.filter { $0.contains("河馬") } == [])
+}
+
+@Test func bootFailsOnPlainSecretsAndOnEncryptedSecretsWithoutTheirKey() async throws {
+    func fresh() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir.appending(path: "memory/secret"), withIntermediateDirectories: true)
+        return dir
+    }
+    func bootError(_ dir: URL) async -> String {
+        do {
+            let h = try await Harness(dir: dir)
+            try await h.doll.boot()
+            return "booted"
+        } catch { return "\(error)" }
+    }
+    let file = "+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 1\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n主人的秘密"
+    // A plain file in an encrypted folder: its path.
+    let a = try fresh()
+    let plain = a.appending(path: "memory/secret/1-aaaaaa.md")
+    try file.write(to: plain, atomically: true, encoding: .utf8)
+    #expect(await bootError(a) == "\(plain.path) is a plain-text memory file in an encrypted folder (secret); plain secrets are no longer allowed (no conversion: remove it)")
+    // Encrypted secrets and no key for this data dir: no new key is made.
+    let b = try fresh()
+    let sealed = b.appending(path: "memory/secret/1-bbbbbb.md")
+    try (try SecretBox(key: SymmetricKey(size: .bits256)).seal(file) + "\n").write(to: sealed, atomically: true, encoding: .utf8)
+    #expect(await bootError(b) == "encrypted secrets exist (\(sealed.path)) but the memory key for \(SecretBox.account(data: b)) is not in the Keychain; without it they cannot be read")
+    #expect(try testKeys.load(account: SecretBox.account(data: b)) == nil)
+    // A key that does not open them (another key): the file named.
+    _ = try testBox(b)
+    #expect(await bootError(b) == "\(sealed.path) cannot be decrypted with the memory key from the Keychain (a different key, or damaged)")
+    // A secret timeline event in plain text: its line.
+    let c = try fresh()
+    try FileManager.default.createDirectory(at: c.appending(path: "timeline"), withIntermediateDirectories: true)
+    let segment = c.appending(path: "timeline/20261121-000000.jsonl")
+    try #"{"type":"event","seq":1,"ts":1,"kind":"owner","source":"owner","secret":true,"voice":false,"text":"主人的秘密"}"#
+        .appending("\n").write(to: segment, atomically: true, encoding: .utf8)
+    #expect(await bootError(c) == "\(segment.path) line 1 is a secret event stored in plain text; plain secrets are no longer allowed (no conversion: remove it)")
+    // Rows of the encrypted folders in the on-disk index.
+    let e = try fresh()
+    try Store(path: e.appending(path: "doll.db")).putMemoryIndex(id: "1-cccccc", path: "x", folder: "secret", confidence: 0.9, ts: 1, sourceSeq: 1,
+                                                                 kind: "", tier: "owner", entities: [], text: "主人的秘密", vector: Data([0, 0, 0, 0]))
+    #expect(await bootError(e) == "\(e.appending(path: "doll.db").path) holds 2 index rows of the secret/own folders in plain text; those folders are encrypted now and their index is in memory only (delete the file: it is rebuilt from the memory files)")
+}
+
+/// The real login Keychain, only with `DOLLCORE_KEYCHAIN_TEST=1`: a throwaway service, deleted after.
+@Test func theLoginKeychainKeepsTheKeyWhenAskedTo() throws {
+    guard ProcessInfo.processInfo.environment["DOLLCORE_KEYCHAIN_TEST"] == "1" else { return }
+    let store = KeychainKeyStore(service: "DollOS dollcore keychain test \(UUID().uuidString)")
+    defer { try? store.delete(account: "/tmp/dollcore-keychain-test") }
+    let box = try SecretBox.unlock(store: store, account: "/tmp/dollcore-keychain-test", sealedPlace: nil)
+    let again = try SecretBox.unlock(store: store, account: "/tmp/dollcore-keychain-test", sealedPlace: nil)
+    #expect(try again.open(try box.seal("秘密"), place: "test") == "秘密")
+    try store.delete(account: "/tmp/dollcore-keychain-test")
+    #expect(try store.load(account: "/tmp/dollcore-keychain-test") == nil)
+}

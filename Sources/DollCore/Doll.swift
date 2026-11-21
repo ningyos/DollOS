@@ -2641,7 +2641,8 @@ public actor Doll {
     /// returns the nearest; 「0 條」 only when there is nothing to search.
     func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
         let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
-        let trigger = Selector.Trigger(label: "recall「\(query)」", query: query, app: nil)
+        // The label goes to the log (plain text on disk): her query stays out of it in a turn that saw a secret.
+        let trigger = Selector.Trigger(label: events.contains(where: \.secret) ? "recall（秘密的回合，不記查詢）" : "recall「\(query)」", query: query, app: nil)
         // The owner's or developer's last line is the one she is answering: not a result (2026-11-15,
         // real runs: the question itself came back as the first of her three). Later events can be,
         // a compaction may have taken them out of her request.
@@ -2715,7 +2716,8 @@ public actor Doll {
                 picks[pick.id] = pick
                 return "m:" + pick.id
             }
-            log("INFO", "turn \(turnIndex): 相關記憶（\(label)）query「\(query)」: task groups \(merged.sorted().joined(separator: " ")), "
+            // A secret line stays out of the log (2026-11-21: the log is plain text on disk).
+            log("INFO", "turn \(turnIndex): 相關記憶（\(label)）query「\(owner.secret ? "（秘密，不記）" : query)」: task groups \(merged.sorted().joined(separator: " ")), "
                 + "already attached \(already.count) \(already.sorted())")
             logSelection(report)
             let fresh = report.selected.compactMap { picks[$0.id] }
