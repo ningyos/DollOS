@@ -351,12 +351,37 @@ public actor Doll {
     /// Feature records made since the last commit (`ideal#3`, `fix#2`): the next commit carries them.
     var historyRefs: [String] = []
 
+    /// The memory key (`SecretBox`, owner 2026-11-21), after looking at the disk without it: a plain
+    /// file in the `secret` or `own` folder, or a secret timeline event stored in plain text, is
+    /// plaintext that is no longer allowed and fails the boot with its place. The key is the one in
+    /// `keys` for the data dir (made on first boot); encrypted secrets with no key fail the boot.
+    public static func unlockSecrets(keys: any KeyStore, data: URL, memRoot: URL, memory: MemoryConfig, timeline: URL) throws -> SecretBox {
+        var sealed: String?
+        let fm = FileManager.default
+        for dir in [memory.secretDir, memory.ownDir] {
+            let folder = memRoot.appending(path: dir)
+            for name in ((try? fm.contentsOfDirectory(atPath: folder.path)) ?? []).sorted() where name.hasSuffix(".md") {
+                let url = folder.appending(path: name)
+                guard SecretBox.isSealed(try String(contentsOf: url, encoding: .utf8)) else {
+                    throw SecretBoxError("\(url.path) is a plain-text memory file in an encrypted folder (\(dir)); plain secrets are no longer allowed (no conversion: remove it)")
+                }
+                if sealed == nil { sealed = url.path }
+            }
+        }
+        let scan = try Timeline.scan(dir: timeline)
+        if let plain = scan.plain {
+            throw SecretBoxError("\(plain) is a secret event stored in plain text; plain secrets are no longer allowed (no conversion: remove it)")
+        }
+        let account = SecretBox.account(data: data)
+        return try SecretBox.unlock(store: keys, account: account, sealedPlace: sealed ?? scan.sealed)
+    }
+
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
     /// (tests script one model for both).
     public init(config: Config, root: URL, model: any MainModel,
                 embedder: any Embedder, computer: (any ComputerDriver)? = nil, maintenanceModel: (any MainModel)? = nil,
-                deliver: @escaping Deliver) throws {
+                keys: any KeyStore, deliver: @escaping Deliver) throws {
         self.config = config
         maintenanceConfig = config.maintenance
         self.embedder = embedder
@@ -372,11 +397,13 @@ public actor Doll {
         calendarConfig = config.calendar
         ownerSleepConfig = config.ownerSleep
         let data = config.dataDirectory(root: root)
+        let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         shots = data.appending(path: "shots")
         bootReports = data.appending(path: "boot-reports")
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timelineDir = data.appending(path: "timeline")
-        timeline = try Timeline(dir: timelineDir)
+        let box = try Self.unlockSecrets(keys: keys, data: data, memRoot: memRoot, memory: config.memory, timeline: timelineDir)
+        timeline = try Timeline(dir: timelineDir, box: box)
         maintenanceURL = data.appending(path: "maintenance.json")
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
@@ -386,7 +413,7 @@ public actor Doll {
         signalsURL = data.appending(path: "signals.json")
         estimatesURL = data.appending(path: "estimates.json")
         fixesURL = data.appending(path: "memory-fixes.json")
-        fixFile = try Concerns.read(MemoryFixFile.self, fixesURL, what: "memory fixes") ?? MemoryFixFile()
+        fixFile = try MemoryFixFile.read(fixesURL, box: box) ?? MemoryFixFile()
         auditConfig = config.audit
         toolStore = ToolStore(dir: data.appending(path: "tools"))
         estimateFile = try Concerns.read(EstimateFile.self, estimatesURL, what: "estimates") ?? EstimateFile()
@@ -405,11 +432,10 @@ public actor Doll {
         idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
         curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity") ?? CuriosityFile()
         agenda = try Agenda(url: data.appending(path: "calendar.json"))
-        let memRoot = memoryConfig.dir.hasPrefix("/") ? URL(filePath: memoryConfig.dir) : root.appending(path: memoryConfig.dir)
         memory = try Memory(config: memoryConfig, root: memRoot, store: try Store(path: data.appending(path: "doll.db")),
-                            embedder: embedder)
+                            embedder: embedder, box: box)
         historyConfig = config.history
-        history = try History(config: config.history, data: data, memory: memoryConfig, memoryDir: memRoot)
+        history = try History(config: config.history, data: data, memory: memoryConfig, memoryDir: memRoot, box: box)
         pipeline = Selector(memory: memory, config: config.select)
         // Before anything is appended: every event of the segment so far.
         today = try TodayIndex(timeline, embedder: embedder)
@@ -515,8 +541,12 @@ public actor Doll {
     // boot -------------------------------------------------------------------
     /// Checks the model (unreachable = error, no fallback).
     public func boot() async throws {
-        // Memories written by a previous process exist only as markdown until indexed (spec 6).
-        try memory.syncOnBoot()
+        // Memories written by a previous process exist only as markdown until indexed (spec 6); the
+        // encrypted folders' index is built in memory every boot (2026-11-21).
+        let t0 = Date()
+        let sealed = try memory.syncOnBoot()
+        log("INFO", String(format: "memory: index ready in %.2f s (%d memories of the encrypted folders decrypted and indexed in memory)",
+                           Date().timeIntervalSince(t0), sealed))
         try await model.check()
     }
 
@@ -1136,7 +1166,8 @@ public actor Doll {
         }
 
         // She saw every event, so a secret seen marks her reply (5.1). Stored as returned: re-sent byte-identical.
-        var replyEvent = Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret))
+        var replyEvent = Event(.doll, .internal, reply.content, secret: events.contains(where: \.secret),
+                               sealed: try carriesSealed(reply.calls))
         replyEvent.calls = reply.calls
         let stored = try append(replyEvent)
         try timeline.attachFooter(stored.seq!, footerText)
@@ -1207,7 +1238,7 @@ public actor Doll {
                     }
                 }
             }
-            var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, image: out.image, window: out.window)
+            var resultEvent = Event(.tool, .internal, out.text, secret: out.secret, sealed: out.sealed, image: out.image, window: out.window)
             resultEvent.channel = out.channel
             try append(resultEvent)
             actions += out.actions
@@ -1379,6 +1410,8 @@ public actor Doll {
         var image: String?
         var window: String?
         var secret = false
+        /// It carries content of an encrypted memory folder (`Event.sealed`): stored encrypted.
+        var sealed = false
         var actions: [String]
         var background = false
         /// This call closed a span (`todo.done`, `todo.fail`, `todo.progress`): the calls after it do not run.
@@ -2581,6 +2614,25 @@ public actor Doll {
         }
     }
 
+    /// The encrypted memory folders by directory name (`Memory.sealedFolders`).
+    var sealedFolders: Set<String> { Memory.sealedFolders(memoryConfig) }
+
+    /// Whether her calls carry content of an encrypted folder, so her reply is stored encrypted: a
+    /// `remember` item into `secret` or `own` (its text is in the arguments), a `memory.fix` of a
+    /// memory there (the new text is).
+    func carriesSealed(_ calls: [ToolCall]) throws -> Bool {
+        let folder = try NSRegularExpression(pattern: #"folder\\?"\s*:\s*\\?"(secret|own)\\?""#)
+        for call in calls {
+            let text = call.arguments ?? call.malformed ?? ""
+            if call.name == "remember", folder.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return true }
+            if call.name == Tools.Name.memoryFix, let id = call.parameters.first(where: { $0.name == "id" })?.value,
+               let (f, _) = try memory.file(id.trimmingCharacters(in: .whitespacesAndNewlines)), sealedFolders.contains(memory.dirName(f)) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Folders by `Memory.visible`: `secret` only if the turn saw secret events (5.1), `own` in the
     /// owner's turns and hers. Her memories and today's events (today's secret events only where the
     /// secret folder is visible) through the selection pipeline (`Selector.run`, `Rule.recall`):
@@ -2605,8 +2657,15 @@ public actor Doll {
         for hit in hits {
             out += "\n\n" + hit.rendered
         }
-        // A secret hit makes the result a secret event (5.1: what the turn saw is what it may say).
-        return Outcome(text: out, secret: hits.contains(where: \.secret), actions: ["recall \(hits.count)"])
+        // A secret hit makes the result a secret event (5.1: what the turn saw is what it may say); a
+        // hit of an encrypted folder, or of an encrypted event of today, makes it stored encrypted.
+        let sealed = hits.contains { hit in
+            switch hit {
+            case .memory(let h): sealedFolders.contains(h.folder)
+            case .today(let h): timeline.events.contains { $0.seq == h.seq && $0.sealed }
+            }
+        }
+        return Outcome(text: out, secret: hits.contains(where: \.secret), sealed: sealed, actions: ["recall \(hits.count)"])
     }
 
     /// One selection's line: to the log and the turn's report.
@@ -2673,7 +2732,8 @@ public actor Doll {
             if !offered.isEmpty {
                 text += (fresh.isEmpty ? "" : "\n你存的工具裡可能用得上的：") + offered.map { "\n〔工具〕" + $0.offerLine }.joined()
             }
-            try append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret)))
+            try append(Event(.memory, .internal, text, secret: fresh.contains(where: \.secret),
+                             sealed: fresh.contains { sealedFolders.contains($0.folder) }))
             attachedNow.append(text)
         } catch {
             log("ERROR", "turn \(turnIndex): 相關記憶（\(label)）failed: \(error)")

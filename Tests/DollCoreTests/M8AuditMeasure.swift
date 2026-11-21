@@ -140,7 +140,7 @@ import Testing
             cfg.memory.dir = dir.appending(path: "memory").path
             cfg.audit.mode = "change"
             // The day's segment: events with her clock today.
-            let tl = try Timeline(dir: data.appending(path: "timeline"))
+            let tl = try Timeline(dir: data.appending(path: "timeline"), box: try testBox(data))
             let day = Day(ts: Date().timeIntervalSince1970)
             func ev(_ hm: String, _ kind: Event.Kind, _ principal: Principal, _ text: String, calls: [ToolCall] = []) throws {
                 var e = Event(kind, principal, text)
@@ -192,7 +192,7 @@ import Testing
                 labels[o.text] = o.label
             }
             let doll = try Doll(config: cfg, root: repo, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(),
-                                maintenanceModel: Consolidation.model(cfg), deliver: { _, _, _ in nil })
+                                maintenanceModel: Consolidation.model(cfg), keys: testKeys, deliver: { _, _, _ in nil })
             try await doll.rebuildMemory()
             let started = Date()
             let answer = try await doll.prepareAudit()
@@ -273,7 +273,7 @@ import Testing
             // M8_MAXSRC: a smaller source cap, so that `Audit.select` (only used over the cap) is exercised.
             if let m = env["M8_MAXSRC"].flatMap(Int.init) { cfg.audit.maxSourceChars = m }
             for f in ["public", "secret", "own"] { try FileManager.default.createDirectory(at: dir.appending(path: "memory/\(f)"), withIntermediateDirectories: true) }
-            let tl = try Timeline(dir: data.appending(path: "timeline"))
+            let tl = try Timeline(dir: data.appending(path: "timeline"), box: try testBox(data))
             let day = Day(ts: tl.events.first!.ts)
             var label: [String: Mem] = [:]
             for (i, m) in spec.memories.enumerated() {
@@ -285,7 +285,7 @@ import Testing
                 label[m.text] = m
             }
             let doll = try Doll(config: cfg, root: repo, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(),
-                                maintenanceModel: Consolidation.model(cfg), deliver: { _, _, _ in nil })
+                                maintenanceModel: Consolidation.model(cfg), keys: testKeys, deliver: { _, _, _ in nil })
             try await doll.rebuildMemory()
             var pass = 0
             while pass < 3 {

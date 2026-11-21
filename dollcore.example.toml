@@ -78,6 +78,7 @@ secret_dir = "secret"         # 主人的秘密，只進對主人的回合（spe
 own_dir = "own"              # 她自己的秘密（密碼、token）：主人的回合和她自己做事的回合看得到，陌生人的回合看不到（spec 6，2026-11-08）
 public_dir = "public"
 registry_dir = "entities"     # 實體登記簿（2026-11-11）：記憶提到的每個具體東西一個檔（正式名字、別名、說明），是原始資料；SQLite 裡的是可重建索引
+keychain_service = "DollOS dollcore memory key"  # secret 和 own 加密用的金鑰（2026-11-21）在登入鑰匙圈的這個 service 底下，account 是 data_dir 的絕對路徑。理由：拋棄式或測試用的 doll 要用自己的名字，才不會碰到真的那一個
 rrf_k = 60                    # 初始值理由：RRF 原始論文的建議常數；k 大讓單一條列表的第 1 名不會壓死另一條列表
 max_candidates = 50           # 初始值理由：每條列表取 50，2 萬條以內記憶體裡算 cosine 不到 0.1 秒（30 條實測 <1 ms）
 confidence_weight = 0.01      # 初始值理由：RRF 分數約 0.003–0.033（k=60）；0.01×confidence 讓確信度能翻掉名次差一两名、不會蓋過排序本身

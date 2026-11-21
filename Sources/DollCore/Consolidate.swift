@@ -115,13 +115,14 @@ public enum Consolidation {
     /// The CLI's `consolidate` command; her running process does the same three steps in its daily
     /// maintenance (`Maintenance.swift`).
     public static func run(config: Config, root: URL, model: any MainModel,
-                           embedder: any Embedder, now: Double) async throws -> ConsolidationResult {
+                           embedder: any Embedder, keys: any KeyStore, now: Double) async throws -> ConsolidationResult {
         func path(_ p: String) -> URL { p.hasPrefix("/") ? URL(filePath: p) : root.appending(path: p) }
         let data = path(config.core.dataDir)
         let timelineDir = data.appending(path: "timeline")
-        let timeline = try Timeline(dir: timelineDir)
+        let box = try Doll.unlockSecrets(keys: keys, data: data, memRoot: path(config.memory.dir), memory: config.memory, timeline: timelineDir)
+        let timeline = try Timeline(dir: timelineDir, box: box)
         let memory = try Memory(config: config.memory, root: path(config.memory.dir), store: try Store(path: data.appending(path: "doll.db")),
-                                embedder: embedder)
+                                embedder: embedder, box: box)
         try memory.syncOnBoot()
         try await model.check()
         let request = try gather(timeline, memory: memory, config: config.consolidate)
@@ -129,7 +130,10 @@ public enum Consolidation {
         let result = try apply(request, answer, memory: memory, config: config.consolidate, now: now) {
             try Timeline.startSegment(dir: timelineDir)
         }
-        try Timeline(dir: timelineDir).append(Event(.memory, .internal, "【系統維護】（離線整理）" + doneText(result.plan) + "\n" + summaryNote + answer.summary))
+        let sealed = timeline.events.contains { $0.secret || $0.sealed }
+            || request.related.contains { Memory.sealedFolders(config.memory).contains($0.folder) }
+        try Timeline(dir: timelineDir, box: box).append(Event(.memory, .internal, "【系統維護】（離線整理）" + doneText(result.plan) + "\n" + summaryNote + answer.summary,
+                                                        sealed: sealed))
         return result
     }
 

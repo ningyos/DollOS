@@ -489,7 +489,7 @@ extension Doll {
             if name == timeline.segment {
                 segments.append((name, Audit.sourceLines(timeline.events)))
             } else if FileManager.default.fileExists(atPath: timelineDir.appending(path: name + ".jsonl").path) {
-                segments.append((name, Audit.sourceLines(try Timeline(dir: timelineDir, segment: name).events)))
+                segments.append((name, Audit.sourceLines(try Timeline(dir: timelineDir, segment: name, box: memory.box).events)))
             } else {
                 gone.insert(name)
             }
@@ -550,9 +550,17 @@ extension Doll {
             }
         }
         for id in a.request.items.map(\.id) + a.request.noSource where !left.contains(id) { try memory.clearAudit(id) }
-        for r in changed { log("INFO", "audit: changed \(r.memory) → \(r.replacement ?? "retired")「\(r.before)」⇒「\(r.after ?? "")」quote「\(r.basis)」") }
-        for r in flagged { log("INFO", "audit: flagged \(r.memory)「\(r.before)」quote「\(r.basis)」proposed「\(r.after ?? "")」") }
-        for r in rejected { log("INFO", "audit: quote rejected: \(r)") }
+        // Memories of an encrypted folder, or source lines of secret events: their texts stay out of
+        // the log, the end notice's words are kept encrypted (2026-11-21).
+        let sealed = a.request.items.contains { sealedFolders.contains(memory.dirName($0.folder)) }
+            || a.request.sources.values.contains { $0.contains("｜秘密]") }
+        if sealed {
+            log("INFO", "audit: \(changed.count) changed, \(flagged.count) flagged, \(rejected.count) quotes rejected (secret or encrypted content: texts not logged)")
+        } else {
+            for r in changed { log("INFO", "audit: changed \(r.memory) → \(r.replacement ?? "retired")「\(r.before)」⇒「\(r.after ?? "")」quote「\(r.basis)」") }
+            for r in flagged { log("INFO", "audit: flagged \(r.memory)「\(r.before)」quote「\(r.basis)」proposed「\(r.after ?? "")」") }
+            for r in rejected { log("INFO", "audit: quote rejected: \(r)") }
+        }
         let u = a.reply.usage
         let priority = a.request.items.filter(\.priority).count
         return MaintenanceDone(
@@ -561,8 +569,8 @@ extension Doll {
                 + "\(left.count) changed meanwhile, \(a.request.left) left for next time, "
                 + "\(a.request.cut) source lines not shown (\(a.request.cutChars) chars); "
                 + "request \(u.promptTokens) prompt tokens, \(u.completionTokens) completion, \(String(format: "%.1f", a.seconds)) s; "
-                + "reply「\(a.reply.content.replacingOccurrences(of: "\n", with: "⏎"))」",
+                + (sealed ? "reply not logged (secret or encrypted content)" : "reply「\(a.reply.content.replacingOccurrences(of: "\n", with: "⏎"))」"),
             words: Audit.doneText(checked: a.request.items.count, priority: priority, changed: changed, flagged: flagged, left: a.request.left),
-            summary: nil, kept: nil)
+            summary: nil, kept: nil, sealed: sealed)
     }
 }

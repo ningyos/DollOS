@@ -322,6 +322,14 @@ private final class FakeCua: ComputerDriver, Sendable {
     }
 }
 
+/// The memory keys of every test doll (by data dir): never the login Keychain.
+let testKeys = MemoryKeyStore()
+
+/// The memory key of the test doll whose data dir is `data` (made when it has none yet).
+func testBox(_ data: URL) throws -> SecretBox {
+    try SecretBox.unlock(store: testKeys, account: SecretBox.account(data: data), sealedPlace: nil)
+}
+
 /// The embedding model's stand-in: a bag of the text's characters and character pairs, each hashed
 /// (FNV-1a) into one of 512 dimensions, L2-normalized. Texts sharing more characters are nearer;
 /// the same text is 1. Queries and documents alike.
@@ -395,7 +403,7 @@ private struct Harness {
         let cua = FakeCua()
         self.cua = cua
         doll = try Doll(config: cfg, root: root, model: model, embedder: embedder ?? FakeEmbedder(), computer: cua,
-                        deliver: { text, to, image in
+                        keys: testKeys, deliver: { text, to, image in
                             rec.said.withLock { $0.append(text) }
                             rec.saidTo.withLock { $0.append(to) }
                             rec.images.withLock { $0.append(image) }
@@ -421,7 +429,7 @@ private struct Harness {
     }
 
     /// The timeline as a new process reads it from the file.
-    func timeline() throws -> Timeline { try Timeline(dir: dir.appending(path: "timeline")) }
+    func timeline() throws -> Timeline { try Timeline(dir: dir.appending(path: "timeline"), box: try testBox(dir)) }
     func events() throws -> [Event] { try timeline().events }
 
     /// Her tool results, oldest first.
@@ -996,7 +1004,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     let dir = h.dir.appending(path: "memory/public")
     var kinds: [String: String] = [:]
     for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".md") {
-        let parsed = try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8))
+        let parsed = try readMemory(h.dir, dir.appending(path: name))
         #expect(try h.store.memoryMeta(String(name.dropLast(3)))?.kind == parsed.kind)
         kinds[parsed.body] = parsed.kind
     }
@@ -1004,7 +1012,7 @@ private func ask(_ h: Harness, _ query: String, secret: Bool = false) async thro
     // the index rebuilt from markdown keeps it
     try await h.doll.rebuildMemory()
     for name in try FileManager.default.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".md") {
-        let parsed = try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8))
+        let parsed = try readMemory(h.dir, dir.appending(path: name))
         #expect(try h.store.memoryMeta(String(name.dropLast(3)))?.kind == kinds[parsed.body])
     }
 }
@@ -1956,7 +1964,9 @@ private let allowed = #"{"accessibility": true, "screen_recording": true}"#
     // A stranger's turn (no such input until M6; the projection is Memory's): never.
     var cfg = try exampleConfig().memory
     cfg.dir = h.dir.appending(path: "memory").path
-    let memory = try Memory(config: cfg, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    // A second process's view: the encrypted folders' index lives in each process's memory, built at its boot.
+    let memory = try Memory(config: cfg, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
+    try memory.syncOnBoot()
     let stranger = try memory.search("VM 登入密碼", visible: Memory.visible(.stranger, sawSecret: false), limit: 5)
     #expect(!stranger.contains { $0.folder == "own" } && stranger.contains { $0.text.contains("深色模式") })
     #expect(try memory.search("VM 登入密碼", visible: Memory.visible(.doll, sawSecret: false), limit: 5).contains { $0.folder == "own" })
@@ -1981,8 +1991,19 @@ private func seedMemory(_ h: Harness, _ folder: String, _ text: String, tier: St
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let ents = entities.isEmpty ? "" : "entities = \(MemoryEntity.json(entities))\n"
     let file = "+++\nkind = \"\"\nconfidence = \(confidence)\ncreated_ts = \(Date().timeIntervalSince1970)\nsource_event_seq = 1\nsource_tier = \"\(tier)\"\n\(ents)+++\n\(text)"
-    try file.write(to: dir.appending(path: "\(id ?? "1-\(UUID().uuidString.prefix(6).lowercased())").md"), atomically: true, encoding: .utf8)
+    try memoryText(h.dir, folder, file).write(to: dir.appending(path: "\(id ?? "1-\(UUID().uuidString.prefix(6).lowercased())").md"), atomically: true, encoding: .utf8)
     try await h.doll.rebuildMemory()
+}
+
+/// A memory file's bytes as dollcore writes them: encrypted in `secret` and `own` (2026-11-21).
+func memoryText(_ data: URL, _ folder: String, _ text: String) throws -> String {
+    ["secret", "own"].contains(folder) ? try testBox(data).seal(text) + "\n" : text
+}
+
+/// A memory file parsed as dollcore reads it (decrypted when its folder is encrypted).
+func readMemory(_ data: URL, _ url: URL) throws -> MemoryFile {
+    let raw = try String(contentsOf: url, encoding: .utf8)
+    return try Memory.parseFile(SecretBox.isSealed(raw) ? try testBox(data).open(raw, place: url.path) : raw)
 }
 
 /// The 【相關記憶】 events (not the program's 【提醒】 after a call-less reply to the owner, 2026-11-18).
@@ -3182,7 +3203,7 @@ private func memoryFilesByID(_ h: Harness) throws -> [String: (folder: String, f
     for folder in ["secret", "own", "public"] {
         let dir = h.dir.appending(path: "memory/\(folder)")
         for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasSuffix(".md") {
-            out[String(name.dropLast(3))] = (folder, try Memory.parseFile(String(contentsOf: dir.appending(path: name), encoding: .utf8)))
+            out[String(name.dropLast(3))] = (folder, try readMemory(h.dir, dir.appending(path: name)))
         }
     }
     return out
@@ -3244,7 +3265,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func consolidationAppliesAddUpdateRetireAndTheNextStartIsANewDay() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: [], description: "macOS 內建的文字編輯 app")
     let saveAs = try memory.write("TextEdit 另存要從 File 選單點 Save As…", folder: .public, sourceSeq: 1, tier: .doll, kind: nil,
                                   entities: [MemoryEntity(app.id, "TextEdit")], now: Date().timeIntervalSince1970)
@@ -3276,7 +3297,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         ```
         """
     let model = FakeModel([Scripted(reply), Scripted("主人要了一份副本，你用 ⇧⌥⌘S 另存好了。")])
-    let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+    let r = try await Consolidation.run(config: cfg, root: root, model: model, embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
 
     // The request: no persona, high effort, the day as text, only memories she or consolidation
     // wrote, with their entities by registry id, and the registry entries near the day.
@@ -3344,9 +3365,9 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let cfg = try consolidationConfig(h)
     // Nothing in the timeline yet: nothing to consolidate.
     await #expect(throws: ConsolidationError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
     }
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let cat = try memory.write("主人養貓", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, now: Date().timeIntervalSince1970)
     let shortcut = try memory.write("TextEdit：File › Save＝⌘S（TextEdit 1.21）", folder: .public, sourceSeq: 0, tier: .program, kind: nil, now: Date().timeIntervalSince1970)
     try writeRetired(h, "9-old000", days: 40, body: "退休很久的")
@@ -3395,25 +3416,25 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     ]
     for reply in bad {
         await #expect(throws: ConsolidationError.self, "\(reply)") {
-            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+            try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply)]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
         }
     }
     // The model failing is an error too.
     await #expect(throws: ModelError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
     }
     // So is the summary request failing or coming back empty: a valid plan is not applied without it.
     await #expect(throws: ModelError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add))]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
     }
     await #expect(throws: ConsolidationError.self) {
-        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("")]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+        try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("")]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
     }
     #expect(try memoryFiles(h) == files)
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "timeline").path).sorted() == segments)
     #expect(try h.events().contains { $0.text == "主人的貓叫什麼" })
     // The same reply, valid: applied.
-    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("今天的摘要。")]), embedder: FakeEmbedder(), now: Date().timeIntervalSince1970)
+    let ok = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(plan(add)), Scripted("今天的摘要。")]), embedder: FakeEmbedder(), keys: testKeys, now: Date().timeIntervalSince1970)
     #expect(ok.applied.count == 3 && ok.applied[1].hasPrefix("entity ") && ok.applied[2].hasSuffix("主人的貓叫咪咪"))
 }
 
@@ -3449,7 +3470,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 @Test func theRegistryAndEntityRefsRoundTripAndTheIndexRebuildsFromFiles() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let app = try memory.registry.create(.app, name: "TextEdit", aliases: ["文字編輯", " ", "ｔｅｘｔ Edit", "com.apple.TextEdit"],
                                          description: "macOS 內建的文字編輯 app")
     // Blank aliases and those with the name's key are dropped; the file gives the entry back.
@@ -3500,7 +3521,7 @@ private let openTextEdit: (String, [(String, String)]) = ("open", [("app", "Text
 @Test func theProgramsEntriesAreExactAndAnAppNeverResolvesToAnotherType() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let sel = Selector(memory: memory, config: cfg.select)
     let registry = memory.registry
     // The wrong merge the on-device model made in real runs (experiments/m6-todo-compact): TextEdit
@@ -3548,7 +3569,7 @@ private let openTextEdit: (String, [(String, String)]) = ("open", [("app", "Text
 private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ description: String,
                    aliases: [String] = []) throws -> RegistryEntry {
     let cfg = try consolidationConfig(h)
-    return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder()).registry
+    return try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir)).registry
         .create(type, name: name, aliases: aliases, description: description)
 }
 
@@ -3603,7 +3624,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     let cfg = try consolidationConfig(h)
     var select = cfg.select
     (select.similarity, select.attachMax, select.entityWeight) = (0.2, 3, 1)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let report = try Selector(memory: memory, config: select).run(
         .init(label: "測試", query: "TextEdit 另存", app: textEdit), rule: .attach, visible: [.public],
         tiers: [.selfReported, .consolidated], today: nil, now: Date().timeIntervalSince1970) { $0.key }
@@ -3663,7 +3684,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     let mine = try #require(files.first { $0.body.contains("林美玲") })
     #expect(mine.entities.isEmpty)
     let cfg = try consolidationConfig(h)
-    #expect(try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder()).registry.all().isEmpty)
+    #expect(try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir)).registry.all().isEmpty)
 }
 
 @Test func programWrittenMemoriesCarryWhatTheProgramKnows() async throws {
@@ -3673,7 +3694,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await h.turn()
     let cfg = try consolidationConfig(h)
     let registry = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store,
-                              embedder: FakeEmbedder()).registry
+                              embedder: FakeEmbedder(), box: try testBox(h.dir)).registry
     let app = try #require(try registry.exact("com.apple.TextEdit").first)
     #expect(app.name == "TextEdit" && app.aliases == ["com.apple.TextEdit"] && app.type == .app)
     let files = try memoryFilesByID(h).values.map(\.file)
@@ -5030,7 +5051,7 @@ private func day(_ days: Double) -> Double {
 @Test func confirmCountsOnePieceOfEvidencePerDayAndSettlesAboveTheLine() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let tea = try memory.write("主人喜歡喝無糖綠茶", folder: .public, sourceSeq: 3, tier: .consolidated, kind: nil, now: day(0))
     // A file written before 2026-11-15 has no evidence key: its one piece is created_ts.
     let raw = try String(contentsOf: h.dir.appending(path: "memory/public/\(tea).md"), encoding: .utf8)
@@ -5097,7 +5118,7 @@ private func day(_ days: Double) -> Double {
 @Test func aConsolidationConfirmIsEvidenceFromItsTasksEventOncePerDay() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let now = Date().timeIntervalSince1970
     let old = try memory.write("主人喜歡喝無糖綠茶", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, now: now - 3 * 86400)
     let fresh = try memory.write("主人喜歡喝無糖紅茶", folder: .public, sourceSeq: 1, tier: .doll, kind: nil, now: now)
@@ -5106,7 +5127,7 @@ private func day(_ days: Double) -> Double {
     let owner = try h.events().last { $0.kind == .owner }!
     let reply = "```json\n{\"entities\": [], \"operations\": [{\"op\": \"confirm\", \"id\": \"\(old)\", \"task\": 1}, {\"op\": \"confirm\", \"id\": \"\(fresh)\", \"task\": 1}]}\n```"
     let r = try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply), Scripted("摘要。")]),
-                                        embedder: FakeEmbedder(), now: now + 60)
+                                        embedder: FakeEmbedder(), keys: testKeys, now: now + 60)
     #expect(r.applied.contains { $0.hasPrefix("confirm \(old) (task 1, \(Memory.day(owner.ts)), event \(owner.seq!)): strength ") })
     #expect(r.applied.contains("confirm \(fresh) (task 1): not counted, it already has evidence on \(Memory.day(now))"))
     #expect(try memoryFilesByID(h)[old]!.file.evidence == [Evidence(ts: now - 3 * 86400, seq: 1), Evidence(ts: owner.ts, seq: owner.seq!)])
@@ -5116,7 +5137,7 @@ private func day(_ days: Double) -> Double {
 @Test func aFadedMemoryIsNotAttachedButRecallFindsItAndSettledOrDeepOnesStay() async throws {
     let h = try await Harness()
     let cfg = try consolidationConfig(h)
-    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
+    let memory = try Memory(config: cfg.memory, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder(), box: try testBox(h.dir))
     let text = "主人的公司在信義區"
     let faded = try memory.write(text, folder: .public, sourceSeq: 1, tier: .consolidated, kind: nil, now: day(0))
     let settled = try memory.write(text + "。", folder: .public, sourceSeq: 2, tier: .consolidated, kind: nil, now: day(0))
@@ -5220,7 +5241,7 @@ private func day(_ days: Double) -> Double {
     cfg.memory.dir = dir.appending(path: "memory").path
     let timeline = dir.appending(path: "timeline")
     func live(_ n: Double, _ lines: [String]) throws {
-        let t = try Timeline(dir: timeline)
+        let t = try Timeline(dir: timeline, box: try testBox(timeline.deletingLastPathComponent()))
         for (i, line) in lines.enumerated() {
             var e = Event(.owner, .owner, line)
             e.ts = day(n) + Double(i) * 120
@@ -5233,7 +5254,7 @@ private func day(_ days: Double) -> Double {
     func sleep(_ n: Double, _ ops: String) async throws -> [String] {
         let reply = "```json\n{\"entities\": [], \"operations\": [\(ops)]}\n```"
         return try await Consolidation.run(config: cfg, root: root, model: FakeModel([Scripted(reply), Scripted("摘要。")]),
-                                           embedder: embedder, now: day(n) + 10 * 3600).applied
+                                           embedder: embedder, keys: testKeys, now: day(n) + 10 * 3600).applied
     }
     func ids() throws -> [String: String] {
         let pub = dir.appending(path: "memory/public")
@@ -5249,7 +5270,7 @@ private func day(_ days: Double) -> Double {
     log += try await sleep(0, #"{"op": "add", "ref": "n1", "text": "主人喜歡喝無糖綠茶", "folder": "public", "kind": "", "entities": []}, {"op": "add", "ref": "n2", "text": "主人的公司在信義區", "folder": "public", "kind": "", "entities": []}"#)
     do {
         let memory = try Memory(config: cfg.memory, root: URL(filePath: cfg.memory.dir), store: try Store(path: dir.appending(path: "doll.db")),
-                                embedder: embedder)
+                                embedder: embedder, box: try testBox(dir))
         try memory.write("主人對花生過敏", folder: .public, sourceSeq: 1, tier: .owner, kind: nil, deep: true, now: day(0) + 60)
     }
     let tea = try ids()["主人喜歡喝無糖綠茶"]!, office = try ids()["主人的公司在信義區"]!, peanut = try ids()["主人對花生過敏"]!
@@ -5259,7 +5280,7 @@ private func day(_ days: Double) -> Double {
     try live(14, ["綠茶一樣要無糖的喔"])
     log += try await sleep(14, #"{"op": "confirm", "id": "\#(tea)", "task": 1}"#)
     let memory = try Memory(config: cfg.memory, root: URL(filePath: cfg.memory.dir), store: try Store(path: dir.appending(path: "doll.db")),
-                            embedder: embedder)
+                            embedder: embedder, box: try testBox(dir))
     let selector = Selector(memory: memory, config: cfg.select)
     let name = [tea: "tea", office: "office", peanut: "peanut"]
     let queries = ["tea": "下午幫我買一杯無糖綠茶", "office": "我們公司在哪一區", "peanut": "這塊蛋糕有花生，我能吃嗎"]
@@ -6540,7 +6561,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let stats = await h.doll.turnStats()
     #expect(replies.map { stats[$0]?.finish } == ["stop", "tool_calls"] && replies.allSatisfy { stats[$0]?.completion == 10 })
     // Read back from the timeline file.
-    let again = try Timeline(dir: h.dir.appending(path: "timeline"))
+    let again = try Timeline(dir: h.dir.appending(path: "timeline"), box: try testBox(h.dir))
     #expect(replies.map { again.turnStats[$0]?.finish } == ["stop", "tool_calls"])
 }
 
@@ -8779,7 +8800,7 @@ private func historyList(_ about: String? = nil) -> (String, [(String, String)])
 private func historyOf(_ h: Harness) throws -> History {
     var cfg = HistoryConfig()
     cfg.dir = h.dir.appending(path: "history").path
-    return try History(config: cfg, data: h.dir, memory: MemoryConfig(), memoryDir: h.dir.appending(path: "memory"))
+    return try History(config: cfg, data: h.dir, memory: MemoryConfig(), memoryDir: h.dir.appending(path: "memory"), box: try testBox(h.dir))
 }
 
 /// Runs the system git in `dir` (for the tests' own checks of a parent repository).
@@ -8810,7 +8831,8 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     try FileManager.default.createDirectory(at: dir.appending(path: "tools"), withIntermediateDirectories: true)
     try seededTool.write(to: dir.appending(path: "tools/開計算機.json"), atomically: true, encoding: .utf8)
     try FileManager.default.createDirectory(at: dir.appending(path: "memory/own"), withIntermediateDirectories: true)
-    try "+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 1\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n主人喜歡貓".write(
+    // Her own folder is encrypted (2026-11-21): the file as dollcore writes it.
+    try (try testBox(dir).seal("+++\nkind = \"\"\nconfidence = 0.9\ncreated_ts = 1\nsource_event_seq = 1\nsource_tier = \"owner\"\n+++\n主人喜歡貓") + "\n").write(
         to: dir.appending(path: "memory/own/1-aaaaaa.md"), atomically: true, encoding: .utf8)
     setenv("GIT_DIR", parent.appending(path: ".git").path, 1)
     setenv("GIT_WORK_TREE", parent.path, 1)
@@ -9046,9 +9068,9 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     try FileManager.default.createDirectory(at: dir.appending(path: "tools"), withIntermediateDirectories: true)
     var cfg = HistoryConfig()
     cfg.dir = dir.appending(path: "history").path
-    let a = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    let a = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"), box: try testBox(dir))
     _ = try a.open(ts: 1)
-    let b = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    let b = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"), box: try testBox(dir))
     let errors = Mutex<[String]>([])
     DispatchQueue.concurrentPerform(iterations: 20) { i in
         let h = i % 2 == 0 ? a : b
@@ -9074,7 +9096,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     var cfg = HistoryConfig()
     cfg.dir = dir.appending(path: "history").path
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let h = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"))
+    let h = try History(config: cfg, data: dir, memory: MemoryConfig(), memoryDir: dir.appending(path: "memory"), box: try testBox(dir))
     _ = try h.open(ts: 1_800_000_000)
     var t = try JSONDecoder().decode(OwnTool.self, from: Data(seededTool.utf8))
     try store.write(t)

@@ -61,7 +61,7 @@ private func start(_ cfg: Config, dir: URL, clock: ShiftClock) async throws -> R
     cfg.memory.dir = dir.appending(path: "memory").path
     let rec = Rec()
     let doll = try Doll(config: cfg, root: step0Root, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(),
-                        deliver: { text, _, _ in rec.said.withLock { $0.append(text) }; return nil })
+                        keys: testKeys, deliver: { text, _, _ in rec.said.withLock { $0.append(text) }; return nil })
     await doll.setObserver { r in rec.reports.withLock { $0.append(r) } }
     await doll.setClock(clock)
     try await doll.boot()

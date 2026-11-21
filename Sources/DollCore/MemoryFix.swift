@@ -39,11 +39,31 @@ public struct MemoryFixRecord: Codable, Sendable, Equatable {
     public var basis: String
     public var basisFrom: String
     public var why: String
+    /// The memory is in an encrypted folder (2026-11-21): on disk `before`, `after`, `basis` and `why`
+    /// are `SecretBox` texts. Absent in records written before.
+    public var sealed: Bool?
 }
 
 struct MemoryFixFile: Codable, Equatable {
     var nextId = 1
     var items: [MemoryFixRecord] = []
+
+    /// `body` on every text of the sealed records (seal to write, open after reading).
+    func mapSealed(_ body: (String) throws -> String) throws -> MemoryFixFile {
+        var f = self
+        for i in f.items.indices where f.items[i].sealed == true {
+            f.items[i].before = try body(f.items[i].before)
+            f.items[i].after = try f.items[i].after.map(body)
+            f.items[i].basis = try body(f.items[i].basis)
+            f.items[i].why = try body(f.items[i].why)
+        }
+        return f
+    }
+
+    /// The file at `url` with its sealed records opened; nil when there is none.
+    static func read(_ url: URL, box: SecretBox) throws -> MemoryFixFile? {
+        try Concerns.read(MemoryFixFile.self, url, what: "memory fixes")?.mapSealed { try box.open($0, place: url.path) }
+    }
 }
 
 extension Doll {
@@ -53,14 +73,16 @@ extension Doll {
         return key(a) == key(b)
     }
 
-    func saveFixes() throws { try Concerns.write(fixFile, fixesURL) }
+    func saveFixes() throws { try Concerns.write(try fixFile.mapSealed { try memory.box.seal($0) }, fixesURL) }
 
     /// Appends one record and saves the file.
     @discardableResult
     func recordFix(by: String, memory id: String, before: String, replacement: String?, after: String?, basis: String,
                    from: String, why: String, now: Double) throws -> MemoryFixRecord {
+        guard let folder = try memory.file(id)?.folder else { throw MemoryError(description: "no memory file \(id)") }
         let r = MemoryFixRecord(id: fixFile.nextId, ts: now, by: by, memory: id, before: before, replacement: replacement,
-                                after: after, basis: basis, basisFrom: from, why: why)
+                                after: after, basis: basis, basisFrom: from, why: why,
+                                sealed: Memory.sealedFolders(memoryConfig).contains(memory.dirName(folder)) ? true : nil)
         fixFile.nextId += 1
         fixFile.items.append(r)
         try saveFixes()
@@ -80,6 +102,7 @@ extension Doll {
         let visible = Memory.visible(Self.audience(events), sawSecret: true)
         guard visible.contains(folder) else { throw refuse(notFound) }
         let secret = folder == .secret
+        let sealed = sealedFolders.contains(memory.dirName(folder))
         if let r = file.retired {
             throw refuse("記憶 \(id) 已經收起來了（\(r.reason)）" + (r.supersededBy.isEmpty ? "。" : "，換成了記憶 \(r.supersededBy)；要改就改那一條。"))
         }
@@ -96,7 +119,7 @@ extension Doll {
         }
         let b = basis.trimmingCharacters(in: .whitespacesAndNewlines)
         if b.isEmpty {
-            return try overwriteHers(id: id, file: file, text: text, why: w, secret: secret, reply: reply)
+            return try overwriteHers(id: id, file: file, text: text, why: w, secret: secret, sealed: sealed, reply: reply)
         }
         guard Self.plainKey(b).count >= computerConfig.planMinChars else {
             throw refuse("basis「\(b)」太短：至少 \(computerConfig.planMinChars) 個字，照抄一整段。")
@@ -124,9 +147,10 @@ extension Doll {
                                              auditSegment: timeline.segment, now: now)
         let r = try recordFix(by: "her", memory: id, before: file.body, replacement: replacement, after: text, basis: b,
                               from: source.source, why: w, now: now)
-        log("INFO", "turn \(turnIndex): memory.fix #\(r.id) \(id) → \(replacement) (\(tier.rawValue)) basis「\(b)」from \(source.source)")
+        log("INFO", "turn \(turnIndex): memory.fix #\(r.id) \(id) → \(replacement) (\(tier.rawValue)) "
+            + (sealed ? "basis from \(source.source) (encrypted folder: not logged)" : "basis「\(b)」from \(source.source)"))
         return Outcome(text: "改好了：記憶 \(id)「\(file.body)」換成記憶 \(replacement)「\(text)」。舊的收起來了，主人在儀表板看得到，可以還原。",
-                       secret: secret, actions: ["memory fix"])
+                       secret: secret, sealed: sealed, actions: ["memory fix"])
     }
 
     /// What "she wrote it herself" is (2026-11-20, owner: a memory she wrote herself she may overwrite
@@ -140,7 +164,7 @@ extension Doll {
 
     /// Her own memory overwritten without a basis: the new one stays hers (`doll`), so she may
     /// overwrite it again; the rest is as a correction with a basis.
-    private func overwriteHers(id: String, file: MemoryFile, text: String, why w: String, secret: Bool, reply: Event) throws -> Outcome {
+    private func overwriteHers(id: String, file: MemoryFile, text: String, why w: String, secret: Bool, sealed: Bool, reply: Event) throws -> Outcome {
         guard Self.hers(file) else {
             let from = switch file.tier {
             case .owner: "主人說的話"
@@ -159,7 +183,7 @@ extension Doll {
                               from: Self.hersFrom, why: w, now: now)
         log("INFO", "turn \(turnIndex): memory.fix #\(r.id) \(id) → \(replacement) (doll) without a basis: her own")
         return Outcome(text: "改好了：記憶 \(id)「\(file.body)」換成記憶 \(replacement)「\(text)」（那條是你自己憑印象記的，不用依據）。舊的收起來了，主人在儀表板看得到，可以還原。",
-                       secret: secret, actions: ["memory fix"])
+                       secret: secret, sealed: sealed, actions: ["memory fix"])
     }
 
     /// `basisFrom` of an overwrite without a basis.

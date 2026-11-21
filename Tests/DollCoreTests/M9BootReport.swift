@@ -172,7 +172,7 @@ private func boot(at hhmm: String) -> Double {
                 clock.set(logEntries.first!.ts!)
                 let said = Mutex<[String]>([])
                 let pre = try Doll(config: k, root: m9Root, model: HTTPMainModel(k.llm), embedder: FakeEmbedder(), computer: RefusingComputer(),
-                                   deliver: { _, _, _ in nil })
+                                   keys: testKeys, deliver: { _, _, _ in nil })
                 await pre.setClock(clock)
                 try await pre.announceBoot()
                 try await c.seed(pre, clock, b)
@@ -183,7 +183,7 @@ private func boot(at hhmm: String) -> Double {
                 clock.set(b)
                 let comp = RefusingComputer()
                 let doll = try Doll(config: k, root: m9Root, model: HTTPMainModel(k.llm), embedder: FakeEmbedder(), computer: comp,
-                                    deliver: { text, to, _ in
+                                    keys: testKeys, deliver: { text, to, _ in
                                         // As live: the owner's DM goes out (the bridge is up); no dollctl chat is open.
                                         let failed: String? = to == .developer ? "沒有開著的 dollctl chat" : nil
                                         said.withLock { $0.append("[\(to.label)\(failed == nil ? "" : "，沒送到")] \(text)") }

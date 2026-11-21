@@ -53,6 +53,24 @@ CREATE TABLE IF NOT EXISTS memory_index_version (
 );
 """
 
+/// The memory tables again in the attached in-memory schema `sealed` (owner, 2026-11-21): the
+/// rows of the encrypted folders (`secret`, `own`) live only here, built at boot from the decrypted
+/// files (`Memory.syncOnBoot`); their text, trigram index and vectors never reach the disk.
+private let sealedSchema = """
+PRAGMA temp_store = MEMORY;
+ATTACH DATABASE ':memory:' AS sealed;
+CREATE TABLE sealed.memory_index (
+    id TEXT PRIMARY KEY, path TEXT NOT NULL, folder TEXT NOT NULL, confidence REAL NOT NULL,
+    ts REAL NOT NULL, source_seq INTEGER NOT NULL, kind TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE sealed.memory_fts USING fts5(text, id UNINDEXED, folder UNINDEXED, tokenize='trigram');
+CREATE TABLE sealed.memory_vectors (id TEXT PRIMARY KEY, vector BLOB NOT NULL);
+CREATE TABLE sealed.memory_entity_refs (
+    id TEXT NOT NULL, entity TEXT NOT NULL, folder TEXT NOT NULL, tier TEXT NOT NULL, PRIMARY KEY (id, entity)
+);
+CREATE INDEX sealed.memory_entity_refs_entity ON memory_entity_refs (entity);
+"""
+
 public struct StoreError: Error, CustomStringConvertible {
     public let description: String
 }
@@ -105,6 +123,10 @@ public struct Event: Sendable, Equatable {
     public var principal: Principal
     public var text: String
     public var secret: Bool
+    /// Stored encrypted (2026-11-21): a secret event always is; `sealed` marks one that is not secret
+    /// but carries the content of an encrypted memory folder (her `own` memories in a recall result,
+    /// a `remember` into `own`, a fix of one). Visibility stays `secret`'s alone.
+    public var sealed = false
     /// Only owner voice may cancel a model call in flight (voice itself is M6).
     public var voice: Bool
     /// A computer read's window screenshot: a file name under the data dir's `shots/`; rendered as an image part.
@@ -123,12 +145,13 @@ public struct Event: Sendable, Equatable {
     /// `tool_calls`, arguments text as returned, then the calls the server returned as text).
     public var calls: [ToolCall] = []
 
-    public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, voice: Bool = false,
+    public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, sealed: Bool = false, voice: Bool = false,
                 image: String? = nil, window: String? = nil) {
         self.kind = kind
         self.principal = principal
         self.text = text
         self.secret = secret
+        self.sealed = sealed
         self.voice = voice
         self.image = image
         self.window = window
@@ -179,6 +202,12 @@ public struct Event: Sendable, Equatable {
 ///     {"type":"turn","seq":2,"started":…,"seconds":…,"prompt":…,"cached":…,"effort":"medium"}
 ///                                                                   what the turn of reply `seq` took
 ///
+/// Secret events, and sealed ones (content of the encrypted memory folders, `Event.sealed`), keep
+/// seq, ts, kind, source and flags plain and put text, window and calls into `"box":"dollbox1:…"`
+/// (`SecretBox`, owner 2026-11-21); the footer of such a reply and a compaction summary over such
+/// an event are boxes too. A secret event without a box is plain text that is no longer allowed:
+/// opening the segment fails with its line.
+///
 /// Her replies are stored raw (tool call text included) and re-sent byte-identical. Each line is
 /// written and synced before `append` returns, so a crash loses at most the line being written; a
 /// cut-off last line is dropped when the file is next opened. The whole file is read once at start
@@ -199,6 +228,8 @@ public final class Timeline {
     public private(set) var turnStats: [Int64: TurnStats] = [:]
     private var position: [Int64: Int] = [:]
     private var handle: FileHandle?
+    /// Encrypts secret and sealed events (nil: a timeline that may hold none).
+    private let box: SecretBox?
 
     /// What one turn took, keyed by her reply's seq; for the dashboard, not the prompt.
     public struct TurnStats: Sendable, Equatable, Codable {
@@ -229,6 +260,15 @@ public final class Timeline {
         var window: String?
         var channel: Channel?
         /// Her reply's calls; present on every `doll` event since 2026-11-14.
+        var calls: [StoredCall]?
+        /// A secret or sealed event's `{text, window, calls}` as one `SecretBox` (2026-11-21); then
+        /// `text` is empty and `window`/`calls` absent.
+        var box: String?
+    }
+    /// What a box of an event holds.
+    private struct SealedContent: Codable {
+        var text: String
+        var window: String?
         var calls: [StoredCall]?
     }
     /// One call as stored: `arguments` nil and `malformed` set for a call the server returned as text.
@@ -295,7 +335,8 @@ public final class Timeline {
     }()
 
     /// Opens the newest segment under `dir`, or starts one when there is none.
-    public init(dir: URL) throws {
+    public init(dir: URL, box: SecretBox?) throws {
+        self.box = box
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         segment = try Self.segments(dir).last ?? Self.newName(after: nil)
@@ -310,13 +351,33 @@ public final class Timeline {
 
     /// Opens the existing segment `segment` under `dir` to read it (the audit reads a past day,
     /// 2026-11-18). A segment that is not there is an error.
-    public init(dir: URL, segment: String) throws {
+    public init(dir: URL, segment: String, box: SecretBox?) throws {
+        self.box = box
         self.segment = segment
         file = dir.appending(path: segment + ".jsonl")
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw StoreError(description: "no timeline segment \(segment) in \(dir.path)")
         }
         try load()
+    }
+
+    /// Every segment under `dir`, line by line without decrypting (boot, before the key): the first
+    /// secret event stored in plain text (`<path> line <n>`), and the first encrypted line.
+    public static func scan(dir: URL) throws -> (plain: String?, sealed: String?) {
+        var plain: String?, sealed: String?
+        guard FileManager.default.fileExists(atPath: dir.path) else { return (nil, nil) }
+        for name in try segments(dir) {
+            let url = dir.appending(path: name + ".jsonl")
+            for (n, line) in try Data(contentsOf: url).split(separator: UInt8(ascii: "\n")).enumerated() {
+                let text = String(decoding: line, as: UTF8.self)
+                let boxed = text.contains("\"" + SecretBox.prefix)
+                if boxed, sealed == nil { sealed = "\(url.path) line \(n + 1)" }
+                if !boxed, plain == nil, text.contains("\"type\":\"event\""), text.contains("\"secret\":true") {
+                    plain = "\(url.path) line \(n + 1)"
+                }
+            }
+        }
+        return (plain, sealed)
     }
 
     /// The local time now as `yyyyMMdd-HHmmss`; when that does not sort after `newest` (same second),
@@ -365,11 +426,18 @@ public final class Timeline {
         }
         for (n, line) in data.split(separator: UInt8(ascii: "\n")).enumerated() {
             let raw = Data(line)
-            func bad(_ e: Error) -> StoreError { StoreError(description: "\(file.path) line \(n + 1): \(e)") }
+            let place = "\(file.path) line \(n + 1)"
+            func bad(_ e: Error) -> StoreError { StoreError(description: "\(place): \(e)") }
             do {
                 switch try Self.decoder.decode(Line.self, from: raw).type {
                 case "event":
-                    let l = try Self.decoder.decode(EventLine.self, from: raw)
+                    var l = try Self.decoder.decode(EventLine.self, from: raw)
+                    if let boxed = l.box {
+                        let p = try Self.decoder.decode(SealedContent.self, from: Data(try key().open(boxed, place: place).utf8))
+                        (l.text, l.window, l.calls) = (p.text, p.window, p.calls)
+                    } else if l.secret {
+                        throw StoreError(description: "secret event \(l.seq) is stored in plain text; secret events are encrypted now and plain ones are not allowed (no conversion: remove it)")
+                    }
                     if l.kind == .doll, l.calls == nil {
                         // Before 2026-11-14 her reply was stored as raw text with her calls inside it.
                         throw StoreError(description: "her reply \(l.seq) has no calls record: a timeline from before native tool calls (2026-11-14); start a new data dir")
@@ -378,14 +446,15 @@ public final class Timeline {
                 case "footer":
                     let f = try Self.decoder.decode(FooterLine.self, from: raw)
                     guard let i = position[f.seq] else { throw StoreError(description: "footer for unknown seq \(f.seq)") }
-                    events[i].footer = f.text
+                    events[i].footer = try opened(f.text, place: place)
                 case "todo":
                     let t = try Self.decoder.decode(TodoLine.self, from: raw)
                     todo = Self.state(t)
                     todoAside = t.aside
                 case "compact":
                     let c = try Self.decoder.decode(CompactLine.self, from: raw)
-                    compactions.append(Compaction(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: c.text))
+                    compactions.append(Compaction(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq,
+                                                  text: try c.text.map { try opened($0, place: place) }))
                 case "turn":
                     let t = try Self.decoder.decode(TurnLine.self, from: raw)
                     turnStats[t.seq] = TurnStats(seq: t.seq, started: t.started, seconds: t.seconds, prompt: t.prompt,
@@ -397,8 +466,20 @@ public final class Timeline {
         }
     }
 
+    /// The memory key; secret content is never written or read without it.
+    private func key() throws -> SecretBox {
+        guard let box else { throw StoreError(description: "the timeline holds or gets encrypted content, and no memory key was given") }
+        return box
+    }
+
+    /// `text` decrypted when it is a box, else as it is.
+    private func opened(_ text: String, place: String) throws -> String {
+        SecretBox.isSealed(text) ? try key().open(text, place: place) : text
+    }
+
     private func take(_ l: EventLine) {
         var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, window: l.window)
+        e.sealed = l.box != nil && !l.secret
         e.channel = l.channel
         e.calls = (l.calls ?? []).map { c in
             if let arguments = c.arguments { ToolCall(name: c.name, arguments: arguments) }
@@ -442,22 +523,38 @@ public final class Timeline {
     /// The newest event's seq; 0 for an empty timeline.
     public var lastSeq: Int64 { events.last?.seq ?? 0 }
 
-    /// Appends one event and returns it with its seq.
+    /// Appends one event and returns it with its seq. A secret or sealed event's text, window and
+    /// calls are written as one box (`SecretBox`); its kind, seq, time and flags stay plain.
     @discardableResult
     public func append(_ ev: Event) throws -> Event {
-        let line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
+        var line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image,
                              window: ev.window, channel: ev.channel,
                              calls: ev.kind == .doll ? ev.calls.map { StoredCall(name: $0.name, arguments: $0.arguments,
                                                                                   malformed: $0.arguments == nil ? $0.malformed : nil) } : nil)
-        try write(line)
+        if ev.secret || ev.sealed {
+            var stored = line
+            let content = SealedContent(text: line.text, window: line.window, calls: line.calls)
+            stored.box = try key().seal(String(decoding: try Self.encoder.encode(content), as: UTF8.self))
+            (stored.text, stored.window, stored.calls) = ("", nil, nil)
+            try write(stored)
+            line.box = stored.box
+        } else {
+            try write(line)
+        }
         take(line)
         return events[events.count - 1]
     }
 
+    /// Whether any event in `(from, to]` is stored encrypted.
+    private func sealedSpan(_ from: Int64, _ to: Int64) -> Bool {
+        events.contains { ($0.secret || $0.sealed) && $0.seq! > from && $0.seq! <= to }
+    }
+
+    /// A footer of a secret or sealed reply is encrypted with it.
     public func attachFooter(_ seq: Int64, _ text: String) throws {
         guard let i = position[seq] else { throw StoreError(description: "no event \(seq) to attach a footer to") }
-        try write(FooterLine(seq: seq, text: text))
+        try write(FooterLine(seq: seq, text: events[i].secret || events[i].sealed ? try key().seal(text) : text))
         events[i].footer = text
     }
 
@@ -472,9 +569,11 @@ public final class Timeline {
         todoAside = aside
     }
 
-    /// Records a compaction; requests render its span from then on.
+    /// Records a compaction; requests render its span from then on. Its summary is encrypted when
+    /// the span holds an encrypted event.
     public func compact(_ c: Compaction) throws {
-        try write(CompactLine(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: c.text))
+        let text = try c.text.map { sealedSpan(c.fromSeq, c.toSeq) ? try key().seal($0) : $0 }
+        try write(CompactLine(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: text))
         compactions.append(c)
     }
 
@@ -571,12 +670,17 @@ final class SQLite {
     }
 }
 
-/// `<data_dir>/doll.db`: the memory index only (the timeline is in `Timeline`'s files).
+/// `<data_dir>/doll.db`: the memory index only (the timeline is in `Timeline`'s files). The rows of
+/// `sealedFolders` go to the in-memory schema `sealed` instead (`sealedSchema`); every read covers both.
 public final class Store {
     private let sql: SQLite
+    public let path: URL
+    /// The folder names (`Memory.sealedFolders`) whose rows never reach the disk; set by `Memory`.
+    var sealedFolders: Set<String> = []
 
     public init(path: URL) throws {
-        sql = try SQLite(path: path, schema: memorySchema)
+        self.path = path
+        sql = try SQLite(path: path, schema: memorySchema + "\n" + sealedSchema)
     }
 
     private func query<T>(_ s: String, _ args: [Bind] = [], _ each: (Row) -> T) throws -> [T] {
@@ -584,6 +688,25 @@ public final class Store {
     }
 
     private func exec(_ s: String, _ args: [Bind]) throws { try sql.exec(s, args) }
+
+    /// `select` (with `{s}` for the schema) over the on-disk and the in-memory tables, `UNION ALL`;
+    /// `args` repeated for each.
+    private func both<T>(_ select: String, _ args: [Bind], suffix: String = "", _ each: (Row) -> T) throws -> [T] {
+        let s = ["main", "sealed"].map { select.replacingOccurrences(of: "{s}", with: $0) }.joined(separator: " UNION ALL ")
+        return try query(s + suffix, args + args, each)
+    }
+
+    /// Rows of `folders` in the on-disk memory index (boot fails on any: `Memory.syncOnBoot`).
+    func diskRows(folders: Set<String>) throws -> Int {
+        guard !folders.isEmpty else { return 0 }
+        let marks = folders.map { _ in "?" }.joined(separator: ", ")
+        let args: [Bind] = folders.sorted().map { .text($0) }
+        return try query("SELECT (SELECT count(*) FROM main.memory_index WHERE folder IN (\(marks)))"
+                         + " + (SELECT count(*) FROM main.memory_fts WHERE folder IN (\(marks)))"
+                         + " + (SELECT count(*) FROM main.memory_entity_refs WHERE folder IN (\(marks)))", args + args + args) {
+            Int($0.int(0)!)
+        }.first ?? 0
+    }
 
     // memory index (M3a) ------------------------------------------------------
     public struct MemoryMeta {
@@ -600,44 +723,40 @@ public final class Store {
     }
 
     /// Inserts or replaces one index entry (the markdown file was already written), its registry
-    /// entity ids with it.
+    /// entity ids with it; in memory only for a folder of `sealedFolders`.
     public func putMemoryIndex(id: String, path: String, folder: String, confidence: Double,
                                ts: Double, sourceSeq: Int64, kind: String, tier: String, entities: [String],
                                text: String, vector: Data) throws {
-        try exec("""
-            INSERT INTO memory_index (id, path, folder, confidence, ts, source_seq, kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET path = excluded.path, folder = excluded.folder,
-                confidence = excluded.confidence, ts = excluded.ts,
-                source_seq = excluded.source_seq, kind = excluded.kind
-            """, [.text(id), .text(path), .text(folder),
-                  .real(confidence), .real(ts), .int(sourceSeq), .text(kind)])
-        try exec("DELETE FROM memory_fts WHERE id = ?", [.text(id)])
-        try exec("INSERT INTO memory_fts (text, id, folder) VALUES (?, ?, ?)",
-                 [.text(text), .text(id), .text(folder)])
-        try exec("INSERT INTO memory_vectors (id, vector) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET vector = excluded.vector",
-                 [.text(id), .blob(vector)])
-        try exec("DELETE FROM memory_entity_refs WHERE id = ?", [.text(id)])
+        try deleteMemoryIndex(id: id)
+        let s = sealedFolders.contains(folder) ? "sealed" : "main"
+        try exec("INSERT INTO \(s).memory_index (id, path, folder, confidence, ts, source_seq, kind) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 [.text(id), .text(path), .text(folder), .real(confidence), .real(ts), .int(sourceSeq), .text(kind)])
+        try exec("INSERT INTO \(s).memory_fts (text, id, folder) VALUES (?, ?, ?)", [.text(text), .text(id), .text(folder)])
+        try exec("INSERT INTO \(s).memory_vectors (id, vector) VALUES (?, ?)", [.text(id), .blob(vector)])
         for entity in Set(entities) {
-            try exec("INSERT INTO memory_entity_refs (id, entity, folder, tier) VALUES (?, ?, ?, ?)",
+            try exec("INSERT INTO \(s).memory_entity_refs (id, entity, folder, tier) VALUES (?, ?, ?, ?)",
                      [.text(id), .text(entity), .text(folder), .text(tier)])
         }
     }
 
+    /// Entries of the on-disk index (the plain folders).
     public func countMemoryIndex() throws -> Int {
-        try query("SELECT count(*) FROM memory_index", []) { Int($0.int(0)!) }.first ?? 0
+        try query("SELECT count(*) FROM main.memory_index", []) { Int($0.int(0)!) }.first ?? 0
     }
 
     /// Removes one entry from every index table (its markdown file is already gone).
     public func deleteMemoryIndex(id: String) throws {
-        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entity_refs"] {
-            try exec("DELETE FROM \(table) WHERE id = ?", [.text(id)])
+        for s in ["main", "sealed"] {
+            for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entity_refs"] {
+                try exec("DELETE FROM \(s).\(table) WHERE id = ?", [.text(id)])
+            }
         }
     }
 
-    /// Empties the memory index and the registry index.
+    /// Empties the memory index (both schemas) and the registry index.
     public func clearMemoryIndex() throws {
-        for table in ["memory_index", "memory_fts", "memory_vectors", "memory_entity_refs",
+        for table in ["main.memory_index", "main.memory_fts", "main.memory_vectors", "main.memory_entity_refs",
+                      "sealed.memory_index", "sealed.memory_fts", "sealed.memory_vectors", "sealed.memory_entity_refs",
                       "registry_index", "registry_keys", "registry_fts", "registry_vectors"] {
             try exec("DELETE FROM \(table)", [])
         }
@@ -648,8 +767,8 @@ public final class Store {
         guard !ids.isEmpty else { return [:] }
         let marks = ids.map { _ in "?" }.joined(separator: ", ")
         var out: [String: [String]] = [:]
-        for (id, entity) in try query("SELECT id, entity FROM memory_entity_refs WHERE id IN (\(marks)) ORDER BY id, entity",
-                                      ids.map { .text($0) }, { ($0.text(0)!, $0.text(1)!) }) {
+        for (id, entity) in try both("SELECT id, entity FROM {s}.memory_entity_refs WHERE id IN (\(marks))",
+                                     ids.map { .text($0) }, suffix: " ORDER BY id, entity", { ($0.text(0)!, $0.text(1)!) }) {
             out[id, default: []].append(entity)
         }
         return out
@@ -660,14 +779,14 @@ public final class Store {
     public func memoriesWithEntities(_ entities: [String], folders: [String], tiers: [String]?) throws -> [String: [String]] {
         guard !entities.isEmpty, !folders.isEmpty else { return [:] }
         func marks(_ n: Int) -> String { Array(repeating: "?", count: n).joined(separator: ", ") }
-        var sql = "SELECT id, entity FROM memory_entity_refs WHERE entity IN (\(marks(entities.count))) AND folder IN (\(marks(folders.count)))"
+        var sql = "SELECT id, entity FROM {s}.memory_entity_refs WHERE entity IN (\(marks(entities.count))) AND folder IN (\(marks(folders.count)))"
         var args: [Bind] = entities.map { .text($0) } + folders.map { .text($0) }
         if let tiers {
             sql += " AND tier IN (\(marks(tiers.count)))"
             args += tiers.map { .text($0) }
         }
         var out: [String: [String]] = [:]
-        for (id, entity) in try query(sql + " ORDER BY id, entity", args, { ($0.text(0)!, $0.text(1)!) }) {
+        for (id, entity) in try both(sql, args, suffix: " ORDER BY id, entity", { ($0.text(0)!, $0.text(1)!) }) {
             out[id, default: []].append(entity)
         }
         return out
@@ -732,9 +851,10 @@ public final class Store {
     /// `limit` nil: every hit.
     public func memoryFTS(match: String, folders: [String], limit: Int?) throws -> [(id: String, rank: Double)] {
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
-        return try query("""
-            SELECT id, rank FROM memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks)) ORDER BY rank, id LIMIT ?
-            """, [.text(match)] + folders.map { .text($0) } + [.int(Int64(limit ?? -1))]) { ($0.text(0)!, $0.real(1)) }
+        return try both("SELECT id, rank FROM {s}.memory_fts WHERE memory_fts MATCH ? AND folder IN (\(marks))",
+                        [.text(match)] + folders.map { .text($0) }, suffix: " ORDER BY rank, id LIMIT \(limit ?? -1)") {
+            ($0.text(0)!, $0.real(1))
+        }
     }
 
     /// Memories in the given folders whose text contains one of `terms` (case-insensitive for
@@ -745,22 +865,21 @@ public final class Store {
         guard !terms.isEmpty else { return [] }
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
         let likes = terms.map { _ in "text LIKE ?" }.joined(separator: " OR ")
-        return try query("SELECT id FROM memory_fts WHERE folder IN (\(marks)) AND (\(likes)) ORDER BY id",
-                         folders.map { .text($0) } + terms.map { .text("%\($0)%") }) { $0.text(0)! }
+        return try both("SELECT id FROM {s}.memory_fts WHERE folder IN (\(marks)) AND (\(likes))",
+                        folders.map { .text($0) } + terms.map { .text("%\($0)%") }, suffix: " ORDER BY id") { $0.text(0)! }
     }
 
     public func memoryVectors(folders: [String]) throws -> [MemoryVectorRow] {
         let marks = folders.map { _ in "?" }.joined(separator: ", ")
-        return try query("""
-            SELECT m.id, m.vector FROM memory_vectors m JOIN memory_index m2 ON m2.id = m.id WHERE m2.folder IN (\(marks))
+        return try both("""
+            SELECT m.id, m.vector FROM {s}.memory_vectors m JOIN {s}.memory_index m2 ON m2.id = m.id WHERE m2.folder IN (\(marks))
             """, folders.map { .text($0) }) {
             MemoryVectorRow(id: $0.text(0)!, vector: $0.blob(1))
         }
     }
 
     public func memoryMeta(_ id: String) throws -> MemoryMeta? {
-        try query("SELECT id, path, folder, confidence, kind FROM memory_index WHERE id = ?",
-                  [.text(id)]) {
+        try both("SELECT id, path, folder, confidence, kind FROM {s}.memory_index WHERE id = ?", [.text(id)]) {
             MemoryMeta(id: $0.text(0)!, path: $0.text(1)!, folder: $0.text(2)!,
                        confidence: $0.real(3), kind: $0.text(4)!)
         }.first

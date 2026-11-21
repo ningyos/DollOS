@@ -85,6 +85,9 @@ struct MaintenanceDone {
     var kept: TodoState?
     /// The list set aside beside `kept`, carried with it.
     var keptAside: ListAside? = nil
+    /// Its words or summary carry content of secrets or of the encrypted folders (2026-11-21): the
+    /// words are kept encrypted in `maintenance.json`, the end notice is stored encrypted.
+    var sealed = false
 }
 
 /// One task's prepared work: what `commit` writes.
@@ -306,7 +309,7 @@ extension Doll {
                 commitHistory(.maintenance, task: t.rawValue, what: t.label, why: String(d.log.prefix(300)))
                 done = d
                 maintenanceState.done.append(t.rawValue)
-                maintenanceState.words = (maintenanceState.words ?? []) + [d.words]
+                maintenanceState.words = (maintenanceState.words ?? []) + [d.sealed ? try memory.box.seal(d.words) : d.words]
                 try saveMaintenance()
                 log("INFO", String(format: "maintenance: %@ done in %.1f s: %@", t.rawValue, Date().timeIntervalSince(started), d.log))
             } catch {
@@ -335,7 +338,12 @@ extension Doll {
         saveMaintenanceLogged()
         let kept = done?.kept ?? (ended.forced && todoHeld ? todo : nil)
         var text = "【系統維護】結束，現在 \(Self.hhmm(now))。"
-        text += (ended.words ?? []).joined()
+        for w in ended.words ?? [] {
+            do { text += SecretBox.isSealed(w) ? try memory.box.open(w, place: maintenanceURL.path) : w } catch {
+                log("ERROR", "maintenance: a task's words not shown: \(error)")
+            }
+        }
+        let sealed = done?.sealed == true || (ended.words ?? []).contains(where: SecretBox.isSealed)
         let failed = MaintenanceTask.allCases.filter { ended.failed[$0.rawValue] != nil }
         if !failed.isEmpty {
             text += "沒做成：\(failed.map(\.label).joined(separator: "、"))（程式出錯），明天維護的時候再做"
@@ -347,7 +355,7 @@ extension Doll {
             text += kept.phase == .waiting ? "你手上的「\(kept.current ?? "")」還在，還是等待中。" : "你手上的「\(kept.current ?? "")」還在，接著做。"
         }
         do {
-            let ev = try append(Event(.memory, .internal, text))
+            let ev = try append(Event(.memory, .internal, text, sealed: sealed))
             // The lists she holds go on in the new day, their steps starting at the notice.
             if var k = done?.kept {
                 k.startSeq = ev.seq!
@@ -412,15 +420,18 @@ extension Doll {
             }
             // The new day: its own timeline, today index, todo list and compactions; the calendar,
             // the memory and the process stay.
-            timeline = try Timeline(dir: timelineDir)
+            timeline = try Timeline(dir: timelineDir, box: memory.box)
             today = try TodayIndex(timeline, embedder: embedder)
             startDay()
             // Program notices that came after the request was gathered (the owner's calendar
             // edits meanwhile) move to the new day.
             for ev in old.events where ev.seq! > request.lastSeq { try append(ev, keepTime: true) }
+            // The summary may tell of the day's secrets or of the encrypted memories it saw: stored encrypted then.
+            let sealed = old.events.contains { $0.secret || $0.sealed } || request.related.contains { sealedFolders.contains($0.folder) }
             return MaintenanceDone(
                 log: "segment \(result.segment) → \(result.newSegment), \(result.applied.count) applied, request \(result.promptTokens) prompt tokens",
-                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept, keptAside: keptAside)
+                words: Consolidation.doneText(result.plan), summary: Consolidation.summaryNote + answer.summary, kept: kept, keptAside: keptAside,
+                sealed: sealed)
         }
     }
 

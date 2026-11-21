@@ -11,7 +11,7 @@ import Testing
     cfg.core.dataDir = dir + "/data"
     cfg.memory.dir = dir + "/memory"
     cfg.voice.enabled = false
-    let doll = try Doll(config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(), deliver: { _, _, _ in nil })
+    let doll = try Doll(config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(), keys: testKeys, deliver: { _, _, _ in nil })
     let events = await doll.timelineEvents()
     var out: [[String: Any]] = []
     for reply in events where reply.kind == .doll {
@@ -33,7 +33,7 @@ import Testing
 @Test func replayConcernExtraction() async throws {
     guard let dir = ProcessInfo.processInfo.environment["EXTRACT_DIR"] else { return }
     let cfg = try Config.load(URL(filePath: ProcessInfo.processInfo.environment["REPLAY_CONFIG"]!))
-    let timeline = try Timeline(dir: URL(filePath: dir + "/timeline"))
+    let timeline = try Timeline(dir: URL(filePath: dir + "/timeline"), box: nil)
     let open = [Concern(id: 1, text: "主人跟老闆開會（2026-11-17（星期二） 09:00）", about: .duty, source: "calendar", created: 0, due: 0)]
     let model = HTTPMainModel(cfg.llm)
     let r = ConcernExtraction.gather(events: timeline.events, open: open, cap: cfg.drives.maintenanceConcernsMax, now: timeline.events.last!.ts + 3600)

@@ -329,6 +329,9 @@ public struct MemoryConfig: Sendable {
     public var publicDir = "public"
     /// The entity registry's files (2026-11-11), under `dir` like the three folders.
     public var registryDir = "entities"
+    /// The login Keychain service of the memory key (`SecretBox`, 2026-11-21); the account is the
+    /// data dir. A throwaway doll names its own so the real one's item is never touched.
+    public var keychainService = "DollOS dollcore memory key"
     /// RRF's k: the constant in 1/(k + rank).
     public var rrfK = 60
     /// Per list: how many FTS hits and how many vector hits become candidates.
@@ -649,6 +652,7 @@ public struct Config: Sendable {
         try m.read("own_dir", &memory.ownDir)
         try m.read("public_dir", &memory.publicDir)
         try m.read("registry_dir", &memory.registryDir)
+        try m.read("keychain_service", &memory.keychainService)
         try m.read("rrf_k", &memory.rrfK)
         try m.read("max_candidates", &memory.maxCandidates)
         try m.read("confidence_weight", &memory.confidenceWeight)

@@ -42,8 +42,7 @@ import Testing
         cfg.core.dataDir = dir.appending(path: "data").path
         cfg.memory.dir = dir.appending(path: "memory").path
         let said = MutexBox<[String]>([])
-        let doll = try Doll(config: cfg, root: repo, model: HTTPMainModel(cfg.llm), embedder: embedder, computer: NoComputer(),
-                            deliver: { text, _, _ in said.mutate { $0.append(text) }; return nil })
+        let doll = try Doll(config: cfg, root: repo, model: HTTPMainModel(cfg.llm), embedder: embedder, computer: NoComputer(), keys: testKeys, deliver: { text, _, _ in said.mutate { $0.append(text) }; return nil })
         try await doll.boot()
         let runner = Task { try await doll.run() }
         return (doll, runner, said)

@@ -61,10 +61,13 @@ if argv.count > 3 {
         // Her history (2026-11-19): opened first (what changed with no commit is recorded as found),
         // then the consolidation's writes are one change of the maintenance's.
         let memDir = cfg.memory.dir.hasPrefix("/") ? URL(filePath: cfg.memory.dir) : root.appending(path: cfg.memory.dir)
-        let history = try History(config: cfg.history, data: cfg.dataDirectory(root: root), memory: cfg.memory, memoryDir: memDir)
+        let keys = KeychainKeyStore(service: cfg.memory.keychainService)
+        let box = try Doll.unlockSecrets(keys: keys, data: cfg.dataDirectory(root: root), memRoot: memDir, memory: cfg.memory,
+                                         timeline: cfg.dataDirectory(root: root).appending(path: "timeline"))
+        let history = try History(config: cfg.history, data: cfg.dataDirectory(root: root), memory: cfg.memory, memoryDir: memDir, box: box)
         _ = try history.open(ts: Date().timeIntervalSince1970)
         let result = try await Consolidation.run(config: cfg, root: root,
-                                                 model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory),
+                                                 model: Consolidation.model(cfg), embedder: try await MLXEmbedder.load(cfg.memory), keys: keys,
                                                  now: Date().timeIntervalSince1970)
         try history.record(HistoryChange(who: .maintenance, task: "consolidate", what: "整理記憶、寫摘要（手動）",
                                          why: "dollcore consolidate，她的程序沒開的時候手動跑的", ts: Date().timeIntervalSince1970))
@@ -114,6 +117,7 @@ do {
     api = a
     let d = try Doll(
         config: cfg, root: root, model: HTTPMainModel(cfg.llm), embedder: embedder, maintenanceModel: Consolidation.model(cfg),
+        keys: KeychainKeyStore(service: cfg.memory.keychainService),
         deliver: { text, to, image in
             let failed = a.deliver(text, to: to, image: image)
             out("[→ \(to.label)] \(text)" + (failed.map { "  （沒送到：\($0)）" } ?? ""))

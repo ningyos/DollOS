@@ -242,7 +242,10 @@ public final class History: @unchecked Sendable {
         case clean
     }
 
-    public init(config: HistoryConfig, data: URL, memory: MemoryConfig, memoryDir: URL) throws {
+    /// Opens the encrypted folders' files for the owner's diff and for merging an undo.
+    let box: SecretBox
+
+    public init(config: HistoryConfig, data: URL, memory: MemoryConfig, memoryDir: URL, box: SecretBox) throws {
         let exe = try Git.locate(config.git)
         let dir = config.dir.hasPrefix("/") ? URL(filePath: config.dir) : data.appending(path: config.dir)
         git = Git(exe: exe, gitDir: dir.standardizedFileURL)
@@ -250,6 +253,7 @@ public final class History: @unchecked Sendable {
         memoryRegistryDir = memory.registryDir
         secretDir = memory.secretDir
         ownDir = memory.ownDir
+        self.box = box
         let fm = FileManager.default
         if !fm.fileExists(atPath: dir.appending(path: "HEAD").path) {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -265,7 +269,8 @@ public final class History: @unchecked Sendable {
             try h.seekToEnd()
             try h.write(contentsOf: Data("[user]\n\tname = dollcore\n\temail = dollcore@localhost\n[core]\n\tquotepath = false\n\tautocrlf = false\n[gc]\n\tautoDetach = false\n".utf8))
         }
-        // Only the owner's user reads it: the secret folder's history is in it, in plain text.
+        // Only the owner's user reads it. The secret and own folders' files are in it as they are on
+        // disk: encrypted (`SecretBox`).
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         let fd = Darwin.open(dir.appending(path: "doll.lock").path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else { throw HistoryError(description: "cannot open \(dir.path)/doll.lock: errno \(errno)") }
@@ -473,6 +478,10 @@ public final class History: @unchecked Sendable {
             last = snap
             return nil
         }
+        // A change to an encrypted folder keeps no why and no args in its message (the commit message
+        // is plain: `remember`'s args are the memory's text); the diff shows what changed, decrypted.
+        var c = c
+        if paths.contains(where: isSealed) { (c.why, c.args) = ("", nil) }
         let message = Self.message(c, unrecorded: unrecorded)
         var stream = Data()
         func add(_ s: String) { stream.append(Data(s.utf8)) }
@@ -577,11 +586,59 @@ public final class History: @unchecked Sendable {
         return id.isEmpty ? nil : try entry(id)
     }
 
-    /// The patch of one change (its first commit: against nothing).
+    /// The patch of one change (its first commit: against nothing). The encrypted folders' files are
+    /// decrypted in memory and shown whole, each line marked (` `, `-`, `+`), after git's patch of the rest.
     public func diff(_ rev: String) throws -> String {
         let id = try resolve(rev)
-        return String(decoding: try git.run(["diff-tree", "-p", "--root", "--no-commit-id", "--no-color", "--no-ext-diff", "--no-renames", id]).out,
-                      as: UTF8.self)
+        let sealed = [secretDir, ownDir].map { "memory/\($0)" }
+        let base = ["diff-tree", "--root", "--no-commit-id", "--no-color", "--no-ext-diff", "--no-renames"]
+        var out = String(decoding: try git.run(base + ["-p", id, "--", "."] + sealed.map { ":(exclude)\($0)" }).out, as: UTF8.self)
+        for line in try git.text(base + ["-r", id, "--"] + sealed).split(separator: "\n") {
+            // :100644 100644 <old> <new> M\t<path>
+            let parts = line.split(separator: "\t", maxSplits: 1)
+            let fields = parts[0].split(separator: " ")
+            guard parts.count == 2, fields.count >= 4 else { continue }
+            let path = String(parts[1])
+            func text(_ blobID: Substring) throws -> [String]? {
+                guard blobID.contains(where: { $0 != "0" }) else { return nil }
+                return try box.open(String(decoding: try blob(String(blobID)), as: UTF8.self), place: "\(path) in the history").components(separatedBy: "\n")
+            }
+            out += Self.wholeDiff(path: path, old: try text(fields[2]), new: try text(fields[3]))
+        }
+        return out
+    }
+
+    /// A patch of one file shown whole (no hunks): every line, `-` removed, `+` added, ` ` kept.
+    static func wholeDiff(path: String, old: [String]?, new: [String]?) -> String {
+        let a = old ?? [], b = new ?? []
+        let change = b.difference(from: a)
+        var removed = Set<Int>(), inserted = Set<Int>()
+        for c in change {
+            switch c {
+            case .remove(let o, _, _): removed.insert(o)
+            case .insert(let o, _, _): inserted.insert(o)
+            }
+        }
+        var lines = ["diff --git a/\(path) b/\(path)", old == nil ? "--- /dev/null" : "--- a/\(path)",
+                     new == nil ? "+++ /dev/null" : "+++ b/\(path)", "@@ -1,\(a.count) +1,\(b.count) @@ (decrypted)"]
+        var i = 0, j = 0
+        while i < a.count || j < b.count {
+            if i < a.count, removed.contains(i) { lines.append("-" + a[i]); i += 1 }
+            else if j < b.count, inserted.contains(j) { lines.append("+" + b[j]); j += 1 }
+            else { lines.append(" " + a[i]); i += 1; j += 1 }
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// A path of an encrypted memory folder (`memory/<secret|own>/…`).
+    func isSealed(_ path: String) -> Bool { [secretDir, ownDir].contains { path.hasPrefix("memory/\($0)/") } }
+
+    /// `merge`, with an encrypted folder's file decrypted for it and the result encrypted again.
+    func mergeFile(path: String, cur: Data, base: Data, other: Data) throws -> Data? {
+        guard isSealed(path) else { return Self.merge(path: path, cur: cur, base: base, other: other) }
+        func open(_ d: Data) throws -> Data { Data(try box.open(String(decoding: d, as: UTF8.self), place: path).utf8) }
+        guard let merged = Self.merge(path: path, cur: try open(cur), base: try open(base), other: try open(other)) else { return nil }
+        return Data((try box.seal(String(decoding: merged, as: UTF8.self)) + "\n").utf8)
     }
 
     // going back --------------------------------------------------------------------------------
@@ -618,8 +675,8 @@ public final class History: @unchecked Sendable {
                 } else if t == nil, p.hasSuffix(".md") || p.hasPrefix("data/tools/") {
                     // A memory, registry entry or tool the change created goes, its later edits with it.
                     writes.append((p, nil))
-                } else if let b, c != nil, let u = url(p), let merged = Self.merge(path: p, cur: try Data(contentsOf: u), base: try blob(b),
-                                                               other: try t.map(blob) ?? Data("{}".utf8)) {
+                } else if let b, c != nil, let u = url(p), let merged = try mergeFile(path: p, cur: try Data(contentsOf: u), base: try blob(b),
+                                                                          other: try t.map(blob) ?? Data("{}".utf8)) {
                     // A record file the change created: merged against an empty one, so later records stay.
                     writes.append((p, merged))
                 } else {
@@ -843,7 +900,7 @@ extension Doll {
                 goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
                 goalsChanged()
             case "data/record.json": recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record") ?? RecordFile()
-            case "data/memory-fixes.json": fixFile = try Concerns.read(MemoryFixFile.self, fixesURL, what: "memory fixes") ?? MemoryFixFile()
+            case "data/memory-fixes.json": fixFile = try MemoryFixFile.read(fixesURL, box: memory.box) ?? MemoryFixFile()
             default:
                 // Tools are read from disk at every use; memory and registry files need their index rows.
                 if p.hasPrefix("memory/") { mem.append(String(p.dropFirst("memory/".count))) }

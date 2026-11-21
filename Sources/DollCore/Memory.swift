@@ -470,14 +470,18 @@ public final class Memory {
     private let root: URL
     private let store: Store
     let embedder: any Embedder
+    /// Encrypts the `secret` and `own` folders' files (`SecretBox`).
+    let box: SecretBox
     /// The entity registry the memories' entities name (`<memory.dir>/<registry_dir>/`).
     public let registry: Registry
 
-    init(config: MemoryConfig, root: URL, store: Store, embedder: any Embedder) throws {
+    init(config: MemoryConfig, root: URL, store: Store, embedder: any Embedder, box: SecretBox) throws {
         self.config = config
         self.root = root
         self.store = store
         self.embedder = embedder
+        self.box = box
+        store.sealedFolders = Self.sealedFolders(config)
         let fm = FileManager.default
         for dir in [config.secretDir, config.ownDir, config.publicDir] {
             try fm.createDirectory(at: root.appending(path: dir), withIntermediateDirectories: true)
@@ -487,6 +491,29 @@ public final class Memory {
         if try store.countMemoryIndex() == 0, try store.countRegistryIndex() == 0 {
             try store.setMemoryIndexVersion(Self.indexVersion)
         }
+    }
+
+    /// The folders whose files are encrypted and whose index lives only in memory (owner, 2026-11-21).
+    static func sealedFolders(_ config: MemoryConfig) -> Set<String> { [config.secretDir, config.ownDir] }
+
+    /// Whether `url` is a memory file of an encrypted folder.
+    func isSealed(_ url: URL) -> Bool {
+        let dir = url.deletingLastPathComponent().standardizedFileURL.path
+        return Self.sealedFolders(config).contains { root.appending(path: $0).standardizedFileURL.path == dir }
+    }
+
+    /// A memory file's text, decrypted when its folder is encrypted (a plain one there is an error
+    /// naming its path: boot fails on it).
+    func contents(_ url: URL) throws -> String {
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        return isSealed(url) ? try box.open(raw, place: url.path) : raw
+    }
+
+    func readFile(_ url: URL) throws -> MemoryFile { try Self.parseFile(contents(url)) }
+
+    /// Writes a memory file, encrypted in the `secret` and `own` folders.
+    func writeFile(_ file: MemoryFile, to url: URL) throws {
+        try (isSealed(url) ? try box.seal(file.text) + "\n" : file.text).write(to: url, atomically: true, encoding: .utf8)
     }
 
     static func blob(_ v: [Float]) -> Data {
@@ -610,7 +637,7 @@ public final class Memory {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         return try names.sorted().filter { $0.hasSuffix(".md") }.compactMap { name in
             let url = dir.appending(path: name)
-            let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+            let parsed = try readFile(url)
             return parsed.app.isEmpty ? nil : (url, parsed)
         }
     }
@@ -638,7 +665,7 @@ public final class Memory {
                               app: app?.bundleID ?? "", appVersion: app?.version ?? "",
                               task: experience?.task, stats: experience?.stats, entities: entities, deep: deep,
                               auditSegment: auditSegment, body: body)
-        try file.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(file, to: url)
         try index(id, url: url, folder: dirName(f), file)
         return id
     }
@@ -679,7 +706,7 @@ public final class Memory {
     /// settled from `ts` on (stored). The text, and so the index, stay as they are.
     func confirm(_ id: String, at ts: Double, seq: Int64) throws -> Confirmation {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
         guard Self.strengthTiers.contains(parsed.tier) else {
             throw MemoryError(description: "memory \(id) is \(parsed.tier.rawValue): it has no strength to confirm")
@@ -690,7 +717,7 @@ public final class Memory {
         let strength = Self.activation(parsed.evidence.map(\.ts), now: ts, decay: config.strengthDecay, unitDays: config.strengthUnitDays)
         let settles = parsed.settled == nil && strength >= config.strengthSettled
         if settles { parsed.settled = ts }
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
         return .counted(strength: strength, settled: settles)
     }
 
@@ -704,13 +731,13 @@ public final class Memory {
     /// with a strength; never a retired one. The text, and so the index, stay as they are.
     func setDeep(_ id: String, _ deep: Bool) throws {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
         guard Self.strengthTiers.contains(parsed.tier) else {
             throw MemoryError(description: "memory \(id) is \(parsed.tier.rawValue): it has no strength, so it cannot be deep")
         }
         parsed.deep = deep
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
     }
 
     /// Every entity must name an existing registry entry.
@@ -741,7 +768,7 @@ public final class Memory {
         for f in MemoryFolder.allCases where visible.contains(f) {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
             for name in names.sorted() where name.hasSuffix(".md") {
-                let parsed = try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8))
+                let parsed = try readFile(directory(f).appending(path: name))
                 guard parsed.tier == .selfReported, parsed.retired == nil, !parsed.body.isEmpty else { continue }
                 out.append(Experience(id: String(name.dropLast(3)), folder: dirName(f), secret: f == .secret,
                                       level: level(parsed.confidence), file: parsed))
@@ -753,7 +780,7 @@ public final class Memory {
     /// One experience by id; nil when no folder holds it or it is not an experience.
     func experience(_ id: String) throws -> Experience? {
         guard let url = url(of: id) else { return nil }
-        let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        let parsed = try readFile(url)
         guard parsed.tier == .selfReported else { return nil }
         let folder = url.deletingLastPathComponent().lastPathComponent
         return Experience(id: id, folder: folder, secret: folder == config.secretDir, level: level(parsed.confidence), file: parsed)
@@ -763,7 +790,7 @@ public final class Memory {
     /// and it is not retired (2026-11-11, provisional).
     func attachable(_ id: String) throws -> Experience? {
         guard let url = url(of: id) else { return nil }
-        let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        let parsed = try readFile(url)
         guard parsed.tier == .consolidated || (parsed.deep && Self.strengthTiers.contains(parsed.tier)),
               parsed.retired == nil, !parsed.body.isEmpty else { return nil }
         let folder = url.deletingLastPathComponent().lastPathComponent
@@ -775,7 +802,7 @@ public final class Memory {
         guard let url = url(of: id) else { return nil }
         let dir = url.deletingLastPathComponent().lastPathComponent
         guard let folder = MemoryFolder.allCases.first(where: { dirName($0) == dir }) else { return nil }
-        return (folder, try Self.parseFile(String(contentsOf: url, encoding: .utf8)))
+        return (folder, try readFile(url))
     }
 
     /// Replaces a memory's text and entities (consolidation's update); the rest of its front-matter
@@ -784,13 +811,13 @@ public final class Memory {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw MemoryError(description: "update of \(id) with no text") }
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is retired") }
         parsed.body = body
         parsed.entities = MemoryEntity.unique(entities)
         if let auditSegment { parsed.auditSegment = auditSegment }
         try checkEntities(parsed.entities)
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
         try index(id, url: url, folder: url.deletingLastPathComponent().lastPathComponent, parsed)
     }
 
@@ -806,10 +833,10 @@ public final class Memory {
                            entities: parsed.entities, deep: parsed.deep && Self.strengthTiers.contains(tier),
                            auditSegment: auditSegment, now: now)
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var fresh = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var fresh = try readFile(url)
         fresh.evidence = parsed.allEvidence
         fresh.settled = parsed.settled
-        try fresh.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(fresh, to: url)
         try retire(old, Retirement(ts: now, supersededBy: id, reason: reason))
         return id
     }
@@ -818,10 +845,10 @@ public final class Memory {
     /// is indexed again.
     func unretire(_ id: String) throws {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.retired != nil else { throw MemoryError(description: "memory \(id) is not retired") }
         parsed.retired = nil
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
         try index(id, url: url, folder: url.deletingLastPathComponent().lastPathComponent, parsed)
     }
 
@@ -835,19 +862,19 @@ public final class Memory {
     /// The audit checked it: its `audit_pending` mark goes (text and index stay).
     func clearAudit(_ id: String) throws {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.auditSegment != nil else { return }
         parsed.auditSegment = nil
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
     }
 
     /// Marks a memory retired in its front-matter and takes it out of the index; the file stays.
     func retire(_ id: String, _ r: Retirement) throws {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is already retired") }
         parsed.retired = r
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
         try store.deleteMemoryIndex(id: id)
     }
 
@@ -858,7 +885,7 @@ public final class Memory {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
             for name in names.sorted() where name.hasSuffix(".md") {
                 let url = directory(f).appending(path: name)
-                guard let r = try Self.parseFile(String(contentsOf: url, encoding: .utf8)).retired, r.ts < cutoff else { continue }
+                guard let r = try readFile(url).retired, r.ts < cutoff else { continue }
                 try FileManager.default.removeItem(at: url)
                 gone.append(String(name.dropLast(3)))
             }
@@ -871,7 +898,7 @@ public final class Memory {
     func list(_ f: MemoryFolder) throws -> [(id: String, file: MemoryFile)] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
         return try names.filter { $0.hasSuffix(".md") }.map { name in
-            (String(name.dropLast(3)), try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8)))
+            (String(name.dropLast(3)), try readFile(directory(f).appending(path: name)))
         }.sorted { ($0.1.ts, $1.0) > ($1.1.ts, $0.0) }
     }
 
@@ -880,11 +907,11 @@ public final class Memory {
     @discardableResult
     func updateStats(_ id: String, _ change: (inout ExperienceStats) -> Void) throws -> ExperienceStats? {
         guard let url = url(of: id) else { throw MemoryError(description: "no memory file \(id)") }
-        var parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+        var parsed = try readFile(url)
         guard var stats = parsed.stats else { return nil }
         change(&stats)
         parsed.stats = stats
-        try parsed.text.write(to: url, atomically: true, encoding: .utf8)
+        try writeFile(parsed, to: url)
         return stats
     }
 
@@ -927,13 +954,13 @@ public final class Memory {
         }
     }
 
-    /// Number of records on disk that belong in the index: not retired, not empty.
+    /// Number of records in the plain folders that belong in the on-disk index: not retired, not empty.
     private func fileCount() throws -> Int {
         var n = 0
-        for f in MemoryFolder.allCases {
+        for f in MemoryFolder.allCases where !isSealed(directory(f).appending(path: "x.md")) {
             let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(f).path)) ?? []
             for name in names where name.hasSuffix(".md") {
-                let parsed = try Self.parseFile(String(contentsOf: directory(f).appending(path: name), encoding: .utf8))
+                let parsed = try readFile(directory(f).appending(path: name))
                 if parsed.retired == nil, !parsed.body.isEmpty { n += 1 }
             }
         }
@@ -948,14 +975,27 @@ public final class Memory {
     static let indexVersion = 5
 
     /// Called at boot: files written by a previous process (or by hand) are not in the index,
-    /// and a new process would not find them. If the counts disagree (memories or registry
+    /// and a new process would not find them. If the counts disagree (plain memories or registry
     /// entries), or older code built the index (`indexVersion`), the whole index is rebuilt —
     /// records are small and few, a full rebuild is cheaper than tracking which are missing.
-    func syncOnBoot() throws {
+    /// The encrypted folders' index is in memory only (`Store`), so it is built here every boot,
+    /// from the decrypted files. Rows of those folders in the on-disk index are plaintext that is
+    /// no longer allowed: boot fails.
+    /// Returns how many memories of the encrypted folders it indexed in memory.
+    @discardableResult
+    func syncOnBoot() throws -> Int {
+        let plain = try store.diskRows(folders: Self.sealedFolders(config))
+        if plain > 0 {
+            throw MemoryError(description: "\(store.path.path) holds \(plain) index rows of the \(config.secretDir)/\(config.ownDir) folders in plain text; those folders are encrypted now and their index is in memory only (delete the file: it is rebuilt from the memory files)")
+        }
+        let sealed = MemoryFolder.allCases.filter { isSealed(directory($0).appending(path: "x.md")) }
         if try store.memoryIndexVersion() != Self.indexVersion || (try fileCount()) != (try store.countMemoryIndex())
             || registry.fileCount() != (try store.countRegistryIndex()) {
             try rebuild()
+        } else {
+            try index(indexable(sealed))
         }
+        return try store.memoryVectors(folders: sealed.map(dirName)).count
     }
 
     /// Drops every index row and re-reads the markdown files, the registry's first (spec 6: SQLite
@@ -964,18 +1004,27 @@ public final class Memory {
         try store.clearMemoryIndex()
         try store.setMemoryIndexVersion(Self.indexVersion)
         try registry.rebuild()
+        try index(indexable(MemoryFolder.allCases))
+    }
+
+    /// The files of `folders` that belong in the index (decrypted), their entities checked.
+    private func indexable(_ folders: [MemoryFolder]) throws -> [(id: String, url: URL, folder: String, file: MemoryFile)] {
         var files: [(id: String, url: URL, folder: String, file: MemoryFile)] = []
-        for f in MemoryFolder.allCases {
+        for f in folders {
             let dir = directory(f)
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names.sorted() where name.hasSuffix(".md") {
                 let url = dir.appending(path: name)
-                let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+                let parsed = try readFile(url)
                 guard !parsed.body.isEmpty, parsed.retired == nil else { continue }
                 do { try checkEntities(parsed.entities) } catch { throw MemoryError(description: "\(url.path): \(error)") }
                 files.append((String(name.dropLast(3)), url, dirName(f), parsed))
             }
         }
+        return files
+    }
+
+    private func index(_ files: [(id: String, url: URL, folder: String, file: MemoryFile)]) throws {
         let vectors = try embedder.embed(files.map(\.file.body), as: .document)
         for (f, v) in zip(files, vectors) { try index(f.id, url: f.url, folder: f.folder, f.file, vector: v) }
     }
@@ -995,7 +1044,7 @@ public final class Memory {
             guard MemoryFolder.allCases.contains(where: { dirName($0) == parts[0] }) else { continue }
             let url = root.appending(path: rel)
             if FileManager.default.fileExists(atPath: url.path) {
-                let parsed = try Self.parseFile(String(contentsOf: url, encoding: .utf8))
+                let parsed = try readFile(url)
                 if parsed.retired == nil, !parsed.body.isEmpty {
                     try index(id, url: url, folder: parts[0], parsed)
                     continue
@@ -1169,8 +1218,8 @@ public final class Memory {
     /// `tiers`) its tier is one of them.
     private func memoryHit(_ id: String, folders: [String], tiers: Set<SourceTier>?) throws -> MemoryHit? {
         guard let meta = try store.memoryMeta(id), folders.contains(meta.folder),
-              let body = try? String(contentsOfFile: meta.path, encoding: .utf8) else { return nil }
-        let parsed = try Self.parseFile(body)
+              FileManager.default.fileExists(atPath: meta.path) else { return nil }
+        let parsed = try readFile(URL(filePath: meta.path))
         guard !parsed.body.isEmpty, tiers?.contains(parsed.tier) ?? true else { return nil }
         return MemoryHit(id: id, folder: meta.folder, secret: meta.folder == config.secretDir,
                          confidence: meta.confidence, level: level(meta.confidence),
