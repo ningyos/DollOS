@@ -9,7 +9,7 @@ max_tokens = 4096             # 初始值理由：一回合一個動作，回覆
 
 [core]
 data_dir = "data"
-pack = "character_packs/doll2/doll.toml"
+pack = "character_packs/doll/doll.toml"
 # 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、行事曆的時間到了、watch 叫醒）
 # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
 # calendar（2026-11-15）：人說的話之後、watch 之前。行事曆的開始時間是外面世界的事實（主人的約），watch 是她自己設來看畫面的，常常只是「沒變化／時間到」；同一批裡她先讀到約、再讀到畫面

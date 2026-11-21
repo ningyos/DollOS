@@ -352,10 +352,18 @@ final class FakeEmbedder: Embedder, Sendable {
 
 /// The real embedding model (`dollcore.example.toml`'s), loaded once for the tests that are about
 /// meaning: the M3a corpus and recall by meaning. Needs the weights in the Hugging Face cache.
-private let qwen3 = Task { try await MLXEmbedder.load(try Config.load(root.appending(path: "dollcore.example.toml")).memory) }
+private let qwen3 = Task { try await MLXEmbedder.load(try exampleConfig().memory) }
 
 /// A memory's id as she sees it (〔…｜記憶 12-ab34cd〕, 2026-11-18) left out, for texts compared whole.
 func noIDs(_ s: String) -> String { s.replacing(/｜記憶 [0-9]+-[0-9a-f]{6}〕/, with: "〕") }
+
+/// `dollcore.example.toml` with 娃娃's pack: the example now starts Doll (owner, 2026-11-21), and the
+/// tests keep 娃娃, the pack they were written and measured with (it stays in the project as an example).
+func exampleConfig() throws -> Config {
+    var c = try Config.load(root.appending(path: "dollcore.example.toml"))
+    c.core.pack = "character_packs/doll2/doll.toml"
+    return c
+}
 
 private struct Harness {
     let doll: Doll
@@ -369,7 +377,7 @@ private struct Harness {
     init(_ replies: [Scripted] = [], dir reuse: URL? = nil, embedder: (any Embedder)? = nil, clock: (any DollClock)? = nil,
          tune: (inout Config) -> Void = { _ in }) async throws {
         dir = reuse ?? FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
-        var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+        var cfg = try exampleConfig()
         cfg.core.dataDir = dir.path
         cfg.computer.settleS = 0
         cfg.computer.windowWaitS = 0
@@ -460,7 +468,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func keyIsOneKeyWithModifiersInAFixedOrder() throws {
-    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let cfg = try exampleConfig()
     let specs = Tools.computerSpecs(cfg.computer, cfg.files)
     func decode(_ step: String) throws -> Tools.Request {
         try Tools.decode(call("act", [("steps", "[\(step)]")]), specs: specs)
@@ -483,7 +491,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func jsonParametersDecodeFromTheirText() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
+    let specs = Tools.specs(memory: try exampleConfig().memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
     let items = "[{\"text\": \"主人養貓\", \"folder\": \"public\"},\n {\"text\": \"我的 VM 密碼\", \"folder\": \"own\"}, {\"text\": \"姐姐的事\", \"folder\": \"secret\"}]"
     // as a JSON string (the text of the array) and as the array itself
     for c in [call("remember", [("items", items)]), ToolCall(name: "remember", arguments: "{\"items\": \(items)}")] {
@@ -504,7 +512,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
 }
 
 @Test func aFailedCallsResultIsItsProblem() throws {
-    let specs = Tools.specs(memory: try Config.load(root.appending(path: "dollcore.example.toml")).memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
+    let specs = Tools.specs(memory: try exampleConfig().memory, voice: false, computer: ComputerConfig(), files: FilesConfig())
     let failed = ToolCall.unread(content: "<invoke name=\"use_computer\">\n</invoke>", rejected: [])[0]
     do { _ = try Tools.decode(failed, specs: specs); Issue.record("accepted") } catch {
         #expect("\(error)" == ToolCall.unreadable)
@@ -1073,7 +1081,7 @@ private let sent = "（送出了，cua-driver 沒法確認有沒有作用；看�
 private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×816"
 
 @Test func eachComputerToolDecodesItsArgumentsAndRefusesBadOnes() throws {
-    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let cfg = try exampleConfig()
     let specs = Tools.specs(memory: cfg.memory, voice: false, computer: cfg.computer, files: cfg.files)
     func decode(_ name: String, _ params: [(String, String)]) throws -> Tools.Request { try Tools.decode(call(name, params), specs: specs) }
     func error(_ name: String, _ params: [(String, String)]) -> String? {
@@ -1169,7 +1177,7 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(await h.doll.itemSteps.map(\.line) == ["open Calculator"])
     // The read asked for both tree formats and a jpeg screenshot into her shots folder, with this session.
     let read = try #require(h.cua.args("get_window_state").first)
-    let maxElements = try Config.load(root.appending(path: "dollcore.example.toml")).computer.maxElements
+    let maxElements = try exampleConfig().computer.maxElements
     #expect(read["pid"] as? Int == 100 && read["window_id"] as? Int == 62541 && read["tree_format"] as? String == "both"
             && read["screenshot_format"] as? String == "jpeg" && read["max_elements"] as? Int == maxElements
             && (read["screenshot_out_file"] as? String)?.hasPrefix(h.dir.appending(path: "shots").path) == true
@@ -1660,7 +1668,7 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
 @Test func sequenceMaxStepsIsReadFromTheConfigAndZeroIsRefused() throws {
     let example = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
     #expect(example.contains("\nsequence_max_steps = 20"))
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.sequenceMaxSteps == 20)
+    #expect(try exampleConfig().computer.sequenceMaxSteps == 20)
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-seq-\(UUID().uuidString).toml")
     defer { try? FileManager.default.removeItem(at: file) }
     try example.replacingOccurrences(of: "\nsequence_max_steps = 20", with: "\nsequence_max_steps = 7").write(to: file, atomically: true, encoding: .utf8)
@@ -1711,7 +1719,7 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
     #expect(after.count == 2 && after[1].tool == "end_session" && parsed(after[1].json)["session"] as? String == label)
     // The config key: 0 by default, read from the file, outside 0...60000 refused.
     let example = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.cursorIdleHideMs == 0)
+    #expect(try exampleConfig().computer.cursorIdleHideMs == 0)
     let file = FileManager.default.temporaryDirectory.appending(path: "dollcore-cursor-\(UUID().uuidString).toml")
     defer { try? FileManager.default.removeItem(at: file) }
     try example.replacingOccurrences(of: "\ncursor_idle_hide_ms = 0", with: "\ncursor_idle_hide_ms = 60001").write(to: file, atomically: true, encoding: .utf8)
@@ -1946,7 +1954,7 @@ private let allowed = #"{"accessibility": true, "screen_recording": true}"#
     #expect(Doll.audience(try h.events()) == .doll)
     #expect(try h.toolResults().last!.text.contains("fish123"))
     // A stranger's turn (no such input until M6; the projection is Memory's): never.
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml")).memory
+    var cfg = try exampleConfig().memory
     cfg.dir = h.dir.appending(path: "memory").path
     let memory = try Memory(config: cfg, root: h.dir.appending(path: "memory"), store: h.store, embedder: FakeEmbedder())
     let stranger = try memory.search("VM 登入密碼", visible: Memory.visible(.stranger, sawSecret: false), limit: 5)
@@ -2105,7 +2113,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
         + "1. click AXButton \"7\"\n2. click 100,50 雙擊\n3. type「娃娃來過」\n4. key cmd+s"
     #expect(h.last.itemEnd == "完成" && h.last.experience == text && h.last.actions.contains("todo done"))
     let mems = try experiences(h)
-    let conf = try Config.load(root.appending(path: "dollcore.example.toml")).memory.confidence[.selfReported]!
+    let conf = try exampleConfig().memory.confidence[.selfReported]!
     #expect(mems.count == 1 && mems[0].text == text && mems[0].confidence == conf && mems[0].kind == "")
     #expect(conf >= 0.3 && conf < 0.7)
     // The list is done: idle, the computer refused again.
@@ -2902,7 +2910,7 @@ private func memoryFiles(_ h: Harness) throws -> [String: Data] {
         try (head + "[dashboard]\n\(bad)\n").write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
-    let example = try Config.load(root.appending(path: "dollcore.example.toml")).dashboard
+    let example = try exampleConfig().dashboard
     #expect(example.enabled && example.port == 8790 && example.bind == "127.0.0.1")
 }
 
@@ -3148,7 +3156,7 @@ extension Doll {
 
 /// The config a harness runs with, for consolidating its data dir.
 private func consolidationConfig(_ h: Harness) throws -> Config {
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var cfg = try exampleConfig()
     cfg.core.dataDir = h.dir.path
     cfg.memory.dir = h.dir.appending(path: "memory").path
     return cfg
@@ -3422,7 +3430,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
 }
 
 @Test func consolidateConfigIsValidated() throws {
-    let c = try Config.load(root.appending(path: "dollcore.example.toml")).consolidate
+    let c = try exampleConfig().consolidate
     #expect(c.effort == "high" && c.retiredKeepDays == 30 && c.recallK >= 1 && c.registryK >= 1)
     let file = FileManager.default.temporaryDirectory.appending(path: "consolidate-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
@@ -3674,7 +3682,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 }
 
 @Test func selectConfigIsValidated() throws {
-    let s = try Config.load(root.appending(path: "dollcore.example.toml")).select
+    let s = try exampleConfig().select
     #expect(s.similarity == 0.55 && s.attachMax == 5 && s.recallLimit == 3 && s.recallCandidates == 5)
     let file = FileManager.default.temporaryDirectory.appending(path: "select-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
@@ -3783,7 +3791,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
 }
 
 @Test func apiAndBridgeConfigAreValidated() throws {
-    let example = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let example = try exampleConfig()
     #expect(example.api.port == 8791 && !example.bridge.enabled && example.bridge.command.first?.hasPrefix("/") == true)
     #expect(example.core.priority == ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"])
     let file = FileManager.default.temporaryDirectory.appending(path: "api-\(UUID().uuidString).toml")
@@ -4093,7 +4101,7 @@ private func tone(seconds: Double, amplitude: Double = 8000) -> [Int16] {
 }
 
 @Test func voiceToolsAndPromptOnlyWithVoiceEnabled() async throws {
-    let mem = try Config.load(root.appending(path: "dollcore.example.toml")).memory
+    let mem = try exampleConfig().memory
     #expect(!Tools.specs(memory: mem, voice: false, computer: ComputerConfig(), files: FilesConfig()).contains { $0.name.hasPrefix("voice.") })
     let on = Tools.specs(memory: mem, voice: true, computer: ComputerConfig(), files: FilesConfig())
     #expect(on.suffix(3).map(\.name) == ["voice.join", "voice.say", "voice.leave"])
@@ -4471,7 +4479,7 @@ private func voiceRig(_ recognizer: any SpeechRecognizer, synth: any SpeechSynth
 /// each time the bridge must come back by itself, be joined again and finish a new utterance.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_RECONNECT"] == "1"))
 func realBridgeRecoversFromAViolationMidUtterance() async throws {
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var cfg = try exampleConfig()
     cfg.voice.enabled = true
     MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
     let synth = try await QwenSynthesizer.load(cfg.voice, root: root)
@@ -4535,7 +4543,7 @@ func realBridgeRecoversFromAViolationMidUtterance() async throws {
 /// heard of her own sentence; writes them to /tmp/m6test/real.txt.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_REAL"] == "1"))
 func realVoiceThroughTheLoopback() async throws {
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var cfg = try exampleConfig()
     cfg.voice.enabled = true
     var lines: [String] = []
     func note(_ s: String) { print("M6REAL " + s); lines.append(s) }
@@ -5178,7 +5186,7 @@ private func day(_ days: Double) -> Double {
 }
 
 @Test func strengthConfigHasDefaultsAndIsValidated() throws {
-    let c = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let c = try exampleConfig()
     #expect(c.memory.strengthDecay == 0.5 && c.memory.strengthUnitDays == 7 && c.memory.strengthSettled == 0.75)
     #expect(c.select.strengthFloor == -0.75 && c.select.strengthWeight == 0.1)
     let file = FileManager.default.temporaryDirectory.appending(path: "strength-\(UUID().uuidString).toml")
@@ -5207,7 +5215,7 @@ private func day(_ days: Double) -> Double {
 @Test func endToEndUnconfirmedMemoriesFadeConfirmedAndDeepOnesStayRecallFindsAll() async throws {
     let embedder = try await qwen3.value
     let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-strength-\(UUID().uuidString)")
-    var cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    var cfg = try exampleConfig()
     cfg.core.dataDir = dir.path
     cfg.memory.dir = dir.appending(path: "memory").path
     let timeline = dir.appending(path: "timeline")
@@ -6313,7 +6321,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 }
 
 @Test func theExampleDrivesSectionIsTheDefaultsAndBadValuesAreRefused() throws {
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).drives == DrivesConfig())
+    #expect(try exampleConfig().drives == DrivesConfig())
     let file = FileManager.default.temporaryDirectory.appending(path: "drives-\(UUID().uuidString).toml")
     let head = "[llm]\nbase_url = \"http://x\"\nmodel = \"m\"\n[memory]\n"
         + SourceTier.allCases.map { "confidence_\($0.rawValue) = 0.5\n" }.joined()
@@ -6486,7 +6494,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     let file = dir.appending(path: "c.toml")
     let head = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
         .replacingOccurrences(of: "[owner_sleep]\n", with: "[owner_sleep_old]\n")
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).ownerSleep.end == "08:00")
+    #expect(try exampleConfig().ownerSleep.end == "08:00")
     for bad in ["[owner_sleep]\nstart = \"25:00\"\n", "[owner_sleep]\nstart = \"07:00\"\nend = \"07:00\"\n", "[owner_sleep]\nquiet = true\n"] {
         try (head.components(separatedBy: "[owner_sleep_old]")[0] + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
@@ -6551,7 +6559,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
 }
 
 @Test func theAssociationThresholdIsItsOwnDrivesSetting() throws {
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).drives.associationSimilarity == DrivesConfig().associationSimilarity)
+    #expect(try exampleConfig().drives.associationSimilarity == DrivesConfig().associationSimilarity)
     let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let file = dir.appending(path: "c.toml")
@@ -8533,7 +8541,7 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
         try (head + bad).write(to: file, atomically: true, encoding: .utf8)
         #expect(throws: TOMLError.self, "\(bad)") { try Config.load(file) }
     }
-    let example = try Config.load(root.appending(path: "dollcore.example.toml")).audit
+    let example = try exampleConfig().audit
     #expect(example.enabled && example.mode == "flag" && example.maxMemories == 20 && example.maxSourceChars == 30000
             && example.originShare == 0.5 && example.guardChars == 2)
     #expect(AuditConfig().mode == "flag")
@@ -8754,7 +8762,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     #expect(!(try h.events().last!.text.contains("\n")))
     // An empty [log] section and none at all both load.
     #expect(LogConfig().maxMB == 10 && LogConfig().turnWarns == 5)
-    let example = try Config.load(root.appending(path: "dollcore.example.toml")).log
+    let example = try exampleConfig().log
     #expect(example.maxMB == 10 && example.reportKinds == 8 && example.exampleChars == 200 && example.turnWarns == 5)
 }
 
@@ -9093,7 +9101,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
 /// What the computer switch must leave alone when on: every tools list and every prompt text, as
 /// SHA-256 over all the combinations (pinned against the build before the switch, ef43eeb).
 private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
-    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let cfg = try exampleConfig()
     var tools: [String] = [], prompt: [String] = []
     for voice in [false, true] {
         for drives in [false, true] {
@@ -9128,7 +9136,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 
 @Test func theComputerSwitchIsReadStrictlyAndOnByDefault() throws {
     let text = try String(contentsOf: root.appending(path: "dollcore.example.toml"), encoding: .utf8)
-    #expect(try Config.load(root.appending(path: "dollcore.example.toml")).computer.enabled)
+    #expect(try exampleConfig().computer.enabled)
     let dir = FileManager.default.temporaryDirectory.appending(path: "computer-switch-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let line = text.split(separator: "\n").first { $0.hasPrefix("enabled = true                # false（2026-11-19") }!
@@ -9161,7 +9169,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 }
 
 @Test func withTheComputerOffHerToolsAreTheOthersAndAskOwnerStays() async throws {
-    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let cfg = try exampleConfig()
     var off = cfg.computer
     off.enabled = false
     for voice in [false, true] {
@@ -9181,7 +9189,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 }
 
 @Test func withTheComputerOffNoPromptTextOrToolSaysComputerFilesWindowsShotsOrSavedTools() throws {
-    let cfg = try Config.load(root.appending(path: "dollcore.example.toml"))
+    let cfg = try exampleConfig()
     var off = cfg.computer
     off.enabled = false
     var texts: [String] = []

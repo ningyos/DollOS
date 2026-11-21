@@ -17,7 +17,7 @@ public struct LlmConfig: Sendable {
 
 public struct CoreConfig: Sendable {
     public var dataDir = "data"
-    public var pack = "character_packs/doll2/doll.toml"
+    public var pack = "character_packs/doll/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
     public var priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"]
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her

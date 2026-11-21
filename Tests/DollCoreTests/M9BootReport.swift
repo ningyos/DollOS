@@ -147,6 +147,7 @@ private func boot(at hhmm: String) -> Double {
     let runsDir = out.appending(path: "runs")
     try FileManager.default.createDirectory(at: runsDir, withIntermediateDirectories: true)
     var cfg = try Config.load(m9Root.appending(path: "dollcore.example.toml"))
+    cfg.core.pack = "character_packs/doll2/doll.toml"   // measured with 娃娃; the example now starts Doll
     cfg.llm.baseURL = "http://192.0.2.10:8080"
     cfg.llm.model = "qwen3.8-flash-next-unsloth-ud-iq2_xs"
     cfg.voice.enabled = false
