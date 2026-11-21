@@ -6737,6 +6737,21 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
             == (others: [Doll.bootNotice + "x", "送出了", "嗨"], own: ["想", "說"]))
 }
 
+/// A basis stitched from sentences of the boot notice joined by 。 (the m15 fix 3 real check's run 1,
+/// verbatim): each sentence is found on its own, so the note is kept as written.
+@Test func aConcernBasisStitchedFromSeveralSentencesIsFoundSentenceBySentence() throws {
+    let notice = Doll.bootNotice + "現在 11-20 18:00。\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-20 13:00:13 開機，共 57 行。\n"
+        + "- 結束：沒有結束的紀錄，最後一行 log 在 11-20 17:12:51，之後就沒有了。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。\n"
+        + "- 沒有錯誤和警告。"
+    let run1 = "note own: log 在 17:12 中斷且沒有錯誤，原因還沒分清楚是不是 Mac 關機／斷電｜根據：最後一行 log 在 11-20 17:12:51，之後就沒有了。沒有錯誤和警告。可能是被強制結束、當掉、或這台 Mac 關機／斷電"
+    let plan = try ConcernExtraction.parse(run1, open: [], ownerLines: [], others: [notice], own: ["下午 17:12 左右我這裡斷了一次"], cap: 3, room: 20)
+    #expect(plan.notes.map(\.text) == ["log 在 17:12 中斷且沒有錯誤，原因還沒分清楚是不是 Mac 關機／斷電"] && plan.dropped.isEmpty)
+    // A piece found nowhere still leaves the note out; pieces only in her lines make it hers.
+    #expect(try ConcernExtraction.parse("note owner: x ｜根據：沒有錯誤和警告。電腦常常斷電", open: [], ownerLines: [], others: [notice], own: [], cap: 3, room: 20).notes.isEmpty)
+    #expect(try ConcernExtraction.parse("note owner: 斷了 ｜根據：下午 17:12。我這裡斷了一次", open: [], ownerLines: [], others: [notice],
+                                        own: ["下午 17:12 左右我這裡斷了一次"], cap: 3, room: 20).notes.map(\.text) == ["她說過斷了（沒查證）"])
+}
+
 /// The trial's case end to end: she told the owner a cut she only inferred; the extraction's note
 /// sourced from her line is written as hers, unverified.
 @Test func maintenanceWritesAConcernFromHerOwnLineAsSomethingSheSaid() async throws {

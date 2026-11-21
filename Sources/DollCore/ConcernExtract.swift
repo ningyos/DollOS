@@ -152,13 +152,16 @@ enum ConcernExtraction {
                 body = body[..<b.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: "｜| ").union(.whitespaces))
                 guard !body.isEmpty else { throw ModelError("concern extraction: empty text in「\(line)」") }
                 if body.hasSuffix("。") { body = String(body.dropLast()) }
-                if !others.contains(where: { Doll.quoted(basis, in: $0) }) {
-                    guard own.contains(where: { Doll.quoted(basis, in: $0) }) else {
-                        plan.dropped.append("basis「\(basis)」 is not in the day「\(body)」")
-                        continue
-                    }
-                    if about != .duty { body = unverified(body) }
+                // Each sentence of the basis on its own (2026-11-22, m15 fix 3 real check: a basis copied
+                // from the boot notice as three sentences joined by 。 was not found whole): every piece
+                // must be in the day; only her own words when none of them is in anyone else's.
+                let pieces = basis.split(whereSeparator: { "。！？".contains($0) }).map(String.init).filter { !key($0).isEmpty }
+                let inOthers = pieces.map { p in others.contains { Doll.quoted(p, in: $0) } }
+                guard !pieces.isEmpty, pieces.indices.allSatisfy({ i in inOthers[i] || own.contains { Doll.quoted(pieces[i], in: $0) } }) else {
+                    plan.dropped.append("basis「\(basis)」 is not in the day「\(body)」")
+                    continue
                 }
+                if !inOthers.contains(true), about != .duty { body = unverified(body) }
                 let k = key(body)
                 if seen.contains(k) { plan.dropped.append("duplicate「\(body)」"); continue }
                 if plan.notes.count >= min(cap, room) {
