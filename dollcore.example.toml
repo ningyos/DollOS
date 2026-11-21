@@ -1,6 +1,6 @@
 [llm]
-base_url = "http://192.0.2.10:8080"
-model = "qwen3.8-flash-next-iq3_s"
+base_url = "http://127.0.0.1:8080"   # 你的模型伺服器（OpenAI chat completions＋tool calling），不含 /v1
+model = "your-model-name"           # 伺服器認得的模型名字
 default_effort = "none"       # 決定（spec 3.1）：預設 none；她呼叫 think(medium) 調高一次（2026-11-15：high 拿掉了，模板把 high 那句寫在 prompt 最前面，每用一次整條時間線重讀兩次，30 題對答案也沒有比 medium 好）。現在每個回合都是做事的回合，這個值只在「沒有新事件」的回合用（目前不會發生）
 task_turn_effort = "medium"  # 決定（2026-11-08）：做事的回合（含新主人事件、她的工具結果、watch 叫醒）用 medium。理由：none 時第 1 回合常只說一句就停（B 同一請求重送 5／8 有呼叫工具），medium 10/10；M2 medium 輪 C 有 2 次在工具結果回合（none）只說一句就停。她用 think 指定的仍優先
 timeout_s = 300.0             # 初始值理由：high 一次約 1.5 分鐘（spec 3.1 量測 94–98 s），留一倍餘裕
@@ -12,7 +12,7 @@ retry_max_s = 120.0           # 每次等的時間加倍（5、10、20、40、80
 
 [core]
 data_dir = "data"
-pack = "character_packs/doll/doll.toml"
+pack = "character_packs/template/doll.toml"   # 角色包（SETUP.md 第 5 步：複製到資料夾、填好，寫絕對路徑）
 # 佇列排進時間線的優先序，高→低（spec 3.1；主人說話、主人打字、開發者打字（dollctl chat）、行事曆的時間到了、watch 叫醒）
 # 決定（主人，2026-11-12）：開發者打字預設排在主人打字下面
 # calendar（2026-11-15）：人說的話之後、watch 之前。行事曆的開始時間是外面世界的事實（主人的約），watch 是她自己設來看畫面的，常常只是「沒變化／時間到」；同一批裡她先讀到約、再讀到畫面
@@ -123,7 +123,7 @@ port = 8791                   # 初始值理由：dashboard 8790 的下一個；
 [bridge]
 # Discord bridge（2026-11-12）：dollcore 開機時啟動、看著它。只轉主人的私訊；她用 discord.dm 傳的話回到主人的私訊
 enabled = false               # 決定：範例預設關，先照 DEMO.md 放好 bridge/discord.toml（token、主人的 Discord user ID）再改 true；開著但起不來＝開機失敗
-command = ["~/.local/bin/uv", "run", "--quiet", "--frozen", "--project", "bridge", "python", "-m", "dollbridge", "--config", "bridge/discord.toml"]   # 從目前目錄跑；dollcore 另外給 DOLL_API 和 DOLL_BRIDGE_TOKEN 兩個環境變數
+command = ["/opt/homebrew/bin/uv", "run", "--quiet", "--frozen", "--project", "bridge", "python", "-m", "dollbridge", "--config", "bridge/discord.toml"]   # 從目前目錄跑；dollcore 另外給 DOLL_API 和 DOLL_BRIDGE_TOKEN 兩個環境變數。uv 的路徑用 `which uv` 的結果（SETUP.md 第 8 步）
 ready_timeout_s = 60.0        # bridge 連上 Discord、開好主人的串流要在這麼多秒內。初始值理由：登入加 on_ready 一般幾秒；第一次 uv 要建 venv，留餘裕
 
 [consolidate]
@@ -156,8 +156,8 @@ asr_final_timeout_ms = 1500   # finalize 之後等 final 最多這麼久；沒�
 tts_model = "aufklarer/Qwen3-TTS-12Hz-0.6B-Base-MLX-8bit"   # Hugging Face id（快取在 ~/Library/Caches/qwen3-speech）或資料夾絕對路徑；之後換成夜間微調的 bundle
 tts_codec = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
 tts_precision = "int8"        # 決定（主人）：8-bit；bf16 要未量化的 bundle
-reference_audio = "character_packs/doll/voice/qwen3/ref_plus_zh.wav"   # ICL 參考聲音（相對目前目錄或絕對路徑）；開機編一次
-reference_text = "character_packs/doll/voice/qwen3/ref_plus_zh.txt"    # 參考聲音的逐字稿
+reference_audio = "voice-reference.wav"   # ICL 參考聲音（相對目前目錄或絕對路徑）；開機編一次。DollOS 不附錄音：放你有權使用的一段 10–20 秒、單一說話者的 WAV（SETUP.md 第 9 步）；語音關著時不讀
+reference_text = "voice-reference.txt"    # 參考聲音的逐字稿（錄音裡說的每一個字）
 tts_language = "detect"       # 每句給 TTS 的語言：detect＝有假名 ja、有漢字 zh、有英文字母 en、其他 auto；或固定一個 voice-mlx 收的代碼
 warmup_text = "嗯。"          # 開機念一次（丟掉）：編譯 talker、用參考聲音種好串流解碼器的狀態，第一句真的話就不用付這些
 sentence_max_chars = 60       # voice.say 切成句子（。！？；… 換行，小數點不切），一句超過這麼多字再從逗號切。初始值理由：一句越長，主人打斷時「大約說到哪」越不準；60 字約 10 秒

@@ -21,7 +21,7 @@ public struct LlmConfig: Sendable {
 
 public struct CoreConfig: Sendable {
     public var dataDir = "data"
-    public var pack = "character_packs/doll/doll.toml"
+    public var pack = "character_packs/template/doll.toml"
     /// Event sources from highest to lowest priority when the queue is drained.
     public var priority = ["owner_voice", "owner_text", "developer_text", "calendar", "watch", "wander"]
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
@@ -534,8 +534,9 @@ public struct VoiceConfig: Sendable {
     /// int8 | bf16 (voice-mlx `WeightPrecision`).
     public var ttsPrecision = "int8"
     /// The ICL reference voice and its transcript file (relative to the working directory or absolute).
-    public var referenceAudio = "character_packs/doll/voice/qwen3/ref_plus_zh.wav"
-    public var referenceText = "character_packs/doll/voice/qwen3/ref_plus_zh.txt"
+    /// DollOS ships no recording: the default names files the person supplies next to the config.
+    public var referenceAudio = "voice-reference.wav"
+    public var referenceText = "voice-reference.txt"
     /// The language passed to the TTS per sentence: "detect" (Han → zh, kana → ja, else en) or one
     /// fixed code voice-mlx accepts.
     public var ttsLanguage = "detect"
