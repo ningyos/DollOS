@@ -18,11 +18,12 @@ import Foundation
 /// - Ending: only a concern she or the maintenance noted (not the calendar's or a failed todo's,
 ///   which the program ends itself), and only with the owner's own words, found verbatim in one of
 ///   his lines of the day; otherwise it stays open (logged).
-/// - Basis (2026-11-22): a note carries 「｜根據：」 and words copied from the day, matched as
-///   `todo.done`'s evidence (`Doll.quoted`). Her own words (thoughts, what she said, her call
-///   arguments: `sources`) are never a source of facts, as in the audit and `memory.fix`: a note whose
-///   basis is only in them is written 「她說過…（沒查證）」 (`unverified`), except a duty, whose source
-///   is her promise. A note without a basis, or with one found nowhere, is dropped (logged). The
+/// - Basis (2026-11-22): a note carries 「｜根據：」 and words copied from the day, split at 。！？ and
+///   each sentence matched as `todo.done`'s evidence (`Doll.quoted`). Her own words (thoughts, what
+///   she said, her call arguments: `sources`) are never a source of facts, as in the audit and
+///   `memory.fix`: a note whose sentences are all only in them is written 「她說過…（沒查證）」
+///   (`unverified`), except a duty, whose source is her promise; one sentence in another's line keeps
+///   it as written. A note without a basis, or with a sentence found nowhere, is dropped (logged). The
 ///   3-day trial: she told the owner 「下午 17:12 左右我這裡斷了一次」 after a boot report that only said
 ///   the last log line was at 17:12, and this task wrote 「今天17:12那台電腦沒有錯誤紀錄地斷掉」 as his
 ///   concern, which she repeated the next day.
