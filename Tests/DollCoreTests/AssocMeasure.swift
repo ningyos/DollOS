@@ -8,7 +8,8 @@ import Testing
     guard ProcessInfo.processInfo.environment["ASSOC_MEASURE"] == "1" else { return }
     var out = ""
     func print(_ s: String) { out += s + "\n" }
-    let cfg = try Config.load(URL(filePath: "~/Desktop/DollOS/DollOS/.worktrees/rewrite/experiments/m6-drives/real/config-sleep.toml"))
+    let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let cfg = try Config.load(repo.appending(path: "experiments/m6-drives/real/config-sleep.toml"))
     let embedder = try await MLXEmbedder.load(cfg.memory)
 
     // Concerns (real runs first, then hand-made in her note style).

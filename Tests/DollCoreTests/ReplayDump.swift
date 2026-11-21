@@ -6,7 +6,7 @@ import Testing
 /// renders them) so they can be replayed against the server. Runs only with REPLAY_DIR set.
 @Test func replayDumpRequests() async throws {
     guard let dir = ProcessInfo.processInfo.environment["REPLAY_DIR"] else { return }
-    let root = URL(filePath: "~/Desktop/DollOS/DollOS/.worktrees/rewrite")
+    let root = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     var cfg = try Config.load(URL(filePath: ProcessInfo.processInfo.environment["REPLAY_CONFIG"]!))
     cfg.core.dataDir = dir + "/data"
     cfg.memory.dir = dir + "/memory"

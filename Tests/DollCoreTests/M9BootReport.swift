@@ -81,7 +81,7 @@ private let cases: [Case] = [
         var out = [runStart(t0)] + routine(t0, 5)
         for i in 0..<40 {
             out.append(entry(t0 + 300 + Double(i) * 420, "ERROR",
-                             "maintenance: audit failed: The request timed out. (POST http://192.0.2.10:8080/v1/chat/completions, request \(7100 + i), after 300 s)"))
+                             "maintenance: audit failed: The request timed out. (POST http://127.0.0.1:8080/v1/chat/completions, request \(7100 + i), after 300 s)"))
         }
         for i in 0..<3 {
             out.append(entry(t0 + 1200 + Double(i) * 5000, "ERROR",
@@ -117,7 +117,7 @@ private let cases: [Case] = [
         return [runStart(t0)] + routine(t0, 6) + [
             entry(m, "INFO", "maintenance: started; 212 events in segment 2026-11-17"),
             entry(m + 40, "INFO", "maintenance: concerns done in 38.2 s: 1 noted"),
-            entry(m + 400, "ERROR", "maintenance: consolidate failed: The request timed out. (POST http://192.0.2.10:8080/v1/chat/completions, after 300 s)"),
+            entry(m + 400, "ERROR", "maintenance: consolidate failed: The request timed out. (POST http://127.0.0.1:8080/v1/chat/completions, after 300 s)"),
             entry(m + 401, "INFO", "maintenance: ended; done [\"concerns\"], failed [\"consolidate\"]"),
         ] + routine(m + 3600, 2) + [cleanEnd(min(b - 1800, m + 4 * 3600))]
     }, seed: { d, clock, b in
@@ -147,9 +147,11 @@ private func boot(at hhmm: String) -> Double {
     let runsDir = out.appending(path: "runs")
     try FileManager.default.createDirectory(at: runsDir, withIntermediateDirectories: true)
     var cfg = try Config.load(m9Root.appending(path: "dollcore.example.toml"))
-    cfg.core.pack = "character_packs/doll2/doll.toml"   // measured with 娃娃; the example now starts Doll
-    cfg.llm.baseURL = "http://192.0.2.10:8080"
-    cfg.llm.model = "qwen3.8-flash-next-unsloth-ud-iq2_xs"
+    // The recorded runs (experiments/m9-boot-report) used a private character pack; M9_PACK (absolute)
+    // reproduces them with it, else the tests' fixture pack. M9_URL and M9_MODEL: the model server.
+    cfg.core.pack = env["M9_PACK"] ?? "Tests/DollCoreTests/Fixtures/xiaodeng/doll.toml"
+    cfg.llm.baseURL = env["M9_URL"] ?? "http://127.0.0.1:8080"
+    cfg.llm.model = env["M9_MODEL"] ?? "qwen3.8-flash-next-unsloth-ud-iq2_xs"
     cfg.voice.enabled = false
     cfg.bridge.enabled = false
     cfg.dashboard.enabled = false

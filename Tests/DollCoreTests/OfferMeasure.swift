@@ -19,7 +19,7 @@ import Testing
          "open Calculator、按 {{a}} 的每一個字（AXButton）、click AXButton \"加\"、按 {{b}} 的每一個字（AXButton）、click AXButton \"等於\""),
         ("看圖", "主人要我用預覽程式打開一張圖片的時候", "用預覽程式打開 ~/DollOS-test/pic.png 給我看",
          "open Preview {{path}}"),
-        ("新文件", "主人要我用 TextEdit 開一份新文件寫一段字的時候", "用 TextEdit 開一份新文件，寫一行「娃娃的測試」",
+        ("新文件", "主人要我用 TextEdit 開一份新文件寫一段字的時候", "用 TextEdit 開一份新文件，寫一行「小燈的測試」",
          "open TextEdit、menu 檔案 › 新增、type「{{text}}」進 AXTextArea"),
         ("深色模式", "主人要我把電腦外觀換成深色或淺色的時候", "幫我把外觀改成深色模式",
          "open System Settings、click AXButton \"外觀\"、click AXButton \"{{mode}}\""),

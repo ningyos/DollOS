@@ -11,7 +11,7 @@ import Testing
     guard env["M14_SECRET_LINES"] == "1" else { return }
     let repo = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     let dir = repo.appending(path: "experiments/m14-secret-lines")
-    let llm = LlmConfig(baseURL: env["M14_URL"] ?? "http://192.0.2.10:8080", model: env["M14_MODEL"] ?? "qwen3.8-flash-next-unsloth-ud-iq2_xs")
+    let llm = LlmConfig(baseURL: env["M14_URL"] ?? "http://127.0.0.1:8080", model: env["M14_MODEL"] ?? "qwen3.8-flash-next-unsloth-ud-iq2_xs")
     let model = HTTPMainModel(llm)
     try await model.check()
     let reps = Int(env["M14_REPS"] ?? "2") ?? 2

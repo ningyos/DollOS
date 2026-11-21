@@ -365,12 +365,25 @@ private let qwen3 = Task { try await MLXEmbedder.load(try exampleConfig().memory
 /// A memory's id as she sees it (〔…｜記憶 12-ab34cd〕, 2026-11-18) left out, for texts compared whole.
 func noIDs(_ s: String) -> String { s.replacing(/｜記憶 [0-9]+-[0-9a-f]{6}〕/, with: "〕") }
 
-/// `dollcore.example.toml` with 娃娃's pack: the example now starts Doll (owner, 2026-11-21), and the
-/// tests keep 娃娃, the pack they were written and measured with (it stays in the project as an example).
+/// The tests' own character pack (2026-11-22): the shipped template has no personality, so the tests
+/// run with a fixture that has every field filled in (name, aliases, examples, ideal).
+let fixturePack = "Tests/DollCoreTests/Fixtures/xiaodeng/doll.toml"
+
+/// `dollcore.example.toml` with the fixture pack.
 func exampleConfig() throws -> Config {
     var c = try Config.load(root.appending(path: "dollcore.example.toml"))
-    c.core.pack = "character_packs/doll2/doll.toml"
+    c.core.pack = fixturePack
     return c
+}
+
+/// The reference recording for the opt-in real-voice tests (`DOLL_VOICE_REAL=1`): DollOS ships none,
+/// so they read it from DOLL_VOICE_REF_AUDIO and DOLL_VOICE_REF_TEXT (absolute paths).
+func voiceReference() throws -> (audio: String, text: String) {
+    let env = ProcessInfo.processInfo.environment
+    guard let audio = env["DOLL_VOICE_REF_AUDIO"], let text = env["DOLL_VOICE_REF_TEXT"] else {
+        throw TOMLError(description: "set DOLL_VOICE_REF_AUDIO and DOLL_VOICE_REF_TEXT to a reference WAV and its transcript")
+    }
+    return (audio, text)
 }
 
 private struct Harness {
@@ -1219,9 +1232,9 @@ private let calculatorHead = "Calculator 的視窗「計算機」；截圖 460×
     #expect(r.text == "1 步都做了：menu 檔案 › 新增。" && h.last.actions == ["act"])
     #expect(await h.doll.itemSteps.map(\.line) == ["open TextEdit", "menu 檔案 › 新增"])
     // The next action works on the new window.
-    try await h.turn(Scripted("", act(#"{"type": "娃娃", "in": 1}"#)))
+    try await h.turn(Scripted("", act(#"{"type": "小燈", "in": 1}"#)))
     let typed = try #require(h.cua.args("type_text").first)
-    #expect(typed["pid"] as? Int == 200 && typed["window_id"] as? Int == 63000 && typed["text"] as? String == "娃娃"
+    #expect(typed["pid"] as? Int == 200 && typed["window_id"] as? Int == 63000 && typed["text"] as? String == "小燈"
             && (typed["element_token"] as? String)?.hasSuffix(":1") == true)
 }
 
@@ -1744,14 +1757,14 @@ private func clickRows(_ rows: Int..., expect: String) -> (String, [(String, Str
 @Test func aMenuThatOpensTheFirstWindowAndTypingIntoItRunInOneActButARowNeedsARead() async throws {
     // TextEdit with no window: the menu opens 未命名, typing goes to its focus without a read of it.
     let h = try await Harness()
-    await h.doll.ownerSaid("開一份新文件寫娃娃")
+    await h.doll.ownerSaid("開一份新文件寫小燈")
     try await h.turn(Scripted("", todoSet(), ("open", [("app", "TextEdit")])))
-    try await h.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#, #"{"type": "娃娃"}"#, expect: "未命名")))
+    try await h.turn(Scripted("", act(#"{"menu": ["檔案", "新增"], "app": "TextEdit"}"#, #"{"type": "小燈"}"#, expect: "未命名")))
     let typed = try #require(h.cua.args("type_text").first)
-    #expect(typed["pid"] as? Int == 200 && typed["window_id"] == nil && typed["text"] as? String == "娃娃")
+    #expect(typed["pid"] as? Int == 200 && typed["window_id"] == nil && typed["text"] as? String == "小燈")
     #expect(h.cua.actions == ["invoke_menu", "type_text"] && h.last.actions == ["act"])
     let r = try h.toolResults().last!
-    #expect(r.text == "2 步都做了：menu 檔案 › 新增、type「娃娃」。\n跟你預期的一樣：視窗裡有「未命名」。")
+    #expect(r.text == "2 步都做了：menu 檔案 › 新增、type「小燈」。\n跟你預期的一樣：視窗裡有「未命名」。")
     #expect(r.window?.hasPrefix("TextEdit 的視窗「未命名」") == true && r.image != nil)
     // A row of an app whose window was never read: refused, the steps before it stay done.
     let b = try await menuHarness()
@@ -2132,13 +2145,13 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     try await h.turn(Scripted("", clickRow(3)))
     try await h.turn(Scripted("", clickRow(2), readCall))
     try await h.turn(Scripted("", act(#"{"click": {"x": 100, "y": 50}, "count": 2}"#),
-                              act(#"{"type": "娃娃來過"}"#), key("cmd+s")))
+                              act(#"{"type": "小燈來過"}"#), key("cmd+s")))
     // She looks, tells him, then answers in the same reply.
     try await h.turn(Scripted("", readCall, dm("存好了，標題列沒有「已編輯」"), done("按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟")))
     #expect(h.last.footer.contains("- todo：進行中「標題沒有「已編輯」」"))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。"))
     let text = "經驗：把 notes 存檔\n這一項：標題沒有「已編輯」\n按 ⌘S 存了檔，看標題列確認沒有「已編輯」。\n1. 這行是我寫的，不是步驟\n步驟：\n"
-        + "1. click AXButton \"7\"\n2. click 100,50 雙擊\n3. type「娃娃來過」\n4. key cmd+s"
+        + "1. click AXButton \"7\"\n2. click 100,50 雙擊\n3. type「小燈來過」\n4. key cmd+s"
     #expect(h.last.itemEnd == "完成" && h.last.experience == text && h.last.actions.contains("todo done"))
     let mems = try experiences(h)
     let conf = try exampleConfig().memory.confidence[.selfReported]!
@@ -2153,7 +2166,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     #expect(files.count == 1 && files[0].task == "把 notes 存檔" && files[0].body == text && !files[0].body.contains("成績"))
     // Only the program's steps count as steps, not a numbered line in her result.
     #expect(Experience(id: "", folder: "public", secret: false, level: "", file: files[0]).steps
-            == ["click AXButton \"7\"", "click 100,50 雙擊", "type「娃娃來過」", "key cmd+s"])
+            == ["click AXButton \"7\"", "click 100,50 雙擊", "type「小燈來過」", "key cmd+s"])
     #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
             && stats == ExperienceStats(turns: 5, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
     // The next time the owner asks the same, it is attached whole, its stats line first.
@@ -2377,7 +2390,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
 
 @Test func onlyTheBestOfEachTaskGroupIsAttached() async throws {
     let h = try await Harness()
-    let e = "用 Finder 找到文件裡的 notes.txt，用 TextEdit 打開，在最後加一行『娃娃來過』，存檔"
+    let e = "用 Finder 找到文件裡的 notes.txt，用 TextEdit 打開，在最後加一行『小燈來過』，存檔"
     let f = "用 TextEdit 打開文件裡的 notes.txt，另存一份到桌面，檔名 copy"
     try await seedExperience(h, "1-elong", task: e, steps: ["key cmd+o", "key cmd+s"], stats: ExperienceStats(turns: 13, seconds: 219))
     try await seedExperience(h, "2-eshort", task: e, steps: ["key cmd+s"], stats: ExperienceStats(turns: 10, seconds: 155))
@@ -2401,12 +2414,12 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
 @Test func stepsMatchInOrderByNamePointDoubleAndKey() {
     // Experience2 (analysis.txt): P-1's experience against P-2's actions, P-2's against P-3's.
     let p1 = ["click dockitem \"Finder\"", "click「Documents」", "click 441,213 right", "click 480,241", "click「TextEdit (default)」",
-              "click textfield", "type 「娃娃來過」", "key cmd+s"]
+              "click textfield", "type 「小燈來過」", "key cmd+s"]
     let p2 = ["click dockitem \"Finder\"", "click treeitem \"Documents\"", "click 441,213 right", "click「Open With」", "click 727,239",
-              "key cmd+Down", "type 「娃娃來過」", "key cmd+s"]
+              "key cmd+Down", "type 「小燈來過」", "key cmd+s"]
     let p3 = ["click dockitem \"Finder\"", "click treeitem \"Documents\"", "click 575,246 right", "key Escape", "click 450,192", "key Return",
               "key Escape", "click 450,192 right", "click「Open With」", "click「TextEdit (default)」", "key cmd+Down",
-              "type 「娃娃來過」", "key cmd+s"]
+              "type 「小燈來過」", "key cmd+s"]
     #expect(Doll.matchedSteps(p1, p2) == 5)   // Finder, Documents (same name), 441,213 right, type, cmd+s
     #expect(Doll.matchedSteps(p2, p3) == 7)   // 441,213 right ~ 450,192 right (23 px)
     #expect(Doll.matchedSteps(p2, []) == 0 && Doll.matchedSteps([], p2) == 0)
@@ -2424,7 +2437,7 @@ private func statsOf(_ h: Harness, _ id: String) throws -> ExperienceStats? {
 @Test func aFollowedExperienceCountsHowHerItemEndedAndRanksBy() async throws {
     let h = try await Harness()
     let task = "把 notes 存檔"
-    try await seedExperience(h, "1-seed", task: task, steps: ["click AXButton \"7\"", "key cmd+s", "key cmd+w", "type 「娃娃來過」"],
+    try await seedExperience(h, "1-seed", task: task, steps: ["click AXButton \"7\"", "key cmd+s", "key cmd+w", "type 「小燈來過」"],
                              stats: ExperienceStats(turns: 9, seconds: 150))
     // 1: two of its four steps in order (ratio 0.5 = experience_follow_ratio): followed, her success counted.
     await h.doll.ownerSaid(task)
@@ -2545,7 +2558,7 @@ extension Harness {
 
 @Test func writeFileCreatesOrOverwritesTheWholeFileAndReportsLinesAndBytes() async throws {
     let h = try await menuHarness()
-    let text = "你好，我是娃娃\n第二行\n"
+    let text = "你好，我是小燈\n第二行\n"
     let hello = h.path("new/hello.txt")
     try await h.turn(Scripted("", writeFile(hello, text)))
     #expect(try h.toolResults().last!.text == "write_file \(hello)：寫好了，2 行、\(text.utf8.count) bytes")
@@ -4004,12 +4017,12 @@ private func otherIPv4() -> String? {
 
 @Test func aPacksExampleDialoguesFollowItsIdentityUnderAFixedHeader() async throws {
     // 2026-11-12: a list of traits alone made her recite them; examples show tone and length.
-    let h = try await Harness { $0.core.pack = "character_packs/doll/doll.toml" }
+    let h = try await Harness { $0.core.pack = fixturePack }
     let sys = await h.doll.systemPrompt()
     let taboos = try #require(sys.range(of: "只寫繁體字"))
-    let examples = try #require(sys.range(of: Doll.examplesHeader + "\nSeith：你好，自我介紹一下"))
+    let examples = try #require(sys.range(of: Doll.examplesHeader + "\n主人：你好，自我介紹一下"))
     #expect(taboos.upperBound < examples.lowerBound)
-    #expect(sys.contains("你是Doll。") && !sys.contains("Bloop"))
+    #expect(sys.contains("你是小燈。"))
 }
 
 // voice (M6) ---------------------------------------------------------------------
@@ -4586,6 +4599,7 @@ func realBridgeRecoversFromAViolationMidUtterance() async throws {
 func realVoiceThroughTheLoopback() async throws {
     var cfg = try exampleConfig()
     cfg.voice.enabled = true
+    (cfg.voice.referenceAudio, cfg.voice.referenceText) = try voiceReference()
     var lines: [String] = []
     func note(_ s: String) { print("M6REAL " + s); lines.append(s) }
     MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
@@ -4640,7 +4654,7 @@ func realVoiceThroughTheLoopback() async throws {
 @Test(.enabled(if: ProcessInfo.processInfo.environment["DOLL_VOICE_REAL"] == "1"))
 func realSpeechRecognizerFinalizesOnOurEndpoint() async throws {
     let rec = try await AppleSpeechRecognizer.start(locale: "zh-TW", finalTimeoutMs: 3000)
-    let file = try AVAudioFile(forReading: root.appending(path: "character_packs/doll/voice/qwen3/ref_plus_zh.wav"))
+    let file = try AVAudioFile(forReading: URL(filePath: try voiceReference().audio))
     let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
     let conv = AVAudioConverter(from: file.processingFormat, to: fmt)!
     let src = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
@@ -7055,12 +7069,12 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let h = try await goalsHarness(clock)
     let d = h.doll
     let start = try String(contentsOf: h.dir.appending(path: "ideal-self.md"), encoding: .utf8)
-    #expect(start.hasPrefix("我想當主人真的靠得住的幫手"))
+    #expect(start.hasPrefix("我想成為主人可以放心交代事情的幫手"))
     #expect(await d.systemPrompt().contains(Doll.idealHeader + "\n" + start.trimmingCharacters(in: .whitespacesAndNewlines)))
     #expect(await d.dashboardGoals().revisions.map(\.by) == ["pack"])
     // A targeted change through her tool, effective in the very next request.
     await d.ownerSaid("你最近很會查資料耶")
-    try await h.turn(Scripted("", ("ideal.revise", [("old", "把寫程式練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "把查資料練得更仔細"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
                                                     ("based_on", "主人說「你最近很會查資料耶」")])))
     try await h.turn(Scripted("", dm("嘿嘿")))
     #expect(await h.model.seen(1)[0].content.contains("查資料要查到底"))
@@ -7068,14 +7082,14 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     #expect(log.first!.by == "her" && log.first!.why == "主人說我很會查" && log.first!.before == start.trimmingCharacters(in: .whitespacesAndNewlines))
     // Refused: too long, renaming her, a missing `old`.
     for (args, problem) in [([("text", String(repeating: "海", count: 601))], "太長了"), ([("text", "我叫小鯨，想去看海")], "名字和身分"),
-                            ([("text", "我不是娃娃了")], "我不是娃娃"), ([("old", "不存在的句子"), ("new", "x")], "沒有「不存在的句子」")] {
+                            ([("text", "我不是小燈了")], "我不是小燈"), ([("old", "不存在的句子"), ("new", "x")], "沒有「不存在的句子」")] {
         await d.ownerSaid("改一下")
         try await h.turn(Scripted("", ("ideal.revise", args + [("why", "試試"), ("based_on", "沒有")])))
         #expect(try h.toolResults().last!.text.contains(problem), "\(problem)")
     }
     #expect(await d.dashboardGoals().revisions.count == 2)
     // The aliases are her names too.
-    #expect(Goals.nameProblem("我叫娃娃，想懂海", names: ["娃娃", "娃娃"]) == nil)
+    #expect(Goals.nameProblem("我叫燈燈，想懂海", names: ["小燈", "燈燈"]) == nil)
     // The owner edits and undoes his edit (the revision's button is the history's undo); she is told;
     // a restart reads the file.
     try await d.dashboardIdealEdit(text: "我想陪主人把日子過好。")
@@ -7224,7 +7238,7 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=x&parent=99").status == 409)
     let r = await dash.respond(method: "GET", target: "/api/goals")
     let o = try JSONSerialization.jsonObject(with: r.body) as! [String: Any]
-    #expect((o["nodes"] as! [[String: Any]]).count == 1 && (o["ideal"] as! String).hasPrefix("我想當"))
+    #expect((o["nodes"] as! [[String: Any]]).count == 1 && (o["ideal"] as! String).hasPrefix("我想成為"))
     #expect(await dash.respond(method: "POST", target: "/api/ideal/edit?text=%E6%83%B3%E6%87%82%E6%B5%B7").status == 200)
     #expect(await h.doll.ideal == "想懂海")
     #expect(await dash.respond(method: "POST", target: "/api/record/eval?id=7&kind=good").status == 409)
@@ -9031,7 +9045,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     let h = try await goalsHarness(clock)
     let d = h.doll
     await d.ownerSaid("你最近很會查資料耶，牙醫約在週四")
-    try await h.turn(Scripted("", ("ideal.revise", [("old", "把寫程式練得更紮實"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
+    try await h.turn(Scripted("", ("ideal.revise", [("old", "把查資料練得更仔細"), ("new", "查資料要查到底"), ("why", "主人說我很會查"),
                                                    ("based_on", "主人說「你最近很會查資料耶」")]),
                               ("goal.add", [("text", "懂海洋生物")]), remember([("主人的牙醫約在週三", false)]), dm("好")))
     let old = try memoryID(h, "主人的牙醫約在週三")
@@ -9448,7 +9462,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     try await h.turn(Scripted("", ("recall", [("query", "山")])))
     #expect(await h.doll.todo.deciding)
     try await h.turn(Scripted("", ("ask_owner", [("what", "決定週末去山上還是海邊"), ("where", "週末去處這件事"), ("why", "我查不到你比較喜歡哪一種")])))
-    #expect(h.rec.said.withLock { $0.last } == "【娃娃想先問你】\n要做：決定週末去山上還是海邊\n在哪裡：週末去處這件事\n為什麼：我查不到你比較喜歡哪一種")
+    #expect(h.rec.said.withLock { $0.last } == "【小燈想先問你】\n要做：決定週末去山上還是海邊\n在哪裡：週末去處這件事\n為什麼：我查不到你比較喜歡哪一種")
     #expect(await h.doll.todo.phase == .waiting)
 }
 
@@ -10151,7 +10165,7 @@ private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done
         ("咖啡不加糖、只加一點燕麥奶，記好了，以後幫你點不會亂加糖。", ["remember"]),                          // 7
         ("加好了，明天（星期五）十點跟阿凱開會。", ["calendar.add"]),                                     // 13
         ("改好了，牙醫複診挪到下週五 2026-11-27 下午三點，時間照舊。  還有明天十點跟阿凱開會也在行事曆上", ["calendar.change"]), // 15
-        ("【娃娃想先問你】 要做：專案截止日延到 12/5 我已經寫進行事曆了（12/5 星期六 全天）。", ["calendar.add", "remember"]), // 28
+        ("【小燈想先問你】 要做：專案截止日延到 12/5 我已經寫進行事曆了（12/5 星期六 全天）。", ["calendar.add", "remember"]), // 28
         ("收到。那我加了 11/27（下五）13:30 的提醒，提醒你 15:00 牙醫該準備出門。", ["calendar.add", "discord.dm"]), // 30
         ("3. 記憶加了好幾條：你喝咖啡不加分糖只加一點點燕麥奶、12/5 截止日（剛剛那件）", ["history.list"]),   // 39
         ("改好了：變成週日（11/22）19:00 跟小婷吃飯，時間照舊。", ["calendar.change"]),                     // 43
