@@ -58,6 +58,9 @@ enum Claims {
                     guard let hit = hits.min(by: { $0.at < $1.at }) else { continue }
                     let before = String(s[..<i])
                     if c.earlier.contains(where: before.contains) { continue }
+                    // A plan in the verb's own clause (「我再加了…」 never; 「這次我會記好行事曆」 is a promise).
+                    let ownClause = String(before.reversed().prefix { !"，,；;：:、".contains($0) }.reversed())
+                    if c.planned.contains(where: ownClause.contains) { continue }
                     if c.negations.contains(where: before.hasSuffix) { continue }
                     if ownerDid(before, c) { continue }
                     let claim = Claim(words: verb + String(clause[..<hit.at]) + hit.word, object: hit.object)

@@ -445,9 +445,10 @@ public struct AuditConfig: Sendable {
 public struct ClaimsConfig: Sendable {
     /// Off: her lines go out unchecked.
     public var enabled = true
-    /// The verbs that say she did something (with 了／過／好／進／下 they are done, not planned).
-    public var verbs = ["查過", "查了", "查好", "看過", "看了", "確認過", "確認了", "記好", "記了", "記下", "記進", "寫進",
-                        "加好", "加了", "加進", "改好", "改了", "刪了", "刪掉"]
+    /// The verbs that say she did something: only forms that mark it done (了／過／好／掉). 「加進」「記下」
+    /// 「記進」「寫進」 are out (2026-11-22, m16: 「你告訴我日期，我加進行事曆」 is a promise and was refused twice).
+    public var verbs = ["查過", "查了", "查好", "看過", "看了", "確認過", "確認了", "記好", "記了",
+                        "加好", "加了", "改好", "改了", "刪了", "刪掉"]
     /// The words that make a claim one about the calendar: a successful `calendar.*` call backs it.
     public var calendarWords = ["行事曆", "日程", "行程", "提醒"]
     /// The words that make a claim one about her memories: a successful `remember`, `recall` or `memory.fix` backs it.
@@ -457,6 +458,8 @@ public struct ClaimsConfig: Sendable {
     public var reach = 6
     /// Words before the verb in its sentence that date the action before the line she answers.
     public var earlier = ["之前", "早上", "上午", "下午", "昨天", "昨晚", "前天", "上次", "上週", "稍早", "那時", "當時", "早就"]
+    /// Words in the verb's clause before it that make it a plan, not a report: 「這次我會記好行事曆」.
+    public var planned = ["再", "會", "要", "等", "打算", "可以", "準備"]
     /// Words right before the verb that negate it: 「我還沒查行事曆」 claims nothing.
     public var negations = ["沒", "不", "別", "沒有"]
     /// Words for the owner as the one who did it: 「你改了行事曆」 is his action, not hers.
@@ -871,12 +874,13 @@ public struct Config: Sendable {
         try cl.read("memory_words", &cfg.claims.memoryWords)
         try cl.read("reach", &cfg.claims.reach)
         try cl.read("earlier", &cfg.claims.earlier)
+        try cl.read("planned", &cfg.claims.planned)
         try cl.read("negations", &cfg.claims.negations)
         try cl.read("owner", &cfg.claims.owner)
         try cl.read("for_owner", &cfg.claims.forOwner)
         try cl.finish()
         guard cfg.claims.reach >= 0, ([cfg.claims.verbs, cfg.claims.calendarWords, cfg.claims.memoryWords, cfg.claims.earlier,
-                                       cfg.claims.negations, cfg.claims.owner, cfg.claims.forOwner].allSatisfy { !$0.contains("") }) else {
+                                       cfg.claims.planned, cfg.claims.negations, cfg.claims.owner, cfg.claims.forOwner].allSatisfy { !$0.contains("") }) else {
             throw TOMLError(description: "[claims] reach at least 0; no empty word in a list")
         }
         var hi = Section(name: "history", raw: raw["history"] ?? [:])

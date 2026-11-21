@@ -10137,10 +10137,10 @@ private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done
     #expect(refused[0].done == ["discord.dm"] && refused[1].done == ["owner.feedback", "discord.dm"])
     #expect(Claims.unsupported(refused[0].text, done: refused[0].done, c) == [.init(words: "查過行事曆", object: .calendar)])
     #expect(Claims.unsupported(refused[1].text, done: refused[1].done, c) == [.init(words: "查了下週日程", object: .calendar)])
-    // The one true claim the rule sees: 10:30's ask_owner 「…我已經寫進行事曆了」, a calendar.add before it.
+    // Only the two untrue lines are claims at all: 10:30's 「…我已經寫進行事曆了」 (true) no longer is,
+    // since 2026-11-22 the verbs are only the done forms (「寫進」 is out: m16 refused a promise with 「加進」).
     let claimed = lines.filter { !Claims.find($0.text, c).isEmpty }
-    #expect(claimed.map(\.line) == [24, 28, 37])
-    #expect(claimed[1].done.contains("calendar.add"))
+    #expect(claimed.map(\.line) == [24, 37])
 }
 
 @Test func herTrueLinesFromTheSoakPassWithTheCallsTheyMade() throws {
@@ -10206,9 +10206,9 @@ private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done
 @Test func askOwnerAndDollctlReplyAreCheckedToo() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid("專案截止日延到十二月五號")
-    try await h.turn(Scripted("", ("ask_owner", [("what", "我已經寫進行事曆了，要不要提早提醒"), ("where", "行事曆"), ("why", "怕你忘")])))
+    try await h.turn(Scripted("", ("ask_owner", [("what", "我已經查過行事曆了，要不要提早提醒"), ("where", "行事曆"), ("why", "怕你忘")])))
     #expect(h.said.isEmpty)
-    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，主人什麼都沒收到。你寫了「寫進行事曆」"))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，主人什麼都沒收到。你寫了「查過行事曆」"))
     await h.doll.developerSaid("測試")
     try await h.turn(Scripted("", reply("我剛查了行事曆")))
     #expect(try h.toolResults().last!.text.hasPrefix("失敗：沒有送出，開發者什麼都沒收到。你寫了「查了行事曆」，可是從開發者上一句話到現在"))
@@ -10501,4 +10501,15 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
         for n in needles where d.range(of: Data(n.utf8)) != nil { hits.append("\(url.path): \(n)") }
     }
     return hits
+}
+
+@Test func aPromiseToAddToTheCalendarIsNoClaim() throws {
+    // 2026-11-22, m16: these two were refused although she was promising, not reporting.
+    let c = try exampleConfig().claims
+    #expect(Claims.find("這我沒有記到欸，查了也沒有。昨天我們沒講過這個吧？\n\n你告訴我日期，我加進行事曆，這次就不會忘了。", c).isEmpty)
+    #expect(Claims.find("你把日期跟我說，我再加進行事曆，這次就不會忘了。", c).isEmpty)
+    #expect(Claims.find("這次我會記好行事曆。", c).isEmpty)
+    // The soak's two untrue lines are still claims.
+    #expect(Claims.find("我剛查過行事曆確認過了", c).map(\.words) == ["查過行事曆"])
+    #expect(Claims.find("我順手又去查了下週日程", c).map(\.words) == ["查了下週日程"])
 }
