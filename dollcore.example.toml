@@ -122,7 +122,7 @@ port = 8791                   # 初始值理由：dashboard 8790 的下一個；
 
 [bridge]
 # Discord bridge（2026-11-12）：dollcore 開機時啟動、看著它。只轉主人的私訊；她用 discord.dm 傳的話回到主人的私訊
-enabled = false               # 決定：範例預設關，先照 DEMO.md 放好 bridge/discord.toml（token、主人的 Discord user ID）再改 true；開著但起不來＝開機失敗
+enabled = false               # 決定：範例預設關，先照 SETUP.md 第 8 步放好 bridge/discord.toml（token、主人的 Discord user ID）再改 true；開著但起不來＝開機失敗
 command = ["/opt/homebrew/bin/uv", "run", "--quiet", "--frozen", "--project", "bridge", "python", "-m", "dollbridge", "--config", "bridge/discord.toml"]   # 從目前目錄跑；dollcore 另外給 DOLL_API 和 DOLL_BRIDGE_TOKEN 兩個環境變數。uv 的路徑用 `which uv` 的結果（SETUP.md 第 8 步）
 ready_timeout_s = 60.0        # bridge 連上 Discord、開好主人的串流要在這麼多秒內。初始值理由：登入加 on_ready 一般幾秒；第一次 uv 要建 venv，留餘裕
 

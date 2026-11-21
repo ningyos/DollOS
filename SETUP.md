@@ -83,8 +83,8 @@ cp character_packs/template/doll.toml ~/DollOS-data/<doll id>/doll.toml
 ```
 
 Fields (all strings unless noted):
-- `[meta] id` — short, lowercase, no spaces. `name` — what she is called. `aliases` (list) — other names.
-  `language` — e.g. `"zh-TW"`, `"en"`.
+- `[meta] name` — what she is called. `aliases` (list) — other names. `id` (short, lowercase, no
+  spaces) and `language` (e.g. `"zh-TW"`, `"en"`) are for your reference; dollcore does not read them.
 - `[identity] self` — who she is, in her own voice ("I am …"). Required.
 - `[identity] personality` — how she behaves. Required.
 - `[identity] taboos` — what she must not do or say. Required.

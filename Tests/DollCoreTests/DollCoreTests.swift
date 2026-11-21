@@ -3902,7 +3902,7 @@ private func otherIPv4() -> String? {
     #expect(LocalAPI.isLoopback(.hostPort(host: "127.0.0.1", port: 1)))
     #expect(LocalAPI.isLoopback(.hostPort(host: "::1", port: 1)))
     #expect(!LocalAPI.isLoopback(.hostPort(host: "192.168.1.20", port: 1)))
-    #expect(!LocalAPI.isLoopback(.hostPort(host: "192.0.2.11", port: 1)))
+    #expect(!LocalAPI.isLoopback(.hostPort(host: "100.64.0.1", port: 1)))
     let h = try await Harness(["否"])   // the owner line's secret check
     let api = try await localAPI(h)
     defer { api.stop() }
@@ -8767,7 +8767,7 @@ private func logDir() -> URL { FileManager.default.temporaryDirectory.appending(
 private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     var out = [start(t0)]
     for i in 0..<40 {
-        out.append(line(t0 + 60 + Double(i) * 300, "ERROR", "maintenance: audit failed: request \(4000 + i) to http://192.0.2.10:8080 timed out after 300 s"))
+        out.append(line(t0 + 60 + Double(i) * 300, "ERROR", "maintenance: audit failed: request \(4000 + i) to http://10.0.0.2:8080 timed out after 300 s"))
     }
     for i in 0..<3 {
         out.append(line(t0 + 100 + Double(i) * 900, "ERROR", "bridge: ERROR dollbridge.voice: voice socket closed (code 1006); reconnecting in \(1 << i) s"))
@@ -8842,7 +8842,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     let timeouts = last.kinds[0]
     #expect(timeouts.key == "maintenance: audit failed: request # to http://#.#:# timed out after # s")
     #expect(timeouts.first == t0 + 60 && timeouts.last == t0 + 60 + 39 * 300)
-    #expect(timeouts.example == "maintenance: audit failed: request 4000 to http://192.0.2.10:8080 timed out after 300 s")
+    #expect(timeouts.example == "maintenance: audit failed: request 4000 to http://10.0.0.2:8080 timed out after 300 s")
     // Two different errors stay two kinds; ERROR before WARN.
     #expect(last.kinds[2].example == "cua-driver session not ended: daemon gone" && last.kinds[3].level == "WARN")
     #expect(RunLog.kindKey("session dollcore-4242-1763459039 id 9f8e7d6c5b4a") == "session dollcore-#-# id #")
@@ -8875,7 +8875,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     #expect(notice.contains("\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-18 09:00:00 開機，共 46 行。"))
     #expect(notice.contains("- 結束：正常關掉的（signal 15 (SIGTERM)），11-18 12:53:20。"))
     #expect(notice.contains("- 錯誤 2 種、警告 0 種（同一種＝數字和編號以外都一樣）："))
-    #expect(notice.contains("  錯誤 40 次（11-18 09:01:00 到 11-18 12:16:00），例：maintenance: audit failed: request 4000 to http://192.0.2.10:8080 timed out after 300 s"))
+    #expect(notice.contains("  錯誤 40 次（11-18 09:01:00 到 11-18 12:16:00），例：maintenance: audit failed: request 4000 to http://10.0.0.2:8080 timed out after 300 s"))
     #expect(notice.contains("  錯誤 3 次（11-18 09:01:40 到 11-18 09:31:40），例：bridge: ERROR dollbridge.voice: voice socket closed (code 1006); reconnecting in 1 s"))
     #expect(notice.contains("完整的紀錄在 \(h.doll.bootReports.path)/20261118-140000-"))
     let run = Task { [doll = h.doll] in try await doll.run() }
