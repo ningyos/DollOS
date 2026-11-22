@@ -355,6 +355,14 @@ public actor Doll {
     var ideal = ""
     /// The pack's name and aliases: what the ideal self may not rename.
     var packNames: [String] = []
+    /// `[reflection]` (2026-11-23, `Reflection.swift`): her diary and what she knows of herself.
+    let reflectionConfig: ReflectionConfig
+    let dataDir: URL
+    let selfURL: URL
+    let diaryDirURL: URL
+    var selfFile: SelfFile
+    /// Her diary's passages, embedded (in memory only; rebuilt at boot).
+    var diaryIndex: [DiaryPassage] = []
     /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
     func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
     /// The history of what is hers (2026-11-19, `History.swift`).
@@ -395,7 +403,7 @@ public actor Doll {
 
     /// Her single-document files under the data dir, each written whole and sealed whole (`saveDocument`).
     static let documents = ["concerns.json", "signals.json", "estimates.json", "goals.json", "record.json",
-                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json"]
+                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json", Reflection.selfFileName]
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
@@ -424,12 +432,17 @@ public actor Doll {
         try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
         timelineDir = data.appending(path: "timeline")
         let box = try Self.unlockSecrets(keys: keys, data: data, memRoot: memRoot, memory: config.memory, timeline: timelineDir,
-                                         documents: Self.documents.map { data.appending(path: $0) })
+                                         documents: Self.documents.map { data.appending(path: $0) } + Reflection.diaryFiles(data))
         timeline = try Timeline(dir: timelineDir, box: box)
         inbox = try Inbox(dir: data.appending(path: "inbox"), box: box)
         maintenanceURL = data.appending(path: "maintenance.json")
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
+        reflectionConfig = config.reflection
+        dataDir = data
+        selfURL = data.appending(path: Reflection.selfFileName)
+        diaryDirURL = data.appending(path: Reflection.diaryDir)
+        selfFile = try Concerns.read(SelfFile.self, selfURL, what: "self-knowledge", box: box) ?? SelfFile()
         ownerLastLine = timeline.events.last { $0.kind == .owner }?.ts ?? 0
         drivesConfig = config.drives
         concernsURL = data.appending(path: "concerns.json")
@@ -469,7 +482,8 @@ public actor Doll {
                   shots: shots, log: data.appending(path: "computer-actions.jsonl"))
         self.deliver = deliver
         tools = Tools.specs(memory: memoryConfig, voice: config.voice.enabled, computer: config.computer, files: config.files,
-                            drives: config.drives.enabled)
+                            drives: config.drives.enabled,
+                            reflection: config.reflection.enabled && config.maintenance.enabled && config.drives.enabled)
         voiceEnabled = config.voice.enabled
         toolsJSON = Tools.json(tools)
         todo = timeline.todo
@@ -523,6 +537,7 @@ public actor Doll {
                 try Concerns.write(idealLog, idealLogURL)
             }
         }
+        diaryIndex = reflectionConfig.enabled && config.maintenance.enabled && config.drives.enabled ? try Reflection.index(data: data, box: box, embedder: embedder) : []
         // Last, after every file the boot itself writes: the first commit of a new history is the
         // dirs as found; an existing one gets what changed with no commit since.
         historyBoot = try history.open(ts: Date().timeIntervalSince1970)
@@ -799,9 +814,10 @@ public actor Doll {
     /// the next request (one cache miss of the prefix). The persona and how she works. Her tools go
     /// in the request's `tools` (`toolsJSON`); the template renders them ahead of this text.
     func systemPrompt() -> String {
-        "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n")
+        "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n") + habitsText()
             + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
-                                drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn)
+                                drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn,
+                                reflection: reflectionOn)
             + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn) : "")
     }
 
@@ -1272,8 +1288,12 @@ public actor Doll {
             let isAction = actionTools.contains(call.name)
             var out: Outcome
             // A computer call on the waiting item takes it up again (2026-11-20).
-            if gatedTools.contains(call.name), todo.phase == .waiting, ended == nil, !setRefused { resumeWaiting(name) }
-            if let ended, Tools.speaking[call.name] == nil {
+            let diaryRefused = diaryRefusal(call.name)
+            if gatedTools.contains(call.name), todo.phase == .waiting, ended == nil, !setRefused, diaryRefused == nil { resumeWaiting(name) }
+            if let diaryRefused {
+                // Her diary turn (2026-11-23, `Reflection.swift`): only its tools; theirs only in it.
+                out = Outcome(text: diaryRefused, actions: ["refused \(name)"])
+            } else if let ended, Tools.speaking[call.name] == nil {
                 out = Outcome(text: "失敗：這則回覆前面已經用 \(ended) 收起這一項了，後面的呼叫沒有執行；看了結果下一回合再做。",
                               actions: ["error \(name)"], background: true)
             } else if gatedTools.contains(call.name), todo.phase != .doing {
@@ -1403,7 +1423,15 @@ public actor Doll {
         // task stopped); the `max_turns_without_tool`-th one in a row writes the log line instead and
         // lets her rest until an event.
         let usedTool = !calls.isEmpty
-        if usedTool {
+        if inDiaryTurn {
+            // Her diary turn ends with a reply that calls nothing, or at `[reflection] max_turns`
+            // (a list in progress does not keep it going; the maintenance carries the list).
+            maintenanceState.diaryTurns = (maintenanceState.diaryTurns ?? 0) + 1
+            saveMaintenanceLogged()
+            followUp = usedTool && maintenanceState.diaryTurns! < reflectionConfig.maxTurns
+            taskTurn = followUp
+            idleTurns = 0
+        } else if usedTool {
             idleTurns = 0
         } else {
             idleTurns += 1
@@ -1687,6 +1715,20 @@ public actor Doll {
                 return Outcome(text: goalTreeText(), actions: ["goal list"])
             case .idealRevise(let text, let old, let new, let why, let basedOn):
                 return try idealReviseTool(text: text, old: old, new: new, why: why, basedOn: basedOn)
+            case .diaryWrite(let text):
+                return try diaryWriteTool(text)
+            case .diaryRead(let date):
+                return try diaryReadTool(date, seen: events)
+            case .selfRead:
+                return selfReadTool()
+            case .selfNote(let kind, let text, let evidence):
+                return try selfNoteTool(kind: kind, text: text, evidence: evidence)
+            case .selfHabit(let id, let when, let then, let why):
+                return try selfHabitTool(id: id, when: when, then: then, why: why)
+            case .selfGoal(let id, let goal):
+                return try selfGoalTool(id: id, goal: goal)
+            case .selfPast(let id, let why):
+                return try selfPastTool(id: id, why: why)
             }
         } catch {
             log("ERROR", "turn \(turnIndex): \(name) failed: \(error)")
@@ -2767,15 +2809,18 @@ public actor Doll {
         for hit in hits {
             out += "\n\n" + hit.rendered
         }
+        // Her diary (2026-11-23): the nearest passages after the memories, as her own words.
+        let diary = try diaryRecall(query, visible: visible)
+        out += diary.text
         // A secret hit makes the result a secret event (5.1: what the turn saw is what it may say); a
         // hit of an encrypted folder, or of an encrypted event of today, makes it stored encrypted.
-        let sealed = hits.contains { hit in
+        let sealed = diary.sealed || hits.contains { hit in
             switch hit {
             case .memory(let h): sealedFolders.contains(h.folder)
             case .today(let h): timeline.events.contains { $0.seq == h.seq && $0.sealed }
             }
         }
-        return Outcome(text: out, secret: hits.contains(where: \.secret), sealed: sealed, actions: ["recall \(hits.count)"])
+        return Outcome(text: out, secret: diary.sealed || hits.contains(where: \.secret), sealed: sealed, actions: ["recall \(hits.count)"])
     }
 
     /// One selection's line: to the log and the turn's report.

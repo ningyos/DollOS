@@ -145,7 +145,8 @@ public enum Tools {
     /// `tools` list never changes between turns and the server's prefix cache keeps hitting.
     /// `voice` (`[voice] enabled`, M6): the voice tools follow the others. `computer.enabled` off
     /// (2026-11-19): no computer, file or saved tools, and no description mentions them.
-    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig, drives: Bool = false) -> [Spec] {
+    static func specs(memory: MemoryConfig, voice: Bool, computer: ComputerConfig, files: FilesConfig, drives: Bool = false,
+                      reflection: Bool = false) -> [Spec] {
         let on = computer.enabled
         let dmVoice = voice ? "你在語音頻道裡的時候，連結、網址、程式碼、數字、表情符號這些念出來沒意義的東西，也用 \(Name.dm) 傳給他。" : ""
         return [
@@ -239,6 +240,7 @@ public enum Tools {
                      "required": ["id", "why"],
                  ], jsonParameters: []),
         ] + (drives ? todoSpecsGoals(computer: on) : todoSpecs(computer: on)) + calendarSpecs + (drives ? concernSpecs + goalSpecs : [])
+            + (reflection ? reflectionSpecs : [])
             + (on ? computerSpecs(computer, files) : []) + [askOwnerSpec(computer: on)] + (voice ? voiceSpecs : [])
     }
 
@@ -307,6 +309,65 @@ public enum Tools {
                      ("based_on", ["type": "string", "description": "根據哪件事，一句"]),
                  ]),
                  "required": ["why", "based_on"],
+             ], jsonParameters: []),
+    ]
+
+    /// Her diary and what she knows of herself (2026-11-23, `Reflection.swift`). Writing only in the
+    /// diary turn at the start of the maintenance; reading any time.
+    static let reflectionSpecs: [Spec] = [
+        Spec(name: "diary.write",
+             description: "寫今天的日記（整篇；再寫一次就整篇換掉）。寫給你自己的，用你自己的口吻；主人在後台看得到，但不會傳給他。只有系統維護開始、寫日記的那個回合能用。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("text", ["type": "string", "description": "整篇日記"])]),
+                 "required": ["text"],
+             ], jsonParameters: []),
+        Spec(name: "diary.read",
+             description: "讀你的日記。給 date 讀那一天的；不給就讀最近幾篇。日記是你自己寫的話，不是事實的來源。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("date", ["type": "string", "description": "例：2026-11-22"])]),
+                 "required": [],
+             ], jsonParameters: []),
+        Spec(name: "self.read",
+             description: "看你記下的長處和短處：每條的根據、短處定的習慣和連著的目標、之後又出現幾次、以前有（你改掉的）。",
+             parameters: ["type": "object", "properties": .object([]), "required": []], jsonParameters: []),
+        Spec(name: "self.note",
+             description: "記一條你的長處或短處，一句話。要有根據：evidence 照抄今天對話裡撐住它的一段，一字不差（主人或別人說的、工具的結果、程式的通知；你自己說的不算），或寫「紀錄 #編號」。已經記過的短處又出現，不用另記：系統維護會記。只有寫日記的那個回合能用。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("kind", ["type": "string", "enum": ["strength", "weakness"], "description": "strength＝長處，weakness＝短處"]),
+                     ("text", ["type": "string", "description": "一句話"]),
+                     ("evidence", ["type": "string", "description": "照抄的一段，或「紀錄 #編號」"]),
+                 ]),
+                 "required": ["kind", "text", "evidence"],
+             ], jsonParameters: []),
+        Spec(name: "self.habit",
+             description: "給一個短處定習慣：碰到什麼情況（when）就怎麼做（do）。習慣會一直寫在你的系統提示裡。只給 id 和 why 是把那條習慣拿掉。只有寫日記的那個回合能用。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("id", ["type": "integer", "description": "短處的 #編號"]),
+                     ("when", ["type": "string", "description": "什麼情況，例：要跟主人說做完了之前"]),
+                     ("do", ["type": "string", "description": "怎麼做，例：先看一次結果"]),
+                     ("why", ["type": "string", "description": "拿掉習慣的時候寫為什麼"]),
+                 ]),
+                 "required": ["id"],
+             ], jsonParameters: []),
+        Spec(name: "self.goal",
+             description: "把一個要長期下功夫的短處，連到目標樹上的一個節點（先用 goal.add 加）。只有寫日記的那個回合能用。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("id", ["type": "integer", "description": "短處的 #編號"]), ("goal", ["type": "integer", "description": "目標樹的 #編號"])]),
+                 "required": ["id", "goal"],
+             ], jsonParameters: []),
+        Spec(name: "self.past",
+             description: "把一條長處或短處移到「以前有」：你覺得已經改掉了（或不再是了）。要寫為什麼；它不會自己消失，只有你能移。只有寫日記的那個回合能用。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([("id", ["type": "integer"]), ("why", ["type": "string", "description": "為什麼，一句"])]),
+                 "required": ["id", "why"],
              ], jsonParameters: []),
     ]
 
@@ -757,6 +818,14 @@ public enum Tools {
         case goalBlocked(id: Int, missing: String)
         case goalList
         case idealRevise(text: String?, old: String?, new: String?, why: String, basedOn: String)
+        /// Her diary and self-knowledge (2026-11-23, `Reflection.swift`).
+        case diaryWrite(text: String)
+        case diaryRead(date: String?)
+        case selfRead
+        case selfNote(kind: String, text: String, evidence: String)
+        case selfHabit(id: Int, when: String?, then: String?, why: String?)
+        case selfGoal(id: Int, goal: Int)
+        case selfPast(id: Int, why: String)
     }
 
     /// `specs` are the tools she has; bad arguments throw with what was wrong.
@@ -941,6 +1010,20 @@ public enum Tools {
             return .idealRevise(text: given("text").flatMap { $0.isEmpty ? nil : $0 }, old: given("old").flatMap { $0.isEmpty ? nil : $0 },
                                 new: call.parameters.first { $0.name == "new" }?.value, why: try nonEmpty("why"),
                                 basedOn: try nonEmpty("based_on"))
+        case "diary.write":
+            return .diaryWrite(text: try nonEmpty("text"))
+        case "diary.read":
+            return .diaryRead(date: given("date").flatMap { $0.isEmpty ? nil : $0 })
+        case "self.read":
+            return .selfRead
+        case "self.note":
+            return .selfNote(kind: try oneOf("kind", ["strength", "weakness"], default: ""), text: try nonEmpty("text"), evidence: try nonEmpty("evidence"))
+        case "self.habit":
+            return .selfHabit(id: try int("id")!, when: given("when"), then: given("do"), why: given("why"))
+        case "self.goal":
+            return .selfGoal(id: try int("id")!, goal: try int("goal")!)
+        case "self.past":
+            return .selfPast(id: try int("id")!, why: try nonEmpty("why"))
         case let n where CalendarRequest.names.contains(n):
             do {
                 return .calendar(try CalendarRequest.parse(n, Dictionary(call.parameters.map { ($0.name, $0.value) }, uniquingKeysWith: { $1 })))
@@ -1088,7 +1171,7 @@ enum Instructions {
     /// `computer` (`[computer] enabled`, 2026-11-19): off, nothing tells her of a computer, files,
     /// windows, screenshots or saved tools; her docs (read with `read_file`) are not pointed to either.
     static func text(voice: Bool, context c: ContextConfig, docs: String, maintenance: Bool = false, drives: Bool = false, ownerSleep: Bool = false,
-                     computer: Bool = true) -> String {
+                     computer: Bool = true, reflection: Bool = false) -> String {
         func detail(_ file: String) -> String { computer ? "細節在 \(docs)/\(file)。" : "" }
         // `ownerSleep` (`[owner_sleep] enabled`, 2026-11-16): the fact, no rule; she judges.
         let ownerSleepPart = ownerSleep
@@ -1119,6 +1202,13 @@ enum Instructions {
             從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；現在做不了（缺東西、缺資料），用 goal.blocked 在那個節點記下缺什麼，不要編一個出來。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
             做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。" : "")\(detail("goals.md"))
             """ : ""
+        let reflectionPart = reflection ? """
+
+
+            ## 日記、你的長處和短處
+
+            系統維護開始的時候，你先有自己的一個回合寫今天的日記（diary.write）：寫給你自己的，用你自己的口吻；主人在後台看得到，但不會傳給他。寫完看看你的長處和短處：每一條都要有根據（今天對話裡一字不差的一段，不能是你自己說的；或「紀錄 #編號」）。想改的短處，是碰到某個情況就該怎麼做的，用 self.habit 定一個習慣，它會一直寫在上面「你的習慣」裡；要長期下功夫的，加成目標再用 self.goal 連起來。每天的系統維護會看你的短處那天有沒有又出現，記下來。覺得改掉了，用 self.past 說理由移到「以前有」；不會自己消失。那個回合只能寫日記、看自己、改習慣和目標；回覆裡不再呼叫工具，維護就接著做。平常隨時可以用 diary.read 讀日記、self.read 看自己；recall 也會附上日記裡最接近的幾段。日記是你自己的話，不是事實的來源。\(detail("reflection.md"))
+            """ : ""
         let computerPart = computer ? """
 
 
@@ -1145,7 +1235,7 @@ enum Instructions {
         畫面上跳出系統要 Touch ID 或密碼的視窗（結果裡會寫【系統驗證】），馬上停下來，不要試著通過它，用 ask_owner 告訴主人是哪一步叫出來的。
         人機驗證（拼圖、選圖、滑塊）、要手機號、要主人才有的東西，也一樣跟主人說清楚卡在哪、要他做什麼。
         """ : ""
-        let docsIndex = "你自己這套系統（DollOS）其他的事寫在這台 Mac 的 \(docs)/：README.md 是目錄；computer.md 是電腦怎麼用、常見的狀況；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。用 read_file 讀，例：read_file(path: \"\(docs)/memory.md\")。read_file 是電腦工具，要有進行中的 todo。"
+        let docsIndex = "你自己這套系統（DollOS）其他的事寫在這台 Mac 的 \(docs)/：README.md 是目錄；computer.md 是電腦怎麼用、常見的狀況；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。" + (reflection ? "reflection.md 是日記、長處和短處、習慣。" : "") + "用 read_file 讀，例：read_file(path: \"\(docs)/memory.md\")。read_file 是電腦工具，要有進行中的 todo。"
         return """
         ## 你怎麼運作
 
@@ -1176,7 +1266,7 @@ enum Instructions {
 
         ## 行事曆
 
-        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人自己加的事你不能改也不能刪，覺得該改就跟他說。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)\(detail("calendar.md"))\(maintenancePart)\(drivesPart)\(computerPart)
+        你有一本行事曆，記以後的事和每天的固定行程，用 calendar.add、calendar.change、calendar.delete、calendar.list。有開始時間的事，時間一到程式就給你一個回合，時間線上會有【行事曆】，要提醒主人、開始做什麼、或不理它，你自己決定；全天的事不會叫你，只列在【狀況】。要提早提醒，就自己另外加一件早一點的。主人自己加的事你不能改也不能刪，覺得該改就跟他說。主人也會在 dashboard 改行事曆，他改了時間線上會有【行事曆】主人在 dashboard …的通知。\(ownerSleepPart)\(detail("calendar.md"))\(maintenancePart)\(drivesPart)\(reflectionPart)\(computerPart)
 
         ## 開機時的紀錄
 

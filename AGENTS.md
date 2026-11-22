@@ -235,6 +235,7 @@ update `Instructions` (re-pin the hash test) and the matching `dolldocs/` file, 
 | [turns-and-todo.md](docs/dev/turns-and-todo.md) | Events, queue, turns, the request, todo states, aside list, decision point, compaction, effort, claims, inbox, retries |
 | [memory.md](docs/dev/memory.md) | Memory files, index, embedding, registry, selection, strength, `memory.fix`, consolidation, audit |
 | [drives-and-goals.md](docs/dev/drives-and-goals.md) | Concerns, the three signals, wander, the idle drive, association, goals, ideal self, curiosity |
+| [reflection.md](docs/dev/reflection.md) | Her diary turn, strengths and weaknesses with evidence, habits, the `recur` task |
 | [maintenance.md](docs/dev/maintenance.md) | The daily system maintenance |
 | [calendar.md](docs/dev/calendar.md) | Her calendar, the timer, owner sleep |
 | [boot-and-logs.md](docs/dev/boot-and-logs.md) | Boot order, the log file, run endings, the boot report |

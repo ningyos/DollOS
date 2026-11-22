@@ -79,6 +79,7 @@ enum DashboardPage {
     <div id="calendar-body"></div></section>
   <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
   <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
+  <section id="reflection"><h2>她的日記、長處和短處（她自己寫的；不會傳給你）</h2><div id="reflection-body" class="muted">關閉</div></section>
   <section id="tools"><h2>她的工具（她存下來的一串動作）</h2><div id="tools-body" class="muted">還沒有</div></section>
   <section id="boots"><h2>開機紀錄（上一次執行的 log 整理）</h2><div id="boots-body" class="muted">還沒有</div></section>
   <section id="history"><h2>改動紀錄（她的想成為的樣子、目標樹、工具、記憶、紀錄：誰、什麼時候、做了什麼、為什麼；可以看改了什麼、退回一個、或全部回到某一筆之後）</h2><div id="history-body" class="muted">還沒有</div></section>
@@ -420,6 +421,41 @@ function renderGoals(g) {
   box.append(el("div", "muted", `上次碰到新東西：${g.lastNew ? clock(g.lastNew) : "—"}${g.curiosityDue ? `；沒有新東西的話，${clock(g.curiosityDue)} 會冒一次好奇` : "；好奇現在是關的（沒有電腦就沒有新東西的來源）"}`));
 }
 
+function renderReflection(r) {
+  const box = $("reflection-body");
+  const open = new Set([...box.querySelectorAll("details[open]")].map(d => d.dataset.key));
+  box.replaceChildren();
+  if (!r.enabled) { box.textContent = "關閉（[reflection]、[maintenance] 或 [drives] 沒開）"; return; }
+  const cur = r.items.filter(i => !i.item.past), old = r.items.filter(i => i.item.past);
+  const habits = cur.filter(i => i.item.habit).length;
+  const row = i => {
+    const it = i.item;
+    const d = el("div", it.kind === "weakness" && !it.past ? null : "muted");
+    d.append(el("div", null, `#${it.id} ${it.text}`));
+    for (const e of it.evidence) d.append(el("div", "meta", `根據（${clock(e.ts)}）：${e.quote}`));
+    if (it.habit) d.append(el("div", null, `習慣：${it.habit.when} → ${it.habit.then}（${clock(it.habit.since)} 起）`));
+    if (i.goal) d.append(el("div", null, "目標：" + i.goal));
+    d.append(el("div", "meta", i.stats));
+    for (const e of it.again) d.append(el("div", "meta", `又出現（${clock(e.ts)}）：${e.quote}`));
+    if (it.past) d.append(el("div", "meta", `移到以前有（${clock(it.past.ts)}）：${it.past.why}`));
+    d.style.margin = "0 0 8px";
+    return d;
+  };
+  box.append(el("h3", null, `長處（${cur.filter(i => i.item.kind === "strength").length}）`));
+  for (const i of cur.filter(i => i.item.kind === "strength")) box.append(row(i));
+  box.append(el("h3", null, `短處（${cur.filter(i => i.item.kind === "weakness").length}；習慣 ${habits}／${r.habitsMax}；${r.quietDays} 天沒再出現會標出來，不會自己消失）`));
+  for (const i of cur.filter(i => i.item.kind === "weakness")) box.append(row(i));
+  if (old.length) { box.append(el("h3", null, `以前有（${old.length}）`)); for (const i of old) box.append(row(i)); }
+  box.append(el("h3", null, `日記（最近 ${r.diary.length} 篇）`));
+  if (!r.diary.length) box.append(el("div", "muted", "還沒有"));
+  for (const e of r.diary) {
+    const d = details(`${e.day}${e.file.length > 13 ? "（" + e.file + "）" : ""}${e.sealed ? " · 加密存的（那天她碰過加密的東西）" : ""}`, el("pre", null, e.text), open.has(e.file));
+    d.className = "mem";
+    d.dataset.key = e.file;
+    box.append(d);
+  }
+}
+
 function renderTools(ts) {
   const box = $("tools-body");
   box.replaceChildren();
@@ -520,8 +556,8 @@ async function refresh() {
   if (busy) { dirty = true; return; }
   busy = true;
   try {
-    const [s, t, v, m, c, dr, go, tl, bo, hi] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools", "/api/boots", "/api/history"].map(get));
-    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl); renderBoots(bo); renderHistory(hi);
+    const [s, t, v, m, c, dr, go, tl, bo, hi, rf] = await Promise.all(["/api/status", "/api/timeline", "/api/vision", "/api/memory", "/api/calendar", "/api/drives", "/api/goals", "/api/tools", "/api/boots", "/api/history", "/api/reflection"].map(get));
+    renderStatus(s); renderTimeline(t); renderVision(v); memory = m; renderMemory(m); renderCalendar(c); renderDrives(dr); renderGoals(go); renderTools(tl); renderBoots(bo); renderHistory(hi); renderReflection(rf);
   } catch (e) {
     console.error(e);
   } finally {

@@ -273,7 +273,7 @@ extension Doll {
 /// The page's HTTP server: Network.framework, HTTP/1.1, one request per connection (`/events` stays
 /// open as an SSE stream).
 public final class Dashboard: @unchecked Sendable {
-    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete, boots, history, historyDiff, historyEdit }
+    public enum Kind: Sendable, Equatable { case page, status, timeline, vision, memory, shot, events, interrupt, pause, resume, deep, undeep, memoryRevert, calendar, calendarEdit, drives, goals, idealEdit, goalEdit, recordEval, tools, toolDelete, boots, history, historyDiff, historyEdit, reflection }
 
     /// Every route. A path ending in `/` matches by prefix (the rest is a screenshot's file name or a memory id).
     /// The POST routes are the system operations, and only those (spec 3.x, 2026-11-09).
@@ -315,6 +315,9 @@ public final class Dashboard: @unchecked Sendable {
         ("GET", "/api/history", .history),
         ("GET", "/api/history/diff/", .historyDiff),
         ("POST", "/api/history/", .historyEdit),
+        // Her diary and what she knows of herself (2026-11-23): read only (sealed entries opened: this
+        // page is where his secrets show); the owner undoes a change in the history.
+        ("GET", "/api/reflection", .reflection),
     ]
 
     public struct Response: Sendable {
@@ -421,6 +424,7 @@ public final class Dashboard: @unchecked Sendable {
             case .tools: return .json(try await doll.dashboardTools())
             case .boots: return .json(try await doll.dashboardBoots(limit: config.bootReports))
             case .history: return .json(try await doll.dashboardHistory())
+            case .reflection: return .json(try await doll.dashboardReflection())
             case .historyDiff:
                 do { return .text(200, try await doll.dashboardHistoryDiff(rest)) } catch let e as HistoryError { return .text(404, e.description) }
             case .historyEdit:

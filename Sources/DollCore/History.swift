@@ -224,7 +224,7 @@ public final class History: @unchecked Sendable {
     let ownDir: String
     static let branch = "refs/heads/main"
     /// Data-dir files kept, besides `tools/*.json`.
-    static let dataFiles = ["ideal-self.md", "ideal-self-log.json", "goals.json", "record.json", "memory-fixes.json"]
+    static let dataFiles = ["ideal-self.md", "ideal-self-log.json", "goals.json", "record.json", "memory-fixes.json", Reflection.selfFileName]
     /// Changes whose commit failed in this process, for the next commit's message.
     var unrecorded: [String] = []
     /// The snapshot last committed (or found equal to the head): a change that writes nothing makes no
@@ -326,6 +326,11 @@ public final class History: @unchecked Sendable {
         let tools = data.appending(path: "tools")
         for f in ((try? fm.contentsOfDirectory(atPath: tools.path)) ?? []).sorted() where f.hasSuffix(".json") && !f.hasPrefix(".") {
             out.append(("data/tools/" + f, tools.appending(path: f)))
+        }
+        // Her diary (2026-11-23).
+        let diary = data.appending(path: Reflection.diaryDir)
+        for f in ((try? fm.contentsOfDirectory(atPath: diary.path)) ?? []).sorted() where f.hasSuffix(".md") && !f.hasPrefix(".") {
+            out.append(("data/\(Reflection.diaryDir)/" + f, diary.appending(path: f)))
         }
         // Memory folders and the registry: one level of folders of `.md` files. The data dir or the
         // repository inside the memory dir (a config that nests them) is not memory.
@@ -830,8 +835,10 @@ public final class History: @unchecked Sendable {
         case "data/goals.json": return "目標樹"
         case "data/record.json": return "做完的事的紀錄"
         case "data/memory-fixes.json": return "記憶的更正紀錄"
+        case "data/" + Reflection.selfFileName: return "長處和短處"
         default: break
         }
+        if p.count == 3, p[0] == "data", p[1] == Reflection.diaryDir { return "日記 \(p[2].replacingOccurrences(of: ".md", with: ""))" }
         if p.count == 3, p[0] == "data", p[1] == "tools" { return "工具「\(p[2].replacingOccurrences(of: ".json", with: ""))」" }
         if p.count == 3, p[0] == "memory" { return "記憶 \(p[2].replacingOccurrences(of: ".md", with: ""))" }
         return path
@@ -904,7 +911,7 @@ extension Doll {
 
     /// The in-memory state and the index made to match the files the history just wrote.
     func reloadAfterHistory(_ paths: [String]) throws {
-        var mem: [String] = []
+        var mem: [String] = [], diary = false
         for p in paths {
             switch p {
             case "data/ideal-self.md":
@@ -917,11 +924,14 @@ extension Doll {
                 goalsChanged()
             case "data/record.json": recordFile = try readDocument(RecordFile.self, recordURL, what: "record") ?? RecordFile()
             case "data/memory-fixes.json": fixFile = try MemoryFixFile.read(fixesURL, box: memory.box) ?? MemoryFixFile()
+            case "data/" + Reflection.selfFileName: selfFile = try readDocument(SelfFile.self, selfURL, what: "self-knowledge") ?? SelfFile()
+            case let d where d.hasPrefix("data/\(Reflection.diaryDir)/"): diary = true
             default:
                 // Tools are read from disk at every use; memory and registry files need their index rows.
                 if p.hasPrefix("memory/") { mem.append(String(p.dropFirst("memory/".count))) }
             }
         }
+        if diary { try rebuildDiaryIndex() }
         try memory.reindex(mem)
         feed.notify(.drives)
         feed.notify(.history)
@@ -1020,13 +1030,15 @@ extension Doll {
         case "工具", "tool", "tools": return ["data/tools/"]
         case "記憶", "memory": return ["memory/"]
         case "紀錄", "record": return ["data/record.json", "data/memory-fixes.json"]
+        case "日記", "diary": return ["data/\(Reflection.diaryDir)/"]
+        case "長處", "短處", "長短處", "長處和短處", "self": return ["data/" + Reflection.selfFileName]
         default: break
         }
         if OwnTools.validName(a) == nil, try toolStore.get(a) != nil || history.count(paths: ["data/tools/\(a).json"]) > 0 {
             return ["data/tools/\(a).json"]
         }
         if let (folder, _) = try memory.file(a) { return ["memory/\(memory.dirName(folder))/\(a).md"] }
-        throw ToolError(description: "about 給：想成為的樣子、目標、工具、記憶、紀錄，或一個工具的名字、一條記憶的 id；不給就是全部")
+        throw ToolError(description: "about 給：想成為的樣子、目標、工具、記憶、紀錄、日記、長短處，或一個工具的名字、一條記憶的 id；不給就是全部")
     }
 
     /// `history.list`: her recent changes, short. What a folder her turn may not read holds is only counted.

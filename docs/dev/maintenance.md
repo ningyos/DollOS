@@ -70,6 +70,21 @@ writes no notice, resets `maintenance.json`, and logs `maintenance: nothing to d
 `Doll.dayToConsolidate` is false when the segment holds no person's line and no reply of hers (boot
 and maintenance notices alone are not a day).
 
+### Her diary turn first
+
+With `[reflection]` on (and `[drives]`), `startMaintenance` first gives her a turn of her own
+(`Doll.startDiaryTurn`, `Reflection.swift`) when `Doll.diaryDue` (a day to consolidate, `diary` not
+yet in `MaintenanceFile.done`): `MaintenanceFile.diary` is set, `running` is not, and the notice
+`【系統維護】開始…維護之前先寫今天的日記…` is queued (it gives the turn). Owner decision
+(2026-11-23): her first step in maintenance is still hers. In that turn only
+`Reflection.diaryTurnTools` run; the rest are refused. The turn ends with a reply that calls
+nothing, or after `[reflection] max_turns` replies; `maintenanceCheck` then calls
+`finishDiaryTurn`, which adds `diary` to `done` and runs `beginMaintenanceTasks` (the usual start
+notice, worded `【系統維護】日記的回合結束了，接著做…`). Not writing a diary is logged
+(`no diary today`); nothing writes one for her. An owner or developer line interrupts it like the
+tasks (what she wrote stays; `MaintenanceFile.diaryFile` keeps the same file for the retry); a
+restart starts it again. Details: [reflection.md](reflection.md).
+
 ## The tasks
 
 `MaintenanceTask` cases run in declaration order (`CaseIterable`):
@@ -79,6 +94,7 @@ and maintenance notices alone are not a day).
 | `concerns` | `[drives] enabled`, `[drives] maintenance_concerns_max` > 0, and `dayToConsolidate` | reads the day's timeline, which consolidation closes |
 | `review` | `reviewDue`: `[drives] enabled`, `[goals] review`, `dayToConsolidate`, and the last maintenance revision at least `[goals] revise_min_days` ago | same |
 | `audit` | `auditDue` (new memories checked against their sources, `Audit.swift`) | its corrections must be in place before consolidation recalls related memories |
+| `recur` | `recurDue`: `[reflection]` on, `dayToConsolidate`, and a current weakness | reads the day's timeline, which consolidation closes |
 | `consolidate` | `dayToConsolidate` | last: it opens a new timeline segment |
 
 Details of each task belong to [memory.md](memory.md) (audit, consolidation) and

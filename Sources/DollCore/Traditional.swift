@@ -64,6 +64,9 @@ extension Tools.Request {
         case .concernNote(let text, let about, let due): out = .concernNote(text: fix(text), about: about, due: due)
         case .idealRevise(let text, let old, let new, let why, let basedOn):
             out = .idealRevise(text: text.map(fix), old: old, new: new.map(fix), why: why, basedOn: basedOn)
+        case .diaryWrite(let text): out = .diaryWrite(text: fix(text))
+        case .selfNote(let kind, let text, let evidence): out = .selfNote(kind: kind, text: fix(text), evidence: evidence)
+        case .selfHabit(let id, let when, let then, let why): out = .selfHabit(id: id, when: when.map(fix), then: then.map(fix), why: why)
         default: out = self
         }
         return (out, changes)

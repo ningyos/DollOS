@@ -410,6 +410,7 @@ private struct Harness {
         cfg.ownerSleep.enabled = false    // the owner-sleep tests switch it on
         cfg.goals.review = false          // the ideal-self review tests switch it on
         cfg.audit.enabled = false         // the memory audit tests switch it on
+        cfg.reflection.enabled = false    // the diary and self-knowledge tests switch it on
         cfg.computer.estimateSimilarity = 2   // the estimate check tests switch it on (no cosine reaches 2)
         tune(&cfg)
         let fake = FakeModel(replies)
@@ -10584,4 +10585,112 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
     // Without either, the item is refused as before.
     try await h.turn(Scripted("", ("remember", [("items", #"[{"text":"沒有資料夾"}]"#)])))
     #expect(try h.toolResults().last!.text.hasPrefix("失敗：remember 的 items"))
+}
+
+// her diary and what she knows of herself (2026-11-23, `Reflection.swift`) ---------------------------
+
+private func reflectionHarness(_ clock: ManualClock, dir: URL? = nil, _ replies: [Scripted] = []) async throws -> Harness {
+    try await Harness(replies, dir: dir, clock: clock) {
+        $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
+        $0.drives.maintenanceConcernsMax = 0; $0.reflection.enabled = true
+    }
+}
+
+private func selfFile(_ h: Harness) throws -> SelfFile {
+    try Concerns.read(SelfFile.self, h.dir.appending(path: Reflection.selfFileName), what: "self", box: try testBox(h.dir))!
+}
+
+@Test func maintenanceBeginsWithHerOwnDiaryTurnWhoseNotesNeedEvidenceThenItsTasksRun() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await reflectionHarness(clock, [
+        Scripted("", dm("我先睡了喔")),
+        // Her diary turn: the diary, a weakness quoting the owner, one quoting herself (refused), a
+        // message (refused: the turn only writes and looks at herself).
+        Scripted("", ("diary.write", [("text", "今天主人說我回太短。\n\n我想多說一點。")]),
+                 ("self.note", [("kind", "weakness"), ("text", "回主人的話太短"), ("evidence", "「你回太短了吧」")]),
+                 ("self.note", [("kind", "strength"), ("text", "會說晚安"), ("evidence", "我先睡了喔")]),
+                 ("self.note", [("kind", "weakness"), ("text", "主人沒問也想多說"), ("evidence", "你回太短了吧")]),
+                 dm("還在嗎")),
+        Scripted("", ("self.habit", [("id", "1"), ("when", "回主人之前"), ("do", "多說一句他問的事")])),
+        Scripted("寫完了"),
+        // The task `recur`: #1's quote is the line she noted it from (before it: not again); #2's is
+        // the refusal that came after its note; #9 is no weakness of hers.
+        Scripted("#1｜你回太短了吧\n#2｜這個回合只寫日記\n#9｜晚安"),
+        planReply, summaryReply])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("你回太短了吧，晚安")
+    try await waitUntil { h.said == ["我先睡了喔"] }
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(h.said == ["我先睡了喔"])
+    let day = try segmentTexts(h)[0]
+    let notice = try #require(day.first { $0.hasPrefix("【系統維護】開始，現在 03:00。維護之前先寫今天的日記") })
+    #expect(notice.hasSuffix("你現在的長處和短處：\n長處：\n（還沒有）\n短處：\n（還沒有）"))
+    #expect(day.contains { $0.hasPrefix("失敗：今天的對話裡找不到「我先睡了喔」") })
+    #expect(day.contains { $0.hasPrefix("失敗：系統維護中，這個回合只寫日記") })
+    #expect(day.contains { $0.hasPrefix("【系統維護】日記的回合結束了，接著做") })
+    #expect(h.logs.contains { $0.contains("maintenance: diary turn over after 3 turns; diary 2026-11-16.md written") })
+    // The diary is hers and kept; one weakness with its evidence, its habit, and the day it showed again.
+    let diary = try String(contentsOf: h.dir.appending(path: "diary/2026-11-16.md"), encoding: .utf8)
+    #expect(diary == "今天主人說我回太短。\n\n我想多說一點。\n")
+    let items = try selfFile(h).items
+    #expect(items.count == 2 && items[0].kind == "weakness" && items[0].evidence.map(\.quote) == ["你回太短了吧"])
+    #expect(items[0].habit?.when == "回主人之前" && items[0].habit?.then == "多說一句他問的事")
+    #expect(items[0].again.isEmpty)
+    #expect(items[1].again.map(\.quote) == ["這個回合只寫日記"] && items[1].again[0].by == "maintenance")
+    #expect(h.logs.contains { $0.contains("maintenance: recur done") && $0.contains("again [\"#2\"]")
+        && $0.contains("#1 的「你回太短了吧」是記下它之前（或已經算過）的事") && $0.contains("#9 不是還在的短處") })
+    // The habit is in her system prompt from the reply after it was set.
+    let reqs = await h.model.requests
+    #expect(!reqs[2].messages[0].content.contains(Reflection.habitsHeader))
+    #expect(reqs[3].messages[0].content.contains("\(Reflection.habitsHeader)\n- 回主人之前→多說一句他問的事\n\n"))
+    #expect(try maintenanceFile(h) == MaintenanceFile())
+    // Her history keeps both.
+    #expect(try await doll.dashboardHistory().contains { $0.things.contains("日記 2026-11-16") })
+    #expect(try await doll.dashboardHistory().contains { $0.things.contains("長處和短處") })
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func herDiaryTurnInterruptedByTheOwnerEndsAndComesBackWritingTheSameEntry() async throws {
+    let clock = ManualClock(at("2026-11-16", "22:00"))
+    let h = try await reflectionHarness(clock, [Scripted("", dm("晚安")), Scripted("", dm("我在")),
+                                                Scripted("", ("diary.write", [("text", "主人半夜叫我。")])), Scripted(""),
+                                                planReply, summaryReply])
+    let doll = h.doll
+    let runner = Task { try await doll.run() }
+    await doll.ownerSaid("晚安")
+    try await waitUntil { h.said == ["晚安"] }
+    await h.model.stall(request: 2)
+    clock.set(at("2026-11-17", "03:00"))
+    try await waitUntil { await h.model.requests.count == 2 }
+    await doll.ownerSaid("你還在嗎", voice: true)
+    try await waitUntil { h.said == ["晚安", "我在"] }
+    #expect(h.logs.contains { $0.contains("maintenance: interrupted by 主人 in her diary turn") })
+    #expect(try h.events().contains { $0.text.hasPrefix("【系統維護】被主人打斷了，日記的回合先停下來（寫了的留著）") })
+    // The reply to him is an ordinary one: discord.dm went out.
+    #expect(try maintenanceFile(h).diary == nil && maintenanceFile(h).diaryFile == "2026-11-16.md")
+    clock.set(at("2026-11-17", "03:31"))
+    try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+    #expect(try String(contentsOf: h.dir.appending(path: "diary/2026-11-16.md"), encoding: .utf8) == "主人半夜叫我。\n")
+    #expect(!FileManager.default.fileExists(atPath: h.dir.appending(path: "diary/2026-11-16-2.md").path))
+    await doll.stop()
+    try await runner.value
+}
+
+@Test func outsideHerDiaryTurnSheReadsButCannotWriteAndRecallBringsHerDiaryAsHerOwnWords() async throws {
+    let dir = FileManager.default.temporaryDirectory.appending(path: "dollcore-test-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir.appending(path: "diary"), withIntermediateDirectories: true)
+    try Data("今天去海邊撿貝殼。\n".utf8).write(to: dir.appending(path: "diary/2026-11-14.md"))
+    try Concerns.writeDocument(Data("主人的保險箱密碼的事。\n".utf8), dir.appending(path: "diary/2026-11-15.md"), box: try testBox(dir))
+    let h = try await reflectionHarness(ManualClock(at("2026-11-16", "12:00")), dir: dir)
+    await h.doll.developerSaid("查一下")
+    try await h.turn(Scripted("", ("diary.write", [("text", "x")]), ("diary.read", []), ("recall", [("query", "海邊")])))
+    let r = try h.toolResults().suffix(3).map(\.text)
+    #expect(r[0].hasPrefix("失敗：diary.write 只在系統維護開始、寫日記的那個回合能用"))
+    // The developer's turn does not see the day that touched a secret.
+    #expect(r[1] == "【日記 2026-11-14】\n今天去海邊撿貝殼。\n\n（另外 1 篇有秘密，這個回合看不到）")
+    #expect(r[2].contains("你的日記裡最接近的 1 段（你自己寫的話，不是事實的來源）：\n\n【日記 2026-11-14】今天去海邊撿貝殼。"))
+    #expect(!r[2].contains("保險箱"))
 }

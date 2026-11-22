@@ -47,6 +47,12 @@ struct MaintenanceFile: Codable, Equatable {
     var failed: [String: String] = [:]
     /// What the tasks done so far did, in her words, for the end notice (kept across a restart).
     var words: [String]?
+    /// Her diary turn (2026-11-23, `Reflection.swift`) runs since this time; nil: not in it.
+    var diary: Double?
+    /// Her replies in the diary turn so far.
+    var diaryTurns: Int?
+    /// This maintenance's diary file (kept across an interruption, so a retry writes the same one).
+    var diaryFile: String?
 }
 
 /// The maintenance's tasks, run in this order.
@@ -61,6 +67,9 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
     /// Her new memories checked against where they came from (`Audit.swift`); before
     /// consolidation, so its corrections are in place before consolidation recalls related memories.
     case audit
+    /// Her weaknesses against the day (`Reflection.swift`, 2026-11-23): each one that showed again,
+    /// with the quote; before consolidation, which closes the day's timeline.
+    case recur
     /// The timeline so far into long-term memory, then a new segment opened by the end notice and
     /// the day's summary.
     case consolidate
@@ -71,6 +80,7 @@ public enum MaintenanceTask: String, CaseIterable, Sendable {
         case .concerns: "從今天的對話記掛念"
         case .review: "回顧今天、看想成為的樣子要不要改"
         case .audit: "查對新記的記憶"
+        case .recur: "看你的短處今天有沒有又出現"
         case .consolidate: "整理記憶、寫摘要"
         }
     }
@@ -95,6 +105,7 @@ enum MaintenanceWork: Sendable {
     case concerns(ConcernExtraction.Answer)
     case review(IdealReview.Answer)
     case audit(Audit.Answer)
+    case recur(Reflection.RecurAnswer)
     case consolidate(Consolidation.Request, Consolidation.Answer)
 }
 
@@ -239,6 +250,11 @@ extension Doll {
         guard maintenanceConfig.enabled, calendarCaughtUp, !stopped, maintenanceState.due != nil,
               maintenanceState.running == nil else { return }
         let now = wallClock.now()
+        // Her diary turn: over once she is idle (her last reply called nothing, or its turns ran out).
+        if maintenanceState.diary != nil {
+            if !inTurn, queue.isEmpty, !followUp { finishDiaryTurn() }
+            return
+        }
         if let r = retryAt(), now < r { return armMaintenanceTimer(r) }
         if let n = maintenanceState.notBefore, now < n { return armMaintenanceTimer(n) }
         if maintenanceIdle { return startMaintenance(forced: false) }
@@ -263,19 +279,28 @@ extension Doll {
         maintenanceCheck()
     }
 
-    /// Starts it: the start notice, then the tasks. Nothing to do: no notice, no longer due.
+    /// Starts it: her diary turn first when it is due (2026-11-23), else the start notice and the
+    /// tasks. Nothing to do: no notice, no longer due.
     func startMaintenance(forced: Bool) {
-        let now = wallClock.now()
-        guard MaintenanceTask.allCases.contains(where: { !maintenanceState.done.contains($0.rawValue) && maintenanceDue($0) }) else {
+        guard diaryDue || MaintenanceTask.allCases.contains(where: { !maintenanceState.done.contains($0.rawValue) && maintenanceDue($0) }) else {
             log("INFO", "maintenance: nothing to do; not started")
             maintenanceState = MaintenanceFile()
             return saveMaintenanceLogged()
         }
+        if diaryDue { return startDiaryTurn(forced: forced) }
+        beginMaintenanceTasks(forced: forced)
+    }
+
+    /// The start notice, then the tasks.
+    func beginMaintenanceTasks(forced: Bool) {
+        let now = wallClock.now()
         taskTurn = false
         maintenanceState.running = now
         maintenanceState.forced = forced
         saveMaintenanceLogged()
-        let text = "【系統維護】開始，現在 \(Self.hhmm(now))。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+        let wrote = maintenanceState.done.contains(Reflection.diaryTask)
+        let text = (wrote ? "【系統維護】日記的回合結束了，接著做，現在 \(Self.hhmm(now))。" : "【系統維護】開始，現在 \(Self.hhmm(now))。")
+            + "程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
             + (forced ? "你手上的「\(todo.current ?? "")」先停著，結束後接著做。" : "")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: start notice not written: \(error)") }
         log("INFO", "maintenance: started\(forced ? " (busy limit)" : ""); \(timeline.events.count) events in segment \(timeline.segment)")
@@ -389,6 +414,7 @@ extension Doll {
         case .concerns: drivesConfig.enabled && drivesConfig.maintenanceConcernsMax > 0 && dayToConsolidate
         case .review: reviewDue
         case .audit: auditDue
+        case .recur: recurDue
         case .consolidate: dayToConsolidate
         }
     }
@@ -402,6 +428,8 @@ extension Doll {
             return .review(try await prepareIdealReview())
         case .audit:
             return .audit(try await prepareAudit())
+        case .recur:
+            return .recur(try await prepareRecur())
         case .consolidate:
             let request = try Consolidation.gather(timeline, memory: memory, config: config.consolidate)
             return .consolidate(request, try await Consolidation.ask(request, model: maintenanceModel, config: config))
@@ -415,6 +443,8 @@ extension Doll {
             return try commitIdealReview(answer)
         case .audit(let answer):
             return try commitAudit(answer)
+        case .recur(let answer):
+            return try commitRecur(answer)
         case .concerns(let answer):
             return try commitConcernExtraction(answer)
         case .consolidate(let request, let answer):
@@ -448,6 +478,7 @@ extension Doll {
         case .review: return day || [goalsURL, recordURL, idealURL].contains(where: Concerns.boxed)
         case .audit(let a): return a.request.items.contains { sealedFolders.contains(memory.dirName($0.folder)) }
             || a.request.sources.values.contains { $0.contains("｜秘密]") }
+        case .recur: return day || Concerns.boxed(selfURL)
         case .consolidate(let request, _): return day || request.related.contains { sealedFolders.contains($0.folder) }
         }
     }
@@ -479,28 +510,39 @@ extension Doll {
 
     /// The owner's or the developer's line while it runs (no-op otherwise): the running task is
     /// cancelled and writes nothing; it stays due for the retry; the notice lands before the line.
+    /// In her diary turn: the turn is over (what she wrote stays) and comes again at the retry.
     func interruptMaintenance(by who: String) {
-        guard maintenanceState.running != nil else { return }
+        let diary = maintenanceState.diary != nil
+        guard maintenanceState.running != nil || diary else { return }
         maintenanceSerial += 1
         maintenanceTask?.cancel()
         maintenanceTask = nil
         maintenanceTimer?.cancel()
         maintenanceTimer = nil
         maintenanceState.running = nil
+        maintenanceState.diary = nil
         maintenanceState.interrupted = true
         maintenanceState.forced = false
         saveMaintenanceLogged()
         let left = MaintenanceTask.allCases.filter { !maintenanceState.done.contains($0.rawValue) && maintenanceDue($0) }
-        let text = "【系統維護】被\(who)打斷了，" + (left.contains(.consolidate) ? "今天的還沒整理完，之前的對話和做過的事都還在你眼前" : "還沒做完")
-            + "；沒人跟你說話 \(Self.minutes(maintenanceConfig.retryIdleMin))、你手上也沒事的時候，會再做一次。"
+        let text = "【系統維護】被\(who)打斷了，" + (diary ? "日記的回合先停下來（寫了的留著），" : "")
+            + (left.contains(.consolidate) ? "今天的還沒整理完，之前的對話和做過的事都還在你眼前" : "還沒做完")
+            + "；沒人跟你說話 \(Self.minutes(maintenanceConfig.retryIdleMin))、你手上也沒事的時候，會再做一次"
+            + (diary ? "，那時候可以接著寫日記。" : "。")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: interrupt notice not written: \(error)") }
-        log("INFO", "maintenance: interrupted by \(who); left \(left.map(\.rawValue)); retries after \(maintenanceConfig.retryIdleMin) min of quiet")
+        log("INFO", "maintenance: interrupted by \(who)\(diary ? " in her diary turn" : ""); left \(left.map(\.rawValue)); retries after \(maintenanceConfig.retryIdleMin) min of quiet")
         feed.notify(.maintenance)
     }
 
     /// At boot: running before the restart goes on with the tasks not done; due waits for the check.
     func resumeMaintenance() {
         guard maintenanceConfig.enabled else { return }
+        // A restart in her diary turn starts it again (the notice gives her the turn).
+        if maintenanceState.diary != nil {
+            log("INFO", "maintenance: was in her diary turn at the restart; it starts again")
+            maintenanceState.diary = nil
+            saveMaintenanceLogged()
+        }
         if maintenanceState.running != nil {
             log("INFO", "maintenance: was running at the restart; going on with the tasks not done (\(maintenanceState.done) done)")
             runMaintenance()
@@ -514,6 +556,7 @@ extension Doll {
     /// The dashboard's and `dollctl status`'s line while maintenance runs or waits; nil otherwise.
     public func maintenanceLine() -> String? {
         if let r = maintenanceState.running { return "系統維護中，從 \(Self.nowText(r)) 起" }
+        if let d = maintenanceState.diary { return "系統維護：她在寫日記，從 \(Self.nowText(d)) 起" }
         if let d = maintenanceState.due {
             return "系統維護 \(Self.nowText(d)) 到了，" + (maintenanceState.interrupted ? "被打斷過，等安靜 \(maintenanceConfig.retryIdleMin) 分鐘" : "等她手上沒事")
         }

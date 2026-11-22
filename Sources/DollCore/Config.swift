@@ -557,6 +557,34 @@ public struct VoiceConfig: Sendable {
     public var bridgeProbeMs = 1000
 }
 
+/// Her diary and what she knows of herself (2026-11-23, `Reflection.swift`). Follows `[maintenance]`
+/// and `[drives]` (the diary turn opens the maintenance; a weakness's goal is a node of her tree).
+public struct ReflectionConfig: Sendable {
+    /// Off: no diary turn, no diary or self tools, no habits in the prompt, no `recur` task.
+    public var enabled = true
+    public var diaryMaxChars = 3000
+    /// Her diary turn's replies at most; then the maintenance's tasks begin.
+    public var maxTurns = 8
+    /// `diary.read` without a date: the newest this many entries.
+    public var readDays = 3
+    public var dashboardDays = 30
+    /// `recall` adds this many diary passages nearest the query (0: none).
+    public var recallMax = 2
+    /// Strengths and weaknesses not yet moved to 以前有.
+    public var itemsMax = 20
+    public var itemMaxChars = 80
+    public var habitsMax = 8
+    /// A habit's 「when」 and 「do」 together.
+    public var habitMaxChars = 80
+    /// A quoted evidence at least this long.
+    public var quoteMinChars = 4
+    /// A weakness not seen again for this long is shown so (to her, and in the dashboard); it never
+    /// moves by itself (owner, 2026-11-23).
+    public var weaknessQuietDays = 14.0
+
+    public init() {}
+}
+
 public struct Config: Sendable {
     public var llm: LlmConfig
     public var core: CoreConfig
@@ -579,6 +607,7 @@ public struct Config: Sendable {
     public var audit = AuditConfig()
     public var claims = ClaimsConfig()
     public var log = LogConfig()
+    public var reflection = ReflectionConfig()
     public var history = HistoryConfig()
 
     /// `[core] data_dir`, a relative one under `root`.
@@ -590,7 +619,7 @@ public struct Config: Sendable {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
                                                  "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "claims",
-                                                 "log", "history"])
+                                                 "log", "history", "reflection"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -902,6 +931,7 @@ public struct Config: Sendable {
         guard cfg.log.maxMB > 0, cfg.log.reportKinds >= 1, cfg.log.exampleChars >= 20, cfg.log.turnWarns >= 1 else {
             throw TOMLError(description: "[log] max_mb above 0; report_kinds at least 1; example_chars at least 20; turn_warns at least 1")
         }
+        cfg.reflection = try Self.readReflection(raw["reflection"] ?? [:])
         return cfg
     }
 
@@ -928,6 +958,25 @@ public struct Config: Sendable {
             throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days, blocked_hours above 0; revise_min_days and novelty_gap_min 0 or more")
         }
         return g
+    }
+
+    static func readReflection(_ raw: [String: TOMLValue]) throws -> ReflectionConfig {
+        var s = Section(name: "reflection", raw: raw)
+        var r = ReflectionConfig()
+        try s.read("enabled", &r.enabled)
+        let ints: [(String, WritableKeyPath<ReflectionConfig, Int>)] = [
+            ("diary_max_chars", \.diaryMaxChars), ("max_turns", \.maxTurns), ("read_days", \.readDays), ("dashboard_days", \.dashboardDays),
+            ("items_max", \.itemsMax), ("item_max_chars", \.itemMaxChars), ("habits_max", \.habitsMax), ("habit_max_chars", \.habitMaxChars),
+            ("quote_min_chars", \.quoteMinChars),
+        ]
+        for (k, p) in ints { try s.read(k, &r[keyPath: p]) }
+        try s.read("recall_max", &r.recallMax)
+        try s.read("weakness_quiet_days", &r.weaknessQuietDays)
+        try s.finish()
+        guard ints.allSatisfy({ r[keyPath: $0.1] >= 1 }), r.recallMax >= 0, r.weaknessQuietDays > 0 else {
+            throw TOMLError(description: "[reflection] counts and character caps at least 1; recall_max 0 or more; weakness_quiet_days above 0")
+        }
+        return r
     }
 
     static func readDrives(_ raw: [String: TOMLValue]) throws -> DrivesConfig {

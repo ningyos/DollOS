@@ -361,7 +361,7 @@ extension Doll {
     /// Idle: no todo in hand, or one 等待中 with none set aside (2026-11-20, owner: waiting is not
     /// busy, `TodoAside.swift`); nothing queued or owed, not in maintenance, no turn running.
     var idleForWander: Bool {
-        !inTurn && !paused && maintenanceState.running == nil && queue.isEmpty && !followUp
+        !inTurn && !paused && maintenanceState.running == nil && maintenanceState.diary == nil && queue.isEmpty && !followUp
             && (todo.phase == .idle || todo.phase == .done || (todo.phase == .waiting && aside == nil))
     }
 
