@@ -38,6 +38,8 @@ first boot. The repository ships one blank character template
 (`character_packs/template/doll.toml`); her personality is yours to write.
 
 Her own documentation — what she reads about her tools and how she works — is in `dolldocs/`.
+Documentation for developers and coding agents working on DollOS is in [AGENTS.md](AGENTS.md)
+(start there) and [docs/dev/](docs/dev/).
 
 ## Status
 
