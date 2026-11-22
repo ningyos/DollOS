@@ -28,12 +28,15 @@ jobs:
       - name: Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
-      - name: Cache SwiftPM build
+      # Only the package downloads are cached, not the build: a cached build plan names the Metal
+      # compiler by the path it was mounted at on that machine, which the next machine does not have
+      # ("unable to spawn process …/MetalToolchain-…/metal", 2026-11-22).
+      - name: Cache SwiftPM packages
         uses: actions/cache@v4
         with:
-          path: .build
-          key: swiftpm-v4-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-v4-${{ runner.os }}-
+          path: .build/repositories
+          key: swiftpm-repos-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-repos-${{ runner.os }}-
 
       # The tests about meaning load the real memory embedding model (Qwen3-Embedding-0.6B, ~1.2 GB).
       - name: Cache Hugging Face models
