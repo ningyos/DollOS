@@ -7092,7 +7092,7 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     let log = await d.dashboardGoals().revisions
     #expect(log.first!.by == "her" && log.first!.why == "主人說我很會查" && log.first!.before == start.trimmingCharacters(in: .whitespacesAndNewlines))
     // Refused: too long, renaming her, a missing `old`.
-    for (args, problem) in [([("text", String(repeating: "海", count: 601))], "太長了"), ([("text", "我叫小鯨，想去看海")], "名字和身分"),
+    for (args, problem) in [([("text", String(repeating: "海", count: 1201))], "太長了"), ([("text", "我叫小鯨，想去看海")], "名字和身分"),
                             ([("text", "我不是小燈了")], "我不是小燈"), ([("old", "不存在的句子"), ("new", "x")], "沒有「不存在的句子」")] {
         await d.ownerSaid("改一下")
         try await h.turn(Scripted("", ("ideal.revise", args + [("why", "試試"), ("based_on", "沒有")])))

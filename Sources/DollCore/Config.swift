@@ -276,7 +276,7 @@ public struct GoalsConfig: Sendable, Equatable {
     public var nowShare = 0.5
     /// `owner.feedback` without a record number lands on the newest record this recent.
     public var feedbackHours = 12.0
-    public var idealMaxChars = 600
+    public var idealMaxChars = 1200
     /// The maintenance proposes a revision at most this often.
     public var reviseMinDays = 3.0
     /// Off: no `review` maintenance task (runners and tests not about it).
