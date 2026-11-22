@@ -94,6 +94,13 @@ longer. A Mac that sleeps does not end the process, so sleep never appears as an
 - A failed write is reported once on stderr; the next successful write is preceded by an ERROR line
   saying how many lines are missing from the file.
 
+### Reading a log with sealed lines
+
+A line written by a turn that saw a secret has its whole message sealed (`dollbox1:…`), so the
+file alone does not say what went wrong in that turn. `dollcore --config <file.toml> log` prints the
+log with those lines opened (`RunLog.readable`, marked 🔒), using the memory key from the login
+Keychain; it never creates a key and says so when there is none.
+
 ## Reading the last run
 
 `RunLog.lastRun(dir:)` reads `dollcore.1.log` then `dollcore.log` and returns a `LastRun` for the

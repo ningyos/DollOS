@@ -10562,3 +10562,13 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
     #expect(Claims.find("20:57 記了你妹妹生日，21:00 加了行事曆的提醒。", c).isEmpty)
     #expect(Claims.find("我剛查了記憶，沒有記過。", c).map(\.words) == ["查了記憶"])
 }
+
+@Test func aSealedLogLineIsReadableWithTheKeyAndSaysSoWithAnother() throws {
+    // 2026-11-22, m17: errors of turns that saw a secret were unreadable to anyone.
+    let box = SecretBox(key: SymmetricKey(size: .bits256)), other = SecretBox(key: SymmetricKey(size: .bits256))
+    let sealed = try box.seal("turn 6: remember failed: remember 沒有 folder 這個參數")
+    let line = #"{"level":"ERROR","msg":"\#(sealed)","time":"2026-11-22 21:03:17","ts":1}"#
+    #expect(RunLog.readable(line, box: box) == "2026-11-22 21:03:17 ERROR 🔒 turn 6: remember failed: remember 沒有 folder 這個參數")
+    #expect(RunLog.readable(line, box: other).hasSuffix("🔒 （打不開：不是這把金鑰加密的）"))
+    #expect(RunLog.readable(#"{"level":"INFO","msg":"bridge up","time":"t","ts":1}"#, box: box) == "t INFO bridge up")
+}

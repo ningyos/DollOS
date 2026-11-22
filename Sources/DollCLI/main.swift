@@ -11,6 +11,7 @@
 // Run it only while her process is not running. Her running process does the same in its daily
 // system maintenance (2026-11-16, `Maintenance.swift`); this command stays for a data dir whose process is stopped.
 
+import CryptoKit
 import DollCore
 import Foundation
 
@@ -48,8 +49,29 @@ func buildText(root: URL) -> String {
 }
 
 let argv = CommandLine.arguments
-let usage = "usage: dollcore --config <file.toml> [consolidate <data_dir> [--memory <dir>]]"
+let usage = "usage: dollcore --config <file.toml> [consolidate <data_dir> [--memory <dir>] | log]"
 guard argv.count >= 3, argv[1] == "--config" else { fail(usage) }
+
+// `dollcore --config <file.toml> log` (2026-11-22): her log with the lines of turns that saw a secret
+// opened (they are sealed on disk), for the owner or a developer finding out what went wrong. Uses the
+// key in the login Keychain; never makes one.
+if argv.count == 4, argv[3] == "log" {
+    do {
+        let cfg = try Config.load(URL(filePath: argv[2]))
+        let root = URL(filePath: FileManager.default.currentDirectoryPath)
+        let data = cfg.dataDirectory(root: root)
+        let account = SecretBox.account(data: data)
+        guard let key = try KeychainKeyStore(service: cfg.memory.keychainService).load(account: account) else {
+            fail("log: no memory key in the login Keychain for \(account) (service \(cfg.memory.keychainService))")
+        }
+        let box = SecretBox(key: SymmetricKey(data: key))
+        let text = try String(contentsOf: data.appending(path: "logs").appending(path: LogFile.current), encoding: .utf8)
+        for line in text.split(separator: "\n") { out(RunLog.readable(String(line), box: box)) }
+    } catch {
+        fail("log: \(error)")
+    }
+    exit(0)
+}
 
 if argv.count > 3 {
     guard argv[3] == "consolidate", argv.count == 5 || (argv.count == 7 && argv[5] == "--memory") else { fail(usage) }

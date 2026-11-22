@@ -156,6 +156,9 @@ swift test  --scratch-path /tmp/m6build --filter <name>  # one test
 The suite loads the real embedding model (Qwen3-Embedding-0.6B, ~1.2 GB) from the Hugging Face
 cache or downloads it once. Everything else is faked. Wrap long runs with a time limit.
 
+**Reading her log.** `dollcore --config <file.toml> log` prints `<data_dir>/logs/dollcore.log` with
+the lines of turns that saw a secret opened (they are sealed on disk; marked 🔒).
+
 **Writing a test** ([docs/dev/testing.md](docs/dev/testing.md)): build a `Harness` (a real `Doll`
 in a temp data dir with the fixture character, `Scripted` model replies via `FakeModel`, `FakeCua`
 for cua-driver, `FakeEmbedder`, `testKeys` = an in-memory key store), drive turns with

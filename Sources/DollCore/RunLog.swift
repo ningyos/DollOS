@@ -336,3 +336,18 @@ public enum RunLog {
     }
     public static let sealedKind = "（加密的一行）"
 }
+
+extension RunLog {
+    /// One log line made readable for the owner or a developer (`dollcore … log`, 2026-11-22): a line
+    /// whose message was sealed (a turn that saw a secret) shows its text, marked 🔒; any other line
+    /// as it is. A sealed message the key cannot open says so instead of failing the whole read.
+    public static func readable(_ line: String, box: SecretBox) -> String {
+        guard let data = line.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let msg = o["msg"] as? String else { return line }
+        let time = o["time"] as? String ?? "", level = o["level"] as? String ?? ""
+        guard SecretBox.isSealed(msg) else { return "\(time) \(level) \(msg)" }
+        let opened = (try? box.open(msg, place: "the log")) ?? "（打不開：不是這把金鑰加密的）"
+        return "\(time) \(level) 🔒 \(opened)"
+    }
+}
