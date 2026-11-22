@@ -5323,7 +5323,9 @@ private func day(_ days: Double) -> Double {
                             embedder: embedder, box: try testBox(dir))
     let selector = Selector(memory: memory, config: cfg.select)
     let name = [tea: "tea", office: "office", peanut: "peanut"]
-    let queries = ["tea": "下午幫我買一杯無糖綠茶", "office": "我們公司在哪一區", "peanut": "這塊蛋糕有花生，我能吃嗎"]
+    // Each query clearly above `[select] similarity` (0.55): the peanut one was 0.55 on this Mac and just
+    // under it on CI's GPU (2026-11-22), so a test about strength failed on a rounding.
+    let queries = ["tea": "下午幫我買一杯無糖綠茶", "office": "我們公司在哪一區", "peanut": "我對花生過敏，這塊花生蛋糕我能吃嗎"]
     var attached: [Double: [String: [String]]] = [:]
     for d in [3.0, 20, 30, 60, 180] {
         for (what, q) in queries.sorted(by: { $0.key < $1.key }) {
