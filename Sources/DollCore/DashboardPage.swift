@@ -1,6 +1,6 @@
 /// The dashboard's one page: inline CSS and JS, served from the binary. It reads the JSON routes and
-/// refetches them whenever `/events` says something changed; the only things it can send are
-/// interrupt and pause/resume.
+/// refetches them whenever `/events` says something changed; it sends interrupt and pause/resume and
+/// the owner's edits (calendar, goals, ideal self, deep marks, history undo).
 enum DashboardPage {
     static let html = #"""
 <!doctype html>

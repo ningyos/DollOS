@@ -70,7 +70,7 @@ public struct TodoState: Sendable, Equatable, Codable {
 /// What she hands in with a `todo.set` that starts a list (2026-11-17, owner: the ten ways of
 /// thinking in every doll; hook 1 = first principles, limits, order-of-magnitude estimate). The
 /// program checks that each is written and is not filler, and that each fact quotes something she
-/// read or was told (`Doll.planRefusal`); it cannot judge whether a fact follows from its quote.
+/// read or was told (`Doll.checkedPlan`); it cannot judge whether a fact follows from its quote.
 public struct TodoPlan: Sendable, Equatable, Codable {
     /// The items the list started with.
     public var items: [String]
@@ -171,7 +171,7 @@ public struct EstimateCheck: Sendable, Equatable, Codable {
     public var reason: String?
 }
 
-/// The five `todo.set` fields as she gave them (trimmed; nil = not given), before `Doll.planRefusal`.
+/// The five `todo.set` fields as she gave them (trimmed; nil = not given), before `Doll.checkedPlan`.
 struct PlanInput: Sendable, Equatable {
     /// Each fact as she wrote it: `{"fact": …, "quote": …}`; a missing key is nil.
     struct Fact: Sendable, Equatable, Decodable {

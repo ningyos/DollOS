@@ -285,7 +285,7 @@ out-of-range values fail the boot. Reasons for each value: `dollcore.example.tom
   Chrome also came forward for 1–2 s.
 - **Windowless TextEdit.** A document app launched in the background has no window. `open` says so;
   a `menu` step (檔案 › 新增) or `open` with a target makes one. TextEdit's save panel buttons have also
-  failed with `window_not_key` / `target_occluded`.
+  failed with the driver's `target_occluded`.
 - **Misclicks.** A repeated pattern: press 3, then 「清除」, then 3 again, though list and screenshot
   already showed 3. Cause not verified. Row misclicks dropped to 0 once she clicked by name.
 - **Truncated web pages.** At `max_elements` 250 a Wikipedia article's body was not in the list, so

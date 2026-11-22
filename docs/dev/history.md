@@ -197,5 +197,3 @@ disagreement with the owner instead.
 - Undo of a file changed since may refuse on conflict; the fallback is the owner's restore to a point.
 - Two dollcore processes writing the same repo: the later commit is refused, the change stands, and
   it is recorded at the next commit or boot.
-- The `History` type comment names `History.versioned`; no such symbol exists. The kept list is
-  `History.dataFiles` plus `History.files()`.

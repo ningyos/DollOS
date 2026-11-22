@@ -10,7 +10,7 @@ import Foundation
 /// made all-day. Its start makes maintenance *due*; it gives her no turn.
 ///
 /// Due, it starts as soon as she is idle (`maintenanceIdle`): no turn running, nothing queued, no
-/// tool result waiting for her, no todo item in progress or waiting. So a todo in hand or a turn
+/// tool result waiting for her, no todo item in progress (one that only waits does not count, `todoBusy`). So a list in progress or a turn
 /// running only defers it; the check runs after every turn and on the timer. Busy past
 /// `busy_limit_hours` since it came due, it starts when the current turn ends anyway (nothing
 /// queued): the todo is carried into the new day and the end notice gives her a turn to resume it.

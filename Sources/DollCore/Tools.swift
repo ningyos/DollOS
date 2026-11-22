@@ -306,7 +306,7 @@ public enum Tools {
              ], jsonParameters: []),
     ]
 
-    /// What a `todo.set` that starts a list hands in (2026-11-17, hook 1; `TodoPlan`, `Doll.planRefusal`).
+    /// What a `todo.set` that starts a list hands in (2026-11-17, hook 1; `TodoPlan`, `Doll.checkedPlan`).
     /// Facts carry a quote the program finds (2026-11-17, owner: a fact needs where she saw it).
     /// `assumptions` says that every plan has some, with examples (2026-11-17 morning: 6 of 14 first
     /// `todo.set` left it out — a-1, a-2, a-4, b-2, m-2, m-3, all simple tasks where she saw nothing
@@ -728,7 +728,7 @@ public enum Tools {
         case open(app: String, target: String?)
         case readWindow(app: String?, window: String?)
         case askOwner(what: String, where: String, why: String)
-        /// `plan`: the five fields as given (trimmed; absent = nil), checked by `Doll.planRefusal`
+        /// `plan`: the five fields as given (trimmed; absent = nil), checked by `Doll.checkedPlan`
         /// only when the call starts a list.
         case todoSet([String], subgoal: Int?, plan: PlanInput)
         case todoDone(String, evidence: String?)

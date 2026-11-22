@@ -4,7 +4,7 @@ import Foundation
 /// The history of what is hers (2026-11-19, layer 4: version control and rollback only; owner
 /// 2026-11-04 「skill、人設筆記、糾正紀錄放進 git：留紀錄、看 diff、可還原」).
 ///
-/// What is kept (`History.versioned`): in `[core] data_dir`, her ideal self (`ideal-self.md`) and its
+/// What is kept (`History.dataFiles` and the folders beside it): in `[core] data_dir`, her ideal self (`ideal-self.md`) and its
 /// revision log, her goal tree (`goals.json`), the record of what she did with the owner's evaluations
 /// (`record.json`), the corrections of her memories and the audit's flags (`memory-fixes.json`) and
 /// her saved tools (`tools/*.json`); in `[memory] dir`, every memory file (secret, own, public) and the

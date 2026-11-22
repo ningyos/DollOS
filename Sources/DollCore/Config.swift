@@ -199,9 +199,9 @@ public struct OwnerSleepConfig: Sendable {
     public var end = "08:00"
 }
 
-/// Her concerns and four signals (m6-drives, 2026-11-15, `Signals.swift`, `Drives.swift`). Values
+/// Her concerns and three signals (動力, 壓力, 親近; `Signals.swift`, `Concerns.swift`). Values
 /// are 0…1. The reasons for each number are in `dollcore.example.toml` and
-/// experiments/m6-drives/week.txt (the simulated week).
+/// the simulated week (`M6DrivesWeek` test).
 public struct DrivesConfig: Sendable, Equatable {
     /// Off: no concern tools, no signals, no wandering, association or felt line (runners and tests
     /// that are not about them). Her own process keeps it on.
@@ -403,7 +403,7 @@ public struct ConsolidateConfig: Sendable {
 public struct AuditConfig: Sendable {
     /// Off: no `audit` maintenance task (runners and tests not about it).
     public var enabled = true
-    /// `change`: a memory with a verified contradicting quote is replaced (or retired) at once;
+    /// `change`: a memory with a verified contradicting quote is replaced at once (never retired without a replacement; with none it is only flagged);
     /// `flag`: it is only listed for the owner (dashboard, end notice). `flag` by default
     /// (experiments/m8-memory-fix, 2026-11-18): on short seeded days `change` changed 0 of 72 correct
     /// memories, but on realistic days (17–25k tokens, the 30,000-character cap cutting the morning)
