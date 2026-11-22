@@ -10543,3 +10543,11 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
     #expect(Claims.find("我剛查過行事曆確認過了", c).map(\.words) == ["查過行事曆"])
     #expect(Claims.find("我順手又去查了下週日程", c).map(\.words) == ["查了下週日程"])
 }
+
+@Test func aConcernNoteEndingInAFullStopIsNotGivenAnother() async throws {
+    // 2026-11-22: the result read 「…等他醒了問他。。」.
+    let h = try await goalsHarness(ManualClock(at("2026-11-16", "10:00")))
+    try await h.turn(Scripted("", ("concern.note", [("text", "等他醒了問他。"), ("about", "owner")]), ("concern.note", [("text", "等他醒了問他"), ("about", "owner")])))
+    let results = try h.toolResults().map(\.text).filter { $0.hasPrefix("記下了") }
+    #expect(results.count == 2 && results.allSatisfy { $0.hasSuffix("等他醒了問他。") })
+}

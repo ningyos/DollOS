@@ -282,7 +282,9 @@ extension Doll {
             dueTS = day.at(time)
         }
         let c = try addConcern(t, about: a, source: "her", due: dueTS)
-        return Outcome(text: "記下了：#\(c.id)〔\(a.label)〕\(t)。", actions: ["concern note"])
+        // Her text often ends in 「。」 already (2026-11-22: 「等他醒了問他。。」).
+        let end = t.hasSuffix("。") || t.hasSuffix("？") || t.hasSuffix("！") ? "" : "。"
+        return Outcome(text: "記下了：#\(c.id)〔\(a.label)〕\(t)\(end)", actions: ["concern note"])
     }
 
     func concernEnd(id: Int, how: String) throws -> Outcome {
