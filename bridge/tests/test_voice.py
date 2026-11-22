@@ -715,7 +715,13 @@ async def test_link_leave_mid_utterance(rig: Any) -> None:
     channel.vc.pump(1)
     await rig.core.send(type="leave")
     assert (await rig.core.played_until(1, 480))[-1] == 480     # what was heard
-    assert await rig.core.expect("left", skip=()) == {"type": "left"}
+    # The progress report may repeat before `left` on a slow machine (it reports every <= 100 ms,
+    # CI 2026-11-22); it may not report more than was heard.
+    while True:
+        msg = await asyncio.wait_for(rig.core.texts.get(), 2)
+        if msg["type"] == "left":
+            break
+        assert msg["type"] == "played" and msg["utterance"] == 1 and msg["samples"] <= 480, msg
     await rig.core.ws.send_bytes(her(480))             # still in flight from dollcore: absorbed
     await rig.core.send(type="utterance_end", utterance=1)
     await rig.core.send(type="utterance_start", utterance=2)  # not in voice any more
