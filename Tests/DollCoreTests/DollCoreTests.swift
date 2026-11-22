@@ -8723,7 +8723,9 @@ private func auditDay(mode: String, dir: URL? = nil, stall: Int? = nil, _ after:
     let r = Audit.gather(items: items, segments: [("s", lines)], maxChars: 1000, originShare: 0.5, left: 0, noSource: [])
     let shown = r.sources["s"]!
     // The budget: the shown lines (without the gap marks) stay within the cap.
-    #expect(shown.split(separator: "\n").filter { !$0.hasPrefix("……（略過") }.reduce(0) { $0 + $1.count + 1 } <= 1000)
+    let shownLines: [Substring] = shown.split(separator: "\n").filter { !$0.hasPrefix("……（略過") }
+    let shownChars: Int = shownLines.reduce(0) { $0 + $1.count + 1 }
+    #expect(shownChars <= 1000)
     // Each memory's origin (m2: the line at its seq; m1: the last line) and m1's related morning line (心臟科).
     #expect(shown.contains("中午吃了牛肉麵") && shown.contains("上次回診是 11/4") && shown.contains("心臟科 王醫師"))
     #expect(shown.contains("[07:40 read_file 的結果]"))
@@ -9569,7 +9571,9 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(await h.doll.idleForWander)
     // Her own step: the waiting list goes aside, untouched.
     try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
-    #expect(try h.toolResults().last!.text.hasSuffix("「房東的時間問到了」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。"))
+    let setAside: String = try h.toolResults().last!.text
+    let setAsideTail: String = "「房東的時間問到了」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。"
+    #expect(setAside.hasSuffix(setAsideTail))
     #expect(try await h.last.todo == "進行中")
     #expect(try await h.doll.todo.current == ownStep)
     #expect(try await h.doll.aside?.todo == (h.timeline().todoAside?.todo))
