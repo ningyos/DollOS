@@ -2167,7 +2167,8 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // Only the program's steps count as steps, not a numbered line in her result.
     #expect(Experience(id: "", folder: "public", secret: false, level: "", file: files[0]).steps
             == ["click AXButton \"7\"", "click 100,50 雙擊", "type「小燈來過」", "key cmd+s"])
-    #expect(stats.turns == 5 && (0..<30).contains(stats.seconds)
+    // Seconds are wall-clock time (event timestamps): only not negative; a busy CI machine took 48 s.
+    #expect(stats.turns == 5 && stats.seconds >= 0
             && stats == ExperienceStats(turns: 5, seconds: stats.seconds, attachedFollowed: 0, attachedSuccess: 0, attachedFailed: 0))
     // The next time the owner asks the same, it is attached whole, its stats line first.
     await h.doll.ownerSaid("把 notes 存檔")
@@ -3945,7 +3946,9 @@ private func otherIPv4() -> String? {
     let api = try await localAPI(h)
     defer { api.stop() }
     var req = URLRequest(url: URL(string: api.baseURL + "/api/listen?to=developer")!)
-    req.timeoutInterval = 10
+    // A hang guard, not a speed check: the stream is silent between lines, and on a busy CI machine
+    // a gap passed 10 s (2026-11-22). The test's own waits end it long before.
+    req.timeoutInterval = 60
     let (bytes, response) = try await URLSession.shared.bytes(for: req)
     #expect((response as! HTTPURLResponse).statusCode == 200)
     var lines = bytes.lines.makeAsyncIterator()
