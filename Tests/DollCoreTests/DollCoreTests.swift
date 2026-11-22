@@ -9337,7 +9337,7 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 /// 「用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；…」.
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "2656e6ff93652901d1c58e4d9e5c79b49fb690ea440423decd7ffffecfe4c0a1")
+    #expect(d.tools == "bed53f452ddcc57981105f96be9e4d42590815d2db5a306a3ed0d2a41f0da3c0")
     #expect(d.prompt == "5cf246545cc7f8f7c2e1094c6813f56a4aebed0f1b421c6fa378e5fd5bef6505")
 }
 
@@ -10571,4 +10571,17 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
     #expect(RunLog.readable(line, box: box) == "2026-11-22 21:03:17 ERROR 🔒 turn 6: remember failed: remember 沒有 folder 這個參數")
     #expect(RunLog.readable(line, box: other).hasSuffix("🔒 （打不開：不是這把金鑰加密的）"))
     #expect(RunLog.readable(#"{"level":"INFO","msg":"bridge up","time":"t","ts":1}"#, box: box) == "t INFO bridge up")
+}
+
+@Test func aFolderBesideTheItemsIsTheFolderOfEachItemThatNamesNone() async throws {
+    // 2026-11-22: she wrote `folder` beside `items` 9 times in two runs and was refused each time.
+    let h = try await Harness()
+    await h.doll.developerSaid("記一下")
+    try await h.turn(Scripted("", ("remember", [("items", #"[{"text":"我的信箱密碼是 Qx2-鯨魚"},{"text":"主人喜歡無糖綠茶","folder":"public"}]"#),
+                                                ("folder", "own")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("第 1 條已存入 own/"))
+    #expect(try h.toolResults().last!.text.contains("第 2 條已存入 public/"))
+    // Without either, the item is refused as before.
+    try await h.turn(Scripted("", ("remember", [("items", #"[{"text":"沒有資料夾"}]"#)])))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：remember 的 items"))
 }

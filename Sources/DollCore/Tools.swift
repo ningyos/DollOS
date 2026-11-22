@@ -190,9 +190,13 @@ public enum Tools {
                                  "deep": ["type": "boolean",
                                           "description": "true＝這件事對你特別重要，要一直記得，永遠不會淡。只標真的重要的；平常不填"],
                              ],
-                             "required": ["text", "folder"],
+                             "required": ["text"],
                          ],
-                     ]],
+                     ],
+                     // 2026-11-22: she put `folder` beside `items` 9 times in two runs and was refused
+                     // each time; it now means the folder of every item that does not name its own.
+                     "folder": ["type": "string", "enum": ["secret", "own", "public"],
+                                "description": "每一條都放這個資料夾（某一條自己寫了 folder 就用它自己的）"]],
                      "required": ["items"],
                  ], jsonParameters: ["items"]),
             Spec(name: "recall",
@@ -810,7 +814,13 @@ public enum Tools {
             }
             return .think(level)
         case "remember":
-            let raw = value("items")
+            var raw = value("items")
+            // A `folder` beside `items` is the folder of each item that names none.
+            if let all = given("folder"), !all.isEmpty,
+               var list = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] {
+                for i in list.indices where list[i]["folder"] == nil { list[i]["folder"] = all }
+                raw = String(decoding: try JSONSerialization.data(withJSONObject: list), as: UTF8.self)
+            }
             let items: [Request.Item]
             do { items = try JSONDecoder().decode([Request.Item].self, from: Data(raw.utf8)) } catch {
                 throw ToolError(description: "remember 的 items 要是 JSON 陣列，每條 {\"text\": …, \"folder\": \"secret\"/\"own\"/\"public\", \"kind\": 可不填}；讀不懂：\(raw)")
