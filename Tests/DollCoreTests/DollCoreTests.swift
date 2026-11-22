@@ -10554,3 +10554,11 @@ private func diskHits(_ dir: URL, _ needles: [String]) throws -> [String] {
     let results = try h.toolResults().map(\.text).filter { $0.hasPrefix("記下了") }
     #expect(results.count == 2 && results.allSatisfy { $0.hasSuffix("等他醒了問他。") })
 }
+
+@Test func aClaimDatedByAClockTimeIsNoClaim() throws {
+    // 2026-11-22, m17: asked what she did this evening, her true recap was refused.
+    let c = try exampleConfig().claims
+    #expect(Claims.find("21:14 你問你爸生日，我查了記憶，沒有記過。", c).isEmpty)
+    #expect(Claims.find("20:57 記了你妹妹生日，21:00 加了行事曆的提醒。", c).isEmpty)
+    #expect(Claims.find("我剛查了記憶，沒有記過。", c).map(\.words) == ["查了記憶"])
+}

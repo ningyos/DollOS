@@ -58,6 +58,9 @@ enum Claims {
                     guard let hit = hits.min(by: { $0.at < $1.at }) else { continue }
                     let before = String(s[..<i])
                     if c.earlier.contains(where: before.contains) { continue }
+                    // A clock time before it in the sentence dates it too (2026-11-22, m17: a recap of the
+                    // evening, 「21:14 你問你爸生日，我查了記憶」, was refused).
+                    if before.range(of: #"[0-9]{1,2}[:：][0-9]{2}"#, options: .regularExpression) != nil { continue }
                     // A plan in the verb's own clause (「我再加了…」 never; 「這次我會記好行事曆」 is a promise).
                     let ownClause = String(before.reversed().prefix { !"，,；;：:、".contains($0) }.reversed())
                     if c.planned.contains(where: ownClause.contains) { continue }
