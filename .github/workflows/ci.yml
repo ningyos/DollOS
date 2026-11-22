@@ -6,33 +6,25 @@ on:
 
 jobs:
   swift:
-    runs-on: macos-26
+    # Xcode 27 (Swift 6.4): its default build system, Swift Build, compiles MLX's .metal kernels into
+    # default.metallib. Swift 6.2's native build system skips them, and its Swift Build preview does not
+    # link this package (2026-11-22, CI runs 2-4).
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      # The newest Xcode installed on the image (the image's Xcodes are /Applications/Xcode_<version>.app;
-      # see actions/runner-images images/macos/macos-26-arm64-Readme.md). Betas and release candidates
-      # are skipped. The package needs Swift 6.2 or later: fail here, clearly, if that Xcode has less.
-      - name: Select Xcode
+      - name: Toolchain
         run: |
           set -euo pipefail
-          xcode=$(ls -d /Applications/Xcode_*.app | grep -v -i -E 'beta|rc' | python3 -c '
-          import re, sys
-          apps = [l.strip() for l in sys.stdin if re.fullmatch(r"/Applications/Xcode_[0-9.]+\.app", l.strip())]
-          if not apps: sys.exit("no /Applications/Xcode_<version>.app on this image")
-          print(max(apps, key=lambda a: [int(p) for p in re.findall(r"[0-9]+", a)]))')
-          echo "Selecting $xcode"
-          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
           swift --version
           swift --version 2>&1 | python3 -c '
           import re, sys
           m = re.search(r"Swift version ([0-9]+)\.([0-9]+)", sys.stdin.read())
-          if not m or (int(m[1]), int(m[2])) < (6, 2): sys.exit("Swift 6.2 or later is required (Package.swift tools version)")'
+          if not m or (int(m[1]), int(m[2])) < (6, 4): sys.exit("Swift 6.4 or later (Xcode 27) is required to build the Metal kernels")'
 
-      # MLX compiles its GPU kernels (.metal) into default.metallib only when the Metal toolchain is
-      # installed; Xcode 26 ships it as a separate component. Without it the build succeeds and every
-      # MLX use fails at run time ("Failed to load the default metallib").
+      # MLX's kernels need the Metal toolchain, a separate component since Xcode 26.
       - name: Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
@@ -40,8 +32,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-v3-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-v3-${{ runner.os }}-
+          key: swiftpm-v4-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-v4-${{ runner.os }}-
 
       # The tests about meaning load the real memory embedding model (Qwen3-Embedding-0.6B, ~1.2 GB).
       - name: Cache Hugging Face models
@@ -51,16 +43,14 @@ jobs:
           key: huggingface-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: huggingface-${{ runner.os }}-
 
-      # Swift Build (the default build system from Swift 6.4) compiles MLX's .metal files into
-      # default.metallib; the native build system of Swift 6.2 does not. Name it explicitly.
       - name: Build
-        run: swift build --build-system swiftbuild
+        run: swift build
 
       - name: Test
-        run: swift test --build-system swiftbuild
+        run: swift test
 
   bridge:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 15
     defaults:
       run:

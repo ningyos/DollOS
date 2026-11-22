@@ -26,7 +26,7 @@ Run and check each; stop with a clear message if one fails.
 |---|---|---|
 | Apple silicon | `uname -m` prints `arm64` | MLX (memory search, voice) runs on Apple silicon only |
 | macOS 26 or later | `sw_vers -productVersion` ≥ 26 | the package's minimum platform |
-| Swift 6.2 or later (Xcode 26+) | `swift --version` | the package's tools version |
+| Xcode 27 (Swift 6.4 or later) | `swift --version` | its default build system compiles MLX's GPU kernels; Swift 6.2 builds without them |
 | Disk | ≥ 10 GB free in the home volume | models: memory embedding ~1.2 GB; voice ~2–3 GB if enabled; the build ~3 GB |
 | Memory | ≥ 16 GB recommended | voice alone peaks around 4 GB |
 
@@ -53,17 +53,16 @@ Notes to pass on:
 
 ## 3. Build
 
-Once per machine, install the Metal toolchain (about 1 GB; Xcode 26 ships it separately). Without it
+Once per machine, install the Metal toolchain (about 1 GB; Xcode ships it separately). Without it
 the build succeeds but memory search and voice fail at run time ("Failed to load the default metallib"):
 ```sh
 xcodebuild -downloadComponent MetalToolchain
 ```
 Then, from the repository root:
 ```sh
-swift build -c release --build-system swiftbuild
+swift build -c release
 ```
-`--build-system swiftbuild` is what compiles MLX's GPU kernels (`.metal`) into `default.metallib`; it is
-the default from Swift 6.4, and Swift 6.2 needs it named. The first build downloads Swift packages and
+The first build downloads Swift packages and
 takes several minutes. When it ends with `Build complete!`, the program is `.build/release/dollcore` and
 next to it three resource bundles (`*.bundle`) it needs at run time. Check the kernels are there:
 `ls .build/release/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib`.
@@ -214,7 +213,7 @@ Stop her with Ctrl-C (a clean stop).
 ## 12. Updating
 
 ```sh
-git pull && swift build -c release --build-system swiftbuild
+git pull && swift build -c release
 ```
 Stop her, copy the new `dollcore` and `*.bundle` into `~/DollOS-data/bin/` (step 4), start her again.
 If the new version's config has new keys, the boot names any that are wrong; compare with the new

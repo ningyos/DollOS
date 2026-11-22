@@ -23,7 +23,7 @@ The program is `dollcore` (Swift). A local dashboard shows her state, memory, ca
 
 ## Requirements
 
-- A Mac with Apple silicon, macOS 26 or later, Swift 6.2 or later (Xcode 26+).
+- A Mac with Apple silicon, macOS 26 or later, Xcode 27 (Swift 6.4 or later).
 - About 10 GB of free disk (models and the build), 16 GB of memory recommended.
 - A language model server that speaks the OpenAI chat completions API **with tool calling**
   (for example llama.cpp's `llama-server`). DollOS does not include a language model.
