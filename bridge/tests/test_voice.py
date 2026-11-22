@@ -403,7 +403,10 @@ def test_keepalive_uses_send(restore_keepalive: Any) -> None:
     sock = FakeSocket()
     ka = receive_reader.UDPKeepAlive(keepalive_client(sock))
     ka.start()
-    time.sleep(0.1)
+    # Wait for three sends (every 0.01 s) rather than a fixed 0.1 s: a slow CI machine sent only two in that time.
+    deadline = time.monotonic() + 5
+    while len(sock.sent) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
     ka.stop()
     ka.join(1)
     assert not ka.is_alive() and reports == []
@@ -534,6 +537,10 @@ class Dollcore:
         seen: list[int] = []
         while True:
             msg = await self.expect("played", skip=())
+            # A progress report of the utterance before can still arrive late (it reports every
+            # <= 100 ms): skip those, but nothing of a later one may come first.
+            if msg["utterance"] < uid:
+                continue
             assert msg["utterance"] == uid
             seen.append(msg["samples"])
             if msg["samples"] == samples:

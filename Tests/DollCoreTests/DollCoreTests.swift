@@ -3984,15 +3984,21 @@ private func otherIPv4() -> String? {
     // Up (it opened the owner stream with the key it was given), then gone: down, not restarted,
     // and her say to the owner fails with the reason.
     c.readyTimeoutS = 10
-    c.command = ["/bin/sh", "-c", "exec /usr/bin/curl -sN --max-time 1.5 -H \"Authorization: Bearer $DOLL_BRIDGE_TOKEN\" \"$DOLL_API/api/listen?to=owner\" > /dev/null"]
+    // The stand-in holds the owner stream until the test says so (a flag file), then exits 3: a fixed
+    // lifetime ran out before a slow CI machine had seen it up (2026-11-22).
+    let flag = FileManager.default.temporaryDirectory.appending(path: "bridge-exit-\(UUID().uuidString)")
+    c.command = ["/bin/sh", "-c", "/usr/bin/curl -sN -H \"Authorization: Bearer $DOLL_BRIDGE_TOKEN\" \"$DOLL_API/api/listen?to=owner\" > /dev/null & p=$!; "
+                 + "while [ ! -e '\(flag.path)' ]; do sleep 0.05; done; kill $p; exit 3"]
     let bridge = Bridge(config: c, api: api, root: root)
     try await bridge.start()
     #expect(api.bridge.hasPrefix("up (pid "))
     #expect(api.deliver("在嗎", to: .owner) == nil)
+    FileManager.default.createFile(atPath: flag.path, contents: nil)
+    defer { try? FileManager.default.removeItem(at: flag) }
     try await waitUntil { api.bridge.hasPrefix("down") }
-    #expect(api.bridge.contains("exit status 28") && api.bridge.contains("not restarted"))
+    #expect(api.bridge.contains("exit status 3") && api.bridge.contains("not restarted"))
     #expect(api.listening(.owner) == 0)
-    #expect(api.deliver("在嗎", to: .owner)!.contains("bridge down: exit status 28"))
+    #expect(api.deliver("在嗎", to: .owner)!.contains("bridge down: exit status 3"))
 }
 
 @Test func aPersonsLineSaysWhoWhereAndWhetherSpokenOrTyped() async throws {
