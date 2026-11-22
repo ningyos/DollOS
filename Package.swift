@@ -28,9 +28,6 @@ let package = Package(
                 linkerSettings: [.linkedLibrary("sqlite3")]),
         .executableTarget(name: "DollCLI", dependencies: ["DollCore"]),
         .executableTarget(name: "DollCtl", dependencies: ["DollCore"]),
-        .executableTarget(name: "mac-computer", dependencies: ["DollCore"], path: "experiments/m7-mac/Runner"),
-        .executableTarget(name: "m6-calendar", dependencies: ["DollCore"], path: "experiments/m6-calendar/Runner"),
-        .executableTarget(name: "m6-drives-real", dependencies: ["DollCore"], path: "experiments/m6-drives/real/Runner"),
         // Fixtures/ holds the test character pack, read by path at run time (not a resource).
         .testTarget(name: "DollCoreTests", dependencies: ["DollCore"], exclude: ["Fixtures"]),
     ]

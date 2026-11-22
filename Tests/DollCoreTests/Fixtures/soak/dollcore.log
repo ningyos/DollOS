@@ -1,0 +1,161 @@
+{"time": "2026-11-19 19:40:05", "msg": "turn 1 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=9398 prefilled=268 cached=9130 finish=tool_calls completion=167 reasoning_chars=185"}
+{"time": "2026-11-19 19:48:06", "msg": "turn 2 effort=medium todo=待命中 actions=[\"calendar.add\"] prompt=9695 prefilled=302 cached=9393 finish=tool_calls completion=212 reasoning_chars=197"}
+{"time": "2026-11-19 19:48:10", "msg": "turn 3 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=9995 prefilled=305 cached=9690 finish=tool_calls completion=124 reasoning_chars=253"}
+{"time": "2026-11-19 20:05:03", "msg": "turn 4 effort=medium todo=待命中 actions=[\"remember public\"] prompt=10282 prefilled=292 cached=9990 finish=tool_calls completion=67 reasoning_chars=60"}
+{"time": "2026-11-19 20:05:07", "msg": "turn 5 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=10528 prefilled=251 cached=10277 finish=tool_calls completion=113 reasoning_chars=73"}
+{"time": "2026-11-19 20:30:04", "msg": "turn 6 effort=medium todo=待命中 actions=[\"think medium\"] prompt=10826 prefilled=303 cached=10523 finish=tool_calls completion=89 reasoning_chars=113"}
+{"time": "2026-11-19 20:30:16", "msg": "turn 7 effort=medium todo=待命中 actions=[\"ideal revise\"] prompt=11028 prefilled=207 cached=10821 finish=tool_calls completion=478 reasoning_chars=376"}
+{"time": "2026-11-19 20:30:34", "msg": "turn 8 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=11603 prefilled=11603 cached=0 finish=tool_calls completion=237 reasoning_chars=151"}
+{"time": "2026-11-19 20:54:23", "msg": "turn 9 effort=medium todo=待命中 actions=[\"goal add\"] prompt=12050 prefilled=12050 cached=0 finish=tool_calls completion=148 reasoning_chars=444"}
+{"time": "2026-11-19 20:54:28", "msg": "turn 10 effort=medium todo=待命中 actions=[\"goal add\"] prompt=12282 prefilled=237 cached=12045 finish=tool_calls completion=112 reasoning_chars=116"}
+{"time": "2026-11-19 20:54:38", "msg": "turn 11 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=12534 prefilled=257 cached=12277 finish=tool_calls completion=352 reasoning_chars=938"}
+{"time": "2026-11-19 21:30:04", "msg": "turn 12 effort=medium todo=待命中 actions=[\"calendar.add\"] prompt=12907 prefilled=378 cached=12529 finish=tool_calls completion=89 reasoning_chars=30"}
+{"time": "2026-11-19 21:30:08", "msg": "turn 13 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=13239 prefilled=337 cached=12902 finish=tool_calls completion=134 reasoning_chars=196"}
+{"time": "2026-11-19 22:10:05", "msg": "turn 14 effort=medium todo=待命中 actions=[\"calendar.change\"] prompt=13556 prefilled=322 cached=13234 finish=tool_calls completion=194 reasoning_chars=387"}
+{"time": "2026-11-19 22:10:14", "msg": "turn 15 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=13930 prefilled=379 cached=13551 finish=tool_calls completion=294 reasoning_chars=779"}
+{"time": "2026-11-19 23:20:04", "msg": "turn 16 effort=medium todo=待命中 actions=[\"said discord_dm\"] prompt=14262 prefilled=337 cached=13925 finish=tool_calls completion=111 reasoning_chars=245"}
+{"time": "2026-11-20 03:00:16", "msg": "turn 17 effort=none todo=待命中 actions=[\"concern note\"] prompt=14700 prefilled=14700 cached=0 finish=tool_calls completion=54 reasoning_chars=0"}
+{"time": "2026-11-20 03:00:23", "msg": "turn 18 effort=medium todo=待命中 actions=[\"think medium\"] prompt=15091 prefilled=338 cached=14753 finish=tool_calls completion=242 reasoning_chars=895"}
+{"time": "2026-11-20 03:00:31", "msg": "turn 19 effort=medium todo=待命中 actions=[\"calendar.add\"] prompt=15376 prefilled=290 cached=15086 finish=tool_calls completion=265 reasoning_chars=278"}
+{"time": "2026-11-20 03:00:49", "msg": "turn 20 effort=medium todo=待命中 actions=[] prompt=15865 prefilled=494 cached=15371 finish=stop completion=722 reasoning_chars=2937"}
+{"time": "2026-11-20 05:30:40", "msg": "turn 1 effort=medium todo=待命中 actions=[\"goal add\"] prompt=10701 prefilled=10701 cached=0 finish=tool_calls completion=252 reasoning_chars=290"}
+{"time": "2026-11-20 05:30:45", "msg": "turn 2 effort=medium todo=待命中 actions=[\"goal add\"] prompt=11177 prefilled=481 cached=10696 finish=tool_calls completion=94 reasoning_chars=126"}
+{"time": "2026-11-20 05:30:50", "msg": "turn 3 effort=medium todo=待命中 actions=[\"goal add\"] prompt=11667 prefilled=495 cached=11172 finish=tool_calls completion=120 reasoning_chars=101"}
+{"time": "2026-11-20 05:31:04", "msg": "turn 4 effort=medium todo=待命中 actions=[\"goal add\"] prompt=12159 prefilled=497 cached=11662 finish=tool_calls completion=515 reasoning_chars=1913"}
+{"time": "2026-11-20 05:31:13", "msg": "turn 5 effort=medium todo=待命中 actions=[\"goal change\"] prompt=12670 prefilled=516 cached=12154 finish=tool_calls completion=271 reasoning_chars=1050"}
+{"time": "2026-11-20 05:31:47", "msg": "turn 6 effort=medium todo=待命中 actions=[\"concern note\"] prompt=13159 prefilled=494 cached=12665 finish=tool_calls completion=1344 reasoning_chars=5171"}
+{"time": "2026-11-20 05:33:04", "msg": "turn 7 effort=medium todo=進行中 actions=[\"todo set\"] prompt=13606 prefilled=452 cached=13154 finish=tool_calls completion=3174 reasoning_chars=11918"}
+{"time": "2026-11-20 05:33:17", "msg": "turn 8 effort=medium todo=進行中 actions=[\"remember public\"] prompt=14317 prefilled=716 cached=13601 finish=tool_calls completion=430 reasoning_chars=457"}
+{"time": "2026-11-20 05:33:55", "msg": "turn 9 effort=medium todo=進行中 actions=[\"remember public\"] prompt=15010 prefilled=698 cached=14312 finish=tool_calls completion=1603 reasoning_chars=3832"}
+{"time": "2026-11-20 05:33:59", "msg": "turn 10 effort=medium todo=進行中 actions=[\"recall 3\"] prompt=15708 prefilled=703 cached=15005 finish=tool_calls completion=54 reasoning_chars=76"}
+{"time": "2026-11-20 05:34:41", "msg": "turn 11 effort=medium todo=進行中 actions=[\"concern note\"] prompt=16776 prefilled=1073 cached=15703 finish=tool_calls completion=1602 reasoning_chars=5667"}
+{"time": "2026-11-20 05:34:51", "msg": "turn 12 effort=medium todo=待命中 actions=[\"todo done\"] prompt=17392 prefilled=621 cached=16771 finish=tool_calls completion=315 reasoning_chars=184"}
+{"time": "2026-11-20 06:35:10", "msg": "turn 13 effort=medium todo=待命中 actions=[\"goal list\"] prompt=14611 prefilled=5447 cached=9164 finish=tool_calls completion=620 reasoning_chars=2505"}
+{"time": "2026-11-20 06:35:28", "msg": "turn 14 effort=medium todo=待命中 actions=[\"goal add\"] prompt=15140 prefilled=534 cached=14606 finish=tool_calls completion=573 reasoning_chars=1536"}
+{"time": "2026-11-20 06:35:40", "msg": "turn 15 effort=medium todo=待命中 actions=[\"recall 3\"] prompt=15687 prefilled=552 cached=15135 finish=tool_calls completion=416 reasoning_chars=1391"}
+{"time": "2026-11-20 06:36:05", "msg": "turn 16 effort=medium todo=待命中 actions=[\"error memory.fix\"] prompt=16644 prefilled=962 cached=15682 finish=tool_calls completion=960 reasoning_chars=2422"}
+{"time": "2026-11-20 06:36:27", "msg": "turn 17 effort=medium todo=進行中 actions=[\"todo set\"] prompt=17434 prefilled=795 cached=16639 finish=tool_calls completion=732 reasoning_chars=1787"}
+{"time": "2026-11-20 06:36:58", "msg": "turn 18 effort=medium todo=進行中 actions=[\"error remember\"] prompt=18099 prefilled=670 cached=17429 finish=tool_calls completion=1311 reasoning_chars=1962"}
+{"time": "2026-11-20 06:37:15", "msg": "turn 19 effort=medium todo=進行中 actions=[\"remember public\"] prompt=19223 prefilled=1129 cached=18094 finish=tool_calls completion=719 reasoning_chars=149"}
+{"time": "2026-11-20 06:37:19", "msg": "turn 20 effort=medium todo=進行中 actions=[\"recall 3\"] prompt=20273 prefilled=1055 cached=19218 finish=tool_calls completion=54 reasoning_chars=51"}
+{"time": "2026-11-20 06:37:39", "msg": "turn 21 effort=medium todo=待命中 actions=[\"todo done\"] prompt=21954 prefilled=1686 cached=20268 finish=tool_calls completion=639 reasoning_chars=1056"}
+{"time": "2026-11-20 07:00:12", "msg": "turn 22 effort=none todo=待命中 actions=[\"concern note\"] prompt=18481 prefilled=3875 cached=14606 finish=tool_calls completion=101 reasoning_chars=0"}
+{"time": "2026-11-20 07:00:26", "msg": "turn 23 effort=medium todo=待命中 actions=[\"remember public\"] prompt=18988 prefilled=406 cached=18582 finish=tool_calls completion=515 reasoning_chars=1797"}
+{"time": "2026-11-20 07:00:38", "msg": "turn 24 effort=medium todo=待命中 actions=[\"goal add\"] prompt=19423 prefilled=440 cached=18983 finish=tool_calls completion=395 reasoning_chars=1425"}
+{"time": "2026-11-20 07:00:42", "msg": "turn 25 effort=medium todo=待命中 actions=[\"think medium\"] prompt=19861 prefilled=443 cached=19418 finish=tool_calls completion=99 reasoning_chars=279"}
+{"time": "2026-11-20 07:01:00", "msg": "turn 26 effort=medium todo=待命中 actions=[\"think medium\"] prompt=20204 prefilled=348 cached=19856 finish=tool_calls completion=657 reasoning_chars=2736"}
+{"time": "2026-11-20 07:01:04", "msg": "turn 27 effort=medium todo=待命中 actions=[\"concern note\"] prompt=20547 prefilled=348 cached=20199 finish=tool_calls completion=94 reasoning_chars=107"}
+{"time": "2026-11-20 07:01:13", "msg": "turn 28 effort=medium todo=待命中 actions=[\"recall 3\"] prompt=21036 prefilled=494 cached=20542 finish=tool_calls completion=280 reasoning_chars=958"}
+{"time": "2026-11-20 07:01:30", "msg": "turn 29 effort=medium todo=待命中 actions=[\"error remember\"] prompt=21619 prefilled=588 cached=21031 finish=tool_calls completion=627 reasoning_chars=2118"}
+{"time": "2026-11-20 07:01:35", "msg": "turn 30 effort=medium todo=待命中 actions=[\"remember public\"] prompt=22024 prefilled=410 cached=21614 finish=tool_calls completion=125 reasoning_chars=142"}
+{"time": "2026-11-20 07:01:45", "msg": "turn 31 effort=medium todo=進行中 actions=[\"todo set\"] prompt=22445 prefilled=426 cached=22019 finish=tool_calls completion=330 reasoning_chars=576"}
+{"time": "2026-11-20 07:01:52", "msg": "turn 32 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=23145 prefilled=705 cached=22440 finish=tool_calls completion=186 reasoning_chars=446"}
+{"time": "2026-11-20 08:20:12", "msg": "turn 33 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=23627 prefilled=487 cached=23140 finish=tool_calls completion=416 reasoning_chars=1091"}
+{"time": "2026-11-20 08:20:20", "msg": "turn 34 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=24055 prefilled=433 cached=23622 finish=tool_calls completion=239 reasoning_chars=741"}
+{"time": "2026-11-20 08:40:05", "msg": "turn 35 effort=medium todo=進行中 actions=[\"calendar.list\"] prompt=24526 prefilled=476 cached=24050 finish=tool_calls completion=129 reasoning_chars=316"}
+{"time": "2026-11-20 08:40:10", "msg": "turn 36 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=25467 prefilled=946 cached=24521 finish=tool_calls completion=118 reasoning_chars=70"}
+{"time": "2026-11-20 08:40:14", "msg": "turn 37 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=25845 prefilled=383 cached=25462 finish=tool_calls completion=93 reasoning_chars=139"}
+{"time": "2026-11-20 09:15:05", "msg": "turn 38 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=26413 prefilled=573 cached=25840 finish=tool_calls completion=158 reasoning_chars=245"}
+{"time": "2026-11-20 09:15:09", "msg": "turn 39 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=26770 prefilled=362 cached=26408 finish=tool_calls completion=87 reasoning_chars=121"}
+{"time": "2026-11-20 09:40:03", "msg": "turn 40 effort=none todo=進行中 actions=[\"said discord_dm\"] prompt=27266 prefilled=501 cached=26765 finish=tool_calls completion=70 reasoning_chars=0"}
+{"time": "2026-11-20 09:40:07", "msg": "turn 41 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=27576 prefilled=317 cached=27259 finish=tool_calls completion=69 reasoning_chars=105"}
+{"time": "2026-11-20 10:00:05", "msg": "turn 42 effort=none todo=進行中 actions=[\"said discord_dm\"] prompt=27928 prefilled=357 cached=27571 finish=tool_calls completion=45 reasoning_chars=0"}
+{"time": "2026-11-20 10:00:08", "msg": "turn 43 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=28199 prefilled=226 cached=27973 finish=tool_calls completion=80 reasoning_chars=136"}
+{"time": "2026-11-20 10:30:09", "msg": "turn 44 effort=medium todo=進行中 actions=[\"calendar.add\"] prompt=28710 prefilled=516 cached=28194 finish=tool_calls completion=119 reasoning_chars=259"}
+{"time": "2026-11-20 10:30:14", "msg": "turn 45 effort=medium todo=進行中 actions=[\"error remember\"] prompt=29040 prefilled=335 cached=28705 finish=tool_calls completion=149 reasoning_chars=293"}
+{"time": "2026-11-20 10:30:19", "msg": "turn 46 effort=medium todo=進行中 actions=[\"remember public\", \"decision point\"] prompt=29362 prefilled=327 cached=29035 finish=tool_calls completion=107 reasoning_chars=87"}
+{"time": "2026-11-20 10:30:32", "msg": "turn 47 effort=medium todo=等待中 actions=[\"ask owner\"] prompt=29848 prefilled=491 cached=29357 finish=tool_calls completion=440 reasoning_chars=1242"}
+{"time": "2026-11-20 10:32:28", "msg": "turn 48 effort=medium todo=進行中 actions=[\"calendar.add\", \"concern end\"] prompt=30376 prefilled=533 cached=29843 finish=tool_calls completion=1018 reasoning_chars=3168"}
+{"time": "2026-11-20 10:32:42", "msg": "turn 49 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=30857 prefilled=486 cached=30371 finish=tool_calls completion=501 reasoning_chars=1520"}
+{"time": "2026-11-20 10:32:47", "msg": "turn 50 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=31169 prefilled=317 cached=30852 finish=tool_calls completion=128 reasoning_chars=300"}
+{"time": "2026-11-20 11:14:00", "msg": "turn 51 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=31601 prefilled=31601 cached=0 finish=tool_calls completion=565 reasoning_chars=1339"}
+{"time": "2026-11-20 11:14:05", "msg": "turn 52 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=32080 prefilled=484 cached=31596 finish=tool_calls completion=78 reasoning_chars=104"}
+{"time": "2026-11-20 12:20:04", "msg": "turn 53 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=32498 prefilled=423 cached=32075 finish=tool_calls completion=95 reasoning_chars=107"}
+{"time": "2026-11-20 12:20:07", "msg": "turn 54 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=32792 prefilled=299 cached=32493 finish=tool_calls completion=51 reasoning_chars=43"}
+{"time": "2026-11-20 13:00:25", "msg": "turn 1 effort=medium todo=等待中 actions=[\"remember public\", \"concern note\"] prompt=33602 prefilled=815 cached=32787 finish=tool_calls completion=234 reasoning_chars=386"}
+{"time": "2026-11-20 14:00:03", "msg": "turn 2 effort=medium todo=進行中 actions=[\"owner feedback praise\"] prompt=34167 prefilled=570 cached=33597 finish=tool_calls completion=73 reasoning_chars=46"}
+{"time": "2026-11-20 14:00:11", "msg": "turn 3 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=34611 prefilled=449 cached=34162 finish=tool_calls completion=222 reasoning_chars=518"}
+{"time": "2026-11-20 14:00:16", "msg": "turn 4 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=34943 prefilled=337 cached=34606 finish=tool_calls completion=147 reasoning_chars=322"}
+{"time": "2026-11-20 15:30:02", "msg": "turn 5 effort=medium todo=進行中 actions=[\"history list\", \"decision point\"] prompt=35356 prefilled=418 cached=34938 finish=tool_calls completion=28 reasoning_chars=50"}
+{"time": "2026-11-20 15:30:20", "msg": "turn 6 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=36337 prefilled=986 cached=35351 finish=tool_calls completion=474 reasoning_chars=348"}
+{"time": "2026-11-20 15:30:33", "msg": "turn 7 effort=medium todo=進行中 actions=[\"todo continue\"] prompt=36825 prefilled=493 cached=36332 finish=tool_calls completion=448 reasoning_chars=1292"}
+{"time": "2026-11-20 15:30:36", "msg": "turn 8 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=37333 prefilled=513 cached=36820 finish=tool_calls completion=70 reasoning_chars=109"}
+{"time": "2026-11-20 16:40:14", "msg": "turn 9 effort=medium todo=進行中 actions=[\"calendar.add\"] prompt=37752 prefilled=424 cached=37328 finish=tool_calls completion=177 reasoning_chars=382"}
+{"time": "2026-11-20 16:40:20", "msg": "turn 10 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=38108 prefilled=361 cached=37747 finish=tool_calls completion=183 reasoning_chars=322"}
+{"time": "2026-11-20 16:40:25", "msg": "turn 11 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=38424 prefilled=321 cached=38103 finish=tool_calls completion=118 reasoning_chars=279"}
+{"time": "2026-11-20 17:10:42", "msg": "turn 12 effort=medium todo=進行中 actions=[\"calendar.change\"] prompt=38844 prefilled=38844 cached=0 finish=tool_calls completion=87 reasoning_chars=73"}
+{"time": "2026-11-20 17:11:37", "msg": "turn 13 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=39181 prefilled=39181 cached=0 finish=tool_calls completion=87 reasoning_chars=62"}
+{"time": "2026-11-20 17:12:51", "msg": "turn 14 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=39471 prefilled=39471 cached=0 finish=tool_calls completion=74 reasoning_chars=109"}
+{"time": "2026-11-20 18:01:12", "msg": "turn 1 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=40325 prefilled=40325 cached=0 finish=tool_calls completion=558 reasoning_chars=1716"}
+{"time": "2026-11-20 18:01:39", "msg": "turn 2 effort=medium todo=等待中 actions=[\"concern note\"] prompt=40885 prefilled=565 cached=40320 finish=tool_calls completion=998 reasoning_chars=3888"}
+{"time": "2026-11-20 18:01:47", "msg": "turn 3 effort=medium todo=等待中 actions=[\"concern end\"] prompt=41295 prefilled=415 cached=40880 finish=tool_calls completion=247 reasoning_chars=847"}
+{"time": "2026-11-20 18:02:03", "msg": "turn 4 effort=medium todo=等待中 actions=[\"error remember\"] prompt=41661 prefilled=371 cached=41290 finish=tool_calls completion=592 reasoning_chars=1494"}
+{"time": "2026-11-20 18:02:13", "msg": "turn 5 effort=medium todo=等待中 actions=[\"remember public\"] prompt=42237 prefilled=581 cached=41656 finish=tool_calls completion=310 reasoning_chars=275"}
+{"time": "2026-11-20 18:02:19", "msg": "turn 6 effort=medium todo=等待中 actions=[] prompt=42736 prefilled=504 cached=42232 finish=stop completion=130 reasoning_chars=144"}
+{"time": "2026-11-20 19:02:31", "msg": "turn 7 effort=medium todo=等待中 actions=[\"error todo.set\"] prompt=43234 prefilled=503 cached=42731 finish=tool_calls completion=541 reasoning_chars=1024"}
+{"time": "2026-11-20 19:02:45", "msg": "turn 8 effort=medium todo=進行中 actions=[\"todo set\"] prompt=43989 prefilled=760 cached=43229 finish=tool_calls completion=489 reasoning_chars=742"}
+{"time": "2026-11-20 19:02:56", "msg": "turn 9 effort=medium todo=進行中 actions=[\"memory fix\"] prompt=44686 prefilled=702 cached=43984 finish=tool_calls completion=440 reasoning_chars=42"}
+{"time": "2026-11-20 19:03:06", "msg": "turn 10 effort=medium todo=進行中 actions=[\"recall 3\"] prompt=46029 prefilled=1348 cached=44681 finish=tool_calls completion=230 reasoning_chars=575"}
+{"time": "2026-11-20 19:03:23", "msg": "turn 11 effort=medium todo=進行中 actions=[\"memory fix\"] prompt=47483 prefilled=1459 cached=46024 finish=tool_calls completion=786 reasoning_chars=79"}
+{"time": "2026-11-20 19:03:39", "msg": "turn 12 effort=medium todo=等待中 actions=[\"todo done\"] prompt=49845 prefilled=2367 cached=47478 finish=tool_calls completion=440 reasoning_chars=535"}
+{"time": "2026-11-20 19:30:12", "msg": "turn 13 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=45052 prefilled=4732 cached=40320 finish=tool_calls completion=178 reasoning_chars=348"}
+{"time": "2026-11-20 20:03:45", "msg": "turn 14 effort=medium todo=等待中 actions=[\"concern end\"] prompt=45581 prefilled=534 cached=45047 finish=tool_calls completion=228 reasoning_chars=759"}
+{"time": "2026-11-20 20:03:52", "msg": "turn 15 effort=medium todo=等待中 actions=[\"concern end\"] prompt=45946 prefilled=370 cached=45576 finish=tool_calls completion=205 reasoning_chars=638"}
+{"time": "2026-11-20 20:04:12", "msg": "turn 16 effort=medium todo=等待中 actions=[\"think medium\"] prompt=46246 prefilled=305 cached=45941 finish=tool_calls completion=691 reasoning_chars=2630"}
+{"time": "2026-11-20 20:04:28", "msg": "turn 17 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=46569 prefilled=328 cached=46241 finish=tool_calls completion=616 reasoning_chars=2516"}
+{"time": "2026-11-20 20:15:05", "msg": "turn 18 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=47002 prefilled=438 cached=46564 finish=tool_calls completion=101 reasoning_chars=200"}
+{"time": "2026-11-20 21:00:07", "msg": "turn 19 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=47381 prefilled=384 cached=46997 finish=tool_calls completion=242 reasoning_chars=71"}
+{"time": "2026-11-20 21:04:35", "msg": "turn 20 effort=medium todo=等待中 actions=[\"goal add\"] prompt=48024 prefilled=648 cached=47376 finish=tool_calls completion=294 reasoning_chars=921"}
+{"time": "2026-11-20 21:04:44", "msg": "turn 21 effort=medium todo=等待中 actions=[\"think medium\"] prompt=48514 prefilled=495 cached=48019 finish=tool_calls completion=281 reasoning_chars=1139"}
+{"time": "2026-11-20 21:05:11", "msg": "turn 22 effort=medium todo=等待中 actions=[\"goal list\"] prompt=48795 prefilled=286 cached=48509 finish=tool_calls completion=1055 reasoning_chars=4491"}
+{"time": "2026-11-20 21:05:29", "msg": "turn 23 effort=medium todo=進行中 actions=[\"todo set\"] prompt=49417 prefilled=627 cached=48790 finish=tool_calls completion=647 reasoning_chars=1483"}
+{"time": "2026-11-20 21:05:40", "msg": "turn 24 effort=medium todo=進行中 actions=[\"said discord_dm\"] prompt=50124 prefilled=712 cached=49412 finish=tool_calls completion=344 reasoning_chars=157"}
+{"time": "2026-11-20 21:05:58", "msg": "turn 25 effort=medium todo=進行中 actions=[\"error memory.fix\"] prompt=50736 prefilled=617 cached=50119 finish=tool_calls completion=637 reasoning_chars=2005"}
+{"time": "2026-11-20 21:06:07", "msg": "turn 26 effort=medium todo=等待中 actions=[\"todo done\"] prompt=51349 prefilled=618 cached=50731 finish=tool_calls completion=254 reasoning_chars=260"}
+{"time": "2026-11-20 22:06:18", "msg": "turn 27 effort=medium todo=等待中 actions=[\"goal add\"] prompt=50770 prefilled=2751 cached=48019 finish=tool_calls completion=313 reasoning_chars=1119"}
+{"time": "2026-11-20 22:06:23", "msg": "turn 28 effort=medium todo=等待中 actions=[\"concern end\"] prompt=51315 prefilled=550 cached=50765 finish=tool_calls completion=103 reasoning_chars=277"}
+{"time": "2026-11-20 22:06:34", "msg": "turn 29 effort=medium todo=等待中 actions=[\"remember public\", \"remember public\"] prompt=51673 prefilled=363 cached=51310 finish=tool_calls completion=380 reasoning_chars=806"}
+{"time": "2026-11-20 22:06:47", "msg": "turn 30 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=52237 prefilled=569 cached=51668 finish=tool_calls completion=385 reasoning_chars=1335"}
+{"time": "2026-11-20 22:30:16", "msg": "turn 31 effort=medium todo=等待中 actions=[\"ideal revise\"] prompt=52748 prefilled=516 cached=52232 finish=tool_calls completion=595 reasoning_chars=1627"}
+{"time": "2026-11-20 22:31:10", "msg": "turn 32 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=53503 prefilled=53503 cached=0 finish=tool_calls completion=131 reasoning_chars=107"}
+{"time": "2026-11-20 23:06:59", "msg": "turn 33 effort=medium todo=等待中 actions=[] prompt=54129 prefilled=631 cached=53498 finish=stop completion=554 reasoning_chars=1883"}
+{"time": "2026-11-20 23:40:04", "msg": "turn 34 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=54564 prefilled=440 cached=54124 finish=tool_calls completion=77 reasoning_chars=79"}
+{"time": "2026-11-21 00:07:22", "msg": "turn 35 effort=medium todo=等待中 actions=[\"recall 3\"] prompt=55198 prefilled=639 cached=54559 finish=tool_calls completion=971 reasoning_chars=3712"}
+{"time": "2026-11-21 00:07:40", "msg": "turn 36 effort=medium todo=等待中 actions=[\"concern note\"] prompt=56284 prefilled=1091 cached=55193 finish=tool_calls completion=579 reasoning_chars=1913"}
+{"time": "2026-11-21 00:07:50", "msg": "turn 37 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=56965 prefilled=686 cached=56279 finish=tool_calls completion=298 reasoning_chars=982"}
+{"time": "2026-11-21 01:08:42", "msg": "turn 38 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=57696 prefilled=57696 cached=0 finish=tool_calls completion=136 reasoning_chars=306"}
+{"time": "2026-11-21 02:08:46", "msg": "turn 39 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=58396 prefilled=705 cached=57691 finish=tool_calls completion=128 reasoning_chars=256"}
+{"time": "2026-11-21 03:00:09", "msg": "turn 40 effort=none todo=等待中 actions=[\"todo wait\"] prompt=58968 prefilled=577 cached=58391 finish=tool_calls completion=42 reasoning_chars=0"}
+{"time": "2026-11-21 03:09:55", "msg": "turn 41 effort=medium todo=等待中 actions=[\"remember public\"] prompt=59823 prefilled=59823 cached=0 finish=tool_calls completion=489 reasoning_chars=551"}
+{"time": "2026-11-21 03:10:10", "msg": "turn 42 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=60358 prefilled=540 cached=59818 finish=tool_calls completion=305 reasoning_chars=1079"}
+{"time": "2026-11-21 03:39:01", "msg": "turn 1 effort=medium todo=等待中 actions=[\"remember public\"] prompt=61420 prefilled=61420 cached=0 finish=tool_calls completion=261 reasoning_chars=835"}
+{"time": "2026-11-21 03:41:22", "msg": "turn 2 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=35571 prefilled=35571 cached=0 finish=tool_calls completion=395 reasoning_chars=1236"}
+{"time": "2026-11-21 04:10:30", "msg": "turn 3 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=11886 prefilled=11886 cached=0 finish=tool_calls completion=220 reasoning_chars=557"}
+{"time": "2026-11-21 05:41:24", "msg": "turn 4 effort=medium todo=等待中 actions=[\"recall 3\"] prompt=12546 prefilled=665 cached=11881 finish=tool_calls completion=520 reasoning_chars=2109"}
+{"time": "2026-11-21 07:19:14", "msg": "turn 1 effort=medium todo=等待中 actions=[\"concern note\"] prompt=14951 prefilled=2410 cached=12541 finish=tool_calls completion=324 reasoning_chars=811"}
+{"time": "2026-11-21 07:19:21", "msg": "turn 2 effort=medium todo=等待中 actions=[\"concern end\"] prompt=15496 prefilled=550 cached=14946 finish=tool_calls completion=197 reasoning_chars=578"}
+{"time": "2026-11-21 07:20:00", "msg": "turn 3 effort=medium todo=等待中 actions=[\"remember public\"] prompt=15844 prefilled=353 cached=15491 finish=tool_calls completion=1533 reasoning_chars=5309"}
+{"time": "2026-11-21 07:20:15", "msg": "turn 4 effort=medium todo=等待中 actions=[\"goal list\"] prompt=16312 prefilled=473 cached=15839 finish=tool_calls completion=533 reasoning_chars=2125"}
+{"time": "2026-11-21 07:20:33", "msg": "turn 5 effort=medium todo=等待中 actions=[\"history list\"] prompt=17022 prefilled=715 cached=16307 finish=tool_calls completion=599 reasoning_chars=2450"}
+{"time": "2026-11-21 07:21:02", "msg": "turn 6 effort=medium todo=等待中 actions=[\"think medium\"] prompt=18025 prefilled=1008 cached=17017 finish=tool_calls completion=1045 reasoning_chars=4070"}
+{"time": "2026-11-21 07:21:20", "msg": "turn 7 effort=medium todo=等待中 actions=[\"memory fix\"] prompt=18447 prefilled=427 cached=18020 finish=tool_calls completion=647 reasoning_chars=1566"}
+{"time": "2026-11-21 07:21:35", "msg": "turn 8 effort=medium todo=等待中 actions=[\"calendar.list\"] prompt=19352 prefilled=910 cached=18442 finish=tool_calls completion=472 reasoning_chars=1788"}
+{"time": "2026-11-21 07:21:52", "msg": "turn 9 effort=medium todo=等待中 actions=[\"calendar.add\"] prompt=19913 prefilled=566 cached=19347 finish=tool_calls completion=557 reasoning_chars=747"}
+{"time": "2026-11-21 07:21:57", "msg": "turn 10 effort=medium todo=等待中 actions=[\"calendar.add\"] prompt=20410 prefilled=502 cached=19908 finish=tool_calls completion=138 reasoning_chars=79"}
+{"time": "2026-11-21 07:22:22", "msg": "turn 11 effort=medium todo=等待中 actions=[\"error remember\"] prompt=20854 prefilled=449 cached=20405 finish=tool_calls completion=921 reasoning_chars=3041"}
+{"time": "2026-11-21 07:22:31", "msg": "turn 12 effort=medium todo=等待中 actions=[\"error remember\"] prompt=21329 prefilled=480 cached=20849 finish=tool_calls completion=244 reasoning_chars=170"}
+{"time": "2026-11-21 07:22:39", "msg": "turn 13 effort=medium todo=等待中 actions=[\"remember public\", \"remember own\"] prompt=21851 prefilled=527 cached=21324 finish=tool_calls completion=242 reasoning_chars=73"}
+{"time": "2026-11-21 07:22:51", "msg": "turn 14 effort=medium todo=等待中 actions=[\"concern end\"] prompt=22462 prefilled=616 cached=21846 finish=tool_calls completion=286 reasoning_chars=743"}
+{"time": "2026-11-21 07:23:20", "msg": "turn 15 effort=medium todo=等待中 actions=[\"recall 3\"] prompt=22854 prefilled=397 cached=22457 finish=tool_calls completion=1131 reasoning_chars=4413"}
+{"time": "2026-11-21 07:23:48", "msg": "turn 16 effort=medium todo=等待中 actions=[\"calendar.add\"] prompt=23621 prefilled=772 cached=22849 finish=tool_calls completion=1057 reasoning_chars=3741"}
+{"time": "2026-11-21 07:24:01", "msg": "turn 17 effort=medium todo=等待中 actions=[\"concern end\", \"memory fix\"] prompt=24143 prefilled=527 cached=23616 finish=tool_calls completion=461 reasoning_chars=541"}
+{"time": "2026-11-21 07:24:20", "msg": "turn 18 effort=medium todo=等待中 actions=[\"history list\"] prompt=25045 prefilled=907 cached=24138 finish=tool_calls completion=594 reasoning_chars=2288"}
+{"time": "2026-11-21 07:24:48", "msg": "turn 19 effort=medium todo=等待中 actions=[\"think medium\"] prompt=26182 prefilled=1142 cached=25040 finish=tool_calls completion=931 reasoning_chars=3549"}
+{"time": "2026-11-21 07:24:55", "msg": "turn 20 effort=medium todo=等待中 actions=[\"todo wait\"] prompt=26580 prefilled=403 cached=26177 finish=tool_calls completion=157 reasoning_chars=391"}
+{"time": "2026-11-21 07:25:00", "msg": "turn 21 effort=none todo=等待中 actions=[\"concern end\"] prompt=27101 prefilled=526 cached=26575 finish=tool_calls completion=40 reasoning_chars=0"}
+{"time": "2026-11-21 07:25:29", "msg": "turn 22 effort=medium todo=等待中 actions=[\"think medium\"] prompt=27447 prefilled=307 cached=27140 finish=tool_calls completion=1142 reasoning_chars=4629"}
+{"time": "2026-11-21 07:25:36", "msg": "turn 23 effort=medium todo=等待中 actions=[] prompt=27778 prefilled=336 cached=27442 finish=stop completion=139 reasoning_chars=460"}
+{"time": "2026-11-21 08:50:40", "msg": "turn 1 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=28626 prefilled=853 cached=27773 finish=tool_calls completion=156 reasoning_chars=230"}
+{"time": "2026-11-21 09:20:07", "msg": "turn 2 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=29004 prefilled=383 cached=28621 finish=tool_calls completion=154 reasoning_chars=225"}
+{"time": "2026-11-21 10:00:27", "msg": "turn 3 effort=medium todo=等待中 actions=[\"concern end\"] prompt=29546 prefilled=547 cached=28999 finish=tool_calls completion=1238 reasoning_chars=1588"}
+{"time": "2026-11-21 10:00:38", "msg": "turn 4 effort=medium todo=等待中 actions=[\"said discord_dm\"] prompt=30107 prefilled=566 cached=29541 finish=tool_calls completion=399 reasoning_chars=382"}

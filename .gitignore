@@ -51,3 +51,8 @@ logs/
 
 # Swift
 .build/
+
+# Design notes and experiment records live in the private repo ningyos/DollOS-notes (2026-11-22);
+# a local copy here stays out of the public repository. The measurement tests (env-gated) read it.
+/docs/
+/experiments/

@@ -10110,12 +10110,12 @@ private func derivedTurn(_ s: String) -> Scripted {
 
 // her claims about her own actions (2026-11-22, `Claims`) --------------------
 
-/// Her lines in the m11 soak (experiments/m11-soak/results/talk.jsonl, 1-based line numbers) with
+/// Her lines in the m11 soak (a copy in Fixtures/soak: talk.jsonl, 1-based line numbers; the log's turn lines) with
 /// the calls her replies made since the owner's line before each (dollcore.log's `turn N … actions=`
 /// lines from that line's time to hers; failed calls left out, the log's action words mapped back to
 /// tool names where a claim could lean on them).
 private func soakLinesWithTheirCalls() throws -> [(line: Int, text: String, done: [String])] {
-    let results = root.appending(path: "experiments/m11-soak/results")
+    let results = root.appending(path: "Tests/DollCoreTests/Fixtures/soak")
     struct Talk: Decodable { let time: String; let who: String; let text: String }
     struct Log: Decodable { let msg: String; let time: String }
     let talk = try String(contentsOf: results.appending(path: "talk.jsonl"), encoding: .utf8).split(separator: "\n")
