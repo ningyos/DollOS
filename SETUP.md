@@ -53,13 +53,20 @@ Notes to pass on:
 
 ## 3. Build
 
-From the repository root:
+Once per machine, install the Metal toolchain (about 1 GB; Xcode 26 ships it separately). Without it
+the build succeeds but memory search and voice fail at run time ("Failed to load the default metallib"):
 ```sh
-swift build -c release
+xcodebuild -downloadComponent MetalToolchain
 ```
-The first build downloads Swift packages and takes several minutes. When it ends with
-`Build complete!`, the program is `.build/release/dollcore` and next to it three resource bundles
-(`*.bundle`) it needs at run time.
+Then, from the repository root:
+```sh
+swift build -c release --build-system swiftbuild
+```
+`--build-system swiftbuild` is what compiles MLX's GPU kernels (`.metal`) into `default.metallib`; it is
+the default from Swift 6.4, and Swift 6.2 needs it named. The first build downloads Swift packages and
+takes several minutes. When it ends with `Build complete!`, the program is `.build/release/dollcore` and
+next to it three resource bundles (`*.bundle`) it needs at run time. Check the kernels are there:
+`ls .build/release/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib`.
 
 ## 4. The data folder
 
@@ -207,7 +214,7 @@ Stop her with Ctrl-C (a clean stop).
 ## 12. Updating
 
 ```sh
-git pull && swift build -c release
+git pull && swift build -c release --build-system swiftbuild
 ```
 Stop her, copy the new `dollcore` and `*.bundle` into `~/DollOS-data/bin/` (step 4), start her again.
 If the new version's config has new keys, the boot names any that are wrong; compare with the new

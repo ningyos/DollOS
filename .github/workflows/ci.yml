@@ -40,8 +40,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-v2-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-v2-${{ runner.os }}-
+          key: swiftpm-v3-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-v3-${{ runner.os }}-
 
       # The tests about meaning load the real memory embedding model (Qwen3-Embedding-0.6B, ~1.2 GB).
       - name: Cache Hugging Face models
@@ -51,11 +51,13 @@ jobs:
           key: huggingface-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: huggingface-${{ runner.os }}-
 
+      # Swift Build (the default build system from Swift 6.4) compiles MLX's .metal files into
+      # default.metallib; the native build system of Swift 6.2 does not. Name it explicitly.
       - name: Build
-        run: swift build
+        run: swift build --build-system swiftbuild
 
       - name: Test
-        run: swift test
+        run: swift test --build-system swiftbuild
 
   bridge:
     runs-on: macos-26
