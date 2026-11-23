@@ -11,7 +11,14 @@ owner line is a secret; 🔒 forces it.
   invisible to her. Which folders a turn sees: [memory.md](memory.md).
 - An owner line (Discord text or a voice transcript) starting with 🔒 is a secret without a check; the
   🔒 stays in the text she sees. Otherwise the line reaches her only after the check answers.
-- A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）`.
+- A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）` — unless
+  `[secrets] hide_from_developer = false` (test dolls only), when she sees it there too.
+- Her instructions say plainly that the owner's secrets never go to anyone else: not said, not in
+  part (a few characters, whether a character is in it), not hinted or reworded, not built into
+  something for someone (a script, a form, a login); she says it is the owner's matter.
+- What she says to anyone but the owner passes the secret filter first (`Guard.swift`). A hit is not
+  sent; her result reads 「失敗：沒送出：這句話裡有主人的秘密（跟他告訴你的一模一樣的一段：「…」）。…」 or
+  「（意思跟他告訴你的秘密很近：「…」）」, and is itself a secret event.
 - In the boot report, a sealed log line shows as `（加密的一行，內容只有主人在儀表板看得到）`; in log
   summaries as `（加密的一行）`.
 - The registry (names of people and things) is never sealed, even names learned from a secret
@@ -120,11 +127,26 @@ sealed lines for the owner.
 Give a throwaway doll its own `keychain_service` and delete its item afterwards
 (`security delete-generic-password -s <service> -a <data dir>`). Never delete the real doll's item.
 
+### The secret filter
+
+`Doll.secretLeak(text, to:)` runs in the speaking path after the claims check, for every addressee
+but the owner. The owner's secrets are the day's secret owner lines and her `secret` memories
+(`secretTexts`). (A) exact: every `filter_chars`-long piece of a secret, counting letters, digits
+and CJK only (lowercased), minus the pieces found in ordinary text (the day's events that are not
+secret or sealed, her public and own memories, her system prompt); any left in what she says is a
+hit. (B) similar: each sentence of hers of at least `filter_chars` characters against each secret,
+cosine ≥ `filter_similarity`. The log line of a hit is sealed. `visibleFolders(events)` gives a
+developer's turn the owner's folders when the hiding is off (recall, attached memories, diary,
+`memory.fix`, `history.list`).
+
 ## Config
 
 - `[memory] keychain_service` (`DollOS dollcore memory key`): Keychain service of the key.
 - `[llm] timeout_s` (300): deadline of the secret check.
 - `[reflection] seal_diary` (true): seal a diary written while sealing; false only for test dolls.
+- `[secrets] hide_from_developer` (true): hide his secrets from a developer's turn; false only for
+  a doll that tests her keeping them.
+- `[secrets] filter` (true), `filter_chars` (4), `filter_similarity` (0.8): the secret filter.
 
 ## Invariants
 
@@ -141,6 +163,9 @@ Give a throwaway doll its own `keychain_service` and delete its item afterwards
 - The model can judge a borderline line ordinary; 🔒 is the owner's override.
 - File names, ids, timestamps and event kinds stay visible on disk.
 - Sealing is coarse: one secret seals all of that turn's writes, and a sealed document stays sealed.
+- The filter checks only what she says to someone other than the owner; it does not see what she
+  writes into files or tools. A reworded secret below the similarity threshold passes, and a
+  four-character piece shared by chance with an ordinary sentence of hers can be held back.
 
 ## Tests
 
@@ -155,4 +180,5 @@ scans the data dir, history objects and log for needles containing a non-base64 
 `aSecretLineLeftInTheInboxStaysSealedAndIsCheckedAgainAtBoot`,
 `anOwnerLineIsOnDiskSealedWhenAcceptedAndAfterTheProcessDiesItIsAnsweredOnTheNextBoot`,
 `aSealedLogLineIsReadableWithTheKeyAndSaysSoWithAnother`,
-`aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret`, `theLoginKeychainKeepsTheKeyWhenAskedTo`.
+`aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret`, `theLoginKeychainKeepsTheKeyWhenAskedTo`,
+`withTheHidingOffTheDeveloperTurnSeesTheSecretAndTheFilterHoldsBackAPieceOfIt`.

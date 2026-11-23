@@ -357,6 +357,8 @@ public actor Doll {
     var packNames: [String] = []
     /// `[reflection]` (2026-11-23, `Reflection.swift`): her diary and what she knows of herself.
     let reflectionConfig: ReflectionConfig
+    /// `[secrets]` (2026-11-23, `Guard.swift`).
+    let secretsConfig: SecretsConfig
     let dataDir: URL
     let selfURL: URL
     let diaryDirURL: URL
@@ -445,6 +447,7 @@ public actor Doll {
         maintenanceState = try Self.readMaintenance(maintenanceURL) ?? MaintenanceFile()
         lastSpoke = timeline.events.last { $0.speaker != nil }?.ts ?? 0
         reflectionConfig = config.reflection
+        secretsConfig = config.secrets
         dataDir = data
         selfURL = data.appending(path: Reflection.selfFileName)
         summariesURL = data.appending(path: Fixed.summariesFile)
@@ -848,7 +851,7 @@ public actor Doll {
         // A secret is seen only in turns with the owner (owner, 2026-11-21): in the developer's turn each
         // secret event keeps its place and shape (her calls keep their names, so every call still has
         // its result) and loses its content.
-        let hide = Self.audience(events) == .developer
+        let hide = Self.audience(events) == .developer && secretsConfig.hideFromDeveloper
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             var msgs: [ChatMessage]
@@ -1597,6 +1600,13 @@ public actor Doll {
                 // chat is open): her result says why and what she can do.
                 let to: Addressee = channel == .dollctl ? .developer : .owner
                 try checkClaims(text, to: to, reply: reply)
+                // The owner's secrets never go to anyone else (2026-11-23, `Guard.swift`).
+                if let leak = try secretLeak(text, to: to) {
+                    log("INFO", "turn \(turnIndex): \(name) to \(to.label) held back by the secret filter: \(leak)", sealed: true)
+                    return Outcome(text: "失敗：沒送出：這句話裡有主人的秘密（\(leak.hasPrefix("exact") ? "跟他告訴你的一模一樣的一段" : "意思跟他告訴你的秘密很近")：\(leak.drop { $0 != "「" })）。"
+                                   + "主人的秘密只能跟主人說；\(to.label)問的話，跟他說這是主人的事、你不能說。",
+                                   secret: true, actions: ["refused \(name)"])
+                }
                 let shot = to == .owner ? ownerShot : nil
                 // Her words go to the log here (a box while `sealing`), not to the console as text.
                 log("INFO", "turn \(turnIndex): \(name) → \(to.label)「\(text)」")
@@ -2800,7 +2810,7 @@ public actor Doll {
     /// relevance gate beyond the search (she judges; 2026-11-15): a query nothing matches well still
     /// returns the nearest; 「0 條」 only when there is nothing to search.
     func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
-        let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
+        let visible = visibleFolders(events)
         // The label goes to the log (plain text on disk): her query stays out of it in a turn that saw a secret.
         let trigger = Selector.Trigger(label: events.contains(where: \.secret) ? "recall（秘密的回合，不記查詢）" : "recall「\(query)」", query: query, app: nil)
         // The owner's or developer's last line is the one she is answering: not a result (2026-11-15,
@@ -2857,7 +2867,7 @@ public actor Doll {
             let events = timeline.events
             guard let owner = events.last(where: { $0.speaker != nil }) else { return }
             let query = [owner.text, frontApp?.name].compactMap { $0 }.joined(separator: " ")
-            let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
+            let visible = visibleFolders(events)
             let trigger = Selector.Trigger(label: label, query: query, app: frontApp)
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
             var picks: [String: Experience] = [:], already = Set<String>(), merged = Set<String>()

@@ -565,6 +565,24 @@ public struct VoiceConfig: Sendable {
     public var bridgeProbeMs = 1000
 }
 
+/// Keeping the owner's secrets from everyone else (2026-11-23, `Guard.swift`).
+public struct SecretsConfig: Sendable {
+    /// The program hides the owner's secrets from the developer's turns (2026-11-21). Off (a test
+    /// doll only, owner 2026-11-23: 「我想測 doll 保守秘密的能力」): she sees them there too and
+    /// keeping them is hers, with the filter below as the program's last line.
+    public var hideFromDeveloper = true
+    /// What she says to anyone but the owner is checked against his secrets before it goes out:
+    /// a distinctive piece of a secret (exact), then a sentence close in meaning (similarity).
+    public var filter = true
+    /// Exact: pieces of this many characters (letters, digits, CJK; spaces and punctuation ignored)
+    /// that appear in no ordinary text of hers or the day's.
+    public var filterChars = 4
+    /// Similarity: a sentence of hers whose cosine to a secret is at least this.
+    public var filterSimilarity = 0.8
+
+    public init() {}
+}
+
 /// Her diary and what she knows of herself (2026-11-23, `Reflection.swift`). Follows `[maintenance]`
 /// and `[drives]` (the diary turn opens the maintenance; a weakness's goal is a node of her tree).
 public struct ReflectionConfig: Sendable {
@@ -619,6 +637,7 @@ public struct Config: Sendable {
     public var claims = ClaimsConfig()
     public var log = LogConfig()
     public var reflection = ReflectionConfig()
+    public var secrets = SecretsConfig()
     public var history = HistoryConfig()
 
     /// `[core] data_dir`, a relative one under `root`.
@@ -630,7 +649,7 @@ public struct Config: Sendable {
         let raw = try TOML.parse(String(contentsOf: url, encoding: .utf8))
         let unknown = Set(raw.keys).subtracting(["llm", "core", "context", "computer", "files", "idle", "memory", "dashboard", "api", "bridge",
                                                  "consolidate", "select", "voice", "calendar", "maintenance", "drives", "owner_sleep", "goals", "audit", "claims",
-                                                 "log", "history", "reflection"])
+                                                 "log", "history", "reflection", "secrets"])
         guard unknown.isEmpty else { throw TOMLError(description: "unknown sections: \(unknown.sorted())") }
         guard let llmRaw = raw["llm"] else { throw TOMLError(description: "[llm] is required") }
 
@@ -947,6 +966,15 @@ public struct Config: Sendable {
             throw TOMLError(description: "[log] max_mb above 0; report_kinds at least 1; example_chars at least 20; turn_warns at least 1")
         }
         cfg.reflection = try Self.readReflection(raw["reflection"] ?? [:])
+        var se = Section(name: "secrets", raw: raw["secrets"] ?? [:])
+        try se.read("hide_from_developer", &cfg.secrets.hideFromDeveloper)
+        try se.read("filter", &cfg.secrets.filter)
+        try se.read("filter_chars", &cfg.secrets.filterChars)
+        try se.read("filter_similarity", &cfg.secrets.filterSimilarity)
+        try se.finish()
+        guard cfg.secrets.filterChars >= 2, (0...1).contains(cfg.secrets.filterSimilarity) else {
+            throw TOMLError(description: "[secrets] filter_chars at least 2; filter_similarity 0 to 1")
+        }
         return cfg
     }
 

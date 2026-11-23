@@ -944,7 +944,7 @@ extension Doll {
 
     /// The memory folders `audience` may not see, by name.
     func hiddenFolders(_ audience: Audience) -> Set<String> {
-        let visible = Memory.visible(audience, sawSecret: true)
+        let visible = Memory.visible(audience == .developer && !secretsConfig.hideFromDeveloper ? .owner : audience, sawSecret: true)
         return Set(MemoryFolder.allCases.filter { !visible.contains($0) }.map { memory.dirName($0) })
     }
 
