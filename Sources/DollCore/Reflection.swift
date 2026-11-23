@@ -292,7 +292,7 @@ extension Doll {
             picked = Array(all.suffix(reflectionConfig.readDays))
             guard !picked.isEmpty else { return Outcome(text: "你還沒有寫過日記。", actions: ["diary read"]) }
         }
-        let visible = visibleFolders(events)
+        let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
         var parts: [String] = [], sealed = false, hidden = 0
         for url in picked {
             let (text, s) = try readDiary(url)

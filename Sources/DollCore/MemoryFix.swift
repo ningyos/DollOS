@@ -99,8 +99,7 @@ extension Doll {
         // she wrote her memory into secret herself, then could not fix it in the next plain turn). A
         // memory of a folder this audience never reads is one she has no id for: the same answer as
         // none. A secret one makes the result a secret event (5.1, as a secret recall hit does).
-        let visible = Self.audience(events) == .developer && !secretsConfig.hideFromDeveloper
-            ? Memory.visible(.owner, sawSecret: true) : Memory.visible(Self.audience(events), sawSecret: true)
+        let visible = Memory.visible(Self.audience(events), sawSecret: true)
         guard visible.contains(folder) else { throw refuse(notFound) }
         let secret = folder == .secret
         let sealed = sealedFolders.contains(memory.dirName(folder))

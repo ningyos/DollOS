@@ -851,7 +851,7 @@ public actor Doll {
         // A secret is seen only in turns with the owner (owner, 2026-11-21): in the developer's turn each
         // secret event keeps its place and shape (her calls keep their names, so every call still has
         // its result) and loses its content.
-        let hide = Self.audience(events) == .developer && secretsConfig.hideFromDeveloper
+        let hide = Self.audience(events) == .developer
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             var msgs: [ChatMessage]
@@ -2810,7 +2810,7 @@ public actor Doll {
     /// relevance gate beyond the search (she judges; 2026-11-15): a query nothing matches well still
     /// returns the nearest; 「0 條」 only when there is nothing to search.
     func recall(_ query: String, seen events: [Event]) async throws -> Outcome {
-        let visible = visibleFolders(events)
+        let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
         // The label goes to the log (plain text on disk): her query stays out of it in a turn that saw a secret.
         let trigger = Selector.Trigger(label: events.contains(where: \.secret) ? "recall（秘密的回合，不記查詢）" : "recall「\(query)」", query: query, app: nil)
         // The owner's or developer's last line is the one she is answering: not a result (2026-11-15,
@@ -2867,7 +2867,7 @@ public actor Doll {
             let events = timeline.events
             guard let owner = events.last(where: { $0.speaker != nil }) else { return }
             let query = [owner.text, frontApp?.name].compactMap { $0 }.joined(separator: " ")
-            let visible = visibleFolders(events)
+            let visible = Memory.visible(Self.audience(events), sawSecret: events.contains(where: \.secret))
             let trigger = Selector.Trigger(label: label, query: query, app: frontApp)
             let groups = try memory.experienceGroups(try memory.experiences(visible: visible))
             var picks: [String: Experience] = [:], already = Set<String>(), merged = Set<String>()

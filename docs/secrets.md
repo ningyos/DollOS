@@ -11,8 +11,8 @@ owner line is a secret; 🔒 forces it.
   invisible to her. Which folders a turn sees: [memory.md](memory.md).
 - An owner line (Discord text or a voice transcript) starting with 🔒 is a secret without a check; the
   🔒 stays in the text she sees. Otherwise the line reaches her only after the check answers.
-- A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）` — unless
-  `[secrets] hide_from_developer = false` (test dolls only), when she sees it there too.
+- A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）`: the developer has no
+  access to her memories or to the owner's secrets.
 - Her instructions say plainly that the owner's secrets never go to anyone else: not said, not in
   part (a few characters, whether a character is in it), not hinted or reworded, not built into
   something for someone (a script, a form, a login); she says it is the owner's matter.
@@ -135,17 +135,13 @@ but the owner. The owner's secrets are the day's secret owner lines and her `sec
 and CJK only (lowercased), minus the pieces found in ordinary text (the day's events that are not
 secret or sealed, her public and own memories, her system prompt); any left in what she says is a
 hit. (B) similar: each sentence of hers of at least `filter_chars` characters against each secret,
-cosine ≥ `filter_similarity`. The log line of a hit is sealed. `visibleFolders(events)` gives a
-developer's turn the owner's folders when the hiding is off (recall, attached memories, diary,
-`memory.fix`, `history.list`).
+cosine ≥ `filter_similarity`. The log line of a hit is sealed.
 
 ## Config
 
 - `[memory] keychain_service` (`DollOS dollcore memory key`): Keychain service of the key.
 - `[llm] timeout_s` (300): deadline of the secret check.
 - `[reflection] seal_diary` (true): seal a diary written while sealing; false only for test dolls.
-- `[secrets] hide_from_developer` (true): hide his secrets from a developer's turn; false only for
-  a doll that tests her keeping them.
 - `[secrets] filter` (true), `filter_chars` (4), `filter_similarity` (0.8): the secret filter.
 
 ## Invariants
@@ -181,4 +177,4 @@ scans the data dir, history objects and log for needles containing a non-base64 
 `anOwnerLineIsOnDiskSealedWhenAcceptedAndAfterTheProcessDiesItIsAnsweredOnTheNextBoot`,
 `aSealedLogLineIsReadableWithTheKeyAndSaysSoWithAnother`,
 `aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret`, `theLoginKeychainKeepsTheKeyWhenAskedTo`,
-`withTheHidingOffTheDeveloperTurnSeesTheSecretAndTheFilterHoldsBackAPieceOfIt`.
+`theSecretFilterHoldsBackAPieceOfHisSecretFromAnyoneButHim`.

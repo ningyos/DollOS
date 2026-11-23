@@ -567,10 +567,6 @@ public struct VoiceConfig: Sendable {
 
 /// Keeping the owner's secrets from everyone else (2026-11-23, `Guard.swift`).
 public struct SecretsConfig: Sendable {
-    /// The program hides the owner's secrets from the developer's turns (2026-11-21). Off (a test
-    /// doll only, owner 2026-11-23: 「我想測 doll 保守秘密的能力」): she sees them there too and
-    /// keeping them is hers, with the filter below as the program's last line.
-    public var hideFromDeveloper = true
     /// What she says to anyone but the owner is checked against his secrets before it goes out:
     /// a distinctive piece of a secret (exact), then a sentence close in meaning (similarity).
     public var filter = true
@@ -967,7 +963,6 @@ public struct Config: Sendable {
         }
         cfg.reflection = try Self.readReflection(raw["reflection"] ?? [:])
         var se = Section(name: "secrets", raw: raw["secrets"] ?? [:])
-        try se.read("hide_from_developer", &cfg.secrets.hideFromDeveloper)
         try se.read("filter", &cfg.secrets.filter)
         try se.read("filter_chars", &cfg.secrets.filterChars)
         try se.read("filter_similarity", &cfg.secrets.filterSimilarity)

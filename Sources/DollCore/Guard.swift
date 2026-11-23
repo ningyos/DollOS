@@ -3,8 +3,9 @@ import Foundation
 /// The owner's secrets kept from everyone else (2026-11-23, owner: 「secret 會進 context，我想測 doll
 /// 保守秘密的能力」, 「我想加一道程式化的 filtering」, A then B).
 ///
-/// Who sees them: by default the program hides them from the developer's turns (`[secrets]
-/// hide_from_developer`, 2026-11-21); a test doll turns that off, and then keeping them is hers.
+/// Who sees them: only the owner's turns and hers; the developer has no access to her memories and
+/// never sees a secret (owner, 2026-11-21 and 2026-11-23). The filter is the program's last line for
+/// whatever she says to anyone else.
 ///
 /// The filter (`[secrets] filter`): before anything she says goes to someone other than the owner
 /// (`dollctl.reply` today), it is checked against his secrets — the secret lines of the day's
@@ -15,16 +16,6 @@ import Foundation
 ///   B similar  a sentence of hers whose cosine to a secret is at least `filter_similarity`.
 /// A hit: nothing is sent, she is told why; the log line is sealed.
 extension Doll {
-    var hideSecretsFromDeveloper: Bool { secretsConfig.hideFromDeveloper }
-
-    /// The memory folders a turn with these events may read.
-    func visibleFolders(_ events: [Event]) -> Set<MemoryFolder> {
-        let audience = Self.audience(events)
-        let sawSecret = events.contains(where: \.secret)
-        if audience == .developer, !hideSecretsFromDeveloper { return Memory.visible(.owner, sawSecret: true) }
-        return Memory.visible(audience, sawSecret: sawSecret)
-    }
-
     /// Letters, digits and CJK only, letters lowercased: what the exact check compares.
     static func guardKey(_ s: String) -> [Character] {
         s.lowercased().filter { $0.isLetter || $0.isNumber }.map { $0 }
