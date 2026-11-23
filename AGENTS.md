@@ -1,10 +1,10 @@
 # AGENTS.md — working on DollOS
 
 This file is for coding agents (and people) who change DollOS: fix a bug, add a feature, change a
-behavior. Read it first; the design notes per subsystem are in [docs/dev/](docs/dev/).
-Do not confuse it with [dolldocs/](dolldocs/): those files are written for **the doll herself**
-and are read by her at run time (they are part of her prompt surface; change them only when her
-tools or rules change).
+behavior. Read it first; the manual per subsystem is in [docs/](docs/README.md).
+The manual is one English set for developers **and for the doll herself**: with `[context] manual`
+every `docs/*.md` is placed whole in her system prompt. Keep it true and short; a wrong sentence
+there is a wrong belief of hers.
 
 ## What DollOS is
 
@@ -71,7 +71,7 @@ Other:
 - `Sources/DollCLI/main.swift` — the `dollcore` executable: boot order, signals, `consolidate` subcommand.
 - `Sources/DollCtl/main.swift` — `dollctl chat` / `dollctl status` against the local API.
 - `bridge/` — Python Discord bridge (py-cord, `uv`); DMs and voice. Tests in `bridge/tests`.
-- `dolldocs/` — her own docs, read at run time. `character_packs/template` — the blank character.
+- `docs/` — the manual (hers and yours; `docs/private/` is the owner's, never tracked). `character_packs/template` — the blank character.
 - `dollcore.example.toml` — every config key with its value **and the reason for it**.
 - `Tests/DollCoreTests/DollCoreTests.swift` — the deterministic suite; the other files there are
   env-gated real-model measurements. `Fixtures/xiaodeng` is the test character (小燈).
@@ -91,7 +91,7 @@ Each rule is enforced in code, not only in a prompt. Keep them when you change t
    `finish_reason == "length"`) is an error.
 3. **Every behavior number is in config, with a reason.** `dollcore.example.toml` has each key, its
    value and a comment saying why that value. Never hard-code a threshold; add a key (see
-   [docs/dev/config.md](docs/dev/config.md)).
+   [docs/config.md](docs/config.md)).
 4. **Strict config.** Unknown section or key, wrong type or out-of-range value = boot error
    (`Config.load`, `Section.finish`). `[core] priority` must list every `Priority` exactly once.
 5. **Her own words are never a source of facts.** Facts come from the owner's and others' lines,
@@ -159,7 +159,7 @@ cache or downloads it once. Everything else is faked. Wrap long runs with a time
 **Reading her log.** `dollcore --config <file.toml> log` prints `<data_dir>/logs/dollcore.log` with
 the lines of turns that saw a secret opened (they are sealed on disk; marked 🔒).
 
-**Writing a test** ([docs/dev/testing.md](docs/dev/testing.md)): build a `Harness` (a real `Doll`
+**Writing a test** ([docs/testing.md](docs/testing.md)): build a `Harness` (a real `Doll`
 in a temp data dir with the fixture character, `Scripted` model replies via `FakeModel`, `FakeCua`
 for cua-driver, `FakeEmbedder`, `testKeys` = an in-memory key store), drive turns with
 `Harness.turn`, control time with `ManualClock` (every "now" goes through `DollClock`), and wait for
@@ -173,7 +173,7 @@ log); each needle needs a non-base64 character.
 
 **Real-model measurements.** Files like `M8AuditMeasure.swift` are env-gated (`M8_AUDIT=1`, …) and
 do nothing by default. They need a model server and private data that is not in this repository;
-see the table in [docs/dev/testing.md](docs/dev/testing.md). Run them alone.
+see the table in [docs/testing.md](docs/testing.md). Run them alone.
 
 **A throwaway doll** (to try a behavior against a real model): its own config with `[core] data_dir`
 and `[memory] dir` under one `/tmp/<name>` dir (absolute paths), its own `[api] port` and
@@ -185,12 +185,11 @@ resolved absolute path — `/tmp` resolves to `/private/tmp`).
 
 **Changing behavior.** Read the code comments at the place you change: decisions and their reasons
 are written there. Keep the comment true when you change the code. If her tools or rules change,
-update `Instructions` (re-pin the hash test) and the matching `dolldocs/` file, and the
-`docs/dev/` file. A new config key goes into the struct, `Config.load`, and
+update `Instructions` (re-pin the hash test) and the matching `docs/` file. A new config key goes into the struct, `Config.load`, and
 `dollcore.example.toml` with its reason.
 
 **Git.** Commit focused changes with a message that says why. Do not commit `dollcore.toml`,
-`bridge/discord.toml`, `data/` or anything under `/docs/` other than `docs/dev/`.
+`bridge/discord.toml`, `data/` or anything under `docs/private/`.
 
 ## Pitfalls learned the hard way
 
@@ -232,21 +231,22 @@ update `Instructions` (re-pin the hash test) and the matching `dolldocs/` file, 
 
 | File | Topic |
 |---|---|
-| [turns-and-todo.md](docs/dev/turns-and-todo.md) | Events, queue, turns, the request, todo states, aside list, decision point, compaction, effort, claims, inbox, retries |
-| [memory.md](docs/dev/memory.md) | Memory files, index, embedding, registry, selection, strength, `memory.fix`, consolidation, audit |
-| [drives-and-goals.md](docs/dev/drives-and-goals.md) | Concerns, the three signals, wander, the idle drive, association, goals, ideal self, curiosity |
-| [reflection.md](docs/dev/reflection.md) | Her diary turn, strengths and weaknesses with evidence, habits, the `recur` task |
-| [maintenance.md](docs/dev/maintenance.md) | The daily system maintenance |
-| [calendar.md](docs/dev/calendar.md) | Her calendar, the timer, owner sleep |
-| [boot-and-logs.md](docs/dev/boot-and-logs.md) | Boot order, the log file, run endings, the boot report |
-| [computer.md](docs/dev/computer.md) | The Mac via cua-driver, `act`/`read_window`, safety, honest completion, her own tools |
-| [voice-and-bridge.md](docs/dev/voice-and-bridge.md) | The Discord bridge, the voice WebSocket, TTS/ASR |
-| [local-api-and-dashboard.md](docs/dev/local-api-and-dashboard.md) | The local API, `dollctl`, the dashboard |
-| [secrets.md](docs/dev/secrets.md) | Sealing, the key, the secret check |
-| [history.md](docs/dev/history.md) | The git history of her files, undo/restore |
-| [config.md](docs/dev/config.md) | Config loading, adding a key, the character pack |
-| [testing.md](docs/dev/testing.md) | Toolchain, harness, deterministic tests, opt-in measurements, throwaway dolls |
+| [turns-and-todo.md](docs/turns-and-todo.md) | Events, queue, turns, the request, todo states, aside list, decision point, compaction, effort, claims, inbox, retries |
+| [memory.md](docs/memory.md) | Memory files, index, embedding, registry, selection, strength, `memory.fix`, consolidation, audit |
+| [tool-failures.md](docs/tool-failures.md) | What each common 「失敗：」 result means |
+| [drives-and-goals.md](docs/drives-and-goals.md) | Concerns, the three signals, wander, the idle drive, association, goals, ideal self, curiosity |
+| [reflection.md](docs/reflection.md) | Her diary turn, strengths and weaknesses with evidence, habits, the `recur` task |
+| [maintenance.md](docs/maintenance.md) | The daily system maintenance |
+| [calendar.md](docs/calendar.md) | Her calendar, the timer, owner sleep |
+| [boot-and-logs.md](docs/boot-and-logs.md) | Boot order, the log file, run endings, the boot report |
+| [computer.md](docs/computer.md) | The Mac via cua-driver, `act`/`read_window`, safety, honest completion, her own tools |
+| [voice-and-bridge.md](docs/voice-and-bridge.md) | The Discord bridge, the voice WebSocket, TTS/ASR |
+| [local-api-and-dashboard.md](docs/local-api-and-dashboard.md) | The local API, `dollctl`, the dashboard |
+| [secrets.md](docs/secrets.md) | Sealing, the key, the secret check |
+| [history.md](docs/history.md) | The git history of her files, undo/restore |
+| [config.md](docs/config.md) | Config loading, adding a key, the character pack |
+| [testing.md](docs/testing.md) | Toolchain, harness, deterministic tests, opt-in measurements, throwaway dolls |
 
-Also: [SETUP.md](SETUP.md) (installing for a user), [dolldocs/](dolldocs/) (what she is told).
+Also: [SETUP.md](SETUP.md) (installing for a user), [docs/README.md](docs/README.md) (the manual's index).
 The design history (dated decisions and measurements) is kept privately; the reasons that matter
-are in code comments and in `docs/dev/`.
+are in code comments and in `docs/`.

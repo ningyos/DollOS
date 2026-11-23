@@ -363,6 +363,11 @@ public actor Doll {
     var selfFile: SelfFile
     /// Her diary's passages, embedded (in memory only; rebuilt at boot).
     var diaryIndex: [DiaryPassage] = []
+    /// The fixed part of her system prompt (`Fixed.swift`), and its estimated tokens: the context
+    /// figure counts what is on top of it.
+    var fixedPrompt = ""
+    var fixedTokens = 0
+    let summariesURL: URL
     /// 【狀況】's felt sentence; nil when every signal is in range (or drives are off).
     func feltLine(now: Double) -> String? { drivesConfig.enabled ? drives.felt(at: now) : nil }
     /// The history of what is hers (2026-11-19, `History.swift`).
@@ -403,7 +408,8 @@ public actor Doll {
 
     /// Her single-document files under the data dir, each written whole and sealed whole (`saveDocument`).
     static let documents = ["concerns.json", "signals.json", "estimates.json", "goals.json", "record.json",
-                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json", Reflection.selfFileName]
+                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json", Reflection.selfFileName,
+                            Fixed.summariesFile]
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
     /// index embeds the segment's events here. `maintenanceModel`: the maintenance's requests; nil = `model`
@@ -441,6 +447,7 @@ public actor Doll {
         reflectionConfig = config.reflection
         dataDir = data
         selfURL = data.appending(path: Reflection.selfFileName)
+        summariesURL = data.appending(path: Fixed.summariesFile)
         diaryDirURL = data.appending(path: Reflection.diaryDir)
         selfFile = try Concerns.read(SelfFile.self, selfURL, what: "self-knowledge", box: box) ?? SelfFile()
         ownerLastLine = timeline.events.last { $0.kind == .owner }?.ts ?? 0
@@ -743,6 +750,7 @@ public actor Doll {
     // consumer ---------------------------------------------------------------
     public func run() async throws {
         if !calendarCaughtUp { _ = try calendarCatchUp() }
+        refreshFixed()
         scheduleCalendar()
         // A restart during maintenance goes on with the tasks not done; one due waits for her to be idle.
         resumeMaintenance()
@@ -817,8 +825,9 @@ public actor Doll {
         "你是\(name)。\n\n\(identity)\n\n" + (ideal.isEmpty ? "" : "\(Self.idealHeader)\n\(ideal)\n\n") + habitsText()
             + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
                                 drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn,
-                                reflection: reflectionOn)
-            + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn) : "")
+                                reflection: reflectionOn, manual: contextConfig.manual)
+            + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn, manual: contextConfig.manual) : "")
+            + fixedPrompt
     }
 
     /// The line before her ideal self (fixed bytes).
@@ -1141,7 +1150,7 @@ public actor Doll {
 
     /// `status` in the CLI: the footer as the next turn would see it.
     public func status() throws -> String {
-        let used = Int(Double(try estimateContext()) * tokenRatio)
+        let used = max(0, Int(Double(try estimateContext() - fixedTokens) * tokenRatio))
         let p = try processTokens()
         let process = (Int(Double(p.tokens) * tokenRatio), Int(Double(p.images) * tokenRatio))
         return footer(used: used, process: process, advice: advice(used: used, process: process.0))
@@ -1204,7 +1213,7 @@ public actor Doll {
         let events = timeline.events
         var messages = try context(events)
         let guess = estimate(messages)
-        let used = Int(Double(guess) * tokenRatio)
+        let used = max(0, Int(Double(guess - fixedTokens) * tokenRatio))
         let p = try processTokens()
         let process = (Int(Double(p.tokens) * tokenRatio), Int(Double(p.images) * tokenRatio))
         let warn = advice(used: used, process: process.0)
@@ -2624,7 +2633,7 @@ public actor Doll {
     func compactTalk() async {
         do {
             let all = timeline.events
-            let used = Int(Double(estimate(try context(all))) * tokenRatio)
+            let used = max(0, Int(Double(estimate(try context(all)) - fixedTokens) * tokenRatio))
             guard used >= contextConfig.limit else { return }
             let earlier = timeline.compactions.filter { $0.kind == .talk }.max { $0.toSeq < $1.toSeq }
             let last = earlier?.toSeq ?? 0

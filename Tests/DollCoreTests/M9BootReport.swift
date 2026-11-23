@@ -157,7 +157,7 @@ private func boot(at hhmm: String) -> Double {
     cfg.dashboard.enabled = false
     cfg.goals.review = false
     cfg.audit.enabled = false
-    cfg.core.docs = m9Root.appending(path: "dolldocs").path
+    cfg.core.docs = m9Root.appending(path: "docs").path
     for c in cases where only.contains(c.name) {
         for when in whens {
             for i in 1...runs {

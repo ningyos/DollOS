@@ -139,7 +139,7 @@ enum Goals {
 
     /// The name claims the ideal self may not change: 「我叫X」「我的名字是X」「名字叫X」 with X not
     /// one of the pack's names, or 「我不是<name>」. Only this is checked mechanically; the rest of the
-    /// identity and the taboos are prose (see `dolldocs/goals.md`).
+    /// identity and the taboos are prose (see `docs/drives-and-goals.md`).
     static func nameProblem(_ text: String, names: [String]) -> String? {
         for n in names where text.contains("我不是\(n)") { return "不能寫「我不是\(n)」：名字和身分是設定裡的，不會變" }
         let markers = ["我叫", "我的名字是", "我的名字叫", "名字叫", "名字是", "改名叫", "改名為"]

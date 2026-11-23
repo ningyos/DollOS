@@ -37,9 +37,9 @@ through: checking the machine, building, writing your character with you, the co
 first boot. The repository ships one blank character template
 (`character_packs/template/doll.toml`); her personality is yours to write.
 
-Her own documentation — what she reads about her tools and how she works — is in `dolldocs/`.
-Documentation for developers and coding agents working on DollOS is in [AGENTS.md](AGENTS.md)
-(start there) and [docs/dev/](docs/dev/).
+The manual is in [docs/](docs/README.md): one English set that the doll reads (it is part of her
+system prompt) and that developers and coding agents use. Coding agents start at
+[AGENTS.md](AGENTS.md).
 
 ## Status
 

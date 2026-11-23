@@ -245,7 +245,7 @@ extension Doll {
         log("INFO", "maintenance: diary turn over after \(maintenanceState.diaryTurns ?? 0) turns; " + (wrote ? "diary \(file) written" : "no diary today"))
         maintenanceState.diary = nil
         maintenanceState.done.append(Reflection.diaryTask)
-        beginMaintenanceTasks(forced: maintenanceState.forced)
+        beginMaintenanceTasks(forced: maintenanceState.forced, afterDiary: true)
     }
 
     /// Why a call is refused for where she is (diary turn or not); nil: it runs.

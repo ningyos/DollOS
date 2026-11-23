@@ -411,6 +411,7 @@ private struct Harness {
         cfg.goals.review = false          // the ideal-self review tests switch it on
         cfg.audit.enabled = false         // the memory audit tests switch it on
         cfg.reflection.enabled = false    // the diary and self-knowledge tests switch it on
+        cfg.context.manual = false        // the fixed-prompt tests switch it on
         cfg.computer.estimateSimilarity = 2   // the estimate check tests switch it on (no cosine reaches 2)
         tune(&cfg)
         let fake = FakeModel(replies)
@@ -9336,10 +9337,12 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 
 /// Re-pinned 2026-11-22 (grounding fix 2): the goal.blocked tool, and the tree paragraph's
 /// 「用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；…」.
+/// Re-pinned 2026-11-23: the manual section (one English manual in `docs/`; its own 「## 記憶」 heading),
+/// and 「watch 叫你」 gone from the waiting state and `todo.wait`.
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "bed53f452ddcc57981105f96be9e4d42590815d2db5a306a3ed0d2a41f0da3c0")
-    #expect(d.prompt == "5cf246545cc7f8f7c2e1094c6813f56a4aebed0f1b421c6fa378e5fd5bef6505")
+    #expect(d.tools == "e82db2210d2c95cd76d633301f8e6ef84117eb2dcc6da6efad6f22f629b85866")
+    #expect(d.prompt == "a461958d4d31d7288d9c966ceb3f025630bd6beed7c0ed2aeb2e45bb088d3825")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -10712,6 +10715,42 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
         try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
         let raw = try String(contentsOf: h.dir.appending(path: "diary/2026-11-16.md"), encoding: .utf8)
         #expect(seal ? raw.hasPrefix(SecretBox.prefix) : raw == "主人今天跟我說了一個秘密。\n")
+        await doll.stop()
+        try await runner.value
+    }
+}
+
+@Test func theFixedPartOfHerPromptHoldsTheManualTheDaysSummariesAndHerDeepPublicMemoriesButNoSealedDay() async throws {
+    // Owner, 2026-11-23: most of the context in the system prompt; rebuilt when a maintenance ends.
+    for secret in [false, true] {
+        let clock = ManualClock(at("2026-11-16", "22:00"))
+        let h = try await Harness([Scripted("", remember(folders: [("主人的生日是 3 月 14 號", "public", nil)]), dm("記好了")), Scripted(""),
+                                   planReply, summaryReply, Scripted("", dm("早"))], clock: clock) {
+            $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.context.manual = true
+        }
+        let doll = h.doll
+        let runner = Task { try await doll.run() }
+        await doll.ownerSaid(secret ? "🔒 保險箱在書櫃最下層" : "晚安", secret: secret)
+        try await waitUntil { h.said == ["記好了"] }
+        let id = try #require(try memoryFilesByID(h).first { $0.value.file.body == "主人的生日是 3 月 14 號" }?.key)
+        try await doll.dashboardSetDeep(id, true)
+        let first = await h.model.requests
+        let before = first[0].messages[0].content
+        #expect(before.contains("=== README.md ===\n# DollOS manual") && !before.contains("最近幾天的摘要"))
+        clock.set(at("2026-11-17", "03:00"))
+        try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+        clock.set(at("2026-11-17", "08:00"))
+        await doll.ownerSaid("早")
+        try await waitUntil { h.said.count == 2 }
+        let reqs = await h.model.requests
+        let after = reqs.last!.messages[0].content
+        #expect(after.contains("## 你一直記得的事（標成深刻的記憶，公開的那些；秘密的不在這裡，用 recall 查）\n- 主人的生日是 3 月 14 號"))
+        #expect(after.contains("【2026-11-16】今天主人跟她說了晚安。") == !secret)
+        #expect(after.hasSuffix(try String(contentsOf: URL(filePath: "docs/voice-and-bridge.md"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        // The context figure counts what is on top of the fixed part.
+        let footer = reqs.last!.messages.last!.content
+        let used = Int(footer.split(separator: "context：")[1].split(separator: "／")[0].replacingOccurrences(of: ",", with: ""))!
+        #expect(used < 20_000)
         await doll.stop()
         try await runner.value
     }

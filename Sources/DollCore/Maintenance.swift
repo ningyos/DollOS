@@ -292,14 +292,13 @@ extension Doll {
     }
 
     /// The start notice, then the tasks.
-    func beginMaintenanceTasks(forced: Bool) {
+    func beginMaintenanceTasks(forced: Bool, afterDiary: Bool = false) {
         let now = wallClock.now()
         taskTurn = false
         maintenanceState.running = now
         maintenanceState.forced = forced
         saveMaintenanceLogged()
-        let wrote = maintenanceState.done.contains(Reflection.diaryTask)
-        let text = (wrote ? "【系統維護】日記的回合結束了，接著做，現在 \(Self.hhmm(now))。" : "【系統維護】開始，現在 \(Self.hhmm(now))。")
+        let text = (afterDiary ? "【系統維護】日記的回合結束了，接著做，現在 \(Self.hhmm(now))。" : "【系統維護】開始，現在 \(Self.hhmm(now))。")
             + "程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
             + (forced ? "你手上的「\(todo.current ?? "")」先停著，結束後接著做。" : "")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: start notice not written: \(error)") }
@@ -399,6 +398,8 @@ extension Doll {
             }
         } catch { log("ERROR", "maintenance: end notice not written: \(error)") }
         log("INFO", "maintenance: ended; done \(ended.done), failed \(Array(ended.failed.keys))")
+        // The new day's fixed part of her prompt: today's summary, her deep memories, her tools.
+        refreshFixed()
         feed.notify(.maintenance)
         // A turn only for a list 進行中: one 等待中 waits on for its answer.
         if kept != nil, todoBusy { followUp = true }
@@ -453,6 +454,7 @@ extension Doll {
             let result = try Consolidation.apply(request, answer, memory: memory, config: config.consolidate, now: wallClock.now()) {
                 try Timeline.startSegment(dir: timelineDir)
             }
+            try saveSummary(day: Day(ts: old.events.first?.ts ?? wallClock.now()).description, segment: result.segment, text: answer.summary)
             // The new day: its own timeline, today index, todo list and compactions; the calendar,
             // the memory and the process stay.
             timeline = try Timeline(dir: timelineDir, box: memory.box)

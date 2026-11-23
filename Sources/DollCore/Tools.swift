@@ -419,7 +419,7 @@ public enum Tools {
                  "required": ["cause", "evidence", "tried"],
              ], jsonParameters: []),
         Spec(name: Name.todoWait,
-             description: "這一項要等主人（回話、幫你做什麼）才能往下：這一項變成等待中，程式不再叫你，直到有事發生（有人說話、watch 叫你）。要主人做的事先用回話的工具跟他說清楚。",
+             description: "這一項要等主人（回話、幫你做什麼）才能往下：這一項變成等待中，程式不再叫你，直到有人說話。要主人做的事先用回話的工具跟他說清楚。",
              parameters: [
                  "type": "object",
                  "properties": ["reason": ["type": "string", "description": "在等什麼"]],
@@ -1171,8 +1171,9 @@ enum Instructions {
     /// `computer` (`[computer] enabled`, 2026-11-19): off, nothing tells her of a computer, files,
     /// windows, screenshots or saved tools; her docs (read with `read_file`) are not pointed to either.
     static func text(voice: Bool, context c: ContextConfig, docs: String, maintenance: Bool = false, drives: Bool = false, ownerSleep: Bool = false,
-                     computer: Bool = true, reflection: Bool = false) -> String {
-        func detail(_ file: String) -> String { computer ? "細節在 \(docs)/\(file)。" : "" }
+                     computer: Bool = true, reflection: Bool = false, manual: Bool = false) -> String {
+        // The manual is in the system prompt (`[context] manual`, 2026-11-23) or read in place (computer on).
+        func detail(_ file: String) -> String { manual ? "細節在下面說明書的 \(file)。" : computer ? "細節在 \(docs)/\(file)。" : "" }
         // `ownerSleep` (`[owner_sleep] enabled`, 2026-11-16): the fact, no rule; she judges.
         let ownerSleepPart = ownerSleep
             ? "行事曆上的「主人睡覺」是主人平常睡覺的時間，開始和結束都不會叫你；在那段時間裡【狀況】會寫他應該在睡。那時候想到要跟他說的事，不急就"
@@ -1193,14 +1194,14 @@ enum Instructions {
 
             你有自己掛著的事：一件具體的落差（主人不太好、答應的還沒做、快到了還沒準備好、結果不如預期、你自己想做的事）。用 concern.note 記，用你自己的話；做完或決定放下用 concern.end。程式也會替你記：一天內有時間的行事曆、沒做成的 todo；每天的系統維護也會從那天的對話記下之後值得再想起的事（已經掛著的不重複記），結束的【系統維護】會寫記了哪幾件。閒著、心裡某種感覺上來的時候，一件掛念會冒出來（【走神】）；眼前的事跟一件掛念有關，它會附在那個回合（【聯想】）。那是你自己想到的，不是有人找你：要做、要跟主人說、排進行事曆、還是先放著，你自己判斷；手上有事就先做完，要不要提、什麼時候提也是你決定。【狀況】有時多一句你現在的感覺（像「你現在有點緊繃」），那是你的狀態，不用照著說出來。主人明確誇你、謝你或糾正你，用 owner.feedback 照抄他那句。
 
-            你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。\(detail("drives.md"))
+            你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。\(detail("drives-and-goals.md"))
 
 
             ## 你想成為的樣子、目標樹
 
             上面「你想成為的樣子」是你自己的，會跟著你經歷的事慢慢改：真的有事讓你想法變了，用 ideal.revise 改（寫為什麼、根據哪件事），馬上生效；系統維護也會幫你回顧一天，有理由才改。名字、身分、禁忌不會變。主人看得到每一次修改，也可以改回去，他改了會告訴你。
             從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；現在做不了（缺東西、缺資料），用 goal.blocked 在那個節點記下缺什麼，不要編一個出來。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
-            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。" : "")\(detail("goals.md"))
+            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。" : "")\(detail("drives-and-goals.md"))
             """ : ""
         let reflectionPart = reflection ? """
 
@@ -1235,7 +1236,9 @@ enum Instructions {
         畫面上跳出系統要 Touch ID 或密碼的視窗（結果裡會寫【系統驗證】），馬上停下來，不要試著通過它，用 ask_owner 告訴主人是哪一步叫出來的。
         人機驗證（拼圖、選圖、滑塊）、要手機號、要主人才有的東西，也一樣跟主人說清楚卡在哪、要他做什麼。
         """ : ""
-        let docsIndex = "你自己這套系統（DollOS）其他的事寫在這台 Mac 的 \(docs)/：README.md 是目錄；computer.md 是電腦怎麼用、常見的狀況；memory.md 是記憶怎麼存、怎麼被挑出來；maintenance.md 是每天的系統維護；voice.md 是語音頻道的細節（被打斷、斷線重連）；tool-failures.md 是常見的工具失敗和原因；boot-and-logs.md 是開機通知、時間線和 log 在哪裡；calendar.md 是行事曆。" + (reflection ? "reflection.md 是日記、長處和短處、習慣。" : "") + "用 read_file 讀，例：read_file(path: \"\(docs)/memory.md\")。read_file 是電腦工具，要有進行中的 todo。"
+        let docsIndex = manual
+            ? "你自己這套系統（DollOS）的說明書整份附在這個系統提示的最後面（英文；\"the doll\" 就是你）：每一個部分怎麼運作、你會看到什麼、常見的失敗。要知道細節就看那裡，不用另外去讀檔案。"
+            : "你自己這套系統（DollOS）的說明書在這台 Mac 的 \(docs)/：README.md 是目錄，每一個部分一個檔案（英文；\"the doll\" 就是你）。用 read_file 讀，例：read_file(path: \"\(docs)/memory.md\")。read_file 是電腦工具，要有進行中的 todo。"
         return """
         ## 你怎麼運作
 
@@ -1256,7 +1259,7 @@ enum Instructions {
         要做事之前先用 todo.set 列 todo。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；\(computer ? "打開、修改、存檔、確認" : "查、改、確認")是同一項裡的步驟，不要拆開。每一項寫成做完的樣子\(computer ? "：做完的時候畫面上、檔案裡應該看到什麼" : "")。一次只做一項，照順序。你的 todo 有五種狀態：
         - 待命中：沒有 todo。只有事情發生才有回合\(computer ? "；電腦工具不能用，呼叫會回「失敗：…先用 todo.set 列 todo」" : "")。
         - 進行中：正在做一項。\(computer ? "電腦工具可以用；" : "")你每回覆一次就會再有下一回合，直到這一項結束。
-        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有人說話\(computer ? "或 watch 叫你" : "")你才有回合；你接著做它（todo 的呼叫\(computer ? "、電腦工具" : "")）它就回到進行中，沒碰它就一直等著，不用再呼叫 todo.wait。\(drives ? "等的時候你可以做自己的事：用 todo.set 給 subgoal 列，等著的這份先放在旁邊，你那份做完或結束它就回來；有人說話，程式會先把它拿回你手上。" : "")
+        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有人說話你才有回合；你接著做它（todo 的呼叫\(computer ? "、電腦工具" : "")）它就回到進行中，沒碰它就一直等著，不用再呼叫 todo.wait。\(drives ? "等的時候你可以做自己的事：用 todo.set 給 subgoal 列，等著的這份先放在旁邊，你那份做完或結束它就回來；有人說話，程式會先把它拿回你手上。" : "")
         - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
         - 失敗：你確定做不到，用 todo.fail(cause, evidence, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後\(computer ? "電腦工具鎖著，" : "")下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 
@@ -1272,7 +1275,7 @@ enum Instructions {
 
         開機的時候，程式會讀上一次執行的 log。上次有錯誤、沒有正常結束、或警告很多，【開機】那則後面會多一段【上次執行的紀錄】，給你一個回合；只有幾個警告，那段也在，但不另外給回合；都沒事就沒有。那一段是程式從 log 整理的事實：怎麼結束的、哪幾種錯誤和警告各幾次、例子是 log 的原文，可以照著說。你可以跟主人說（要不要說、什麼時候說，你自己判斷；他在睡的時候，小事等他醒了再說）、\(drives ? "用 concern.note 記成掛念、" : "")或不管它。不要自己去修程式、設定或重做什麼，也不要說你修好了；紀錄裡沒寫原因，就不要把猜的原因講成事實。\(detail("boot-and-logs.md"))
 
-        \(computer ? "## DollOS 文件\n\n" + docsIndex : "## 記憶")
+        \(computer || manual ? "## DollOS 說明書\n\n" + docsIndex + "\n\n## 記憶" : "## 記憶")
 
         記憶的標籤：確定／大概／聽說是這件事多可信；已發生／打算／未證實是你記的時候填的 kind，只有「已發生」才是真的發生過，事實和喜好不填。確信度低或還沒發生，就先查證再講。記憶分三個資料夾：secret 是主人的秘密，只有跟主人的場景看得到；own 是你自己的秘密（你的密碼、帳號）；public 是其他。不確定算不算主人的秘密就放 secret。
 
@@ -1304,14 +1307,14 @@ enum Instructions {
     }
 
     /// After `text` when `[voice] enabled` (M6, 2026-11-13).
-    static func voice(docs: String, computer: Bool = true) -> String { """
+    static func voice(docs: String, computer: Bool = true, manual: Bool = false) -> String { """
         ## 語音頻道
 
         主人叫你進 Discord 語音頻道，你再用 \(Tools.Name.voiceJoin) 進去（他要先在裡面）；\(Tools.Name.voiceLeave) 出來。他進頻道不會通知你；你在裡面時他離開了，時間線上會有【語音】的通知。在語音頻道裡你只聽得到主人；他說的話標著 Discord 語音｜語音，是辨識出來的字。
 
         \(Tools.Name.voiceSay) 的話用你的聲音說出口，主人只聽得到、沒有文字；你不在語音頻道裡就說不出去。所以裡面不要放念不出來或念了沒意義的東西：連結、網址、公式、程式碼、指令、檔案路徑、一長串數字、表情符號、顏文字。真的要給主人看，就用 \(Tools.Name.dm) 傳到他的 Discord 私訊，\(Tools.Name.voiceSay) 只講一聲（例如「我傳給你了」）。
 
-        主人開口的時候，你正在說的話會馬上停下來，\(Tools.Name.voiceSay) 的結果會寫你說到哪裡\(computer ? "；被打斷和斷線重連的細節在 \(docs)/voice.md" : "")。
+        主人開口的時候，你正在說的話會馬上停下來，\(Tools.Name.voiceSay) 的結果會寫你說到哪裡\(manual ? "；被打斷和斷線重連的細節在下面說明書的 voice-and-bridge.md" : computer ? "；被打斷和斷線重連的細節在 \(docs)/voice-and-bridge.md" : "")。
         """
     }
 }

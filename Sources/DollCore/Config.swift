@@ -27,9 +27,10 @@ public struct CoreConfig: Sendable {
     /// MLX's buffer cache limit for the whole process (2026-11-13, M6): the embedding model and her
     /// voice share one MLX runtime, so one limit covers both. Set before either loads.
     public var mlxCacheLimitMB = 256
-    /// Her DollOS documents (2026-11-14; on this Mac since 2026-11-16): she reads them in place with
-    /// `read_file`, at this folder's absolute path; a relative path is under the config's folder.
-    public var docs = "dolldocs"
+    /// The DollOS manual (one English set for her and developers, 2026-11-23): whole in her system
+    /// prompt with `[context] manual`, else she reads it in place with `read_file`. A relative path is
+    /// under the current directory; boot fails without its README.md.
+    public var docs = "docs"
 }
 
 /// The persistent log and the boot report (2026-11-18, `RunLog.swift`, `BootReport.swift`).
@@ -59,6 +60,13 @@ public struct ContextConfig: Sendable {
     public var talkShare = 0.5
     /// `reasoning_effort` of that summary request.
     public var talkEffort = "medium"
+    /// The fixed part of her system prompt (2026-11-23, owner: put most of the context there; rebuilt
+    /// at boot and after each maintenance, `Fixed.swift`): the whole manual (`[core] docs`), the last
+    /// `summary_days` days' summaries, her deep public memories (at most `deep_max`) and her saved
+    /// tools. Off: none of it, and her instructions point to the manual files (runners, tests).
+    public var manual = true
+    public var summaryDays = 7
+    public var deepMax = 40
 }
 
 /// Her computer is this Mac (2026-11-16): the owner's apps, driven in the background through
@@ -667,10 +675,14 @@ public struct Config: Sendable {
         try x.read("force_keep_turns", &context.forceKeepTurns)
         try x.read("talk_share", &context.talkShare)
         try x.read("talk_effort", &context.talkEffort)
+        try x.read("manual", &context.manual)
+        try x.read("summary_days", &context.summaryDays)
+        try x.read("deep_max", &context.deepMax)
         try x.finish()
         guard context.limit >= 1000, context.warnRatio > 0, context.warnRatio < 1, context.forceAfterTurns >= 1,
-              context.forceKeepTurns >= 1, context.talkShare > 0, context.talkShare < 1, Effort.levels.contains(context.talkEffort) else {
-            throw TOMLError(description: "[context] limit at least 1000, warn_ratio and talk_share between 0 and 1, force_after_turns and force_keep_turns at least 1, talk_effort one of \(Effort.levels)")
+              context.forceKeepTurns >= 1, context.talkShare > 0, context.talkShare < 1, Effort.levels.contains(context.talkEffort),
+              context.summaryDays >= 0, context.deepMax >= 0 else {
+            throw TOMLError(description: "[context] limit at least 1000, warn_ratio and talk_share between 0 and 1, force_after_turns and force_keep_turns at least 1, talk_effort one of \(Effort.levels), summary_days and deep_max 0 or more")
         }
 
         var v = Section(name: "computer", raw: raw["computer"] ?? [:])

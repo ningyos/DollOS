@@ -54,7 +54,8 @@ logs/
 
 # Design notes and experiment records live in the private repo ningyos/DollOS-notes (2026-11-22);
 # a local copy here stays out of the public repository. The measurement tests (env-gated) read it.
-# docs/dev/ (developer documentation for coding agents, 2026-11-22) is public and tracked.
-/docs/*
-!/docs/dev/
+# docs/ is the public documentation (one English set for her and for developers, 2026-11-23);
+# docs/private/ is the owner's local notes.
+/docs/private/
+**/.DS_Store
 /experiments/

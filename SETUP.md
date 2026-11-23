@@ -114,7 +114,7 @@ cp dollcore.example.toml ~/DollOS-data/<doll id>/dollcore.toml
 | `[llm] base_url`, `model` | from step 2 |
 | `[core] data_dir` | `<data folder>/data` |
 | `[core] pack` | `<data folder>/doll.toml` |
-| `[core] docs` | `<repository>/dolldocs` (absolute) |
+| `[core] docs` | `<repository>/docs` (absolute) |
 | `[memory] dir` | `<data folder>/memory` |
 | `[memory] keychain_service` | leave the default unless two DollOS installs share this Mac user |
 | `[dashboard] port`, `[api] port` | defaults 8790 / 8791; change only if taken (`lsof -iTCP:<port> -sTCP:LISTEN`) |
