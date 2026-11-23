@@ -117,8 +117,6 @@ public actor Doll {
 
     var queue: [Event] = []
     /// Owner lines being checked for a secret (`ownerLine`), not queued yet; the last check in the chain.
-    var heldLines = 0
-    var lineChecks: Task<Void, Never>?
     /// His lines on disk until they are in the timeline (`Inbox.swift`), and the last file number given.
     let inbox: Inbox
     var inboxSerial = 0
@@ -359,6 +357,10 @@ public actor Doll {
     let reflectionConfig: ReflectionConfig
     /// `[secrets]` (2026-11-23, `Guard.swift`).
     let secretsConfig: SecretsConfig
+    /// A held turn's log lines (`heldTurn`); nil outside one.
+    var heldLog: [(level: String, msg: String, sealed: Bool)]?
+    /// His lines in the held turn's timeline: their inbox files go when the turn's lines are written.
+    var inboxDone: [String] = []
     let dataDir: URL
     let selfURL: URL
     let diaryDirURL: URL
@@ -590,6 +592,8 @@ public actor Doll {
     /// (`sealed`: a sealed todo list or document), the whole message is one box (`SecretBox`) in
     /// stderr, the log file and the test sink: the dashboard's boot reports open it for the owner.
     func log(_ level: String, _ msg: String, sealed: Bool = false) {
+        // A held turn's lines wait for its end, sealed then when she marked something secret in it.
+        if heldLog != nil, level != "ERROR" { heldLog!.append((level, msg, sealing || sealed)); return }
         let msg = sealing || sealed ? (try? memory.box.seal(msg)) ?? "（加密失敗，這一行沒記）" : msg
         Log.write(level, msg)
         logSink?("\(level) \(msg)")
@@ -615,11 +619,13 @@ public actor Doll {
         // The dashboard shows a lost model connection while her requests wait (`connectionLine`).
         for m in [model, maintenanceModel] { m.connection?.onChange { [feed] in feed.notify(.connection) } }
         try await model.check()
-        // His lines received by the last process and not yet in her timeline: checked again, queued in order.
+        // His lines received by the last process and not yet in her timeline: queued in order.
         let pending = try inbox.pending()
         if !pending.isEmpty {
-            log("INFO", "owner lines: \(pending.count) received before the last exit and not in the timeline; checked again and queued")
-            for p in pending { hold(p.line.text, voice: p.line.voice, channel: p.line.channel, inbox: p.name) }
+            log("INFO", "owner lines: \(pending.count) received before the last exit and not in the timeline; queued")
+            for p in pending {
+                ownerSaid(p.line.text, secret: SecretCheck.isLocked(p.line.text), voice: p.line.voice, channel: p.line.channel, inbox: p.name)
+            }
         }
     }
 
@@ -642,7 +648,8 @@ public actor Doll {
         interruptMaintenance(by: "主人")
         lastSpoke = wallClock.now()
         ownerLastLine = lastSpoke
-        signal(.ownerTalk, secret ? "（一句秘密，不記）" : "「\(text.prefix(30))」")
+        // His words stay out of the signals and the log (2026-11-23: no program judges them any more).
+        signal(.ownerTalk, "主人說了一句（\(text.count) 字）")
         var ev = Event(.owner, .owner, text, secret: secret, voice: voice)
         ev.channel = channel
         ev.inbox = inbox
@@ -760,9 +767,11 @@ public actor Doll {
         drivesCheck()
         while !stopped {
             guard await waitForEvent() else { break }
-            try drain()
-            try await turn()
-            try flushHeld()
+            try await heldTurn {
+                try drain()
+                try await turn()
+                try flushHeld()
+            }
             maintenanceCheck()
             drivesCheck()
         }
@@ -781,7 +790,7 @@ public actor Doll {
         var last: Event?
         for ev in batch {
             last = try append(ev, keepTime: true)
-            if let name = ev.inbox { try inbox.remove(name) }
+            if let name = ev.inbox { inboxDone.append(name) }
         }
         if batch.contains(where: { $0.speaker != nil || $0.kind == .watch || Concerns.isOwnWander($0) }) { taskTurn = true }
         if batch.contains(where: { $0.speaker != nil }) { ownerArrived = true }
@@ -1166,8 +1175,29 @@ public actor Doll {
     // one turn ---------------------------------------------------------------
     /// Drain the queue and take one turn; what `run()` does per event.
     func runOnce() async throws {
-        try drain()
-        try await turn()
+        try await heldTurn {
+            try drain()
+            try await turn()
+        }
+    }
+
+    /// One turn whose timeline lines, log lines of what was said, and his lines' inbox removal wait
+    /// until it ends (owner 2026-11-23: 「時間線檔在回合結束時寫入」): a line she marks secret in it
+    /// is written sealed, and nothing of it was on disk in plain text before. A crash in the turn loses
+    /// the turn; his lines are still in the inbox and come back at the next boot.
+    func heldTurn(_ body: () async throws -> Void) async throws {
+        timeline.hold()
+        heldLog = []
+        var failure: Error?
+        do { try await body() } catch { failure = error }
+        let marked = timeline.heldEvents.contains(where: \.secret)
+        let lines = heldLog ?? []
+        heldLog = nil
+        for l in lines { log(l.level, l.msg, sealed: l.sealed || marked) }
+        try timeline.release()
+        for name in inboxDone { try inbox.remove(name) }
+        inboxDone = []
+        if let failure { throw failure }
     }
 
     /// One model call over the whole timeline. Owner voice may cancel the call in flight; the
@@ -1248,7 +1278,6 @@ public actor Doll {
                 return
             }
             log("INFO", "turn \(turnIndex + 1) interrupted; rerunning with the new events")
-            await awaitHeldLines()
             try drain()
             return try await turn()
         }
@@ -1636,6 +1665,8 @@ public actor Doll {
                 return Outcome(text: "下一回合 effort：\(level)", actions: ["think \(level)"])
             case .remember(let items):
                 return await remember(items, seen: events, reply: reply)
+            case .secretMark(let quote):
+                return try secretMarkTool(quote)
             case .recall(let query):
                 return try await recall(query, seen: events)
             case .memoryFix(let id, let text, let basis, let why):

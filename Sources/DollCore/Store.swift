@@ -236,6 +236,14 @@ public final class Timeline {
     private var handle: FileHandle?
     /// Encrypts secret and sealed events (nil: a timeline that may hold none).
     private let box: SecretBox?
+    /// Where every encrypted piece lives (owner 2026-11-23: 「時間線的留下的就只有秘密索引」): the
+    /// segment's line holds 「【秘密 #n】」 in its place, `<timeline dir>/secrets.store` the box.
+    private let store: SecretStore
+    /// Her turn holds its writes until it ends (owner 2026-11-23: 「時間線檔在回合結束時寫入」), so a
+    /// line she marks secret in the turn never reaches the file in plain text (`hold`, `mark`, `release`).
+    public private(set) var holding = false
+    private var held: [() throws -> Data] = []
+    private var heldFrom: Int64 = 0
 
     /// What one turn took, keyed by her reply's seq; for the dashboard, not the prompt.
     public struct TurnStats: Sendable, Equatable, Codable {
@@ -352,6 +360,7 @@ public final class Timeline {
         self.box = box
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        store = try SecretStore(dir: dir)
         segment = try Self.segments(dir).last ?? Self.newName(after: nil)
         file = dir.appending(path: segment + ".jsonl")
         if !fm.fileExists(atPath: file.path) {
@@ -367,6 +376,7 @@ public final class Timeline {
     public init(dir: URL, segment: String, box: SecretBox?) throws {
         self.box = box
         self.segment = segment
+        store = try SecretStore(dir: dir)
         file = dir.appending(path: segment + ".jsonl")
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw StoreError(description: "no timeline segment \(segment) in \(dir.path)")
@@ -383,7 +393,7 @@ public final class Timeline {
             let url = dir.appending(path: name + ".jsonl")
             for (n, line) in try Data(contentsOf: url).split(separator: UInt8(ascii: "\n")).enumerated() {
                 let text = String(decoding: line, as: UTF8.self)
-                let boxed = text.contains("\"" + SecretBox.prefix)
+                let boxed = text.contains("\"" + SecretBox.prefix) || text.contains("\"" + SecretStore.refPrefix)
                 if boxed, sealed == nil { sealed = "\(url.path) line \(n + 1)" }
                 if !boxed, plain == nil, text.contains("\"type\":\"event\""), text.contains("\"secret\":true") {
                     plain = "\(url.path) line \(n + 1)"
@@ -438,8 +448,8 @@ public final class Timeline {
             try h.close()
         }
         for (n, line) in data.split(separator: UInt8(ascii: "\n")).enumerated() {
-            let raw = Data(line)
             let place = "\(file.path) line \(n + 1)"
+            let raw = try store.resolve(Data(line), place: place)
             func bad(_ e: Error) -> StoreError { StoreError(description: "\(place): \(e)") }
             do {
                 switch try Self.decoder.decode(Line.self, from: raw).type {
@@ -525,15 +535,53 @@ public final class Timeline {
         return s
     }
 
-    /// Writes one line and syncs it to disk.
-    private func write<T: Encodable>(_ record: T) throws {
+    /// Writes one line and syncs it to disk; while `holding`, at `release`. `make` builds the record
+    /// then, so what a mark changed (an event's flags) is what is written.
+    private func write<T: Encodable>(_ make: @escaping () throws -> T) throws {
+        let line: () throws -> Data = { [store] in try store.extract(try Self.encoder.encode(try make())) }
+        if holding { return held.append(line) }
+        try put(try line())
+    }
+
+    private func write<T: Encodable>(_ record: T) throws { try write { record } }
+
+    private func put(_ line: Data) throws {
         if handle == nil {
             let h = try FileHandle(forWritingTo: file)
             try h.seekToEnd()
             handle = h
         }
-        try handle!.write(contentsOf: try Self.encoder.encode(record) + Data([UInt8(ascii: "\n")]))
+        try handle!.write(contentsOf: line + Data([UInt8(ascii: "\n")]))
         try handle!.synchronize()
+    }
+
+    /// Her turn begins: its lines wait in memory until `release`.
+    public func hold() {
+        guard !holding else { return }
+        holding = true
+        held = []
+        heldFrom = lastSeq
+    }
+
+    /// She marked the event `seq` secret (`secret.mark`): it and every event after it that the turn
+    /// holds become secret; written as such at `release`. Only an event of the held turn.
+    public func mark(_ seq: Int64) throws {
+        guard holding, seq > heldFrom, position[seq] != nil else {
+            throw StoreError(description: "event \(seq) is not one this turn holds")
+        }
+        for i in events.indices where events[i].seq! >= seq { events[i].secret = true }
+    }
+
+    /// The events this turn holds (not yet in the file).
+    public var heldEvents: [Event] { holding ? events.filter { $0.seq! > heldFrom } : [] }
+
+    /// Her turn ended: its lines go to the file, in order.
+    public func release() throws {
+        guard holding else { return }
+        holding = false
+        let lines = held
+        held = []
+        for l in lines { try put(try l()) }
     }
 
     /// The newest event's seq; 0 for an empty timeline.
@@ -543,22 +591,26 @@ public final class Timeline {
     /// calls are written as one box (`SecretBox`); its kind, seq, time and flags stay plain.
     @discardableResult
     public func append(_ ev: Event) throws -> Event {
-        var line = EventLine(seq: lastSeq + 1, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
+        let seq = lastSeq + 1
+        let line = EventLine(seq: seq, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image,
                              window: ev.window, channel: ev.channel,
                              calls: ev.kind == .doll ? ev.calls.map { StoredCall(name: $0.name, arguments: $0.arguments,
                                                                                   malformed: $0.arguments == nil ? $0.malformed : nil) } : nil)
-        if ev.secret || ev.sealed {
-            var stored = line
-            let content = SealedContent(text: line.text, window: line.window, calls: line.calls)
-            stored.box = try key().seal(String(decoding: try Self.encoder.encode(content), as: UTF8.self))
-            (stored.text, stored.window, stored.calls) = ("", nil, nil)
-            try write(stored)
-            line.box = stored.box
-        } else {
-            try write(line)
-        }
+        if (ev.secret || ev.sealed) && box == nil { throw StoreError(description: "the timeline holds or gets encrypted content, and no memory key was given") }
         take(line)
+        events[events.count - 1].sealed = ev.sealed && !ev.secret
+        try write { [unowned self] in
+            // The flags as they are when written (a mark in the held turn may have made it secret).
+            let e = self.events[self.position[seq]!]
+            var stored = line
+            stored.secret = e.secret
+            guard e.secret || e.sealed else { return stored }
+            let content = SealedContent(text: line.text, window: line.window, calls: line.calls)
+            stored.box = try self.key().seal(String(decoding: try Self.encoder.encode(content), as: UTF8.self))
+            (stored.text, stored.window, stored.calls) = ("", nil, nil)
+            return stored
+        }
         return events[events.count - 1]
     }
 
@@ -570,8 +622,10 @@ public final class Timeline {
     /// A footer of a secret or sealed reply is encrypted with it.
     public func attachFooter(_ seq: Int64, _ text: String) throws {
         guard let i = position[seq] else { throw StoreError(description: "no event \(seq) to attach a footer to") }
-        try write(FooterLine(seq: seq, text: events[i].secret || events[i].sealed ? try key().seal(text) : text))
         events[i].footer = text
+        try write { [unowned self] in
+            FooterLine(seq: seq, text: self.events[i].secret || self.events[i].sealed ? try self.key().seal(text) : text)
+        }
     }
 
     /// Records the todo list after her reply `seq` (or the program's change at the event `seq`),
@@ -582,10 +636,12 @@ public final class Timeline {
                             rounds: s.rounds, decideAt: s.decideAt, deciding: s.deciding, goOn: s.goOn,
                             plan: s.plan, listRounds: s.listRounds, listStart: s.listStart,
                             listText: s.listText, estimateCheck: s.estimateCheck, aside: aside)
-        if sealed {
-            try write(SealedTodoLine(seq: seq, box: try key().seal(String(decoding: try Self.encoder.encode(line), as: UTF8.self))))
-        } else {
-            try write(line)
+        let held = holding ? heldFrom : nil
+        try write { [unowned self] () -> AnyEncodable in
+            // A list recorded in a turn that marked a secret is sealed with it.
+            let marked = held.map { h in self.events.contains { $0.seq! > h && $0.secret } } ?? false
+            guard sealed || marked else { return AnyEncodable(line) }
+            return AnyEncodable(SealedTodoLine(seq: seq, box: try self.key().seal(String(decoding: try Self.encoder.encode(line), as: UTF8.self))))
         }
         todo = s
         todoAside = aside
@@ -595,8 +651,10 @@ public final class Timeline {
     /// Records a compaction; requests render its span from then on. Its summary is encrypted when
     /// the span holds an encrypted event.
     public func compact(_ c: Compaction) throws {
-        let text = try c.text.map { sealedSpan(c.fromSeq, c.toSeq) ? try key().seal($0) : $0 }
-        try write(CompactLine(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq, text: text))
+        try write { [unowned self] in
+            CompactLine(kind: c.kind, item: c.item, fromSeq: c.fromSeq, toSeq: c.toSeq,
+                        text: try c.text.map { self.sealedSpan(c.fromSeq, c.toSeq) ? try self.key().seal($0) : $0 })
+        }
         compactions.append(c)
     }
 

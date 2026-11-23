@@ -67,4 +67,24 @@ extension Doll {
         }
         return best.0 >= secretsConfig.filterSimilarity ? String(format: "similar %.2f「%@」", best.0, best.1) : nil
     }
+
+    /// `secret.mark`: one of his lines of this turn (by a quote, or his last) and what the turn
+    /// writes after it become secret; this turn's writes are sealed from now on.
+    func secretMarkTool(_ quote: String?) throws -> Outcome {
+        let his = timeline.heldEvents.filter { $0.kind == .owner }
+        guard !his.isEmpty else { throw ToolError(description: "這個回合沒有主人的話；之前回合的話已經存好了，標不了") }
+        let line: Event
+        if let quote {
+            guard let l = his.last(where: { $0.text.contains(quote) }) else {
+                throw ToolError(description: "這個回合主人的話裡找不到「\(quote.prefix(30))」；照抄他那句裡的一段，或不給 quote（就是最後一句）")
+            }
+            line = l
+        } else {
+            line = his.last!
+        }
+        try timeline.mark(line.seq!)
+        sealing = true
+        log("INFO", "turn \(turnIndex): she marked owner line \(line.seq!) secret")
+        return Outcome(text: "標好了：主人那句和這個回合之後寫的都加密存，只有跟主人的對話看得到。", secret: true, actions: ["secret mark"])
+    }
 }

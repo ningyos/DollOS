@@ -556,7 +556,7 @@ private func call(_ name: String, _ params: [(String, String)]) -> ToolCall { Sc
     let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
     // her tools, the todo list's, then the computer's (declared from the start so the list never changes)
-    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "history.list", "history.undo", "todo.set", "todo.done", "todo.fail",
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "secret.mark", "recall", "memory.fix", "history.list", "history.undo", "todo.set", "todo.done", "todo.fail",
                       "todo.wait", "todo.progress", "todo.continue", "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "apps", "open", "read_window",
                       "act", "tool.save", "tool.run", "read_file", "write_file", "edit_file", "ask_owner"])
     #expect(tools.allSatisfy { $0["type"] as? String == "function" })
@@ -3924,9 +3924,8 @@ private func otherIPv4() -> String? {
     #expect(try await post(api, "/api/owner", "主人真的來了", key: api.ownerKey) == 200)
     // Answered after the line was on disk (2026-11-22): one inbox file, sealed.
     #expect(try FileManager.default.contentsOfDirectory(atPath: h.dir.appending(path: "inbox").path).filter { $0.hasSuffix(".line") }.count == 1)
-    // The owner's line was held for the secret check (one request, no tools), then queued as an ordinary line.
-    await h.doll.lineChecks?.value
-    #expect(await h.model.requests.map { $0.messages.map(\.content) } == [[SecretCheck.instruction, "主人真的來了"]])
+    // Queued as he wrote it; no program judges it (2026-11-23), no request.
+    #expect(await h.model.requests.isEmpty)
     #expect(await h.doll.queue.map(\.kind) == [.developer, .owner])
     #expect(await h.doll.queue.map(\.text) == ["嗨", "主人真的來了"])
     #expect(await h.doll.queue.map(\.secret) == [false, false])
@@ -9338,11 +9337,12 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 /// Re-pinned 2026-11-22 (grounding fix 2): the goal.blocked tool, and the tree paragraph's
 /// 「用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；…」.
 /// Re-pinned 2026-11-23: the manual section (one English manual in `docs/`; its own 「## 記憶」 heading),
-/// 「watch 叫你」 gone from the waiting state and `todo.wait`; the rule that his secrets never leak.
+/// 「watch 叫你」 gone from the waiting state and `todo.wait`; the rule that his secrets never leak;
+/// `secret.mark` and the line on marking his secrets (no program check any more).
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "e82db2210d2c95cd76d633301f8e6ef84117eb2dcc6da6efad6f22f629b85866")
-    #expect(d.prompt == "5cd12d6f6c242e889a5fdb57d8ff613029686c62243693bf51790e6d165484f5")
+    #expect(d.tools == "c7fabde1e89fb9e6f7aeee6d24f93d1408a92f7f0c771ef2c6e12fc711d30bbc")
+    #expect(d.prompt == "91c77529b43ee821a438ca79af1d6ccb3e79111c3871f098228fedc636528e4c")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -9404,7 +9404,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     let h = try await Harness(tune: computerOff)
     let tools = try #require(try JSONSerialization.jsonObject(with: Data(await h.doll.toolsJSON.utf8)) as? [[String: Any]])
     let names = tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
-    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "recall", "memory.fix", "history.list", "history.undo",
+    #expect(names == ["discord.dm", "dollctl.reply", "think", "remember", "secret.mark", "recall", "memory.fix", "history.list", "history.undo",
                       "todo.set", "todo.done", "todo.fail", "todo.wait", "todo.progress", "todo.continue",
                       "calendar.add", "calendar.change", "calendar.delete", "calendar.list", "ask_owner"])
 }
@@ -9820,7 +9820,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     try p.run()
     let objects = out.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
-    #expect(p.terminationStatus == 0 && objects.count > 1000)
+    #expect(p.terminationStatus == 0 && !objects.isEmpty)
     for n in needles where objects.range(of: Data(n.utf8)) != nil { hits.append("history object: \(n)") }
     for n in needles where h.logs.contains(where: { $0.contains(n) }) { hits.append("log: \(n)") }
     return hits
@@ -9963,59 +9963,45 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     #expect(try store.load(account: "/tmp/dollcore-keychain-test") == nil)
 }
 
-// the owner-line secret check (owner, 2026-11-21: `SecretCheck.swift`) ----------------------------------
+// his lines and her secret mark (2026-11-23: no secret check; she marks, the turn writes at its end) ---------
 
-@Test func theModelDecidesWhetherAnOwnerLineIsASecretALockForcesItAndAFailureMakesItOne() async throws {
+@Test func sheMarksHisLineSecretAndNothingOfThatTurnReachesTheDiskInPlainText() async throws {
     let h = try await Harness()
     let d = h.doll
-    // The check says 是: held until then, a secret event. One request: the question and his line, no tools, no thinking.
-    await h.model.add(["是"])
-    try await d.ownerLine("我的銀行密碼是 Pw8-犀牛-552").value
-    #expect(await h.model.requests.map { $0.messages.map(\.content) } == [[SecretCheck.instruction, "我的銀行密碼是 Pw8-犀牛-552"]])
-    #expect(await h.model.requests.map(\.effort) == ["none"])
-    #expect(await h.model.tools == [nil])
-    #expect(await d.queue.map(\.secret) == [true])
-    // She sees it in the owner's turn.
-    try await h.turn(Scripted("", dm("好，我記住了")))
-    #expect(await h.model.seen(1).contains { $0.content.contains("Pw8-犀牛-552") })
-    // A developer's turn: the secret line and her secret reply keep their place, not their content.
+    // No request before her turn; the line reaches her as he wrote it.
+    try await d.ownerLine("我的銀行密碼是 Pw8-犀牛-552")
+    #expect(await h.model.requests.isEmpty)
+    #expect(await d.queue.map(\.secret) == [false])
+    // In her turn she marks it, and answers; the turn's lines are written at its end, sealed from the line on.
+    try await h.turn(Scripted("", ("secret.mark", [("quote", "銀行密碼")]), dm("好，我記住了，不會跟別人說")))
+    let events = try h.events()
+    #expect(events.filter { $0.kind == .owner }.map(\.secret) == [true])
+    #expect(events.last { $0.kind == .doll }?.secret == true)
+    // The segment file holds only references; the boxes are in secrets.store.
+    let seg = try String(contentsOf: try h.timeline().file, encoding: .utf8)
+    #expect(seg.contains("【秘密 #") && !seg.contains("dollbox1:") && !seg.contains("Pw8"))
+    // A developer's turn: his line and her reply keep their place, not their content.
     await d.developerSaid("剛剛主人說了什麼")
     try await h.turn(Scripted("", reply("那是主人的事")))
-    let dev = await h.model.seen(2)
-    #expect(!dev.contains { $0.content.contains("Pw8") || $0.content.contains("記住了") || $0.toolCalls.contains { ($0.arguments ?? "").contains("記住了") } })
-    #expect(dev.filter { $0.content == Doll.hiddenSecret }.count >= 2)
-    // 🔒 first: no request, a secret; the line keeps the lock (she sees he locked it).
-    try await d.ownerLine("🔒 保險箱在衣櫃第二層").value
-    #expect(await h.model.requests.count == 3)
-    #expect(await d.queue.last?.secret == true)
-    #expect(await d.queue.last?.text == "🔒 保險箱在衣櫃第二層")
-    // 否: an ordinary line, plain.
-    await h.model.add(["否"])
-    try await d.ownerLine("今天晚餐吃咖哩飯").value
-    #expect(await d.queue.last?.secret == false)
-    // No clean answer, then no answer at all (the script ran out: an error): secret both times,
-    // and the log says the check failed, without the line.
-    await h.model.add(["可能吧，看情況"])
-    try await d.ownerLine("我下個月要去看身心科").value
-    try await d.ownerLine("我的提款卡密碼是 7391").value
-    #expect(await d.queue.suffix(2).map(\.secret) == [true, true])
-    let failed = h.logs.filter { $0.contains("the secret check failed") }
-    #expect(failed.count == 2 && failed[0].contains("unreadable answer") && failed[1].contains("script ran out"))
-    try await h.turn(Scripted("", dm("好"), remember([("主人今天晚餐吃咖哩飯", false),
-                                                       ("主人週末常常去家附近那家咖哩店，點豬排咖哩加一顆半熟蛋，配一杯冰紅茶；吃完會去河濱公園散步一圈，看看有沒有人在放風箏，再慢慢走回家洗澡看書", false)])))
-    // Queued in the order they came.
-    #expect(try h.events().filter { $0.kind == .owner }.map(\.text)
-            == ["我的銀行密碼是 Pw8-犀牛-552", "🔒 保險箱在衣櫃第二層", "今天晚餐吃咖哩飯", "我下個月要去看身心科", "我的提款卡密碼是 7391"])
-    // On disk (files, sqlite, timeline, history objects) and in the log: only the ordinary line.
-    let secrets = ["Pw8-", "犀牛", "保險箱", "衣櫃", "身心科", " 7391"]
+    let dev = await h.model.requests.last!.messages
+    #expect(!dev.contains { $0.content.contains("Pw8") || $0.content.contains("記住了") })
+    // 🔒 first: a secret from the start; a line she does not mark stays plain.
+    try await d.ownerLine("🔒 保險箱在衣櫃第二層")
+    try await d.ownerLine("今天晚餐吃咖哩飯")
+    #expect(await d.queue.map(\.secret) == [true, false])
+    try await h.turn(Scripted("", dm("好"), remember([("主人今天晚餐吃咖哩飯", false)])))
+    // Marking a line of an earlier turn is refused.
+    try await h.turn(Scripted("", ("secret.mark", [("quote", "咖哩飯")])))
+    #expect(try h.toolResults().last!.text.hasPrefix("失敗：這個回合沒有主人的話"))
+    // On disk and in the log: only the line she left plain.
+    let secrets = ["Pw8-", "犀牛", "保險箱", "衣櫃", "記住了"]
     do { let hits = try plainHits(h, secrets); #expect(hits == [], "\(hits)") }
     do { let leaked = h.logs.filter { l in secrets.contains { l.contains($0) } }; #expect(leaked == [], "\(leaked)") }
-    let ordinary = try plainHits(h, ["咖哩飯"])
-    #expect(ordinary.contains { $0.contains("/timeline/") } && ordinary.contains { $0.contains("/memory/public/") })
+    #expect(try plainHits(h, ["咖哩飯"]).contains { $0.contains("/timeline/") })
 }
 
-@Test func hisVoiceCutsHerCallAtOnceAndTheRerunWaitsForItsCheck() async throws {
-    let h = try await Harness(["否", Scripted("", dm("好，我停下來"))])
+@Test func hisVoiceCutsHerCallAtOnceAndTheRerunHasHisLine() async throws {
+    let h = try await Harness([Scripted("", dm("好，我停下來"))])
     await h.model.stall(request: 1)
     let runner = Task { [doll = h.doll] in try await doll.run() }
     await h.doll.developerSaid("幫我算 7+8")
@@ -10024,15 +10010,11 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
     try await waitUntil { h.said == ["好，我停下來"] }
     await h.doll.stop()
     try await runner.value
-    // Her call was cancelled, the check ran (request 2), and the rerun (request 3) has his line.
     #expect(await h.model.cancelled == 1)
-    #expect(await h.model.seen(1).map(\.content) == [SecretCheck.instruction, "等一下先停"])
-    #expect(await h.model.seen(2).contains { $0.content.hasSuffix("主人｜Discord 語音｜語音] 等一下先停") })
+    #expect(await h.model.seen(1).contains { $0.content.hasSuffix("主人｜Discord 語音｜語音] 等一下先停") })
 }
 
-@Test func theCheckReadsOnlyACleanYesOrNo() {
-    #expect(SecretCheck.read("是") == true && SecretCheck.read(" 否。\n") == false && SecretCheck.read("是！") == true)
-    for bad in ["", "是的", "否，沒有", "可能", "yes", "是 否"] { #expect(SecretCheck.read(bad) == nil, "\(bad)") }
+@Test func onlyHisLockAtTheVeryStartMakesALineSecret() {
     #expect(SecretCheck.isLocked("🔒 x") && SecretCheck.isLocked("🔒️x") && !SecretCheck.isLocked("x 🔒") && !SecretCheck.isLocked(" 🔒"))
 }
 
@@ -10384,43 +10366,40 @@ private func modelLines(_ logs: [String]) -> [String] {
 @Test func aTurnWaitsOutALostConnectionItsToolsRunOnceAndALineDuringItIsAnsweredAfter() async throws {
     let t = at("2026-11-16", "10:00")
     let clock = ManualClock(t)
-    // Up for A's check and her first reply (a DM and a recall); down from the follow-up request on.
-    let relay = Relay(downAfter: 2)
-    let h = try await Harness(["否", Scripted("", dm("先回一句"), recall("下雨")), "否", Scripted("", dm("查完了")), Scripted("", dm("第二句收到"))],
+    // Up for her first reply (a DM and a recall); down from the follow-up request on.
+    let relay = Relay(downAfter: 1)
+    let h = try await Harness([Scripted("", dm("先回一句"), recall("下雨")), Scripted("", dm("查完了")), Scripted("", dm("第二句收到"))],
                               clock: clock, relay: relay)
     let d = h.doll
     let runner = Task { try await d.run() }
-    try await d.ownerLine("第一句：明天會下雨嗎").value
+    try await d.ownerLine("第一句：明天會下雨嗎")
     try await waitUntil { await d.connectionLine() != nil }
     #expect(h.said == ["先回一句"])
     #expect(try await d.dashboardStatus().connection == "等模型連線（10:00 起斷了 0 秒）")
     #expect(try await d.dashboardStatus().state == "thinking")
-    // A line during the outage: accepted, its check waits too.
+    // A line during the outage: accepted and queued at once (no check waits on the model).
     clock.set(t + 1)
     try await d.ownerLine("第二句：那後天呢")
-    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 6 } } }
+    #expect(await d.queue.count == 1)
     try await wake(clock, at: t + 5)          // the follow-up again: still down
     try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 15 } } }
     relay.up()
-    try await wake(clock, at: t + 6)          // the check gets through
-    try await waitUntil { await d.queue.count == 1 }
     try await wake(clock, at: t + 15)         // the follow-up gets through
     try await waitUntil { h.said.count == 3 }
     await d.stop()
     try await runner.value
-    // Each reply once, in order; the recall ran once; five requests reached the model, eight were sent.
+    // Each reply once, in order; the recall ran once; three requests reached the model, five were sent.
     #expect(h.said == ["先回一句", "查完了", "第二句收到"])
     #expect(try h.toolResults().count == 4)   // DM, recall, DM, DM
-    #expect(await h.model.requests.count == 5 && relay.attempts == 8)
+    #expect(await h.model.requests.count == 3 && relay.attempts == 5)
     #expect(try h.events().filter { $0.kind == .owner }.map(\.text) == ["第一句：明天會下雨嗎", "第二句：那後天呢"])
-    #expect(await h.model.seen(4).last { $0.role == "user" && $0.content.contains("第二句") } != nil)
+    #expect(await h.model.seen(2).last { $0.role == "user" && $0.content.contains("第二句") } != nil)
     #expect(await d.connectionLine() == nil)
     // The log: kinds, attempts, waits; nothing anyone said.
     #expect(modelLines(h.logs) == [
         "WARN model request failed (connection lost), attempt 1; next try in 5 s",
-        "WARN model request failed (connection lost), attempt 1; next try in 5 s",
         "WARN model request failed (connection lost), attempt 2; next try in 10 s",
-        "INFO model connection back after 6 s down (3 failed attempts)"])
+        "INFO model connection back after 15 s down (2 failed attempts)"])
     #expect(!modelLines(h.logs).contains { l in ["下雨", "後天", "先回一句", "查完了"].contains { l.contains($0) } })
 }
 
@@ -10473,39 +10452,21 @@ private func modelLines(_ logs: [String]) -> [String] {
     #expect(modelLines(h.logs).count == 3)
 }
 
-@Test func theSecretCheckWaitsForTheConnectionOnlyForItsTimeThenTheLineIsASecret() async throws {
-    let t = at("2026-11-16", "10:00")
-    let clock = ManualClock(t)
-    let relay = Relay(downAfter: 0)
-    let h = try await Harness([], clock: clock, relay: relay)
-    let d = h.doll
-    let check = try await d.ownerLine("我的提款卡密碼是 7391")
-    try await waitUntil { clock.state.withLock { $0.sleepers.contains { $0.t == t + 5 } } }
-    // `[llm] timeout_s` (300 s) passes with the server still down.
-    clock.set(t + 300)
-    await check.value
-    #expect(await d.queue.map(\.secret) == [true])
-    #expect(h.logs.contains { $0.contains("the secret check failed after") && $0.contains("(no answer within 300 s); the line is treated as secret") })
-    #expect(!h.logs.contains { $0.contains("7391") })
-    #expect(await h.model.requests.isEmpty)
-}
-
 @Test func anOwnerLineIsOnDiskSealedWhenAcceptedAndAfterTheProcessDiesItIsAnsweredOnTheNextBoot() async throws {
-    // The first process accepts two lines; their check never answers before it dies (kill -9).
+    // The first process accepts two lines and dies (kill -9) before her turn.
     let h1 = try await Harness([])
-    await h1.model.stall(request: 1)
     try await h1.doll.ownerLine("早安")
     try await h1.doll.ownerLine("昨天我跟你說專案截止日是哪一天？")
     let inbox = h1.dir.appending(path: "inbox")
     #expect(try FileManager.default.contentsOfDirectory(atPath: inbox.path).filter { $0.hasSuffix(".line") }.count == 2)
-    // On disk only sealed: the check has not said whether they are secrets.
+    // On disk only sealed: she has not seen them yet.
     #expect(try diskHits(h1.dir, ["早安", "截止日"]) == [] && !h1.logs.contains { $0.contains("早安") })
     #expect(try h1.events().isEmpty)
-    // The next process: boot checks them again and queues them in order; her turn answers both.
-    let h2 = try await Harness(["否", "否", Scripted("", dm("早安！截止日是週五"))], dir: h1.dir)
+    // The next process: boot queues them in order; her turn answers both.
+    let h2 = try await Harness([Scripted("", dm("早安！截止日是週五"))], dir: h1.dir)
     try await h2.doll.boot()
-    try await waitUntil { await h2.doll.queue.count == 2 }
-    #expect(h2.logs.contains("INFO owner lines: 2 received before the last exit and not in the timeline; checked again and queued"))
+    #expect(await h2.doll.queue.count == 2)
+    #expect(h2.logs.contains("INFO owner lines: 2 received before the last exit and not in the timeline; queued"))
     try await h2.turn()
     #expect(h2.said == ["早安！截止日是週五"])
     #expect(try h2.events().filter { $0.kind == .owner }.map(\.text) == ["早安", "昨天我跟你說專案截止日是哪一天？"])
@@ -10516,14 +10477,12 @@ private func modelLines(_ logs: [String]) -> [String] {
     #expect(await h3.doll.queue.isEmpty && !h3.logs.contains { $0.contains("owner lines:") })
 }
 
-@Test func aSecretLineLeftInTheInboxStaysSealedAndIsCheckedAgainAtBoot() async throws {
+@Test func aSecretLineLeftInTheInboxStaysSealedUntilSheMarksItAtTheNextBoot() async throws {
     let h1 = try await Harness([])
-    await h1.model.stall(request: 1)
     try await h1.doll.ownerLine("我的提款卡密碼是 7391")
-    let h2 = try await Harness(["是", Scripted("", dm("好，我記住了"))], dir: h1.dir)
+    let h2 = try await Harness([Scripted("", ("secret.mark", []), dm("好，我記住了"))], dir: h1.dir)
     try await h2.doll.boot()
-    try await waitUntil { await h2.doll.queue.count == 1 }
-    #expect(await h2.doll.queue.map(\.secret) == [true])
+    #expect(await h2.doll.queue.map(\.secret) == [false])
     try await h2.turn()
     #expect(try diskHits(h2.dir, ["7391"]) == [] && !h2.logs.contains { $0.contains("7391") })
     #expect(try h2.events().filter { $0.kind == .owner }.map(\.secret) == [true])

@@ -61,6 +61,7 @@ if argv.count == 4, argv[3] == "log" {
         let root = URL(filePath: FileManager.default.currentDirectoryPath)
         let data = cfg.dataDirectory(root: root)
         let account = SecretBox.account(data: data)
+        if cfg.secrets.touchID { try await OwnerPresence.require(reason: "讀 DollOS 的 log：解開她的秘密金鑰") }
         guard let key = try KeychainKeyStore(service: cfg.memory.keychainService).load(account: account) else {
             fail("log: no memory key in the login Keychain for \(account) (service \(cfg.memory.keychainService))")
         }
@@ -83,6 +84,7 @@ if argv.count > 3 {
         // Her history (2026-11-19): opened first (what changed with no commit is recorded as found),
         // then the consolidation's writes are one change of the maintenance's.
         let memDir = cfg.memory.dir.hasPrefix("/") ? URL(filePath: cfg.memory.dir) : root.appending(path: cfg.memory.dir)
+        if cfg.secrets.touchID { try await OwnerPresence.require(reason: "DollOS 手動整理記憶：解開她的秘密金鑰") }
         let keys = KeychainKeyStore(service: cfg.memory.keychainService)
         let box = try Doll.unlockSecrets(keys: keys, data: cfg.dataDirectory(root: root), memRoot: memDir, memory: cfg.memory,
                                          timeline: cfg.dataDirectory(root: root).appending(path: "timeline"))
@@ -135,6 +137,10 @@ do {
     MLXProcess.configure(cacheLimitMB: cfg.core.mlxCacheLimitMB)
     // Boot: the embedding model loads first (the today index embeds at start); no fallback.
     let embedder = try await MLXEmbedder.load(cfg.memory)
+    if cfg.secrets.touchID {
+        out("Touch ID：解開她的秘密金鑰…")
+        try await OwnerPresence.require(reason: "開啟 \(cfg.dataDirectory(root: root).lastPathComponent) 的 DollOS：解開她的秘密金鑰")
+    }
     let a = LocalAPI(config: cfg.api)
     api = a
     let d = try Doll(
