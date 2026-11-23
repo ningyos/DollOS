@@ -216,6 +216,10 @@ public struct DrivesConfig: Sendable, Equatable {
     public var enabled = true
     /// Which out-of-range signal surfaces first when several are pending.
     public var order: [Signal] = [.stress, .closeness, .drive]
+    /// How a wandering is worded (2026-11-24, owner: first person reads more like her own thought):
+    /// `second` 「你想起…」 from 程式, with the ask in the line; `first` 「我想起…」 as 你的念頭, the
+    /// rules for it in her instructions. Measured before it becomes the default.
+    public var wanderVoice = "second"
     /// 動力 (idle-drive, 2026-11-20): its rest is above `driveHigh`, so left alone it climbs; an
     /// episode of her own things sets it back to `driveReset`. Reset → high takes
     /// `driveHalfLifeH · log2((rest − reset) / (rest − high))` = 0.63 h · log2(3) ≈ 1.0 h.
@@ -1028,6 +1032,8 @@ public struct Config: Sendable {
         var order = d.order.map(\.rawValue)
         try s.read("enabled", &d.enabled)
         try s.read("order", &order)
+        try s.read("wander_voice", &d.wanderVoice)
+        guard ["second", "first"].contains(d.wanderVoice) else { throw TOMLError(description: "[drives] wander_voice second or first") }
         let nums: [(String, WritableKeyPath<DrivesConfig, Double>)] = [
             ("drive_rest", \.driveRest), ("drive_half_life_h", \.driveHalfLifeH), ("drive_high", \.driveHigh), ("drive_reset", \.driveReset),
             ("stress_rest", \.stressRest), ("stress_half_life_h", \.stressHalfLifeH), ("stress_high", \.stressHigh),

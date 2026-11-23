@@ -880,6 +880,7 @@ public actor Doll {
             + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
                                 drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn,
                                 reflection: reflectionOn, manual: contextConfig.manual)
+            + (drivesConfig.enabled && firstVoice ? "\n\n" + Concerns.ownRule + "標「你的念頭」的是你自己冒出來的念頭，不是誰跟你說的話。" : "")
             + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn, manual: contextConfig.manual) : "")
             + fixedPrompt
     }
@@ -1078,6 +1079,9 @@ public actor Doll {
         case .owner, .developer, .stranger: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
+        case .memory where ev.text.hasPrefix(Concerns.firstStart):
+            // A first-person wandering (2026-11-24) is her own thought, not the program speaking.
+            return [ChatMessage(role: "user", content: "[\(t) 你的念頭] \(ev.text)")]
         case .memory, .calendar: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
         }
     }
