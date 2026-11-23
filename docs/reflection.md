@@ -23,6 +23,14 @@ The doll keeps a diary, a list of her strengths and weaknesses with evidence, an
 
 **Recall.** `recall` appends the 2 nearest diary passages under 「你的日記裡最接近的 N 段（你自己寫的話，不是事實的來源）：」. Facts come from memory, the timeline and the record, not the diary.
 
+**Knowing herself (2026-11-24).** Her instructions carry a method, not a mechanism (the owner: prompt
+engineering, no new tool): she picks an ability of any kind (not only code), sets it as a goal,
+works out a standard she cannot bend (known answers, a program's real output, a fact, the owner's
+judgment, what really happened), predicts her score, tests herself several times, compares the
+result with the prediction, and writes it down with `self.note`. An ability she has not tested
+counts as unknown: she says so, checks first, or tries a small step. Missing tools for a test go
+into `goal.blocked`; she does not pretend to have tested.
+
 ## How it works
 
 `Reflection.swift`. Active only when `Doll.reflectionOn`: `[reflection]`, `[maintenance]` and `[drives]` all enabled. Off: no diary turn, tools, habits, `recur` or diary recall. Test harnesses turn it off except its own tests. `Instructions.text` (`## 日記、你的長處和短處`), `Tools.reflectionSpecs` and `Reflection.notice` must match this file.
