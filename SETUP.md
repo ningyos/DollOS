@@ -223,7 +223,8 @@ If the new version's config has new keys, the boot names any that are wrong; com
 
 - Her secrets (what she stores as secret) are encrypted with a key in their **login Keychain**, local
   to this Mac. If that Keychain item is lost, those secrets are lost; there is no other copy.
-- A message of theirs is checked for secrets before it is stored (one extra request to the model,
-  about a second). Starting a message with 🔒 marks it secret without the check.
+- She decides herself which of their messages are secrets and stores those encrypted; starting a
+  message with 🔒 makes it a secret from the start. Starting her needs their fingerprint (Touch ID)
+  once; set `[secrets] touch_id = false` only for an unattended test doll.
 - Everything she does that changes her own state (memories, goals, ideal self) is versioned; the
   dashboard can show and undo changes.

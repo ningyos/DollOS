@@ -20,7 +20,7 @@ todo list. Then the topic you need:
 | [computer.md](computer.md) | The Mac through cua-driver, `act`, safety, honest completion, saved tools |
 | [voice-and-bridge.md](voice-and-bridge.md) | The Discord bridge, the voice channel, TTS and speech recognition |
 | [history.md](history.md) | The version history of her files, undo and restore |
-| [secrets.md](secrets.md) | Sealing, the memory key, the secret check, reading a sealed log |
+| [secrets.md](secrets.md) | Sealing, the memory key and Touch ID, her secret mark, the secret filter, reading a sealed log |
 | [boot-and-logs.md](boot-and-logs.md) | Boot order, the log, the boot report |
 | [local-api-and-dashboard.md](local-api-and-dashboard.md) | The local API, `dollctl`, the dashboard |
 | [config.md](config.md) | Config loading, adding a key, the character pack |

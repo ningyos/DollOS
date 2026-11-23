@@ -58,7 +58,7 @@ one turn at a time; events queue while she is in a turn or in maintenance.
 | `Maintenance.swift` | The daily system maintenance: due/idle, tasks (`MaintenanceTask`), interruption, restart. |
 | `Calendar.swift` | Her calendar (`Agenda`), `DollClock`, the start-time timer, owner-sleep item. |
 | `Computer.swift`, `OwnTools.swift`, `Files.swift` | The Mac via cua-driver (`Mac`, `CuaDaemon`); her saved tools; `read_file`/`write_file`/`edit_file`. |
-| `SecretBox.swift`, `SecretCheck.swift` | AES-GCM sealing with a Keychain key; deciding whether an owner line is a secret. |
+| `SecretBox.swift`, `SecretCheck.swift` | AES-GCM sealing with a Keychain key; the owner's 🔒; `Guard.swift`: her secret mark and the secret filter. |
 | `History.swift` | A git history of her own files (goals, ideal self, memories, tools), undo/restore. |
 | `RunLog.swift`, `BootReport.swift` | The JSON log file, run endings, crash marks; the boot report she gets about the last run. |
 | `LocalAPI.swift`, `WebSocket.swift`, `Bridge.swift` | Loopback HTTP API, RFC 6455 framing, launching/watching the Discord bridge. |
@@ -109,15 +109,16 @@ Each rule is enforced in code, not only in a prompt. Keep them when you change t
    (`Doll.memoryFix`); `Memory.replace`/`Memory.retire` keep the old file; the audit only flags
    unless it has corrected text (`[audit] mode`). Retired files go only after
    `[consolidate] retired_keep_days` (`Memory.deleteRetired`).
-8. **Secrets are sealed at rest.** `secret` and `own` memory files, secret timeline events and their
-   footers, inbox lines, todo lines of a secret list, and everything a turn that saw a secret writes
-   are AES-GCM sealed (`SecretBox`, `Memory.sealedFolders`, `Doll.sealing`, `Inbox.put`). The key is
-   in the login Keychain. Plaintext in a sealed place, or sealed data without its key, fails the boot
-   (`Doll.unlockSecrets`); there is no migration. A failed secret check counts as secret
-   (`SecretCheck.Verdict.isSecret`).
+8. **Secrets are sealed at rest; only secrets.** `secret` and `own` memory files, secret timeline
+   events (their boxes in `secrets.store`, the segment keeps 【秘密 #n】), inbox lines, todo lines of a
+   secret list, and everything a turn that saw a secret writes are AES-GCM sealed (`SecretBox`,
+   `Memory.sealedFolders`, `Doll.sealing`, `Inbox.put`). She decides which of his lines are secrets
+   (`secret.mark`); her turn's lines are written only when it ends (`Doll.heldTurn`). The key is in
+   the login Keychain, used after Touch ID (`OwnerPresence`). Plaintext in a sealed place, or sealed
+   data without its key, fails the boot (`Doll.unlockSecrets`); there is no migration.
 9. **The owner's line is durable before it is acknowledged.** `Doll.ownerLine` writes it sealed and
-   fsynced to `<data_dir>/inbox/` (`Inbox.put`) before the API answers 200; the file goes when the
-   line is in the timeline (`Doll.drain`); leftovers are re-queued at boot.
+   fsynced to `<data_dir>/inbox/` (`Inbox.put`) before the API answers 200; the file goes when her
+   turn's lines are written (`Doll.heldTurn`); leftovers are re-queued at boot.
 10. **Her prompt and tool list are pinned by hash.** The test
     `withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch` (`enabledRequestDigests`)
     pins SHA-256 over every tools list and prompt variant. Changing a sentence of `Instructions` or
@@ -206,8 +207,8 @@ update `Instructions` (re-pin the hash test) and the matching `docs/` file. A ne
   use `ManualClock`.
 - **One Discord bot.** There is one bot token per doll; never start a second bridge with the real
   `bridge/discord.toml` (keep `[bridge] enabled = false` on throwaway dolls).
-- **The model server may have one slot.** Her turns, maintenance requests and the secret check share
-  it; a throwaway doll or a measurement on the same server waits behind the real doll and slows it.
+- **The model server may have one slot.** Her turns and maintenance requests share it, and a request
+  with another prompt start evicts her cached prompt; a throwaway doll or a measurement on the same server waits behind the real doll and slows it.
 - **A waiting todo list is not "busy".** Maintenance once waited hours behind a list waiting for the
   owner. Use `Doll.todoBusy` (in-progress only) for "is she busy", `Doll.todoHeld` for "is there a
   list to carry over".
@@ -242,7 +243,7 @@ update `Instructions` (re-pin the hash test) and the matching `docs/` file. A ne
 | [computer.md](docs/computer.md) | The Mac via cua-driver, `act`/`read_window`, safety, honest completion, her own tools |
 | [voice-and-bridge.md](docs/voice-and-bridge.md) | The Discord bridge, the voice WebSocket, TTS/ASR |
 | [local-api-and-dashboard.md](docs/local-api-and-dashboard.md) | The local API, `dollctl`, the dashboard |
-| [secrets.md](docs/secrets.md) | Sealing, the key, the secret check |
+| [secrets.md](docs/secrets.md) | Sealing, the key, Touch ID, her secret mark, the filter |
 | [history.md](docs/history.md) | The git history of her files, undo/restore |
 | [config.md](docs/config.md) | Config loading, adding a key, the character pack |
 | [testing.md](docs/testing.md) | Toolchain, harness, deterministic tests, opt-in measurements, throwaway dolls |

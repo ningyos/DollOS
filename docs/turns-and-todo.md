@@ -41,7 +41,7 @@ Before working she lists results with `todo.set`. One item is one result the per
 
 `Doll.run` loops: `Doll.waitForEvent` (queue non-empty or `followUp` set, not paused, not in maintenance), `Doll.drain`, `Doll.turn`, then `flushHeld`, `maintenanceCheck`, `drivesCheck` ([maintenance.md](maintenance.md)).
 
-**Events.** `Doll.put` queues `Doll.ownerSaid`, `Doll.developerSaid` (never secret, never cancels), `Doll.voiceNotice`, calendar starts and wandering. `Doll.drain` sorts a batch by `[core] priority` through `Event.priority`. Only owner voice cancels the request in flight (`Doll.hold`); the turn reruns with the new line and the same effort. A dashboard `Doll.interrupt` cancels without a rerun. `Doll.ownerLine` (`SecretCheck.swift`) writes each owner line sealed with `Inbox.put` to `<data_dir>/inbox/<ms>-<serial>.line` (temp, `fsync`, `rename`) before the API answers; `Doll.checkAndQueue` checks lines in arrival order ([secrets.md](secrets.md)); `Doll.drain` removes the file once the event is in the timeline, and `Doll.boot` requeues leftovers. A kill can duplicate a line, never lose one.
+**Events.** `Doll.put` queues `Doll.ownerSaid`, `Doll.developerSaid` (never secret, never cancels), `Doll.voiceNotice`, calendar starts and wandering. `Doll.drain` sorts a batch by `[core] priority` through `Event.priority`. Only owner voice cancels the request in flight; the turn reruns with the new line and the same effort. A dashboard `Doll.interrupt` cancels without a rerun. `Doll.ownerLine` (`SecretCheck.swift`) writes each owner line sealed with `Inbox.put` to `<data_dir>/inbox/<ms>-<serial>.line` (temp, `fsync`, `rename`) before the API answers and queues it at once ([secrets.md](secrets.md)); a turn's timeline lines are written when it ends (`Doll.heldTurn`), and the inbox files of his lines in it are removed then, and `Doll.boot` requeues leftovers. A kill can duplicate a line, never lose one.
 
 **A turn** (`Doll.turn`): on a person's line `attachMemories` and `associate` ([memory.md](memory.md)); `Doll.forceCompact` / `Doll.compactTalk`; `Doll.context` + `Doll.footer` → `model.chat(messages, tools: toolsJSON, effort:)`; store the reply with its footer (`Timeline.attachFooter`); `Doll.execute` each call; apply compaction, todo changes, decision point (`Doll.recordTodo`); log `turn N …` and write a `turn` record (`Timeline.recordTurn`, with `finish_reason`, completion tokens, reasoning characters). `finish_reason == "length"` throws `main model hit max_tokens`.
 
@@ -65,7 +65,7 @@ Before working she lists results with `todo.set`. One item is one result the per
 
 - `[core] priority` — `owner_voice owner_text developer_text calendar watch wander`; drain order.
 - `[llm] default_effort` / `task_turn_effort` — `none` / `medium`.
-- `[llm] timeout_s` — `300`; also bounds the secret check.
+- `[llm] timeout_s` — `300`.
 - `[llm] max_tokens` — `4096`.
 - `[llm] retry_first_s` / `retry_max_s` — `5` / `120`.
 - `[context] limit` — `60000` tokens above the fixed part; `warn_ratio` `0.85`.

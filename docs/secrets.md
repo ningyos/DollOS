@@ -1,16 +1,24 @@
 # Secrets
 
-The owner's secrets and the doll's own credentials never reach the disk in plain text. One key in the
-owner's login Keychain seals the `secret` and `own` memory folders, every owner line until it is judged,
-secret events, and everything written by a turn that saw a secret. A model call decides whether each
-owner line is a secret; 🔒 forces it.
+The owner's secrets and the doll's own credentials never reach the disk in plain text. Only secrets
+are encrypted; everything else is plain. Which of the owner's lines are secrets the doll decides
+herself (`secret.mark`); 🔒 at the start of a line makes it one from the start. One key in the owner's
+login Keychain, unlocked with Touch ID once per process, seals the `secret` and `own` memory folders,
+the inbox, secret events (kept apart from the timeline in `secrets.store`), and everything written by
+a turn that saw a secret. What she says to anyone but the owner passes a filter.
 
 ## What the doll sees and does
 
 - She reads, recalls, remembers and fixes sealed content exactly like plain content; sealing is
   invisible to her. Which folders a turn sees: [memory.md](memory.md).
-- An owner line (Discord text or a voice transcript) starting with 🔒 is a secret without a check; the
-  🔒 stays in the text she sees. Otherwise the line reaches her only after the check answers.
+- An owner line (Discord text or a voice transcript) reaches her as he wrote it; one starting with 🔒
+  is a secret from the start, and keeps the 🔒.
+- `secret.mark(quote?)` marks one of his lines of the current turn secret (a quote of it, or his last
+  line): it and everything the turn writes after it are stored encrypted and hidden from a developer's
+  turn. Her instructions tell her to mark passwords, accounts, card numbers, money, health, addresses,
+  other people's private matters and what he would not want others to know, and to mark when unsure.
+  A line of an earlier turn cannot be marked (its turn's lines are already written): 「失敗：這個回合沒有
+  主人的話；之前回合的話已經存好了，標不了」.
 - A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）`: the developer has no
   access to her memories or to the owner's secrets.
 - Her instructions say plainly that the owner's secrets never go to anyone else: not said, not in
@@ -31,8 +39,11 @@ owner line is a secret; 🔒 forces it.
 - One random 256-bit AES-GCM key per doll, made on first boot by `SecretBox.unlock`.
 - Production `KeyStore` is `KeychainKeyStore`: a generic password in the login Keychain, service
   `[memory] keychain_service`, account `SecretBox.account(data:)` (the data dir's absolute path,
-  symlinks resolved). Not synchronizable, `kSecAttrAccessibleAfterFirstUnlock`, no prompt: the doll
-  boots unattended.
+  symlinks resolved). Not synchronizable, `kSecAttrAccessibleAfterFirstUnlock`.
+- `[secrets] touch_id` (true): before the key is read, `OwnerPresence.require` asks for the owner's
+  fingerprint (LocalAuthentication, biometrics) — at boot in `dollcore`, and in `dollcore … log` and
+  `consolidate`. Refused or unavailable: the process does not start. The key then stays in memory for
+  the life of the process. It gates this program, not the Keychain item.
 - No backup key: losing the Keychain item loses all sealed content.
 - Threat model: the disk and its backups read without the owner's login. It does not protect against a
   program running as the owner.
@@ -48,8 +59,11 @@ plain.
 ### What is sealed
 
 - `[memory] secret_dir`, `own_dir`: every memory file, as one box (`Memory.sealedFolders`).
-- Timeline: secret and `Event.sealed` events (text, window, calls).
-- `<data_dir>/inbox/`: every owner line until its check answers (`Inbox.put`).
+- Timeline: secret and `Event.sealed` events (text, window, calls), footers of such replies, compaction
+  summaries over them, sealed todo lines. A segment line never holds ciphertext: `SecretStore` moves
+  each box into `<timeline dir>/secrets.store` (`{"n":…,"box":"dollbox1:…"}`, synced) and leaves
+  `"【秘密 #n】"` in its place; reading puts it back.
+- `<data_dir>/inbox/`: every owner line until his turn's lines are written (`Inbox.put`).
 - `memory-fixes.json`: texts of records about sealed folders (`sealed: true`).
 - Single documents (`Doll.documents`) and `diary/*.md`: the whole file, when written while sealing,
   and forever after (`Doll.sealKey`). Diary not when `[reflection] seal_diary = false`.
@@ -57,7 +71,9 @@ plain.
 - Log messages written while sealing (`Doll.log`); maintenance words of a task that touched sealed
   content.
 - History: the same ciphertext as on disk, no why/args.
-- SQLite: the sealed folders' index lives only in memory, never in `doll.db`.
+- SQLite: the sealed folders' index lives only in memory, never in `doll.db`. It is kept as one box
+  `<data_dir>/secret-index.box` (rows, text, vectors, each file's SHA-256): at boot a file whose hash
+  matches comes from the box, neither decrypted nor embedded again; the rest are read and embedded.
 
 `Event.sealed` marks a non-secret event carrying `own` content (an `own` hit in `recall`, a `remember`
 into `own`, a fix of one). Visibility is decided by `Event.secret` alone.
@@ -81,31 +97,30 @@ No fallback, no migration of old plaintext (the owner chose deletion over conver
 - a key that is not 32 bytes fails boot;
 - content that does not open fails where it is read (`SecretBox.open`).
 
-### The owner's line (`SecretCheck.swift`)
+### The owner's line and her turn (`SecretCheck.swift`, `Doll.heldTurn`)
 
 1. `Doll.ownerLine` (bridge `POST /api/owner`, voice transcripts) writes the line sealed to the inbox
-   (`Inbox.put`: temp file, sync, rename) before the API answers.
-2. `Doll.hold` queues the check behind earlier lines (`Doll.lineChecks`): arrival order is kept.
-3. `Doll.checkAndQueue` calls `SecretCheck.ask`, then `Doll.ownerSaid(_:secret:…)`.
-4. `Doll.drain` puts the event on the timeline and removes the inbox file.
+   (`Inbox.put`: temp file, sync, rename) before the API answers, then queues it (`Doll.ownerSaid`);
+   🔒 first (`SecretCheck.isLocked`) makes it secret. No model call.
+2. Her turn runs inside `Doll.heldTurn`: `Timeline.hold` keeps every line the turn writes (events,
+   footers, todo, compactions, turn stats) in memory, and `Doll.log` keeps the turn's log lines
+   (not ERRORs).
+3. `secret.mark` → `Timeline.mark(seq)`: that event and every later event of the turn become secret;
+   `Doll.sealing` is set for the rest of the turn.
+4. The turn ends: the held log lines are written (sealed when the turn marked something), then
+   `Timeline.release` writes the turn's lines with the flags they have now, then the inbox files of his
+   lines in it are removed.
 
-`SecretCheck.ask`: first scalar 🔒 (`SecretCheck.lock`) → `.locked`, no request. Otherwise one request
-to the main model: system `SecretCheck.instruction`, user the line, no tools, effort `none`.
-`SecretCheck.read` accepts only `是` or `否` (spaces and one closing punctuation allowed). Anything else
-is `.failed(reason)`, and `Verdict.isSecret` is true: network error, timeout (`[llm] timeout_s` on the
-doll's clock), unreadable answer. The reason keeps only the error kind (≤ 60 characters); the log never
-holds the line or the answer.
-
-While a line waits, her turn continues; owner voice cancels her model call and the rerun waits for
-held lines (`Doll.awaitHeldLines`); maintenance is interrupted. At boot, leftover inbox files are
-checked again in order (`Inbox.pending`). Measured: secrets 30/30, borderline 9/10, ordinary 40/40,
-about 1.1 s per check.
+A crash in a turn loses that turn's lines; his lines are still in the inbox and are queued again at
+the next boot (`Inbox.pending`). Owner voice cancels her model call; the rerun is in the same held
+turn. The signals record only that he spoke and how long the line was, never his words.
 
 ### Sealing (`Doll.sealing`)
 
 True while what is written derives from secret content:
 
 - `Doll.turn`: any event in the segment is `secret` or `sealed`;
+- `secret.mark`: from the mark to the end of the turn;
 - `Doll.append`: a secret or sealed event is appended mid-turn; every later event of that turn is
   marked `sealed`;
 - maintenance, per task: `Doll.maintenanceSeals`;
@@ -140,23 +155,25 @@ cosine ≥ `filter_similarity`. The log line of a hit is sealed.
 ## Config
 
 - `[memory] keychain_service` (`DollOS dollcore memory key`): Keychain service of the key.
-- `[llm] timeout_s` (300): deadline of the secret check.
+- `[secrets] touch_id` (true): Touch ID before the key is used; false only for tests and unattended
+  throwaway dolls.
 - `[reflection] seal_diary` (true): seal a diary written while sealing; false only for test dolls.
 - `[secrets] filter` (true), `filter_chars` (4), `filter_similarity` (0.8): the secret filter.
 
 ## Invariants
 
 - Nothing of a secret, an `own` memory, or an unjudged owner line is on disk in plain text.
-- A failed check is a secret. A log line that fails to seal is dropped as `（加密失敗，這一行沒記）`.
+- A log line that fails to seal is dropped as `（加密失敗，這一行沒記）`.
 - No plaintext secret is accepted at boot; no migration path.
 - Sealed content without its key is a boot error; a key is made only when nothing is sealed.
 - Sealed stays sealed.
 
 ## Known limitations
 
-- Any process running as the owner can read the key without a prompt.
+- Any process running as the owner can read the key without a prompt; Touch ID gates only this program.
 - Losing the Keychain item loses every sealed memory.
-- The model can judge a borderline line ordinary; 🔒 is the owner's override.
+- A secret she does not mark stays plain in the timeline and in what her turn wrote; 🔒 is the
+  owner's override.
 - File names, ids, timestamps and event kinds stay visible on disk.
 - Sealing is coarse: one secret seals all of that turn's writes, and a sealed document stays sealed.
 - The filter checks only what she says to someone other than the owner; it does not see what she
@@ -170,10 +187,10 @@ scans the data dir, history objects and log for needles containing a non-base64 
 
 `secretAndOwnMemoriesReachTheDiskOnlyEncryptedAndStillWorkEverywhere`,
 `bootFailsOnPlainSecretsAndOnEncryptedSecretsWithoutTheirKey`,
-`theModelDecidesWhetherAnOwnerLineIsASecretALockForcesItAndAFailureMakesItOne`,
+`sheMarksHisLineSecretAndNothingOfThatTurnReachesTheDiskInPlainText`,
+`theEncryptedFoldersIndexComesBackFromItsBoxAtBootWithoutDecryptingOrEmbeddingAFileThatDidNotChange`,
 `aSecretTurnsDerivedWritesAreSealedAndReadBackWhole`,
-`theSecretCheckWaitsForTheConnectionOnlyForItsTimeThenTheLineIsASecret`,
-`aSecretLineLeftInTheInboxStaysSealedAndIsCheckedAgainAtBoot`,
+`aSecretLineLeftInTheInboxStaysSealedUntilSheMarksItAtTheNextBoot`,
 `anOwnerLineIsOnDiskSealedWhenAcceptedAndAfterTheProcessDiesItIsAnsweredOnTheNextBoot`,
 `aSealedLogLineIsReadableWithTheKeyAndSaysSoWithAnother`,
 `aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret`, `theLoginKeychainKeepsTheKeyWhenAskedTo`,

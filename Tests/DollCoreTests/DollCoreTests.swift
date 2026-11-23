@@ -10730,3 +10730,31 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
     #expect(h.said == ["記住了", "這是主人的事，我不能說"])
     #expect(h.logs.contains { $0.contains("held back by the secret filter") } == false)   // sealed in the log
 }
+
+/// Records every text it embeds.
+private final class CountingEmbedder: Embedder, @unchecked Sendable {
+    let seen = Mutex<[String]>([])
+    func embed(_ texts: [String], as role: EmbeddingRole) throws -> [[Float]] {
+        seen.withLock { $0 += texts }
+        return texts.map(FakeEmbedder.vector)
+    }
+}
+
+@Test func theEncryptedFoldersIndexComesBackFromItsBoxAtBootWithoutDecryptingOrEmbeddingAFileThatDidNotChange() async throws {
+    // Owner, 2026-11-23: the index stored encrypted, opened once at boot; a memory's text only when used.
+    let h = try await Harness()
+    await h.doll.ownerSaid("🔒 保險箱在衣櫃第二層", secret: true)
+    try await h.turn(Scripted("", remember([("保險箱在衣櫃第二層", true)]), dm("記住了")))
+    let box = h.dir.appending(path: "secret-index.box")
+    #expect(try String(contentsOf: box, encoding: .utf8).hasPrefix(SecretBox.prefix))
+    #expect(try diskHits(h.dir, ["衣櫃"]) == [])
+    // The next boot: nothing of the secret folder is embedded again; recall in his turn finds it.
+    let counting = CountingEmbedder()
+    let h2 = try await Harness([Scripted("", recall("保險箱"))], dir: h.dir, embedder: counting)
+    try await h2.doll.boot()
+    // (The day's events are embedded again for the today index; the memory's own text is not.)
+    #expect(!counting.seen.withLock { $0 }.contains("保險箱在衣櫃第二層"))
+    await h2.doll.ownerSaid("🔒 保險箱在哪", secret: true)
+    try await h2.turn()
+    #expect(try h2.toolResults().last!.text.contains("保險箱在衣櫃第二層"))
+}

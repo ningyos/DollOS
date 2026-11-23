@@ -42,7 +42,7 @@ get 401.
 
 Bad bodies are 400, unknown paths 404, requests before `start` 503. Requests are capped at 256 KiB
 (`LocalAPI.maxRequest`), WebSocket messages at 1 MiB (`LocalAPI.maxVoiceMessage`). The inbox and
-secret check after an owner line are in [secrets.md](secrets.md).
+what happens to an owner line are in [secrets.md](secrets.md).
 
 Stream lines: `{"type":"hello"}`, `{"type":"say","text":…}` (owner stream may add `"image"`, an
 absolute screenshot path), `{"type":"typing","on":…}`. `LocalAPI.deliver` returns why a `say` went

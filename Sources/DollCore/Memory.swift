@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// M3a memory (spec 6): the markdown files under `<memory.dir>/<secret_dir>/`, `<own_dir>/` and
@@ -474,6 +475,17 @@ public final class Memory {
     let box: SecretBox
     /// The entity registry the memories' entities name (`<memory.dir>/<registry_dir>/`).
     public let registry: Registry
+    /// The encrypted folders' index, kept as one box beside the index (owner 2026-11-23: 「索引加密存一個
+    /// 檔，開機解一次進記憶體；內文要用才解」): opened once at boot, so a file that did not change is
+    /// neither decrypted nor embedded again; its rows go to the in-memory schema from here.
+    private var sealedCache: [String: SealedRow] = [:]
+    private var sealedCacheURL: URL { store.path.deletingLastPathComponent().appending(path: "secret-index.box") }
+
+    /// One encrypted memory's index rows, and the hash of the file they came from.
+    struct SealedRow: Codable {
+        var path: String, folder: String, confidence: Double, ts: Double, sourceSeq: Int64, kind: String, tier: String
+        var entities: [String], text: String, vector: [Float], fileHash: String
+    }
 
     init(config: MemoryConfig, root: URL, store: Store, embedder: any Embedder, box: SecretBox) throws {
         self.config = config
@@ -627,7 +639,7 @@ public final class Memory {
         let gone = try appRecords().filter { $0.1.app == bundleID }
         for (url, _) in gone {
             try FileManager.default.removeItem(at: url)
-            try store.deleteMemoryIndex(id: String(url.lastPathComponent.dropLast(3)))
+            try unindex(String(url.lastPathComponent.dropLast(3)))
         }
         return gone.count
     }
@@ -750,10 +762,39 @@ public final class Memory {
     /// One file's index rows: metadata, FTS text, vector (of its text, `vector` when the caller
     /// already has it), registry entity ids.
     private func index(_ id: String, url: URL, folder: String, _ file: MemoryFile, vector: [Float]? = nil) throws {
+        let v = try vector ?? embedder.embed(file.body, as: .document)
         try store.putMemoryIndex(id: id, path: url.path, folder: folder, confidence: file.confidence, ts: file.ts,
                                  sourceSeq: file.sourceSeq, kind: file.kind, tier: file.tier.rawValue,
-                                 entities: file.entities.map(\.id), text: file.body,
-                                 vector: Self.blob(try vector ?? embedder.embed(file.body, as: .document)))
+                                 entities: file.entities.map(\.id), text: file.body, vector: Self.blob(v))
+        guard Self.sealedFolders(config).contains(folder) else { return }
+        sealedCache[id] = SealedRow(path: url.path, folder: folder, confidence: file.confidence, ts: file.ts, sourceSeq: file.sourceSeq,
+                                    kind: file.kind, tier: file.tier.rawValue, entities: file.entities.map(\.id), text: file.body,
+                                    vector: v, fileHash: try Self.fileHash(url))
+        if !batching { try saveSealedCache() }
+    }
+
+    /// Drops one memory's index rows (and its encrypted-index entry).
+    private func unindex(_ id: String) throws {
+        try store.deleteMemoryIndex(id: id)
+        if sealedCache.removeValue(forKey: id) != nil { try saveSealedCache() }
+    }
+
+    static func fileHash(_ url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func saveSealedCache() throws {
+        let data = try JSONEncoder().encode(sealedCache)
+        try Data((try box.seal(String(decoding: data, as: UTF8.self)) + "\n").utf8).write(to: sealedCacheURL, options: .atomic)
+    }
+
+    private func loadSealedCache() throws -> [String: SealedRow] {
+        guard FileManager.default.fileExists(atPath: sealedCacheURL.path) else { return [:] }
+        let raw = try String(contentsOf: sealedCacheURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        do { return try JSONDecoder().decode([String: SealedRow].self, from: Data(try box.open(raw, place: sealedCacheURL.path).utf8)) } catch {
+            // Unreadable (another key, an older shape): rebuilt from the files.
+            return [:]
+        }
     }
 
     // experiences -------------------------------------------------------------
@@ -875,7 +916,7 @@ public final class Memory {
         guard parsed.retired == nil else { throw MemoryError(description: "memory \(id) is already retired") }
         parsed.retired = r
         try writeFile(parsed, to: url)
-        try store.deleteMemoryIndex(id: id)
+        try unindex(id)
     }
 
     /// Deletes every file retired before `cutoff` (seconds since 1970); returns their ids.
@@ -993,15 +1034,44 @@ public final class Memory {
             || registry.fileCount() != (try store.countRegistryIndex()) {
             try rebuild()
         } else {
-            try index(indexable(sealed))
+            try indexSealedFromCache(sealed)
         }
+        try saveSealedCache()
         return try store.memoryVectors(folders: sealed.map(dirName)).count
+    }
+
+    /// The encrypted folders' rows at boot: a file whose bytes match its cached hash comes from the
+    /// cache (not decrypted, not embedded); the rest are read and embedded.
+    private func indexSealedFromCache(_ folders: [MemoryFolder]) throws {
+        let cache = try loadSealedCache()
+        sealedCache = [:]
+        var misses: [(id: String, url: URL, folder: String, file: MemoryFile)] = []
+        for f in folders {
+            let dir = directory(f)
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
+            for name in names.sorted() where name.hasSuffix(".md") {
+                let id = String(name.dropLast(3)), url = dir.appending(path: name)
+                if let row = cache[id], row.fileHash == (try Self.fileHash(url)), row.folder == dirName(f) {
+                    try store.putMemoryIndex(id: id, path: url.path, folder: row.folder, confidence: row.confidence, ts: row.ts,
+                                             sourceSeq: row.sourceSeq, kind: row.kind, tier: row.tier, entities: row.entities,
+                                             text: row.text, vector: Self.blob(row.vector))
+                    sealedCache[id] = row
+                    continue
+                }
+                let parsed = try readFile(url)
+                guard !parsed.body.isEmpty, parsed.retired == nil else { continue }
+                do { try checkEntities(parsed.entities) } catch { throw MemoryError(description: "\(url.path): \(error)") }
+                misses.append((id, url, dirName(f), parsed))
+            }
+        }
+        try index(misses)
     }
 
     /// Drops every index row and re-reads the markdown files, the registry's first (spec 6: SQLite
     /// is a rebuildable index). A memory naming a registry entry that has no file is an error.
     public func rebuild() throws {
         try store.clearMemoryIndex()
+        sealedCache = [:]
         try store.setMemoryIndexVersion(Self.indexVersion)
         try registry.rebuild()
         try index(indexable(MemoryFolder.allCases))
@@ -1026,8 +1096,13 @@ public final class Memory {
 
     private func index(_ files: [(id: String, url: URL, folder: String, file: MemoryFile)]) throws {
         let vectors = try embedder.embed(files.map(\.file.body), as: .document)
+        batching = true
+        defer { batching = false }
         for (f, v) in zip(files, vectors) { try index(f.id, url: f.url, folder: f.folder, f.file, vector: v) }
+        try saveSealedCache()
     }
+    /// Many files indexed at once: the encrypted index is saved once at the end.
+    private var batching = false
 
     /// After the history put files back (`History.swift`): each of `paths` (relative to the memory
     /// dir, `<folder>/<id>.md`) is indexed again from its file, or leaves the index when the file is
@@ -1050,7 +1125,7 @@ public final class Memory {
                     continue
                 }
             }
-            try store.deleteMemoryIndex(id: id)
+            try unindex(id)
         }
     }
 
