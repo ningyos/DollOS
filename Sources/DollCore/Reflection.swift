@@ -340,7 +340,7 @@ extension Doll {
             case .doll: return false
             case .tool: return !echo.contains(names[ev.seq ?? -1] ?? "")
             case .memory: return !ev.text.hasPrefix("【相關記憶】") && !ev.text.hasPrefix("【系統維護】開始")
-            case .owner, .developer, .watch, .calendar: return true
+            case .owner, .developer, .stranger, .watch, .calendar: return true
             }
         }
     }

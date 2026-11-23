@@ -20,6 +20,13 @@ class CoreAPI:
             if r.status != 200:
                 raise RuntimeError(f"dollcore answered {r.status}: {await r.text()}")
 
+    async def post_stranger(self, user_id: int, name: str, channel: str | None, text: str) -> None:
+        body = {"id": str(user_id), "name": name, "channel": channel, "text": text}
+        async with self.session.post(f"{self.base}/api/stranger", json=body, headers=self.auth,
+                                     timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status != 200:
+                raise RuntimeError(f"dollcore answered {r.status}: {await r.text()}")
+
     async def listen(self) -> AsyncIterator[dict[str, Any]]:
         """The owner stream: one dict per line, until dollcore closes it."""
         async with self.session.get(f"{self.base}/api/listen", params={"to": "owner"}, headers=self.auth,

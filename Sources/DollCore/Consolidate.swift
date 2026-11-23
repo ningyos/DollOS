@@ -344,7 +344,7 @@ public enum Consolidation {
                 lines.append(String(format: "[%02d:%02d ", c.hour!, c.minute!) + who + mark + "] " + t)
             }
             switch ev.kind {
-            case .owner, .developer:
+            case .owner, .developer, .stranger:
                 flush()
                 owner = true
                 line(ev.kind == .owner ? "主人" : "開發者", ev.text)

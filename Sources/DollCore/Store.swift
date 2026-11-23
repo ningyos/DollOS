@@ -77,18 +77,36 @@ public struct StoreError: Error, CustomStringConvertible {
 
 public enum Principal: String, Sendable, Codable {
     case owner, developer, `internal`
+    /// Someone on Discord who is not the owner (2026-11-24): a DM to her, or a message in the owner's
+    /// channel that mentions her.
+    case stranger
 }
 
 /// A person she hears and answers: the owner (Discord) or the developer (`dollctl chat`).
 public enum Addressee: String, Sendable, Codable, CaseIterable {
-    case owner, developer
+    case owner, developer, stranger
 
     /// How the prompt, the dashboard and the logs name them.
     public var label: String {
         switch self {
         case .owner: "主人"
         case .developer: "開發者"
+        case .stranger: "陌生人"
         }
+    }
+}
+
+/// Who a stranger's line is from and where (2026-11-24): their Discord user id and name, and the
+/// channel's name when it came from the owner's channel (nil: a DM to her).
+public struct Stranger: Sendable, Codable, Equatable {
+    public var id: String
+    public var name: String
+    public var channel: String?
+
+    public init(id: String, name: String, channel: String?) {
+        self.id = id
+        self.name = name
+        self.channel = channel
     }
 }
 
@@ -99,12 +117,15 @@ public enum Channel: String, Sendable, Codable, CaseIterable {
     /// The owner's speech in a Discord voice channel, transcribed (2026-11-13, M6).
     case discordVoice = "discord_voice"
     case dollctl
+    /// The owner's Discord channel where strangers mention her (2026-11-24, `[bridge]` side).
+    case discordChannel = "discord_channel"
 
     public var label: String {
         switch self {
         case .discordDM: "Discord 私訊"
         case .discordVoice: "Discord 語音"
         case .dollctl: "終端機"
+        case .discordChannel: "Discord 頻道"
         }
     }
 }
@@ -113,6 +134,7 @@ public struct Event: Sendable, Equatable {
     public enum Kind: String, Sendable, Codable {
         case owner      // the owner spoke
         case developer  // the developer typed in `dollctl chat` (2026-11-12): renders 開發者, never sees the secret folder
+        case stranger   // someone on Discord who is not the owner (2026-11-24): sees only the public folder
         case doll       // her reply: her thought (the text content) and her calls
         case tool       // the result of one of her tool calls, in call order
         case watch      // her watch woke her: the region changed, or max_wait passed
@@ -146,6 +168,8 @@ public struct Event: Sendable, Equatable {
     public var calls: [ToolCall] = []
     /// An owner line's file in the inbox (`Inbox.swift`) while it waits in the queue; not stored.
     public var inbox: String?
+    /// A stranger's line: who and where.
+    public var stranger: Stranger?
 
     public init(_ kind: Kind, _ principal: Principal, _ text: String, secret: Bool = false, sealed: Bool = false, voice: Bool = false,
                 image: String? = nil, window: String? = nil) {
@@ -164,7 +188,7 @@ public struct Event: Sendable, Equatable {
     public var priority: Priority {
         switch kind {
         case .owner: voice ? .ownerVoice : .ownerText
-        case .developer: .developerText
+        case .developer, .stranger: .developerText   // a stranger's line ranks with the developer's
         case .watch: .watch
         case .calendar: .calendar
         case .memory where text.hasPrefix(Concerns.wanderTag): .wander   // her wandering (m6-drives)
@@ -177,6 +201,7 @@ public struct Event: Sendable, Equatable {
         switch kind {
         case .owner: .owner
         case .developer: .developer
+        case .stranger: .stranger
         case .doll, .tool, .watch, .memory, .calendar: nil
         }
     }
@@ -273,6 +298,7 @@ public final class Timeline {
         var image: String?
         var window: String?
         var channel: Channel?
+        var stranger: Stranger?
         /// Her reply's calls; present on every `doll` event since 2026-11-14.
         var calls: [StoredCall]?
         /// A secret or sealed event's `{text, window, calls}` as one `SecretBox` (2026-11-21); then
@@ -507,6 +533,7 @@ public final class Timeline {
         var e = Event(l.kind, l.source, l.text, secret: l.secret, voice: l.voice, image: l.image, window: l.window)
         e.sealed = l.box != nil && !l.secret
         e.channel = l.channel
+        e.stranger = l.stranger
         e.calls = (l.calls ?? []).map { c in
             if let arguments = c.arguments { ToolCall(name: c.name, arguments: arguments) }
             else { ToolCall(failed: c.name, c.malformed ?? ToolCall.unreadable) }
@@ -594,7 +621,7 @@ public final class Timeline {
         let seq = lastSeq + 1
         let line = EventLine(seq: seq, ts: ev.ts, kind: ev.kind, source: ev.principal, secret: ev.secret,
                              voice: ev.voice, text: ev.text, image: ev.image,
-                             window: ev.window, channel: ev.channel,
+                             window: ev.window, channel: ev.channel, stranger: ev.stranger,
                              calls: ev.kind == .doll ? ev.calls.map { StoredCall(name: $0.name, arguments: $0.arguments,
                                                                                   malformed: $0.arguments == nil ? $0.malformed : nil) } : nil)
         if (ev.secret || ev.sealed) && box == nil { throw StoreError(description: "the timeline holds or gets encrypted content, and no memory key was given") }

@@ -1,12 +1,12 @@
 # Discord bridge and voice
 
-The owner reaches the doll over Discord: direct messages, and a voice channel when voice is on. A separate Python process, the bridge (`bridge/`), talks to Discord and to dollcore's local API; it is the only path by which anything speaks *as the owner*, and it forwards only the owner's DMs and only his voice. In voice, dollcore transcribes him with Apple's speech recognizer and speaks her `voice.say` lines with Qwen3-TTS in her cloned voice.
+The owner reaches the doll over Discord: direct messages, and a voice channel when voice is on. A separate Python process, the bridge (`bridge/`), talks to Discord and to dollcore's local API; it is the only path by which anything speaks *as the owner*: his DMs and his voice. Since 2026-11-24 it also forwards strangers — anyone else's DM to her, and messages in the owner's channel (`channel_id`) that mention her — as stranger lines. In voice, dollcore transcribes him with Apple's speech recognizer and speaks her `voice.say` lines with Qwen3-TTS in her cloned voice.
 
 ## What the doll sees and does
 
 ### Direct messages
 
-`discord.dm` sends her words to the owner's DMs. His DMs arrive as owner lines; attachments arrive only as file names, one line each: `[附件：<filename>]`. If the bridge is down, `discord.dm` fails with the reason and the line was not seen ([tool-failures.md](tool-failures.md)). A DM that Discord itself refuses is not reported to her.
+`discord.dm` sends her words to the owner's DMs. `discord.send(to, text)` sends them to a stranger: `to` 「頻道」 is the owner's channel, `to` a stranger's id (from their line's tag) is that person's DM; a stranger she has not heard from today cannot be written to. A stranger's line is tagged `[14:32 陌生人 小明（id 1234）｜Discord 頻道 #聊天｜文字]` (or `｜Discord 私訊｜`); in a turn answering one she sees neither the owner's secrets nor her own (`（秘密：主人以外的人在的回合看不到）`), recall reaches only the public folder, and every `discord.send` passes the secret filter ([secrets.md](secrets.md)). What she does for strangers is hers to judge; no limit is set on them. A stranger's line during maintenance waits and is queued when it ends. His DMs arrive as owner lines; attachments arrive only as file names, one line each: `[附件：<filename>]`. If the bridge is down, `discord.dm` fails with the reason and the line was not seen ([tool-failures.md](tool-failures.md)). A DM that Discord itself refuses is not reported to her.
 
 ### Voice tools (only when voice is enabled)
 
@@ -48,9 +48,9 @@ The bridge (`bridge/src/dollbridge/`: `__main__.py`, `core.py`, `api.py`, `voice
 
 ### DMs (`core.py`)
 
-- `on_message`: ignores her own messages; forwards only a DM whose author is `owner_id`; drops everything else with one INFO line (author id and where, never content). `owner_text` appends attachment lines; empty = dropped.
+- `on_message`: ignores her own messages; a DM from `owner_id` → `POST /api/owner`; any other DM, or a message in `channel_id` that mentions her (mention removed from the text) → `POST /api/stranger {id, name, channel, text}` (`channel` is the channel's name, null for a DM); drops everything else with one INFO line (author id and where, never content). `owner_text` appends attachment lines; empty = dropped.
 - `POST /api/owner`: dollcore answers 200 only after the line is written sealed to its inbox (`Doll.ownerLine`); otherwise the bridge DMs the owner `[系統] 這則沒送到她那裡：…` and logs ERROR.
-- Owner stream (`GET /api/listen?to=owner`, NDJSON) in `on_core`: `say` → `split_message` (pieces ≤ `DISCORD_LIMIT` 2000, cut at line ends where possible, blank pieces dropped); `image` (absolute screenshot path) attaches to the last piece, a failed attach sends the words plus `[系統] 截圖沒附上：…`. `typing` on/off, re-triggered every `TYPING_EVERY_S` (8 s). A failed DM send is logged only.
+- Owner stream (`GET /api/listen?to=owner`, NDJSON) in `on_core`: `say` → `split_message` (pieces ≤ `DISCORD_LIMIT` 2000, cut at line ends where possible, blank pieces dropped); `image` (absolute screenshot path) attaches to the last piece, a failed attach sends the words plus `[系統] 截圖沒附上：…`. `typing` on/off, re-triggered every `TYPING_EVERY_S` (8 s). `send` (`to` `channel` or `dm:<id>`) goes to the channel or opens that user's DM, in the same pieces. A failed send is logged only.
 - Intents: guilds, DM messages, guild messages (to drop and log them), message content, voice states.
 
 ### Voice WebSocket (`/api/voice`)
@@ -108,7 +108,7 @@ dollcore:
 
 ## Invariants
 
-- Only the owner's DMs and voice reach her; the owner key is never on disk.
+- Only the owner's DMs and voice reach her as the owner; strangers reach her only as stranger lines; the owner key is never on disk.
 - Every protocol violation is reported both ways and logged; nothing is dropped silently.
 - Once voice has connected, a voice failure never takes down DMs.
 - `played` never exceeds samples sent; utterance ids are never reused within a process.
@@ -126,4 +126,4 @@ dollcore:
 
 Swift: `theBridgeMustComeUpAndItsExitIsASystemError`, `apiAndBridgeConfigAreValidated`, `localAPIIsLoopbackOnlyAndOnlyTheBridgeSpeaksAsTheOwner`, `aSayLineCarriesTheScreenshotsPathForTheBridge`, `voiceToolsAndPromptOnlyWithVoiceEnabled`, `theSpeakingToolsAreRefusedWithAReasonWhenTheirChannelIsNotThere`, `voiceLinkRejectsASecondBridgeAndProtocolViolations`, `voiceStaleBridgeSocketIsReplacedByTheNewOne`, `voiceBridgeReconnectsMidUtteranceAndSheSpeaksAgain`, `voiceLoopbackHearsTheOwnerSpeaksAndStopsWhenHeTalks`, `endpointingClosesTheUtteranceAfterTheConfiguredSilence`, `anInterruptedSayReportsWhatWasHeard`, `everySpokenSentenceGoesToTheManifest`, `ownerVoiceCancelsTheCallAndTheRerunSeesTheVoiceWithTheSameEffort`, `hisVoiceCutsHerCallAtOnceAndTheRerunWaitsForItsCheck`; opt-in: `realVoiceThroughTheLoopback`, `realSpeechRecognizerFinalizesOnOurEndpoint`, `realBridgeRecoversFromAViolationMidUtterance`.
 
-Bridge (`cd bridge && uv run --frozen pytest`; `bridge/tests/test_bridge.py`, `test_voice.py`): `test_owner_dm_is_forwarded`, `test_other_dms_and_guild_messages_are_dropped_and_logged`, `test_attachments_become_lines`, `test_undelivered_owner_dm_is_told_to_the_owner`, `test_say_goes_to_the_owner_dm_split_at_2000`, `test_a_say_with_an_image_carries_it_on_its_last_piece`, `test_example_config_documents_the_defaults`, `test_real_opus_round_trip` (needs libopus).
+Bridge (`cd bridge && uv run --frozen pytest`; `bridge/tests/test_bridge.py`, `test_voice.py`): `test_owner_dm_is_forwarded`, `test_guild_messages_outside_her_channel_or_without_a_mention_are_dropped_and_logged`, `test_a_strangers_dm_and_a_mention_in_her_channel_go_to_her_as_a_strangers_line`, `test_her_words_to_a_stranger_go_to_the_channel_or_their_dm`, `test_attachments_become_lines`, `test_undelivered_owner_dm_is_told_to_the_owner`, `test_say_goes_to_the_owner_dm_split_at_2000`, `test_a_say_with_an_image_carries_it_on_its_last_piece`, `test_example_config_documents_the_defaults`, `test_real_opus_round_trip` (needs libopus).

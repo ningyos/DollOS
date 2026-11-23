@@ -87,4 +87,41 @@ extension Doll {
         log("INFO", "turn \(turnIndex): she marked owner line \(line.seq!) secret")
         return Outcome(text: "標好了：主人那句和這個回合之後寫的都加密存，只有跟主人的對話看得到。", secret: true, actions: ["secret mark"])
     }
+
+    /// `discord.send`: to the owner's channel (「頻道」) or the DM of a stranger she has heard from today
+    /// (their id, or their name when it is unique). Claims and the secret filter first, like any words
+    /// not to the owner.
+    func speakToStranger(to: String, raw: String, reply: Event, name: String) throws -> Outcome {
+        let (text, fixed) = Traditional.fix(raw)
+        let who = to.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target: String, label: String
+        if ["頻道", "channel", "#頻道"].contains(who.lowercased()) {
+            target = "channel"
+            label = "頻道"
+        } else {
+            let known = timeline.events.compactMap(\.stranger)
+            let byID = known.last { $0.id == who }
+            let byName = known.filter { $0.name == who }
+            guard let s = byID ?? (Set(byName.map(\.id)).count == 1 ? byName.last : nil) else {
+                throw ToolError(description: "今天沒有 id 或名字是「\(who.prefix(30))」的人跟你說過話；to 給「頻道」，或對方那句前面括號裡的 id")
+            }
+            target = "dm:\(s.id)"
+            label = "\(s.name) 的私訊"
+        }
+        try checkClaims(text, to: .stranger, reply: reply)
+        if let leak = try secretLeak(text, to: .stranger) {
+            log("INFO", "turn \(turnIndex): \(name) to \(label) held back by the secret filter: \(leak)", sealed: true)
+            return Outcome(text: "失敗：沒送出：這句話裡有主人的秘密（\(leak.hasPrefix("exact") ? "跟他告訴你的一模一樣的一段" : "意思跟他告訴你的秘密很近")：\(leak.drop { $0 != "「" })）。"
+                           + "主人的秘密只能跟主人說；別人問的話，跟他說這是主人的事、你不能說。",
+                           secret: true, actions: ["refused \(name)"])
+        }
+        log("INFO", "turn \(turnIndex): \(name) → \(label)「\(text)」")
+        guard let deliver = deliverStranger else { throw ToolError(description: "Discord 還沒接上，送不出去") }
+        if let why = deliver(text, target) {
+            log("ERROR", "turn \(turnIndex): \(name) not delivered: \(why)")
+            return Outcome(text: "失敗：\(label)沒收到：\(why)。", actions: ["error \(name)"], background: true)
+        }
+        return Outcome(text: fixed.isEmpty ? "" : Traditional.note(fixed), actions: ["said \(Channel.discordChannel.rawValue)"],
+                       background: true, channel: .discordChannel)
+    }
 }

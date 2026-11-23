@@ -36,6 +36,7 @@ get 401.
 | `GET /api/status` | none | `ApiStatus` JSON |
 | `POST /api/developer {"text":…}` | none | `{"queued":true}`; `Doll.developerSaid` |
 | `POST /api/owner {"text":…}` | owner | `{"queued":true}` only after `Doll.ownerLine` wrote the line sealed to the inbox; else 500 `owner line not recorded: …` |
+| `POST /api/stranger {"id","name","channel","text"}` | owner key (the bridge) | `{"queued":true}`; `Doll.strangerSaid` (2026-11-24) |
 | `GET /api/listen?to=developer` | none | NDJSON stream; any number |
 | `GET /api/listen?to=owner` | owner | NDJSON stream; one at a time, else 409 `an owner stream is already open` |
 | `GET /api/voice` | owner | WebSocket; 503 with voice off; 409 while a live one is open (one that misses a ping is replaced) |

@@ -23,12 +23,18 @@ OWNER, OTHER, BOT = 111, 222, 999
 class FakeCore:
     def __init__(self, fail: Exception | None = None) -> None:
         self.posted: list[str] = []
+        self.strangers: list[tuple[int, str, str | None, str]] = []
         self.fail = fail
 
     async def post_owner(self, text: str) -> None:
         if self.fail:
             raise self.fail
         self.posted.append(text)
+
+    async def post_stranger(self, user_id: int, name: str, channel: str | None, text: str) -> None:
+        if self.fail:
+            raise self.fail
+        self.strangers.append((user_id, name, channel, text))
 
 
 class FakeDM:
@@ -46,9 +52,11 @@ class FakeDM:
         self.typing += 1
 
 
-def message(author: int, content: str = "", guild: int | None = None, files: tuple[str, ...] = ()) -> Any:
-    return NS(author=NS(id=author), content=content, guild=NS(id=guild) if guild else None,
-              channel=NS(id=5), attachments=[NS(filename=f) for f in files])
+def message(author: int, content: str = "", guild: int | None = None, files: tuple[str, ...] = (),
+            channel: int = 5, mentions: tuple[int, ...] = ()) -> Any:
+    return NS(author=NS(id=author, display_name=f"user{author}"), content=content, guild=NS(id=guild) if guild else None,
+              channel=NS(id=channel, name="聊天"), attachments=[NS(filename=f) for f in files],
+              mentions=[NS(id=m) for m in mentions])
 
 
 def bridge(core: FakeCore | None = None, typing_every_s: float = 8.0) -> tuple[Bridge, FakeCore, FakeDM]:
@@ -64,18 +72,42 @@ async def test_owner_dm_is_forwarded() -> None:
     assert core.posted == ["今天好累"]
 
 
-async def test_other_dms_and_guild_messages_are_dropped_and_logged(caplog: pytest.LogCaptureFixture) -> None:
+async def test_guild_messages_outside_her_channel_or_without_a_mention_are_dropped_and_logged(caplog: pytest.LogCaptureFixture) -> None:
     b, core, dm = bridge()
+    b.channel_id = 7
     with caplog.at_level(logging.INFO, logger="dollbridge"):
-        await b.on_message(message(OTHER, "嗨"))
         await b.on_message(message(OWNER, "在伺服器講的", guild=42))
-        await b.on_message(message(OTHER, "伺服器", guild=42))
-    assert core.posted == [] and dm.sent == []
+        await b.on_message(message(OTHER, "伺服器", guild=42, channel=5, mentions=(BOT,)))
+        await b.on_message(message(OTHER, "沒叫她", guild=42, channel=7))
+    assert core.posted == [] and core.strangers == [] and dm.sent == []
     dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
-    assert len(dropped) == 3
-    assert "user 222 in DM" in dropped[0] and "guild 42" in dropped[1]
+    assert len(dropped) == 3 and "guild 42" in dropped[0]
     # The content never reaches the log.
-    assert not any("嗨" in m or "伺服器" in m for m in dropped)
+    assert not any("伺服器" in m or "沒叫她" in m for m in dropped)
+
+
+async def test_a_strangers_dm_and_a_mention_in_her_channel_go_to_her_as_a_strangers_line() -> None:
+    b, core, _ = bridge()
+    b.channel_id = 7
+    await b.on_message(message(OTHER, "嗨"))
+    await b.on_message(message(OTHER, f"<@{BOT}> 你好", guild=42, channel=7, mentions=(BOT,)))
+    assert core.strangers == [(OTHER, "user222", None, "嗨"), (OTHER, "user222", "聊天", "你好")]
+    assert core.posted == []
+
+
+async def test_her_words_to_a_stranger_go_to_the_channel_or_their_dm() -> None:
+    b, _, owner_dm = bridge()
+    ch, their = FakeDM(), FakeDM()
+    b.channel = ch
+
+    async def open_dm(user_id: int) -> FakeDM:
+        assert user_id == OTHER
+        return their
+
+    b.open_dm = open_dm
+    await b.on_core({"type": "send", "to": "channel", "text": "大家好"})
+    await b.on_core({"type": "send", "to": f"dm:{OTHER}", "text": "私下說"})
+    assert ch.sent == ["大家好"] and their.sent == ["私下說"] and owner_dm.sent == []
 
 
 async def test_her_own_messages_are_ignored_silently(caplog: pytest.LogCaptureFixture) -> None:

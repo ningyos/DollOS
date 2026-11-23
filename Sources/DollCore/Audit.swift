@@ -134,7 +134,7 @@ enum Audit {
                 lastRead[head] = (at, rows)
             }
             switch ev.kind {
-            case .owner, .developer: line(ev.speaker!.label + "說", ev.text)
+            case .owner, .developer, .stranger: line(ev.speaker!.label + "說", ev.text)
             case .doll: calls = ev.calls[...]
             case .tool:
                 guard let call = calls.popFirst(), Tools.gated.contains(call.name) else { continue }

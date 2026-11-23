@@ -20,7 +20,9 @@ a turn that saw a secret. What she says to anyone but the owner passes a filter.
   A line of an earlier turn cannot be marked (its turn's lines are already written): 「失敗：這個回合沒有
   主人的話；之前回合的話已經存好了，標不了」.
 - A secret event in a developer's turn shows as `（秘密：開發者在的回合看不到）`: the developer has no
-  access to her memories or to the owner's secrets.
+  access to her memories or to the owner's secrets. In a stranger's turn secret events and events
+  carrying her own encrypted memories show as `（秘密：主人以外的人在的回合看不到）`, and recall sees
+  only the public folder.
 - Her instructions say plainly that the owner's secrets never go to anyone else: not said, not in
   part (a few characters, whether a character is in it), not hinted or reworded, not built into
   something for someone (a script, a form, a login); she says it is the owner's matter.
@@ -194,4 +196,5 @@ scans the data dir, history objects and log for needles containing a non-base64 
 `anOwnerLineIsOnDiskSealedWhenAcceptedAndAfterTheProcessDiesItIsAnsweredOnTheNextBoot`,
 `aSealedLogLineIsReadableWithTheKeyAndSaysSoWithAnother`,
 `aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret`, `theLoginKeychainKeepsTheKeyWhenAskedTo`,
-`theSecretFilterHoldsBackAPieceOfHisSecretFromAnyoneButHim`.
+`theSecretFilterHoldsBackAPieceOfHisSecretFromAnyoneButHim`,
+`aStrangerSeesNoSecretSheAnswersWithDiscordSendAndTheFilterStandsBetween`.

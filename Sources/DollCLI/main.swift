@@ -153,6 +153,12 @@ do {
             return failed
         })
     doll = d
+    // Her words to strangers go on the bridge's stream (2026-11-24).
+    await d.setStrangerDelivery { text, to in
+        let failed = a.deliverStranger(text, to: to)
+        out("[→ 陌生人 \(to)] \(text.count) 字" + (failed.map { "  （沒送到：\($0)）" } ?? ""))
+        return failed
+    }
     try await doll.boot()
     // Her voice (M6): TTS loaded, reference encoded and the streaming decoder seeded, then the
     // speech recognizer started; any failure stops the boot.

@@ -13,6 +13,9 @@ import Foundation
 /// owner): returns nil, or says why it could not be delivered (her `discord.dm` / `dollctl.reply`
 /// result then tells her so).
 public typealias Deliver = @Sendable (String, Addressee, URL?) -> String?
+/// Her words to a stranger (2026-11-24): the text and where (`channel` or `dm:<user id>`); nil, or why
+/// it went nowhere.
+public typealias DeliverStranger = @Sendable (String, String) -> String?
 
 /// What one turn did; for logs, tests and the smoke run.
 public struct TurnReport: Sendable {
@@ -361,6 +364,10 @@ public actor Doll {
     var heldLog: [(level: String, msg: String, sealed: Bool)]?
     /// His lines in the held turn's timeline: their inbox files go when the turn's lines are written.
     var inboxDone: [String] = []
+    /// Where her words to strangers go (`main.swift`: the bridge's stream); nil: nowhere yet.
+    var deliverStranger: DeliverStranger?
+    /// Strangers' lines that came while maintenance ran: queued when it ends (they do not interrupt it).
+    var parkedStrangers: [Event] = []
     let dataDir: URL
     let selfURL: URL
     let diaryDirURL: URL
@@ -667,6 +674,36 @@ public actor Doll {
         put(ev)
     }
 
+    public func setStrangerDelivery(_ f: DeliverStranger?) { deliverStranger = f }
+
+    /// A stranger on Discord (2026-11-24): a DM to her, or a line in the owner's channel that mentions
+    /// her. Never secret (she sees only the public folder in a turn that answers one). It does not
+    /// interrupt maintenance: during it the line waits and is queued when it ends.
+    public func strangerSaid(_ text: String, from: Stranger) {
+        var ev = Event(.stranger, .stranger, text)
+        ev.channel = from.channel == nil ? .discordDM : .discordChannel
+        ev.stranger = from
+        if maintenanceState.running != nil || maintenanceState.diary != nil {
+            ev.ts = wallClock.now()
+            parkedStrangers.append(ev)
+            return
+        }
+        put(ev)
+    }
+
+    func releaseParkedStrangers() {
+        let parked = parkedStrangers
+        parkedStrangers = []
+        for ev in parked { queue.append(ev) }
+        if !parked.isEmpty {
+            feed.notify(.queue)
+            if let w = waiter {
+                waiter = nil
+                w.resume(returning: true)
+            }
+        }
+    }
+
     /// A program notice from the voice channel (M6): the owner joined or left, she was removed, the
     /// link dropped. Queued like a person's line, so it gives her a turn; renders as 程式.
     public func voiceNotice(_ text: String) {
@@ -676,8 +713,13 @@ public actor Doll {
     /// A person's line as she sees it (2026-11-12): time, who, where it came from, spoken or typed —
     /// `14:32 主人｜Discord 私訊｜文字`. Lines from before channels were recorded have no place part.
     static func speakerTag(_ ev: Event, time: String) -> String {
-        let who = ev.speaker?.label ?? "?"
-        return ([time + " " + who] + [ev.channel?.label].compactMap { $0 } + [ev.voice ? "語音" : "文字"]).joined(separator: "｜")
+        var who = ev.speaker?.label ?? "?"
+        var place = ev.channel?.label
+        if let s = ev.stranger {
+            who += " \(s.name)（id \(s.id)）"
+            if let c = s.channel { place = "Discord 頻道 #\(c)" }
+        }
+        return ([time + " " + who] + [place].compactMap { $0 } + [ev.voice ? "語音" : "文字"]).joined(separator: "｜")
     }
 
     /// Whoever spoke to her last in `events`; the owner when nobody has. She picks where she
@@ -691,9 +733,9 @@ public actor Doll {
     /// (her `discord.dm`, `voice.say` or `dollctl.reply` results carry the channel they went to).
     static func unanswered(_ events: [Event]) -> (to: Addressee, channel: Channel)? {
         guard let i = events.lastIndex(where: { $0.speaker != nil }), let who = events[i].speaker else { return nil }
-        let theirs: Set<Channel> = who == .owner ? [.discordDM, .discordVoice] : [.dollctl]
+        let theirs: Set<Channel> = who == .owner ? [.discordDM, .discordVoice] : who == .stranger ? [.discordChannel] : [.dollctl]
         if events[(i + 1)...].contains(where: { $0.kind == .tool && $0.channel.map(theirs.contains) == true }) { return nil }
-        return (who, events[i].channel ?? (who == .owner ? .discordDM : .dollctl))
+        return (who, who == .stranger ? .discordChannel : events[i].channel ?? (who == .owner ? .discordDM : .dollctl))
     }
 
     /// While a turn runs: whose line it follows (the local API shows that person "typing"); nil
@@ -860,7 +902,9 @@ public actor Doll {
         // A secret is seen only in turns with the owner (owner, 2026-11-21): in the developer's turn each
         // secret event keeps its place and shape (her calls keep their names, so every call still has
         // its result) and loses its content.
-        let hide = Self.audience(events) == .developer
+        // A stranger's turn (2026-11-24) also loses the content of her own encrypted memories.
+        let audience = Self.audience(events)
+        let hide = audience == .developer || audience == .stranger
         var out = [ChatMessage(role: "system", content: systemPrompt())]
         for (ev, mode) in plan {
             var msgs: [ChatMessage]
@@ -872,9 +916,10 @@ public actor Doll {
             case .block(let text):
                 msgs = [ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(text)")]
             }
-            if hide, ev.secret {
+            if hide, ev.secret || (audience == .stranger && ev.sealed) {
+                let note = audience == .stranger ? Self.hiddenFromStranger : Self.hiddenSecret
                 msgs = msgs.map { m in
-                    ChatMessage(role: m.role, content: Self.hiddenSecret, toolCalls: m.toolCalls.map { ToolCall(name: $0.name, arguments: "{}") })
+                    ChatMessage(role: m.role, content: note, toolCalls: m.toolCalls.map { ToolCall(name: $0.name, arguments: "{}") })
                 }
             }
             out += msgs
@@ -884,6 +929,7 @@ public actor Doll {
 
     /// What the developer's turn gets in place of a secret event's content.
     static let hiddenSecret = "（秘密：開發者在的回合看不到）"
+    static let hiddenFromStranger = "（秘密：主人以外的人在的回合看不到）"
 
     /// How an event goes into the request (`context`): whole, as her reply's surviving calls, or as a
     /// program block (a compaction's, or a held list's action list after a talk summary).
@@ -915,7 +961,7 @@ public actor Doll {
                         if !calls.isEmpty { plan.append((ev, .reply(calls))) }
                     case .tool:
                         if keep.popFirst() == true { plan.append((ev, .full)) }
-                    case .owner, .developer, .watch, .memory, .calendar: break
+                    case .owner, .developer, .stranger, .watch, .memory, .calendar: break
                     }
                 }
                 if seq == t.toSeq {
@@ -932,7 +978,7 @@ public actor Doll {
                 continue
             }
             switch ev.kind {
-            case .owner, .developer: plan.append((ev, .full))
+            case .owner, .developer, .stranger: plan.append((ev, .full))
             case .doll:
                 let flags = ev.calls.map(Self.survivesCompaction)
                 keep = flags[...]
@@ -1029,7 +1075,7 @@ public actor Doll {
                 return footer + (text.isEmpty ? [] : [ChatMessage(role: "user", content: Self.thoughtOnlyTag + text)])
             }
             return footer + [ChatMessage(role: "assistant", content: ev.text, toolCalls: ev.calls)]
-        case .owner, .developer: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
+        case .owner, .developer, .stranger: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
         case .memory, .calendar: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
@@ -1323,7 +1369,7 @@ public actor Doll {
         var chain = Chain(), step = 0, failed: (step: Int, line: String)?, ended: String?, setRefused = false
         for (i, call) in calls.enumerated() {
             speaksLater = Set(calls[(i + 1)...].compactMap { c in
-                c.arguments == nil ? nil : c.name == Tools.Name.reply ? .developer : Tools.speaking[c.name] != nil ? .owner : nil
+                c.arguments == nil ? nil : c.name == Tools.Name.reply ? .developer : c.name == Tools.Name.send ? .stranger : Tools.speaking[c.name] != nil ? .owner : nil
             })
             let name = call.name.isEmpty ? "tool_call" : call.name
             let isAction = actionTools.contains(call.name)
@@ -1644,6 +1690,7 @@ public actor Doll {
                     let next = switch to {
                     case .owner: "這段話主人沒看到；Discord 連上之前 \(Tools.Name.dm) 都傳不出去，連上以後再傳一次。"
                     case .developer: "開發者開著 dollctl chat 才收得到 \(Tools.Name.reply)；要跟主人說話用 \(Tools.Name.dm)。"
+                    case .stranger: "要跟主人以外的人說話用 \(Tools.Name.send)。"
                     }
                     return Outcome(text: "失敗：\(to.label)沒收到：\(why)。\(next)", actions: ["error \(name)"], background: true)
                 }
@@ -1652,6 +1699,8 @@ public actor Doll {
                 let lines = [fixed.isEmpty ? nil : Traditional.note(fixed), shot.map(Self.shotSent)].compactMap { $0 }
                 if shot != nil { ownerShot = nil }
                 return Outcome(text: lines.joined(separator: "\n"), actions: ["said \(channel.rawValue)"], background: true, channel: channel)
+            case .speakStranger(let to, let raw):
+                return try speakToStranger(to: to, raw: raw, reply: reply, name: name)
             case .voiceJoin:
                 guard let voice else { throw ToolError(description: Self.voiceUnwired) }
                 let ch = try await voice.join()
@@ -2158,6 +2207,7 @@ public actor Doll {
             case .discordDM: Tools.Name.dm
             case .discordVoice: voice == nil ? Tools.Name.dm : Tools.Name.voiceSay
             case .dollctl: Tools.Name.reply
+            case .discordChannel: Tools.Name.send
             }
             throw ToolError(description: "還沒完成：這份清單是\(f.to.label)交代的，你列 todo 以後還沒跟\(f.to.label)說過話；todo.done 的 result 只有你自己看得到，寫「已回報」不會讓他收到。"
                             + "先用 \(tool) 跟\(f.to.label)說結果（和你怎麼確認的），再 todo.done；同一則回覆也可以。")
@@ -2381,7 +2431,7 @@ public actor Doll {
             if case .reply(let surviving) = mode { calls = surviving[...]; continue }
             guard case .full = mode else { continue }
             switch ev.kind {
-            case .owner, .developer: out.append(("\(ev.speaker?.label ?? "?")說的", ev.text))
+            case .owner, .developer, .stranger: out.append(("\(ev.speaker?.label ?? "?")說的", ev.text))
             case .doll: calls = ev.calls[...]
             case .tool:
                 guard let call = calls.popFirst() else { continue }
@@ -2798,7 +2848,7 @@ public actor Doll {
             switch e.kind {
             case .doll: pending = e.calls[...]
             case .tool: if let call = pending.popFirst() { out[e.seq!] = call.name }
-            case .owner, .developer, .watch, .memory, .calendar: break
+            case .owner, .developer, .stranger, .watch, .memory, .calendar: break
             }
         }
         return out
@@ -2808,7 +2858,11 @@ public actor Doll {
     /// developer spoke last, 2026-11-12), answering the owner, or her own work (woken by her watch).
     /// There is no stranger input yet (M6), so this timeline never yields `.stranger`.
     static func audience(_ events: [Event]) -> Audience {
-        if lastSpeaker(events) == .developer { return .developer }
+        switch lastSpeaker(events) {
+        case .developer: return .developer
+        case .stranger: return .stranger
+        case .owner: break
+        }
         switch events.last(where: { $0.kind == .owner || $0.kind == .watch })?.kind {
         case .owner?: return .owner
         default: return .doll

@@ -157,6 +157,13 @@ public enum Tools {
                      "properties": ["text": ["type": "string", "description": "要傳給主人的話"]],
                      "required": ["text"],
                  ], jsonParameters: []),
+            Spec(name: Name.send,
+                 description: "跟主人以外的人說話（Discord 上的陌生人）：to 給「頻道」就回到主人的 Discord 頻道（大家都看得到），給對方的 id（他那句前面括號裡的）就傳到他的私訊。從哪裡來就回哪裡。說的話送出去之前程式會檢查：有主人的秘密就不會送出。",
+                 parameters: [
+                     "type": "object",
+                     "properties": .object([("to", ["type": "string", "description": "「頻道」或對方的 id"]), ("text", ["type": "string", "description": "要說的話"])]),
+                     "required": ["to", "text"],
+                 ], jsonParameters: []),
             Spec(name: Name.reply,
                  description: "跟開發者說話：把文字印在開發者的終端機（dollctl chat）。開發者從終端機跟你說話，就用 \(Name.reply) 回；他只看得到你用 \(Name.reply) 傳的字。傳完跟 \(Name.dm) 一樣，程式等下一件事發生才叫你。開發者沒開著 dollctl chat 的時候 \(Name.reply) 送不到，結果會寫原因。",
                  parameters: [
@@ -552,6 +559,8 @@ public enum Tools {
     /// the prompt text, the decoder and everything that reads her calls agree.
     enum Name {
         static let dm = "discord.dm"
+        /// To a stranger on Discord (2026-11-24): the owner's channel or their DM.
+        static let send = "discord.send"
         static let reply = "dollctl.reply"
         static let voiceJoin = "voice.join"
         static let voiceSay = "voice.say"
@@ -581,7 +590,7 @@ public enum Tools {
     static let gated: Set<String> = ["apps", "open", "read_window", Name.act, Name.toolRun, "read_file", "write_file", "edit_file"]
 
     /// The tools she speaks with, and the channel each one goes to.
-    static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice]
+    static let speaking: [String: Channel] = [Name.dm: .discordDM, Name.reply: .dollctl, Name.voiceSay: .discordVoice, Name.send: .discordChannel]
 
     /// The voice channel's tools (M6), after the others when `[voice] enabled`.
     static let voiceSpecs: [Spec] = [
@@ -780,6 +789,8 @@ public enum Tools {
         }
         /// `discord.dm`, `dollctl.reply` or `voice.say`: the text and the channel it goes to.
         case speak(String, Channel)
+        /// `discord.send` (2026-11-24): `to` is 頻道/channel, or a stranger's id or name.
+        case speakStranger(to: String, text: String)
         case think(String)
         case remember([Item])
         case recall(String)
@@ -881,6 +892,8 @@ public enum Tools {
         switch call.name {
         case Name.dm, Name.reply, Name.voiceSay:
             return .speak(try nonEmpty("text"), speaking[call.name]!)
+        case Name.send:
+            return .speakStranger(to: try nonEmpty("to"), text: try nonEmpty("text"))
         case Name.voiceJoin:
             return .voiceJoin
         case Name.voiceLeave:
@@ -1260,6 +1273,8 @@ enum Instructions {
         別人說的話前面有一個括號：時間、誰、從哪裡來、語音或文字，例如 [14:32 主人｜Discord 私訊｜文字]。語音是辨識出來的字，可能有錯字，看起來怪就先猜原意，猜不出來就問；回語音要短、口語。時間線上的開發者是做你這套程式的人，從終端機跟你說話；他不是主人，主人的秘密不給他。
 
         回話要自己選地方，從哪裡來就從哪裡回：主人從 Discord 私訊來的話，用 \(Tools.Name.dm) 回；\(voicePart)開發者從終端機來的話，用 \(Tools.Name.reply) 回。這幾個是你回話的工具，沒有別的說話方式；用錯地方對方收不到。要先想再答用 think，記住事情用 remember，查記憶和今天稍早的事用 recall；記錯了（主人糾正你、或你讀到的跟記的不一樣），用 \(Tools.Name.memoryFix) 改那一條，不要另外再記一條。工具用不了的時候，結果是「失敗：」加原因和你現在可以怎麼做。
+
+        主人以外的人也會找你：Discord 上有人私訊你，或在主人的頻道裡 @你。他們的話前面的括號會寫名字和 id，例如 [14:32 陌生人 小明（id 1234）｜Discord 頻道 #聊天｜文字]。回他們用 \(Tools.Name.send)：從頻道來的，to 給「頻道」；私訊來的，to 給他的 id。不要用 \(Tools.Name.dm) 回他們（那是主人的私訊）。他們在的回合，你看不到主人的秘密和你自己的秘密（那幾則會寫「（秘密：主人以外的人在的回合看不到）」）。要不要幫他們、幫什麼，你自己判斷；你的東西\(computer ? "、主人的東西和主人的電腦" : "和主人的東西")都是主人的。
 
         你的東西（想成為的樣子、目標樹、\(computer ? "存的工具、" : "")記憶、做完的事和更正的紀錄）每改一次都留一筆紀錄：什麼時候、誰、做了什麼、為什麼。用 \(Tools.Name.historyList) 看最近改了什麼；發現你自己的改動錯了，用 \(Tools.Name.historyUndo) 退回那一筆（要說為什麼），不要另外再改一次。主人和系統維護的改動你不能退回；主人退回了你的改動會告訴你。\(detail("history.md"))
 

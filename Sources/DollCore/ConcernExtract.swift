@@ -94,7 +94,7 @@ enum ConcernExtraction {
         var others: [String] = [], own: [String] = []
         for ev in events {
             switch ev.kind {
-            case .owner, .developer, .watch, .calendar: others.append(ev.text)
+            case .owner, .developer, .stranger, .watch, .calendar: others.append(ev.text)
             case .tool: if !TodayIndex.unindexedResults.contains(names[ev.seq!] ?? "") { others.append(ev.text) }
             case .memory: if ev.text.hasPrefix(Doll.bootNotice) { others.append(ev.text) }
             case .doll: own += [ev.text] + ev.calls.flatMap { $0.parameters.map(\.value) }

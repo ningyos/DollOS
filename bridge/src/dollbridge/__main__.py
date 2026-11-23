@@ -33,12 +33,14 @@ class Config:
     token: str
     owner_id: int
     voice: VoiceConfig
+    #: The owner's channel where strangers mention her (2026-11-24); None: no channel.
+    channel_id: int | None = None
 
 
 def load_config(path: Path) -> Config:
     """discord.toml. Unknown keys are errors, like dollcore's config; `[voice]` keys are optional."""
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    unknown = set(raw) - {"token", "owner_id", "voice"}
+    unknown = set(raw) - {"token", "owner_id", "voice", "channel_id"}
     if unknown:
         raise ValueError(f"{path}: unknown keys {sorted(unknown)}")
     token, owner = raw.get("token"), raw.get("owner_id")
@@ -48,14 +50,19 @@ def load_config(path: Path) -> Config:
         owner = int(owner)
     if not isinstance(owner, int) or owner <= 0:
         raise ValueError(f"{path}: owner_id must be the owner's Discord user id (a number)")
-    return Config(token.strip(), owner, VoiceConfig.from_toml(raw.get("voice", {}), str(path)))
+    channel = raw.get("channel_id")
+    if isinstance(channel, str) and channel.isdigit():
+        channel = int(channel)
+    if channel is not None and (not isinstance(channel, int) or channel <= 0):
+        raise ValueError(f"{path}: channel_id must be the channel's Discord id (a number)")
+    return Config(token.strip(), owner, VoiceConfig.from_toml(raw.get("voice", {}), str(path)), channel)
 
 
 def intents() -> discord.Intents:
     i = discord.Intents.none()
     i.guilds = True
     i.dm_messages = True
-    i.guild_messages = True     # only so other messages are seen, dropped and logged
+    i.guild_messages = True     # her channel (strangers who mention her); other channels are dropped and logged
     i.message_content = True    # privileged: switch it on in the Developer Portal (DEMO.md)
     i.voice_states = True       # where the owner is in voice, and the bot's own voice connection
     return i
@@ -67,7 +74,12 @@ async def run(cfg: Config, base: str, key: str, config: Path) -> int:
     failure: list[str] = []
     async with aiohttp.ClientSession() as session:
         core = CoreAPI(base, key, session)
-        bridge = Bridge(owner_id, core, self_id=lambda: client.user.id if client.user else None, attach=discord.File)
+        async def open_dm(user_id: int) -> discord.DMChannel:
+            user = await client.fetch_user(user_id)
+            return user.dm_channel or await user.create_dm()
+
+        bridge = Bridge(owner_id, core, self_id=lambda: client.user.id if client.user else None, attach=discord.File,
+                        channel_id=cfg.channel_id, open_dm=open_dm)
         voice = VoiceLink(cfg.voice, owner_id, client, core.voice)
         stream: asyncio.Task[None] | None = None
         voice_task: asyncio.Task[None] | None = None
@@ -94,8 +106,10 @@ async def run(cfg: Config, base: str, key: str, config: Path) -> int:
             try:
                 owner = await client.fetch_user(owner_id)
                 bridge.dm = owner.dm_channel or await owner.create_dm()
+                if cfg.channel_id is not None:
+                    bridge.channel = client.get_channel(cfg.channel_id) or await client.fetch_channel(cfg.channel_id)
             except Exception as e:  # noqa: BLE001
-                failure.append(f"cannot open a DM with owner_id {owner_id}: {e}")
+                failure.append(f"cannot open a DM with owner_id {owner_id} or channel_id {cfg.channel_id}: {e}")
                 await client.close()
                 return
             log.info("logged in as %s; owner %s; listening to dollcore", client.user, owner_id)

@@ -384,6 +384,7 @@ public final class TodayIndex {
         switch ev.kind {
         case .owner: out = [("\(seq)-owner", "主人說", ev.text)]
         case .developer: out = [("\(seq)-developer", "開發者說", ev.text)]
+        case .stranger: out = [("\(seq)-stranger", "\(ev.stranger?.name ?? "陌生人")說", ev.text)]
         case .doll:
             let said = ToolCall.said(ev.calls)
             out = Channel.allCases.map { ch in

@@ -2,6 +2,7 @@
 # bridge does, and it never logs the token.
 token = "PASTE-THE-BOT-TOKEN"   # Developer Portal → your application → Bot → Reset Token
 owner_id = 123456789012345678   # the owner's Discord user id (Discord: Settings → Advanced → Developer Mode on, then right-click yourself → Copy User ID)
+# channel_id = 123456789012345678  # optional (2026-11-24): the owner's channel where anyone who mentions her (@her) talks to her; right-click the channel → Copy Channel ID. Without it, only DMs reach her (anyone's DM: strangers too)
 
 # Voice (M6, `/api/voice`). Every key is optional; the values below are the defaults.
 # The bot needs Connect and Speak in the owner's voice channel; she joins only when she decides to

@@ -398,6 +398,7 @@ extension Doll {
             }
         } catch { log("ERROR", "maintenance: end notice not written: \(error)") }
         log("INFO", "maintenance: ended; done \(ended.done), failed \(Array(ended.failed.keys))")
+        releaseParkedStrangers()
         // The new day's fixed part of her prompt: today's summary, her deep memories, her tools.
         refreshFixed()
         feed.notify(.maintenance)
@@ -532,6 +533,7 @@ extension Doll {
             + "；沒人跟你說話 \(Self.minutes(maintenanceConfig.retryIdleMin))、你手上也沒事的時候，會再做一次"
             + (diary ? "，那時候可以接著寫日記。" : "。")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: interrupt notice not written: \(error)") }
+        releaseParkedStrangers()
         log("INFO", "maintenance: interrupted by \(who)\(diary ? " in her diary turn" : ""); left \(left.map(\.rawValue)); retries after \(maintenanceConfig.retryIdleMin) min of quiet")
         feed.notify(.maintenance)
     }

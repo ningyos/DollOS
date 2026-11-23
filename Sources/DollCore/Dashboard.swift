@@ -212,7 +212,7 @@ extension Doll {
                 items[i].calls![at].window = e.window
                 items[i].calls![at].secret = e.secret
                 items[i].secret = items[i].secret || e.secret
-            case .owner, .developer:
+            case .owner, .developer, .stranger:
                 items.append(DashboardItem(type: e.kind.rawValue, seq: seq, ts: e.ts, secret: e.secret, text: e.text,
                                            voice: e.kind == .owner ? e.voice : nil))
                 open = nil

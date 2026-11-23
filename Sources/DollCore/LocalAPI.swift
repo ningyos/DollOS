@@ -10,13 +10,15 @@ import Synchronization
 ///     POST /api/developer   {"text":…}    a developer line (dollctl chat)
 ///     GET  /api/listen?to=developer       NDJSON stream: what she says to the developer
 ///     POST /api/owner       {"text":…}    an owner line (the bridge); needs `Authorization: Bearer <owner key>`
+///     POST /api/stranger    {"id","name","channel","text"}  a stranger's line (the bridge, 2026-11-24); needs the owner key
 ///     GET  /api/listen?to=owner           NDJSON stream for the bridge; needs the owner key; one at a time
 ///     GET  /api/voice                     WebSocket for the bridge's voice channel (2026-11-13, M6; `Voice.swift`);
 ///                                         needs the owner key; one at a time (409 while a live one is open; an open
 ///                                         one that does not answer a ping is replaced as stale); 503 when
 ///                                         `[voice] enabled = false`
 ///
-/// Stream lines: `{"type":"hello"}` first, then `{"type":"say","text":…}` and
+/// Stream lines: `{"type":"hello"}` first, then `{"type":"say","text":…}`, on the owner stream
+/// `{"type":"send","to":"channel"|"dm:<id>","text":…}` (her words to a stranger), and
 /// `{"type":"typing","on":true|false}` (a turn that follows that person's line started or ended).
 /// The owner key is random per launch and handed to the bridge in its environment, so nothing else
 /// on this machine can speak as the owner.
@@ -62,17 +64,25 @@ public final class LocalAPI: @unchecked Sendable {
         switch to {
         case .owner: return "Discord 送不出去：bridge \(bridge)"
         case .developer: return "沒有開著的 dollctl chat"
+        case .stranger: return "Discord 送不出去：bridge \(bridge)"
         }
     }
 
+    /// Her `discord.send` (2026-11-24): a `send` line on the bridge's (owner) stream, `to` being
+    /// `channel` or `dm:<user id>`; nil, or why it went nowhere.
+    public func deliverStranger(_ text: String, to target: String) -> String? {
+        send(.sendTo(text, target), to: .owner) == 0 ? "Discord 送不出去：bridge \(bridge)" : nil
+    }
+
     enum Message {
-        case hello, say(String, image: String? = nil), typing(Bool)
+        case hello, say(String, image: String? = nil), typing(Bool), sendTo(String, String)
 
         var line: Data {
             let obj: [String: Any] = switch self {
             case .hello: ["type": "hello"]
             case .say(let t, let image): image.map { ["type": "say", "text": t, "image": $0] } ?? ["type": "say", "text": t]
             case .typing(let on): ["type": "typing", "on": on]
+            case .sendTo(let t, let to): ["type": "send", "to": to, "text": t]
             }
             return (try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes])) + Data("\n".utf8)
         }
@@ -147,6 +157,8 @@ public final class LocalAPI: @unchecked Sendable {
     }
 
     struct Line: Decodable { var text: String }
+    /// A stranger's line from the bridge (2026-11-24).
+    struct StrangerLine: Decodable { var id: String; var name: String; var channel: String?; var text: String }
 
     /// Answers everything but the streams.
     public func respond(_ r: Request) async -> Response {
@@ -172,6 +184,16 @@ public final class LocalAPI: @unchecked Sendable {
             } else {
                 await doll.developerSaid(text)
             }
+            return .json(["queued": true])
+        case ("POST", "/api/stranger"):
+            // Only the bridge (it holds the owner key) speaks for Discord users.
+            guard authorized(r) else { return .error(401, "owner key required") }
+            guard let s = try? JSONDecoder().decode(StrangerLine.self, from: r.body), !s.id.isEmpty else {
+                return .error(400, "body must be {\"id\": …, \"name\": …, \"channel\": … or null, \"text\": …}")
+            }
+            let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return .error(400, "empty text") }
+            await doll.strangerSaid(text, from: Stranger(id: s.id, name: s.name, channel: s.channel))
             return .json(["queued": true])
         case ("GET", "/api/listen"):
             return .error(400, "/api/listen is a stream")
