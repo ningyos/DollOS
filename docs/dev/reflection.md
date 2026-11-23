@@ -31,7 +31,8 @@ Keep them consistent.
 - `<data_dir>/diary/YYYY-MM-DD.md`: one entry per maintenance, the day the timeline segment began. A
   second maintenance on the same day writes `YYYY-MM-DD-2.md`. Chosen once per maintenance
   (`MaintenanceFile.diaryFile`), so a retry after an interruption rewrites the same file. Written whole
-  (`diary.write` replaces it), sealed when the turn saw a secret (`sealKey`), and then stays sealed.
+  (`diary.write` replaces it), sealed when the turn saw something sealed (`sealKey`), and then stays
+  sealed. `[reflection] seal_diary = false` (test dolls only) writes every entry plain.
 - `<data_dir>/self-knowledge.json`: `SelfFile { next_id, items }`, each `SelfItem`:
 
 | field | meaning |

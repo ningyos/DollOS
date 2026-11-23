@@ -270,7 +270,8 @@ extension Doll {
         try FileManager.default.createDirectory(at: diaryDirURL, withIntermediateDirectories: true)
         let url = diaryURL(name)
         let again = FileManager.default.fileExists(atPath: url.path)
-        let key = sealKey(url)
+        // A test doll (`[reflection] seal_diary = false`, owner 2026-11-23) writes it plain to be read.
+        let key = reflectionConfig.sealDiary ? sealKey(url) : nil
         try Concerns.writeDocument(Data((text + "\n").utf8), url, box: key)
         try indexDiary(name, text, sealed: key != nil)
         feed.notify(.drives)

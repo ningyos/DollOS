@@ -581,6 +581,9 @@ public struct ReflectionConfig: Sendable {
     /// A weakness not seen again for this long is shown so (to her, and in the dashboard); it never
     /// moves by itself (owner, 2026-11-23).
     public var weaknessQuietDays = 14.0
+    /// A day that touched something sealed stores its diary sealed; false (test dolls only, owner
+    /// 2026-11-23): always plain Markdown, to be read in a file.
+    public var sealDiary = true
 
     public init() {}
 }
@@ -972,6 +975,7 @@ public struct Config: Sendable {
         for (k, p) in ints { try s.read(k, &r[keyPath: p]) }
         try s.read("recall_max", &r.recallMax)
         try s.read("weakness_quiet_days", &r.weaknessQuietDays)
+        try s.read("seal_diary", &r.sealDiary)
         try s.finish()
         guard ints.allSatisfy({ r[keyPath: $0.1] >= 1 }), r.recallMax >= 0, r.weaknessQuietDays > 0 else {
             throw TOMLError(description: "[reflection] counts and character caps at least 1; recall_max 0 or more; weakness_quiet_days above 0")

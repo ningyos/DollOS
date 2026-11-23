@@ -10694,3 +10694,25 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
     #expect(r[2].contains("你的日記裡最接近的 1 段（你自己寫的話，不是事實的來源）：\n\n【日記 2026-11-14】今天去海邊撿貝殼。"))
     #expect(!r[2].contains("保險箱"))
 }
+
+@Test func aTestDollWritesItsDiaryPlainEvenOnADayThatTouchedASecret() async throws {
+    // Owner, 2026-11-23: sealed like the day otherwise; a test doll's diary is read in a file.
+    for seal in [true, false] {
+        let clock = ManualClock(at("2026-11-16", "22:00"))
+        let h = try await Harness([Scripted("", dm("記好了")), Scripted("", ("diary.write", [("text", "主人今天跟我說了一個秘密。")])), Scripted(""),
+                                   planReply, summaryReply], clock: clock) {
+            $0.maintenance.enabled = true; $0.maintenance.noticeMin = 0; $0.drives.enabled = true; $0.drives.driveHalfLifeH = noClimb
+            $0.drives.maintenanceConcernsMax = 0; $0.reflection.enabled = true; $0.reflection.sealDiary = seal
+        }
+        let doll = h.doll
+        let runner = Task { try await doll.run() }
+        await doll.ownerSaid("🔒 保險箱在書櫃最下層", secret: true)
+        try await waitUntil { h.said == ["記好了"] }
+        clock.set(at("2026-11-17", "03:00"))
+        try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
+        let raw = try String(contentsOf: h.dir.appending(path: "diary/2026-11-16.md"), encoding: .utf8)
+        #expect(seal ? raw.hasPrefix(SecretBox.prefix) : raw == "主人今天跟我說了一個秘密。\n")
+        await doll.stop()
+        try await runner.value
+    }
+}
