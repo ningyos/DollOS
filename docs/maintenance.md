@@ -16,12 +16,14 @@ Her diary turn comes first ([reflection.md](reflection.md)). Then 「【系統�
 1. 從今天的對話記掛念 — concerns from the day ([drives-and-goals.md](drives-and-goals.md)).
 2. 回顧今天、看想成為的樣子要不要改 — at most every 3 days ([drives-and-goals.md](drives-and-goals.md)).
 3. 查對新記的記憶 ([memory.md](memory.md)).
-4. 看你的短處今天有沒有又出現 ([reflection.md](reflection.md)).
+4. 看你的短處今天有沒有又出現 — the failed nodes of her graph ([reflection.md](reflection.md)).
 5. 整理記憶、寫摘要 — the timeline becomes long-term memory and a new segment starts; the old conversation leaves her context and `recall` no longer finds its raw text ([memory.md](memory.md)).
 
 Her own lines are marked 「｜自己的話」 for these tasks and are never a source of fact.
 
 **End.** The new segment opens with 「【系統維護】結束，現在 HH:MM。」, each task's words, the day's summary (written by a separate request, not by her), 「今天的行事曆：…。」, and a carried list: 「你手上的「…」還在，還是等待中。」 (no turn) or 「你手上的「…」還在，接著做。」 (a turn). Otherwise the notice gives no turn. A failed task adds 「沒做成：…（程式出錯），明天維護的時候再做」 (and 「；之前的對話和做過的事都還在你眼前」 if consolidation failed).
+
+When maintenance ends, the fixed part of her system prompt is rebuilt, with her skill panel ([reflection.md](reflection.md)).
 
 **Interrupted.** An owner line (DM or voice) or developer line stops it; the cut-off task writes nothing. Before the line: 「【系統維護】被主人打斷了，今天的還沒整理完，之前的對話和做過的事都還在你眼前；沒人跟你說話 30 分鐘、你手上也沒事的時候，會再做一次。」 (「被開發者打斷了」; in the diary turn 「日記的回合先停下來（寫了的留著），」 is inserted and it ends 「，那時候可以接著寫日記。」). She answers directly. It runs again after 30 quiet minutes with nothing in hand, else at the next day's time.
 

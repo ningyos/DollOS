@@ -4,6 +4,8 @@ import Foundation
 /// prompt」; `[context] manual`): what changes only with the day goes in front of the timeline, so
 /// it is computed once a day and cached after that.
 ///
+///   panel      her skill panel (`Doll.panelText`): what she has shown she can and cannot do, and what she
+///              has not found out; with `[drives]`, whether or not the manual is in.
 ///   summaries  the last `summary_days` maintenance summaries (`<data_dir>/summaries.json`, written by
 ///              the consolidation); a summary of a day that touched something sealed is left out (the
 ///              system prompt is in every scene, the developer's too) — she recalls those.
@@ -44,8 +46,9 @@ enum Fixed {
         }.joined(separator: "\n\n")
     }
 
-    static func text(summaries: [SummaryFile.Entry], deep: [String], tools: [(name: String, when: String)], manual: String) -> String {
+    static func text(panel: String?, summaries: [SummaryFile.Entry], deep: [String], tools: [(name: String, when: String)], manual: String) -> String {
         var parts: [String] = []
+        if let panel { parts.append("## 技能面板（系統記的：你有根據地會的、不會的、還沒弄清楚的；每天系統維護時更新，現在的和每條的根據用 self.read 看）\n" + panel) }
         if !summaries.isEmpty {
             parts.append("## 最近幾天的摘要（每天系統維護另外寫的，不是你寫的；舊的在前）\n"
                          + summaries.map { "【\($0.day)】\($0.text.trimmingCharacters(in: .whitespacesAndNewlines))" }.joined(separator: "\n\n"))
@@ -88,11 +91,14 @@ extension Doll {
     }
 
     func buildFixed() throws -> String {
-        guard contextConfig.manual else { return "" }
+        // Her skill panel (2026-11-24) goes with or without the manual; empty graph: no panel.
+        let shown = goalFile.nodes.contains { $0.done || $0.failed || !$0.blocks.isEmpty }
+        let panel = drivesConfig.enabled && shown ? panelText(brief: true) : nil
+        guard contextConfig.manual else { return Fixed.text(panel: panel, summaries: [], deep: [], tools: [], manual: "") }
         let summaries = Array(try readSummaries().entries.filter { !$0.sealed }.suffix(contextConfig.summaryDays))
         let deep = try memory.list(.public).filter { $0.file.deep && $0.file.retired == nil }.prefix(contextConfig.deepMax)
             .map { $0.file.body.trimmingCharacters(in: .whitespacesAndNewlines) }
         let tools = computerOn ? try toolStore.all().filter { !$0.retired(computerConfig.ownToolRetireFailures) }.map { ($0.name, $0.when) } : []
-        return Fixed.text(summaries: summaries, deep: Array(deep), tools: tools, manual: try Fixed.manual(docsDir))
+        return Fixed.text(panel: panel, summaries: summaries, deep: Array(deep), tools: tools, manual: try Fixed.manual(docsDir))
     }
 }

@@ -14,8 +14,8 @@ todo list. Then the topic you need:
 | [tool-failures.md](tool-failures.md) | What each common 「失敗：」 result means and what to do |
 | [memory.md](memory.md) | Memory files, folders, recall, attached memories, strength, `memory.fix`, consolidation, audit |
 | [maintenance.md](maintenance.md) | The daily system maintenance: the diary turn, the tasks, interruption |
-| [reflection.md](reflection.md) | The diary, strengths and weaknesses, habits, the `recur` task |
-| [drives-and-goals.md](drives-and-goals.md) | Concerns, signals, wandering, the ideal self, the goal tree, the record, curiosity |
+| [reflection.md](reflection.md) | The diary, the skill panel, habits, the `recur` task |
+| [drives-and-goals.md](drives-and-goals.md) | Concerns, signals, wandering, system tasks, the ideal self, her graph, the record, curiosity |
 | [calendar.md](calendar.md) | The calendar, its timer, owner sleep |
 | [computer.md](computer.md) | The Mac through cua-driver, `act`, safety, honest completion, saved tools |
 | [voice-and-bridge.md](voice-and-bridge.md) | The Discord bridge, the voice channel, TTS and speech recognition |

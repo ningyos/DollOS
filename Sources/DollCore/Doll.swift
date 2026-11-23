@@ -369,9 +369,7 @@ public actor Doll {
     /// Strangers' lines that came while maintenance ran: queued when it ends (they do not interrupt it).
     var parkedStrangers: [Event] = []
     let dataDir: URL
-    let selfURL: URL
     let diaryDirURL: URL
-    var selfFile: SelfFile
     /// Her diary's passages, embedded (in memory only; rebuilt at boot).
     var diaryIndex: [DiaryPassage] = []
     /// The fixed part of her system prompt (`Fixed.swift`), and its estimated tokens: the context
@@ -418,8 +416,8 @@ public actor Doll {
     }
 
     /// Her single-document files under the data dir, each written whole and sealed whole (`saveDocument`).
-    static let documents = ["concerns.json", "signals.json", "estimates.json", "goals.json", "record.json",
-                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json", Reflection.selfFileName,
+    static let documents = ["concerns.json", "signals.json", "estimates.json", "record.json",
+                            "ideal-self.md", "ideal-self-log.json", "curiosity.json", "calendar.json", "mind.json",
                             Fixed.summariesFile]
 
     /// `embedder` is loaded by the caller before this (`MLXEmbedder.load`; tests: a fake): the today
@@ -458,10 +456,8 @@ public actor Doll {
         reflectionConfig = config.reflection
         secretsConfig = config.secrets
         dataDir = data
-        selfURL = data.appending(path: Reflection.selfFileName)
         summariesURL = data.appending(path: Fixed.summariesFile)
         diaryDirURL = data.appending(path: Reflection.diaryDir)
-        selfFile = try Concerns.read(SelfFile.self, selfURL, what: "self-knowledge", box: box) ?? SelfFile()
         ownerLastLine = timeline.events.last { $0.kind == .owner }?.ts ?? 0
         drivesConfig = config.drives
         concernsURL = data.appending(path: "concerns.json")
@@ -477,12 +473,16 @@ public actor Doll {
         drives = signals.map { Drives(config: config.drives, state: $0) } ?? Drives(config: config.drives, now: 0)
         signalsFresh = signals == nil
         goalsConfig = config.goals
-        goalsURL = data.appending(path: "goals.json")
+        goalsURL = data.appending(path: "mind.json")
+        // The three-level tree and the separate strengths and weaknesses became one graph (2026-11-24): no conversion.
+        for old in ["goals.json", "self-knowledge.json"] where FileManager.default.fileExists(atPath: data.appending(path: old).path) {
+            throw StoreError(description: "\(data.appending(path: old).path) is from before the graph (2026-11-24, mind.json); it is not converted: remove it")
+        }
         recordURL = data.appending(path: "record.json")
         idealURL = data.appending(path: "ideal-self.md")
         idealLogURL = data.appending(path: "ideal-self-log.json")
         curiosityURL = data.appending(path: "curiosity.json")
-        goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "goal tree", box: box) ?? GoalFile()
+        goalFile = try Concerns.read(GoalFile.self, goalsURL, what: "graph", box: box) ?? GoalFile()
         recordFile = try Concerns.read(RecordFile.self, recordURL, what: "record", box: box) ?? RecordFile()
         idealLog = try Concerns.read(IdealLog.self, idealLogURL, what: "ideal-self log", box: box) ?? IdealLog()
         curiosity = try Concerns.read(CuriosityFile.self, curiosityURL, what: "curiosity", box: box) ?? CuriosityFile()
@@ -880,7 +880,6 @@ public actor Doll {
             + Instructions.text(voice: voiceEnabled, context: contextConfig, docs: docsPath, maintenance: maintenanceConfig.enabled,
                                 drives: drivesConfig.enabled, ownerSleep: ownerSleepConfig.enabled, computer: computerOn,
                                 reflection: reflectionOn, manual: contextConfig.manual)
-            + (drivesConfig.enabled && firstVoice ? "\n\n" + Concerns.ownRule + "標「你的念頭」的是你自己冒出來的念頭，不是誰跟你說的話。" : "")
             + (voiceEnabled ? "\n\n" + Instructions.voice(docs: docsPath, computer: computerOn, manual: contextConfig.manual) : "")
             + fixedPrompt
     }
@@ -915,7 +914,7 @@ public actor Doll {
             case .reply(let calls):
                 msgs = [ChatMessage(role: "assistant", content: "", toolCalls: calls)]
             case .block(let text):
-                msgs = [ChatMessage(role: "user", content: "[\(clock(ev.ts)) 程式] \(text)")]
+                msgs = [ChatMessage(role: "user", content: "[\(clock(ev.ts)) 系統] \(text)")]
             }
             if hide, ev.secret || (audience == .stranger && ev.sealed) {
                 let note = audience == .stranger ? Self.hiddenFromStranger : Self.hiddenSecret
@@ -1079,10 +1078,7 @@ public actor Doll {
         case .owner, .developer, .stranger: return [ChatMessage(role: "user", content: "[\(Self.speakerTag(ev, time: t))] \(ev.text)")]
         case .tool: return [ChatMessage(role: "tool", content: ev.text, extra: extra)]
         case .watch: return [ChatMessage(role: "user", content: "[\(t) watch] \(ev.text)", extra: extra)]
-        case .memory where ev.text.hasPrefix(Concerns.firstStart):
-            // A first-person wandering (2026-11-24) is her own thought, not the program speaking.
-            return [ChatMessage(role: "user", content: "[\(t) 你的念頭] \(ev.text)")]
-        case .memory, .calendar: return [ChatMessage(role: "user", content: "[\(t) 程式] \(ev.text)")]
+        case .memory, .calendar: return [ChatMessage(role: "user", content: "[\(t) 系統] \(ev.text)")]
         }
     }
 
@@ -1197,9 +1193,9 @@ public actor Doll {
 
     /// The todo line of 【狀況】.
     func todoLine() -> String {
-        let sub = todo.phase == .idle || todo.phase == .done ? nil : goalFile.link?.subgoal
+        let sub = todo.phase == .idle || todo.phase == .done ? nil : goalFile.link?.node
         let rest = (todo.pending.isEmpty ? "" : "；後面還有：" + todo.pending.map { "「\($0)」" }.joined(separator: ""))
-            + (sub.map { "（子目標 #\($0) 的步驟）" } ?? "")
+            + (sub.map { "（為了 #\($0)）" } ?? "")
         let item = "「\(todo.current ?? "")」"
         let line = switch todo.phase {
         case .idle, .done: "待命中（沒有 todo；要做事先用 todo.set 列）"
@@ -1729,7 +1725,7 @@ public actor Doll {
             case .historyUndo(let id, let why):
                 return try historyUndoTool(id: id, why: why, seen: events)
             case .todoSet(let items, let subgoal, let plan):
-                return try todoSet(items, subgoal: subgoal, plan: plan, reply: reply)
+                return try todoSet(items, node: subgoal, plan: plan, reply: reply)
             case .todoDone(let result, let evidence):
                 return try await todoDone(result, evidence: evidence, reply: reply)
             case .todoFail(let cause, let evidence, let tried):
@@ -1806,14 +1802,14 @@ public actor Doll {
                 return try concernEnd(id: id, how: how)
             case .ownerFeedback(let kind, let quote, let record):
                 return try ownerFeedback(kind: kind, quote: quote, record: record)
-            case .goalAdd(let text, let parent):
-                return try goalAddTool(text: text, parent: parent)
+            case .goalAdd(let text, let target):
+                return try goalAddTool(text: text, for: target)
             case .goalChange(let id, let text):
                 return try goalChangeTool(id: id, text: text)
-            case .goalEnd(let id, let how):
-                return try goalEndTool(id: id, how: how)
-            case .goalBlocked(let id, let missing):
-                return try goalBlockedTool(id: id, missing: missing)
+            case .goalEnd(let id, let how, let evidence):
+                return try goalEndTool(id: id, how: how, evidence: evidence)
+            case .goalBlocked(let id, let missing, let by):
+                return try goalBlockedTool(id: id, missing: missing, by: by)
             case .goalList:
                 return Outcome(text: goalTreeText(), actions: ["goal list"])
             case .idealRevise(let text, let old, let new, let why, let basedOn):
@@ -1828,8 +1824,6 @@ public actor Doll {
                 return try selfNoteTool(kind: kind, text: text, evidence: evidence)
             case .selfHabit(let id, let when, let then, let why):
                 return try selfHabitTool(id: id, when: when, then: then, why: why)
-            case .selfGoal(let id, let goal):
-                return try selfGoalTool(id: id, goal: goal)
             case .selfPast(let id, let why):
                 return try selfPastTool(id: id, why: why)
             }
@@ -2114,7 +2108,7 @@ public actor Doll {
     /// 進行中 from her reply on (that reply is the item's first event); with one in progress only the
     /// items after it are replaced. No items: the list ends (待命中). `subgoal` (phase 2): the list
     /// works on that sub-goal; its items are its steps (new ones added to the tree first).
-    func todoSet(_ items: [String], subgoal: Int? = nil, plan p: PlanInput, reply: Event) throws -> Outcome {
+    func todoSet(_ items: [String], node subgoal: Int? = nil, plan p: PlanInput, reply: Event) throws -> Outcome {
         func listed(_ xs: [String]) -> String { xs.isEmpty ? "沒有" : xs.map { "「\($0)」" }.joined() }
         // Hook 1 (2026-11-17): a list that starts hands in its plan; checked before anything changes.
         var plan: TodoPlan?
@@ -2125,7 +2119,7 @@ public actor Doll {
         let ownBeside = todo.phase == .waiting && subgoal != nil && !items.isEmpty
         if ownBeside, let a = aside {
             throw ToolError(description: "沒有列：「\(todo.current ?? "")」在等待中，旁邊已經放著「\(a.todo.current ?? "")」；一次最多一份等著、一份你自己的事。"
-                            + "要做自己的事，先把手上這份做完或結束；要改「\(todo.current ?? "")」後面的項目，不要給 subgoal。")
+                            + "要做自己的事，先把手上這份做完或結束；要改「\(todo.current ?? "")」後面的項目，不要給 node。")
         }
         if ownBeside || (todo.phase != .doing && todo.phase != .waiting && !items.isEmpty) {
             do {
@@ -2138,13 +2132,13 @@ public actor Doll {
                 throw error
             }
         }
-        let linkNote = try subgoal.map { try linkTodo(items, subgoal: $0) } ?? ""
+        let linkNote = try subgoal.map { try linkTodo(items, node: $0) } ?? ""
         let waiting = todo.current ?? ""
         if ownBeside { setAside() }
         switch todo.phase {
         case .doing, .waiting:
             todo.pending = items
-            startLink(subgoal: subgoal, fresh: false)
+            startLink(node: subgoal, fresh: false)
             return Outcome(text: "後面的項目改成：\(listed(items))。現在\(todo.phase.label)的還是「\(todo.current ?? "")」。" + linkNote,
                            actions: ["todo set"])
         case .idle, .done, .failed:
@@ -2155,7 +2149,7 @@ public actor Doll {
                 listDropped()
                 return Outcome(text: (ended ? "清單結束了，現在待命中。" : "沒有項目，還是待命中。") + backNote(), actions: ["todo end"], background: true)
             }
-            startLink(subgoal: subgoal, fresh: todo.phase != .failed)
+            startLink(node: subgoal, fresh: todo.phase != .failed)
             todo.phase = .doing
             todo.current = first
             todo.pending = Array(items.dropFirst())
@@ -2173,7 +2167,9 @@ public actor Doll {
             todo.listStart = reply.ts
             // Whose line was waiting before this reply: a 「好，我來」 she wrote ahead of todo.set in the
             // same reply is an acknowledgement and does not make the list her own.
-            listFor = Self.unanswered(timeline.events.filter { ($0.seq ?? 0) <= reply.seq! })
+            // A list for a thing of her graph is her own whoever spoke last (m22, 2026-11-24: the owner
+            // said 「你自己找事做」, and her own test could not be done until she had reported it to him).
+            listFor = subgoal != nil ? nil : Self.unanswered(timeline.events.filter { ($0.seq ?? 0) <= reply.seq! })
             listReply = reply.seq!
             listReported = false
             let compared = check.map { c in
@@ -2370,7 +2366,7 @@ public actor Doll {
             throw refuse(problem)
         }
         let sources = citable(before: reply)
-        let places = computerOn ? "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行" : "主人說的話、行事曆、你的目標樹、【狀況】"
+        let places = computerOn ? "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的圖、【相關記憶】裡〔工具〕那一行" : "主人說的話、行事曆、你的圖、【狀況】"
         var facts: [PlanFact] = []
         for (i, f) in given.enumerated() {
             let name = "facts 第 \(i + 1) 條"
@@ -2418,7 +2414,7 @@ public actor Doll {
         // Her goal tree as the program holds it now, like the calendar (2026-11-20, m12-idle-drive: 11
         // plans for a step of her own were refused for quoting the step they were about): a list that
         // does a step may say what the step is. The words are hers; that the node exists is the program's.
-        for n in goalFile.nodes where n.ended == nil { out.append(("目標樹", "#\(n.id)〔\(n.level.label)〕\(n.text)")) }
+        for n in goalFile.nodes where n.ended == nil { out.append(("想做的事", "#\(n.id) \(n.text)")) }
         switch latestRead {
         case .window(let text): out.append(("最新讀到的視窗", text))
         case .file(let path): if let t = try? FileText.decode(try LocalFiles.read(path), path: path) { out.append(("檔案 \(path)", t)) }

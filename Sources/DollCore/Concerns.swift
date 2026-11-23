@@ -64,6 +64,9 @@ struct ConcernFile: Codable, Equatable {
 
 enum Concerns {
     static let wanderTag = "【走神】"
+    /// 動力's own-thing task (2026-11-24, owner: like the 「宿主系統」 of web novels): the system
+    /// speaks to her as 宿主, second person, and names what completes the task.
+    static let taskTag = "【系統任務】"
     static let associateTag = "【聯想】"
     /// How much of the new lines and results an association compares: the embedding's input is
     /// capped anyway (`embedding_max_tokens`); a screen summary's first 2000 characters hold its
@@ -140,23 +143,15 @@ enum Concerns {
         switch c.source {
         case "calendar": return "#\(c.id)，程式從行事曆記的"
         case "maintenance": return "#\(c.id)，系統維護 \(at) 從那天的對話記的"
-        case "goal": return "#\(c.id)，程式從你的目標樹記的"
+        case "goal": return "#\(c.id)，系統從你的圖記的"
         case "todo": return "#\(c.id)，程式在 todo 失敗時記的，\(at)"
         default: return "#\(c.id)，你 \(at) 記的"
         }
     }
 
-    static func wanderText(_ c: Concern, first: Bool = false) -> String {
-        first ? "\(wanderTag)我想起一件掛著的事（#\(c.id)）：\(c.text)" : "\(wanderTag)你想起掛著的一件事（\(origin(c))）：\(c.text)"
+    static func wanderText(_ c: Concern) -> String {
+        "\(wanderTag)你想起掛著的一件事（\(origin(c))）：\(c.text)"
     }
-    /// The first-person wordings (`[drives] wander_voice = "first"`): her own thought, no rules in it.
-    static let firstStart = wanderTag + "我"
-    static let wanderOwnerFirst = "\(wanderTag)我好一陣子沒跟主人說上話了。"
-    static let ownAskFirst = "現在有空，要不要做一步？"
-    static let wanderOwnNoneFirst = "\(wanderTag)我想做點自己的事，可是目標樹上沒有掛著的下一步。想想我想成為的樣子，要不要定一個目標或下一步？"
-    /// What `ownAsk` says, as a rule of her instructions when the wandering itself does not carry it.
-    static let ownRule = "【走神】想到的是你自己的事（目標樹的下一步、想做點自己的事）的時候：要做就做一步，先用 todo.set 列出來，做完 todo.done；現在做不了（缺東西、缺資料），用 goal.blocked 記下缺什麼，不要編一個出來；這次不做，就在想法裡寫一句為什麼。"
-
     // Not 「手上沒事」 (step 0, 2026-11-15): then her sleep section said "with nothing in hand, sleep",
     // and 3 of 20 idle runs about an unhurried step answered a mid-afternoon surfacing by calling sleep.
     static let wanderOwner = "\(wanderTag)你想到好一陣子沒跟主人說上話了。"
@@ -167,10 +162,12 @@ enum Concerns {
     /// about it five times): `goal.blocked` on the node, what is missing.
     static let ownAsk = "這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；現在做不了（缺東西、缺資料），用 goal.blocked 記下缺什麼，不要編一個出來；這次不做，就在想法裡寫一句為什麼。"
     /// 動力 high with no concern of her own (no goal, or every one ended): the episode still happens.
-    static let wanderOwnNone = "\(wanderTag)你想做點自己的事，可是目標樹上沒有掛著的下一步。可以想想你想成為的樣子，用 goal.add 定一個目標、子目標或下一步。\(ownAsk)"
+    static let wanderOwnNone = "\(taskTag)宿主現在沒有掛著的事。挑一件比技能面板上「會的」難一點點的事試試；面板還是空的，就挑一個你常用的能力，照「了解你自己」的方法測一次。用 goal.add 記到圖上。\n\(ownAsk)"
+    /// A node of her graph as a task.
+    static func taskText(_ c: Concern) -> String { "\(taskTag)宿主，\(c.text)" }
     /// 動力's wandering (it carries `ownAsk`): her turn for it is a task turn (`Doll.taskTurn`).
     static func isOwnWander(_ e: Event) -> Bool {
-        e.kind == .memory && e.text.hasPrefix(wanderTag) && (e.text.contains(ownAsk) || e.text.contains(ownAskFirst) || e.text.hasPrefix(wanderOwnNoneFirst))
+        e.kind == .memory && (e.text.hasPrefix(taskTag) || (e.text.hasPrefix(wanderTag) && e.text.contains(ownAsk)))
     }
 
     /// Real runs (2026-11-16): at 05:44 she thought 「等他醒了再說」, and at his 「早～」 nothing put it
@@ -376,7 +373,7 @@ extension Doll {
     /// 動力's wandering while a list waits: how her own step starts without touching it.
     func waitingNote() -> String {
         guard todo.phase == .waiting else { return "" }
-        return "\n（「\(todo.current ?? "")」在等待中：todo.set 給 subgoal，它會先放在旁邊，不會動到它；不給 subgoal 是改它後面的項目。）"
+        return "\n（「\(todo.current ?? "")」在等待中：todo.set 給 node，它會先放在旁邊，不會動到它；不給 node 是改它後面的項目。）"
     }
 
     /// After every turn, on the timer, and on waking: program concerns, then at most one wandering.
@@ -397,8 +394,8 @@ extension Doll {
             if s == .drive { ownEpisodeStart = now }
             if let c = Concerns.pick(concernFile.items, for: s) { return wander(c, signal: s, now: now) }
             switch s {
-            case .closeness: return wanderLine(firstVoice ? Concerns.wanderOwnerFirst : Concerns.wanderOwner, signal: s)
-            case .drive: return wanderLine(firstVoice ? Concerns.wanderOwnNoneFirst : Concerns.wanderOwnNone, signal: s)
+            case .closeness: return wanderLine(Concerns.wanderOwner, signal: s)
+            case .drive: return wanderLine(Concerns.wanderOwnNone, signal: s)
             case .stress: log("INFO", "drives: \(s.label) out of range, no concern of that kind; nothing surfaces")
             }
         }
@@ -419,8 +416,8 @@ extension Doll {
         }
         do { try saveConcerns() } catch { log("ERROR", "drives: saving \(concernsURL.path) failed: \(error)") }
         log("INFO", "drives: wander (\(s.label)) #\(c.id)「\(c.text)」")
-        let ask = firstVoice ? Concerns.ownAskFirst : "\n" + Concerns.ownAsk
-        put(Event(.memory, .internal, withOwnerSleep(Concerns.wanderText(c, first: firstVoice) + (s == .drive ? ask + waitingNote() : ""))))
+        let text = s == .drive && c.source == "goal" ? Concerns.taskText(c) : Concerns.wanderText(c)
+        put(Event(.memory, .internal, withOwnerSleep(text + (s == .drive ? "\n" + Concerns.ownAsk + waitingNote() : ""))))
     }
 
     /// 動力's episode is over (`Drives.endEpisode`): 動力 back to `drive_reset`, and what she did in it
@@ -447,8 +444,6 @@ extension Doll {
         let did = calls.isEmpty ? "沒有呼叫工具" : "呼叫 " + calls.joined(separator: "、")
         return did + (out == 0 ? "，沒有對任何人說話" : "，說了 \(out) 次話") + thought
     }
-
-    var firstVoice: Bool { drivesConfig.wanderVoice == "first" }
 
     func wanderLine(_ text: String, signal s: Signal) {
         log("INFO", "drives: wander (\(s.label)) \(text)")
@@ -563,8 +558,8 @@ extension Doll {
             curve.append(.init(ts: t, values: Dictionary(uniqueKeysWithValues: Signal.allCases.map { ($0.rawValue, replay($0, at: t)) })))
             t += 900
         }
-        let thoughts = timeline.events.filter { $0.kind == .memory && ($0.text.hasPrefix(Concerns.wanderTag) || $0.text.hasPrefix(Concerns.associateTag)) }
-            .suffix(30).map { DashboardDrives.Thought(ts: $0.ts, kind: $0.text.hasPrefix(Concerns.wanderTag) ? "走神" : "聯想", text: $0.text) }
+        let thoughts = timeline.events.filter { $0.kind == .memory && ($0.text.hasPrefix(Concerns.wanderTag) || $0.text.hasPrefix(Concerns.taskTag) || $0.text.hasPrefix(Concerns.associateTag)) }
+            .suffix(30).map { DashboardDrives.Thought(ts: $0.ts, kind: $0.text.hasPrefix(Concerns.taskTag) ? "系統任務" : $0.text.hasPrefix(Concerns.wanderTag) ? "走神" : "聯想", text: $0.text) }
         return DashboardDrives(enabled: drivesConfig.enabled, values: values, felt: drives.felt(at: now), curve: curve,
                                changes: Array(drives.state.log.filter { $0.ts >= from }.suffix(200)),
                                open: openConcerns, ended: concernFile.items.filter { $0.ended != nil },

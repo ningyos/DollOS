@@ -58,9 +58,9 @@ extension Tools.Request {
         switch self {
         case .remember(let items): out = .remember(items.map { var i = $0; i.text = fix(i.text); return i })
         case .memoryFix(let id, let text, let basis, let why): out = .memoryFix(id: id, text: text.map(fix), basis: basis, why: why)
-        case .goalAdd(let text, let parent): out = .goalAdd(text: fix(text), parent: parent)
+        case .goalAdd(let text, let target): out = .goalAdd(text: fix(text), for: target)
         case .goalChange(let id, let text): out = .goalChange(id: id, text: fix(text))
-        case .goalBlocked(let id, let missing): out = .goalBlocked(id: id, missing: fix(missing))
+        case .goalBlocked(let id, let missing, let by): out = .goalBlocked(id: id, missing: missing.map(fix), by: by)
         case .concernNote(let text, let about, let due): out = .concernNote(text: fix(text), about: about, due: due)
         case .idealRevise(let text, let old, let new, let why, let basedOn):
             out = .idealRevise(text: text.map(fix), old: old, new: new.map(fix), why: why, basedOn: basedOn)

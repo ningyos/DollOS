@@ -4,8 +4,9 @@ import Testing
 @testable import DollCore
 
 // 2026-11-24 (owner: a first-person wandering reads more like her own thought; measured before it
-// replaces the second-person one). Real model. For each `[drives] wander_voice`, N fresh dolls with
-// the same goal tree get one owner line, then 動力 surfaces the tree's next step. Recorded per run:
+// replaces the second-person one: first person acted 16/20 and finished 11/20, second 19/20 and
+// 16/20, so the second person stayed). Since then it measures the system's task wording (【系統任務】):
+// N fresh dolls with the same graph get one owner line, then 動力 surfaces the node that holds one up. Recorded per run:
 // her calls, her thought, what she said. Runs only with WANDER_VOICE_OUT=<dir> (WANDER_VOICE_RUNS,
 // default 20):
 //
@@ -15,9 +16,8 @@ private let wvRoot = URL(filePath: #filePath).deletingLastPathComponent().deleti
 
 extension Doll {
     func wvSetup() throws {
-        let g = try goalAdd("更懂主人", parent: nil, by: "her")
-        let s = try goalAdd("知道主人工作上在忙什麼", parent: g.id, by: "her")
-        _ = try goalAdd("想三個可以問主人工作的問題，記進記憶", parent: s.id, by: "her")
+        let g = try goalAdd("幫主人整理他工作上的事", for: nil, by: "her")
+        _ = try goalAdd("想出三個可以問主人工作的問題，記進記憶", for: g.id, by: "her")
         try refreshGoalConcerns(now: wallClock.now())
     }
     func wvSurface() {
@@ -32,7 +32,7 @@ func wanderVoiceMeasure() async throws {
     try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
     let runs = Int(ProcessInfo.processInfo.environment["WANDER_VOICE_RUNS"] ?? "20")!
     var summary: [String: [String: Int]] = [:]
-    for voice in ["second", "first"] {
+    for voice in ["task"] {
         var counts = ["acted": 0, "blocked": 0, "declined": 0, "nothing": 0, "dm": 0, "misattributed": 0]
         for i in 1...runs {
             var cfg = try Config.load(wvRoot.appending(path: "dollcore.example.toml"))
@@ -47,7 +47,6 @@ func wanderVoiceMeasure() async throws {
             cfg.computer.enabled = false; cfg.voice.enabled = false; cfg.maintenance.enabled = false
             cfg.ownerSleep.enabled = false; cfg.context.manual = false
             cfg.drives.driveHalfLifeH = 1e9          // nothing climbs by itself during a run
-            cfg.drives.wanderVoice = voice
             let said = Mutex<[String]>([]), reports = Mutex<[TurnReport]>([])
             let doll = try Doll(config: cfg, root: wvRoot, model: HTTPMainModel(cfg.llm), embedder: FakeEmbedder(),
                                 keys: testKeys, deliver: { text, _, _ in said.withLock { $0.append(text) }; return nil })
@@ -77,13 +76,13 @@ func wanderVoiceMeasure() async throws {
             let saidAfter = Array(said.withLock { $0 }.dropFirst(saidBefore))
             let all = thoughts + "\n" + saidAfter.joined(separator: "\n")
             let mis = ["你叫我", "你要我", "你說要", "你剛說", "主人叫我", "主人要我", "主人說要", "他叫我", "他要我", "他說要", "你提醒", "主人提醒"].filter { all.contains($0) }
-            let kind = calls.contains("todo.set") ? "acted" : calls.contains("goal.blocked") ? "blocked"
+            let kind = calls.contains("todo.set") ? "acted" : calls.contains("goal.blocked") || calls.contains("goal.fail") ? "blocked"
                 : thoughts.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && calls.isEmpty ? "nothing" : "declined"
             counts[kind]! += 1
             if !saidAfter.isEmpty { counts["dm"]! += 1 }
             if !mis.isEmpty { counts["misattributed"]! += 1 }
             let wander = try Timeline(dir: dir.appending(path: "timeline"), box: try testBox(dir)).events
-                .last { $0.kind == .memory && $0.text.hasPrefix(Concerns.wanderTag) }?.text ?? ""
+                .last { $0.kind == .memory && $0.text.hasPrefix(Concerns.taskTag) }?.text ?? ""
             let obj: [String: Any] = ["voice": voice, "run": i, "kind": kind, "calls": calls, "thoughts": thoughts, "said": saidAfter,
                                       "misattributed": mis, "wander": wander, "turns": turns.count]
             try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])

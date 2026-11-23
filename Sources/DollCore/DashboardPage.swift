@@ -78,11 +78,11 @@ enum DashboardPage {
     <div class="muted">主人改的每一筆，她的時間線上都會多一則【行事曆】通知（不會叫醒她）。</div>
     <div id="calendar-body"></div></section>
   <section id="drives"><h2>她的狀態（訊號、掛念）</h2><div id="drives-body" class="muted">關閉</div></section>
-  <section id="goals"><h2>她的方向（想成為的樣子、目標樹、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
-  <section id="reflection"><h2>她的日記、長處和短處（她自己寫的；不會傳給你）</h2><div id="reflection-body" class="muted">關閉</div></section>
+  <section id="goals"><h2>她的方向（想成為的樣子、她的圖、做完的事）</h2><div id="goals-body" class="muted">關閉</div></section>
+  <section id="reflection"><h2>她的日記、技能面板（她自己寫的；不會傳給你）</h2><div id="reflection-body" class="muted">關閉</div></section>
   <section id="tools"><h2>她的工具（她存下來的一串動作）</h2><div id="tools-body" class="muted">還沒有</div></section>
   <section id="boots"><h2>開機紀錄（上一次執行的 log 整理）</h2><div id="boots-body" class="muted">還沒有</div></section>
-  <section id="history"><h2>改動紀錄（她的想成為的樣子、目標樹、工具、記憶、紀錄：誰、什麼時候、做了什麼、為什麼；可以看改了什麼、退回一個、或全部回到某一筆之後）</h2><div id="history-body" class="muted">還沒有</div></section>
+  <section id="history"><h2>改動紀錄（她的想成為的樣子、她的圖、工具、記憶、紀錄：誰、什麼時候、做了什麼、為什麼；可以看改了什麼、退回一個、或全部回到某一筆之後）</h2><div id="history-body" class="muted">還沒有</div></section>
 </main>
 <div id="zoom"><img alt=""></div>
 <script>
@@ -366,7 +366,7 @@ function renderDrives(d) {
   for (const c of d.changes.slice().reverse()) box.append(el("div", null, `${hm(c.ts)} ${label[c.signal]} ${c.before.toFixed(2)} → ${c.after.toFixed(2)}：${c.cause}`));
   const about = { owner: "主人", duty: "該做的", own: "自己的事" };
   box.append(el("h3", null, `還掛著的（${d.open.length}）`));
-  for (const c of d.open) box.append(el("div", null, `#${c.id}〔${about[c.about]}〕${c.text}（${({ her: "她記的", calendar: "行事曆", goal: "目標樹", maintenance: "系統維護" })[c.source] || "todo 失敗"}，冒出來 ${c.surfaced.length} 次，聯想 ${c.associated.length} 次）`));
+  for (const c of d.open) box.append(el("div", null, `#${c.id}〔${about[c.about]}〕${c.text}（${({ her: "她記的", calendar: "行事曆", goal: "她的圖", maintenance: "系統維護" })[c.source] || "todo 失敗"}，冒出來 ${c.surfaced.length} 次，聯想 ${c.associated.length} 次）`));
   box.append(el("h3", null, `結束的（${d.ended.length}）`));
   for (const c of d.ended.slice(-20).reverse()) box.append(el("div", "muted", `#${c.id} ${c.text}（${({ done: "做完", let_go: "放下", passed: "時間過了" })[c.end] || c.end}）`));
   box.append(el("h3", null, `最近的走神和聯想（${d.thoughts.length}）`));
@@ -381,6 +381,66 @@ async function goalPost(path, params) {
   if (!r.ok) alert(await r.text());
   refresh();
 }
+// Her graph as an SVG: columns by how far a node is from something it holds up (what blocks is to
+// the right of what it blocks), one row per node in a column.
+function drawGraph(nodes) {
+  const shown = nodes.filter(n => n.end !== "dropped" || n.blocks.length);
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  if (!shown.length) { const d = el("div", "muted", "還是空的"); return d; }
+  const byId = new Map(shown.map(n => [n.id, n]));
+  const depth = new Map();
+  const depthOf = (n, seen) => {
+    if (depth.has(n.id)) return depth.get(n.id);
+    if (seen.has(n.id)) return 0;
+    seen.add(n.id);
+    const ds = n.blocks.map(b => byId.get(b)).filter(Boolean).map(m => depthOf(m, seen) + 1);
+    const d = ds.length ? Math.max(...ds) : 0;
+    depth.set(n.id, d);
+    return d;
+  };
+  for (const n of shown) depthOf(n, new Set());
+  const cols = [];
+  for (const n of shown) { const d = depth.get(n.id); (cols[d] = cols[d] || []).push(n); }
+  const W = 230, H = 44, GX = 60, GY = 12, pos = new Map();
+  cols.forEach((col, x) => (col || []).forEach((n, y) => pos.set(n.id, { x: x * (W + GX) + 4, y: y * (H + GY) + 4 })));
+  const rows = Math.max(...cols.map(c => (c || []).length));
+  svg.setAttribute("width", cols.length * (W + GX));
+  svg.setAttribute("height", rows * (H + GY) + 8);
+  // Wider than the section (m22: a second column was cut off): it scrolls sideways, at full size.
+  const frame = el("div");
+  frame.style.overflowX = "auto";
+  frame.append(svg);
+  const mk = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+  const defs = mk("defs", {});
+  const marker = mk("marker", { id: "arr", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
+  marker.append(mk("path", { d: "M0,0 L10,5 L0,10 z", fill: "#8794a3" }));
+  defs.append(marker);
+  svg.append(defs);
+  for (const n of shown) for (const b of n.blocks) {
+    const from = pos.get(b), to = pos.get(n.id);
+    if (!from || !to) continue;
+    // From the blocked node (left) to what blocks it (right).
+    svg.append(mk("line", { x1: from.x + W, y1: from.y + H / 2, x2: to.x, y2: to.y + H / 2, stroke: "#8794a3", "stroke-width": 1.2, "stroke-dasharray": "4 3", "marker-end": "url(#arr)" }));
+  }
+  const color = n => !n.ended ? "#4f7fb8" : n.end === "done" ? "#4f9d69" : n.end === "failed" ? "#b85b5b" : "#55606d";
+  for (const n of shown) {
+    const p = pos.get(n.id);
+    svg.append(mk("rect", { x: p.x, y: p.y, width: W, height: H, rx: 6, fill: "#1f2630", stroke: color(n), "stroke-width": 1.5 }));
+    const t = mk("text", { x: p.x + 8, y: p.y + 18, fill: "#dfe6ee", "font-size": 12 });
+    const label = `#${n.id} ${n.text}`;
+    t.textContent = label.length > 17 ? label.slice(0, 17) + "…" : label;
+    const title = mk("title", {});
+    title.textContent = label + (n.evidence && n.evidence.length ? "\n根據：" + n.evidence[0].quote : "");
+    t.append(title);
+    svg.append(t);
+    const st = mk("text", { x: p.x + 8, y: p.y + 35, fill: color(n), "font-size": 11 });
+    st.textContent = !n.ended ? "想做" : n.end === "done" ? "做成過" : n.end === "failed" ? "做不到" + (n.habit ? "（有習慣）" : "") : "放下";
+    svg.append(st);
+  }
+  return frame;
+}
+
 function renderGoals(g) {
   const box = $("goals-body");
   box.replaceChildren();
@@ -395,22 +455,20 @@ function renderGoals(g) {
     if (r.by !== "pack") row.append(" ", btn("退回這次", () => goalPost("/api/ideal/revert", { id: r.id })));
     box.append(row);
   }
-  box.append(el("h3", null, "目標樹（還開著的）"));
-  const level = { 1: "目標", 2: "子目標", 3: "步驟" };
+  box.append(el("h3", null, "她的圖（想做的事；箭頭＝被擋住；綠＝做成過、紅＝做不到、灰＝放下）"));
+  box.append(drawGraph(g.nodes));
   const open = g.nodes.filter(n => !n.ended);
-  const show = (n, depth) => {
-    const row = el("div", null, "　".repeat(depth) + `#${n.id}〔${level[n.level]}〕${n.text}${n.by === "owner" ? "（主人加的）" : ""}`);
+  for (const n of open) {
+    const row = el("div", null, `#${n.id} ${n.text}${n.by === "owner" ? "（主人加的）" : ""}${n.blocks.length ? "　擋著 " + n.blocks.map(b => "#" + b).join("、") : ""}`);
     row.append(" ", btn("改", () => { const t = prompt("改成", n.text); if (t) goalPost("/api/goals/change", { id: n.id, text: t }); }));
-    if (n.level < 3) row.append(" ", btn("加下一層", () => { const t = prompt("加什麼"); if (t) goalPost("/api/goals/add", { parent: n.id, text: t }); }));
-    row.append(" ", btn("做完", () => goalPost("/api/goals/done", { id: n.id })), " ", btn("放下", () => goalPost("/api/goals/drop", { id: n.id })));
+    row.append(" ", btn("加一件它需要的", () => { const t = prompt("它需要什麼"); if (t) goalPost("/api/goals/add", { for: n.id, text: t }); }));
+    row.append(" ", btn("做成了", () => goalPost("/api/goals/done", { id: n.id })), " ", btn("放下", () => goalPost("/api/goals/drop", { id: n.id })));
     box.append(row);
-    for (const c of open.filter(c => c.parent === n.id)) show(c, depth + 1);
-  };
-  for (const n of open.filter(n => n.level === 1)) show(n, 0);
-  box.append(btn("加一個目標", () => { const t = prompt("目標"); if (t) goalPost("/api/goals/add", { text: t }); }));
-  if (g.link) box.append(el("div", "muted", `手上的 todo 清單：${g.link.subgoal ? "子目標 #" + g.link.subgoal + " 的步驟" : "不是目標樹的"}；做完了 ${g.link.done.length} 項`));
+  }
+  box.append(btn("加一件想做的事", () => { const t = prompt("想做的事"); if (t) goalPost("/api/goals/add", { text: t }); }));
+  if (g.link) box.append(el("div", "muted", `手上的 todo 清單：${g.link.node ? "為了 #" + g.link.node : "不是圖上的事"}；做完了 ${g.link.done.length} 項`));
   box.append(el("h3", null, `做完的事（${g.record.length}；動力：現在算數的／全額）`));
-  const kind = { step: "步驟", subgoal: "子目標", goal: "目標", list: "todo 清單" };
+  const kind = { node: "想做的事", list: "todo 清單" };
   const ev = e => e ? (e.good ? "好" : "不對") + (e.quote ? `「${e.quote}」` : "") : "—";
   for (const e of g.record) {
     const row = el("div", null, `#${e.id} ${clock(e.ts)} ${kind[e.kind]}：${e.text}　她記的主人評價：${ev(e.her)}　主人：${ev(e.owner)}　${e.given.toFixed(2)}／${e.amount.toFixed(2)}`);
@@ -430,21 +488,20 @@ function renderReflection(r) {
   const habits = cur.filter(i => i.item.habit).length;
   const row = i => {
     const it = i.item;
-    const d = el("div", it.kind === "weakness" && !it.past ? null : "muted");
+    const d = el("div", it.end === "failed" && !it.past ? null : "muted");
     d.append(el("div", null, `#${it.id} ${it.text}`));
     for (const e of it.evidence) d.append(el("div", "meta", `根據（${clock(e.ts)}）：${e.quote}`));
     if (it.habit) d.append(el("div", null, `習慣：${it.habit.when} → ${it.habit.then}（${clock(it.habit.since)} 起）`));
-    if (i.goal) d.append(el("div", null, "目標：" + i.goal));
     d.append(el("div", "meta", i.stats));
     for (const e of it.again) d.append(el("div", "meta", `又出現（${clock(e.ts)}）：${e.quote}`));
     if (it.past) d.append(el("div", "meta", `移到以前有（${clock(it.past.ts)}）：${it.past.why}`));
     d.style.margin = "0 0 8px";
     return d;
   };
-  box.append(el("h3", null, `長處（${cur.filter(i => i.item.kind === "strength").length}）`));
-  for (const i of cur.filter(i => i.item.kind === "strength")) box.append(row(i));
-  box.append(el("h3", null, `短處（${cur.filter(i => i.item.kind === "weakness").length}；習慣 ${habits}／${r.habitsMax}；${r.quietDays} 天沒再出現會標出來，不會自己消失）`));
-  for (const i of cur.filter(i => i.item.kind === "weakness")) box.append(row(i));
+  box.append(el("h3", null, `會的（做成過，${cur.filter(i => i.item.end === "done").length}）`));
+  for (const i of cur.filter(i => i.item.end === "done")) box.append(row(i));
+  box.append(el("h3", null, `不會的（做不到、失敗過，${cur.filter(i => i.item.end === "failed").length}；習慣 ${habits}／${r.habitsMax}；${r.quietDays} 天沒再出現會標出來，不會自己消失）`));
+  for (const i of cur.filter(i => i.item.end === "failed")) box.append(row(i));
   if (old.length) { box.append(el("h3", null, `以前有（${old.length}）`)); for (const i of old) box.append(row(i)); }
   box.append(el("h3", null, `日記（最近 ${r.diary.length} 篇）`));
   if (!r.diary.length) box.append(el("div", "muted", "還沒有"));

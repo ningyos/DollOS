@@ -80,8 +80,8 @@ plain.
 `Event.sealed` marks a non-secret event carrying `own` content (an `own` hit in `recall`, a `remember`
 into `own`, a fix of one). Visibility is decided by `Event.secret` alone.
 
-`Doll.documents`: `concerns.json`, `signals.json`, `estimates.json`, `goals.json`, `record.json`,
-`ideal-self.md`, `ideal-self-log.json`, `curiosity.json`, `calendar.json`, `self-knowledge.json`, each
+`Doll.documents`: `concerns.json`, `signals.json`, `estimates.json`, `record.json`,
+`ideal-self.md`, `ideal-self-log.json`, `curiosity.json`, `calendar.json`, `mind.json`, each
 sealed whole. `Doll.sealKey` seals when
 `sealing`, or when `Concerns.boxed` says the file already is a box.
 

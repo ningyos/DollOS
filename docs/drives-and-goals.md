@@ -1,6 +1,8 @@
 # Drives, concerns and goals
 
-How the doll gets turns nobody asked for, and what she thinks about in them. **Concerns** (掛念) are concrete open gaps in her words. Three simulated **signals** (動力, 壓力, 親近) move on events and relax over time; when one leaves its range while she is idle, a matching concern surfaces (【走神】). Concerns also attach to turns by similarity (【聯想】). Her **direction** is an ideal self, a three-level goal tree, a record of finished things, and curiosity.
+How the doll gets turns nobody asked for, and what she thinks about in them. **Concerns** (掛念) are concrete open gaps in her words. Three simulated **signals** (動力, 壓力, 親近) move on events and relax over time; when one leaves its range while she is idle, a matching concern surfaces (【走神】, or 【系統任務】 for a thing of her graph). Concerns also attach to turns by similarity (【聯想】). Her **direction** is an ideal self, her graph (what she wants to do or be able to do, and what holds it up), a record of finished things, and curiosity.
+
+**The system.** Program messages carry the label `系統` in her timeline. The system calls her 宿主, states facts and issues tasks (【系統任務】); it is not a person and needs no reply. She decides whether and how to do a task.
 
 The owner pays for her power and machine; she helps him and may slowly learn to support herself. So, busy with her own thing, she may tell him 「等一下」 or 「現在不行」, with why and when. His lines still give her turns.
 
@@ -16,7 +18,7 @@ One sentence about a gap between how things are and how she expects or hopes (th
 The program also notes concerns; the line she sees names the source:
 - a timed calendar occurrence within 24 hours, role items excluded: 「#N，程式從行事曆記的」; ends when its time passes;
 - a failed todo item: 「沒做成：<item>（<cause>）」, 「#N，程式在 todo 失敗時記的，…」; she ends it;
-- her goal tree: 「#N，程式從你的目標樹記的」;
+- her graph: 「#N，系統從你的圖記的」;
 - maintenance: 「#N，系統維護 <time> 從那天的對話記的」;
 - hers: 「#N，你 <time> 記的」.
 
@@ -36,9 +38,9 @@ She never sees numbers. A signal out of range gives 【狀況】 one of: 「你�
 
 Idle (no turn, no list or only a waiting one with nothing set aside, nothing queued or owed, not in maintenance) and a signal out of range: one concern of the matching kind surfaces with a turn:
 「【走神】你想起掛著的一件事（#3，你 2026-11-15（星期六） 08:52 記的）：主人昨晚加班到兩點，很累」
-It is her own thought, not the owner calling; she decides what to do, including nothing. One crossing gives one thought. With no matching concern, 親近 gives 「【走神】你想到好一陣子沒跟主人說上話了。」, 動力 gives 「【走神】你想做點自己的事，可是目標樹上沒有掛著的下一步。…」, 壓力 nothing.
+It is her own thought, not the owner calling; she decides what to do, including nothing. One crossing gives one thought. With no matching concern, 親近 gives 「【走神】你想到好一陣子沒跟主人說上話了。」, 壓力 nothing.
 
-**Her own thing.** A 動力 wandering adds 「這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；現在做不了（缺東西、缺資料），用 goal.blocked 記下缺什麼，不要編一個出來；這次不做，就在想法裡寫一句為什麼。」. At her next idle moment the episode is over, whatever happened, and 動力 starts climbing again from low; own things never chain. With a list waiting, the line tells her how to start her step beside it ([turns-and-todo.md](turns-and-todo.md)).
+**Her own thing.** 動力 surfaces an `own` concern. One from her graph comes as a task: 「【系統任務】宿主，#4「…」 是你想做的事。完成條件：有根據地知道做得到還是做不到——…」. With no `own` concern, 動力 still issues a task: 「【系統任務】宿主現在沒有掛著的事。挑一件比技能面板上「會的」難一點點的事試試；面板還是空的，就挑一個你常用的能力，照「了解你自己」的方法測一次。用 goal.add 記到圖上。」. Every 動力 turn adds 「這是你自己的事。要做就做一步：先用 todo.set 列出來，做完 todo.done；現在做不了（缺東西、缺資料），用 goal.blocked 記下缺什麼，不要編一個出來；這次不做，就在想法裡寫一句為什麼。」. At her next idle moment the episode is over, whatever happened, and 動力 starts climbing again from low; own things never chain. With a list waiting, the line tells her how to start her own list beside it ([turns-and-todo.md](turns-and-todo.md)).
 
 **Owner asleep.** Inside 「主人睡覺」 ([calendar.md](calendar.md)) nothing is blocked; wanderings carry 「（主人現在應該在睡（00:00–08:00）；不急的事等他醒了再說）」 (or the time of his last line). An `owner` concern that surfaces while he sleeps and that she does not message him about comes back once at his next line: 「【聯想】主人在睡的時候你想起這件事，那時沒找他；現在他在了：…（#3）」.
 
@@ -55,43 +57,48 @@ The prompt section 「你想成為的樣子（你自己寫的，會慢慢改；�
 - Maintenance revises it only when the day gives a reason, at most every 3 days: 「你想成為的樣子沒改。」 or 「回顧今天，你想成為的樣子改了（理由：…；根據：…）。現在是：…」.
 - Every revision is logged; the owner can edit or revert it (she sees 「【主人改了你想成為的樣子】現在是：…」).
 
-### Goal tree
+### Her graph
 
-**Goal** (a direction: 懂海洋生物) → **sub-goal** (a finishable result: 弄懂鯊魚怎麼分類) → **step** (one sitting).
+One kind of node: a thing she wants to do or be able to do, in one short sentence (「弄懂鯊魚怎麼分類」, 「我寫的 Python 一次就跑對」). A node is open, done, failed or dropped. Done and failed need evidence ([reflection.md](reflection.md)). There are no levels and no root; a node may stand alone. The ideal self is not a node.
 
-- `goal.add(text, parent?)` — no parent: goal; parent a goal: sub-goal; parent a sub-goal: step.
-- `goal.change(id, text)`.
-- `goal.end(id, how)` — `done` (nothing open under it) or `drop` (with everything open under it). Not for steps.
-- `goal.blocked(id, missing)` — cannot go on now; records what is missing.
-- `goal.list()` — whole tree and recent finished things.
+One kind of edge: **blocked by**. A node that is not done yet holds up another. She does not plan edges ahead; she adds one when she hits the obstacle. Cycles are refused.
 
-Limits: 3 open goals, 3 open sub-goals per goal, 6 open steps per sub-goal, 60 characters per node.
+- `goal.add(text, for?)` — a new open node. With `for`, the new node holds up node `for` (it is needed for it).
+- `goal.change(id, text)` — an open node's text.
+- `goal.end(id, how, evidence?)` — `done` (evidence required) or `drop` (none). What it held up is free of it.
+- `goal.fail(id, evidence)` — she tried and knows she cannot do it now. Not a disgrace.
+- `goal.blocked(id, missing | by)` — she cannot go on: `missing` becomes a new node that holds `id` up; `by` names an open node already there. Not a failure.
+- `goal.list()` — open nodes with what holds what up, then her skill panel.
 
-**Steps are todo items.** Work a sub-goal with `todo.set(items, subgoal)`, each item starting with its step number (`#3 ~/Documents/sharks.md 裡有我記得的鯊魚清單`); unnumbered items unlike any step become new steps. `todo.done` finishes the step. After the last step she is reminded to `goal.end(id, done)` the sub-goal or add steps. Owner work is a list without `subgoal`.
+Limits: 12 open nodes, 80 characters per node.
 
-**Only real things.** What a sub-goal or step names (a file, a script, data) must be something she has seen and has. Missing something (computer off, no data, never seen it): `goal.blocked`, never an invented one. That is not a failure. The node then shows 「（你 <time> 記下現在做不了，缺：…）」 for 24 hours, or until its text changes, something is added under it, or it ends.
+**Work is a todo list.** Work a node with `todo.set(items, node)`. List items are not nodes. A finished list is one record entry; then she is asked what became of the node: `goal.end(id, done, evidence: 「紀錄 #N」)`, `goal.fail`, `goal.blocked`, or another list. Owner work is a list without `node`.
 
-**Reminders.** Each open sub-goal's next step, and each goal without a sub-goal, is a program `own` concern. 【狀況】 shows only 「- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）」. Owner edits arrive as 「【主人改了你的目標樹】他…。整棵樹用 goal.list 看。」.
+**Only real things.** What a node names (a file, a script, data) must be something she has seen and has. Missing something (computer off, no data, never seen it): `goal.blocked`, never an invented one.
+
+**Tasks.** The open nodes nothing open blocks are what she can act on. Each becomes a system `own` concern (key `node:<id>`), at most 6, the one holding up the most first. The concern's text is the task and what completes it. 【狀況】 shows 「- 你想做的：#1 …（整張圖用 goal.list 看）」 with the open nodes that hold nothing open up (at most 5). Owner edits arrive as 「【主人改了你的圖】他…。整張圖用 goal.list 看。」.
+
+**Skill panel.** Strengths are done nodes (會的), weaknesses failed nodes (不會的), and "not yet known" the open nodes that block others (還沒弄清楚的). It sits in the fixed part of her system prompt under 「## 技能面板…」, rebuilt at boot and when a maintenance ends ([turns-and-todo.md](turns-and-todo.md)). Diary, `self.note`, habits: [reflection.md](reflection.md).
 
 ### Finished things
 
-Every finished step, sub-goal, goal, and finished todo list off the tree gets 「紀錄 #N」. Part of the 動力 reward comes at once; owner praise adds the rest, correction takes back all. His dashboard rating (「【主人的評價】…主人評做得好／不對。」) overrides her `owner.feedback`. No points, wages or quotas.
+Every node done and every finished todo list gets 「紀錄 #N」. Part of the 動力 reward comes at once; owner praise adds the rest, correction takes back all. His dashboard rating (「【主人的評價】…主人評做得好／不對。」) overrides her `owner.feedback`. No points, wages or quotas.
 
 ### Curiosity
 
-A new app or browser page title raises 動力 a little. After 2 days without anything new, while idle: 「【走神】你發現好一陣子沒碰到沒見過的東西了。有空可以找一樣你的目標樹上沒有的東西看看（用電腦，先 todo.set 列一項）；覺得有意思，可以用 goal.add 把它加成一個新目標。」 Never with the computer off.
+A new app or browser page title raises 動力 a little. After 2 days without anything new, while idle: 「【走神】你發現好一陣子沒碰到沒見過的東西了。有空可以找一樣你的圖上沒有的東西看看（用電腦，先 todo.set 列一項）；覺得有意思，可以用 goal.add 把它加成一個新目標。」 Never with the computer off.
 
 ## How it works
 
-Files: `Concerns.swift`, `Signals.swift` (`Drives`), `Goals.swift`, `ConcernExtract.swift`. All gated by `[drives] enabled`; `[goals]` follows it. Off: no concern/goal/ideal tools, signals, wandering, association or felt line. `Instructions.text` (`## 掛念、心情、跟主人的交換`, `## 你想成為的樣子、目標樹`) and the tool specs must match this file.
+Files: `Concerns.swift`, `Signals.swift` (`Drives`), `Goals.swift`, `ConcernExtract.swift`. All gated by `[drives] enabled`; `[goals]` follows it. Off: no concern/goal/ideal tools, signals, wandering, association or felt line. `Instructions.text` (`## 掛念、心情、跟主人的交換`, `## 你想成為的樣子、你的圖、系統`) and the tool specs must match this file.
 
-**Concerns.** `<data_dir>/concerns.json`, `ConcernFile { next_id, items }`, snake_case. `Concern`: `id`, `text`, `about`, `source` (`her`/`calendar`/`todo`/`goal`/`maintenance`), `key` (`calendar:<id>:<start>`, `todo:<startSeq>`, `goal:<step>`, `goalsub:<subgoal>`, `goalnone:<goal>`), `created`, `due`, `surfaced`, `associated`, `held`, `near_raised`, `ended`, `end` (`done`/`let_go`/`passed`). Keep `ConcernFile.nextId` (not `nextID`): the decoder maps `next_id` to `nextId`. `Doll.refreshProgramConcerns` adds role-less calendar concerns, ends passed ones, and fires `deadline` once (`near_raised`). `Doll.endConcern` prunes ended concerns older than `log_days`. `Concerns.origin` renders sources.
+**Concerns.** `<data_dir>/concerns.json`, `ConcernFile { next_id, items }`, snake_case. `Concern`: `id`, `text`, `about`, `source` (`her`/`calendar`/`todo`/`goal`/`maintenance`), `key` (`calendar:<id>:<start>`, `todo:<startSeq>`, `node:<id>`), `created`, `due`, `surfaced`, `associated`, `held`, `near_raised`, `ended`, `end` (`done`/`let_go`/`passed`). Keep `ConcernFile.nextId` (not `nextID`): the decoder maps `next_id` to `nextId`. `Doll.refreshProgramConcerns` adds role-less calendar concerns, ends passed ones, and fires `deadline` once (`near_raised`). `Doll.endConcern` prunes ended concerns older than `log_days`. `Concerns.origin` renders sources.
 
 **Signals.** `Drives.value` = `rest + (v0 − rest)·0.5^((t − t0)/halfLife)` from `SignalState.points`. `Drives.move` (clamped 0…1) and `Drives.set` log a `SignalChange { ts, signal, before, after, cause }`. 親近 is out below its edge (`Signal.outWhenLow`), others above. `Doll.signal` applies a `SignalEvent`, saves, logs, notifies, re-arms:
 
 | event | fired | moves |
 |---|---|---|
-| `item_done` | non-step todo item done (`Doll.itemFinished`) | 動力 |
+| `item_done` | todo item done (`Doll.itemFinished`) | 動力 |
 | `item_failed` | `todo.fail` | 壓力 |
 | `tool_errors` | 2nd failure in a row, each after | 壓力 |
 | `praise` | `owner.feedback(praise)` | 動力, 親近 up; 壓力 down |
@@ -120,15 +127,15 @@ none
 
 `ConcernExtraction.parse`: other forms throw (task fails, nothing written); the basis is split at 。！？ and every piece must match (`Doll.quoted`); `ConcernExtraction.sources` splits `others` from `own` (her thoughts and call arguments) and a non-duty note found only in `own` becomes `unverified`; `ConcernExtraction.key` duplicates drop; cap `min(maintenance_concerns_max, max_open − open)`; `end` only for `her`/`maintenance` with an owner-line quote. Drops log `drives: maintenance concern left out: …`. `Doll.commitConcernExtraction` saves once.
 
-**Goal tree.** `<data_dir>/goals.json` (`GoalFile { next_id, nodes, link }`, `GoalNode` with `level`, `end` `done`/`dropped`, `blocked { missing, ts }`). `Doll.linkTodo` ties a list to a sub-goal (`TodoLink`; items by `Doll.stepRef` or equal text, new ones all-or-none); `Doll.itemFinished` ends steps; her `goal.end done` on a step is refused. Numbers tie items because real runs rephrased steps and left duplicates. `Doll.refreshGoalConcerns` keeps one concern per open sub-goal and empty goal, ending stale ones (`done` or `passed`), text with `Doll.blockedNote`. `goal.blocked` exists because, with the computer off, she once invented a script and asked the owner about it five times. Dashboard edits notify her via `Doll.toldOwnerEdit` (no turn).
+**The graph.** `<data_dir>/mind.json` (`GoalFile { next_id, nodes, link }`). `GoalNode`: `id`, `text`, `created`, `by` (`her`/`owner`), `blocks` (the nodes it holds up), `ended`, `end` (`done`/`failed`/`dropped`), `evidence`, and for a failed node `habit`, `again`, `past` ([reflection.md](reflection.md)). Boot fails if `goals.json` or `self-knowledge.json` is still in the data dir; they are not converted. `Doll.actionable` = open nodes no open node blocks, sorted by how many open nodes they hold up (`Doll.heldUp`, transitive). `Doll.refreshGoalConcerns` keeps one concern per actionable node, at most `tasks_max`, text `Doll.taskText`, and ends the rest (`done` if the node is done, else `passed`). `goal.blocked` with `by` refuses a node that already waits on `id`; with `missing` it reuses an open node of the same text. `Doll.linkTodo` / `Doll.startLink` tie a list to a node (`TodoLink { node, done }`); `Doll.listFinished` writes one `list` record and asks about the node. `goal.blocked` exists because, with the computer off, she once invented a script and asked the owner about it five times. A 動力 wandering on a `goal` concern is `Concerns.taskText` (【系統任務】宿主，…); otherwise `Concerns.wanderText`. Dashboard edits notify her via `Doll.toldOwnerEdit` (no turn).
 
-**Record.** `<data_dir>/record.json`, append-only `RecordEntry` (`kind` `step`/`subgoal`/`goal`/`list`, `amount`, `given`, `her`, `owner`). `Doll.achieve` gives `now_share`; `Doll.evaluate` moves 動力 to `Doll.target` (owner's evaluation, else hers; good = all, bad = none). `Doll.feedbackRecord` picks the entry.
+**Record.** `<data_dir>/record.json`, append-only `RecordEntry` (`kind` `node`/`list`, `node`, `amount`, `given`, `her`, `owner`). `Doll.achieve` gives `now_share`; `Doll.evaluate` moves 動力 to `Doll.target` (owner's evaluation, else hers; good = all, bad = none). `Doll.feedbackRecord` picks the entry.
 
 **Ideal self.** `<data_dir>/ideal-self.md` and `ideal-self-log.json` (`IdealRevision` by `pack`/`her`/`maintenance`/`owner`/`revert`). Starts from the pack's `[identity].ideal` (required while drives are on). Placed after the persona under `Doll.idealHeader`. `Doll.reviseIdeal` checks `Doll.idealProblem` (non-empty, length, `Goals.nameProblem`); no second model review, since the same small model judging itself is unreliable. `IdealReview` (task `review`, `Doll.reviewDue`: `[goals] review`, `dayToConsolidate`, last maintenance revision ≥ `revise_min_days` ago) answers `不改` or 「改成：…理由：…根據：…」; a refusal writes nothing. Reverts are history undos.
 
 **Curiosity.** `<data_dir>/curiosity.json`. `Doll.noteSeen` keys the front app's bundle id and, for `Goals.browsers`, the window title; unseen within `seen_days` = new. `Doll.curiosityDue` is nil with the computer off.
 
-**Storage.** These seven files are whole-file documents (`Doll.documents`); malformed fails boot; `Doll.saveDocument` seals via `Doll.sealKey` ([secrets.md](secrets.md)). Tree, record and ideal self are versioned ([history.md](history.md)). Dashboard: `Doll.dashboardDrives`, `Doll.dashboardGoals` ([local-api-and-dashboard.md](local-api-and-dashboard.md)).
+**Storage.** These seven files are whole-file documents (`Doll.documents`); malformed fails boot; `Doll.saveDocument` seals via `Doll.sealKey` ([secrets.md](secrets.md)). Graph, record and ideal self are versioned ([history.md](history.md)). Dashboard: `Doll.dashboardDrives`, `Doll.dashboardGoals` ([local-api-and-dashboard.md](local-api-and-dashboard.md)).
 
 ## Config
 
@@ -143,18 +150,17 @@ none
 - `association_similarity` 0.42.
 
 `[goals]`:
-- `goals_open_max` 3, `subgoals_open_max` 3, `steps_open_max` 6, `text_max_chars` 60.
-- `step_drive` 0.05, `subgoal_drive` 0.15, `goal_drive` 0.3, `list_drive` 0.1, `now_share` 0.5, `feedback_hours` 12.0.
+- `nodes_open_max` 12, `tasks_max` 6 (actionable nodes kept as her concerns), `text_max_chars` 80 (also a `self.note` line).
+- `node_drive` 0.15, `list_drive` 0.1, `now_share` 0.5, `feedback_hours` 12.0.
 - `ideal_max_chars` 1200; `review` true; `revise_min_days` 3.0 (her own revisions unlimited); `review_chars` 6000 (also used by `recur`).
 - `curiosity_hours` 48.0, `novelty_drive` 0.08, `novelty_gap_min` 30.0, `seen_days` 90.0.
-- `blocked_hours` 24.0.
 
 ## Invariants
 
 - One excursion surfaces at most one thought.
 - She never sees signal values.
 - `owner.feedback` needs a quote from today's owner lines.
-- A tree step is done only through a todo item.
+- A node ends done or failed only with evidence (or the owner's dashboard mark); the graph has no cycles.
 - An episode always ends with 動力 at `drive_reset`.
 - Maintenance never notes a concern without a basis in the day, nor ends one without the owner's words.
 
@@ -163,11 +169,11 @@ none
 - 壓力 with no `duty` concern surfaces nothing but is marked surfaced.
 - Curiosity's "new" is coarse: changing page titles count; content and non-browser documents do not; a fresh data dir finds everything new.
 - The curiosity wandering lacks `ownAsk`: no task turn, no episode.
-- An own list without `subgoal` is recorded as an owner `list`.
+- An own list without `node` is recorded as a plain `list`, tied to nothing.
 - An episode across a restart has an unknown summary.
 - Identity and taboo rules beyond names are unchecked.
 - No reminder to the owner for unevaluated record entries.
 
 ## Tests
 
-`drivesEventsMoveSignalsWithACauseAndRelaxByTheirHalfLife`, `drivesNextCrossingIsExactAndAnExcursionSurfacesOncePerCrossing`, `wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdle`, `driveClimbsWhileLeftAloneAndEachEpisodeSetsItBack`, `cantNowEndsTheEpisodeCleanlyAndComesBackWithTheNode`, `duringMaintenanceNothingSurfaces`, `herConcernToolsCheckWhatTheyAreGiven`, `anAssociationAttachesOnlyAboveTheThresholdAndAddsNoTurn`, `aConcernSheLeftWhileHeSleptComesBackOnceAtHisNextLine`, `maintenanceNotesConcernsFromTheDayAndSaysSoInTheEndNotice`, `maintenanceEndsAConcernOnlyWithTheOwnersOwnWords`, `aConcernOnlyHerOwnWordsSupportIsWrittenAsSomethingSheSaid`, `openSubgoalsNextStepsAreHerOwnProgramConcerns`, `aTodoListTiedToASubgoalMarksItsStepsAndRecordsThem`, `achievementIsTwoStageHerFeedbackSetsItAndTheOwnersEvaluationWins`, `theIdealSelfStartsFromThePackSheRevisesItWithARecordAndTheOwnerEditsOrRevertsIt`, `theMaintenanceReviewRevisesTheIdealSelfAtMostEveryFewDaysAndNothingWhenInterrupted`, `somethingNewRaisesDriveAndNothingNewForLongIsAWandering`, `signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot`; `M6DrivesWeek.swift`, `M6GoalsWeek.swift`, `AssocMeasure.swift`.
+`drivesEventsMoveSignalsWithACauseAndRelaxByTheirHalfLife`, `drivesNextCrossingIsExactAndAnExcursionSurfacesOncePerCrossing`, `wanderingSurfacesHerOwnWordsOncePerCrossingOnlyWhenIdle`, `driveClimbsWhileLeftAloneAndEachEpisodeSetsItBack`, `cantNowMakesWhatIsMissingANodeAndTheNextTaskIsThatOne`, `duringMaintenanceNothingSurfaces`, `herConcernToolsCheckWhatTheyAreGiven`, `anAssociationAttachesOnlyAboveTheThresholdAndAddsNoTurn`, `aConcernSheLeftWhileHeSleptComesBackOnceAtHisNextLine`, `maintenanceNotesConcernsFromTheDayAndSaysSoInTheEndNotice`, `maintenanceEndsAConcernOnlyWithTheOwnersOwnWords`, `aConcernOnlyHerOwnWordsSupportIsWrittenAsSomethingSheSaid`, `theGraphHasOneKindOfNodeEndingOneNeedsEvidenceAndARestartReadsItBack`, `whatNothingBlocksIsHerOwnConcernAndItsWordsAreTheTask`, `aListForANodeIsOneRecordAndSheSaysWhatBecameOfTheNodeWithEvidence`, `aListForAThingOfHerOwnMayQuoteItFromHerGraph`, `achievementIsTwoStageHerFeedbackSetsItAndTheOwnersEvaluationWins`, `theIdealSelfStartsFromThePackSheRevisesItWithARecordAndTheOwnerEditsOrRevertsIt`, `theMaintenanceReviewRevisesTheIdealSelfAtMostEveryFewDaysAndNothingWhenInterrupted`, `somethingNewRaisesDriveAndNothingNewForLongIsAWandering`, `signalsAndConcernsSurviveARestartAndMalformedFilesStopTheBoot`; `M6DrivesWeek.swift`, `M6GoalsWeek.swift`, `AssocMeasure.swift`.

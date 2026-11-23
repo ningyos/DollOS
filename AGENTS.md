@@ -31,7 +31,7 @@ calling on a separate server; everything else (memory embedding, TTS, ASR) runs 
                     timeline (JSONL segments) ──► dashboard, dollctl status
                                        │
           daily maintenance (calendar item): concerns → review → audit → consolidate
-          → new segment; drives/signals and goals produce 【走神】 turns when she is idle
+          → new segment; drives/signals and her graph produce 【走神】 and 【系統任務】 turns when she is idle
 ```
 
 Everything runs in one process around one actor, `Doll` (`Sources/DollCore/Doll.swift`). There is
@@ -54,7 +54,7 @@ one turn at a time; events queue while she is in a turn or in maintenance.
 | `Memory.swift`, `Embedding.swift`, `Registry.swift`, `Select.swift` | Memory files and index, MLX embedding, the entity registry, choosing memories to attach/recall. |
 | `MemoryFix.swift`, `Audit.swift`, `Consolidate.swift` | `memory.fix`; the maintenance audit; nightly consolidation into memory and the day summary. |
 | `Concerns.swift`, `Signals.swift`, `ConcernExtract.swift` | Concerns, the three signals (`Drives`), wander/association, concerns extracted at maintenance. |
-| `Goals.swift` | Goal tree, record, the ideal self and its review (`IdealReview`), curiosity. |
+| `Goals.swift` | Her graph (`mind.json`: nodes, the blocked-by edge, tasks for 動力), record, the ideal self and its review (`IdealReview`), curiosity. |
 | `Maintenance.swift` | The daily system maintenance: due/idle, tasks (`MaintenanceTask`), interruption, restart. |
 | `Calendar.swift` | Her calendar (`Agenda`), `DollClock`, the start-time timer, owner-sleep item. |
 | `Computer.swift`, `OwnTools.swift`, `Files.swift` | The Mac via cua-driver (`Mac`, `CuaDaemon`); her saved tools; `read_file`/`write_file`/`edit_file`. |
@@ -235,8 +235,8 @@ update `Instructions` (re-pin the hash test) and the matching `docs/` file. A ne
 | [turns-and-todo.md](docs/turns-and-todo.md) | Events, queue, turns, the request, todo states, aside list, decision point, compaction, effort, claims, inbox, retries |
 | [memory.md](docs/memory.md) | Memory files, index, embedding, registry, selection, strength, `memory.fix`, consolidation, audit |
 | [tool-failures.md](docs/tool-failures.md) | What each common 「失敗：」 result means |
-| [drives-and-goals.md](docs/drives-and-goals.md) | Concerns, the three signals, wander, the idle drive, association, goals, ideal self, curiosity |
-| [reflection.md](docs/reflection.md) | Her diary turn, strengths and weaknesses with evidence, habits, the `recur` task |
+| [drives-and-goals.md](docs/drives-and-goals.md) | Concerns, the three signals, wander, the idle drive, system tasks, association, ideal self, her graph, curiosity |
+| [reflection.md](docs/reflection.md) | Her diary turn, the skill panel (done and failed nodes with evidence), habits, the `recur` task |
 | [maintenance.md](docs/maintenance.md) | The daily system maintenance |
 | [calendar.md](docs/calendar.md) | Her calendar, the timer, owner sleep |
 | [boot-and-logs.md](docs/boot-and-logs.md) | Boot order, the log file, run endings, the boot report |

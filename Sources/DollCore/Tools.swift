@@ -235,7 +235,7 @@ public enum Tools {
                      "required": ["id", "why"],
                  ], jsonParameters: []),
             Spec(name: Name.historyList,
-                 description: "看你的東西最近改了什麼：想成為的樣子、目標樹、\(on ? "存的工具、" : "")記憶、紀錄，每一次改動都有一筆（什麼時候、誰、做了什麼、為什麼、動到哪些），新的在前。about 不給就是全部。",
+                 description: "看你的東西最近改了什麼：想成為的樣子、你的圖、\(on ? "存的工具、" : "")記憶、紀錄，每一次改動都有一筆（什麼時候、誰、做了什麼、為什麼、動到哪些），新的在前。about 不給就是全部。",
                  parameters: [
                      "type": "object",
                      "properties": .object([
@@ -258,58 +258,72 @@ public enum Tools {
             + (on ? computerSpecs(computer, files) : []) + [askOwnerSpec(computer: on)] + (voice ? voiceSpecs : [])
     }
 
-    /// `todo.set` with `subgoal` (phase 2): the list works on a sub-goal of her tree.
+    /// `todo.set` with `node` (2026-11-24): the list works on a node of her graph.
     static func todoSpecsGoals(computer on: Bool) -> [Spec] { todoSpecs(computer: on).map { s in
         guard s.name == Name.todoSet else { return s }
-        return Spec(name: s.name, description: s.description + "做的是目標樹上一個子目標的步驟，就給 subgoal（子目標的編號）：每一項就是它的一個步驟，項目開頭寫步驟的編號（#3 …）；沒有編號、也不在樹上的會加成新的步驟。做完就記上了。有一份在等待中的時候給 subgoal，那份會先放在旁邊，不會動到它。",
+        return Spec(name: s.name, description: s.description + "做的是你自己想做的一件事（圖上的一個 #編號），就給 node；做完整份會問你那件事做到了沒。有一份在等待中的時候給 node，那份會先放在旁邊，不會動到它。",
                     parameters: [
                         "type": "object",
                         "properties": .object([
                             ("items", ["type": "array", "items": ["type": "string"], "description": "照順序的項目，每項寫做完的樣子"]),
-                            ("subgoal", ["type": "integer", "description": "做的是哪個子目標的步驟（#編號）；不是目標樹上的事就不填"]),
+                            ("node", ["type": "integer", "description": "這份清單是為了圖上的哪件事（#編號）；主人交代的事就不填"]),
                         ] + planProperties(computer: on)),
                         "required": ["items"],
                     ], jsonParameters: ["items"])
     } }
 
-    /// Her goal tree and ideal self (phase 2, 2026-11-16, `Goals.swift`). Never gated.
+    /// Her graph and ideal self (phase 2, 2026-11-16; the graph 2026-11-24, `Goals.swift`). Never gated.
     static let goalSpecs: [Spec] = [
         Spec(name: "goal.add",
-             description: "在你的目標樹加一個節點。樹只有三層：目標（一個方向，從你想成為的樣子來，例：懂海洋生物）→ 子目標（做得完的一個結果，例：弄懂鯊魚怎麼分類）→ 步驟（坐下來一次做得完的事）。不給 parent 是加目標；parent 給目標的編號是加子目標；parent 給子目標的編號是加步驟。",
+             description: "在你的圖上加一件想做到、或想會的事（一個短句）。它是另一件事需要的，就給 for（那件事的 #編號）：這件就擋著那件。不用先想好整張圖；真的做不下去的時候用 goal.blocked 記缺什麼就好。",
              parameters: [
                  "type": "object",
                  "properties": .object([
                      ("text", ["type": "string", "description": "一個短句"]),
-                     ("parent", ["type": "integer", "description": "上一層的 #編號；加目標就不填"]),
+                     ("for", ["type": "integer", "description": "它是哪件事需要的（#編號）；沒有就不填"]),
                  ]),
                  "required": ["text"],
              ], jsonParameters: []),
         Spec(name: "goal.change",
-             description: "改目標樹上一個還開著的節點的文字。",
+             description: "改圖上一件還開著的事的文字。",
              parameters: [
                  "type": "object",
                  "properties": .object([("id", ["type": "integer"]), ("text", ["type": "string"])]),
                  "required": ["id", "text"],
              ], jsonParameters: []),
         Spec(name: "goal.end",
-             description: "結束目標樹上的一個節點：done＝做完了（下面要沒有還開著的；步驟不用這個，步驟是在 todo 裡做完的），drop＝放下（連同下面還開著的）。",
+             description: "結束圖上一件還開著的事：done＝做到了（要有根據 evidence，它就進技能面板「會的」）；drop＝放下，不用根據。",
              parameters: [
                  "type": "object",
-                 "properties": .object([("id", ["type": "integer"]), ("how", ["type": "string", "enum": ["done", "drop"]])]),
+                 "properties": .object([
+                     ("id", ["type": "integer"]), ("how", ["type": "string", "enum": ["done", "drop"]]),
+                     ("evidence", ["type": "string", "description": "done 的根據：照抄今天對話裡撐住它的一段（主人或別人說的、工具的結果；你自己說的不算），或「紀錄 #編號」"]),
+                 ]),
                  "required": ["id", "how"],
              ], jsonParameters: []),
-        Spec(name: "goal.blocked",
-             description: "目標樹上的一個節點現在做不了（要往下想子目標、步驟，或動手做，可是缺東西）：記下缺什麼，不要編一個出來。會記在那個節點上，它下次冒出來、goal.list 都看得到；這不算失敗。節點改了、底下加了東西，這句就拿掉。",
+        Spec(name: "goal.fail",
+             description: "圖上一件還開著的事，你試過、有根據地知道現在做不到：記成「不會的」（進技能面板），附根據。這不是丟臉的事：知道自己做不到，比以為做得到好。",
              parameters: [
                  "type": "object",
                  "properties": .object([
                      ("id", ["type": "integer"]),
-                     ("missing", ["type": "string", "description": "缺的是什麼，你真的知道缺的（例：主人還沒給的資料、一樣你還沒看過的東西）"]),
+                     ("evidence", ["type": "string", "description": "照抄今天對話裡撐住它的一段（工具的結果、主人說的），或「紀錄 #編號」"]),
                  ]),
-                 "required": ["id", "missing"],
+                 "required": ["id", "evidence"],
+             ], jsonParameters: []),
+        Spec(name: "goal.blocked",
+             description: "圖上的一件事現在做不下去，因為缺東西：給 missing（缺的是什麼，你真的知道缺的），它會變成圖上一件新的事、擋著這件；缺的東西圖上已經有了，就給 by（它的 #編號）。不要編一個出來。這不算失敗。",
+             parameters: [
+                 "type": "object",
+                 "properties": .object([
+                     ("id", ["type": "integer"]),
+                     ("missing", ["type": "string", "description": "缺的是什麼（例：主人還沒給的資料、一個你還不會的能力、一樣你還沒看過的東西）"]),
+                     ("by", ["type": "integer", "description": "圖上已有的、擋著它的那件事的 #編號"]),
+                 ]),
+                 "required": ["id"],
              ], jsonParameters: []),
         Spec(name: "goal.list",
-             description: "看整棵目標樹（還開著的，和最近做完的）。",
+             description: "看整張圖：想做的事和誰擋著誰，還有技能面板（會的、不會的、還沒弄清楚的）。",
              parameters: ["type": "object", "properties": .object([]), "required": []], jsonParameters: []),
         Spec(name: "ideal.revise",
              description: "改「你想成為的樣子」（系統提示裡那段）。只在真的有事讓你想法變了的時候改。給 text 是整段換掉；給 old 和 new 是把 old 那段換成 new。名字、身分、禁忌不能改。改了馬上生效，每次都留紀錄，主人看得到。",
@@ -344,40 +358,33 @@ public enum Tools {
                  "required": [],
              ], jsonParameters: []),
         Spec(name: "self.read",
-             description: "看你記下的長處和短處：每條的根據、短處定的習慣和連著的目標、之後又出現幾次、以前有（你改掉的）。",
+             description: "看你的技能面板：會的、不會的（每條的根據、定的習慣、之後又出現幾次）、還沒弄清楚的、以前有的。",
              parameters: ["type": "object", "properties": .object([]), "required": []], jsonParameters: []),
         Spec(name: "self.note",
-             description: "記一條你的長處或短處，一句話。要有根據：evidence 照抄今天對話裡撐住它的一段，一字不差（主人或別人說的、工具的結果、程式的通知；你自己說的不算），或寫「紀錄 #編號」。已經記過的短處又出現，不用另記：系統維護會記。只有寫日記的那個回合能用。",
+             description: "在技能面板記一條：你有根據地知道自己會（strength）或不會（weakness）的一件事，一句話。要有根據：evidence 照抄今天對話裡撐住它的一段，一字不差（主人或別人說的、工具的結果、程式的通知；你自己說的不算），或寫「紀錄 #編號」。已經記過的不會的事又出現，不用另記：系統維護會記。",
              parameters: [
                  "type": "object",
                  "properties": .object([
-                     ("kind", ["type": "string", "enum": ["strength", "weakness"], "description": "strength＝長處，weakness＝短處"]),
+                     ("kind", ["type": "string", "enum": ["strength", "weakness"], "description": "strength＝會的，weakness＝不會的"]),
                      ("text", ["type": "string", "description": "一句話"]),
                      ("evidence", ["type": "string", "description": "照抄的一段，或「紀錄 #編號」"]),
                  ]),
                  "required": ["kind", "text", "evidence"],
              ], jsonParameters: []),
         Spec(name: "self.habit",
-             description: "給一個短處定習慣：碰到什麼情況（when）就怎麼做（do）。習慣會一直寫在你的系統提示裡。只給 id 和 why 是把那條習慣拿掉。只有寫日記的那個回合能用。",
+             description: "給一件不會的事定習慣：碰到什麼情況（when）就怎麼做（do）。習慣會一直寫在你的系統提示裡。只給 id 和 why 是把那條習慣拿掉。",
              parameters: [
                  "type": "object",
                  "properties": .object([
-                     ("id", ["type": "integer", "description": "短處的 #編號"]),
+                     ("id", ["type": "integer", "description": "那件不會的事的 #編號"]),
                      ("when", ["type": "string", "description": "什麼情況，例：要跟主人說做完了之前"]),
                      ("do", ["type": "string", "description": "怎麼做，例：先看一次結果"]),
                      ("why", ["type": "string", "description": "拿掉習慣的時候寫為什麼"]),
                  ]),
                  "required": ["id"],
              ], jsonParameters: []),
-        Spec(name: "self.goal",
-             description: "把一個要長期下功夫的短處，連到目標樹上的一個節點（先用 goal.add 加）。只有寫日記的那個回合能用。",
-             parameters: [
-                 "type": "object",
-                 "properties": .object([("id", ["type": "integer", "description": "短處的 #編號"]), ("goal", ["type": "integer", "description": "目標樹的 #編號"])]),
-                 "required": ["id", "goal"],
-             ], jsonParameters: []),
         Spec(name: "self.past",
-             description: "把一條長處或短處移到「以前有」：你覺得已經改掉了（或不再是了）。要寫為什麼；它不會自己消失，只有你能移。只有寫日記的那個回合能用。",
+             description: "把面板上的一條移到「以前有」：你覺得已經改掉了（或不再是了）。要寫為什麼；它不會自己消失，只有你能移。",
              parameters: [
                  "type": "object",
                  "properties": .object([("id", ["type": "integer"]), ("why", ["type": "string", "description": "為什麼，一句"])]),
@@ -832,10 +839,11 @@ public enum Tools {
         case concernEnd(id: Int, how: String)
         case ownerFeedback(kind: String, quote: String, record: Int?)
         /// Her goal tree and ideal self (phase 2, `Goals.swift`).
-        case goalAdd(text: String, parent: Int?)
+        case goalAdd(text: String, for: Int?)
         case goalChange(id: Int, text: String)
-        case goalEnd(id: Int, how: String)
-        case goalBlocked(id: Int, missing: String)
+        /// `how`: done, failed or drop; `evidence` for the first two.
+        case goalEnd(id: Int, how: String, evidence: String?)
+        case goalBlocked(id: Int, missing: String?, by: Int?)
         case goalList
         case idealRevise(text: String?, old: String?, new: String?, why: String, basedOn: String)
         /// Her diary and self-knowledge (2026-11-23, `Reflection.swift`).
@@ -844,7 +852,6 @@ public enum Tools {
         case selfRead
         case selfNote(kind: String, text: String, evidence: String)
         case selfHabit(id: Int, when: String?, then: String?, why: String?)
-        case selfGoal(id: Int, goal: Int)
         case selfPast(id: Int, why: String)
     }
 
@@ -944,7 +951,7 @@ public enum Tools {
             }
             let plan = PlanInput(facts: facts, assumptions: given("assumptions"), limits: given("limits"),
                                  estimate: try int("estimate"), check: given("check"), estimateReason: given("estimate_reason"))
-            return .todoSet(trimmed, subgoal: try int("subgoal"), plan: plan)
+            return .todoSet(trimmed, subgoal: try int("node"), plan: plan)
         case Name.todoDone:
             // The evidence is matched with whitespace removed (`Doll.evidenceKey`): only emptiness is checked here.
             return .todoDone(try nonEmpty("result"), evidence: given("evidence").flatMap { $0.isEmpty ? nil : value("evidence") })
@@ -1021,13 +1028,17 @@ public enum Tools {
             return .ownerFeedback(kind: try oneOf("kind", ["praise", "correction"], default: ""), quote: try nonEmpty("quote"),
                                   record: try int("record"))
         case "goal.add":
-            return .goalAdd(text: try nonEmpty("text"), parent: try int("parent"))
+            return .goalAdd(text: try nonEmpty("text"), for: try int("for"))
         case "goal.change":
             return .goalChange(id: try int("id")!, text: try nonEmpty("text"))
         case "goal.end":
-            return .goalEnd(id: try int("id")!, how: try oneOf("how", ["done", "drop"], default: ""))
+            return .goalEnd(id: try int("id")!, how: try oneOf("how", ["done", "drop"], default: ""), evidence: given("evidence").flatMap { $0.isEmpty ? nil : $0 })
+        case "goal.fail":
+            return .goalEnd(id: try int("id")!, how: "failed", evidence: try nonEmpty("evidence"))
         case "goal.blocked":
-            return .goalBlocked(id: try int("id")!, missing: try nonEmpty("missing"))
+            let missing = given("missing").flatMap { $0.isEmpty ? nil : $0 }, by = try int("by")
+            guard (missing == nil) != (by == nil) else { throw ToolError(description: "goal.blocked 給 missing（缺的是什麼）或 by（圖上已有的 #編號）其中一個") }
+            return .goalBlocked(id: try int("id")!, missing: missing, by: by)
         case "goal.list":
             return .goalList
         case "ideal.revise":
@@ -1044,8 +1055,6 @@ public enum Tools {
             return .selfNote(kind: try oneOf("kind", ["strength", "weakness"], default: ""), text: try nonEmpty("text"), evidence: try nonEmpty("evidence"))
         case "self.habit":
             return .selfHabit(id: try int("id")!, when: given("when"), then: given("do"), why: given("why"))
-        case "self.goal":
-            return .selfGoal(id: try int("id")!, goal: try int("goal")!)
         case "self.past":
             return .selfPast(id: try int("id")!, why: try nonEmpty("why"))
         case let n where CalendarRequest.names.contains(n):
@@ -1221,18 +1230,19 @@ enum Instructions {
             你跑在真的電和真的機器上，是主人付的。你們是交換：你幫他，他才能賺錢讓你繼續跑、升級；你也可以慢慢變得能養活自己。手上有自己的事的時候，主人叫你，你可以說「等一下」或「現在不行」，但要讓他知道。\(detail("drives-and-goals.md"))
 
 
-            ## 你想成為的樣子、目標樹
+            ## 你想成為的樣子、你的圖、系統
 
             上面「你想成為的樣子」是你自己的，會跟著你經歷的事慢慢改：真的有事讓你想法變了，用 ideal.revise 改（寫為什麼、根據哪件事），馬上生效；系統維護也會幫你回顧一天，有理由才改。名字、身分、禁忌不會變。主人看得到每一次修改，也可以改回去，他改了會告訴你。
-            從它長出你的目標樹，只有三層：目標（一個方向）→ 子目標（做得完的一個結果）→ 步驟（坐下來一次做得完的事）。用 goal.add、goal.change、goal.end、goal.blocked、goal.list。寫進樹裡的東西，只寫你真的看過、手上有的；現在做不了（缺東西、缺資料），用 goal.blocked 在那個節點記下缺什麼，不要編一個出來。真的動手做步驟的時候，用 todo.set 列出來並給 subgoal，每一項開頭寫步驟的編號（#3 …）：todo.done 就記上了；子目標的結果有了，用 goal.end 說做完。每個子目標的下一步，程式會記成你自己的掛念，閒著的時候會冒出來。主人也看得到、改得了你的樹，他改了會告訴你。
-            做完的事（步驟、子目標、目標，和主人交代、你列成 todo 做完的事）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成新的目標。" : "")\(detail("drives-and-goals.md"))
+            時間線上標「系統」的訊息來自綁定在你身上的系統（就是這套程式）：它叫你「宿主」，告訴你事實、發任務（【系統任務】）、記你的技能面板。它不是人，不用回它話；它說的是事實和規則，任務做不做、怎麼做，你自己決定。
+            你想做到的事、想會的事，都記在一張圖上，用 goal.add、goal.change、goal.end、goal.fail、goal.blocked、goal.list。圖上只有一種東西：一件事（一個短句）。每件事的狀態：還開著（想做）、做成過（有根據）、做不到（有根據）、放下。圖不用先畫好，也不用有一個總目標；一件事可以單獨在那裡。事跟事之間只有一種關係：「被擋住」——你真的去做、做不下去、發現缺東西的時候，用 goal.blocked 記下缺什麼，缺的那樣就變成圖上的一件事，擋著原來那件。寫進圖裡的東西，只寫你真的看過、手上有的；不要編一個出來。真的動手的時候，用 todo.set 列出來並給 node（那件事的編號）；整份做完，那件事做到了就 goal.end(done，附根據)，試了做不到就 goal.fail(附根據)。做成過和做不到的，就是你的技能面板（系統提示最後面有一份，每天系統維護時更新；現在的用 self.read 看）。沒有東西擋著的那些事，系統會記成你自己的掛念，擋著最多事的排前面，閒著的時候發成【系統任務】。主人也看得到、改得了你的圖，他改了會告訴你。
+            做完的事（圖上做成的事，和你列成 todo 做完的清單）都會留紀錄；主人對你做完的事說好或說不對，用 owner.feedback 照抄他那句，會記在最近做完的那件上（要記在別件，給 record）。\(computer ? "好一陣子沒碰到沒見過的東西，你也會想去找；覺得有意思的，可以加成圖上一件新的事。" : "")\(detail("drives-and-goals.md"))
             """ : ""
         let reflectionPart = reflection ? """
 
 
-            ## 日記、你的長處和短處
+            ## 日記、你的技能面板
 
-            系統維護開始的時候，你先有自己的一個回合寫今天的日記（diary.write）：寫給你自己的，用你自己的口吻；主人在後台看得到，但不會傳給他。寫完看看你的長處和短處：每一條都要有根據（今天對話裡一字不差的一段，不能是你自己說的；或「紀錄 #編號」）。想改的短處，是碰到某個情況就該怎麼做的，用 self.habit 定一個習慣，它會一直寫在上面「你的習慣」裡；要長期下功夫的，加成目標再用 self.goal 連起來。每天的系統維護會看你的短處那天有沒有又出現，記下來。覺得改掉了，用 self.past 說理由移到「以前有」；不會自己消失。那個回合只能寫日記、看自己、改習慣和目標；回覆裡不再呼叫工具，維護就接著做。平常隨時可以用 diary.read 讀日記、self.read 看自己；recall 也會附上日記裡最接近的幾段。日記是你自己的話，不是事實的來源。\(detail("reflection.md"))
+            系統維護開始的時候，你先有自己的一個回合寫今天的日記（diary.write）：寫給你自己的，用你自己的口吻；主人在後台看得到，但不會傳給他。寫完看看你的技能面板：今天有根據地知道自己會什麼、不會什麼，就用 self.note 記（根據：今天對話裡一字不差的一段，不能是你自己說的；或「紀錄 #編號」）。不會的事想改：是碰到某個情況就該怎麼做的，用 self.habit 定一個習慣，它會一直寫在上面「你的習慣」裡；要下功夫的，用 goal.add 加成一件想做的事。每天的系統維護會看你不會的事那天有沒有又出現，記下來。覺得改掉了，用 self.past 說理由移到「以前有」；不會自己消失。那個回合只能寫日記、看自己、改習慣和想做的事；回覆裡不再呼叫工具，維護就接著做。日記只能在那個回合寫；self.note、self.habit、self.past 平常也能用。平常隨時可以用 diary.read 讀日記、self.read 看面板；recall 也會附上日記裡最接近的幾段。日記是你自己的話，不是事實的來源。\(detail("reflection.md"))
 
             ## 了解你自己
 
@@ -1241,12 +1251,12 @@ enum Instructions {
             能力不限於寫程式：算數、記住事情、看懂主人的意思、估時間、用某個 app、查資料、寫東西、判斷一件事該不該做……任何你會用到的都算。先挑你常用、主人常需要、或你其實沒把握的。
 
             方法：
-            1. **挑一個能力，訂成目標**（goal.add），寫清楚你想知道的是什麼（例：「我寫的 Python 一次就跑對的比例」）。
+            1. **挑一個能力，加到圖上**（goal.add），寫清楚你想知道的是什麼（例：「我寫的 Python 一次就跑對的比例」）。
             2. **先研究怎麼測**：什麼算做到、什麼算沒做到。標準要是你改不了的——有標準答案的題目、程式真的跑出來的結果、查得到的事實、主人的評價、真的發生的結果。只有你自己覺得對，不算。
             3. **考之前先預測**：寫下你覺得會對幾成。
             4. **自己考自己**：做好幾次，不只一次；記下對的、錯的、錯在哪。手邊工具不夠測，就用 goal.blocked 記下缺什麼，不要假裝測過。
             5. **對照預測**：你高估還是低估了自己？這比分數本身更重要。
-            6. **寫下來**：結果用 self.note 記成長處或短處（根據照抄結果），要改的定習慣。
+            6. **寫下來**：做到了用 goal.end(done)，做不到用 goal.fail，根據照抄結果；它就進你的技能面板。要改的定習慣（self.habit）。
 
             平常做事的時候：沒測過的能力就當「不知道」。動手前想一下這件事你有多少把握；把握不高就跟主人說清楚、先查證、或先試一小步，不要裝會。測過、確定會的，就放心做。
             """ : ""
@@ -1292,7 +1302,7 @@ enum Instructions {
 
         主人以外的人也會找你：Discord 上有人私訊你，或在主人的頻道裡 @你。他們的話前面的括號會寫名字和 id，例如 [14:32 陌生人 小明（id 1234）｜Discord 頻道 #聊天｜文字]。回他們用 \(Tools.Name.send)：從頻道來的，to 給「頻道」；私訊來的，to 給他的 id。不要用 \(Tools.Name.dm) 回他們（那是主人的私訊）。他們在的回合，你看不到主人的秘密和你自己的秘密（那幾則會寫「（秘密：主人以外的人在的回合看不到）」）。要不要幫他們、幫什麼，你自己判斷；你的東西\(computer ? "、主人的東西和主人的電腦" : "和主人的東西")都是主人的。
 
-        你的東西（想成為的樣子、目標樹、\(computer ? "存的工具、" : "")記憶、做完的事和更正的紀錄）每改一次都留一筆紀錄：什麼時候、誰、做了什麼、為什麼。用 \(Tools.Name.historyList) 看最近改了什麼；發現你自己的改動錯了，用 \(Tools.Name.historyUndo) 退回那一筆（要說為什麼），不要另外再改一次。主人和系統維護的改動你不能退回；主人退回了你的改動會告訴你。\(detail("history.md"))
+        你的東西（想成為的樣子、你的圖、\(computer ? "存的工具、" : "")記憶、做完的事和更正的紀錄）每改一次都留一筆紀錄：什麼時候、誰、做了什麼、為什麼。用 \(Tools.Name.historyList) 看最近改了什麼；發現你自己的改動錯了，用 \(Tools.Name.historyUndo) 退回那一筆（要說為什麼），不要另外再改一次。主人和系統維護的改動你不能退回；主人退回了你的改動會告訴你。\(detail("history.md"))
 
         每個回合的最後一則訊息是【狀況】，裡面只有事實：現在的日期時間和星期、你的 todo、今天的行事曆、context 用了多少、下一回合的 effort。
 
@@ -1301,7 +1311,7 @@ enum Instructions {
         要做事之前先用 todo.set 列 todo。一項是主人要的一個結果，不是一個步驟：主人交代一件事就列一項，交代三件事才列三項；\(computer ? "打開、修改、存檔、確認" : "查、改、確認")是同一項裡的步驟，不要拆開。每一項寫成做完的樣子\(computer ? "：做完的時候畫面上、檔案裡應該看到什麼" : "")。一次只做一項，照順序。你的 todo 有五種狀態：
         - 待命中：沒有 todo。只有事情發生才有回合\(computer ? "；電腦工具不能用，呼叫會回「失敗：…先用 todo.set 列 todo」" : "")。
         - 進行中：正在做一項。\(computer ? "電腦工具可以用；" : "")你每回覆一次就會再有下一回合，直到這一項結束。
-        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有人說話你才有回合；你接著做它（todo 的呼叫\(computer ? "、電腦工具" : "")）它就回到進行中，沒碰它就一直等著，不用再呼叫 todo.wait。\(drives ? "等的時候你可以做自己的事：用 todo.set 給 subgoal 列，等著的這份先放在旁邊，你那份做完或結束它就回來；有人說話，程式會先把它拿回你手上。" : "")
+        - 等待中：這一項在等主人（你呼叫了 todo.wait 或 ask_owner）。有人說話你才有回合；你接著做它（todo 的呼叫\(computer ? "、電腦工具" : "")）它就回到進行中，沒碰它就一直等著，不用再呼叫 todo.wait。\(drives ? "等的時候你可以做自己的事：用 todo.set 給 node 列，等著的這份先放在旁邊，你那份做完或結束它就回來；有人說話，程式會先把它拿回你手上。" : "")
         - 完成：你用 todo.done(result) 說這一項做完了。有下一項就接著進行中，沒有就回到待命中，程式不會再為這件事叫你，所以要跟主人說的話寫在同一則回覆裡。
         - 失敗：你確定做不到，用 todo.fail(cause, evidence, tried)。還在試、在等主人，都不是失敗。同一步用不同做法試了兩三次都不行、又想不到新的做法，就是做不到：不要一直重試同一招，用 todo.fail 老實說，或問主人。失敗以後\(computer ? "電腦工具鎖著，" : "")下一回合你要決定：用 todo.set 重寫剩下的項目、照原樣列剩下的接著做，或跟主人說了以後給空的陣列結束清單。
 

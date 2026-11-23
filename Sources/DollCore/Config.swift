@@ -216,10 +216,6 @@ public struct DrivesConfig: Sendable, Equatable {
     public var enabled = true
     /// Which out-of-range signal surfaces first when several are pending.
     public var order: [Signal] = [.stress, .closeness, .drive]
-    /// How a wandering is worded (2026-11-24, owner: first person reads more like her own thought):
-    /// `second` 「你想起…」 from 程式, with the ask in the line; `first` 「我想起…」 as 你的念頭, the
-    /// rules for it in her instructions. Measured before it becomes the default.
-    public var wanderVoice = "second"
     /// 動力 (idle-drive, 2026-11-20): its rest is above `driveHigh`, so left alone it climbs; an
     /// episode of her own things sets it back to `driveReset`. Reset → high takes
     /// `driveHalfLifeH · log2((rest − reset) / (rest − high))` = 0.63 h · log2(3) ≈ 1.0 h.
@@ -277,13 +273,14 @@ public struct DrivesConfig: Sendable, Equatable {
 /// the record of what she did, curiosity. On with `[drives] enabled` (they feed 動力 and the
 /// concerns). The reasons for each number are in `dollcore.example.toml`.
 public struct GoalsConfig: Sendable, Equatable {
-    public var goalsOpenMax = 3
-    public var subgoalsOpenMax = 3
-    public var stepsOpenMax = 6
-    public var textMaxChars = 60
+    /// Open nodes of her graph at most (2026-11-24: the three levels and their caps are gone).
+    public var nodesOpenMax = 12
+    /// Actionable nodes kept as her own concerns (what 動力 can bring up), the ones holding up the most first.
+    public var tasksMax = 6
+    public var textMaxChars = 80
     /// 動力 for finishing, full amount (the owner's good confirms it): a step, a sub-goal, a goal of
     /// the tree; a todo list that is not tree work (what the owner asked).
-    public var stepDrive = 0.05, subgoalDrive = 0.15, goalDrive = 0.3, listDrive = 0.1
+    public var nodeDrive = 0.15, listDrive = 0.1
     /// The share given at once on completion; the rest when the evaluation is good.
     public var nowShare = 0.5
     /// `owner.feedback` without a record number lands on the newest record this recent.
@@ -302,8 +299,6 @@ public struct GoalsConfig: Sendable, Equatable {
     public var noveltyGapMin = 30.0
     /// What she saw is remembered this long for "new".
     public var seenDays = 90.0
-    /// Her 「現在做不了，缺 X」 on a node (`goal.blocked`) is shown with it this long.
-    public var blockedHours = 24.0
 
     public init() {}
 }
@@ -599,9 +594,6 @@ public struct ReflectionConfig: Sendable {
     public var dashboardDays = 30
     /// `recall` adds this many diary passages nearest the query (0: none).
     public var recallMax = 2
-    /// Strengths and weaknesses not yet moved to 以前有.
-    public var itemsMax = 20
-    public var itemMaxChars = 80
     public var habitsMax = 8
     /// A habit's 「when」 and 「do」 together.
     public var habitMaxChars = 80
@@ -986,22 +978,22 @@ public struct Config: Sendable {
         var g = GoalsConfig()
         try s.read("review", &g.review)
         let ints: [(String, WritableKeyPath<GoalsConfig, Int>)] = [
-            ("goals_open_max", \.goalsOpenMax), ("subgoals_open_max", \.subgoalsOpenMax), ("steps_open_max", \.stepsOpenMax),
+            ("nodes_open_max", \.nodesOpenMax), ("tasks_max", \.tasksMax),
             ("text_max_chars", \.textMaxChars), ("ideal_max_chars", \.idealMaxChars), ("review_chars", \.reviewChars),
         ]
         let nums: [(String, WritableKeyPath<GoalsConfig, Double>)] = [
-            ("step_drive", \.stepDrive), ("subgoal_drive", \.subgoalDrive), ("goal_drive", \.goalDrive), ("list_drive", \.listDrive),
+            ("node_drive", \.nodeDrive), ("list_drive", \.listDrive),
             ("now_share", \.nowShare), ("feedback_hours", \.feedbackHours), ("revise_min_days", \.reviseMinDays),
             ("curiosity_hours", \.curiosityHours), ("novelty_drive", \.noveltyDrive), ("novelty_gap_min", \.noveltyGapMin),
-            ("seen_days", \.seenDays), ("blocked_hours", \.blockedHours),
+            ("seen_days", \.seenDays),
         ]
         for (k, p) in ints { try s.read(k, &g[keyPath: p]) }
         for (k, p) in nums { try s.read(k, &g[keyPath: p]) }
         try s.finish()
         guard ints.allSatisfy({ g[keyPath: $0.1] >= 1 }),
-              [g.stepDrive, g.subgoalDrive, g.goalDrive, g.listDrive, g.noveltyDrive, g.nowShare].allSatisfy({ (0...1).contains($0) }),
-              g.feedbackHours > 0, g.reviseMinDays >= 0, g.curiosityHours > 0, g.noveltyGapMin >= 0, g.seenDays > 0, g.blockedHours > 0 else {
-            throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days, blocked_hours above 0; revise_min_days and novelty_gap_min 0 or more")
+              [g.nodeDrive, g.listDrive, g.noveltyDrive, g.nowShare].allSatisfy({ (0...1).contains($0) }),
+              g.feedbackHours > 0, g.reviseMinDays >= 0, g.curiosityHours > 0, g.noveltyGapMin >= 0, g.seenDays > 0 else {
+            throw TOMLError(description: "[goals] counts and character caps at least 1; the drive amounts and now_share 0…1; feedback_hours, curiosity_hours, seen_days above 0; revise_min_days and novelty_gap_min 0 or more")
         }
         return g
     }
@@ -1012,7 +1004,7 @@ public struct Config: Sendable {
         try s.read("enabled", &r.enabled)
         let ints: [(String, WritableKeyPath<ReflectionConfig, Int>)] = [
             ("diary_max_chars", \.diaryMaxChars), ("max_turns", \.maxTurns), ("read_days", \.readDays), ("dashboard_days", \.dashboardDays),
-            ("items_max", \.itemsMax), ("item_max_chars", \.itemMaxChars), ("habits_max", \.habitsMax), ("habit_max_chars", \.habitMaxChars),
+            ("habits_max", \.habitsMax), ("habit_max_chars", \.habitMaxChars),
             ("quote_min_chars", \.quoteMinChars),
         ]
         for (k, p) in ints { try s.read(k, &r[keyPath: p]) }
@@ -1032,8 +1024,6 @@ public struct Config: Sendable {
         var order = d.order.map(\.rawValue)
         try s.read("enabled", &d.enabled)
         try s.read("order", &order)
-        try s.read("wander_voice", &d.wanderVoice)
-        guard ["second", "first"].contains(d.wanderVoice) else { throw TOMLError(description: "[drives] wander_voice second or first") }
         let nums: [(String, WritableKeyPath<DrivesConfig, Double>)] = [
             ("drive_rest", \.driveRest), ("drive_half_life_h", \.driveHalfLifeH), ("drive_high", \.driveHigh), ("drive_reset", \.driveReset),
             ("stress_rest", \.stressRest), ("stress_half_life_h", \.stressHalfLifeH), ("stress_high", \.stressHigh),

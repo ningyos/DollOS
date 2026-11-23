@@ -11,49 +11,15 @@ import Foundation
 ///                   She reads it any time (`diary.read`); `recall` adds the nearest passages, marked as
 ///                   her own words (never a source of fact: the audit and the consolidation already
 ///                   treat her own lines that way).
-///   self-knowledge  `<data_dir>/self-knowledge.json`: her strengths and weaknesses, each with evidence
-///                   the program finds (a quote of the day that is not hers, or `紀錄 #N`). A weakness she
-///                   works on gets a habit (「什麼情況→怎麼做」, always in her system prompt after the
-///                   ideal self, at most `habits_max`) or a goal of her tree (long work). The maintenance
-///                   task `recur` records each day a weakness showed again (quoted). Only she moves one
-///                   to 以前有 (`self.past`, with why); nothing disappears by itself (owner, 2026-11-23).
+///   self-knowledge  the done and failed nodes of her graph (`Goals.swift`, `mind.json`; 2026-11-24): what
+///                   she has shown she can do (長處／做成過) and cannot (短處／做不到), each with evidence
+///                   the program finds (a quote of the day that is not hers, or `紀錄 #N`). `self.note`
+///                   writes one directly. A failed one she works on gets a habit (「什麼情況→怎麼做」,
+///                   always in her system prompt after the ideal self, at most `habits_max`). The
+///                   maintenance task `recur` records each day a failed one showed again (quoted). Only
+///                   she moves one to 以前有 (`self.past`, with why); nothing disappears by itself.
 ///
-/// She changes all of it only in the diary turn (`diaryOnly`); reading is any time.
-public struct SelfItem: Sendable, Codable, Equatable {
-    public struct Evidence: Sendable, Codable, Equatable {
-        public var quote: String
-        public var ts: Double
-        /// "her" (her note) or "maintenance" (the `recur` task).
-        public var by: String
-    }
-    public struct Habit: Sendable, Codable, Equatable {
-        public var when: String
-        public var then: String
-        public var since: Double
-    }
-    public struct Past: Sendable, Codable, Equatable {
-        public var why: String
-        public var ts: Double
-    }
-    public var id: Int
-    /// "strength" or "weakness".
-    public var kind: String
-    public var text: String
-    public var evidence: [Evidence]
-    public var created: Double
-    public var habit: Habit?
-    /// The goal-tree node she works on it with.
-    public var goal: Int?
-    /// A weakness: each day it showed again after it was noted.
-    public var again: [Evidence] = []
-    /// Moved to 以前有 by her.
-    public var past: Past?
-}
-
-public struct SelfFile: Sendable, Codable, Equatable {
-    var nextId = 1
-    public var items: [SelfItem] = []
-}
+/// The diary is written only in the diary turn (`diaryOnly`); the rest any time.
 
 /// One passage of her diary in the recall index.
 struct DiaryPassage {
@@ -65,16 +31,16 @@ struct DiaryPassage {
 
 enum Reflection {
     static let diaryDir = "diary"
-    static let selfFileName = "self-knowledge.json"
     /// The task name in `maintenance.json`'s `done` once her diary turn is over.
     static let diaryTask = "diary"
     static let habitsHeader = "你的習慣（你從自己的短處定的；碰到那個情況就照做）："
 
     /// Allowed in the diary turn; everything else is refused there.
-    static let diaryTurnTools: Set<String> = ["diary.write", "diary.read", "self.read", "self.note", "self.habit", "self.goal", "self.past",
-                                              "recall", "think", "goal.list", "goal.add", "goal.change", Tools.Name.historyList]
+    static let diaryTurnTools: Set<String> = ["diary.write", "diary.read", "self.read", "self.note", "self.habit", "self.past",
+                                              "recall", "think", "goal.list", "goal.add", "goal.change", "goal.end", "goal.fail",
+                                              "goal.blocked", Tools.Name.historyList]
     /// Only in the diary turn.
-    static let diaryOnly: Set<String> = ["diary.write", "self.note", "self.habit", "self.goal", "self.past"]
+    static let diaryOnly: Set<String> = ["diary.write"]
 
     /// The diary files of a data dir, oldest first.
     static func diaryFiles(_ data: URL) -> [URL] {
@@ -98,11 +64,11 @@ enum Reflection {
     static func notice(now: String, list: String, habitsMax: Int, forced: String) -> String {
         "【系統維護】開始，現在 \(now)。維護之前先寫今天的日記：用 diary.write 寫一篇，寫給你自己的（主人在後台看得到，但不會傳給他）。"
             + "可以寫的方向，不用每個都寫：今天發生了什麼、你的感受、你學到什麼、明天在想什麼。"
-            + "寫完看看你的長處和短處（在下面）：要加就用 self.note，每一條都要有根據：今天對話裡一字不差的一段（主人或別人說的、工具的結果、程式的通知；不能是你自己說的），或「紀錄 #編號」（goal.list 下面那些做完的事）。已經記過的短處今天又出現了，不要另記一條：系統維護會自己記它又出現。"
-            + "想改的短處：是碰到某個情況就該怎麼做的，用 self.habit 定一個習慣（最多 \(habitsMax) 條，會一直在你眼前）；要長期下功夫的，用 goal.add 加目標，再用 self.goal 連起來。"
-            + "覺得一個短處已經改掉了，用 self.past 說理由（只有你自己能移，不會自己消失）。"
-            + "這個回合只能寫日記、看自己、改習慣和目標，不能傳訊息、不能用電腦。寫完了就不要再呼叫工具，維護接著做，那段時間你不在。"
-            + forced + "\n\n你現在的長處和短處：\n" + list
+            + "寫完看看你的技能面板（在下面）：今天有根據地知道自己會什麼、不會什麼，就用 self.note 記，每一條都要有根據：今天對話裡一字不差的一段（主人或別人說的、工具的結果、程式的通知；不能是你自己說的），或「紀錄 #編號」。已經記過的不會的事今天又出現了，不要另記一條：系統維護會自己記它又出現。"
+            + "想改的：是碰到某個情況就該怎麼做的，用 self.habit 定一個習慣（最多 \(habitsMax) 條，會一直在你眼前）；要下功夫的，用 goal.add 加一件想做的事。"
+            + "覺得一件不會的事已經改掉了，用 self.past 說理由（只有你自己能移，不會自己消失）。"
+            + "這個回合只能寫日記、看自己、改習慣和想做的事，不能傳訊息、不能用電腦。寫完了就不要再呼叫工具，維護接著做，那段時間你不在。"
+            + forced + "\n\n你現在的技能面板：\n" + list
     }
 
     // the maintenance task `recur` ------------------------------------------------------------------
@@ -124,7 +90,7 @@ enum Reflection {
         """
     }
 
-    static func recurUser(weaknesses: [SelfItem], day: String) -> String {
+    static func recurUser(weaknesses: [GoalNode], day: String) -> String {
         "你的短處：\n" + weaknesses.map { "#\($0.id) \($0.text)" + ($0.habit.map { "（習慣：\($0.when)→\($0.then)）" } ?? "") }.joined(separator: "\n")
             + "\n\n今天的對話（最後一段）：\n\(day)"
     }
@@ -161,8 +127,6 @@ extension Doll {
     // storage -----------------------------------------------------------------------------------------
 
     var reflectionOn: Bool { reflectionConfig.enabled && maintenanceConfig.enabled && drivesConfig.enabled }
-
-    func saveSelf() throws { try saveDocument(selfFile, selfURL) }
 
     /// Every passage (a paragraph) of every diary file, embedded: at boot and after the history wrote files.
     func rebuildDiaryIndex() throws {
@@ -232,8 +196,8 @@ extension Doll {
         maintenanceState.forced = forced
         saveMaintenanceLogged()
         let kept = forced ? "你手上的「\(todo.current ?? "")」先停著，維護結束後接著做。" : ""
-        put(Event(.memory, .internal, Reflection.notice(now: Self.hhmm(now), list: selfText(), habitsMax: reflectionConfig.habitsMax, forced: kept),
-                  sealed: Concerns.boxed(selfURL)))
+        put(Event(.memory, .internal, Reflection.notice(now: Self.hhmm(now), list: panelText(), habitsMax: reflectionConfig.habitsMax, forced: kept),
+                  sealed: Concerns.boxed(goalsURL)))
         log("INFO", "maintenance: started with her diary turn\(forced ? " (busy limit)" : ""); diary file \(maintenanceState.diaryFile!)")
         feed.notify(.maintenance)
     }
@@ -252,7 +216,7 @@ extension Doll {
     func diaryRefusal(_ name: String) -> String? {
         guard reflectionOn else { return nil }
         if inDiaryTurn, !Reflection.diaryTurnTools.contains(name) {
-            return "失敗：系統維護中，這個回合只寫日記、看自己、改習慣和目標，\(name) 沒有執行。寫完了就不要再呼叫工具，維護接著做。"
+            return "失敗：系統維護中，這個回合只寫日記、看自己、改習慣和想做的事，\(name) 沒有執行。寫完了就不要再呼叫工具，維護接著做。"
         }
         if !inDiaryTurn, Reflection.diaryOnly.contains(name) {
             return "失敗：\(name) 只在系統維護開始、寫日記的那個回合能用。現在想到的，" + (drivesConfig.enabled ? "用 concern.note 記著，" : "先記著，") + "到時候再寫。"
@@ -306,17 +270,17 @@ extension Doll {
     }
 
     func selfReadTool() -> Outcome {
-        Outcome(text: "你的長處和短處：\n" + selfText(), sealed: Concerns.boxed(selfURL), actions: ["self read"])
+        Outcome(text: "你的技能面板：\n" + panelText(), sealed: Concerns.boxed(goalsURL), actions: ["self read"])
     }
 
     /// Evidence she gives: `紀錄 #N` of her record, or a quote found in an event of this day that is
     /// not her own (her replies, her diary and self-knowledge read back, 【相關記憶】, the diary notice).
     /// Its time is the event's (the newest one holding the quote) or the record's.
-    func checkedEvidence(_ raw: String, by: String) throws -> SelfItem.Evidence {
+    func checkedEvidence(_ raw: String, by: String) throws -> GoalNode.Evidence {
         let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.hasPrefix("紀錄"), let n = Int(t.dropFirst(2).trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "#＃ "))) {
             guard let e = recordFile.entries.first(where: { $0.id == n }) else { throw ToolError(description: "沒有紀錄 #\(n)（goal.list 下面列著做完的事和編號）") }
-            return SelfItem.Evidence(quote: "紀錄 #\(n)：\(e.text)", ts: e.ts, by: by)
+            return GoalNode.Evidence(quote: "紀錄 #\(n)：\(e.text)", ts: e.ts, by: by)
         }
         var quote = t
         for (o, c) in [("「", "」"), ("\"", "\""), ("“", "”")] where quote.hasPrefix(o) && quote.hasSuffix(c) && quote.count > 2 {
@@ -328,13 +292,13 @@ extension Doll {
         guard let ev = notHers(timeline.events).last(where: { $0.text.contains(quote) }) else {
             throw ToolError(description: "今天的對話裡找不到「\(quote.prefix(40))」：要一字不差照抄主人或別人說的、工具的結果、程式的通知（你自己說的不算）；或寫「紀錄 #編號」")
         }
-        return SelfItem.Evidence(quote: quote, ts: ev.ts, by: by)
+        return GoalNode.Evidence(quote: quote, ts: ev.ts, by: by)
     }
 
     /// The events of the day that can be evidence.
     func notHers(_ events: [Event]) -> [Event] {
         let names = Self.callNames(events)
-        let echo: Set<String> = ["diary.read", "diary.write", "self.read", "self.note", "self.habit", "self.goal", "self.past", "recall", "think", "remember", "history.list"]
+        let echo: Set<String> = ["diary.read", "diary.write", "self.read", "self.note", "self.habit", "self.past", "goal.list", "goal.add", "goal.end", "goal.fail", "goal.blocked", "recall", "think", "remember", "history.list"]
         return events.filter { ev in
             switch ev.kind {
             case .doll: return false
@@ -345,85 +309,74 @@ extension Doll {
         }
     }
 
-    func selfItem(_ id: Int) throws -> SelfItem {
-        guard let it = selfFile.items.first(where: { $0.id == id }) else { throw ToolError(description: "沒有 #\(id)（self.read 看編號）") }
-        return it
+    /// A failed node she still has (not moved to 以前有).
+    func weakness(_ id: Int) throws -> GoalNode {
+        guard let n = node(id), n.failed, n.past == nil else { throw ToolError(description: "#\(id) 不是還在的「不會的事」（self.read 看編號）；習慣是從不會的事定的") }
+        return n
     }
 
-    func updateSelf(_ id: Int, _ change: (inout SelfItem) -> Void) throws {
-        var f = selfFile
-        change(&f.items[f.items.firstIndex { $0.id == id }!])
-        try saveDocument(f, selfURL)
-        selfFile = f
+    func updateNode(_ id: Int, _ change: (inout GoalNode) -> Void) throws {
+        var f = goalFile
+        change(&f.nodes[f.nodes.firstIndex { $0.id == id }!])
+        try saveDocument(f, goalsURL)
+        goalFile = f
         feed.notify(.drives)
     }
 
-    func selfNoteTool(kind: String, text: String, evidence: String) throws -> Outcome {
-        guard text.count <= reflectionConfig.itemMaxChars else {
-            throw ToolError(description: "太長了（\(text.count) 字，最多 \(reflectionConfig.itemMaxChars)）：寫成一句")
-        }
-        let current = selfFile.items.filter { $0.past == nil }
-        guard current.count < reflectionConfig.itemsMax else {
-            throw ToolError(description: "已經有 \(current.count) 條了（最多 \(reflectionConfig.itemsMax)）：改掉的用 self.past 移到以前有，再加")
-        }
-        if let same = current.first(where: { $0.text == text }) { throw ToolError(description: "已經有了（#\(same.id)）") }
+    /// `self.note`: a node written already ended, done (strength) or failed (weakness), with its evidence.
+    func selfNoteTool(kind: String, text raw: String, evidence: String) throws -> Outcome {
+        let text = try goalText(raw)
+        let end = kind == "strength" ? "done" : "failed"
+        if let same = goalFile.nodes.first(where: { $0.text == text && $0.end == end && $0.past == nil }) { throw ToolError(description: "已經有了（#\(same.id)）") }
         let e = try checkedEvidence(evidence, by: "her")
-        var f = selfFile
-        let item = SelfItem(id: f.nextId, kind: kind, text: text, evidence: [e], created: wallClock.now())
+        var f = goalFile
+        let n = GoalNode(id: f.nextId, text: text, created: wallClock.now(), by: "her", ended: wallClock.now(), end: end, evidence: [e])
         f.nextId += 1
-        f.items.append(item)
-        try saveDocument(f, selfURL)
-        selfFile = f
+        f.nodes.append(n)
+        try saveDocument(f, goalsURL)
+        goalFile = f
         feed.notify(.drives)
-        return Outcome(text: "記下了：#\(item.id)〔\(kind == "strength" ? "長處" : "短處")〕\(text)。", actions: ["self note"])
+        return Outcome(text: "記下了：#\(n.id)〔\(kind == "strength" ? "會的" : "不會的")〕\(text)。", actions: ["self note"])
     }
 
     func selfHabitTool(id: Int, when: String?, then: String?, why: String?) throws -> Outcome {
-        let it = try selfItem(id)
-        guard it.kind == "weakness", it.past == nil else { throw ToolError(description: "#\(id) 不是還在的短處；習慣是從短處定的") }
+        let it = try weakness(id)
         let w = (when ?? "").trimmingCharacters(in: .whitespacesAndNewlines), d = (then ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if w.isEmpty && d.isEmpty {
             guard it.habit != nil else { throw ToolError(description: "#\(id) 沒有習慣；要定一個就給 when 和 do") }
             guard let why, !why.trimmingCharacters(in: .whitespaces).isEmpty else { throw ToolError(description: "拿掉習慣要寫 why") }
-            try updateSelf(id) { $0.habit = nil }
+            try updateNode(id) { $0.habit = nil }
             return Outcome(text: "#\(id) 的習慣拿掉了，下一回合起就不在你眼前了。", actions: ["self habit off"])
         }
         guard !w.isEmpty, !d.isEmpty else { throw ToolError(description: "when（什麼情況）和 do（怎麼做）都要寫") }
         guard w.count + d.count <= reflectionConfig.habitMaxChars else {
             throw ToolError(description: "太長了（\(w.count + d.count) 字，最多 \(reflectionConfig.habitMaxChars)）：寫成一句")
         }
-        let habits = selfFile.items.filter { $0.past == nil && $0.habit != nil && $0.id != id }.count
+        let habits = goalFile.nodes.filter { $0.past == nil && $0.habit != nil && $0.id != id }.count
         guard habits < reflectionConfig.habitsMax else {
-            throw ToolError(description: "已經有 \(habits) 條習慣了（最多 \(reflectionConfig.habitsMax)）：先拿掉一條（self.habit 只給 id 和 why），或把改掉的短處用 self.past 移走")
+            throw ToolError(description: "已經有 \(habits) 條習慣了（最多 \(reflectionConfig.habitsMax)）：先拿掉一條（self.habit 只給 id 和 why），或把改掉的用 self.past 移走")
         }
-        try updateSelf(id) { $0.habit = SelfItem.Habit(when: w, then: d, since: wallClock.now()) }
+        try updateNode(id) { $0.habit = GoalNode.Habit(when: w, then: d, since: wallClock.now()) }
         return Outcome(text: "#\(id) 的習慣定好了：\(w)→\(d)。從下一回合起一直在你眼前。", actions: ["self habit"])
     }
 
-    func selfGoalTool(id: Int, goal: Int) throws -> Outcome {
-        let it = try selfItem(id)
-        guard it.kind == "weakness", it.past == nil else { throw ToolError(description: "#\(id) 不是還在的短處") }
-        guard let n = node(goal), n.ended == nil else { throw ToolError(description: "目標樹上沒有還開著的 #\(goal)（goal.list 看）") }
-        try updateSelf(id) { $0.goal = goal }
-        return Outcome(text: "短處 #\(id) 連到目標樹的 \(nodeLine(n))。", actions: ["self goal"])
-    }
-
     func selfPastTool(id: Int, why: String) throws -> Outcome {
-        let it = try selfItem(id)
+        guard let it = node(id), it.done || it.failed else { throw ToolError(description: "#\(id) 不是面板上的事（self.read 看編號）") }
         guard it.past == nil else { throw ToolError(description: "#\(id) 已經在以前有了") }
-        try updateSelf(id) { $0.past = SelfItem.Past(why: why, ts: wallClock.now()); $0.habit = nil }
+        try updateNode(id) { $0.past = GoalNode.Past(why: why, ts: wallClock.now()); $0.habit = nil }
         return Outcome(text: "#\(id)「\(it.text)」移到以前有了（\(selfStats(it))）。" + (it.habit != nil ? "它的習慣也拿掉了。" : ""), actions: ["self past"])
     }
 
     // words ---------------------------------------------------------------------------------------------
 
-    /// A weakness's record since it was noted (or since its habit): how often it showed again, and
+    /// A failed node's record since it was noted (or since its habit): how often it showed again, and
     /// how long since it last did.
-    func selfStats(_ it: SelfItem) -> String {
-        guard it.kind == "weakness" else { return "從 \(Self.historyTime(it.created)) 記的" }
-        let from = it.habit?.since ?? it.created
+    func selfStats(_ it: GoalNode) -> String {
+        let at = it.ended ?? it.created
+        guard it.failed else { return "\(Self.historyTime(at)) 記的" }
+        let from = it.habit?.since ?? at
         let after = it.again.filter { $0.ts >= from }
-        let lastSeen = it.again.last?.ts ?? it.created
+        let lastSeen = it.again.last?.ts ?? at
         let days = Int((wallClock.now() - lastSeen) / 86400)
         var s = it.habit != nil ? "定了習慣以後又出現 \(after.count) 次" : "記下以後又出現 \(after.count) 次"
         if let last = it.again.last { s += "，最近一次 \(Self.historyTime(last.ts))「\(last.quote.prefix(30))」" }
@@ -431,18 +384,21 @@ extension Doll {
         return s
     }
 
-    func selfText() -> String {
-        let cur = selfFile.items.filter { $0.past == nil }, old = selfFile.items.filter { $0.past != nil }
-        func line(_ it: SelfItem) -> String {
-            var s = "- #\(it.id) \(it.text)（根據：\(it.evidence.first.map { "「\($0.quote.prefix(40))」" } ?? "—")；\(selfStats(it))）"
-            if let h = it.habit { s += "\n  習慣：\(h.when)→\(h.then)" }
-            if let g = it.goal { s += "\n  目標：" + (node(g).map { nodeLine($0) + ($0.ended == nil ? "" : "（\($0.end == "done" ? "做完了" : "放下了")）") } ?? "#\(g)（不在樹上了）") }
+    /// The skill panel (2026-11-24): what she has shown she can do, cannot do, and has not found out
+    /// (open nodes that hold something up), each with what shows it.
+    func panelText(brief: Bool = false) -> String {
+        let can = goalFile.nodes.filter { $0.done && $0.past == nil }, cannot = goalFile.nodes.filter { $0.failed && $0.past == nil }
+        let unknown = goalFile.nodes.filter { n in n.open && n.blocks.contains { node($0)?.open == true } }
+        let old = goalFile.nodes.filter { $0.past != nil }
+        func line(_ it: GoalNode) -> String {
+            var s = "- #\(it.id) \(it.text)" + (brief ? "" : "（\(evidenceText(it))；\(selfStats(it))）")
+            if let h = it.habit { s += (brief ? "（習慣：" : "\n  習慣：") + "\(h.when)→\(h.then)" + (brief ? "）" : "") }
             return s
         }
-        let strengths = cur.filter { $0.kind == "strength" }, weaknesses = cur.filter { $0.kind == "weakness" }
-        var out = "長處：\n" + (strengths.isEmpty ? "（還沒有）" : strengths.map(line).joined(separator: "\n"))
-        out += "\n短處：\n" + (weaknesses.isEmpty ? "（還沒有）" : weaknesses.map(line).joined(separator: "\n"))
-        if !old.isEmpty {
+        var out = "會的（做成過）：\n" + (can.isEmpty ? "（還沒有）" : can.suffix(brief ? 15 : 40).map(line).joined(separator: "\n"))
+        out += "\n不會的（做不到、失敗過）：\n" + (cannot.isEmpty ? "（還沒有）" : cannot.suffix(brief ? 15 : 40).map(line).joined(separator: "\n"))
+        out += "\n還沒弄清楚的（擋著別的事）：\n" + (unknown.isEmpty ? "（沒有）" : unknown.map { "- " + nodeLine($0) }.joined(separator: "\n"))
+        if !brief, !old.isEmpty {
             out += "\n以前有（你移過來的）：\n" + old.suffix(10).map { "- #\($0.id) \($0.text)（\(Self.historyTime($0.past!.ts))：\($0.past!.why)）" }.joined(separator: "\n")
         }
         return out
@@ -450,17 +406,17 @@ extension Doll {
 
     /// The system prompt's part after the ideal self; empty when she has none.
     func habitsText() -> String {
-        let hs = selfFile.items.filter { $0.past == nil && $0.habit != nil }
+        let hs = goalFile.nodes.filter { $0.past == nil && $0.habit != nil }
         guard reflectionOn, !hs.isEmpty else { return "" }
         return "\(Reflection.habitsHeader)\n" + hs.map { "- \($0.habit!.when)→\($0.habit!.then)" }.joined(separator: "\n") + "\n\n"
     }
 
     // the maintenance task `recur` ----------------------------------------------------------------------
 
-    var recurDue: Bool { reflectionOn && dayToConsolidate && selfFile.items.contains { $0.kind == "weakness" && $0.past == nil } }
+    var recurDue: Bool { reflectionOn && dayToConsolidate && goalFile.nodes.contains { $0.failed && $0.past == nil } }
 
     func prepareRecur() async throws -> Reflection.RecurAnswer {
-        let weak = selfFile.items.filter { $0.kind == "weakness" && $0.past == nil }
+        let weak = goalFile.nodes.filter { $0.failed && $0.past == nil }
         var day = Consolidation.tasks(timeline.events).map(\.text).joined(separator: "\n\n")
         if day.count > goalsConfig.reviewChars { day = String(day.suffix(goalsConfig.reviewChars)) }
         let messages = [ChatMessage(role: "system", content: Reflection.recurSystem(name: name)),
@@ -471,21 +427,21 @@ extension Doll {
     }
 
     func commitRecur(_ a: Reflection.RecurAnswer) throws -> MaintenanceDone {
-        var f = selfFile, kept: [String] = [], refused: [String] = []
+        var f = goalFile, kept: [String] = [], refused: [String] = []
         for (id, quote) in a.found {
-            guard let i = f.items.firstIndex(where: { $0.id == id && $0.kind == "weakness" && $0.past == nil }) else { refused.append("#\(id) 不是還在的短處"); continue }
+            guard let i = f.nodes.firstIndex(where: { $0.id == id && $0.failed && $0.past == nil }) else { refused.append("#\(id) 不是還在的短處"); continue }
             guard let e = try? checkedEvidence(quote, by: "maintenance") else { refused.append("#\(id) 的根據找不到「\(quote.prefix(30))」"); continue }
             // Showing again means after it was noted (m18, 2026-11-23: the line she noted it from was
             // counted as its first recurrence the same night), and not the same event twice.
-            guard e.ts >= f.items[i].created, e.ts > f.items[i].again.last?.ts ?? 0 else {
+            guard e.ts >= f.nodes[i].ended ?? f.nodes[i].created, e.ts > f.nodes[i].again.last?.ts ?? 0 else {
                 refused.append("#\(id) 的「\(quote.prefix(30))」是記下它之前（或已經算過）的事"); continue
             }
-            f.items[i].again.append(e)
+            f.nodes[i].again.append(e)
             kept.append("#\(id)")
         }
         if !kept.isEmpty {
-            try saveDocument(f, selfURL)
-            selfFile = f
+            try saveDocument(f, goalsURL)
+            goalFile = f
         }
         let u = a.reply.usage
         let stats = "request \(u.promptTokens) prompt tokens, \(u.completionTokens) completion, \(String(format: "%.1f", a.seconds)) s"
@@ -502,7 +458,7 @@ extension Doll {
             let (text, sealed) = try readDiary(url)
             return DashboardReflection.Entry(day: Reflection.fileDay(url.lastPathComponent), file: url.lastPathComponent, text: text, sealed: sealed)
         }
-        let items = selfFile.items.map { DashboardReflection.Item(item: $0, stats: selfStats($0), goal: $0.goal.flatMap(node).map(nodeLine)) }
+        let items = goalFile.nodes.filter { !$0.open && $0.end != "dropped" }.map { DashboardReflection.Item(item: $0, stats: selfStats($0)) }
         return DashboardReflection(enabled: true, diary: Array(diary), items: items, habitsMax: reflectionConfig.habitsMax,
                                    quietDays: reflectionConfig.weaknessQuietDays)
     }
@@ -517,9 +473,8 @@ public struct DashboardReflection: Sendable, Codable {
         public var sealed: Bool
     }
     public struct Item: Sendable, Codable {
-        public var item: SelfItem
+        public var item: GoalNode
         public var stats: String
-        public var goal: String?
     }
     public var enabled: Bool
     public var diary: [Entry]

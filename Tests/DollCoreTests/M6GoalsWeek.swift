@@ -92,11 +92,11 @@ private func simulateWeek(_ c: DrivesConfig, _ g: GoalsConfig, curves: inout [St
                 } else { d.apply(.itemFailed, at: t, detail: "task") }
             }
             for e in stepEnds where e == t {
-                d.move(.drive, by: g.stepDrive * g.nowShare, at: t, cause: "step")
+                d.move(.drive, by: g.listDrive * g.nowShare, at: t, cause: "list of a node")
                 stepsTotal += 1
                 if stepsTotal % 3 == 0 { d.move(.drive, by: g.noveltyDrive, at: t, cause: "new"); lastNew = t }
-                // Every third step finishes a sub-goal.
-                if stepsTotal % 3 == 0 { d.move(.drive, by: g.subgoalDrive * g.nowShare, at: t, cause: "sub-goal") }
+                // Every third list finishes a node of her graph (2026-11-24: lists and nodes, no levels).
+                if stepsTotal % 3 == 0 { d.move(.drive, by: g.nodeDrive * g.nowShare, at: t, cause: "node done") }
             }
             if m == 27 * 60 { busyUntil = max(busyUntil, t + 600) }   // maintenance 03:00–03:10
             let v = d.value(.drive, at: t)

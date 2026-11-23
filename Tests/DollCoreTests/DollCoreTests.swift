@@ -3836,7 +3836,7 @@ private func entry(_ h: Harness, _ type: EntityType, _ name: String, _ descripti
     try await h.turn(Scripted("", dm("在")))
     // She reads it with the owner's line, before it.
     let seen = await h.model.seen(0).map(\.content)
-    let boot = try #require(seen.firstIndex { $0.contains("程式] 【開機】你剛被開機了。") })
+    let boot = try #require(seen.firstIndex { $0.contains("系統] 【開機】你剛被開機了。") })
     let line = try #require(seen.firstIndex { $0.contains("在嗎") })
     #expect(boot < line)
 }
@@ -4955,7 +4955,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     #expect(h.last.compacted == ["talk"])
     // Her request: the old lines are gone, the summary block stands in their place, the new line follows.
     #expect(!turn.contains { $0.content.contains("記得叫我小明") || $0.content == "好，小明" })
-    let block = try #require(turn.firstIndex { $0.content.contains("程式] 【之前的對話】") && $0.content.hasSuffix("主人說他叫小明，要你叫他小明；你答應了。") })
+    let block = try #require(turn.firstIndex { $0.content.contains("系統] 【之前的對話】") && $0.content.hasSuffix("主人說他叫小明，要你叫他小明；你答應了。") })
     #expect(block == 1 && turn[2].content.contains("今天天氣不錯"))
     // Recorded: a restart sends the same; the originals are still in the file and the index.
     #expect(try h.timeline().compactions.map(\.kind) == [.talk])
@@ -4978,7 +4978,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     let second = await h.model.requests.first { $0.messages.count == 2 && $0.messages[1].content.contains("【更早的摘要】") }
     #expect(second?.messages[1].content.contains("主人說他叫小明，要你叫他小明；你答應了。") == true)
     let lastRequest = await h.model.requests.last!.messages
-    #expect(lastRequest.filter { $0.content.contains("程式] 【之前的對話】") }.map { $0.content.hasSuffix("\n聊了晚餐。") } == [true])
+    #expect(lastRequest.filter { $0.content.contains("系統] 【之前的對話】") }.map { $0.content.hasSuffix("\n聊了晚餐。") } == [true])
     #expect(t.compactions.allSatisfy { $0.toSeq <= t.todo.startSeq })
     // The item's own steps are still in her request.
     #expect(await h.model.requests.last!.messages.contains { $0.content.contains("幫我存檔") })
@@ -5009,7 +5009,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     #expect(seen[2].toolCalls.first?.arguments?.contains("跟主人說寄好了") == true && seen[3].role == "tool" && seen[3].content.contains("todo 列好了"))
     #expect(seen[4].toolCalls.map(\.name) == ["discord.dm", "todo.wait"] && seen[4].toolCalls[0].arguments?.contains("王經理的信箱是哪個？") == true)
     #expect(seen[5].role == "tool" && seen[6].role == "tool" && seen[6].content.contains("就是等待中"))
-    #expect(seen[7].content.contains("程式] 【之前的對話】") && seen[7].content.hasSuffix("你問了他王經理的信箱。"))
+    #expect(seen[7].content.contains("系統] 【之前的對話】") && seen[7].content.hasSuffix("你問了他王經理的信箱。"))
     #expect(seen[8].content.hasSuffix("【收起】上面那段收起來的對話裡，「報告寄給王經理了」做過的動作：\(Doll.actionList(["key cmd+n"]))。"))
     #expect(seen[9].content.hasSuffix("] 今天好熱"))
     #expect(!seen.contains { $0.role == "tool" && $0.content.contains("AXWindow") })
@@ -5469,7 +5469,7 @@ private func cal(_ name: String, _ params: [(String, String)]) -> (String, [(Str
     #expect(fired == ["【行事曆】現在 10:30：主人看牙醫（#1，到 11:30）"])
     #expect(await h.model.requests.count == before + 1)
     let lastSeen = await h.model.requests.last!.messages
-    #expect(lastSeen.contains { $0.role == "user" && $0.content.hasSuffix(" 程式] 【行事曆】現在 10:30：主人看牙醫（#1，到 11:30）") })
+    #expect(lastSeen.contains { $0.role == "user" && $0.content.hasSuffix(" 系統] 【行事曆】現在 10:30：主人看牙醫（#1，到 11:30）") })
     clock.set(at("2026-11-17", "12:00"))       // the all-day item never fires
     try await Task.sleep(for: .milliseconds(300))
     #expect(await h.model.requests.count == before + 1 && clock.sleepers == 0)
@@ -6289,7 +6289,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await waitUntil { await h.model.requests.count == 7 }
     try await waitUntil { await doll.settled }
     let w3 = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
-    #expect(w3.count == 3 && w3[2].hasSuffix("（「報告寄出了」在等待中：todo.set 給 subgoal，它會先放在旁邊，不會動到它；不給 subgoal 是改它後面的項目。）"))
+    #expect(w3.count == 3 && w3[2].hasSuffix("（「報告寄出了」在等待中：todo.set 給 node，它會先放在旁邊，不會動到它；不給 node 是改它後面的項目。）"))
     #expect(try await doll.dashboardStatus().todo == "等待中")
     await doll.stop()
     try await runner.value
@@ -6328,15 +6328,15 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
         $0.drives.enabled = true; $0.drives.closenessHalfLifeH = 1000
     }
     let doll = h.doll
-    _ = try await doll.goalAdd("懂海洋生物", parent: nil, by: "her")
+    _ = try await doll.goalAdd("懂海洋生物", for: nil, by: "her")
     let runner = Task { try await doll.run() }
     try await waitUntil { clock.sleepers >= 1 }
     clock.set(at("2026-11-17", "00:31"))
     try await waitUntil { await h.model.requests.count == 1 }
     try await waitUntil { await doll.settled }
     let fact = "（主人現在應該在睡（23:00–07:00）；不急的事等他醒了再說）"
-    let w = try h.events().filter { $0.text.hasPrefix("【走神】") }.map(\.text)
-    #expect(w.count == 1 && w[0].contains("目標 #1「懂海洋生物」底下還沒有子目標") && w[0].hasSuffix(Concerns.ownAsk + "\n" + fact))
+    let w = try h.events().filter { $0.text.hasPrefix(Concerns.taskTag) }.map(\.text)
+    #expect(w.count == 1 && w[0].contains("#1「懂海洋生物」 是你想做的事") && w[0].hasSuffix(Concerns.ownAsk + "\n" + fact))
     try await waitUntil { h.logs.contains { $0.contains("own-thing episode over") && $0.contains("沒有對任何人說話") } }
     #expect(h.said.isEmpty)
     await doll.stop()
@@ -6859,62 +6859,72 @@ private func goalsHarness(_ clock: ManualClock, dir: URL? = nil, _ replies: [Scr
 }
 
 private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, String)]) {
-    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self)), ("subgoal", "\(sub)")] + planArgs)
+    ("todo.set", [("items", String(decoding: try! JSONEncoder().encode(items), as: UTF8.self)), ("node", "\(sub)")] + planArgs)
 }
 
-@Test func theTreeHasExactlyThreeLevelsAndItsLimits() async throws {
+@Test func theGraphHasOneKindOfNodeEndingOneNeedsEvidenceAndARestartReadsItBack() async throws {
+    // 2026-11-24: no levels, no root; a node lists what it holds up; done and failed need evidence.
     let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await goalsHarness(clock) { $0.goals.goalsOpenMax = 2; $0.goals.subgoalsOpenMax = 1; $0.goals.stepsOpenMax = 2 }
+    let h = try await goalsHarness(clock) { $0.goals.nodesOpenMax = 3 }
     let d = h.doll
-    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
-    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
-    let st = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
-    #expect(g.level == .goal && s.level == .subgoal && st.level == .step)
-    await #expect { try await d.goalAdd("更細的", parent: st.id, by: "her") } throws: { "\($0)".contains("樹只有三層") }
-    await #expect { try await d.goalAdd("另一個子目標", parent: g.id, by: "her") } throws: { "\($0)".contains("1 個還沒做完的子目標") }
-    _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
-    await #expect { try await d.goalAdd("第三步", parent: s.id, by: "her") } throws: { "\($0)".contains("2 個還沒做的步驟") }
-    _ = try await d.goalAdd("學做菜", parent: nil, by: "her")
-    await #expect { try await d.goalAdd("第三個方向", parent: nil, by: "her") } throws: { "\($0)".contains("2 個目標") }
-    await #expect { try await d.goalAdd(String(repeating: "長", count: 61), parent: nil, by: "her") } throws: { "\($0)".contains("太長") }
-    // done needs nothing open under it; a step is done only as a todo item (her); drop takes the open ones under it.
-    await #expect { try await d.goalEnd(s.id, how: "done", by: "her") } throws: { "\($0)".contains("下面還有沒做完的") }
-    await #expect { try await d.goalEnd(st.id, how: "done", by: "her") } throws: { "\($0)".contains("todo.set") }
-    _ = try await d.goalEnd(g.id, how: "drop", by: "her")
-    let nodes = await d.dashboardGoals().nodes
-    #expect(nodes.filter { $0.end == "dropped" }.count == 4)
-    #expect(await d.goalTreeText().hasPrefix("#5〔目標〕學做菜"))
+    let w = try await d.goalAdd("幫主人把報表自動化", for: nil, by: "her")
+    let p = try await d.goalAdd("會寫 Python。", for: w.id, by: "her")
+    #expect(p.text == "會寫 Python" && p.blocks == [w.id] && w.blocks.isEmpty)
+    await #expect { try await d.goalAdd("會寫 Python", for: nil, by: "her") } throws: { "\($0)".contains("已經有了：#2「會寫 Python」") }
+    await #expect { try await d.goalAdd("更細的", for: 99, by: "her") } throws: { "\($0)".contains("沒有還開著的 #99") }
+    await #expect { try await d.goalAdd(String(repeating: "長", count: 81), for: nil, by: "her") } throws: { "\($0)".contains("太長") }
+    let alone = try await d.goalAdd("心算兩位數乘法", for: nil, by: "her")
+    await #expect { try await d.goalAdd("第四件", for: nil, by: "her") } throws: { "\($0)".contains("3 件還開著的事") }
+    #expect(await d.goalTreeText().hasPrefix("想做的（還開著）：\n- #1「幫主人把報表自動化」 ← 被 #2 擋住\n- #2「會寫 Python」（擋著 #1）\n- #3「心算兩位數乘法」\n會的（做成過）：\n（還沒有）"))
+    // What can be acted on: what nothing open blocks, the one holding up the most first.
+    #expect(await d.actionable.map(\.id) == [p.id, alone.id])
+    // Ending: done and failed need evidence; drop does not. Only the node itself ends.
+    await #expect { try await d.goalEnd(alone.id, how: "done", evidence: nil, by: "her") } throws: { "\($0)".contains("要有根據") }
+    let e = GoalNode.Evidence(quote: "失敗：沒有能跑程式的工具", ts: clock.now(), by: "her")
+    let failed = try await d.goalEnd(p.id, how: "failed", evidence: e, by: "her")
+    #expect(failed.failed && failed.evidence == [e])
+    #expect(await d.actionable.map(\.id) == [w.id, alone.id])
+    _ = try await d.goalEnd(alone.id, how: "drop", evidence: nil, by: "her")
+    #expect(await d.panelText().contains("不會的（做不到、失敗過）：\n- #2 會寫 Python（根據：「失敗：沒有能跑程式的工具」"))
+    // A cycle is refused: what waits on a node cannot hold it up.
+    let q = try await d.goalAdd("能跑程式的地方", for: w.id, by: "her")
+    await #expect { try await d.goalBlockedTool(id: q.id, missing: nil, by: w.id) } throws: { "\($0)".contains("不能反過來擋它") }
     // A restart reads it back.
+    let nodes = await d.dashboardGoals().nodes
     let b = try await goalsHarness(clock, dir: h.dir)
     #expect(await b.doll.dashboardGoals().nodes == nodes)
 }
 
-@Test func openSubgoalsNextStepsAreHerOwnProgramConcerns() async throws {
+@Test func whatNothingBlocksIsHerOwnConcernAndItsWordsAreTheTask() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await goalsHarness(clock)
     let d = h.doll
-    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
-    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
-    var open = await d.dashboardDrives().open
-    #expect(open.map(\.text) == ["子目標 #2「弄懂鯊魚的分類」還沒有下一步（目標「懂海洋生物」；想好了用 goal.add 加步驟）"] && open[0].about == .own && open[0].source == "goal")
-    _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
-    _ = try await d.goalAdd("整理筆記", parent: s.id, by: "her")
-    open = await d.dashboardDrives().open
-    // Only the next step, one per sub-goal; the "no next step" one ended.
-    #expect(open.map(\.text) == ["目標樹的下一步：#3「讀維基的鯊魚條目」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2，那一項開頭寫 #3）"])
-    #expect(Concerns.wanderText(open[0]).contains("程式從你的目標樹記的"))
-    _ = try await d.goalEnd(3, how: "drop", by: "her")
-    #expect(await d.dashboardDrives().open.map(\.text) == ["目標樹的下一步：#4「整理筆記」（子目標 #2「弄懂鯊魚的分類」；做的時候用 todo.set 列，給 subgoal 2，那一項開頭寫 #4）"])
-    // The 【狀況】 line names the open goals only.
-    #expect(await d.goalStatusLine() == "- 你的目標：#1 懂海洋生物（整棵樹用 goal.list 看）")
+    let w1 = try await d.goalAdd("幫主人把報表自動化", for: nil, by: "her")
+    let w2 = try await d.goalAdd("做一個自己的小工具", for: nil, by: "her")
+    #expect(await d.dashboardDrives().open.map(\.key) == ["node:1", "node:2"])
+    let p = try await d.goalAdd("會寫 Python", for: w1.id, by: "her")
+    // The same thing holds up the second one too: an edge to an existing node.
+    #expect(try await d.goalBlockedTool(id: w2.id, missing: "會寫 Python", by: nil).text
+            == "記下了：#2「做一個自己的小工具」 被 #3「會寫 Python」 擋住。缺的有了（或弄清楚做不到）再回來；它之後會先冒出來。")
+    let open = await d.dashboardDrives().open
+    #expect(open.map(\.key) == ["node:3"] && open[0].about == .own && open[0].source == "goal")
+    #expect(open[0].text == "#3「會寫 Python」 還沒弄清楚，它擋著 #1「幫主人把報表自動化」、#2「做一個自己的小工具」。完成條件：有根據地知道做得到還是做不到——做到了用 goal.end(3, done, evidence)，做不到用 goal.fail(3, evidence)；做到一半發現還缺別的，用 goal.blocked(3, missing) 記下缺什麼。要動手就 todo.set(items, node: 3)。")
+    #expect(Concerns.taskText(open[0]).hasPrefix("【系統任務】宿主，#3「會寫 Python」 還沒弄清楚"))
+    // 【狀況】 names what she wants that nothing else of hers waits for.
+    #expect(await d.goalStatusLine() == "- 你想做的：#1 幫主人把報表自動化、#2 做一個自己的小工具（整張圖用 goal.list 看）")
+    // The blocker done (with evidence): both are free, and it is in the record.
+    _ = try await d.goalEnd(p.id, how: "done", evidence: GoalNode.Evidence(quote: "跑出來了", ts: clock.now(), by: "her"), by: "her")
+    #expect(await d.dashboardDrives().open.map(\.key) == ["node:1", "node:2"])
+    #expect(await d.dashboardGoals().record.first.map { [$0.kind, $0.text] } == ["node", "會寫 Python"])
+    #expect(await d.panelText(brief: true).hasPrefix("會的（做成過）：\n- #3 會寫 Python\n不會的"))
 }
 
-/// 「現在做不了，缺 X」 (grounding fix 2, 2026-11-22; m11 soak: asked for a sub-goal with the computer
-/// off, she made up a script she had never seen). 動力 brings up a goal with nothing under it; she
-/// says what is missing with goal.blocked and nothing else: the episode ends like any other (動力 back
-/// to drive_reset), nothing counts as a failure (no 壓力, no todo, no tool error), and the next time the
-/// node comes up its wandering and goal.list carry what she said.
-@Test func cantNowEndsTheEpisodeCleanlyAndComesBackWithTheNode() async throws {
+/// 「現在做不了，缺 X」 (grounding fix 2, 2026-11-22; an edge of the graph since 2026-11-24). 動力
+/// brings up a thing she wants as a task; she says what is missing with goal.blocked and nothing else:
+/// what is missing becomes a node holding the first up, the episode ends like any other (動力 back to
+/// drive_reset), nothing counts as a failure (no 壓力, no todo, no tool error), and the next task is
+/// the missing thing.
+@Test func cantNowMakesWhatIsMissingANodeAndTheNextTaskIsThatOne() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await Harness([Scripted("", dm("好"))], clock: clock) {
         $0.drives.enabled = true
@@ -6928,111 +6938,77 @@ private func todoSetSub(_ sub: Int, _ items: String...) -> (String, [(String, St
     await doll.ownerSaid("你有什麼想做的？")
     try await waitUntil { await h.model.requests.count == 1 }
     try await waitUntil { await doll.settled }
-    let g = try await doll.goalAdd("寫程式練得更紮實", parent: nil, by: "owner")
+    let g = try await doll.goalAdd("寫程式練得更紮實", for: nil, by: "owner")
     let missing = "手上沒有自己寫的程式可以看"
     await h.model.add([Scripted("", ("goal.blocked", [("id", "\(g.id)"), ("missing", missing)])), Scripted("現在做不了，先記下缺什麼")])
     let first = at("2026-11-16", "10:00") + period + 1
     clock.set(first)
     try await waitUntil { await h.model.requests.count == 3 }
     try await waitUntil { await doll.settled }
-    let ask = "目標 #\(g.id)「寫程式練得更紮實」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）"
-    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.last!.text.hasSuffix("：" + ask + "\n" + Concerns.ownAsk))
-    #expect(try h.toolResults().last!.text == "記下了：#\(g.id)〔目標〕寫程式練得更紮實 現在做不了，缺：\(missing)。它下次冒出來會帶著這句；缺的有了再做。")
+    let task = try #require(try h.events().last { $0.text.hasPrefix(Concerns.taskTag) }).text
+    #expect(task.hasPrefix("【系統任務】宿主，#1「寫程式練得更紮實」 是你想做的事。完成條件：") && task.hasSuffix("\n" + Concerns.ownAsk))
+    // The system's lines are rendered as 系統.
+    let taskSeen = await h.model.requests
+    #expect(taskSeen[1].messages.contains { $0.content.contains(" 系統] 【系統任務】宿主，") })
+    #expect(try h.toolResults().last!.text == "記下了：#1「寫程式練得更紮實」 被 #2「\(missing)」 擋住。缺的有了（或弄清楚做不到）再回來；它之後會先冒出來。")
     try await waitUntil { h.logs.contains { $0.contains("own-thing episode over") && $0.contains("呼叫 goal.blocked，沒有對任何人說話；想法「現在做不了，先記下缺什麼」") } }
     #expect(approx(await doll.testDrive(), c.driveReset))
     // Not a failure: 壓力 never moved, no todo, no failed item, no tool error.
     #expect(await !doll.dashboardDrives().changes.contains { $0.signal == .stress })
     #expect(!h.logs.contains { $0.contains("todo 失敗") || $0.contains("工具連續失敗") || $0.contains("ERROR") })
     #expect(try await doll.dashboardStatus().todo == "待命中")
-    // What she said is on the node (saved), in goal.list and in its concern.
-    let note = "（你 \(Doll.nowText(first)) 記下現在做不了，缺：\(missing)）"
-    #expect(await doll.dashboardGoals().nodes.first { $0.id == g.id }!.blocked?.missing == missing)
-    #expect(await doll.goalTreeText() == "#\(g.id)〔目標〕寫程式練得更紮實" + note)
-    #expect(await doll.dashboardDrives().open.filter { $0.source == "goal" }.map(\.text) == [ask + note])
-    // The next episode: the node comes up with it.
+    // The edge is in the graph (saved) and in goal.list; the concern is the missing thing's now.
+    #expect(await doll.dashboardGoals().nodes.map(\.blocks) == [[], [1]])
+    #expect(await doll.goalTreeText().hasPrefix("想做的（還開著）：\n- #1「寫程式練得更紮實」 ← 被 #2 擋住\n- #2「\(missing)」（擋著 #1）"))
+    #expect(await doll.dashboardDrives().open.filter { $0.source == "goal" }.map(\.key) == ["node:2"])
+    // The next episode: the missing thing comes up, naming what it holds up.
     await h.model.add([Scripted("還是缺，這次不做")])
     clock.set(first + period + 1)
     try await waitUntil { await h.model.requests.count == 4 }
     try await waitUntil { await doll.settled }
-    #expect(try h.events().filter { $0.text.hasPrefix("【走神】") }.last!.text.contains(ask + note + "\n" + Concerns.ownAsk))
+    #expect(try h.events().last { $0.text.hasPrefix(Concerns.taskTag) }!.text.hasPrefix("【系統任務】宿主，#2「\(missing)」 還沒弄清楚，它擋著 #1「寫程式練得更紮實」。"))
     try await waitUntil { h.logs.filter { $0.contains("own-thing episode over") }.count == 2 }
     #expect(approx(await doll.testDrive(), c.driveReset))
     await doll.stop()
     try await runner.value
 }
 
-/// When her 「現在做不了」 stops being shown: the node's text changes (her or the owner), a node is added
-/// under it, it ends, or `[goals] blocked_hours` pass. It is read back after a restart.
-@Test func cantNowLastsUntilTheNodeChangesGetsAChildEndsOrItsHoursPass() async throws {
-    let clock = ManualClock(at("2026-11-16", "10:00"))
-    let h = try await goalsHarness(clock) { $0.goals.blockedHours = 10 }
-    let d = h.doll
-    let g = try await d.goalAdd("寫程式練得更紮實", parent: nil, by: "her")
-    await #expect { try await d.goalBlockedTool(id: 99, missing: "資料") } throws: { "\($0)".contains("沒有還開著的 #99") }
-    await #expect { try await d.goalBlockedTool(id: g.id, missing: " ") } throws: { "\($0)".contains("missing 是空的") }
-    // Her own 「。」 at the end is not doubled (real check, 2026-11-22).
-    #expect(try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目。").text.hasPrefix("記下了：#\(g.id)〔目標〕寫程式練得更紮實 現在做不了，缺：主人還沒給題目。它下次"))
-    #expect(await d.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目）"))
-    let b = try await goalsHarness(clock, dir: h.dir)
-    #expect(await b.doll.goalTreeText().contains("記下現在做不了，缺：主人還沒給題目"))
-    // The owner changes it: gone.
-    _ = try await d.goalChange(g.id, "寫程式練得更紮實一點", by: "owner")
-    #expect(await !d.goalTreeText().contains("現在做不了"))
-    // A sub-goal under it: gone from the goal; the sub-goal's own one goes when it ends.
-    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
-    let s = try await d.goalAdd("把主人給的第一題寫完", parent: g.id, by: "her")
-    #expect(await d.dashboardGoals().nodes.first { $0.id == g.id }!.blocked == nil)
-    _ = try await d.goalBlockedTool(id: s.id, missing: "題目還沒拿到")
-    #expect(await d.goalTreeText().contains("  #\(s.id)〔子目標〕把主人給的第一題寫完（你"))
-    _ = try await d.goalEnd(s.id, how: "drop", by: "her")
-    #expect(await d.dashboardGoals().nodes.first { $0.id == s.id }!.blocked == nil)
-    // blocked_hours later it is not shown (the node comes up asking plainly again).
-    _ = try await d.goalBlockedTool(id: g.id, missing: "主人還沒給題目")
-    clock.set(at("2026-11-16", "10:00") + 10 * 3600 - 1)
-    #expect(await d.goalTreeText().contains("現在做不了"))
-    clock.set(at("2026-11-16", "10:00") + 10 * 3600)
-    #expect(await !d.goalTreeText().contains("現在做不了"))
-    try await d.refreshGoalConcerns(now: clock.now())
-    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.map(\.text) == ["目標 #\(g.id)「寫程式練得更紮實一點」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）"])
-}
-
-@Test func aTodoListTiedToASubgoalMarksItsStepsAndRecordsThem() async throws {
+@Test func aListForANodeIsOneRecordAndSheSaysWhatBecameOfTheNodeWithEvidence() async throws {
     let clock = ManualClock(at("2026-11-16", "10:00"))
     let h = try await goalsHarness(clock)
     let d = h.doll
     await d.testStartSignals()
-    let g = try await d.goalAdd("懂海洋生物", parent: nil, by: "her")
-    let s = try await d.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
-    _ = try await d.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
-    let c = GoalsConfig()
+    let n = try await d.goalAdd("弄懂鯊魚的分類", for: nil, by: "her")
+    let c = GoalsConfig(), dc = DrivesConfig()
     // Her first read meets an app she has not seen (Calculator): 碰到新東西 moves 動力 once too.
     let before = await d.testDrive() + c.noveltyDrive
     await d.ownerSaid("（你閒著）")
-    // One existing step, one new: the new one joins the tree.
-    try await h.turn(Scripted("", todoSetSub(s.id, "#3 讀完維基的鯊魚條目，記下各目", "鯊魚分類寫成筆記"), readCall))
-    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }!.text.contains("新的步驟加進樹裡了：「鯊魚分類寫成筆記」"))
-    #expect(try await d.status().contains("（子目標 #2 的步驟）"))
+    try await h.turn(Scripted("", todoSetSub(n.id, "讀完維基的鯊魚條目，記下各目"), readCall))
+    #expect(try h.toolResults().last { $0.text.hasPrefix("todo 列好了") }!.text.contains("這份清單是為了 #1「弄懂鯊魚的分類」。"))
+    #expect(try await d.status().contains("（為了 #1）"))
+    // The items are not nodes.
+    #expect(await d.dashboardGoals().nodes.count == 1)
+    // The owner spoke last, but the list is for a thing of her own: done needs no report to him (m22).
     try await h.turn(Scripted("", done("讀完了", evidence: "AXStaticText \"0\"")))
-    #expect(approx(await d.testDrive(), before + c.stepDrive * c.nowShare))
-    try await h.turn(Scripted("", readCall, dm("筆記寫好了"), done("寫好了", evidence: "AXStaticText \"0\"")))
-    let rec = await d.dashboardGoals().record
-    #expect(rec.map(\.kind) == ["step", "step"] && rec.map(\.text) == ["鯊魚分類寫成筆記", "讀維基的鯊魚條目"])
-    // A number that is not one of its open steps is refused before anything changes.
-    await #expect { try await d.linkTodo(["#99 不存在"], subgoal: s.id) } throws: { "\($0)".contains("#99 不是子目標 #2 還沒做的步驟") }
-    let last = try h.toolResults().last { $0.text.hasPrefix("完成，記下了。") }!.text
-    #expect(last.contains("子目標 #2「弄懂鯊魚的分類」的步驟都做完了"))
-    // The sub-goal done by her: a bigger record; its concern is gone, and the goal with nothing
-    // under it is one now (idle-drive, 2026-11-20).
-    _ = try await d.goalEnd(s.id, how: "done", by: "her")
-    #expect(await d.dashboardGoals().record.first!.kind == "subgoal")
-    #expect(approx(await d.testDrive(), before + (2 * c.stepDrive + c.subgoalDrive) * c.nowShare))
-    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.map(\.key) == ["goalnone:\(g.id)"])
-    // A list not tied to the tree (what the owner asked): one item moves 動力 as a todo item, the finished list is one record.
+    let last = try #require(try h.toolResults().last { $0.text.hasPrefix("完成，記下了。") }).text
+    #expect(last.contains("這份清單記成做完的事（紀錄 #1）。#1「弄懂鯊魚的分類」 呢：做到了用 goal.end(1, done, evidence: 「紀錄 #1」)"))
+    #expect(approx(await d.testDrive(), before + dc.itemDoneDrive + c.listDrive * c.nowShare))
+    #expect(await d.dashboardGoals().record.map { [$0.kind, "\($0.node ?? 0)"] } == [["list", "1"]])
+    // Done without evidence is refused; with the record it is done and joins what she can do.
+    try await h.turn(Scripted("", ("goal.end", [("id", "1"), ("how", "done")]), ("goal.end", [("id", "1"), ("how", "done"), ("evidence", "紀錄 #1")])))
+    let r = try h.toolResults().suffix(2).map(\.text)
+    #expect(r[0].hasPrefix("失敗：要有根據（evidence）") && r[1].hasPrefix("#1「弄懂鯊魚的分類」 記成做成過了"))
+    let node = await d.dashboardGoals().nodes[0]
+    #expect(node.done && node.evidence.map(\.quote) == ["紀錄 #1：讀完維基的鯊魚條目，記下各目"])
+    #expect(await d.dashboardGoals().record.first!.kind == "node")
+    #expect(approx(await d.testDrive(), before + dc.itemDoneDrive + (c.listDrive + c.nodeDrive) * c.nowShare))
+    #expect(await d.dashboardDrives().open.filter { $0.source == "goal" }.isEmpty)
+    // A list not tied to the graph (what the owner asked): one item moves 動力 as a todo item, the finished list is one record.
     let mid = await d.testDrive()
     await d.ownerSaid("幫我存檔")
     try await h.turn(Scripted("", todoSet("存好了"), readCall))
     try await h.turn(Scripted("", dm("存了"), done("存了")))
-    #expect(approx(await d.testDrive(), mid + DrivesConfig().itemDoneDrive + c.listDrive * c.nowShare))
+    #expect(approx(await d.testDrive(), mid + dc.itemDoneDrive + c.listDrive * c.nowShare))
     #expect(await d.dashboardGoals().record.first.map { [$0.kind, $0.text] } == ["list", "存好了"])
     #expect(await d.dashboardGoals().link == nil)
 }
@@ -7236,9 +7212,12 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     #expect(try Config.readGoals([:]) == GoalsConfig())
     #expect(throws: TOMLError.self) { try Config.readGoals(["goal_max": .int(3)]) }
     #expect(throws: TOMLError.self) { try Config.readGoals(["now_share": .double(1.5)]) }
-    // A malformed tree stops the boot.
-    try Data("{".utf8).write(to: dir.appending(path: "goals.json"))
-    await #expect { try await goalsHarness(clock, dir: dir) } throws: { "\($0)".contains("not a goal tree file") }
+    // A malformed graph stops the boot; so does a tree from before the graph (no conversion).
+    try Data("{".utf8).write(to: dir.appending(path: "mind.json"))
+    await #expect { try await goalsHarness(clock, dir: dir) } throws: { "\($0)".contains("not a graph file") }
+    try FileManager.default.removeItem(at: dir.appending(path: "mind.json"))
+    try Data("{}".utf8).write(to: dir.appending(path: "goals.json"))
+    await #expect { try await goalsHarness(clock, dir: dir) } throws: { "\($0)".contains("goals.json is from before the graph") }
 }
 
 @Test func theDashboardShowsAndEditsHerDirectionAndSheIsTold() async throws {
@@ -7246,8 +7225,8 @@ private func reviewReply(_ text: String) -> Scripted { Scripted("改成：\n\(te
     let h = try await goalsHarness(clock)
     let dash = Dashboard(doll: h.doll, config: DashboardConfig())
     #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=%E6%87%82%E6%B5%B7").status == 200)
-    #expect(try h.events().last!.text == "【主人改了你的目標樹】他加了 #1〔目標〕懂海。整棵樹用 goal.list 看。")
-    #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=x&parent=99").status == 409)
+    #expect(try h.events().last!.text == "【主人改了你的圖】他加了 #1「懂海」。整張圖用 goal.list 看。")
+    #expect(await dash.respond(method: "POST", target: "/api/goals/add?text=x&for=99").status == 409)
     let r = await dash.respond(method: "GET", target: "/api/goals")
     let o = try JSONSerialization.jsonObject(with: r.body) as! [String: Any]
     #expect((o["nodes"] as! [[String: Any]]).count == 1 && (o["ideal"] as! String).hasPrefix("我想成為"))
@@ -7552,7 +7531,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
 @Test func aFactNeedsAQuoteFromWhatSheCanSeeAndABeliefWithoutOneGoesToAssumptions() async throws {
     let h = try await Harness()
     await h.doll.ownerSaid(xLine)
-    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行"
+    let places = "主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的圖、【相關記憶】裡〔工具〕那一行"
     // 2026-11-17 x-2: her wrong belief written as a fact. Without a quote: refused, told where it belongs.
     try await h.turn(xSet(facts: #"[{"fact":"\#(pdfBelief)"}]"#))
     #expect(try h.toolResults().last!.text == "失敗：清單沒有列：facts 第 1 條「\(pdfBelief)」沒有 quote。fact 要有出處：quote 照抄撐住它的字（\(places)）。找不到出處，就是你以為的：搬到 assumptions。")
@@ -7988,7 +7967,7 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     await h.doll.ownerSaid("幫我用計算機算 58×13")
     let item = "計算機顯示 58×13 的答案"
     func refusal(_ quote: String, own: String?) -> String {
-        "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的目標樹、【相關記憶】裡〔工具〕那一行）。"
+        "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的圖、【相關記憶】裡〔工具〕那一行）。"
             + (own.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? "")
             + "fact 要有出處：quote 一字不差照抄那裡的字。找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。"
     }
@@ -9070,14 +9049,14 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     #expect(log.map(\.what) == ["ideal.revise", "goal.add", "remember", "memory.fix"])
     #expect(log.allSatisfy { $0.who == .her })
     #expect(log[0].why == "主人說我很會查" && log[0].refs == ["ideal#2"] && log[0].paths == ["data/ideal-self-log.json", "data/ideal-self.md"])
-    #expect(log[1].paths == ["data/goals.json"] && log[1].args == "text=懂海洋生物")
+    #expect(log[1].paths == ["data/mind.json"] && log[1].args == "text=懂海洋生物")
     // One correction, one commit: the new file, the retired one and the record.
     #expect(log[3].why == "日子記錯了" && log[3].args!.contains("basis=牙醫是週四") && log[3].refs == ["fix#1"]
             && log[3].paths == ["data/memory-fixes.json", "memory/public/\(old).md", "memory/public/\(new).md"])
     // The owner's edits on the dashboard are his.
     _ = try await d.dashboardGoalEdit("add", ["text": "學做菜"])
     let last = try historyOf(h).log(limit: 1)[0]
-    #expect(last.who == .owner && last.what == "目標樹：加了 #2〔目標〕學做菜" && last.why == "主人在儀表板改的")
+    #expect(last.who == .owner && last.what == "圖：加了 #2「學做菜」" && last.why == "主人在儀表板改的")
 }
 
 /// 2026-11-20: the branch's commit is read from the repository's files, not by a `git rev-parse`.
@@ -9093,7 +9072,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     _ = try await h.doll.dashboardGoalEdit("add", ["text": "學做菜"])
     #expect(try sysGit(repo, "rev-parse", "refs/heads/main^").out == packed)
     #expect(try historyOf(h).head() == sysGit(repo, "rev-parse", "refs/heads/main").out)
-    #expect(try historyOf(h).log(limit: 1)[0].what.hasSuffix("〔目標〕學做菜"))
+    #expect(try historyOf(h).log(limit: 1)[0].what.hasSuffix("「學做菜」"))
 }
 
 @Test func theOwnerUndoesAChangeOfHersOnTheDashboardAndSheIsToldInPlainWords() async throws {
@@ -9110,13 +9089,13 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     let list = await dash.respond(method: "GET", target: "/api/history")
     #expect(list.status == 200 && String(decoding: list.body, as: UTF8.self).contains("goal.add"))
     let diff = String(decoding: await dash.respond(method: "GET", target: "/api/history/diff/\(added.id)").body, as: UTF8.self)
-    #expect(diff.contains("+++ b/data/goals.json") && diff.contains("懂海洋生物"))
+    #expect(diff.contains("+++ b/data/mind.json") && diff.contains("懂海洋生物"))
     #expect(await dash.respond(method: "POST", target: "/api/history/undo/\(added.id)").status == 200)
     // The tree in memory follows the file; the undo is a new commit naming the one it undid.
     #expect(await d.goalFile.nodes.isEmpty)
     let undo = try hist.log(limit: 1)[0]
-    #expect(undo.who == .owner && undo.undoes == added.id && undo.paths == ["data/goals.json"])
-    #expect(try h.events().last!.text == "【主人退回了一個改動】11-19 10:00 你的「goal.add」，主人在儀表板把它退回了：目標樹 回到那之前的樣子。目標樹用 goal.list 看。")
+    #expect(undo.who == .owner && undo.undoes == added.id && undo.paths == ["data/mind.json"])
+    #expect(try h.events().last!.text == "【主人退回了一個改動】11-19 10:00 你的「goal.add」，主人在儀表板把它退回了：你的圖（想做的事、會的、不會的） 回到那之前的樣子。你的圖用 goal.list 看。")
     // Nothing left to undo twice.
     #expect(await dash.respond(method: "POST", target: "/api/history/undo/\(added.id)").status == 409)
     #expect(await dash.respond(method: "POST", target: "/api/history/undo/zzz").status == 409)
@@ -9137,7 +9116,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     #expect(ideal1 == start && nodes1.isEmpty && revs1 == ["pack"])
     #expect(await d.systemPrompt().contains(Doll.idealHeader + "\n" + start))
     // The first commit was made at boot, on the real clock.
-    #expect(try h.events().last!.text.hasPrefix("【主人把你的東西回到 \(Doll.historyTime(first.ts)) 的樣子】那之後的改動都退回了，動到：目標樹、想成為的樣子。現在你想成為的樣子是：\(start)"))
+    #expect(try h.events().last!.text.hasPrefix("【主人把你的東西回到 \(Doll.historyTime(first.ts)) 的樣子】那之後的改動都退回了，動到：想成為的樣子、你的圖（想做的事、會的、不會的）。現在你想成為的樣子是：\(start)"))
     // Going back is a change too: the history still has every revision.
     #expect(try historyOf(h).log(limit: 1)[0].restores == first.id && historyOf(h).count() == 5)
 }
@@ -9154,11 +9133,11 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     try await h.turn(Scripted("", historyUndo(his.short)))
     #expect(try h.toolResults().last!.text == "失敗：沒有退回：〔\(his.short)〕是主人改的，你不能退回。覺得不對，跟主人說。")
     try await h.turn(Scripted("", historyUndo(hers.short)))
-    #expect(try h.toolResults().last!.text == "退回了：〔\(hers.short)〕11-19 10:00 你的「goal.add」。目標樹 回到那之前的樣子。目標樹用 goal.list 看。主人在儀表板看得到。")
+    #expect(try h.toolResults().last!.text == "退回了：〔\(hers.short)〕11-19 10:00 你的「goal.add」。你的圖（想做的事、會的、不會的） 回到那之前的樣子。你的圖用 goal.list 看。主人在儀表板看得到。")
     #expect(await d.goalFile.nodes.map(\.text) == ["學做菜"])
     // A change without a reason shows what she wrote, so one goal.add can be told from another.
     try await h.turn(Scripted("", historyList("目標樹")))
-    #expect(try h.toolResults().last!.text.contains("〔\(hers.short)〕11-19 10:00 你 goal.add（\(hers.args!.prefix(60))）｜動到：目標樹"))
+    #expect(try h.toolResults().last!.text.contains("〔\(hers.short)〕11-19 10:00 你 goal.add（\(hers.args!.prefix(60))）｜動到：你的圖（想做的事、會的、不會的）"))
     let undo = try historyOf(h).log(limit: 1)[0]
     #expect(undo.who == .her && undo.why == "那不是主人要的" && undo.undoes == hers.id && undo.what == "history.undo〔\(hers.short)〕「goal.add」")
     // Two revisions of the ideal self: the older one cannot go back alone.
@@ -9238,7 +9217,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     // Her call's commit failed, and so did the program's at the end of that turn: the next commit that
     // works (the program's, before her next calls run) carries those files and names both.
     let log = try historyOf(h).log(limit: 2)
-    #expect(log[1].who == .program && log[1].paths == ["data/goals.json"] && log[1].unrecordedBefore == ["her goal.add", "program 回合中程式記下的"])
+    #expect(log[1].who == .program && log[1].paths == ["data/mind.json"] && log[1].unrecordedBefore == ["her goal.add", "program 回合中程式記下的"])
     #expect(log[0].what == "goal.add" && log[0].unrecordedBefore.isEmpty)
 }
 
@@ -9302,7 +9281,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     // What a commit costs on the actor's path: one goal-sized change, median of 20.
     var ms: [Double] = []
     for i in 0..<20 {
-        try "{\"n\": \(i)}".write(to: dir.appending(path: "goals.json"), atomically: true, encoding: .utf8)
+        try "{\"n\": \(i)}".write(to: dir.appending(path: "mind.json"), atomically: true, encoding: .utf8)
         let s = Date()
         _ = try h.record(HistoryChange(who: .her, what: "goal.add", why: "", ts: 1_800_000_010 + Double(i)))
         ms.append(Date().timeIntervalSince(s) * 1000)
@@ -9339,11 +9318,12 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 /// Re-pinned 2026-11-23: the manual section (one English manual in `docs/`; its own 「## 記憶」 heading),
 /// 「watch 叫你」 gone from the waiting state and `todo.wait`; the rule that his secrets never leak;
 /// `secret.mark` and the line on marking his secrets (no program check any more); `discord.send` and
-/// the paragraph on strangers (2026-11-24).
+/// the paragraph on strangers (2026-11-24); the graph (no levels; goal.fail, evidence, todo.set node), the
+/// system's voice and 「了解你自己」 (2026-11-24).
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "c54babfb9b76322ea74aacd255ee081736e89a3148b7ae381bea4bb1cf9eb554")
-    #expect(d.prompt == "2249b6a472ca0d42fb21905ec9257c0e1d29dd219df8ed556315702f64593e8d")
+    #expect(d.tools == "7f41d3690a4fa41a3cf1b0077021bc4b85244824ac60ac079b1bd0514817f3f6")
+    #expect(d.prompt == "2c097be73068f66e0c36e8c0c9c214c117e69a3c1538fff333a34468b51ae0ac")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -9498,30 +9478,29 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
     #expect(await h.doll.curiosityDue() == nil)
 }
 
-@Test func aListForAStepOfHerOwnMayQuoteTheStepAndWhatTheOwnerDidToHerTree() async throws {
+@Test func aListForAThingOfHerOwnMayQuoteItFromHerGraph() async throws {
     // 2026-11-20, m12-idle-drive: 11 plans for her own steps were refused for quoting the step they
-    // were about, or the owner's edit of her tree. The tree as the program holds it is a source, as
+    // were about, or the owner's edit of her tree. Her graph as the program holds it is a source, as
     // the calendar is; a node that is not in it is not.
     let h = try await goalsHarness(ManualClock(at("2026-11-16", "10:00")))
-    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
-    let s = try await h.doll.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
-    let st = try await h.doll.goalAdd("讀維基的鯊魚條目", parent: s.id, by: "her")
+    let n = try await h.doll.goalAdd("讀維基的鯊魚條目", for: nil, by: "her")
     func set(_ quote: String) -> Scripted {
-        Scripted("", ("todo.set", [("items", "[\"#\(st.id) 讀完鯊魚條目\"]"), ("subgoal", "\(s.id)")]
+        Scripted("", ("todo.set", [("items", "[\"讀完鯊魚條目\"]"), ("node", "\(n.id)")]
             + planArgs.map { $0.0 == "facts" ? ("facts", "[{\"fact\":\"這一步是讀鯊魚條目\",\"quote\":\"\(quote)\"}]") : $0 }))
     }
-    try await h.turn(set("#\(st.id + 1)〔步驟〕讀維基的鯨魚條目"))
+    try await h.turn(set("#\(n.id + 1) 讀維基的鯨魚條目"))
     #expect(try h.toolResults().last!.text.contains("不在你看得到的地方"))
-    try await h.turn(set("#\(st.id)〔步驟〕讀維基的鯊魚條目"))
+    try await h.turn(set("#\(n.id) 讀維基的鯊魚條目"))
     #expect(try h.toolResults().last!.text.hasPrefix("todo 列好了"))
-    #expect(await h.doll.todo.plan?.facts.first?.source == "目標樹")
+    // (【狀況】 names it too when nothing of hers waits for it; either is a source.)
+    #expect(await h.doll.todo.plan?.facts.count == 1)
 }
 
 @Test func whatSheWritesIntoHerOwnThingsIsKeptInTraditionalCharacters() async throws {
     // 2026-11-20, the soak run: a step 「问主人那套工具脚本在哪里」 and a memory with 「独角鯨」.
     let h = try await goalsHarness(ManualClock(at("2026-11-16", "10:00")))
-    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
-    try await h.turn(Scripted("", ("goal.add", [("text", "弄懂独角鲸的分类"), ("parent", "\(g.id)")]),
+    let g = try await h.doll.goalAdd("懂海洋生物", for: nil, by: "her")
+    try await h.turn(Scripted("", ("goal.add", [("text", "弄懂独角鲸的分类"), ("for", "\(g.id)")]),
                               ("remember", [("items", #"[{"text":"独角鯨和白鯨是同一科，各种海豚是另一科","folder":"public"}]"#)])))
     #expect(await h.doll.goalFile.nodes.last?.text == "弄懂獨角鯨的分類")
     #expect(try h.store.memoryFTS(match: "\"獨角鯨\"", folders: ["public"], limit: 5).count == 1)
@@ -9535,8 +9514,7 @@ private let computerWords = ["電腦", "檔案", "視窗", "截圖", "畫面", "
 private func waitingOnTheOwner(_ clock: ManualClock = ManualClock(at("2026-11-16", "10:00")),
                                 tune: @escaping (inout Config) -> Void = { _ in }) async throws -> (Harness, Int) {
     let h = try await goalsHarness(clock, tune: tune)
-    let g = try await h.doll.goalAdd("懂海洋生物", parent: nil, by: "her")
-    let s = try await h.doll.goalAdd("弄懂鯊魚的分類", parent: g.id, by: "her")
+    let s = try await h.doll.goalAdd("弄懂鯊魚的分類", for: nil, by: "her")
     await h.doll.ownerSaid("幫我問房東什麼時候來修水管")
     try await h.turn(Scripted("", todoSet("房東的時間問到了"), dm("房東的電話是幾號？"), todoWait("等主人給電話")))
     #expect(h.last.todo == "等待中")
@@ -9596,7 +9574,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try await h.doll.aside?.todo.phase == .waiting)
     #expect(await !h.doll.idleForWander)
     try await h.turn(Scripted("", recallCall))
-    #expect(h.last.footer.contains("- todo：進行中「\(ownStep)」（子目標 #\(sub) 的步驟）；旁邊放著等待中的「房東的時間問到了」：手上這份做完或結束，它就回到你手上；有人說話，程式會先把它拿回你手上"))
+    #expect(h.last.footer.contains("- todo：進行中「\(ownStep)」（為了 #\(sub)）；旁邊放著等待中的「房東的時間問到了」：手上這份做完或結束，它就回到你手上；有人說話，程式會先把它拿回你手上"))
     try await h.turn(Scripted("", done("讀完了", evidence: nil)))
     #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「房東的時間問到了」回到你手上（等待中）。"))
     // Back in hand as it was: still waiting, no turn for it, its own rounds and plan.
@@ -9606,7 +9584,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try await (h.timeline().todoAside) == nil)
     #expect(try await (h.timeline().todo) == back)
     #expect(await !h.doll.followUp)
-    #expect(await h.doll.goalFile.link?.subgoal == nil)
+    #expect(await h.doll.goalFile.link?.node == nil)
     // His answer: her todo.done goes to the waiting item.
     await h.doll.ownerSaid("電話是 0912-345-678")
     try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
@@ -9633,7 +9611,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try await h.doll.todo.phase == .doing)
     #expect(try await h.doll.aside == nil)
     #expect(await h.doll.followUp)
-    #expect(await h.doll.goalFile.link?.subgoal == sub)
+    #expect(await h.doll.goalFile.link?.node == sub)
 }
 
 @Test func herOwnStepsEndingCallInTheTurnHisLineBroughtTheWaitingListIsHeldAndTodoWaitGivesHerStepBack() async throws {
@@ -9688,7 +9666,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try await r.doll.todo.rounds == 1)
     #expect(try await r.doll.aside?.todo.current == "房東的時間問到了")
     #expect(try await r.doll.aside?.todo.phase == .waiting)
-    #expect(await r.doll.goalFile.link?.subgoal == sub)
+    #expect(await r.doll.goalFile.link?.node == sub)
     // Her own step waits too: nothing more may start, and she is not idle.
     try await r.turn(Scripted("", todoWait("等主人說鯊魚書放哪")))
     #expect(await !r.doll.idleForWander)
@@ -10024,7 +10002,7 @@ private func plainHits(_ h: Harness, _ needles: [String]) throws -> [String] {
 /// One turn of hers writing every derived text: a concern, a goal and its record entry, a revision of
 /// her ideal self, a todo list, each quoting `s`; then a DM.
 private func derivedTurn(_ s: String) -> Scripted {
-    Scripted("", noteCall("記得主人說的\(s)", "owner"), ("goal.add", [("text", "守住\(s)")]), ("goal.end", [("id", "1"), ("how", "done")]),
+    Scripted("", noteCall("記得主人說的\(s)", "owner"), ("goal.add", [("text", "守住\(s)")]), ("goal.end", [("id", "1"), ("how", "done"), ("evidence", s)]),
              ("ideal.revise", [("text", "我想好好守住\(s)這種事。"), ("why", "主人說了\(s)"), ("based_on", "主人說\(s)")]),
              todoSet("把\(s)抄進筆記"), dm("好"))
 }
@@ -10042,7 +10020,7 @@ private func derivedTurn(_ s: String) -> Scripted {
     let hits = try plainHits(h, needles)
     #expect(hits == [])
     let data = h.dir
-    for name in ["concerns.json", "goals.json", "record.json", "ideal-self.md", "ideal-self-log.json"] {
+    for name in ["concerns.json", "mind.json", "record.json", "ideal-self.md", "ideal-self-log.json"] {
         #expect(SecretBox.isSealed(try String(contentsOf: data.appending(path: name), encoding: .utf8)), "\(name)")
     }
     let hist = try historyOf(h)
@@ -10079,10 +10057,10 @@ private func derivedTurn(_ s: String) -> Scripted {
 @Test func anOrdinaryTurnsDerivedWritesStayPlain() async throws {
     let clock = ManualClock(at("2026-11-21", "10:00"))
     let h = try await goalsHarness(clock)
-    await h.doll.ownerSaid("幫我記一下企鵝的事")
+    await h.doll.ownerSaid("幫我記一下 Kx9-企鵝 的事")
     try await h.turn(derivedTurn("Kx9-企鵝"))
     let hits = try plainHits(h, ["Kx9-企鵝"])
-    for place in ["concerns.json", "goals.json", "record.json", "ideal-self.md", "ideal-self-log.json", "timeline/", "history object", "log:"] {
+    for place in ["concerns.json", "mind.json", "record.json", "ideal-self.md", "ideal-self-log.json", "timeline/", "history object", "log:"] {
         #expect(hits.contains { $0.contains(place) }, "\(place)")
     }
     let goalCommit = try historyOf(h).log(limit: 20).first { $0.what == "goal.add" }!
@@ -10485,7 +10463,7 @@ private func modelLines(_ logs: [String]) -> [String] {
     try await h2.doll.boot()
     #expect(await h2.doll.queue.map(\.secret) == [false])
     try await h2.turn()
-    #expect(try diskHits(h2.dir, ["7391"]) == [] && !h2.logs.contains { $0.contains("7391") })
+    #expect(try diskHits(h2.dir, ["提款卡"]) == [] && !h2.logs.contains { $0.contains("提款卡") })
     #expect(try h2.events().filter { $0.kind == .owner }.map(\.secret) == [true])
 }
 
@@ -10559,8 +10537,8 @@ private func reflectionHarness(_ clock: ManualClock, dir: URL? = nil, _ replies:
     }
 }
 
-private func selfFile(_ h: Harness) throws -> SelfFile {
-    try Concerns.read(SelfFile.self, h.dir.appending(path: Reflection.selfFileName), what: "self", box: try testBox(h.dir))!
+private func mindFile(_ h: Harness) throws -> GoalFile {
+    try Concerns.read(GoalFile.self, h.dir.appending(path: "mind.json"), what: "graph", box: try testBox(h.dir))!
 }
 
 @Test func maintenanceBeginsWithHerOwnDiaryTurnWhoseNotesNeedEvidenceThenItsTasksRun() async throws {
@@ -10589,7 +10567,7 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
     #expect(h.said == ["我先睡了喔"])
     let day = try segmentTexts(h)[0]
     let notice = try #require(day.first { $0.hasPrefix("【系統維護】開始，現在 03:00。維護之前先寫今天的日記") })
-    #expect(notice.hasSuffix("你現在的長處和短處：\n長處：\n（還沒有）\n短處：\n（還沒有）"))
+    #expect(notice.hasSuffix("你現在的技能面板：\n會的（做成過）：\n（還沒有）\n不會的（做不到、失敗過）：\n（還沒有）\n還沒弄清楚的（擋著別的事）：\n（沒有）"))
     #expect(day.contains { $0.hasPrefix("失敗：今天的對話裡找不到「我先睡了喔」") })
     #expect(day.contains { $0.hasPrefix("失敗：系統維護中，這個回合只寫日記") })
     #expect(day.contains { $0.hasPrefix("【系統維護】日記的回合結束了，接著做") })
@@ -10597,8 +10575,8 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
     // The diary is hers and kept; one weakness with its evidence, its habit, and the day it showed again.
     let diary = try String(contentsOf: h.dir.appending(path: "diary/2026-11-16.md"), encoding: .utf8)
     #expect(diary == "今天主人說我回太短。\n\n我想多說一點。\n")
-    let items = try selfFile(h).items
-    #expect(items.count == 2 && items[0].kind == "weakness" && items[0].evidence.map(\.quote) == ["你回太短了吧"])
+    let items = try mindFile(h).nodes
+    #expect(items.count == 2 && items[0].failed && items[0].evidence.map(\.quote) == ["你回太短了吧"])
     #expect(items[0].habit?.when == "回主人之前" && items[0].habit?.then == "多說一句他問的事")
     #expect(items[0].again.isEmpty)
     #expect(items[1].again.map(\.quote) == ["這個回合只寫日記"] && items[1].again[0].by == "maintenance")
@@ -10611,7 +10589,7 @@ private func selfFile(_ h: Harness) throws -> SelfFile {
     #expect(try maintenanceFile(h) == MaintenanceFile())
     // Her history keeps both.
     #expect(try await doll.dashboardHistory().contains { $0.things.contains("日記 2026-11-16") })
-    #expect(try await doll.dashboardHistory().contains { $0.things.contains("長處和短處") })
+    #expect(try await doll.dashboardHistory().contains { $0.things.contains("你的圖（想做的事、會的、不會的）") })
     await doll.stop()
     try await runner.value
 }
@@ -10788,4 +10766,26 @@ private final class CountingEmbedder: Embedder, @unchecked Sendable {
     try await h.turn(Scripted("", (Tools.Name.send, [("to", "1234"), ("text", "可以啊")])))
     #expect(sent.withLock { $0.last?.1 } == "dm:1234")
     #expect(await h.model.requests.last!.messages.contains { $0.content.hasSuffix("陌生人 小明（id 1234）｜Discord 私訊｜文字] 可以私下跟你聊嗎") })
+}
+
+@Test func herSkillPanelIsInHerSystemPromptFromTheNextBootAndGoalFailNeedsEvidenceFromTheDay() async throws {
+    // 2026-11-24: what she has shown she can and cannot do, in front of her before she starts anything.
+    let clock = ManualClock(at("2026-11-16", "10:00"))
+    let h = try await Harness(clock: clock) { $0.drives.enabled = true; $0.maintenance.enabled = true; $0.reflection.enabled = true }
+    await h.doll.ownerSaid("你算一下 37 乘 48")
+    try await h.turn(Scripted("", ("goal.add", [("text", "心算兩位數乘法")]), dm("1776")))
+    await h.doll.ownerSaid("對，是 1776。那你會寫 Python 嗎")
+    try await h.turn(Scripted("", ("goal.end", [("id", "1"), ("how", "done"), ("evidence", "對，是 1776")]),
+                              ("goal.add", [("text", "會寫 Python")]),
+                              ("goal.fail", [("id", "2"), ("evidence", "我覺得我不會")]),          // her own words: refused
+                              ("self.note", [("kind", "weakness"), ("text", "沒辦法自己跑程式"), ("evidence", "那你會寫 Python 嗎")]),
+                              dm("還沒測過")))
+    let r = try h.toolResults().suffix(5).map(\.text)
+    #expect(r[0].hasPrefix("#1「心算兩位數乘法」 記成做成過了") && r[2].hasPrefix("失敗：今天的對話裡找不到「我覺得我不會」"))
+    #expect(r[3] == "記下了：#3〔不會的〕沒辦法自己跑程式。")
+    // Not in the prompt until it is rebuilt (boot, end of maintenance): the prefix stays cached meanwhile.
+    #expect(await !h.doll.systemPrompt().contains("## 技能面板"))
+    await h.doll.refreshFixed()
+    let prompt = await h.doll.systemPrompt()
+    #expect(prompt.contains("## 技能面板（系統記的：你有根據地會的、不會的、還沒弄清楚的；每天系統維護時更新，現在的和每條的根據用 self.read 看）\n會的（做成過）：\n- #1 心算兩位數乘法\n不會的（做不到、失敗過）：\n- #3 沒辦法自己跑程式\n還沒弄清楚的（擋著別的事）：\n（沒有）"))
 }

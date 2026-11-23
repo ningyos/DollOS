@@ -15,7 +15,7 @@ with a few operations and edits.
   tier `developer` (see [memory.md](memory.md)). A developer line never cancels her model call in
   flight.
 - **The dashboard** shows the owner everything: her window reads, actions and results, memories
-  (secret ones decrypted), calendar, signals, goals, diary and self-knowledge (sealed entries
+  (secret ones decrypted), calendar, signals, her graph, diary and skill panel (sealed entries
   opened), saved tools, boot reports and change history.
 - **His dashboard edits reach her only as program notices, never as his words** (calendar: a
   【行事曆】 notice with no turn, see [calendar.md](calendar.md); memory reverts, undone changes,
@@ -77,7 +77,7 @@ Routes (`Dashboard.routes`; a path ending in `/` matches by prefix):
 | `GET /shots/<name>` | screenshot file (`Dashboard.validShotName`: plain ASCII name only) |
 | `GET /api/memory` | `DashboardMemory`: folders, strengths, deep, attached, corrections |
 | `GET /api/calendar`, `/api/drives`, `/api/goals`, `/api/tools`, `/api/history` | read views |
-| `GET /api/reflection` | `DashboardReflection`: newest `[reflection] dashboard_days` diary entries (sealed opened), self items with stats and goal, `habitsMax`, `quietDays`; `enabled: false` unless `[reflection]`, `[maintenance]` and `[drives]` are all on |
+| `GET /api/reflection` | `DashboardReflection`: newest `[reflection] dashboard_days` diary entries (sealed opened), done and failed nodes with stats, `habitsMax`, `quietDays`; `enabled: false` unless `[reflection]`, `[maintenance]` and `[drives]` are all on |
 | `GET /api/boots` | newest `[dashboard] boot_reports` boot reports ([boot-and-logs.md](boot-and-logs.md)) |
 | `GET /api/history/diff/<id>` | one change's diff, secrets included |
 | `POST /api/interrupt` | cancel the model call in flight (409 if none) |
@@ -86,7 +86,7 @@ Routes (`Dashboard.routes`; a path ending in `/` matches by prefix):
 | `POST /api/memory/revert/<fix id>` | revert a memory correction |
 | `POST /api/calendar/add\|change\|delete?…` | calendar edit with her tool's parameters |
 | `POST /api/ideal/edit?text=`, `/revert?id=` | edit / revert her ideal self |
-| `POST /api/goals/add\|change\|done\|drop?…` | goal tree edit |
+| `POST /api/goals/add?text=&for=`, `/change?id=&text=`, `/done?id=`, `/drop?id=` | graph edit; `for`: the open node the new one holds up |
 | `POST /api/record/eval?id=&kind=good\|bad\|none` | the owner's evaluation of a record |
 | `POST /api/tools/delete?name=` | delete a saved tool |
 | `POST /api/history/undo/<id>`, `/restore/<id>` | undo one change / return to right after one |
@@ -94,11 +94,13 @@ Routes (`Dashboard.routes`; a path ending in `/` matches by prefix):
 Unknown path 404, wrong method 405. `MemoryError`, `CalendarError`, `ToolError`, `HistoryError`
 map to 409 (a missing diff 404).
 
-Page sections: 視覺, 動作, 她怎麼想, 記憶, 行事曆, 她的狀態, 她的方向, 她的日記、長處和短處, 她的工具,
-開機紀錄, 改動紀錄. 視覺 and 她的工具 are hidden when `[computer] enabled = false`. The diary
-section lists strengths, weaknesses (with habit count against `[reflection] habits_max` and the quiet-days mark),
-past items, then the diary entries, each marked when stored sealed; it has no edit controls (the
-owner undoes through 改動紀錄).
+Page sections: 視覺, 動作, 她怎麼想, 記憶, 行事曆, 她的狀態, 她的方向, 她的日記、技能面板, 她的工具,
+開機紀錄, 改動紀錄. 視覺 and 她的工具 are hidden when `[computer] enabled = false`. 她的方向 draws her
+graph as SVG: blue open, green done, red failed, grey dropped; a dashed arrow runs from a blocked
+node to its blocker. Each open node has buttons to change it, add a node it needs, mark it done or
+drop it. The diary section lists 會的 (done nodes), 不會的 (failed nodes, with habit count against
+`[reflection] habits_max` and the quiet-days mark), 以前有, then the diary entries, each marked when
+stored sealed; it has no edit controls (the owner undoes through 改動紀錄).
 
 ## Config
 

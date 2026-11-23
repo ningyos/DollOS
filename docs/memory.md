@@ -159,7 +159,7 @@ strength-tier memory.
 (`Memory.visible` with `sawSecret: true`), else "no such memory"; retired → names the replacement;
 experience/program → refused; `text` present and not `Doll.sameText`; `basis` passes `Doll.quoted`
 against `Doll.citable(before:)` (people's lines, window and file reads, computer/file tool results with
-her argument values cut, calendar, the 【狀況】 footer, her goal-tree nodes) with ≥
+her argument values cut, calendar, the 【狀況】 footer, the open nodes of her graph) with ≥
 `[computer] plan_min_chars` by `Doll.plainKey`; a basis found in a secret event cannot fix a
 non-`secret` memory; an empty basis only when `Doll.hers`. The replacement takes the basis's tier
 (`doll` stays `doll`, `consolidated` stays `consolidated`) and `audit_pending`. Each change appends a

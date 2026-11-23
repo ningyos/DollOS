@@ -299,7 +299,7 @@ public final class Dashboard: @unchecked Sendable {
         // Her signals, concerns, wanderings and associations (m6-drives): read only.
         ("GET", "/api/drives", .drives),
         // Her direction (phase 2): ideal self, tree, record. The owner's edits: `ideal/edit?text=`,
-        // `ideal/revert?id=`, `goals/add|change|done|drop?text=&parent=&id=`, `record/eval?id=&kind=good|bad|none`.
+        // `ideal/revert?id=`, `goals/add|change|done|drop?text=&for=&id=`, `record/eval?id=&kind=good|bad|none`.
         ("GET", "/api/goals", .goals),
         ("POST", "/api/ideal/", .idealEdit),
         ("POST", "/api/goals/", .goalEdit),

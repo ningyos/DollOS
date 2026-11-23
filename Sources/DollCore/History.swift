@@ -5,7 +5,7 @@ import Foundation
 /// 2026-11-04 「skill、人設筆記、糾正紀錄放進 git：留紀錄、看 diff、可還原」).
 ///
 /// What is kept (`History.dataFiles` and the folders beside it): in `[core] data_dir`, her ideal self (`ideal-self.md`) and its
-/// revision log, her goal tree (`goals.json`), the record of what she did with the owner's evaluations
+/// revision log, her graph (`mind.json`: what she wants, what she can and cannot do), the record of what she did with the owner's evaluations
 /// (`record.json`), the corrections of her memories and the audit's flags (`memory-fixes.json`) and
 /// her saved tools (`tools/*.json`); in `[memory] dir`, every memory file (secret, own, public) and the
 /// entity registry. Not kept: what is its own history (timeline, logs, boot reports, the computer's
@@ -224,7 +224,7 @@ public final class History: @unchecked Sendable {
     let ownDir: String
     static let branch = "refs/heads/main"
     /// Data-dir files kept, besides `tools/*.json`.
-    static let dataFiles = ["ideal-self.md", "ideal-self-log.json", "goals.json", "record.json", "memory-fixes.json", Reflection.selfFileName]
+    static let dataFiles = ["ideal-self.md", "ideal-self-log.json", "mind.json", "record.json", "memory-fixes.json"]
     /// Changes whose commit failed in this process, for the next commit's message.
     var unrecorded: [String] = []
     /// The snapshot last committed (or found equal to the head): a change that writes nothing makes no
@@ -832,10 +832,9 @@ public final class History: @unchecked Sendable {
         switch path {
         case "data/ideal-self.md": return "想成為的樣子"
         case "data/ideal-self-log.json": return "想成為的樣子的修改紀錄"
-        case "data/goals.json": return "目標樹"
+        case "data/mind.json": return "你的圖（想做的事、會的、不會的）"
         case "data/record.json": return "做完的事的紀錄"
         case "data/memory-fixes.json": return "記憶的更正紀錄"
-        case "data/" + Reflection.selfFileName: return "長處和短處"
         default: break
         }
         if p.count == 3, p[0] == "data", p[1] == Reflection.diaryDir { return "日記 \(p[2].replacingOccurrences(of: ".md", with: ""))" }
@@ -919,12 +918,11 @@ extension Doll {
                     ideal = String(decoding: text, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             case "data/ideal-self-log.json": idealLog = try readDocument(IdealLog.self, idealLogURL, what: "ideal-self log") ?? IdealLog()
-            case "data/goals.json":
-                goalFile = try readDocument(GoalFile.self, goalsURL, what: "goal tree") ?? GoalFile()
+            case "data/mind.json":
+                goalFile = try readDocument(GoalFile.self, goalsURL, what: "graph") ?? GoalFile()
                 goalsChanged()
             case "data/record.json": recordFile = try readDocument(RecordFile.self, recordURL, what: "record") ?? RecordFile()
             case "data/memory-fixes.json": fixFile = try MemoryFixFile.read(fixesURL, box: memory.box) ?? MemoryFixFile()
-            case "data/" + Reflection.selfFileName: selfFile = try readDocument(SelfFile.self, selfURL, what: "self-knowledge") ?? SelfFile()
             case let d where d.hasPrefix("data/\(Reflection.diaryDir)/"): diary = true
             default:
                 // Tools are read from disk at every use; memory and registry files need their index rows.
@@ -954,7 +952,7 @@ extension Doll {
     func historyAfterWords(_ paths: [String]) -> String {
         var s = ""
         if paths.contains("data/ideal-self.md") { s += "現在你想成為的樣子是：\(ideal)。" }
-        if paths.contains("data/goals.json") { s += "目標樹用 goal.list 看。" }
+        if paths.contains("data/mind.json") { s += "你的圖用 goal.list 看。" }
         return s
     }
 
@@ -1026,19 +1024,18 @@ extension Doll {
         let a = about.trimmingCharacters(in: .whitespacesAndNewlines)
         switch a {
         case "想成為的樣子", "ideal": return ["data/ideal-self.md", "data/ideal-self-log.json"]
-        case "目標", "目標樹", "goal", "goals": return ["data/goals.json"]
+        case "目標", "目標樹", "圖", "想做的事", "技能", "技能面板", "長處", "短處", "長短處", "goal", "goals", "self": return ["data/mind.json"]
         case "工具", "tool", "tools": return ["data/tools/"]
         case "記憶", "memory": return ["memory/"]
         case "紀錄", "record": return ["data/record.json", "data/memory-fixes.json"]
         case "日記", "diary": return ["data/\(Reflection.diaryDir)/"]
-        case "長處", "短處", "長短處", "長處和短處", "self": return ["data/" + Reflection.selfFileName]
         default: break
         }
         if OwnTools.validName(a) == nil, try toolStore.get(a) != nil || history.count(paths: ["data/tools/\(a).json"]) > 0 {
             return ["data/tools/\(a).json"]
         }
         if let (folder, _) = try memory.file(a) { return ["memory/\(memory.dirName(folder))/\(a).md"] }
-        throw ToolError(description: "about 給：想成為的樣子、目標、工具、記憶、紀錄、日記、長短處，或一個工具的名字、一條記憶的 id；不給就是全部")
+        throw ToolError(description: "about 給：想成為的樣子、圖、工具、記憶、紀錄、日記，或一個工具的名字、一條記憶的 id；不給就是全部")
     }
 
     /// `history.list`: her recent changes, short. What a folder her turn may not read holds is only counted.

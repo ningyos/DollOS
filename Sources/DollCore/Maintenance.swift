@@ -481,7 +481,7 @@ extension Doll {
         case .review: return day || [goalsURL, recordURL, idealURL].contains(where: Concerns.boxed)
         case .audit(let a): return a.request.items.contains { sealedFolders.contains(memory.dirName($0.folder)) }
             || a.request.sources.values.contains { $0.contains("｜秘密]") }
-        case .recur: return day || Concerns.boxed(selfURL)
+        case .recur: return day || Concerns.boxed(goalsURL)
         case .consolidate(let request, _): return day || request.related.contains { sealedFolders.contains($0.folder) }
         }
     }

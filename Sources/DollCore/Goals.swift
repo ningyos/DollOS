@@ -1,68 +1,74 @@
 import Foundation
 
-/// Her own direction (m6-drives phase 2, 2026-11-16, owner). Needs have two roots: she must go on
-/// existing (the owner pays for the power and the machine; she helps him), and who she wants to
-/// become. This file holds the second root:
+/// Her own direction (m6-drives phase 2, 2026-11-16, owner; the graph 2026-11-24). Needs have two
+/// roots: she must go on existing (the owner pays for the power and the machine; she helps him), and
+/// who she wants to become. This file holds the second root:
 ///
-///   ideal self   `<data_dir>/ideal-self.md` (plain text) and `ideal-self-log.json` (every revision:
-///                what changed, why, based on what, by whom). It starts from the pack's
-///                `[identity].ideal` (the pack is never modified). She revises it with `ideal.revise`;
-///                the maintenance may propose one (`review`, at most every `[goals] revise_min_days`);
-///                the owner edits or reverts it in the dashboard and she is told. A revision takes
-///                effect at once: the system prompt carries it after the persona.
-///   goal tree    `<data_dir>/goals.json`: exactly three levels, goal (a direction) → sub-goal (a
-///                result that can be finished) → step (finishable in one sitting). A step is done only
-///                as a todo item: `todo.set(items, subgoal)` ties the list to a sub-goal; its items are
-///                that sub-goal's steps (added when new) and `todo.done` marks them. The next open step
-///                of each open sub-goal (or "no next step" for a sub-goal without one) is a program
-///                concern about her own things (`refreshGoalConcerns`).
-///   record       `<data_dir>/record.json`: append-only, one entry per thing finished (a step, a
-///                sub-goal, a goal; a todo list not tied to the tree, which is what the owner asked).
-///                Each carries 動力's full amount and what was given: part at once (`now_share`), the
-///                rest when the evaluation is good, all of it taken back when bad. Her evaluation comes
-///                from `owner.feedback` (his quoted line); the owner's from the dashboard wins.
-///   curiosity    `<data_dir>/curiosity.json`: what she has had in front of her (an app's bundle id; a
-///                browser's front page title). A thing not seen in `seen_days` is new: 動力 rises
-///                (`novelty_drive`, at most once per `novelty_gap_min`). Nothing new for
-///                `curiosity_hours`: a wandering toward something not on the tree.
+///   ideal self   `<data_dir>/ideal-self.md` (plain text) and `ideal-self-log.json` (every revision).
+///                It starts from the pack's `[identity].ideal`. She revises it with `ideal.revise`;
+///                the maintenance may propose one; the owner edits or reverts it in the dashboard.
+///                It is the direction, not a node of the graph.
+///   the graph    `<data_dir>/mind.json` (owner, 2026-11-24: 「很適合作為 doll 思維的視覺化跟框架」):
+///                one kind of node, a thing she wants to do or to be able to do, with a state and what
+///                shows it: open (想做), done (做成過, evidence), failed (做不到／失敗過, evidence),
+///                dropped. One kind of edge, 「被擋住」: a node lists the nodes it holds up (`blocks`).
+///                An edge is never planned ahead: it appears when she hits it (`goal.blocked`: what is
+///                missing becomes a node that blocks the one she was at). No levels, no root needed;
+///                a node may stand alone. Her strengths and weaknesses are the done and failed nodes
+///                (`self.note` writes one directly); a failed one can carry a habit and the days it
+///                showed again (`Reflection.swift`). Work on a node is a todo list
+///                (`todo.set(items, node)`); its items are not nodes.
+///                The open nodes nothing open blocks are what she can act on: each is a program
+///                concern about her own things (`refreshGoalConcerns`), the one holding up the most
+///                first; 動力 brings one up as a task (【系統任務】).
+///   record       `<data_dir>/record.json`: append-only, one entry per thing finished (a node done; a
+///                todo list). Each carries 動力's full amount and what was given: part at once
+///                (`now_share`), the rest when the evaluation is good, all of it taken back when bad.
+///   curiosity    `<data_dir>/curiosity.json`: what she has had in front of her; nothing new for
+///                `curiosity_hours`: a wandering toward something not in the graph.
 ///
-/// She never sees a number; the dashboard shows them.
+/// She never sees a number; the dashboard shows them and draws the graph.
 public struct GoalNode: Sendable, Codable, Equatable {
-    public enum Level: Int, Sendable, Codable {
-        case goal = 1, subgoal = 2, step = 3
-
-        var label: String {
-            switch self {
-            case .goal: "目標"
-            case .subgoal: "子目標"
-            case .step: "步驟"
-            }
-        }
+    /// What shows a state: a quote the program found, or `紀錄 #N：…`.
+    public struct Evidence: Sendable, Codable, Equatable {
+        public var quote: String
+        public var ts: Double
+        /// "her", "owner" or "maintenance" (the `recur` task).
+        public var by: String
+    }
+    public struct Habit: Sendable, Codable, Equatable {
+        public var when: String
+        public var then: String
+        public var since: Double
+    }
+    public struct Past: Sendable, Codable, Equatable {
+        public var why: String
+        public var ts: Double
     }
     public var id: Int
-    public var level: Level
-    public var parent: Int?
     public var text: String
     public var created: Double
     /// "her" or "owner".
     public var by: String
+    /// The nodes it holds up (they are 被擋住 by it).
+    public var blocks: [Int] = []
     public var ended: Double?
-    /// "done" or "dropped".
+    /// "done" (做成過), "failed" (做不到／失敗過) or "dropped".
     public var end: String?
-    /// She said it cannot be done now and what is missing (`goal.blocked`; grounding fix 2,
-    /// 2026-11-22): shown with the node (its concern, `goal.list`) until the node's text changes, a
-    /// node is added under it, it ends, or `[goals] blocked_hours` pass (`blockedNote`).
-    public var blocked: Blocked?
+    public var evidence: [Evidence] = []
+    /// A failed one: the habit she set from it, each day it showed again, and her moving it to 以前有.
+    public var habit: Habit?
+    public var again: [Evidence] = []
+    public var past: Past?
 
-    public struct Blocked: Sendable, Codable, Equatable {
-        public var missing: String
-        public var ts: Double
-    }
+    public var open: Bool { ended == nil }
+    public var done: Bool { end == "done" }
+    public var failed: Bool { end == "failed" }
 }
 
-/// The todo list in hand and the sub-goal it works on (nil: not tree work); the items done so far.
+/// The todo list in hand and the node it works on (nil: not her own thing); the items done so far.
 public struct TodoLink: Sendable, Codable, Equatable {
-    public var subgoal: Int?
+    public var node: Int?
     public var done: [String] = []
 }
 
@@ -82,7 +88,7 @@ public struct Evaluation: Sendable, Codable, Equatable {
 public struct RecordEntry: Sendable, Codable, Equatable {
     public var id: Int
     public var ts: Double
-    /// "step", "subgoal", "goal", "list".
+    /// "node" (a node of the graph done) or "list" (a todo list).
     public var kind: String
     public var text: String
     public var node: Int?
@@ -165,8 +171,6 @@ extension Doll {
     func saveCuriosity() throws { try saveDocument(curiosity, curiosityURL) }
 
     func node(_ id: Int) -> GoalNode? { goalFile.nodes.first { $0.id == id } }
-    func openChildren(_ id: Int) -> [GoalNode] { goalFile.nodes.filter { $0.parent == id && $0.ended == nil } }
-    var openGoals: [GoalNode] { goalFile.nodes.filter { $0.level == .goal && $0.ended == nil } }
 
     /// 動力 moved by `d` (achievement, take-back, a new thing), saved, the timer re-armed.
     func moveDrive(_ d: Double, cause: String) {
@@ -182,45 +186,60 @@ extension Doll {
         scheduleDrives()
     }
 
-    // the goal tree ---------------------------------------------------------------------------------
+    // the graph --------------------------------------------------------------------------------------
 
-    func nodeLine(_ n: GoalNode) -> String { "#\(n.id)〔\(n.level.label)〕\(n.text)" }
+    func nodeLine(_ n: GoalNode) -> String { "#\(n.id)「\(n.text)」" }
 
-    /// Her 「現在做不了」 on a node, while it holds (`[goals] blocked_hours`); "" otherwise. The m11
-    /// soak (2026-11-21): asked for a sub-goal with the computer off, she made one up (「把主人電腦裡
-    /// 自己那套工具腳本從頭讀懂」, a script she had never seen) and then asked the owner about it five
-    /// times; with this the node comes up again carrying what she said was missing.
-    func blockedNote(_ n: GoalNode) -> String {
-        guard let b = n.blocked, wallClock.now() - b.ts < goalsConfig.blockedHours * 3600 else { return "" }
-        return "（你 \(Self.nowText(b.ts)) 記下現在做不了，缺：\(b.missing)）"
+    /// The open nodes that hold `id` up.
+    func blockers(of id: Int) -> [GoalNode] { goalFile.nodes.filter { $0.open && $0.blocks.contains(id) } }
+
+    /// The open nodes `n` holds up, directly or through others.
+    func heldUp(by n: GoalNode) -> [GoalNode] {
+        var seen = Set<Int>(), stack = n.blocks
+        while let id = stack.popLast() {
+            guard seen.insert(id).inserted, let m = node(id), m.open else { continue }
+            stack += m.blocks
+        }
+        return goalFile.nodes.filter { seen.contains($0.id) }
     }
 
-    /// The whole open tree (`goal.list`), indented, steps under their sub-goal.
+    /// The open nodes nothing open blocks: what she can act on now, the one holding up the most first.
+    var actionable: [GoalNode] {
+        goalFile.nodes.filter { $0.open && blockers(of: $0.id).isEmpty }
+            .map { ($0, heldUp(by: $0).count) }.sorted { ($1.1, $0.0.id) < ($0.1, $1.0.id) }.map(\.0)
+    }
+
+    func evidenceText(_ n: GoalNode) -> String { n.evidence.first.map { "根據：「\($0.quote.prefix(40))」" } ?? "沒有根據" }
+
+    /// The whole graph in words (`goal.list`): what she wants and what holds it up, then what she has
+    /// shown she can and cannot do.
     func goalTreeText() -> String {
-        guard !openGoals.isEmpty else { return "你的目標樹是空的。用 goal.add 加一個目標（你想往哪個方向走）。" }
+        let open = goalFile.nodes.filter(\.open)
         var out: [String] = []
-        for g in openGoals {
-            out.append(nodeLine(g) + blockedNote(g))
-            for s in openChildren(g.id) {
-                out.append("  " + nodeLine(s) + blockedNote(s))
-                let steps = openChildren(s.id)
-                if steps.isEmpty { out.append("    （還沒有步驟）") }
-                for st in steps { out.append("    " + nodeLine(st) + blockedNote(st)) }
+        if open.isEmpty {
+            out.append("想做的：（沒有）用 goal.add 加一件你想做到、或想會的事。")
+        } else {
+            out.append("想做的（還開著）：")
+            for n in open {
+                let by = blockers(of: n.id), holds = n.blocks.compactMap(node).filter(\.open)
+                out.append("- " + nodeLine(n) + (holds.isEmpty ? "" : "（擋著 " + holds.map { "#\($0.id)" }.joined(separator: "、") + "）")
+                           + (by.isEmpty ? "" : " ← 被 " + by.map { "#\($0.id)" }.joined(separator: "、") + " 擋住"))
             }
         }
-        let done = goalFile.nodes.filter { $0.end == "done" }.suffix(5)
-        if !done.isEmpty { out.append("最近做完的：" + done.map { nodeLine($0) }.joined(separator: "；")) }
+        out.append(panelText())
         return out.joined(separator: "\n")
     }
 
-    /// 【狀況】's line: the open goals' names only (the tree is by `goal.list`); nil when there are none.
+    /// 【狀況】's line: what she wants that waits on nothing else of hers to be wanted (no open node
+    /// needs it); nil when there is none.
     func goalStatusLine() -> String? {
-        guard drivesConfig.enabled, !openGoals.isEmpty else { return nil }
-        return "- 你的目標：" + openGoals.map { "#\($0.id) \($0.text)" }.joined(separator: "、") + "（整棵樹用 goal.list 看）"
+        let tops = goalFile.nodes.filter { n in n.open && !n.blocks.contains { node($0)?.open == true } }
+        guard drivesConfig.enabled, !tops.isEmpty else { return nil }
+        return "- 你想做的：" + tops.prefix(5).map { "#\($0.id) \($0.text)" }.joined(separator: "、") + "（整張圖用 goal.list 看）"
     }
 
     func goalText(_ raw: String) throws -> String {
-        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "。")))
         guard !t.isEmpty else { throw ToolError(description: "text 是空的") }
         guard t.count <= goalsConfig.textMaxChars else {
             throw ToolError(description: "太長了（\(t.count) 字，最多 \(goalsConfig.textMaxChars)）：寫成一個短句，細節之後在做的時候寫")
@@ -228,262 +247,189 @@ extension Doll {
         return t
     }
 
-    /// Adds a goal (no parent), a sub-goal (parent: a goal) or a step (parent: a sub-goal).
-    func goalAdd(_ raw: String, parent: Int?, by: String) throws -> GoalNode {
+    func openNode(_ id: Int) throws -> GoalNode {
+        guard let n = node(id), n.open else { throw ToolError(description: "沒有還開著的 #\(id)；現在的圖：\n" + goalTreeText()) }
+        return n
+    }
+
+    /// Adds an open node; `for`: an open node it holds up (it is needed for that one).
+    func goalAdd(_ raw: String, for target: Int?, by: String) throws -> GoalNode {
         let text = try goalText(raw)
-        let level: GoalNode.Level
-        if let parent {
-            guard let p = node(parent), p.ended == nil else { throw ToolError(description: "沒有還開著的 #\(parent)；現在的樹：\n" + goalTreeText()) }
-            switch p.level {
-            case .goal:
-                level = .subgoal
-                guard openChildren(parent).count < goalsConfig.subgoalsOpenMax else {
-                    throw ToolError(description: "#\(parent) 已經有 \(goalsConfig.subgoalsOpenMax) 個還沒做完的子目標；先做完或放下一個（goal.end）")
-                }
-            case .subgoal:
-                level = .step
-                guard openChildren(parent).count < goalsConfig.stepsOpenMax else {
-                    throw ToolError(description: "#\(parent) 已經有 \(goalsConfig.stepsOpenMax) 個還沒做的步驟；先做掉或放下幾個")
-                }
-            case .step:
-                throw ToolError(description: "#\(parent) 是步驟；樹只有三層（目標→子目標→步驟），步驟下面不能再加。要加步驟，parent 給它的子目標")
-            }
-        } else {
-            level = .goal
-            guard openGoals.count < goalsConfig.goalsOpenMax else {
-                throw ToolError(description: "已經有 \(goalsConfig.goalsOpenMax) 個目標了；先放下或做完一個（goal.end）")
-            }
+        if let target { _ = try openNode(target) }
+        if let same = goalFile.nodes.first(where: { $0.open && $0.text == text }) {
+            throw ToolError(description: "已經有了：\(nodeLine(same))" + (target.map { "；要讓它擋著 #\($0)，用 goal.blocked(\($0), by: \(same.id))" } ?? ""))
         }
-        let n = GoalNode(id: goalFile.nextId, level: level, parent: parent, text: text, created: wallClock.now(), by: by)
+        guard goalFile.nodes.filter(\.open).count < goalsConfig.nodesOpenMax else {
+            throw ToolError(description: "已經有 \(goalsConfig.nodesOpenMax) 件還開著的事；先做完、弄清楚或放下幾件（goal.end、goal.fail）")
+        }
+        let n = GoalNode(id: goalFile.nextId, text: text, created: wallClock.now(), by: by, blocks: target.map { [$0] } ?? [])
         goalFile.nextId += 1
         goalFile.nodes.append(n)
-        // Something under it now: what was missing is no longer the question there.
-        if let parent, let i = goalFile.nodes.firstIndex(where: { $0.id == parent }) { goalFile.nodes[i].blocked = nil }
         try saveGoals()
-        log("INFO", "goals: \(by) added \(nodeLine(n))\(parent.map { " under #\($0)" } ?? "")", sealed: Concerns.boxed(goalsURL))
+        log("INFO", "goals: \(by) added \(nodeLine(n))\(target.map { " blocking #\($0)" } ?? "")", sealed: Concerns.boxed(goalsURL))
         goalsChanged()
         return n
     }
 
     func goalChange(_ id: Int, _ raw: String, by: String) throws -> GoalNode {
         let text = try goalText(raw)
-        guard let i = goalFile.nodes.firstIndex(where: { $0.id == id && $0.ended == nil }) else {
+        guard let i = goalFile.nodes.firstIndex(where: { $0.id == id && $0.open }) else {
             throw ToolError(description: "沒有還開著的 #\(id)")
         }
         let old = goalFile.nodes[i].text
         goalFile.nodes[i].text = text
-        goalFile.nodes[i].blocked = nil
         try saveGoals()
         log("INFO", "goals: \(by) changed #\(id)「\(old)」→「\(text)」", sealed: Concerns.boxed(goalsURL))
         goalsChanged()
         return goalFile.nodes[i]
     }
 
-    /// `done`: a step only through its todo item (the owner may mark one); a sub-goal or goal only
-    /// when nothing under it is still open. `drop`: it and everything open under it.
-    func goalEnd(_ id: Int, how: String, by: String) throws -> GoalNode {
-        guard let n = node(id), n.ended == nil else { throw ToolError(description: "沒有還開著的 #\(id)") }
-        let now = wallClock.now()
-        if how == "done" {
-            if n.level == .step, by == "her" {
-                throw ToolError(description: "步驟要真的做：用 todo.set 列它（給 subgoal \(n.parent!)，那一項開頭寫 #\(id)），做完 todo.done 就記上了")
-            }
-            let open = openChildren(id)
-            guard open.isEmpty else {
-                throw ToolError(description: "#\(id) 下面還有沒做完的：" + open.map { nodeLine($0) }.joined(separator: "、") + "；先做完或放下（goal.end drop）")
-            }
-        }
-        var ids = [id]
-        if how == "drop" {
-            var i = 0
-            while i < ids.count { ids += openChildren(ids[i]).map(\.id); i += 1 }
-        }
-        for k in goalFile.nodes.indices where ids.contains(goalFile.nodes[k].id) {
-            goalFile.nodes[k].ended = now
-            goalFile.nodes[k].end = how == "done" ? "done" : "dropped"
-            goalFile.nodes[k].blocked = nil
-        }
-        if how == "drop", let s = goalFile.link?.subgoal, ids.contains(s) { goalFile.link?.subgoal = nil }
+    /// Ends an open node: `done` (做成過) and `failed` (做不到／失敗過) need evidence; `drop` none.
+    /// Only the node itself ends; what it held up is free of it.
+    func goalEnd(_ id: Int, how: String, evidence: GoalNode.Evidence?, by: String) throws -> GoalNode {
+        let n = try openNode(id)
+        if how != "drop", evidence == nil { throw ToolError(description: "要有根據（evidence）：照抄撐住它的一段，或「紀錄 #編號」") }
+        let i = goalFile.nodes.firstIndex { $0.id == id }!
+        goalFile.nodes[i].ended = wallClock.now()
+        goalFile.nodes[i].end = how == "done" ? "done" : how == "failed" ? "failed" : "dropped"
+        if let evidence { goalFile.nodes[i].evidence.append(evidence) }
+        if goalFile.link?.node == id { goalFile.link?.node = nil }
         try saveGoals()
-        log("INFO", "goals: \(by) \(how) \(nodeLine(n))\(ids.count > 1 ? " and \(ids.count - 1) under it" : "")", sealed: Concerns.boxed(goalsURL))
-        if how == "done" {
-            let amount = n.level == .goal ? goalsConfig.goalDrive : n.level == .subgoal ? goalsConfig.subgoalDrive : goalsConfig.stepDrive
-            try achieve(kind: n.level == .goal ? "goal" : n.level == .subgoal ? "subgoal" : "step", text: n.text, node: n.id, amount: amount)
-        }
+        log("INFO", "goals: \(by) \(how) \(nodeLine(n))", sealed: Concerns.boxed(goalsURL))
+        if how == "done" { try achieve(kind: "node", text: n.text, node: n.id, amount: goalsConfig.nodeDrive) }
         goalsChanged()
         return node(id)!
     }
 
-    /// After every change of the tree: its concerns, the dashboard.
+    /// After every change of the graph: its concerns, the dashboard.
     func goalsChanged() {
         do { try refreshGoalConcerns(now: wallClock.now()) } catch { log("ERROR", "goals: concerns: \(error)") }
         feed.notify(.drives)
     }
 
-    /// The tree's program concerns (about = own): per open sub-goal, its next open step, or that it
-    /// has none. One per sub-goal, not every step: what she would pick up next, and the concern list
-    /// stays bounded (goals × sub-goals). Ones whose node no longer qualifies end.
+    /// What 動力 brings up for an actionable node: the task and what completes it.
+    func taskText(_ n: GoalNode) -> String {
+        let held = heldUp(by: n)
+        let lead = held.isEmpty ? "\(nodeLine(n)) 是你想做的事"
+            : "\(nodeLine(n)) 還沒弄清楚，它擋著 " + held.prefix(3).map(nodeLine).joined(separator: "、") + (held.count > 3 ? " 等 \(held.count) 件" : "")
+        return lead + "。完成條件：有根據地知道做得到還是做不到——做到了用 goal.end(\(n.id), done, evidence)，做不到用 goal.fail(\(n.id), evidence)；"
+            + "做到一半發現還缺別的，用 goal.blocked(\(n.id), missing) 記下缺什麼。要動手就 todo.set(items, node: \(n.id))。"
+    }
+
+    /// The graph's program concerns (about = own): one per actionable node, the one holding up the
+    /// most first, at most `[goals] tasks_max`. Ones whose node no longer qualifies end.
     func refreshGoalConcerns(now: Double) throws {
         guard drivesConfig.enabled else { return }
-        var want: [String: (String, Int)] = [:]
-        for g in openGoals {
-            // A goal with nothing under it is something of hers to pick up too (idle-drive, 2026-11-20:
-            // until then such a goal had no concern, so 動力 had nothing of it to bring up).
-            if openChildren(g.id).isEmpty {
-                want["goalnone:\(g.id)"] = ("目標 #\(g.id)「\(g.text)」底下還沒有子目標（想好一個做得完的結果，用 goal.add 加在它下面）" + blockedNote(g), g.id)
-            }
-            for s in openChildren(g.id) {
-                if let st = openChildren(s.id).first {
-                    want["goal:\(st.id)"] = ("目標樹的下一步：#\(st.id)「\(st.text)」（子目標 #\(s.id)「\(s.text)」；做的時候用 todo.set 列，給 subgoal \(s.id)，那一項開頭寫 #\(st.id)）" + blockedNote(st), st.id)
-                } else {
-                    want["goalsub:\(s.id)"] = ("子目標 #\(s.id)「\(s.text)」還沒有下一步（目標「\(g.text)」；想好了用 goal.add 加步驟）" + blockedNote(s), s.id)
-                }
-            }
-        }
+        let nodes = Array(actionable.prefix(goalsConfig.tasksMax))
+        var want: [String: String] = [:]
+        for n in nodes { want["node:\(n.id)"] = taskText(n) }
         var changed = false
-        // The open one's words follow the node's 「現在做不了」 (set, or expired): that is what surfaces.
         for i in concernFile.items.indices where concernFile.items[i].ended == nil && concernFile.items[i].source == "goal" {
-            guard let k = concernFile.items[i].key, let w = want[k], concernFile.items[i].text != w.0 else { continue }
-            concernFile.items[i].text = w.0
-            changed = true
-        }
-        for i in concernFile.items.indices where concernFile.items[i].ended == nil && concernFile.items[i].source == "goal" {
-            guard let k = concernFile.items[i].key, want[k] == nil else { continue }
-            let nodeID = Int(k.split(separator: ":").last ?? "") ?? 0
-            concernFile.items[i].ended = now
-            concernFile.items[i].end = node(nodeID)?.end == "done" ? "done" : "passed"
-            changed = true
-            log("INFO", "drives: concern #\(concernFile.items[i].id) ended (the tree changed)")
+            guard let k = concernFile.items[i].key else { continue }
+            if let w = want[k] {
+                if concernFile.items[i].text != w { concernFile.items[i].text = w; changed = true }
+            } else {
+                let nodeID = Int(k.split(separator: ":").last ?? "") ?? 0
+                concernFile.items[i].ended = now
+                concernFile.items[i].end = node(nodeID)?.end == "done" ? "done" : "passed"
+                changed = true
+                log("INFO", "drives: concern #\(concernFile.items[i].id) ended (the graph changed)")
+            }
         }
         if changed { try saveConcerns() }
-        for (k, v) in want.sorted(by: { $0.value.1 < $1.value.1 }) where !concernFile.items.contains(where: { $0.key == k && $0.ended == nil }) {
-            try addConcern(v.0, about: .own, source: "goal", key: k)
+        // In the order they should come up: the concern made first has the lower id (`Concerns.pick`).
+        for n in nodes where !concernFile.items.contains(where: { $0.key == "node:\(n.id)" && $0.ended == nil }) {
+            try addConcern(want["node:\(n.id)"]!, about: .own, source: "goal", key: "node:\(n.id)")
         }
     }
 
     // her tools ------------------------------------------------------------------------------------
 
-    func goalAddTool(text: String, parent: Int?) throws -> Outcome {
-        let n = try goalAdd(text, parent: parent, by: "her")
-        let hint = n.level == .subgoal ? "要做的時候把一步一步列成 todo：todo.set(items, subgoal: \(n.id))。"
-            : n.level == .step ? "做的時候用 todo.set 列，給 subgoal \(n.parent!)，那一項開頭寫 #\(n.id)。" : ""
-        return Outcome(text: "加好了：\(nodeLine(n))。\(hint)", actions: ["goal add"])
+    func goalAddTool(text: String, for target: Int?) throws -> Outcome {
+        let n = try goalAdd(text, for: target, by: "her")
+        return Outcome(text: "加好了：\(nodeLine(n))" + (target.map { "，它擋著 #\($0)" } ?? "") + "。要動手的時候把一步一步列成 todo：todo.set(items, node: \(n.id))。",
+                       actions: ["goal add"])
     }
 
     func goalChangeTool(id: Int, text: String) throws -> Outcome {
         Outcome(text: "改好了：\(nodeLine(try goalChange(id, text, by: "her")))。", actions: ["goal change"])
     }
 
-    func goalEndTool(id: Int, how: String) throws -> Outcome {
-        let n = try goalEnd(id, how: how, by: "her")
-        return Outcome(text: "\(nodeLine(n)) \(how == "done" ? "做完了，記下了" : "放下了")。", actions: ["goal end"])
+    func goalEndTool(id: Int, how: String, evidence: String?) throws -> Outcome {
+        let e = how == "drop" ? nil : try evidence.map { try checkedEvidence($0, by: "her") }
+        let n = try goalEnd(id, how: how, evidence: e, by: "her")
+        let freed = n.blocks.compactMap(node).filter { $0.open && blockers(of: $0.id).isEmpty }
+        return Outcome(text: "\(nodeLine(n)) " + (how == "done" ? "記成做成過了" : how == "failed" ? "記成做不到了" : "放下了")
+                       + (freed.isEmpty ? "。" : "；\(freed.map(nodeLine).joined(separator: "、")) 不再被它擋住。")
+                       + (how == "failed" ? "想改它：碰到某個情況就該怎麼做的，用 self.habit(\(n.id), when, do) 定習慣；要下功夫的，用 goal.add 加一件想做的事。" : ""),
+                       sealed: sealing, actions: ["goal \(how == "drop" ? "drop" : how)"])
     }
 
-    /// `goal.blocked` (grounding fix 2, 2026-11-22): the formal 「現在做不了，因為缺 X」 where the
-    /// program asks her for a sub-goal, a step or a step done. Not a failure: no todo, no 壓力; her
-    /// own-thing episode ends at the next idle moment as any other (`endOwnEpisode`).
-    func goalBlockedTool(id: Int, missing: String) throws -> Outcome {
-        // Her sentence's own 「。」 goes: the result and the note put theirs after it (real check,
-        // 2026-11-22: 「…先問主人。。它下次冒出來…」).
-        let m = missing.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "。")))
-        guard !m.isEmpty else { throw ToolError(description: "missing 是空的：寫缺的是什麼") }
-        guard m.count <= goalsConfig.textMaxChars else {
-            throw ToolError(description: "太長了（\(m.count) 字，最多 \(goalsConfig.textMaxChars)）：寫缺的那樣東西就好")
-        }
-        guard let i = goalFile.nodes.firstIndex(where: { $0.id == id && $0.ended == nil }) else {
-            throw ToolError(description: "沒有還開著的 #\(id)；現在的樹：\n" + goalTreeText())
-        }
-        goalFile.nodes[i].blocked = GoalNode.Blocked(missing: m, ts: wallClock.now())
-        try saveGoals()
-        let n = goalFile.nodes[i]
-        log("INFO", "goals: her blocked \(nodeLine(n)): \(m)", sealed: Concerns.boxed(goalsURL))
-        goalsChanged()
-        return Outcome(text: "記下了：\(nodeLine(n)) 現在做不了，缺：\(m)。它下次冒出來會帶著這句；缺的有了再做。", actions: ["goal blocked"])
-    }
-
-    // todo ↔ steps -----------------------------------------------------------------------------------
-
-    /// The step an item names: it begins with `#<id>` (「#3 shark-list.md 寫好了」). A todo item is
-    /// written as what done looks like, so it rarely equals the step's own words (real runs t,
-    /// 2026-11-16: 3 of 3 rephrased it and the step stayed open beside a new one); the number ties them.
-    static func stepRef(_ item: String) -> Int? {
-        guard item.hasPrefix("#") else { return nil }
-        return Int(item.dropFirst().prefix { $0.isNumber })
-    }
-
-    /// The open step of `subgoal` an item is: by its `#<id>`, else by the same words.
-    func stepIndex(_ item: String, subgoal: Int) -> Int? {
-        if let id = Self.stepRef(item) { return goalFile.nodes.firstIndex { $0.id == id && $0.parent == subgoal && $0.ended == nil } }
-        return goalFile.nodes.firstIndex { $0.parent == subgoal && $0.ended == nil && $0.text == item }
-    }
-
-    /// `todo.set` with a sub-goal: checks it and adds the items that are not yet its open steps
-    /// (all or none, within `steps_open_max`). Returns the note for her result.
-    func linkTodo(_ items: [String], subgoal: Int) throws -> String {
-        guard drivesConfig.enabled else { throw ToolError(description: "沒有目標樹") }
-        guard let s = node(subgoal), s.ended == nil, s.level == .subgoal else {
-            throw ToolError(description: "#\(subgoal) 不是還開著的子目標；現在的樹：\n" + goalTreeText())
-        }
-        for i in items {
-            if let id = Self.stepRef(i), stepIndex(i, subgoal: subgoal) == nil {
-                throw ToolError(description: "#\(id) 不是子目標 #\(subgoal) 還沒做的步驟；它的步驟：" + openChildren(subgoal).map { nodeLine($0) }.joined(separator: "、"))
+    /// `goal.blocked` (grounding fix 2, 2026-11-22; an edge of the graph since 2026-11-24): she was at
+    /// `id` and something is missing. What is missing becomes an open node that holds `id` up
+    /// (`missing`: its words; `by`: an existing open node). Not a failure: no todo, no 壓力.
+    func goalBlockedTool(id: Int, missing: String?, by: Int?) throws -> Outcome {
+        let n = try openNode(id)
+        let blocker: GoalNode
+        if let by {
+            let b = try openNode(by)
+            guard b.id != id, !heldUp(by: n).contains(where: { $0.id == b.id }) else {
+                throw ToolError(description: "#\(by) 自己就在等 #\(id)，不能反過來擋它")
             }
+            if !b.blocks.contains(id) {
+                goalFile.nodes[goalFile.nodes.firstIndex { $0.id == by }!].blocks.append(id)
+                try saveGoals()
+            }
+            blocker = node(by)!
+        } else {
+            let m = try goalText(missing ?? "")
+            if let same = goalFile.nodes.first(where: { $0.open && $0.text == m }) {
+                return try goalBlockedTool(id: id, missing: nil, by: same.id)
+            }
+            blocker = try goalAdd(m, for: id, by: "her")
         }
-        let open = openChildren(subgoal)
-        let new = items.filter { stepIndex($0, subgoal: subgoal) == nil }
-        guard open.count + new.count <= goalsConfig.stepsOpenMax else {
-            throw ToolError(description: "#\(subgoal) 最多 \(goalsConfig.stepsOpenMax) 個還沒做的步驟；這樣會有 \(open.count + new.count) 個")
-        }
-        for i in new { _ = try goalText(i) }
-        for i in new { _ = try goalAdd(i, parent: subgoal, by: "her") }
-        let bound = items.compactMap { stepIndex($0, subgoal: subgoal).map { goalFile.nodes[$0].id } }
-        return "這份清單是子目標 #\(subgoal) 的步驟" + (bound.isEmpty ? "" : "（" + bound.map { "#\($0)" }.joined(separator: "、") + "）")
-            + (new.isEmpty ? "。" : "；新的步驟加進樹裡了：" + new.map { "「\($0)」" }.joined() + "。")
+        log("INFO", "goals: her blocked \(nodeLine(n)) by \(nodeLine(blocker))", sealed: Concerns.boxed(goalsURL))
+        goalsChanged()
+        return Outcome(text: "記下了：\(nodeLine(n)) 被 \(nodeLine(blocker)) 擋住。缺的有了（或弄清楚做不到）再回來；它之後會先冒出來。", actions: ["goal blocked"])
     }
 
-    /// A list starts (from 待命中) or is rewritten: which sub-goal it works on.
-    func startLink(subgoal: Int?, fresh: Bool) {
+    // todo ↔ the graph -------------------------------------------------------------------------------
+
+    /// `todo.set` with a node: checks it. Returns the note for her result.
+    func linkTodo(_ items: [String], node id: Int) throws -> String {
+        guard drivesConfig.enabled else { throw ToolError(description: "沒有圖") }
+        let n = try openNode(id)
+        return "這份清單是為了 \(nodeLine(n))。"
+    }
+
+    /// A list starts (from 待命中) or is rewritten: which node it works on.
+    func startLink(node id: Int?, fresh: Bool) {
         guard drivesConfig.enabled else { return }
-        if fresh { goalFile.link = TodoLink(subgoal: subgoal) } else if let subgoal { goalFile.link = goalFile.link.map { var l = $0; l.subgoal = subgoal; return l } ?? TodoLink(subgoal: subgoal) }
+        if fresh { goalFile.link = TodoLink(node: id) } else if let id { goalFile.link = goalFile.link.map { var l = $0; l.node = id; return l } ?? TodoLink(node: id) }
         do { try saveGoals() } catch { log("ERROR", "goals: saving \(goalsURL.path) failed: \(error)") }
     }
 
-    /// `todo.done`: a tree step is marked done (its achievement); any other item moves 動力 as a todo
-    /// item. Returns the note for her result.
+    /// `todo.done`: one item of the list in hand. Returns the note for her result.
     func itemFinished(_ item: String) -> String {
         guard drivesConfig.enabled else { signal(.itemDone, item); return "" }
-        var note = ""
         if goalFile.link == nil { goalFile.link = TodoLink() }
         goalFile.link!.done.append(item)
-        if let sub = goalFile.link?.subgoal, let i = stepIndex(item, subgoal: sub) {
-            goalFile.nodes[i].ended = wallClock.now()
-            goalFile.nodes[i].end = "done"
-            let n = goalFile.nodes[i]
-            do {
-                try saveGoals()
-                let e = try achieve(kind: "step", text: n.text, node: n.id, amount: goalsConfig.stepDrive)
-                note = "目標樹上的步驟 #\(n.id) 記成做完了（紀錄 #\(e.id)）。"
-                if openChildren(sub).isEmpty, let s = node(sub) {
-                    note += "子目標 #\(sub)「\(s.text)」的步驟都做完了：結果有了就用 goal.end(\(sub), done)，還沒就再加步驟。"
-                }
-            } catch { log("ERROR", "goals: step done not saved: \(error)") }
-            goalsChanged()
-        } else {
-            do { try saveGoals() } catch { log("ERROR", "goals: saving \(goalsURL.path) failed: \(error)") }
-            signal(.itemDone, item)
-        }
-        return note
+        do { try saveGoals() } catch { log("ERROR", "goals: saving \(goalsURL.path) failed: \(error)") }
+        signal(.itemDone, item)
+        return ""
     }
 
-    /// The list is done (its last item): not tree work → one record for it (what the owner asked).
+    /// The list is done (its last item): one record for it; for a node's list, what to do with the node.
     func listFinished() -> String {
         guard drivesConfig.enabled, let link = goalFile.link else { return "" }
         goalFile.link = nil
         do { try saveGoals() } catch { log("ERROR", "goals: saving \(goalsURL.path) failed: \(error)") }
-        guard link.subgoal == nil, !link.done.isEmpty else { return "" }
+        guard !link.done.isEmpty else { return "" }
         do {
-            let e = try achieve(kind: "list", text: link.done.joined(separator: "；"), node: nil, amount: goalsConfig.listDrive)
-            return "這份清單記成做完的事（紀錄 #\(e.id)）。"
+            let e = try achieve(kind: "list", text: link.done.joined(separator: "；"), node: link.node, amount: goalsConfig.listDrive)
+            guard let id = link.node, let n = node(id), n.open else { return "這份清單記成做完的事（紀錄 #\(e.id)）。" }
+            return "這份清單記成做完的事（紀錄 #\(e.id)）。\(nodeLine(n)) 呢：做到了用 goal.end(\(id), done, evidence: 「紀錄 #\(e.id)」)，"
+                + "試了做不到用 goal.fail(\(id), evidence)，還缺別的用 goal.blocked(\(id), missing)，還沒完就再列一份。"
         } catch {
             log("ERROR", "goals: record not saved: \(error)")
             return ""
@@ -501,9 +447,7 @@ extension Doll {
 
     func recordLabel(_ kind: String) -> String {
         switch kind {
-        case "step": "步驟"
-        case "subgoal": "子目標"
-        case "goal": "目標"
+        case "node": "想做的事"
         default: "todo 清單"
         }
     }
@@ -637,7 +581,7 @@ extension Doll {
         do { try saveCuriosity() } catch { log("ERROR", "curiosity: saving \(curiosityURL.path) failed: \(error)") }
     }
 
-    static let curiosityText = "\(Concerns.wanderTag)你發現好一陣子沒碰到沒見過的東西了。有空可以找一樣你的目標樹上沒有的東西看看（用電腦，先 todo.set 列一項）；覺得有意思，可以用 goal.add 把它加成一個新目標。"
+    static let curiosityText = "\(Concerns.wanderTag)你發現好一陣子沒碰到沒見過的東西了。有空可以找一樣你的圖上沒有的東西看看（用電腦，先 todo.set 列一項）；覺得有意思，可以用 goal.add 把它加成一個新目標。"
 
     func curiosityWander(now: Double) {
         curiosity.surfaced = now
@@ -677,27 +621,28 @@ extension Doll {
 
     public func dashboardGoalEdit(_ op: String, _ q: [String: String]) throws -> GoalNode {
         try sealedEdit(goalsURL) {
-            let id = q["id"].flatMap { Int($0) }, parent = q["parent"].flatMap { Int($0) }
+            let id = q["id"].flatMap { Int($0) }, target = q["for"].flatMap { Int($0) }
             let n: GoalNode
             switch op {
-            case "add": n = try goalAdd(q["text"] ?? "", parent: parent, by: "owner")
+            case "add": n = try goalAdd(q["text"] ?? "", for: target, by: "owner")
             case "change":
                 guard let id else { throw ToolError(description: "id needed") }
                 n = try goalChange(id, q["text"] ?? "", by: "owner")
             case "done", "drop":
                 guard let id else { throw ToolError(description: "id needed") }
-                n = try goalEnd(id, how: op, by: "owner")
+                let e = op == "done" ? GoalNode.Evidence(quote: "主人在儀表板標的", ts: wallClock.now(), by: "owner") : nil
+                n = try goalEnd(id, how: op, evidence: e, by: "owner")
             default: throw ToolError(description: "unknown op \(op)")
             }
             let what = switch op {
             case "add": "加了 \(nodeLine(n))"
             case "change": "把 #\(n.id) 改成「\(n.text)」"
-            case "done": "把 \(nodeLine(n)) 記成做完了"
+            case "done": "把 \(nodeLine(n)) 記成做成過了"
             default: "放下了 \(nodeLine(n))"
             }
             // A sealed tree's texts stay out of the commit message: the op and the id only.
-            commitHistory(.owner, what: "目標樹：" + (sealing ? "\(op) #\(n.id)" : what), why: "主人在儀表板改的")
-            toldOwnerEdit("【主人改了你的目標樹】他\(what)。整棵樹用 goal.list 看。")
+            commitHistory(.owner, what: "圖：" + (sealing ? "\(op) #\(n.id)" : what), why: "主人在儀表板改的")
+            toldOwnerEdit("【主人改了你的圖】他\(what)。整張圖用 goal.list 看。")
             return n
         }
     }
@@ -766,7 +711,7 @@ enum IdealReview {
     }
 
     static func user(pack: String, ideal: String, tree: String, record: [String], day: String) -> String {
-        "設定（固定的）：\n\(pack)\n\n你現在想成為的樣子：\n\(ideal)\n\n你的目標樹：\n\(tree)\n\n今天做完的事：\n"
+        "設定（固定的）：\n\(pack)\n\n你現在想成為的樣子：\n\(ideal)\n\n你想做的事和會的、不會的：\n\(tree)\n\n今天做完的事：\n"
             + (record.isEmpty ? "（沒有）" : record.joined(separator: "\n")) + "\n\n今天的對話（最後一段）：\n\(day)"
     }
 

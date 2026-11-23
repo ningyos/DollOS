@@ -1,7 +1,7 @@
 # History
 
-`History.swift` keeps a git history of the files that make up the doll's self: ideal self, goal tree,
-record, memory corrections, saved tools, diary, self-knowledge and every memory file. Each change is
+`History.swift` keeps a git history of the files that make up the doll's self: ideal self, her graph
+(what she wants, can and cannot do), record, memory corrections, saved tools, diary and every memory file. Each change is
 committed when it is made, with who made it and why. The owner sees diffs, undoes any change and returns
 everything to a point; the doll lists changes and undoes her own. History is never rewritten: an undo is
 a new commit.
@@ -9,8 +9,8 @@ a new commit.
 ## What the doll sees and does
 
 - `history.list(about?)`: her recent changes, newest first, at most 8, one line each:
-  `〔id〕MM-dd HH:mm who what：why｜動到：things`. `about` filters by 想成為的樣子/`ideal`, 目標/`goals`,
-  工具/`tools`, 記憶/`memory`, 紀錄/`record`, 日記/`diary`, 長短處/`self`, a tool name, or a memory id.
+  `〔id〕MM-dd HH:mm who what：why｜動到：things`. `about` filters by 想成為的樣子/`ideal`, 圖, 目標, 技能面板, 長短處/`goals`/`self` (all the graph),
+  工具/`tools`, 記憶/`memory`, 紀錄/`record`, 日記/`diary`, a tool name, or a memory id.
   Changes touching a folder her turn may not read show only
   `改了你現在看不到的記憶（主人的回合才看得到）`. She gets no diff. When the owner asks what she changed,
   she answers from this list and claims nothing it does not show.
@@ -32,8 +32,8 @@ a new commit.
 
 Tree paths are `data/…` (`[core] data_dir`) and `memory/…` (`[memory] dir`):
 
-- `data/`: `History.dataFiles` = `ideal-self.md`, `ideal-self-log.json`, `goals.json`, `record.json`,
-  `memory-fixes.json`, `self-knowledge.json` (`Reflection.selfFileName`); `tools/*.json`; and
+- `data/`: `History.dataFiles` = `ideal-self.md`, `ideal-self-log.json`, `mind.json`, `record.json`,
+  `memory-fixes.json`; `tools/*.json`; and
   `diary/*.md` (`Reflection.diaryDir`).
 - `memory/`: every `.md` one level below each folder: `secret`, `own`, `public`, and the registry.
 
@@ -96,7 +96,7 @@ A commit touching `secret`/`own` (`History.isSealed`), and every commit while `D
   `next_id` kept; front-matter markdown by key and body; else only if one side is unchanged). A conflict
   refuses and names the later changes. Sealed files are opened and resealed (`History.mergeFile`).
 - `History.restoreWrites(_:)` writes every kept file as it was right after a change.
-- `Doll.reloadAfterHistory` reloads ideal self, its log, goals, record, memory fixes, self-knowledge,
+- `Doll.reloadAfterHistory` reloads ideal self, its log, the graph, record, memory fixes,
   rebuilds the diary index if a diary file changed, and reindexes memory files; then the caller commits.
 
 Dashboard routes `GET /api/history`, `GET /api/history/diff/<id>`, `POST /api/history/undo/<id>`,
