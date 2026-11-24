@@ -37,7 +37,7 @@ public enum HistoryWho: String, Codable, Sendable {
         case .her: "你"
         case .owner: "主人"
         case .maintenance: "系統維護"
-        case .program: "程式"
+        case .program: "系統"
         }
     }
     /// How the owner reads it.
@@ -1075,7 +1075,7 @@ extension Doll {
         case .her: break
         case .owner: throw refuse("〔\(e.short)〕是主人改的，你不能退回。覺得不對，跟主人說。")
         case .maintenance: throw refuse("〔\(e.short)〕是系統維護改的（\(e.what)），你不能退回。覺得不對，跟主人說。")
-        case .program: throw refuse("〔\(e.short)〕是程式記的，不是你的改動，不能退回。")
+        case .program: throw refuse("〔\(e.short)〕是系統記的，不是你的改動，不能退回。")
         }
         let w = why.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !w.isEmpty else { throw refuse("要給 why：為什麼退回，一句。") }

@@ -38,7 +38,7 @@ enum Traditional {
 
     /// The line added to a speaking tool's result when something was replaced.
     static func note(_ changes: [String]) -> String {
-        "你寫了簡體字，送出去的時候程式改成繁體了：\(changes.joined(separator: "、"))。下次直接寫繁體。"
+        "你寫了簡體字，送出去的時候系統改成繁體了：\(changes.joined(separator: "、"))。下次直接寫繁體。"
     }
 }
 

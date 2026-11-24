@@ -11,12 +11,12 @@ items that started while the process was down (no turns for those; see [calendar
 then the report, then a history finding if any ([history.md](history.md)). Boot continues the newest
 timeline segment, so the earlier conversation stays in her context.
 
-**The report** starts `【上次執行的紀錄】程式從上一次執行的 log 整理的：` ("record of the last run, from
+**The report** starts `【上次執行的紀錄】系統從上一次執行的 log 整理的：` ("record of the last run, from
 its log") and covers only the run right before this one:
 
 - its boot time and line count;
-- how it ended: `正常關掉的` (clean: SIGINT or SIGTERM), `程式出錯停下來的` (an error stopped it),
-  `開機到一半失敗，沒有起來` (boot failed), `程式當掉了` (a crash signal; the time is the last line
+- how it ended: `正常關掉的` (clean: SIGINT or SIGTERM), `系統出錯停下來的` (an error stopped it),
+  `開機到一半失敗，沒有起來` (boot failed), `系統當掉了` (a crash signal; the time is the last line
   before it), or `沒有結束的紀錄` (no end line: killed, uncaught crash, shutdown or power loss, not
   told apart; the time is only the last log line and the stop came later; sleep never ends the
   process);

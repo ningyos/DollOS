@@ -293,7 +293,7 @@ enum OwnTools {
             throw ToolError(description: "沒存：「\(item)」最後一次 act（\(last.steps.map { Mac.step($0, nil) }.joined(separator: "、"))）沒做完或跟你預期的不一樣，這串動作沒有完整做成。做到跟預期一樣以後再存。")
         }
         guard let finalExpect = last.expect else {
-            throw ToolError(description: "沒存：「\(item)」最後一次 act 沒寫 expect，程式沒辦法確認那次結果是對的。用寫了 expect 的 act 做到一樣，再存。")
+            throw ToolError(description: "沒存：「\(item)」最後一次 act 沒寫 expect，系統沒辦法確認那次結果是對的。用寫了 expect 的 act 做到一樣，再存。")
         }
         var left: [String] = []
         var parts: [OwnTool.Part] = []
@@ -323,7 +323,7 @@ enum OwnTools {
                 }
                 guard keep > 0 else { continue }
                 guard c.records.count >= keep else {
-                    throw ToolError(description: "沒存：第 \(actNo) 次 act 的動作紀錄少了步驟（\(c.records.count)／\(c.steps.count)），程式不知道每一步按到哪個元素。")
+                    throw ToolError(description: "沒存：第 \(actNo) 次 act 的動作紀錄少了步驟（\(c.records.count)／\(c.steps.count)），系統不知道每一步按到哪個元素。")
                 }
                 var steps: [OwnTool.Step] = []
                 for (s, r) in zip(c.steps.prefix(keep), c.records.prefix(keep)) {
@@ -372,7 +372,7 @@ enum OwnTools {
                 throw ToolError(description: "沒存：參數「\(pname)」的值「\(p.value)」不在要存的步驟裡（打的字、open 的檔案或網址、連著按的按鈕名字都沒有）。要存的步驟：" + all.joined(separator: "、"))
             }
             guard kinds.count == 1, runs.count <= 1 else {
-                throw ToolError(description: "沒存：參數「\(pname)」的值「\(p.value)」在步驟裡不只一處（\(kinds.joined(separator: "、"))\(runs.count > 1 ? "，按鈕有 \(runs.count) 串" : "")），程式不知道哪一處會變。")
+                throw ToolError(description: "沒存：參數「\(pname)」的值「\(p.value)」在步驟裡不只一處（\(kinds.joined(separator: "、"))\(runs.count > 1 ? "，按鈕有 \(runs.count) 串" : "")），系統不知道哪一處會變。")
             }
             let kind: OwnTool.Param.Kind
             if !typed.isEmpty {
@@ -632,7 +632,7 @@ extension Doll {
             }
             source = (e.item, e.task, e.chain)
         } else {
-            throw ToolError(description: "沒存：沒有可以存的動作。進行中的項目還沒有做成的 act，之前也沒有做完的項目（程式重開以前做的不算）。先做一次、做到跟預期一樣，再存。")
+            throw ToolError(description: "沒存：沒有可以存的動作。進行中的項目還沒有做成的 act，之前也沒有做完的項目（系統重開以前做的不算）。先做一次、做到跟預期一樣，再存。")
         }
         let existing = try toolStore.all()
         if let same = existing.first(where: { $0.name == name }) {

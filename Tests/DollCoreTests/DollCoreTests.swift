@@ -2037,7 +2037,7 @@ private func memoryEvents(_ h: Harness) throws -> [Event] { try h.events().filte
     await h.doll.ownerSaid("幫我用 TextEdit 寫筆記")
     try await h.turn("好")
     let mem = try memoryEvents(h)
-    #expect(mem.map { noIDs($0.text) } == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\n經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點"])
+    #expect(mem.map { noIDs($0.text) } == ["【相關記憶】系統用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\n經驗：幫我用 TextEdit 寫筆記\n期望：筆記存好\n1. key cmd+s → Done\n結果：標題沒有點"])
     // Right after the owner's line, before the footer.
     let seen = await h.model.seen(0)
     #expect(seen[seen.count - 2].content.hasSuffix("] " + mem[0].text) && seen[seen.count - 2].role == "user")
@@ -2215,7 +2215,7 @@ private func experiences(_ h: Harness) throws -> [(text: String, tier: SourceTie
     // The result is still in the timeline, right after her reply.
     let events = try h.events()
     #expect(events.last?.kind == .tool && events.last!.text.hasPrefix("完成，記下了。這次的經過和步驟存成一條經驗。")
-            && events.last!.text.hasSuffix("清單做完了，現在待命中；程式不會再為這件事叫你。"))
+            && events.last!.text.hasSuffix("清單做完了，現在待命中；系統不會再為這件事叫你。"))
     #expect(events.dropLast(3).last?.kind == .doll)
     await h.doll.stop()
     try await runner.value
@@ -3250,7 +3250,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
         stamped(Scripted("", dm("好"), key("cmd+shift+alt+s")), 5),
         stamped(.tool, "", 6),
         stamped(.tool, "1 步都做了：key cmd+shift+alt+s。", 7, image: "b.jpg", window: "TextEdit 的視窗「另存」；截圖 460×816\n- [0] AXWindow \"Save\""),
-        stamped(.memory, "【相關記憶】程式用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
+        stamped(.memory, "【相關記憶】系統用主人的話查到的過去經驗：\n〔大概｜public〕\n經驗：x", 8),
         stamped(Scripted("", recall("另存")), 9),
         stamped(.tool, "另存：1 條\n\n〔大概｜public〕\n舊的", 10),
         stamped(Scripted("", done("按 ⇧⌥⌘S 另存好了", evidence: nil)), 11),
@@ -3287,7 +3287,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     let seeded = [stamped(.memory, Doll.bootNotice + "最後一行 log 在 11-20 17:12:51", 1),
                   stamped(Scripted("斷了一次", dm("下午 17:12 左右我這裡斷了一次")), 2)]
     let (b1, b2) = (hhmm(seeded[0].ts), hhmm(seeded[1].ts))
-    #expect(Consolidation.tasks(seeded).map(\.text) == ["[\(b1) 程式的開機通知] 【開機】你剛被開機了。最後一行 log 在 11-20 17:12:51\n"
+    #expect(Consolidation.tasks(seeded).map(\.text) == ["[\(b1) 系統的開機通知] 【開機】你剛被開機了。最後一行 log 在 11-20 17:12:51\n"
             + "[\(b2) 她想｜自己的話] 斷了一次\n[\(b2) 她說｜Discord 私訊｜自己的話] 下午 17:12 左右我這裡斷了一次"])
 }
 
@@ -3474,7 +3474,7 @@ private func writeRetired(_ h: Harness, _ id: String, days: Double, body: String
     try await seedMemory(h, "public", "TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取", tier: "consolidated", confidence: 0.6)
     await h.doll.ownerSaid("用 TextEdit 另存一份")
     try await h.turn("好")
-    #expect(try memoryEvents(h).map { noIDs($0.text) } == ["【相關記憶】程式用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
+    #expect(try memoryEvents(h).map { noIDs($0.text) } == ["【相關記憶】系統用主人的話查到、最相近的過去經驗：\n〔大概｜public〕\nTextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取"])
     try await h.turn(Scripted("", recall("另存對話框")))
     let result = try h.toolResults().last!.text
     #expect(result.contains("跳出另存對話框") && !result.contains("File 選單點"))
@@ -4859,7 +4859,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     try await h.turn(Scripted(longThought, key("cmd+a")))
     try await h.turn(Scripted("", key("cmd+c")))
     let warned = h.last.footer
-    #expect(warned.contains("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；再 3 回合沒收，程式會自己收（留動作清單和最近 2 回合）。"))
+    #expect(warned.contains("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；再 3 回合沒收，系統會自己收（留動作清單和最近 2 回合）。"))
     #expect(warned.contains("其中做事的過程") && !h.reports[0].footer.contains("快滿了"))
     try await h.turn(Scripted("", progress("選了全部、複製了；接下來要刪掉別的檔案")))
     #expect(h.last.compacted == ["progress"] && h.last.todo == "進行中")
@@ -4915,7 +4915,7 @@ private let longThought = String(repeating: "想", count: 9_000)
     await h.doll.ownerSaid("在嗎")
     try await h.turn(Scripted("", dm("在，我这边没问题")))
     #expect(h.said == ["在，我這邊沒問題"])
-    #expect(try h.toolResults().last!.text == "你寫了簡體字，送出去的時候程式改成繁體了：这→這、边→邊、没→沒、问→問、题→題。下次直接寫繁體。")
+    #expect(try h.toolResults().last!.text == "你寫了簡體字，送出去的時候系統改成繁體了：这→這、边→邊、没→沒、问→問、题→題。下次直接寫繁體。")
     // Nothing simplified: the result stays empty.
     await h.doll.ownerSaid("好")
     try await h.turn(Scripted("", dm("嗯，台北今天裡面外面都很冷")))
@@ -5604,7 +5604,7 @@ private let planReply = Scripted("""
     ```
     """)
 private let summaryReply = Scripted("今天主人跟她說了晚安。")
-private let startNotice = "【系統維護】開始，現在 03:00。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+private let startNotice = "【系統維護】開始，現在 03:00。系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
 private let didOne = "整理了之前的事：新記了 1 條記憶，改了 0 條，0 條舊的換掉了，0 條又遇到一次、記得更牢了。"
 
 /// `notice`: minutes she is told ahead (`[maintenance] notice_min`); 0 here unless a test is about the notice.
@@ -5791,7 +5791,7 @@ private func maintenanceFile(_ h: Harness) throws -> MaintenanceFile {
     try await waitUntil { h.logs.contains { $0.contains("maintenance: ended") } }
     #expect(h.logs.contains { $0.contains("maintenance: busy 3.0 h since due") })
     let segs = try segmentTexts(h)
-    #expect(segs[0].last == "【系統維護】開始，現在 06:00。程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
+    #expect(segs[0].last == "【系統維護】開始，現在 06:00。系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。你手上的「報告寄給主人了」先停著，結束後接著做。")
     #expect(segs[1][0].hasPrefix("【系統維護】結束，現在 06:00。") && segs[1][0].hasSuffix("你手上的「報告寄給主人了」還在，接著做。"))
     #expect(try h.timeline().todo.current == "報告寄給主人了" && h.timeline().todo.phase == .doing)
     #expect(await h.doll.followUp)
@@ -6220,7 +6220,7 @@ private func noteCall(_ text: String, _ about: String) -> (String, [(String, Str
     try await waitUntil { await doll.settled && h.reports.count == 4 }
     open = await doll.dashboardDrives().open
     #expect(open.map(\.text).last == "沒做成：報告寄出了（沒有檔案）" && open.last!.source == "todo")
-    #expect(try h.toolResults().contains { $0.text.contains("程式記成你的掛念 #2") })
+    #expect(try h.toolResults().contains { $0.text.contains("系統記成你的掛念 #2") })
     // Three hours before: 壓力 up once.
     clock.set(at("2026-11-17", "06:30"))
     try await waitUntil { await doll.dashboardDrives().changes.contains { $0.cause.hasPrefix("掛念的事快到了：#1") } }
@@ -6775,8 +6775,8 @@ private func concernsFile(_ h: Harness) throws -> [[String: Any]] {
 /// A basis stitched from sentences of the boot notice joined by 。 (the m15 fix 3 real check's run 1,
 /// verbatim): each sentence is found on its own, so the note is kept as written.
 @Test func aConcernBasisStitchedFromSeveralSentencesIsFoundSentenceBySentence() throws {
-    let notice = Doll.bootNotice + "現在 11-20 18:00。\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-20 13:00:13 開機，共 57 行。\n"
-        + "- 結束：沒有結束的紀錄，最後一行 log 在 11-20 17:12:51，之後就沒有了。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。\n"
+    let notice = Doll.bootNotice + "現在 11-20 18:00。\n【上次執行的紀錄】系統從上一次執行的 log 整理的：那次 11-20 13:00:13 開機，共 57 行。\n"
+        + "- 結束：沒有結束的紀錄，最後一行 log 在 11-20 17:12:51，之後就沒有了。可能是被強制結束、當掉、或這台 Mac 關機／斷電，系統分不出是哪一種；Mac 睡眠不會讓系統結束，所以不是睡眠。\n"
         + "- 沒有錯誤和警告。"
     let run1 = "note own: log 在 17:12 中斷且沒有錯誤，原因還沒分清楚是不是 Mac 關機／斷電｜根據：最後一行 log 在 11-20 17:12:51，之後就沒有了。沒有錯誤和警告。可能是被強制結束、當掉、或這台 Mac 關機／斷電"
     let plan = try ConcernExtraction.parse(run1, open: [], ownerLines: [], others: [notice], own: ["下午 17:12 左右我這裡斷了一次"], cap: 3, room: 20)
@@ -7325,7 +7325,7 @@ private func display(_ value: String) -> String { #"  - [1] AXStaticText ""# + v
     await h.doll.ownerSaid("把買牛奶改成買豆漿")
     try await h.turn(Scripted("", todoSet("todo.txt 第一行是買豆漿"), editFile(todo, "買牛奶", "買豆漿")))
     try await h.turn(Scripted("", dm("改好了"), done("改好了", evidence: "買牛奶")))
-    #expect(try h.toolResults().last!.text == evidenceRefused("買牛奶", source: "\(todo)（程式剛讀的，3 行）", shown: "  1→買豆漿\n  2→洗衣服\n  3→寫作業"))
+    #expect(try h.toolResults().last!.text == evidenceRefused("買牛奶", source: "\(todo)（系統剛讀的，3 行）", shown: "  1→買豆漿\n  2→洗衣服\n  3→寫作業"))
     try await h.turn(Scripted("", done("改好了", evidence: "買豆漿")))
     #expect(try h.toolResults().last!.text.hasPrefix("完成，記下了。"))
 }
@@ -7658,7 +7658,7 @@ private let pdfBelief = "macOS 計算機有「檔案＞匯出為 PDF」功能"
     try await h.turn(Scripted("", done("看到了"), dm("好了")))
     let text = try h.toolResults().suffix(2).first!.text
     #expect(text.contains("這一項做了 2 回合；整份清單做完了：你估整份清單 5 回合，實際到現在 2 回合、"))
-    #expect(text.contains("（記下了，下次列像這樣的清單，程式會拿來對你估的）。"))
+    #expect(text.contains("（記下了，下次列像這樣的清單，系統會拿來對你估的）。"))
     let rec = try #require(await h.doll.estimateFile.records.last)
     #expect(rec.plan.estimate == 5 && rec.rounds == 2 && rec.outcome == "完成" && rec.cause == nil && rec.plan.items == ["畫面上看得到結果"])
     #expect(rec.text == "用電腦" && rec.check == nil)
@@ -7954,7 +7954,7 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     #expect(refusal == "失敗：沒存：「打開計算機給主人看」裡沒有做成的 act。工具只能從真的做過、結果跟你預期一樣的動作存；先做一次，再存。")
     let whole = String(refusal.dropFirst(3))
     try await h.turn(Scripted("", setFacts("存好工具", #"[{"fact":"上次沒存成","quote":"\#(whole)"}]"#)))
-    #expect(try h.toolResults().last!.text.contains("quote 裡的「打開計算機」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。"))
+    #expect(try h.toolResults().last!.text.contains("quote 裡的「打開計算機」是你存工具時自己寫的字，不算出處；只抄系統或別人寫的部分。"))
     try await h.turn(Scripted("", setFacts("存好工具", #"[{"fact":"上次沒存成","quote":"裡沒有做成的 act。工具只能從真的做過、結果跟你預期一樣的動作存"}]"#)))
     #expect(await h.doll.todo.plan?.facts.map(\.source) == ["tool.save 的結果"])
 }
@@ -7968,7 +7968,7 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     let item = "計算機顯示 58×13 的答案"
     func refusal(_ quote: String, own: String?) -> String {
         "失敗：清單沒有列：facts 第 1 條「我有乘法工具」的 quote「\(quote)」不在你看得到的地方（主人說的話、工具的結果、讀過的視窗或檔案、【狀況】、你的圖、【相關記憶】裡〔工具〕那一行）。"
-            + (own.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? "")
+            + (own.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄系統或別人寫的部分。" } ?? "")
             + "fact 要有出處：quote 一字不差照抄那裡的字。找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。"
     }
     // Her own earlier line is not a source.
@@ -8008,7 +8008,7 @@ private func setFacts(_ item: String, _ facts: String) -> (String, [(String, Str
     // A last act without an expectation.
     try await h.turn(Scripted("", act(#"{"click": "全部清除"}"#)))
     try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
-    #expect(try h.toolResults().last!.text == "失敗：沒存：「計算機顯示 37×46 的答案」最後一次 act 沒寫 expect，程式沒辦法確認那次結果是對的。用寫了 expect 的 act 做到一樣，再存。")
+    #expect(try h.toolResults().last!.text == "失敗：沒存：「計算機顯示 37×46 的答案」最後一次 act 沒寫 expect，系統沒辦法確認那次結果是對的。用寫了 expect 的 act 做到一樣，再存。")
     // The corrected attempt is left out, the one that matched is kept.
     try await h.turn(Scripted("", act(#"{"click": "3"}"#, #"{"click": "7"}"#, #"{"click": "乘"}"#, #"{"click": "4"}"#, #"{"click": "6"}"#, #"{"click": "等於"}"#, expect: "1,702")))
     try await h.turn(Scripted("", toolSave("乘法", "算乘法")))
@@ -8388,7 +8388,7 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
         (fix(id, "主人的牙醫約在週三下午兩點。", basis: "牙醫約在週三下午兩點"), "沒有改：text 跟原本那條一樣；要改就寫改好的整條。"),
         (fix("9-abcdef", "x", basis: "牙醫約在週三下午兩點"), "沒有改：沒有 id 是 9-abcdef 的記憶。id 照抄【相關記憶】或 recall 結果裡〔…｜記憶 <id>〕的那一串。"),
         (("memory.fix", [("id", id), ("basis", "牙醫約在週三下午兩點"), ("why", "x")]), "沒有改：" + noRetireOnly),
-        (("memory.fix", [("id", id), ("text", "主人的牙醫約在週日"), ("why", "x")]), "沒有改：記憶 \(id) 不是你自己憑印象記的（程式記的來源是主人說的話），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。"),
+        (("memory.fix", [("id", id), ("text", "主人的牙醫約在週日"), ("why", "x")]), "沒有改：記憶 \(id) 不是你自己憑印象記的（系統記的來源是主人說的話），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。"),
     ] {
         try await h.turn(Scripted("", call))
         let text = try h.toolResults().last!.text
@@ -8398,7 +8398,7 @@ private func fixesFile(_ h: Harness) throws -> MemoryFixFile {
     // The program's own records are not hers to fix.
     try await seedMemory(h, "public", "經驗：TextEdit 存檔", id: "1-eeeeee")
     try await h.turn(Scripted("", fix("1-eeeeee", "y", basis: "牙醫約在週三下午兩點")))
-    #expect(try h.toolResults().last!.text.contains("是程式自己記的（做事的經驗或快捷鍵），不能用 memory.fix 改。"))
+    #expect(try h.toolResults().last!.text.contains("是系統自己記的（做事的經驗或快捷鍵），不能用 memory.fix 改。"))
 }
 
 @Test func aCorrectionNeverLeaksASecretAndASecretMemoryIsUnknownToTheDeveloper() async throws {
@@ -8865,7 +8865,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     let r = try await h.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
     #expect(r.turn && r.why == ["error"])
     let notice = try h.events().last!.text
-    #expect(notice.contains("\n【上次執行的紀錄】程式從上一次執行的 log 整理的：那次 11-18 09:00:00 開機，共 46 行。"))
+    #expect(notice.contains("\n【上次執行的紀錄】系統從上一次執行的 log 整理的：那次 11-18 09:00:00 開機，共 46 行。"))
     #expect(notice.contains("- 結束：正常關掉的（signal 15 (SIGTERM)），11-18 12:53:20。"))
     #expect(notice.contains("- 錯誤 2 種、警告 0 種（同一種＝數字和編號以外都一樣）："))
     #expect(notice.contains("  錯誤 40 次（11-18 09:01:00 到 11-18 12:16:00），例：maintenance: audit failed: request 4000 to http://10.0.0.2:8080 timed out after 300 s"))
@@ -8926,7 +8926,7 @@ private func timeoutsRun(_ t0: Double) -> [LogEntry] {
     clock.set(at("2026-11-18", "10:30"))
     let b = try await Harness([], dir: a.dir, clock: clock)
     let r = try await b.doll.announceBoot(previous: try RunLog.lastRun(dir: dir), build: "test")
-    #expect(r.why == ["ending"] && r.unfinished == ["你手上的「桌面整理好」那時是進行中，還在你的 todo 裡；最後一步做到哪裡，程式不確定"])
+    #expect(r.why == ["ending"] && r.unfinished == ["你手上的「桌面整理好」那時是進行中，還在你的 todo 裡；最後一步做到哪裡，系統不確定"])
     let notice = try b.events().last!.text
     #expect(notice.contains("- 結束：沒有結束的紀錄，最後一行 log 在 11-18 09:30:00，之後就沒有了（那只是它最後一次寫 log 的時間；停掉是在那之後、這次開機之前的某個時候，確切時間不知道）。"))
     #expect(notice.contains("- 沒有錯誤和警告。"))
@@ -9217,7 +9217,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     // Her call's commit failed, and so did the program's at the end of that turn: the next commit that
     // works (the program's, before her next calls run) carries those files and names both.
     let log = try historyOf(h).log(limit: 2)
-    #expect(log[1].who == .program && log[1].paths == ["data/mind.json"] && log[1].unrecordedBefore == ["her goal.add", "program 回合中程式記下的"])
+    #expect(log[1].who == .program && log[1].paths == ["data/mind.json"] && log[1].unrecordedBefore == ["her goal.add", "program 回合中系統記下的"])
     #expect(log[0].what == "goal.add" && log[0].unrecordedBefore.isEmpty)
 }
 
@@ -9232,7 +9232,7 @@ private let seededTool = #"{"name":"開計算機","when":"要算數的時候","p
     let c = try historyOf(b).log(limit: 1)[0]
     #expect(c.who == .program && c.what == "開機時發現沒記錄的改動" && c.paths == ["data/ideal-self.md"])
     let r = try await b.doll.announceBoot()
-    #expect(r.history == "上次結束前有 1 個檔改了卻沒記進改動紀錄（程式當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：想成為的樣子")
+    #expect(r.history == "上次結束前有 1 個檔改了卻沒記進改動紀錄（系統當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：想成為的樣子")
     #expect(try b.events().last!.text.contains(r.history!))
 }
 
@@ -9319,11 +9319,11 @@ private func enabledRequestDigests() throws -> (tools: String, prompt: String) {
 /// 「watch 叫你」 gone from the waiting state and `todo.wait`; the rule that his secrets never leak;
 /// `secret.mark` and the line on marking his secrets (no program check any more); `discord.send` and
 /// the paragraph on strangers (2026-11-24); the graph (no levels; goal.fail, evidence, todo.set node), the
-/// system's voice and 「了解你自己」 (2026-11-24).
+/// system's voice and 「了解你自己」; 「程式」 → 「系統」 in everything she reads (2026-11-24).
 @Test func withTheComputerOnTheToolsAndPromptAreByteIdenticalToBeforeTheSwitch() throws {
     let d = try enabledRequestDigests()
-    #expect(d.tools == "7f41d3690a4fa41a3cf1b0077021bc4b85244824ac60ac079b1bd0514817f3f6")
-    #expect(d.prompt == "2c097be73068f66e0c36e8c0c9c214c117e69a3c1538fff333a34468b51ae0ac")
+    #expect(d.tools == "d337a1715ad527a9e97b247f2b99128fe3dd4b7ce71a2adc91ffad1c4790d398")
+    #expect(d.prompt == "a7fe911e7d9b25cd62444233e09c1bb7c40bf78eb562a82921ed6f5dfb0f4985")
 }
 
 private func computerOff(_ c: inout Config) { c.computer.enabled = false }
@@ -9566,7 +9566,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     // Her own step: the waiting list goes aside, untouched.
     try await h.turn(Scripted("", todoSetSub(sub, ownStep)))
     let setAside: String = try h.toolResults().last!.text
-    let setAsideTail: String = "「房東的時間問到了」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。"
+    let setAsideTail: String = "「房東的時間問到了」還在等待中，先放在旁邊：有人說話，系統會先把它拿回你手上；這份做完或結束，它也回到你手上。"
     #expect(setAside.hasSuffix(setAsideTail))
     #expect(try await h.last.todo == "進行中")
     #expect(try await h.doll.todo.current == ownStep)
@@ -9574,7 +9574,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     #expect(try await h.doll.aside?.todo.phase == .waiting)
     #expect(await !h.doll.idleForWander)
     try await h.turn(Scripted("", recallCall))
-    #expect(h.last.footer.contains("- todo：進行中「\(ownStep)」（為了 #\(sub)）；旁邊放著等待中的「房東的時間問到了」：手上這份做完或結束，它就回到你手上；有人說話，程式會先把它拿回你手上"))
+    #expect(h.last.footer.contains("- todo：進行中「\(ownStep)」（為了 #\(sub)）；旁邊放著等待中的「房東的時間問到了」：手上這份做完或結束，它就回到你手上；有人說話，系統會先把它拿回你手上"))
     try await h.turn(Scripted("", done("讀完了", evidence: nil)))
     #expect(try h.toolResults().last!.text.hasSuffix("清單做完了。放在旁邊的「房東的時間問到了」回到你手上（等待中）。"))
     // Back in hand as it was: still waiting, no turn for it, its own rounds and plan.
@@ -9601,7 +9601,7 @@ private let recallCall: (String, [(String, String)]) = ("recall", [("query", "�
     // call in it is held once (it may be meant for her own step); the same call next turn goes through.
     await h.doll.ownerSaid("電話是 0912-345-678")
     try await h.turn(Scripted("", dm("好，我打給他"), done("問到房東的電話", evidence: nil)))
-    #expect(try h.toolResults().last!.text == "失敗：還沒做：這一回合手上的是等著的「房東的時間問到了」（有人說話了，程式先把它拿回你手上），你自己的「\(ownStep)」放在旁邊。他的話就是「房東的時間問到了」要的答案，就再呼叫一次 todo.done，這次就是給它的；你要做的是「\(ownStep)」，就呼叫 todo.wait（「房東的時間問到了」繼續等），「\(ownStep)」就回到你手上。")
+    #expect(try h.toolResults().last!.text == "失敗：還沒做：這一回合手上的是等著的「房東的時間問到了」（有人說話了，系統先把它拿回你手上），你自己的「\(ownStep)」放在旁邊。他的話就是「房東的時間問到了」要的答案，就再呼叫一次 todo.done，這次就是給它的；你要做的是「\(ownStep)」，就呼叫 todo.wait（「房東的時間問到了」繼續等），「\(ownStep)」就回到你手上。")
     #expect(try await h.doll.todo.current == "房東的時間問到了")
     #expect(try await h.doll.followUp)
     try await h.turn(Scripted("", done("問到房東的電話", evidence: nil)))
@@ -9716,7 +9716,7 @@ private func overwrite(_ id: String, _ text: String?, why: String = "我憑印�
     try await seedMemory(h, "public", "計算機在 Dock 第三個", tier: "tool", id: "1-cccccc")
     for (id, from) in [("1-aaaaaa", "主人說的話"), ("1-bbbbbb", "系統維護整理時寫的"), ("1-cccccc", "工具的結果或讀到的東西")] {
         try await h.turn(Scripted("", overwrite(id, "改掉")))
-        #expect(try h.toolResults().last!.text == "失敗：沒有改：記憶 \(id) 不是你自己憑印象記的（程式記的來源是\(from)），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。")
+        #expect(try h.toolResults().last!.text == "失敗：沒有改：記憶 \(id) 不是你自己憑印象記的（系統記的來源是\(from)），沒有依據不能改。basis 照抄主人說的話，或你讀到的視窗、檔案、工具結果裡的字；找不到依據，就先去查或問主人。")
     }
     #expect(try memoryFilesByID(h).values.allSatisfy { $0.file.retired == nil } && fixesFile(h).items.isEmpty)
     // A rewrite with a basis that is not one is still refused, hers or not.

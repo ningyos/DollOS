@@ -115,7 +115,7 @@ extension Doll {
             return "；你自己的事\(item)先放在旁邊：這則回覆沒接著做「\(todo.current ?? "")」，它就繼續等，\(item)回到你手上"
         }
         return "；旁邊放著\(a.todo.phase.label)的\(item)：手上這份做完或結束，它就回到你手上"
-            + (a.todo.phase == .waiting ? "；有人說話，程式會先把它拿回你手上" : "")
+            + (a.todo.phase == .waiting ? "；有人說話，系統會先把它拿回你手上" : "")
     }
 
     /// What her result says when the list in hand ends with one aside; empty when there is none.

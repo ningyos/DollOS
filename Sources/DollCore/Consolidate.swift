@@ -366,7 +366,7 @@ public enum Consolidation {
                 let name = (names[ev.seq!] ?? "").isEmpty ? "tool_call" : names[ev.seq!]!
                 if !TodayIndex.unindexedResults.contains(name) { line("\(name) 的結果", ev.text) }
             case .watch: line("watch", ev.text)
-            case .memory: if ev.text.hasPrefix(Doll.bootNotice) { line("程式的開機通知", ev.text) }
+            case .memory: if ev.text.hasPrefix(Doll.bootNotice) { line("系統的開機通知", ev.text) }
             case .calendar: line("行事曆", ev.text)
             }
         }
@@ -398,7 +398,7 @@ public enum Consolidation {
     /// maintenance request that reads the day (consolidation, the concern extraction, the review), in
     /// the words of the audit's (「她自己說的話和想法…不算原文」) and `memory.fix`'s rule. What only she said
     /// is written, if at all, as 「她說過…（沒查證）」, so a later reader sees whose word it was.
-    static let ownWords = "標「｜自己的話」的行（她想的、她說的）和她呼叫工具時寫的參數，都是她自己的話，不算事實的來源：事實只能來自主人和別人說的話、工具的結果、行事曆、watch、程式的開機通知。只在她自己的話裡出現、別的地方都沒有的事，要寫也只能寫成「她說過…（沒查證）」，不要寫成發生過的事。"
+    static let ownWords = "標「｜自己的話」的行（她想的、她說的）和她呼叫工具時寫的參數，都是她自己的話，不算事實的來源：事實只能來自主人和別人說的話、工具的結果、行事曆、watch、系統的開機通知。只在她自己的話裡出現、別的地方都沒有的事，要寫也只能寫成「她說過…（沒查證）」，不要寫成發生過的事。"
 
     /// The consolidation request's instructions (no persona: the model is not her).
     static let instructions = """
@@ -407,14 +407,14 @@ public enum Consolidation {
         輸入有三部分：
         1. 既有的長期記憶：每條有 id、資料夾、kind、entities 和內容。
         2. 登記簿裡可能相關的東西：登記簿記著記憶提到的每個具體東西，每條有 id、種類、正式名字、別名和說明（它是什麼、在哪裡）。
-        3. 今天的時間線，依主人的每一句話分成任務（任務 1、任務 2…；「主人說話之前」那段是任務 0）。每行開頭是時間和誰：主人說的話、她想的、她說的（「她說｜」後面是她說在哪裡：Discord 私訊、終端機、Discord 語音；她想的和她說的標「｜自己的話」）、她呼叫的工具和參數、工具的結果、watch 叫醒、程式的開機通知。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
+        3. 今天的時間線，依主人的每一句話分成任務（任務 1、任務 2…；「主人說話之前」那段是任務 0）。每行開頭是時間和誰：主人說的話、她想的、她說的（「她說｜」後面是她說在哪裡：Discord 私訊、終端機、Discord 語音；她想的和她說的標「｜自己的話」）、她呼叫的工具和參數、工具的結果、watch 叫醒、系統的開機通知。標「｜秘密」的是含主人秘密的事件。截圖沒有放進來，只有文字。
 
         要寫的記憶：
         - 技能：一條一個片段：情境＋動作＋結果，例如「TextEdit 按 ⇧⌥⌘S → 跳出另存對話框，檔名欄已選取」。寫具體的 app、按鍵或點的元素、之後畫面或檔案變成什麼。只寫時間線上真的做了、結果看得到的。走了冤枉路的，寫走通的那條路；從今天的經過看得出更短的走法，也可以把一串動作寫成一條（情境＋一串動作＋結果）。值得避開的失敗寫成「做 X → 失敗：原因」。
         - 其他記憶：主人的事實、偏好、今天發生的事、說好要做的事。kind：已經發生的事 happened，打算或約好要做的 intended，沒證實的 uncertain，事實和偏好給空字串。
         - 資料夾 folder：主人的秘密、和在含秘密的事件裡得知的事放 secret；她自己的密碼、帳號、token 放 own；其他放 public。
-        - 不要記她自己的工具怎麼用（discord.dm、voice.join、voice.say、todo.set、remember、recall 這些怎麼呼叫、呼叫了會怎樣：她本來就知道），也不要把這些工具登記成東西。系統自己出的錯（連線斷了、bridge 掛了、程式報的錯誤訊息和數字）不是值得長期記的事，除非主人為了它交代了什麼。
-        - 不要寫時間線上沒有的東西，不要猜。不要抄快捷鍵清單（程式另外記了）。既有記憶已經寫了的不要再寫一次。用繁體中文。
+        - 不要記她自己的工具怎麼用（discord.dm、voice.join、voice.say、todo.set、remember、recall 這些怎麼呼叫、呼叫了會怎樣：她本來就知道），也不要把這些工具登記成東西。系統自己出的錯（連線斷了、bridge 掛了、系統報的錯誤訊息和數字）不是值得長期記的事，除非主人為了它交代了什麼。
+        - 不要寫時間線上沒有的東西，不要猜。不要抄快捷鍵清單（系統另外記了）。既有記憶已經寫了的不要再寫一次。用繁體中文。
         - \(ownWords)
         - 既有記憶：今天的經歷讓它更完整或要修正它時用 update，給新的全文和新的 entities；被今天的新記憶取代時（例如找到更短的走法、事實變了）用 retire，superseded_by 填取代它的那條：既有記憶的 id，或你這次 add 的 ref。跟今天無關的不要動。
         - 既有記憶今天又被證實一次時用 confirm：今天另一件事又一次顯示同一件事是真的，例如主人又說了同一個偏好、同一個做法今天又照做成功、同一個事實又從別的地方看到。task 填那件事所在的任務編號。只是今天提到相關的話題、沒有再顯示同一件事，不要用；她自己把記得的事再說一遍、或查記憶查出來的，不算。這次要 update 或 retire 的那條不要再 confirm。confirm 讓那條記憶比較不會被忘記，不改它的內容。

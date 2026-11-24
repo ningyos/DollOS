@@ -107,7 +107,7 @@ extension Doll {
             throw refuse("記憶 \(id) 已經收起來了（\(r.reason)）" + (r.supersededBy.isEmpty ? "。" : "，換成了記憶 \(r.supersededBy)；要改就改那一條。"))
         }
         guard Memory.strengthTiers.contains(file.tier) else {
-            throw refuse("記憶 \(id) 是程式自己記的（做事的經驗或快捷鍵），不能用 \(Tools.Name.memoryFix) 改。")
+            throw refuse("記憶 \(id) 是系統自己記的（做事的經驗或快捷鍵），不能用 \(Tools.Name.memoryFix) 改。")
         }
         // Never only retired (2026-11-20, owner): what she could recall is replaced, not taken away.
         guard let text else {
@@ -173,7 +173,7 @@ extension Doll {
             case .consolidated: "系統維護整理時寫的"
             default: "別人說的話"
             }
-            throw ToolError(description: "沒有改：記憶 \(id) 不是你自己憑印象記的（程式記的來源是\(from)），沒有依據不能改。basis 照抄主人說的話，或你讀到的\(computerOn ? "視窗、檔案、" : "")工具結果裡的字；找不到依據，就先去查或問主人。")
+            throw ToolError(description: "沒有改：記憶 \(id) 不是你自己憑印象記的（系統記的來源是\(from)），沒有依據不能改。basis 照抄主人說的話，或你讀到的\(computerOn ? "視窗、檔案、" : "")工具結果裡的字；找不到依據，就先去查或問主人。")
         }
         let now = wallClock.now()
         let reason = "她覆蓋自己記的：\(w)（她自己憑印象記的，沒有依據）"

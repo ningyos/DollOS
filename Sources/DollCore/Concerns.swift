@@ -141,10 +141,10 @@ enum Concerns {
     static func origin(_ c: Concern) -> String {
         let at = Doll.nowText(c.created)
         switch c.source {
-        case "calendar": return "#\(c.id)，程式從行事曆記的"
+        case "calendar": return "#\(c.id)，系統從行事曆記的"
         case "maintenance": return "#\(c.id)，系統維護 \(at) 從那天的對話記的"
         case "goal": return "#\(c.id)，系統從你的圖記的"
-        case "todo": return "#\(c.id)，程式在 todo 失敗時記的，\(at)"
+        case "todo": return "#\(c.id)，系統在 todo 失敗時記的，\(at)"
         default: return "#\(c.id)，你 \(at) 記的"
         }
     }

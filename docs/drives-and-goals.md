@@ -16,8 +16,8 @@ One sentence about a gap between how things are and how she expects or hopes (th
 - `concern.end(id, how)` — `done` or `let_go`.
 
 The program also notes concerns; the line she sees names the source:
-- a timed calendar occurrence within 24 hours, role items excluded: 「#N，程式從行事曆記的」; ends when its time passes;
-- a failed todo item: 「沒做成：<item>（<cause>）」, 「#N，程式在 todo 失敗時記的，…」; she ends it;
+- a timed calendar occurrence within 24 hours, role items excluded: 「#N，系統從行事曆記的」; ends when its time passes;
+- a failed todo item: 「沒做成：<item>（<cause>）」, 「#N，系統在 todo 失敗時記的，…」; she ends it;
 - her graph: 「#N，系統從你的圖記的」;
 - maintenance: 「#N，系統維護 <time> 從那天的對話記的」;
 - hers: 「#N，你 <time> 記的」.

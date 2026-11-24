@@ -65,7 +65,7 @@ enum ConcernExtraction {
         - 已經掛著的（下面列出）。換句話說的同一件事也算同一件。
         - 只是到時間要提醒的事：行事曆上有了，時間到行事曆會叫她。除了時間以外還有要關心的（例：看完牙醫之後問感覺），只記要關心的那部分。
         - 已經做完、說完的事。
-        結束一件掛著的：只有主人在今天的對話裡明明白白說它已經解決了，才寫，而且照抄他那句話；不確定就不要結束。行事曆的和程式記的不用你結束。
+        結束一件掛著的：只有主人在今天的對話裡明明白白說它已經解決了，才寫，而且照抄他那句話；不確定就不要結束。行事曆的和系統記的不用你結束。
         \(Consolidation.ownWords)
         每件都要寫根據：照抄今天的對話裡支持它的那一句（或其中一段）。
 
@@ -79,7 +79,7 @@ enum ConcernExtraction {
 
     /// The request: the open concerns with their ids, then the day as consolidation renders it.
     static func gather(events: [Event], open: [Concern], cap: Int, now: Double) -> Request {
-        let held = open.isEmpty ? "（沒有）" : open.map { "#\($0.id)〔\($0.about.rawValue)〕\($0.text)" + ($0.source == "her" || $0.source == "maintenance" ? "" : "（\($0.source == "calendar" ? "行事曆" : "程式")的）") }.joined(separator: "\n")
+        let held = open.isEmpty ? "（沒有）" : open.map { "#\($0.id)〔\($0.about.rawValue)〕\($0.text)" + ($0.source == "her" || $0.source == "maintenance" ? "" : "（\($0.source == "calendar" ? "行事曆" : "系統")的）") }.joined(separator: "\n")
         let day = Consolidation.tasks(events).map(\.text).joined(separator: "\n\n")
         let user = "現在 \(Doll.nowText(now))。\n\n已經掛著的：\n\(held)\n\n今天的對話：\n\(day)"
         return Request(messages: [ChatMessage(role: "system", content: system(cap: cap)), ChatMessage(role: "user", content: user)],

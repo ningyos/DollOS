@@ -1183,10 +1183,10 @@ public actor Doll {
         case .compact:
             let left = max(1, contextConfig.forceAfterTurns - warnedTurns)
             out.append("- context 快滿了：用 todo.progress 寫下這一項做到哪裡，前面的過程就會收起來（留下你寫的進度和動作清單）；"
-                       + "再 \(left) 回合沒收，程式會自己收（留動作清單和最近 \(contextConfig.forceKeepTurns) 回合）。")
+                       + "再 \(left) 回合沒收，系統會自己收（留動作清單和最近 \(contextConfig.forceKeepTurns) 回合）。")
         case .conversation:
             out.append("- context 快滿了，但大部分是對話和之前留下的結果，不是正在做的這一項的過程；收起過程也省不了多少。"
-                       + "到上限的時候，程式會把最舊的那一段對話換成一段摘要（【之前的對話】），原文 recall 不一定查得到。")
+                       + "到上限的時候，系統會把最舊的那一段對話換成一段摘要（【之前的對話】），原文 recall 不一定查得到。")
         }
         return out.joined(separator: "\n")
     }
@@ -1362,7 +1362,7 @@ public actor Doll {
         // after an ending call never run, so the one before it is the last. Every row she gives means
         // the read she saw before this reply (`Mac.beginReply`).
         // What the program wrote before her calls run (attaching, selection) is not hers.
-        commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
+        commitHistory(.program, what: "回合中系統記下的", why: "系統自己記的（人事物登記、做事經驗的統計）")
         await mac.beginReply(item: todo.current)
         let live = calls.prefix { !Tools.ending.contains($0.name) }
         let actionAt = live.indices.filter { actionTools.contains(live[$0].name) }
@@ -1483,7 +1483,7 @@ public actor Doll {
         }
         // Anything kept the program wrote this turn outside her calls (attaching memories may add
         // registry entries): the program's change.
-        commitHistory(.program, what: "回合中程式記下的", why: "程式自己記的（人事物登記、做事經驗的統計）")
+        commitHistory(.program, what: "回合中系統記下的", why: "系統自己記的（人事物登記、做事經驗的統計）")
         // The phase decides the next turn (2026-11-14): 進行中 gets one after every reply; 等待中
         // (2026-11-20) like 待命中, only events and her own tool results, none after the reply that
         // made it wait; the reply that ended the list (done with nothing next, or an empty
@@ -1986,7 +1986,7 @@ public actor Doll {
                 return "還沒完成：你最後用的檔案 \(path) 現在讀不到（\(error)）。先 read_file 或 read_window 確認做完的樣子，再從那裡照抄 evidence。"
             }
             let lines = FileText.lines(text)
-            source = "\(path)（程式剛讀的，\(lines.count) 行）"
+            source = "\(path)（系統剛讀的，\(lines.count) 行）"
             haystack = text
             // At most 6 lines, and when there are more it says so (2026-11-17, m7-mac m-1: the 7-line
             // file was shown as its first 6, she took the 7th for missing and added it again).
@@ -2055,7 +2055,7 @@ public actor Doll {
                 heldForAnswer = true
                 heldAt = turnIndex
                 log("INFO", "turn \(turnIndex): \(tool) held: 「\(todo.current ?? "")」is in hand for a line, 「\(mine)」aside", sealed: todoSealed)
-                throw ToolError(description: "還沒做：這一回合手上的是等著的「\(todo.current ?? "")」（有人說話了，程式先把它拿回你手上），你自己的「\(mine)」放在旁邊。"
+                throw ToolError(description: "還沒做：這一回合手上的是等著的「\(todo.current ?? "")」（有人說話了，系統先把它拿回你手上），你自己的「\(mine)」放在旁邊。"
                                 + "他的話就是「\(todo.current ?? "")」要的答案，就再呼叫一次 \(tool)，這次就是給它的；你要做的是「\(mine)」，就呼叫 todo.wait（「\(todo.current ?? "")」繼續等），「\(mine)」就回到你手上。")
             }
             resumeWaiting(tool)
@@ -2178,7 +2178,7 @@ public actor Doll {
                     : "（跟以前像這樣的清單實際 \(c.reference) 回合差很多，沒寫理由，照收了；主人看得到）"
             } ?? ""
             return Outcome(text: "todo 列好了，你估整份 \(p.estimate!) 回合\(compared)。現在進行中：「\(first)」；後面：\(listed(todo.pending))。" + linkNote
-                           + (ownBeside ? "「\(waiting)」還在等待中，先放在旁邊：有人說話，程式會先把它拿回你手上；這份做完或結束，它也回到你手上。" : ""),
+                           + (ownBeside ? "「\(waiting)」還在等待中，先放在旁邊：有人說話，系統會先把它拿回你手上；這份做完或結束，它也回到你手上。" : ""),
                            actions: ["todo set"])
         }
     }
@@ -2233,7 +2233,7 @@ public actor Doll {
             let line = estimateLine(plan, rounds: todo.totalRounds, seconds: Int((reply.ts - todo.listStart).rounded()))
             if todo.pending.isEmpty {
                 _ = try recordEstimate(outcome: .done, at: reply.ts)
-                estimate = "這一項做了 \(todo.rounds) 回合；整份清單做完了：\(line)（記下了，下次列像這樣的清單，程式會拿來對你估的）。"
+                estimate = "這一項做了 \(todo.rounds) 回合；整份清單做完了：\(line)（記下了，下次列像這樣的清單，系統會拿來對你估的）。"
             } else {
                 estimate = "這一項做了 \(todo.rounds) 回合；\(line)。"
             }
@@ -2245,7 +2245,7 @@ public actor Doll {
         note += step + list
         return Outcome(text: "完成，記下了。\(note)\(estimate)這一項的過程（" + (computerOn ? "截圖、" : "") + "每一步的結果、那幾回合你的念頭）收起來了，之後只留你寫的 result 和這份動作清單："
                        + Self.actionList(steps) + "。"
-                       + (next.map { "下一項「\($0)」現在進行中。" } ?? (aside == nil ? "清單做完了，現在待命中；程式不會再為這件事叫你。" : "清單做完了。" + backNote())),
+                       + (next.map { "下一項「\($0)」現在進行中。" } ?? (aside == nil ? "清單做完了，現在待命中；系統不會再為這件事叫你。" : "清單做完了。" + backNote())),
                        actions: ["todo done"], ends: true)
     }
 
@@ -2280,7 +2280,7 @@ public actor Doll {
         var concernNote = ""
         if drivesConfig.enabled {
             let c = try addConcern("沒做成：\(item)（\(cause)）", about: .duty, source: "todo", key: "todo:\(todo.startSeq)")
-            concernNote = "這件事程式記成你的掛念 #\(c.id)；之後做成或決定放下，用 concern.end 結束它。"
+            concernNote = "這件事系統記成你的掛念 #\(c.id)；之後做成或決定放下，用 concern.end 結束它。"
         }
         let estimate = record.map { estimateLine($0.plan, rounds: $0.rounds, seconds: $0.seconds) + "（記下了）。" } ?? ""
         let rest = todo.pending.isEmpty ? "（後面沒有別的項目了）" : "（剩下：" + todo.pending.map { "「\($0)」" }.joined() + "）"
@@ -2386,7 +2386,7 @@ public actor Doll {
                     .filter { $0.name == Tools.Name.toolSave }.flatMap { Self.argumentStrings($0, except: ["name"]) }
                 let mine = (ownToolWords() + saveArgs.sorted { $0.count > $1.count })
                     .first { quote.contains($0) && Self.plainKey($0).count >= computerConfig.planMinChars }
-                let own = mine.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄程式或別人寫的部分。" } ?? ""
+                let own = mine.map { "quote 裡的「\($0)」是你存工具時自己寫的字，不算出處；只抄系統或別人寫的部分。" } ?? ""
                 throw ToolError(description: "清單沒有列：\(name)「\(fact)」的 quote「\(quote)」不在你看得到的地方（\(places)）。\(own)fact 要有出處：quote 一字不差照抄那裡的字。"
                                 + "找不到出處，就是你以為的：把它搬到 assumptions；想確定，就把「去看」當成清單裡的一步，看到了再說。")
             }
@@ -2696,7 +2696,7 @@ public actor Doll {
             return
         }
         let steps = itemSteps.filter { $0.seq <= cut }.map(\.line)
-        let text = "【收起】context 快滿了，你沒有用 todo.progress 收，程式把「\(item)」到這裡為止的過程收起來了：" + (computerOn ? "截圖、" : "") + "每一步的結果和那幾回合你的念頭都不在了，"
+        let text = "【收起】context 快滿了，你沒有用 todo.progress 收，系統把「\(item)」到這裡為止的過程收起來了：" + (computerOn ? "截圖、" : "") + "每一步的結果和那幾回合你的念頭都不在了，"
             + "最近 \(keep) 回合還在下面。到這裡做過的動作：\(Self.actionList(steps))。"
         try timeline.compact(Compaction(kind: .forced, item: item, fromSeq: start, toSeq: cut, text: text))
         compactedNow.append(Compaction.Kind.forced.rawValue)
@@ -2713,7 +2713,7 @@ public actor Doll {
         用她平常說話看得懂的話寫內容本身（「主人對花生過敏」），不要寫系統內部的東西：記憶檔的檔名或編號、資料夾、confidence、事件編號、工具呼叫的參數格式。
         只寫紀錄裡有的，不要補、不要猜；不用寫開場白和結語。
         """
-    static let talkHeader = "【之前的對話】context 到上限了，程式把到這裡為止最舊的一段（對話和做過的事）收起來，換成另外寫的這段摘要；原文 recall 不一定查得到。\n"
+    static let talkHeader = "【之前的對話】context 到上限了，系統把到這裡為止最舊的一段（對話和做過的事）收起來，換成另外寫的這段摘要；原文 recall 不一定查得到。\n"
 
     /// The context reached `[context] limit` (owner, 2026-11-15: the last resort, so it runs at once):
     /// the oldest `talk_share` of what is still in the request, conversation included, is replaced by
@@ -2985,7 +2985,7 @@ public actor Doll {
             attachedIDs.formUnion(fresh.map(\.id))
             offeredTools.formUnion(offered.map(\.name))
             let from = frontApp.map { "主人的話和前景 app「\($0.name)」" } ?? "主人的話"
-            var text = fresh.isEmpty ? "【相關記憶】程式用\(from)查到你存的工具（字面相近，不一定用得上）：" : "【相關記憶】程式用\(from)查到、最相近的過去經驗："
+            var text = fresh.isEmpty ? "【相關記憶】系統用\(from)查到你存的工具（字面相近，不一定用得上）：" : "【相關記憶】系統用\(from)查到、最相近的過去經驗："
             for e in fresh {
                 text += "\n〔\(e.label)｜\(e.folder)｜記憶 \(e.id)〕\n\(e.attachedText)"
             }

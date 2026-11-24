@@ -215,7 +215,7 @@ extension Doll {
     }
 
     static func maintenanceNotice(_ lead: Int) -> String {
-        "【系統維護】時間到了，\(minutes(lead))後開始：程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。"
+        "【系統維護】時間到了，\(minutes(lead))後開始：系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。"
             + "要收尾、要跟誰說一聲，現在做；今天這個時間不方便，就用 calendar.change 把今天的系統維護往後移。"
             + "你手上沒事它就開始，不會再另外通知。"
     }
@@ -299,7 +299,7 @@ extension Doll {
         maintenanceState.forced = forced
         saveMaintenanceLogged()
         let text = (afterDiary ? "【系統維護】日記的回合結束了，接著做，現在 \(Self.hhmm(now))。" : "【系統維護】開始，現在 \(Self.hhmm(now))。")
-            + "程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
+            + "系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。"
             + (forced ? "你手上的「\(todo.current ?? "")」先停著，結束後接著做。" : "")
         do { try notice(Event(.memory, .internal, text)) } catch { log("ERROR", "maintenance: start notice not written: \(error)") }
         log("INFO", "maintenance: started\(forced ? " (busy limit)" : ""); \(timeline.events.count) events in segment \(timeline.segment)")
@@ -375,7 +375,7 @@ extension Doll {
         let sealed = done?.sealed == true || (ended.words ?? []).contains(where: SecretBox.isSealed)
         let failed = MaintenanceTask.allCases.filter { ended.failed[$0.rawValue] != nil }
         if !failed.isEmpty {
-            text += "沒做成：\(failed.map(\.label).joined(separator: "、"))（程式出錯），明天維護的時候再做"
+            text += "沒做成：\(failed.map(\.label).joined(separator: "、"))（系統出錯），明天維護的時候再做"
                 + (failed.contains(.consolidate) ? "；之前的對話和做過的事都還在你眼前" : "") + "。"
         }
         if let s = done?.summary { text += "\n" + s + "\n" }

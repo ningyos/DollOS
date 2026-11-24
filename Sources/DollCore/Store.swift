@@ -139,7 +139,7 @@ public struct Event: Sendable, Equatable {
         case tool       // the result of one of her tool calls, in call order
         case watch      // her watch woke her: the region changed, or max_wait passed
         case memory     // 【相關記憶】: records the program attached for her (spec 3.1, 2026-11-09)
-        case calendar   // 【行事曆】: a timed calendar item's start arrived (2026-11-15); renders as 程式, gives her a turn
+        case calendar   // 【行事曆】: a timed calendar item's start arrived (2026-11-15); renders as 系統, gives her a turn
     }
     public var kind: Kind
     public var principal: Principal

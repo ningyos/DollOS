@@ -49,7 +49,7 @@ extension Doll {
         let file = bootReports.appending(path: Self.bootReportName(now, pid: r.pid))
         if let p = previous {
             if p.ending.how != .clean, todoHeld {
-                r.unfinished.append("你手上的「\(todo.current ?? "")」那時是\(todo.phase.label)，還在你的 todo 裡；最後一步做到哪裡，程式不確定")
+                r.unfinished.append("你手上的「\(todo.current ?? "")」那時是\(todo.phase.label)，還在你的 todo 裡；最後一步做到哪裡，系統不確定")
             }
             if maintenanceConfig.enabled, maintenanceState.running != nil {
                 let done = maintenanceState.done.compactMap { MaintenanceTask(rawValue: $0)?.label }
@@ -73,7 +73,7 @@ extension Doll {
             r.history = "開始記錄改動：照開機時的樣子記成第一筆，共 \(n) 個檔"
             log("INFO", "history: started, the dirs as found (\(n) files) are the first commit")
         case .found(let paths):
-            r.history = "上次結束前有 \(paths.count) 個檔改了卻沒記進改動紀錄（程式當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：\(history.things(paths))"
+            r.history = "上次結束前有 \(paths.count) 個檔改了卻沒記進改動紀錄（系統當掉或記錄失敗），這次開機補記成一筆「開機時發現，沒有記錄」：\(history.things(paths))"
             found = r.history
             log("WARN", "history: found at boot, not recorded: \(paths)")
         case .clean: break
@@ -120,19 +120,19 @@ extension Doll {
     /// The report part of the boot notice: facts from the log, in plain words; at most
     /// `[log] report_kinds` kinds, then how many were left out.
     static func reportText(_ p: LastRun, unfinished: [String], file: String, log: LogConfig) -> String {
-        var lines = ["【上次執行的紀錄】程式從上一次執行的 log 整理的："
+        var lines = ["【上次執行的紀錄】系統從上一次執行的 log 整理的："
             + (p.complete ? "那次 \(reportTime(p.started)) 開機" : "那次開頭的 log 已經輪替刪掉了，只看得到 \(reportTime(p.firstLine)) 以後的")
             + "，共 \(p.lines) 行。"]
         let detail = p.ending.detail.map { cut($0, log.exampleChars) } ?? ""
         switch p.ending.how {
         case .clean: lines.append("- 結束：正常關掉的（\(detail)），\(reportTime(p.ending.ts))。")
-        case .fatal: lines.append("- 結束：程式出錯停下來的，\(reportTime(p.ending.ts))：\(detail)")
+        case .fatal: lines.append("- 結束：系統出錯停下來的，\(reportTime(p.ending.ts))：\(detail)")
         case .bootFailed: lines.append("- 結束：開機到一半失敗，沒有起來，\(reportTime(p.ending.ts))：\(detail)")
-        case .crashed: lines.append("- 結束：程式當掉了（\(detail)）；當掉前最後一行 log 在 \(reportTime(p.ending.ts))。")
+        case .crashed: lines.append("- 結束：系統當掉了（\(detail)）；當掉前最後一行 log 在 \(reportTime(p.ending.ts))。")
         case .noEnd:
             // The last line is only when it last wrote something (2026-11-20, soak run: killed at 18:00
             // with its last line at 17:12, she told the owner it had stopped "around 17:12").
-            lines.append("- 結束：沒有結束的紀錄，最後一行 log 在 \(reportTime(p.ending.ts))，之後就沒有了（那只是它最後一次寫 log 的時間；停掉是在那之後、這次開機之前的某個時候，確切時間不知道）。可能是被強制結束、當掉、或這台 Mac 關機／斷電，程式分不出是哪一種；Mac 睡眠不會讓程式結束，所以不是睡眠。")
+            lines.append("- 結束：沒有結束的紀錄，最後一行 log 在 \(reportTime(p.ending.ts))，之後就沒有了（那只是它最後一次寫 log 的時間；停掉是在那之後、這次開機之前的某個時候，確切時間不知道）。可能是被強制結束、當掉、或這台 Mac 關機／斷電，系統分不出是哪一種；Mac 睡眠不會讓系統結束，所以不是睡眠。")
         }
         if p.kinds.isEmpty {
             lines.append("- 沒有錯誤和警告。")

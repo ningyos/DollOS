@@ -6,11 +6,11 @@ Once a day the program tidies the doll's memory and writes the day's summary. It
 
 **The item.** Her calendar holds one daily 「系統維護」 (03:00 when created). She or the owner can move it with `calendar.change` (one day with `on`, e.g. `calendar.change(id: 編號, on: "2026-11-17", start: "04:00")`) or skip a day; it cannot be deleted or made all-day ([calendar.md](calendar.md)).
 
-**Before.** At its time she gets a turn with 「【系統維護】時間到了，10 分鐘後開始：程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。要收尾、要跟誰說一聲，現在做；今天這個時間不方便，就用 calendar.change 把今天的系統維護往後移。你手上沒事它就開始，不會再另外通知。」 (plus the owner-sleep sentence inside that span). Moving the item calls this maintenance off until the new time.
+**Before.** At its time she gets a turn with 「【系統維護】時間到了，10 分鐘後開始：系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘，這段時間你不在。要收尾、要跟誰說一聲，現在做；今天這個時間不方便，就用 calendar.change 把今天的系統維護往後移。你手上沒事它就開始，不會再另外通知。」 (plus the owner-sleep sentence inside that span). Moving the item calls this maintenance off until the new time.
 
 **Start.** It starts once she is not in a turn, nothing is queued or owed, and no todo list is **in progress** (進行中), in hand or aside. A **waiting** list (等待中) does not hold it; it crosses into the new day unchanged. An in-progress list holds it at most 3 hours; then it starts after her current turn and the list pauses.
 
-Her diary turn comes first ([reflection.md](reflection.md)). Then 「【系統維護】日記的回合結束了，接著做，現在 HH:MM。」 or, without a diary turn, 「【系統維護】開始，現在 HH:MM。」, followed by 「程式要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。」 At the busy limit: 「你手上的「…」先停著，結束後接著做。」
+Her diary turn comes first ([reflection.md](reflection.md)). Then 「【系統維護】日記的回合結束了，接著做，現在 HH:MM。」 or, without a diary turn, 「【系統維護】開始，現在 HH:MM。」, followed by 「系統要從今天的對話記下掛著的事、整理你的記憶、寫今天的摘要，要幾分鐘；這段時間你不在，結束了會告訴你。」 At the busy limit: 「你手上的「…」先停著，結束後接著做。」
 
 **During**: no turns; events queue. **Tasks**, in order:
 1. 從今天的對話記掛念 — concerns from the day ([drives-and-goals.md](drives-and-goals.md)).
@@ -21,7 +21,7 @@ Her diary turn comes first ([reflection.md](reflection.md)). Then 「【系統�
 
 Her own lines are marked 「｜自己的話」 for these tasks and are never a source of fact.
 
-**End.** The new segment opens with 「【系統維護】結束，現在 HH:MM。」, each task's words, the day's summary (written by a separate request, not by her), 「今天的行事曆：…。」, and a carried list: 「你手上的「…」還在，還是等待中。」 (no turn) or 「你手上的「…」還在，接著做。」 (a turn). Otherwise the notice gives no turn. A failed task adds 「沒做成：…（程式出錯），明天維護的時候再做」 (and 「；之前的對話和做過的事都還在你眼前」 if consolidation failed).
+**End.** The new segment opens with 「【系統維護】結束，現在 HH:MM。」, each task's words, the day's summary (written by a separate request, not by her), 「今天的行事曆：…。」, and a carried list: 「你手上的「…」還在，還是等待中。」 (no turn) or 「你手上的「…」還在，接著做。」 (a turn). Otherwise the notice gives no turn. A failed task adds 「沒做成：…（系統出錯），明天維護的時候再做」 (and 「；之前的對話和做過的事都還在你眼前」 if consolidation failed).
 
 When maintenance ends, the fixed part of her system prompt is rebuilt, with her skill panel ([reflection.md](reflection.md)).
 
